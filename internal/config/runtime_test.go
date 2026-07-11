@@ -56,6 +56,39 @@ func TestResolveRuntime_LoadedConfigNotMutated(t *testing.T) {
 	}
 }
 
+func TestWithSIEMForwarderSSRFFloor(t *testing.T) {
+	t.Parallel()
+	defaults := Defaults().Internal
+	tests := []struct {
+		name     string
+		internal []string
+	}{
+		{name: "null keeps immutable floor"},
+		{name: "operator ranges are additive", internal: []string{"198.51.100.0/24"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = append([]string(nil), tc.internal...)
+			resolved := cfg.WithSIEMForwarderSSRFFloor()
+
+			want := append(append([]string(nil), defaults...), tc.internal...)
+			if !reflect.DeepEqual(resolved.Internal, want) {
+				t.Fatalf("resolved Internal = %v, want %v", resolved.Internal, want)
+			}
+			if !reflect.DeepEqual(cfg.Internal, tc.internal) {
+				t.Fatalf("receiver Internal mutated: got %v, want %v", cfg.Internal, tc.internal)
+			}
+			if len(tc.internal) > 0 {
+				resolved.Internal[len(defaults)] = mutatedSentinel
+				if cfg.Internal[0] == mutatedSentinel {
+					t.Fatal("resolved Internal aliases receiver")
+				}
+			}
+		})
+	}
+}
+
 func TestResolveRuntime_KillSwitchAPITokenEffectiveState(t *testing.T) {
 	const (
 		yamlToken = "yaml-token"

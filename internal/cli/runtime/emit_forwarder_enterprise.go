@@ -22,9 +22,8 @@ func appendEnterpriseEmitSinks(cfg *config.Config, sinks []emit.Sink, observer e
 	// The forwarder's SSRF floor must not inherit `internal: null`, which is a
 	// deliberate escape hatch for the main request scanner. Forwarding always
 	// denies the immutable default ranges plus any operator-added ranges.
-	ssrfCfg := *cfg
-	ssrfCfg.Internal = append(append([]string(nil), config.Defaults().Internal...), cfg.Internal...)
-	ssrfScanner := scanner.New(&ssrfCfg)
+	ssrfCfg := cfg.WithSIEMForwarderSSRFFloor()
+	ssrfScanner := scanner.New(ssrfCfg)
 	forwarder, err := siemforward.New(siemforward.Config{
 		URL:          forwardCfg.URL,
 		AllowedHosts: forwardCfg.DestinationAllowlist,

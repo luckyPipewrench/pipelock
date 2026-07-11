@@ -141,6 +141,17 @@ func (c *Config) ResolveRuntime(opts RuntimeResolveOpts) (*Config, ResolveRuntim
 	return clone, info
 }
 
+// WithSIEMForwarderSSRFFloor returns a cloned config whose internal-address
+// policy contains Pipelock's immutable default ranges plus any operator-added
+// ranges. Forwarding deliberately does not inherit `internal: null`, which is
+// a supported escape hatch for the main request scanner but must not disable
+// the audit sink's SSRF floor.
+func (c *Config) WithSIEMForwarderSSRFFloor() *Config {
+	clone := c.Clone()
+	clone.Internal = append(append([]string(nil), Defaults().Internal...), c.Internal...)
+	return clone
+}
+
 func resolvedKillSwitchAPITokenValue(yamlToken string) string {
 	if envToken := os.Getenv(EnvKillSwitchAPIToken); envToken != "" {
 		return envToken

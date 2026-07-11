@@ -122,6 +122,7 @@ type Forwarder struct {
 	isInternalIP        func(net.IP) bool
 	closeResources      func()
 	allowPrivateLiteral bool
+	appendEvent         func(emit.Event) error
 
 	cursorMu sync.Mutex
 	cursor   cursor
@@ -214,6 +215,7 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 		allowPrivateLiteral: allowPrivateLiteral,
 		cursor:              c,
 	}
+	f.appendEvent = f.append
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           f.safeDialContext,
@@ -482,26 +484,91 @@ func (f *Forwarder) run() {
 		select {
 		case event := <-f.queue:
 			f.setQueued()
-			if err := f.append(event); err != nil {
-				f.recordFailure(err)
-				continue
+			persisted, shutdownDeadline := f.persistAccepted(event)
+			if !shutdownDeadline.IsZero() {
+				f.drainQueue(shutdownDeadline)
+				return
 			}
-			f.deliverPending()
+			if persisted {
+				f.deliverPending()
+			}
 		case <-retry.C:
 			f.deliverPending()
 		case <-f.done:
-			for {
+			f.drainQueue(time.Now().Add(f.cfg.Timeout))
+			return
+		}
+	}
+}
+
+// persistAccepted keeps an accepted event at the head of the worker until it
+// reaches durable storage. It does not consume another queued event while the
+// spool is unavailable. Close switches the retry loop to the same bounded
+// shutdown deadline used to drain the rest of the queue.
+func (f *Forwarder) persistAccepted(event emit.Event) (bool, time.Time) {
+	for {
+		if err := f.appendEvent(event); err == nil {
+			return true, time.Time{}
+		} else {
+			f.recordFailure(err)
+		}
+
+		timer := time.NewTimer(f.cfg.RetryInterval)
+		select {
+		case <-timer.C:
+		case <-f.done:
+			if !timer.Stop() {
 				select {
-				case event := <-f.queue:
-					if err := f.append(event); err != nil {
-						f.recordFailure(err)
-					}
+				case <-timer.C:
 				default:
-					f.setQueued()
-					return
 				}
 			}
+			deadline := time.Now().Add(f.cfg.Timeout)
+			return f.persistUntil(event, deadline), deadline
 		}
+	}
+}
+
+// persistUntil retries one accepted event until it is durable or the shared
+// shutdown deadline expires.
+func (f *Forwarder) persistUntil(event emit.Event, deadline time.Time) bool {
+	for {
+		if err := f.appendEvent(event); err == nil {
+			return true
+		} else {
+			f.recordFailure(err)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			f.recordDropped()
+			return false
+		}
+		wait := min(f.cfg.RetryInterval, remaining)
+		timer := time.NewTimer(wait)
+		<-timer.C
+	}
+}
+
+// drainQueue persists queued events in order without extending Close's single
+// shutdown deadline for each event.
+func (f *Forwarder) drainQueue(deadline time.Time) {
+	for {
+		select {
+		case event := <-f.queue:
+			_ = f.persistUntil(event, deadline)
+		default:
+			f.setQueued()
+			return
+		}
+	}
+}
+
+// recordDropped exposes the otherwise unavoidable loss when storage stays
+// unavailable through the bounded shutdown window.
+func (f *Forwarder) recordDropped() {
+	f.dropped.Add(1)
+	if f.observer != nil {
+		f.observer.RecordDropped()
 	}
 }
 

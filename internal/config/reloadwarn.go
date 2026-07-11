@@ -205,6 +205,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	if added := forwarderDestinationsAdded(
+		old.Emit.Forwarder.DestinationAllowlist,
+		updated.Emit.Forwarder.DestinationAllowlist,
+	); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.forwarder.destination_allowlist",
+			Message: fmt.Sprintf("SIEM forwarder destination allowlist expanded: %s — forwarding can now reach additional hosts", strings.Join(added, ", ")),
+		})
+	}
+
 	// Adaptive enforcement disabled
 	if old.AdaptiveEnforcement.Enabled && !updated.AdaptiveEnforcement.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -1225,6 +1235,23 @@ func passthroughDomainsAdded(old, updated []string) []string {
 	for _, d := range updated {
 		if _, exists := oldSet[strings.ToLower(d)]; !exists {
 			added = append(added, d)
+		}
+	}
+	return added
+}
+
+// forwarderDestinationsAdded compares exact DNS hosts using the same
+// normalization as forwarder validation.
+func forwarderDestinationsAdded(old, updated []string) []string {
+	oldSet := make(map[string]struct{}, len(old))
+	for _, host := range old {
+		oldSet[strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))] = struct{}{}
+	}
+	var added []string
+	for _, host := range updated {
+		normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+		if _, exists := oldSet[normalized]; !exists {
+			added = append(added, host)
 		}
 	}
 	return added

@@ -582,6 +582,49 @@ func TestForwarderRetriesPendingWithoutNewEvent(t *testing.T) {
 	}
 }
 
+func TestForwarderRetriesSpoolAppendWithoutDroppingAcceptedEvent(t *testing.T) {
+	t.Parallel()
+	received := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	cfg.RetryInterval = 10 * time.Millisecond
+	f, err := New(cfg, Options{
+		Resolver:      &sequenceResolver{answers: [][]string{{testPublicIP}}},
+		DialContext:   routeToServer(t, srv),
+		DeferredStart: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	originalAppend := f.appendEvent
+	var attempts atomic.Int32
+	f.appendEvent = func(event emit.Event) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("temporary spool failure")
+		}
+		return originalAppend(event)
+	}
+	f.Start()
+	t.Cleanup(func() { _ = f.Close() })
+	if err := f.Emit(t.Context(), testEvent(1)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("accepted event was not delivered after spool recovery")
+	}
+	waitFor(t, func() bool { return f.Health().Delivered == 1 })
+	health := f.Health()
+	if health.Failed == 0 || health.Dropped != 0 {
+		t.Fatalf("health = %+v, want a recorded failure and no drop", health)
+	}
+}
+
 func routeToServer(t *testing.T, srv *httptest.Server) func(context.Context, string, string) (net.Conn, error) {
 	t.Helper()
 	addr := srv.Listener.Addr().String()

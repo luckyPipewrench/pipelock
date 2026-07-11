@@ -91,7 +91,7 @@ jobs:
         with:
           version: v2.12.2
           skip-cache: true
-          args: --disable-all --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
+          args: --default none --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
 
       - name: Summarize hardening report
         if: always()

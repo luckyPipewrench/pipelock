@@ -51,6 +51,11 @@ func TestValidateForwarderFailClosed(t *testing.T) {
 		{name: "wrong host", mutate: func(c *ForwarderConfig) { c.DestinationAllowlist = []string{"other.vendor.example"} }, wantError: "exactly present"},
 		{name: "wildcard", mutate: func(c *ForwarderConfig) { c.DestinationAllowlist = []string{"*.vendor.example"} }, wantError: "exact hostnames"},
 		{name: "missing spool", mutate: func(c *ForwarderConfig) { c.SpoolFile = "" }, wantError: "spool_file"},
+		{name: "missing cursor", mutate: func(c *ForwarderConfig) { c.CursorFile = "" }, wantError: "cursor_file"},
+		{name: "zero timeout", mutate: func(c *ForwarderConfig) { c.TimeoutSeconds = 0 }, wantError: "must be positive"},
+		{name: "negative queue", mutate: func(c *ForwarderConfig) { c.QueueSize = -1 }, wantError: "must be positive"},
+		{name: "invalid scheme", mutate: func(c *ForwarderConfig) { c.URL = "ftp://api.vendor.example/events" }, wantError: "must be http:// or https://"},
+		{name: "fragment", mutate: func(c *ForwarderConfig) { c.URL = "https://api.vendor.example/events#secret" }, wantError: "fragment"},
 		{name: "userinfo", mutate: func(c *ForwarderConfig) { c.URL = "https://user:pass@api.vendor.example/events" }, wantError: "userinfo"},
 		{name: "bad severity", mutate: func(c *ForwarderConfig) { c.MinSeverity = "debug" }, wantError: "min_severity"},
 	}

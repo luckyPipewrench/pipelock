@@ -279,6 +279,8 @@ func TestEvaluateSessionBinding_NoBaselineFailClosed(t *testing.T) {
 func TestEvaluateSessionBinding_A2AUnknownMethodWithBaseline(t *testing.T) {
 	baseline := tools.NewToolBaseline()
 	baseline.SetKnownA2AMethods([]string{"SendMessage"})
+	frame := MCPFrame{Method: "GetTask"}
+	enforcementIdentity := mcpFrameCollisionSafeCallableIdentity(frame, frame.Method)
 
 	if !baseline.HasA2AMethodBaseline() {
 		t.Fatal("expected A2A baseline to be established")
@@ -286,11 +288,14 @@ func TestEvaluateSessionBinding_A2AUnknownMethodWithBaseline(t *testing.T) {
 	if baseline.IsKnownA2AMethod("GetTask") {
 		t.Fatal("GetTask must not be known before exercising unknown-method path")
 	}
+	if want := a2aBaselineIdentity("GetTask"); enforcementIdentity != want {
+		t.Fatalf("production A2A identity = %q, want %q", enforcementIdentity, want)
+	}
 
 	action, reason := evaluateSessionBinding(sessionBindingCheck{
 		Baseline:            baseline,
-		Method:              "GetTask",
-		EnforcementIdentity: a2aBaselineIdentity("GetTask"),
+		Frame:               frame,
+		EnforcementIdentity: enforcementIdentity,
 		UnknownAction:       config.ActionWarn,
 		NoBaselineAction:    config.ActionBlock,
 	})
@@ -299,5 +304,43 @@ func TestEvaluateSessionBinding_A2AUnknownMethodWithBaseline(t *testing.T) {
 	}
 	if reason != bindingReasonUnknownTool {
 		t.Fatalf("reason = %q, want %q", reason, bindingReasonUnknownTool)
+	}
+}
+
+func TestEvaluateSessionBinding_EarlyReturnsNonBlocking(t *testing.T) {
+	baseline := tools.NewToolBaseline()
+	baseline.SetKnownTools([]string{"search"})
+
+	cases := []struct {
+		name  string
+		check sessionBindingCheck
+	}{
+		{
+			name: "nil baseline",
+			check: sessionBindingCheck{
+				Baseline:         nil,
+				Method:           methodToolsCall,
+				ToolName:         "search",
+				UnknownAction:    config.ActionBlock,
+				NoBaselineAction: config.ActionBlock,
+			},
+		},
+		{
+			name: "non-callable method",
+			check: sessionBindingCheck{
+				Baseline:         baseline,
+				Method:           "initialize",
+				UnknownAction:    config.ActionBlock,
+				NoBaselineAction: config.ActionBlock,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action, reason := evaluateSessionBinding(tc.check)
+			if action != "" || reason != "" {
+				t.Fatalf("evaluateSessionBinding = (%q,%q), want non-blocking empty action and reason", action, reason)
+			}
+		})
 	}
 }

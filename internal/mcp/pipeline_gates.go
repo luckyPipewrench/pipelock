@@ -51,6 +51,16 @@ const (
 	bindingReasonUnknownTool     = "session_binding:unknown_tool"
 )
 
+func frameParseErrFailsClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	// These parser errors can change the callable identity or params view
+	// between policy and upstream parsers. Treat them as non-configurable
+	// parse-error blocks even when content scanning is disabled.
+	return errors.Is(err, ErrInvalidMethodType) || isDuplicateKeyBlock(err)
+}
+
 // MCPInputEvaluation aggregates the outputs of the configured inbound
 // gates for one MCP request. EvaluateMCPInputGates populates the
 // struct in a single pass; callers consume it to merge per-gate
@@ -356,7 +366,7 @@ func EvaluateMCPInputGates(
 		eval.ContentVerdict.ID = frame.ID
 		eval.ContentVerdict.Method = frame.Method
 	}
-	if errors.Is(frame.ParseErr, ErrInvalidMethodType) {
+	if frameParseErrFailsClosed(frame.ParseErr) {
 		eval.ContentVerdict.ID = frame.ID
 		eval.ContentVerdict.Method = frame.Method
 		eval.ContentVerdict.Clean = false
@@ -589,7 +599,7 @@ func EvaluateMCPInputGatesStdio(
 	// consulted at this layer -- the caller gates enablement via
 	// the scanAction / onParseError it passes in).
 	eval.ContentVerdict = scanRequestForAgent(ctx, msg, sc, scanAction, onParseError, opts.addressProtectionAgent())
-	if errors.Is(frame.ParseErr, ErrInvalidMethodType) {
+	if frameParseErrFailsClosed(frame.ParseErr) {
 		eval.ContentVerdict.ID = frame.ID
 		eval.ContentVerdict.Method = frame.Method
 		eval.ContentVerdict.Clean = false

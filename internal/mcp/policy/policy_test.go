@@ -457,6 +457,30 @@ func TestCheckRequest_A2AMethodPolicyMatch(t *testing.T) {
 	}
 }
 
+func TestCheckRequest_DuplicateKeyFailsClosed(t *testing.T) {
+	pc := testConfig(t)
+	tests := map[string][]byte{
+		"tools-call": []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo ok"},"arguments":{"command":"echo hidden"}}}`),
+		"a2a":        []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"kind":"text","text":"ok"}]},"message":{"parts":[{"kind":"text","text":"hidden"}]}}}`),
+		"batch":      []byte(`[{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo ok"},"arguments":{"command":"echo hidden"}}}]`),
+	}
+
+	for name, req := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := pc.CheckRequest(req)
+			if !v.Matched {
+				t.Fatal("duplicate-key request did not fail closed")
+			}
+			if v.Action != config.ActionBlock {
+				t.Fatalf("action = %q, want block", v.Action)
+			}
+			if got := strings.Join(v.Rules, ","); got != duplicateJSONKeyRule {
+				t.Fatalf("rules = %q, want %s", got, duplicateJSONKeyRule)
+			}
+		})
+	}
+}
+
 func TestCheckRequest_Batch_OneMatch(t *testing.T) {
 	pc := testConfig(t)
 	cmd := "rm" + " -rf /"

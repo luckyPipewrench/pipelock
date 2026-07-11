@@ -8,6 +8,7 @@ package policy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"regexp"
@@ -19,9 +20,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
-const uninspectableJSONDepthRule = "uninspectable_json_depth"
+const (
+	uninspectableJSONDepthRule = "uninspectable_json_depth"
+	duplicateJSONKeyRule       = "duplicate_json_object_key"
+)
 
 // shellExpansionRe matches shell variable expansions used as whitespace substitutes.
 // Attackers use ${IFS} or $IFS to replace spaces: "rm${IFS}-rf" expands to "rm -rf"
@@ -667,6 +672,10 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 
 // checkSingle parses one JSON-RPC request and checks it against policy.
 func (pc *Config) checkSingle(line []byte) Verdict {
+	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(line)); err != nil &&
+		errors.Is(err, &redact.BlockError{Reason: redact.ReasonDuplicateKey}) {
+		return duplicateJSONKeyVerdict()
+	}
 	tc := parsePolicyCallable(line)
 	if tc == nil {
 		return Verdict{}
@@ -706,6 +715,18 @@ func uninspectableJSONDepthVerdict() Verdict {
 		Matched: true,
 		Action:  config.ActionBlock,
 		Rules:   []string{uninspectableJSONDepthRule},
+	}
+}
+
+// duplicateJSONKeyVerdict is a defense-in-depth fail-closed result for direct
+// policy callers. The transport gates already block duplicate-key frames before
+// policy evaluation; keeping policy block-capable prevents future callers from
+// reintroducing a last-wins policy view against a first-wins upstream parser.
+func duplicateJSONKeyVerdict() Verdict {
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   []string{duplicateJSONKeyRule},
 	}
 }
 

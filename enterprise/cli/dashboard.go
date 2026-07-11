@@ -75,6 +75,11 @@ type dashboardServeOptions struct {
 	readModelIndex      string
 	legalHoldStore      string
 	complianceTokenFile string
+	oidcIssuer          string
+	oidcAudience        string
+	oidcClientID        string
+	oidcRoleClaim       string
+	oidcRoleMap         string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -83,20 +88,20 @@ func dashboardServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Serve the read-only Evidence dashboard on a dedicated listener",
 		Long: `Serve the read-only Evidence dashboard over a flight-recorder evidence
-directory. Every request must authenticate with the operator token from
---auth-token-file or, when --require-client-cert is enabled, a verified client
-certificate mapped to a dashboard role. The license feature check is
-entitlement, not identity; the token and client certificate are authentication
-boundaries.
+directory. Every request must authenticate through a configured local operator
+token, OIDC bearer token, or, when --require-client-cert is enabled, a verified
+client certificate mapped to a dashboard role. The license feature check is
+entitlement, not identity; the selected authenticator is the identity boundary.
 
 By default the view is redacted: receipt destinations and signed payloads are
 hidden, because a destination URL can carry a capability token and the payload
 is the largest exfil surface. Supply --raw-token-file to issue a second,
-higher-privilege token whose holders see the full raw detail. Every
-authenticated request is written to the access log on stderr.
+higher-privilege token whose holders see the full raw detail, or grant
+dashboard:raw:read to an OIDC role. Every authenticated request is written to
+the access log on stderr.
 
 Without --tls-cert/--tls-key the listener refuses non-loopback addresses,
-because the operator token would transit in cleartext.`,
+because credentials would transit in cleartext.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// License gate: the dashboard is a paid surface. Fail closed before
@@ -124,7 +129,7 @@ because the operator token would transit in cleartext.`,
 	cmd.Flags().StringVar(&opts.legalHoldStore, "legal-hold-store", "",
 		"optional legal-hold metadata store file for read-only compliance display")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
-		"file containing the operator token required on every dashboard request (redacted metadata view)")
+		"optional file containing a dashboard operator token (redacted metadata view); required unless OIDC is configured")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
 		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
 	cmd.Flags().StringVar(&opts.complianceTokenFile, "compliance-token-file", "",
@@ -147,8 +152,17 @@ because the operator token would transit in cleartext.`,
 	cmd.Flags().StringVar(&opts.clientCAFile, "client-ca-file", "", "PEM trust anchor bundle for dashboard client certificates")
 	cmd.Flags().BoolVar(&opts.requireClientCert, "require-client-cert", false, "require and verify a mapped dashboard client certificate")
 	cmd.Flags().StringVar(&opts.clientCertRoleMap, "client-cert-role-map", "", "YAML file mapping client certificate SPKI SHA-256 fingerprints to permission roles")
+	cmd.Flags().StringVar(&opts.oidcIssuer, "oidc-issuer", "",
+		"OIDC issuer URL used for discovery and exact iss validation")
+	cmd.Flags().StringVar(&opts.oidcAudience, "oidc-audience", "",
+		"expected OIDC aud value for dashboard bearer tokens")
+	cmd.Flags().StringVar(&opts.oidcClientID, "oidc-client-id", "",
+		"alias for --oidc-audience; both values must match if both are set")
+	cmd.Flags().StringVar(&opts.oidcRoleClaim, "oidc-role-claim", "",
+		"verified token claim containing role or group values")
+	cmd.Flags().StringVar(&opts.oidcRoleMap, "oidc-role-map", "",
+		`JSON object: {"claim_values":{"GROUP":"ROLE"},"roles":{"ROLE":["dashboard:evidence:read"]}}`)
 	_ = cmd.MarkFlagRequired("receipt-dir")
-	_ = cmd.MarkFlagRequired("auth-token-file")
 	return cmd
 }
 
@@ -170,9 +184,16 @@ func verifyDashboardLicenseWithOptions(in license.FleetVerifyInputs) (license.Li
 }
 
 func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {
-	token, err := loadDashboardTokenFile("--auth-token-file", opts.authTokenFile)
-	if err != nil {
+	if err := validateDashboardAuthenticatorConfig(opts); err != nil {
 		return err
+	}
+	var token string
+	var err error
+	if strings.TrimSpace(opts.authTokenFile) != "" {
+		token, err = loadDashboardTokenFile("--auth-token-file", opts.authTokenFile)
+		if err != nil {
+			return err
+		}
 	}
 	// Optional raw-access token: elevates a request from the redacted metadata
 	// view to full destinations + signed payloads. Must differ from the
@@ -197,6 +218,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			(rawToken != "" && subtle.ConstantTimeCompare([]byte(complianceToken), []byte(rawToken)) == 1) {
 			return errors.New("--compliance-token-file must differ from operator and raw token files")
 		}
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
@@ -267,28 +292,28 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		}
 	}
 
-	// Token auth retains its metadata/raw split. When mTLS is enabled, the
-	// verified certificate's mapped role supplies both route and raw-view
-	// permissions and takes precedence over any token on the same request.
-	tokenMetaAuthorized := func(r *http.Request) bool {
-		if dashboardTokenMatches(r, token) {
-			return true
+	var oidcAuthenticator *dashboardOIDCAuthenticator
+	if strings.TrimSpace(opts.oidcIssuer) != "" {
+		oidcAuthenticator, err = newDashboardOIDCAuthenticator(ctx, dashboardOIDCOptions{
+			Issuer:      opts.oidcIssuer,
+			Audience:    dashboardOIDCAudience(opts),
+			RoleClaim:   opts.oidcRoleClaim,
+			RoleMapJSON: opts.oidcRoleMap,
+		})
+		if err != nil {
+			return err
 		}
-		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
-	tokenRawAuthorized := func(r *http.Request) bool {
-		return rawToken != "" && dashboardTokenMatches(r, rawToken)
-	}
-	// The compliance token is a token-based authorizer scoped to the compliance
-	// path. When mTLS is authoritative it must not bypass the certificate
-	// requirement, so it applies only when client certificates are not required;
-	// a certificate operator that needs compliance access is granted
-	// dashboard:compliance:read directly through its role map.
+	authorization := newDashboardRequestAuthorization(token, rawToken, complianceToken, oidcAuthenticator)
+	// Token/OIDC auth retains its metadata/raw split. When mTLS is enabled, the
+	// verified certificate's mapped role supplies both route and raw-view
+	// permissions and takes precedence over any token or OIDC principal on the
+	// same request.
 	complianceAuthorized := func(r *http.Request) bool {
-		return clientCertAuth == nil && complianceToken != "" && dashboardTokenMatches(r, complianceToken)
+		return clientCertAuth == nil && authorization.complianceAuthorized(r)
 	}
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		clientCertAuth, tokenMetaAuthorized, tokenRawAuthorized, complianceAuthorized,
+		clientCertAuth, authorization.metaAuthorized, authorization.rawAuthorized, complianceAuthorized,
 	)
 	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
 
@@ -323,10 +348,8 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		BudgetSource:    dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})
 	handler := dashboardAuthHandler(authenticated, inner)
-
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
+	if oidcAuthenticator != nil {
+		handler = oidcAuthenticator.middleware(handler)
 	}
 	baseCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

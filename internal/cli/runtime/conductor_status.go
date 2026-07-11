@@ -165,6 +165,7 @@ func (r *conductorPolicyStatusReporter) buildAppliedState(ev policysync.StatusEv
 		BuildDate:        boundAppliedStateString(cliutil.BuildDate),
 		LastPolicyPollAt: pollAt.UTC(),
 		ObservedAt:       pollAt.UTC(),
+		ProvenanceAt:     time.Now().UTC(),
 	}
 	if ev.ApplyError != nil {
 		applied.LastApplyErrorCode = boundAppliedStateString(applyErrorCode(ev.ApplyError))

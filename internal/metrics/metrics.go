@@ -163,6 +163,7 @@ type Metrics struct {
 	siemForwarderFailed      prometheus.Counter
 	siemForwarderDropped     prometheus.Counter
 	siemForwarderLastSuccess prometheus.Gauge
+	siemForwarderSpoolBytes  prometheus.Gauge
 
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex

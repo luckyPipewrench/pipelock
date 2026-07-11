@@ -39,6 +39,37 @@ func TestValidateReload_ForwarderDestinationAllowlistExpanded(t *testing.T) {
 	}
 }
 
+func TestValidateReload_ForwarderInsecureHTTPEnabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		from bool
+		to   bool
+		want bool
+	}{
+		{name: "enabled", from: false, to: true, want: true},
+		{name: "already on", from: true, to: true},
+		{name: "disabled", from: true, to: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := Defaults()
+			old.Emit.Forwarder.AllowInsecureHTTP = tc.from
+			updated := Defaults()
+			updated.Emit.Forwarder.AllowInsecureHTTP = tc.to
+			got := false
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field == "emit.forwarder.allow_insecure_http" {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("insecure http warning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateReload_AgentTrustedDomainsAdded covers the per-agent
 // trusted_domains expansion path: any agent profile whose trusted_domains
 // gains entries on reload should produce a deterministic ReloadWarning

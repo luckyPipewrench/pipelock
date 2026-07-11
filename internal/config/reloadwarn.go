@@ -215,6 +215,13 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	if !old.Emit.Forwarder.AllowInsecureHTTP && updated.Emit.Forwarder.AllowInsecureHTTP {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.forwarder.allow_insecure_http",
+			Message: "SIEM forwarder cleartext http enabled — audit payloads may now be forwarded to a non-loopback host without TLS",
+		})
+	}
+
 	// Adaptive enforcement disabled
 	if old.AdaptiveEnforcement.Enabled && !updated.AdaptiveEnforcement.Enabled {
 		warnings = append(warnings, ReloadWarning{

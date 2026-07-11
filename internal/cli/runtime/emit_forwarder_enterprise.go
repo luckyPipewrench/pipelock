@@ -25,14 +25,16 @@ func appendEnterpriseEmitSinks(cfg *config.Config, sinks []emit.Sink, observer e
 	ssrfCfg := cfg.WithSIEMForwarderSSRFFloor()
 	ssrfScanner := scanner.New(ssrfCfg)
 	forwarder, err := siemforward.New(siemforward.Config{
-		URL:          forwardCfg.URL,
-		AllowedHosts: forwardCfg.DestinationAllowlist,
-		SpoolFile:    forwardCfg.SpoolFile,
-		CursorFile:   forwardCfg.CursorFile,
-		AuthToken:    forwardCfg.AuthToken,
-		QueueSize:    forwardCfg.QueueSize,
-		Timeout:      time.Duration(forwardCfg.TimeoutSeconds) * time.Second,
-		MinSeverity:  emit.ParseSeverity(forwardCfg.MinSeverity),
+		URL:               forwardCfg.URL,
+		AllowedHosts:      forwardCfg.DestinationAllowlist,
+		SpoolFile:         forwardCfg.SpoolFile,
+		CursorFile:        forwardCfg.CursorFile,
+		AuthToken:         forwardCfg.AuthToken,
+		QueueSize:         forwardCfg.QueueSize,
+		Timeout:           time.Duration(forwardCfg.TimeoutSeconds) * time.Second,
+		MinSeverity:       emit.ParseSeverity(forwardCfg.MinSeverity),
+		MaxSpoolBytes:     forwardCfg.MaxSpoolBytes,
+		AllowInsecureHTTP: forwardCfg.AllowInsecureHTTP,
 	}, siemforward.Options{
 		Resolver:      ssrfScanner.HostResolver(),
 		IsInternalIP:  ssrfScanner.IsInternalIP,

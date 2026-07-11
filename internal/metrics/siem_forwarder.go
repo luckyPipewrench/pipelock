@@ -31,7 +31,11 @@ func (m *Metrics) registerSIEMForwarderMetrics(reg *prometheus.Registry) {
 		Name: "pipelock_siem_forwarder_last_success_timestamp_seconds",
 		Help: "Unix timestamp of the last SIEM forwarder delivery acknowledged by the endpoint.",
 	})
-	reg.MustRegister(m.siemForwarderQueued, m.siemForwarderDelivered, m.siemForwarderFailed, m.siemForwarderDropped, m.siemForwarderLastSuccess)
+	m.siemForwarderSpoolBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pipelock_siem_forwarder_spool_bytes",
+		Help: "Current on-disk size of the durable SIEM forwarder spool, bounded by max_spool_bytes.",
+	})
+	reg.MustRegister(m.siemForwarderQueued, m.siemForwarderDelivered, m.siemForwarderFailed, m.siemForwarderDropped, m.siemForwarderLastSuccess, m.siemForwarderSpoolBytes)
 }
 
 func (m *Metrics) SetQueued(value float64) { m.siemForwarderQueued.Set(value) }
@@ -41,3 +45,4 @@ func (m *Metrics) RecordDropped()          { m.siemForwarderDropped.Inc() }
 func (m *Metrics) SetLastSuccess(at time.Time) {
 	m.siemForwarderLastSuccess.Set(float64(at.Unix()))
 }
+func (m *Metrics) SetSpoolBytes(value float64) { m.siemForwarderSpoolBytes.Set(value) }

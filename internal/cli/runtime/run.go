@@ -211,6 +211,7 @@ type emitDeliveryObserver interface {
 	RecordFailed()
 	RecordDropped()
 	SetLastSuccess(time.Time)
+	SetSpoolBytes(float64)
 }
 
 // BuildEmitSinks creates emit sinks from the current config.

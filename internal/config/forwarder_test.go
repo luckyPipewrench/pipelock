@@ -36,6 +36,9 @@ func TestLoadForwarderDefaultsAndNulls(t *testing.T) {
 			if cfg.Emit.Forwarder.MinSeverity != SeverityWarn || cfg.Emit.Forwarder.TimeoutSeconds != 5 || cfg.Emit.Forwarder.QueueSize != 256 {
 				t.Fatalf("forwarder defaults = %+v", cfg.Emit.Forwarder)
 			}
+			if cfg.Emit.Forwarder.MaxSpoolBytes != defaultForwarderMaxSpoolBytes {
+				t.Fatalf("forwarder max_spool_bytes = %d, want default %d", cfg.Emit.Forwarder.MaxSpoolBytes, defaultForwarderMaxSpoolBytes)
+			}
 		})
 	}
 }
@@ -58,6 +61,16 @@ func TestValidateForwarderFailClosed(t *testing.T) {
 		{name: "fragment", mutate: func(c *ForwarderConfig) { c.URL = "https://api.vendor.example/events#secret" }, wantError: "fragment"},
 		{name: "userinfo", mutate: func(c *ForwarderConfig) { c.URL = "https://user:pass@api.vendor.example/events" }, wantError: "userinfo"},
 		{name: "bad severity", mutate: func(c *ForwarderConfig) { c.MinSeverity = "debug" }, wantError: "min_severity"},
+		{name: "http remote without flag", mutate: func(c *ForwarderConfig) { c.URL = "http://api.vendor.example/events" }, wantError: "allow_insecure_http"},
+		{name: "http remote with token", mutate: func(c *ForwarderConfig) {
+			c.URL = "http://api.vendor.example/events"
+			c.AuthToken = "bearer"
+		}, wantError: "requires an https"},
+		{name: "http remote token ignores insecure flag", mutate: func(c *ForwarderConfig) {
+			c.URL = "http://api.vendor.example/events"
+			c.AuthToken = "bearer"
+			c.AllowInsecureHTTP = true
+		}, wantError: "requires an https"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,5 +100,42 @@ func TestValidateForwarderValid(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateForwarderTransportPolicyAllowsSafe(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*ForwarderConfig)
+	}{
+		{name: "loopback http with token", mutate: func(c *ForwarderConfig) {
+			c.URL = "http://127.0.0.1/events"
+			c.DestinationAllowlist = []string{"127.0.0.1"}
+			c.AuthToken = "bearer"
+		}},
+		{name: "localhost http", mutate: func(c *ForwarderConfig) {
+			c.URL = "http://localhost/events"
+			c.DestinationAllowlist = []string{"localhost"}
+		}},
+		{name: "remote http with explicit insecure flag", mutate: func(c *ForwarderConfig) {
+			c.URL = "http://api.vendor.example/events"
+			c.AllowInsecureHTTP = true
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Emit.Forwarder = ForwarderConfig{
+				URL: "https://api.vendor.example/events", DestinationAllowlist: []string{"api.vendor.example"},
+				SpoolFile: "/var/lib/pipelock/siem.spool", CursorFile: "/var/lib/pipelock/siem.cursor",
+				MinSeverity: SeverityWarn, TimeoutSeconds: 5, QueueSize: 256,
+			}
+			tc.mutate(&cfg.Emit.Forwarder)
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
 	}
 }

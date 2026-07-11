@@ -20,6 +20,7 @@ func (m *Metrics) registerSIEMForwarderMetrics(_ *prometheus.Registry) {
 	_ = m.siemForwarderFailed
 	_ = m.siemForwarderDropped
 	_ = m.siemForwarderLastSuccess
+	_ = m.siemForwarderSpoolBytes
 }
 
 func (*Metrics) SetQueued(float64)        {}
@@ -27,3 +28,4 @@ func (*Metrics) RecordDelivered()         {}
 func (*Metrics) RecordFailed()            {}
 func (*Metrics) RecordDropped()           {}
 func (*Metrics) SetLastSuccess(time.Time) {}
+func (*Metrics) SetSpoolBytes(float64)    {}

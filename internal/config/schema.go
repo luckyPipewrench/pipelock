@@ -1271,7 +1271,23 @@ type ForwarderConfig struct {
 	MinSeverity          string   `yaml:"min_severity"`
 	TimeoutSeconds       int      `yaml:"timeout_seconds"`
 	QueueSize            int      `yaml:"queue_size"`
+
+	// MaxSpoolBytes caps the on-disk spool. Once an append would exceed it
+	// while the endpoint is unreachable, new events are dropped (counted, not
+	// retried forever) so a stalled forwarder cannot exhaust host disk.
+	// Defaults to 100 MiB when zero or negative.
+	MaxSpoolBytes int64 `yaml:"max_spool_bytes"`
+
+	// AllowInsecureHTTP permits a plaintext http:// destination to a
+	// non-loopback host. Off by default: cleartext forwarding exposes audit
+	// payloads on the wire, and an auth_token over plaintext is refused
+	// regardless of this flag (loopback destinations excepted).
+	AllowInsecureHTTP bool `yaml:"allow_insecure_http" json:"-"`
 }
+
+// defaultForwarderMaxSpoolBytes bounds the SIEM forwarder spool at 100 MiB when
+// the operator does not set max_spool_bytes.
+const defaultForwarderMaxSpoolBytes int64 = 100 << 20
 
 // EmitFilter configures additive export filtering across all emit sinks.
 type EmitFilter struct {

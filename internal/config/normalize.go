@@ -495,6 +495,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Emit.Forwarder.QueueSize <= 0 {
 		c.Emit.Forwarder.QueueSize = 256
 	}
+	if c.Emit.Forwarder.MaxSpoolBytes <= 0 {
+		c.Emit.Forwarder.MaxSpoolBytes = defaultForwarderMaxSpoolBytes
+	}
 	if c.Emit.Syslog.Facility == "" {
 		c.Emit.Syslog.Facility = "local0"
 	}

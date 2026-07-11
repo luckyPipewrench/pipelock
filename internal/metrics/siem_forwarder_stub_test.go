@@ -18,6 +18,7 @@ func TestSIEMForwarderMetricStubs(t *testing.T) {
 	m.RecordFailed()
 	m.RecordDropped()
 	m.SetLastSuccess(time.Unix(1, 0))
+	m.SetSpoolBytes(1024)
 
 	families, err := m.Registry().Gather()
 	if err != nil {

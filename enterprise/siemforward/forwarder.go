@@ -34,29 +34,40 @@ import (
 )
 
 const (
-	SchemaV1         = "pipelock.siem.event.v1"
-	cursorVersion    = 1
-	defaultQueueSize = 256
-	defaultTimeout   = 5 * time.Second
-	defaultRetry     = time.Second
+	SchemaV1             = "pipelock.siem.event.v1"
+	cursorVersion        = 1
+	defaultQueueSize     = 256
+	defaultTimeout       = 5 * time.Second
+	defaultRetry         = time.Second
+	defaultMaxSpoolBytes = int64(100) << 20 // 100 MiB
 )
 
 var (
 	ErrQueueFull             = errors.New("siem forwarder queue full, event dropped")
 	errClosed                = errors.New("siem forwarder closed")
 	errDestinationUnresolved = errors.New("siem forwarder destination unresolved")
+	// errPermanentEncode marks an event that can never be serialized (e.g. a
+	// NaN/Inf or unsupported type in Fields). Retrying it forever would block
+	// the worker, so it is dropped instead.
+	errPermanentEncode = errors.New("siem forwarder event cannot be encoded")
+	// errSpoolFull marks a refused append because the on-disk spool has reached
+	// its configured ceiling. The new event is dropped so a stalled endpoint
+	// cannot exhaust host disk.
+	errSpoolFull = errors.New("siem forwarder spool at capacity")
 )
 
 type Config struct {
-	URL           string
-	AllowedHosts  []string
-	SpoolFile     string
-	CursorFile    string
-	AuthToken     string
-	QueueSize     int
-	Timeout       time.Duration
-	RetryInterval time.Duration
-	MinSeverity   emit.Severity
+	URL               string
+	AllowedHosts      []string
+	SpoolFile         string
+	CursorFile        string
+	AuthToken         string
+	QueueSize         int
+	Timeout           time.Duration
+	RetryInterval     time.Duration
+	MinSeverity       emit.Severity
+	MaxSpoolBytes     int64
+	AllowInsecureHTTP bool
 }
 
 type Options struct {
@@ -74,6 +85,7 @@ type Observer interface {
 	RecordFailed()
 	RecordDropped()
 	SetLastSuccess(time.Time)
+	SetSpoolBytes(float64)
 }
 
 type Envelope struct {
@@ -123,6 +135,13 @@ type Forwarder struct {
 	closeResources      func()
 	allowPrivateLiteral bool
 	appendEvent         func(emit.Event) error
+	maxSpoolBytes       int64
+	lockFile            *os.File
+
+	// deliverCtx is cancelled by Close so an in-flight HTTP delivery aborts
+	// promptly instead of blocking shutdown/reload for the whole backlog.
+	deliverCtx    context.Context
+	deliverCancel context.CancelFunc
 
 	cursorMu sync.Mutex
 	cursor   cursor
@@ -145,10 +164,13 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 	if cfg.RetryInterval <= 0 {
 		cfg.RetryInterval = defaultRetry
 	}
+	if cfg.MaxSpoolBytes <= 0 {
+		cfg.MaxSpoolBytes = defaultMaxSpoolBytes
+	}
 	if cfg.SpoolFile == "" || cfg.CursorFile == "" {
 		return nil, errors.New("siem forwarder spool_file and cursor_file are required")
 	}
-	target, err := validateTarget(cfg.URL, cfg.AllowedHosts)
+	target, err := validateTarget(cfg.URL, cfg.AllowedHosts, cfg.AuthToken, cfg.AllowInsecureHTTP)
 	if err != nil {
 		return nil, err
 	}
@@ -202,6 +224,7 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: cfg.Timeout}).DialContext
 	}
+	deliverCtx, deliverCancel := context.WithCancel(context.Background())
 	f := &Forwarder{
 		cfg:                 cfg,
 		target:              target,
@@ -213,6 +236,9 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 		isInternalIP:        internalIP,
 		closeResources:      closeResources,
 		allowPrivateLiteral: allowPrivateLiteral,
+		maxSpoolBytes:       cfg.MaxSpoolBytes,
+		deliverCtx:          deliverCtx,
+		deliverCancel:       deliverCancel,
 		cursor:              c,
 	}
 	f.appendEvent = f.append
@@ -249,12 +275,24 @@ func (f *Forwarder) Start() {
 		if f.closed {
 			return
 		}
+		// Acquire the exclusive state lock at delivery time, not in New: a
+		// reload builds the replacement while the outgoing forwarder still
+		// holds the lock, and only releases it on Close before this Start
+		// runs. Locking here still blocks a second OS process pointed at the
+		// same spool/cursor. A failed lock fails safe: no worker runs, so
+		// events queue and overflow rather than racing another writer.
+		lock, err := acquireStateLock(f.cfg.SpoolFile)
+		if err != nil {
+			f.recordFailure(err)
+			return
+		}
+		f.lockFile = lock
 		f.worker.Add(1)
 		go f.run()
 	})
 }
 
-func validateTarget(rawURL string, allowedHosts []string) (*url.URL, error) {
+func validateTarget(rawURL string, allowedHosts []string, authToken string, allowInsecureHTTP bool) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("invalid siem forwarder url %q: must be http:// or https:// with a host", rawURL)
@@ -277,11 +315,31 @@ func validateTarget(rawURL string, allowedHosts []string) (*url.URL, error) {
 	if _, ok := allowed[host]; !ok {
 		return nil, fmt.Errorf("siem forwarder destination host %q is not exactly allowlisted", host)
 	}
+	if u.Scheme == "http" && !hostIsLoopback(host) {
+		if authToken != "" {
+			return nil, errors.New("siem forwarder auth_token requires an https:// url: plaintext http would expose the bearer token (loopback destinations are exempt)")
+		}
+		if !allowInsecureHTTP {
+			return nil, fmt.Errorf("siem forwarder url uses plaintext http:// to non-loopback host %q: use https:// or set allow_insecure_http", host)
+		}
+	}
 	return u, nil
 }
 
 func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+}
+
+// hostIsLoopback reports whether an already-normalized host refers to the local
+// machine, where plaintext http forwarding is acceptable.
+func hostIsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host string, internal func(net.IP) bool, allowPrivateLiteral bool) error {
@@ -453,8 +511,13 @@ func (f *Forwarder) Close() error {
 		close(f.done)
 	}
 	f.lifecycleMu.Unlock()
+	// Abort any in-flight HTTP delivery so Close returns promptly. The worker
+	// still persists already-queued events to the spool within the bounded
+	// shutdown deadline; undelivered spool records replay after restart.
+	f.deliverCancel()
 	f.worker.Wait()
 	f.resourceClose.Do(func() {
+		releaseStateLock(f.lockFile)
 		if f.closeResources != nil {
 			f.closeResources()
 		}
@@ -507,11 +570,15 @@ func (f *Forwarder) run() {
 // shutdown deadline used to drain the rest of the queue.
 func (f *Forwarder) persistAccepted(event emit.Event) (bool, time.Time) {
 	for {
-		if err := f.appendEvent(event); err == nil {
+		err := f.appendEvent(event)
+		if err == nil {
 			return true, time.Time{}
-		} else {
-			f.recordFailure(err)
 		}
+		if isPermanentAppendErr(err) {
+			f.recordDroppedEvent(event, err)
+			return false, time.Time{}
+		}
+		f.recordFailure(err)
 
 		timer := time.NewTimer(f.cfg.RetryInterval)
 		select {
@@ -533,11 +600,15 @@ func (f *Forwarder) persistAccepted(event emit.Event) (bool, time.Time) {
 // shutdown deadline expires.
 func (f *Forwarder) persistUntil(event emit.Event, deadline time.Time) bool {
 	for {
-		if err := f.appendEvent(event); err == nil {
+		err := f.appendEvent(event)
+		if err == nil {
 			return true
-		} else {
-			f.recordFailure(err)
 		}
+		if isPermanentAppendErr(err) {
+			f.recordDroppedEvent(event, err)
+			return false
+		}
+		f.recordFailure(err)
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			f.recordDropped()
@@ -572,6 +643,27 @@ func (f *Forwarder) recordDropped() {
 	}
 }
 
+// recordDroppedEvent drops an event that can never be persisted (permanent
+// encode failure or a full spool) and emits a sanitized diagnostic. Only the
+// event type and the sentinel reason are logged; the untrusted Fields are never
+// written out.
+func (f *Forwarder) recordDroppedEvent(event emit.Event, err error) {
+	f.dropped.Add(1)
+	if f.observer != nil {
+		f.observer.RecordDropped()
+	}
+	f.healthMu.Lock()
+	f.lastError = err.Error()
+	f.healthMu.Unlock()
+	_, _ = fmt.Fprintf(os.Stderr, "siem forwarder dropped event type=%q: %v\n", event.Type, err)
+}
+
+// isPermanentAppendErr reports whether an append failure should not be retried:
+// the event is unencodable or the spool is at capacity.
+func isPermanentAppendErr(err error) bool {
+	return errors.Is(err, errPermanentEncode) || errors.Is(err, errSpoolFull)
+}
+
 func (f *Forwarder) append(event emit.Event) error {
 	envelope := Envelope{Schema: SchemaV1, Event: DeliveryEvent{
 		Severity: event.Severity.String(), Type: event.Type,
@@ -580,9 +672,15 @@ func (f *Forwarder) append(event emit.Event) error {
 	}}
 	b, err := json.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("marshal siem forwarder envelope: %w", err)
+		// A serialization failure (NaN/Inf, unsupported type) is permanent:
+		// retrying the same event never succeeds. Wrap it so the caller drops
+		// it instead of head-of-line blocking every later audit event.
+		return fmt.Errorf("%w: %w", errPermanentEncode, err)
 	}
 	b = append(b, '\n')
+	if info, statErr := os.Stat(f.cfg.SpoolFile); statErr == nil && info.Size()+int64(len(b)) > f.maxSpoolBytes {
+		return fmt.Errorf("%w: spool at %d of %d bytes", errSpoolFull, info.Size(), f.maxSpoolBytes)
+	}
 	file, err := openRegularFile(f.cfg.SpoolFile, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open siem forwarder spool: %w", err)
@@ -594,6 +692,7 @@ func (f *Forwarder) append(event emit.Event) error {
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("sync siem forwarder spool: %w", err)
 	}
+	f.setSpoolBytes()
 	return nil
 }
 
@@ -612,9 +711,14 @@ func (f *Forwarder) deliverPending() {
 	}
 	reader := bufio.NewReader(file)
 	for {
+		// Stop promptly on shutdown/reload instead of walking the whole
+		// backlog: any undelivered record stays spooled for replay.
+		if f.deliverCtx.Err() != nil {
+			return
+		}
 		line, readErr := reader.ReadBytes('\n')
 		if errors.Is(readErr, io.EOF) && len(line) == 0 {
-			return
+			break
 		}
 		if readErr != nil {
 			f.recordFailure(fmt.Errorf("read siem forwarder spool: %w", readErr))
@@ -642,6 +746,41 @@ func (f *Forwarder) deliverPending() {
 		f.lastOK = now
 		f.healthMu.Unlock()
 	}
+	f.compactIfDrained(file)
+}
+
+// compactIfDrained truncates the spool once every record has been delivered so
+// healthy operation stays bounded and the max_spool_bytes cap only trips under
+// a genuine delivery backlog. The cursor is reset to zero on disk before the
+// truncate, so a crash in the window replays the (already-delivered) tail —
+// at-least-once, never a gap. Runs on the worker goroutine, so it never races
+// append.
+func (f *Forwarder) compactIfDrained(spool *os.File) {
+	info, err := spool.Stat()
+	if err != nil || f.cursor.Offset == 0 || f.cursor.Offset != info.Size() {
+		return
+	}
+	reset := cursor{Version: cursorVersion, SourceFile: f.cursor.SourceFile}
+	if err := persistCursor(f.cfg.CursorFile, reset); err != nil {
+		f.recordFailure(fmt.Errorf("reset siem forwarder cursor for compaction: %w", err))
+		return
+	}
+	wf, err := openRegularFile(f.cfg.SpoolFile, os.O_WRONLY, 0)
+	if err != nil {
+		f.recordFailure(fmt.Errorf("open siem forwarder spool for compaction: %w", err))
+		return
+	}
+	defer func() { _ = wf.Close() }()
+	if err := wf.Truncate(0); err != nil {
+		f.recordFailure(fmt.Errorf("truncate siem forwarder spool: %w", err))
+		return
+	}
+	if err := wf.Sync(); err != nil {
+		f.recordFailure(fmt.Errorf("sync siem forwarder spool after compaction: %w", err))
+		return
+	}
+	f.cursor = reset
+	f.setSpoolBytes()
 }
 
 func (f *Forwarder) deliver(record []byte) error {
@@ -652,7 +791,7 @@ func (f *Forwarder) deliver(record []byte) error {
 	if envelope.Schema != SchemaV1 {
 		return fmt.Errorf("unsupported siem forwarder schema %q", envelope.Schema)
 	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, f.target.String(), bytes.NewReader(record))
+	req, err := http.NewRequestWithContext(f.deliverCtx, http.MethodPost, f.target.String(), bytes.NewReader(record))
 	if err != nil {
 		return fmt.Errorf("create siem forwarder request: %w", err)
 	}
@@ -805,5 +944,16 @@ func (f *Forwarder) recordFailure(err error) {
 func (f *Forwarder) setQueued() {
 	if f.observer != nil {
 		f.observer.SetQueued(float64(len(f.queue)))
+	}
+}
+
+// setSpoolBytes publishes the current on-disk spool size so operators can see
+// backlog growth toward the max_spool_bytes ceiling.
+func (f *Forwarder) setSpoolBytes() {
+	if f.observer == nil {
+		return
+	}
+	if info, err := os.Stat(f.cfg.SpoolFile); err == nil {
+		f.observer.SetSpoolBytes(float64(info.Size()))
 	}
 }

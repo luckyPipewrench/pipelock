@@ -2519,8 +2519,28 @@ func (c *Config) validateEmit() error {
 		if c.Emit.Forwarder.TimeoutSeconds <= 0 || c.Emit.Forwarder.QueueSize <= 0 {
 			return fmt.Errorf("emit.forwarder.timeout_seconds and queue_size must be positive")
 		}
+		if u.Scheme == schemeHTTP && !forwarderHostIsLoopback(host) {
+			if c.Emit.Forwarder.AuthToken != "" {
+				return fmt.Errorf("emit.forwarder.auth_token requires an https:// url: a plaintext http:// destination would expose the bearer token on the wire (loopback destinations are exempt)")
+			}
+			if !c.Emit.Forwarder.AllowInsecureHTTP {
+				return fmt.Errorf("emit.forwarder.url uses plaintext http:// to non-loopback host %q: use https://, or set emit.forwarder.allow_insecure_http: true to accept cleartext forwarding", host)
+			}
+		}
 	}
 	return nil
+}
+
+// forwarderHostIsLoopback reports whether an already-normalized forwarder host
+// refers to the local machine, where plaintext http is acceptable.
+func forwarderHostIsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func validateEmitFilterValues(name string, values []string) error {

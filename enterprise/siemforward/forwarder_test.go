@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,10 @@ func testConfig(t *testing.T, rawURL string) Config {
 		CursorFile:   filepath.Join(dir, "forward.cursor"),
 		QueueSize:    8,
 		Timeout:      time.Second,
+		// The harness talks plaintext http to a fake endpoint; opt in so the
+		// transport-confidentiality policy does not reject the fixture URLs.
+		// Dedicated tests exercise that policy with the flag unset.
+		AllowInsecureHTTP: true,
 	}
 }
 
@@ -198,7 +203,9 @@ func TestForwarderDoesNotPersistOrReportEndpointCredentials(t *testing.T) {
 		querySecret = "query-secret-value"
 		authSecret  = "bearer-secret-value"
 	)
-	cfg := testConfig(t, "http://api.vendor.example/events?token="+querySecret)
+	// https because an auth_token over plaintext http to a non-loopback host is
+	// rejected by policy; this test exercises credential handling, not scheme.
+	cfg := testConfig(t, "https://api.vendor.example/events?token="+querySecret)
 	cfg.AuthToken = authSecret
 	f, err := New(cfg, Options{
 		Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}},
@@ -242,7 +249,10 @@ func TestForwarderRefusesRedirectWithoutForwardingAuthorization(t *testing.T) {
 		http.Redirect(w, r, redirected.URL+"/steal", http.StatusTemporaryRedirect)
 	}))
 	t.Cleanup(origin.Close)
-	cfg := testConfig(t, "http://api.vendor.example/events")
+	// Loopback host: http with an auth_token is allowed only for loopback, and
+	// the dial is routed to the httptest origin regardless of the literal.
+	cfg := testConfig(t, "http://127.0.0.1/events")
+	cfg.AllowedHosts = []string{"127.0.0.1"}
 	cfg.AuthToken = token
 	f, err := New(cfg, Options{
 		Resolver:    &sequenceResolver{answers: [][]string{{testPublicIP}}},
@@ -622,6 +632,232 @@ func TestForwarderRetriesSpoolAppendWithoutDroppingAcceptedEvent(t *testing.T) {
 	health := f.Health()
 	if health.Failed == 0 || health.Dropped != 0 {
 		t.Fatalf("health = %+v, want a recorded failure and no drop", health)
+	}
+}
+
+func TestNewEnforcesTransportConfidentiality(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rawURL    string
+		allowed   []string
+		authToken string
+		insecure  bool
+		wantErr   string
+	}{
+		{name: "http remote without flag", rawURL: "http://api.vendor.example/e", allowed: []string{"api.vendor.example"}, wantErr: "allow_insecure_http"},
+		{name: "http remote with token even with flag", rawURL: "http://api.vendor.example/e", allowed: []string{"api.vendor.example"}, authToken: "secret", insecure: true, wantErr: "requires an https"},
+		{name: "http remote with flag no token ok", rawURL: "http://api.vendor.example/e", allowed: []string{"api.vendor.example"}, insecure: true},
+		{name: "http loopback with token ok", rawURL: "http://127.0.0.1/e", allowed: []string{"127.0.0.1"}, authToken: "secret"},
+		{name: "https remote with token ok", rawURL: "https://api.vendor.example/e", allowed: []string{"api.vendor.example"}, authToken: "secret"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig(t, tc.rawURL)
+			cfg.AllowedHosts = tc.allowed
+			cfg.AuthToken = tc.authToken
+			cfg.AllowInsecureHTTP = tc.insecure
+			f, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}})
+			if tc.wantErr != "" {
+				if err == nil {
+					_ = f.Close()
+					t.Fatalf("New succeeded, want error containing %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("New error = %q, want contains %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_ = f.Close()
+		})
+	}
+}
+
+func TestStartTakesExclusiveStateLock(t *testing.T) {
+	t.Parallel()
+	failingDial := func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("no endpoint")
+	}
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	first, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
+	if err != nil {
+		t.Fatalf("New first: %v", err)
+	}
+	// A second forwarder on the same spool/cursor cannot start delivery: the
+	// exclusive lock is already held, so it fails safe rather than racing.
+	second, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
+	if err != nil {
+		t.Fatalf("New second: %v", err)
+	}
+	if got := second.Health().LastError; !strings.Contains(got, "locked by another process") {
+		t.Fatalf("second forwarder LastError = %q, want a lock conflict", got)
+	}
+	_ = second.Close()
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close first: %v", err)
+	}
+	// Once the first releases the lock, a fresh forwarder acquires it cleanly.
+	third, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
+	if err != nil {
+		t.Fatalf("New third: %v", err)
+	}
+	t.Cleanup(func() { _ = third.Close() })
+	if got := third.Health().LastError; strings.Contains(got, "locked by another process") {
+		t.Fatalf("third forwarder still reports a lock conflict: %q", got)
+	}
+}
+
+func TestForwarderDropsUnencodableEventWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	delivered := make(chan int, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var envelope Envelope
+		if err := decodeEnvelope(r.Body, &envelope); err != nil {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		delivered <- int(envelope.Event.Fields["sequence"].(float64))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	f, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: routeToServer(t, srv)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	// A non-finite float can never be JSON-encoded. It must be dropped, not
+	// retried forever ahead of every later event.
+	bad := emit.Event{Severity: emit.SeverityWarn, Type: "blocked", Timestamp: time.Unix(1, 0).UTC(), InstanceID: "agent-a", Fields: map[string]any{"bad": math.Inf(1)}}
+	if err := f.Emit(t.Context(), bad); err != nil {
+		t.Fatalf("Emit bad: %v", err)
+	}
+	if err := f.Emit(t.Context(), testEvent(2)); err != nil {
+		t.Fatalf("Emit good: %v", err)
+	}
+	select {
+	case seq := <-delivered:
+		if seq != 2 {
+			t.Fatalf("delivered sequence %d, want the good event (2)", seq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("good event was blocked behind the unencodable one")
+	}
+	waitFor(t, func() bool { return f.Health().Dropped == 1 })
+}
+
+func TestForwarderDropsNewEventsWhenSpoolAtCapacity(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	cfg.MaxSpoolBytes = 150 // room for roughly one record, not two
+	f, err := New(cfg, Options{
+		Resolver:      &sequenceResolver{answers: [][]string{{testPublicIP}}},
+		DeferredStart: true,
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("endpoint down")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	f.Start()
+	t.Cleanup(func() { _ = f.Close() })
+	for i := 1; i <= 5; i++ {
+		if err := f.Emit(t.Context(), testEvent(i)); err != nil {
+			t.Fatalf("Emit(%d): %v", i, err)
+		}
+	}
+	waitFor(t, func() bool { return f.Health().Dropped > 0 })
+	info, err := os.Stat(cfg.SpoolFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > cfg.MaxSpoolBytes {
+		t.Fatalf("spool grew to %d bytes, past the %d cap", info.Size(), cfg.MaxSpoolBytes)
+	}
+}
+
+func TestForwarderCompactsSpoolAfterFullDelivery(t *testing.T) {
+	t.Parallel()
+	var delivered atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		delivered.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	f, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: routeToServer(t, srv)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	for i := 1; i <= 4; i++ {
+		if err := f.Emit(t.Context(), testEvent(i)); err != nil {
+			t.Fatalf("Emit(%d): %v", i, err)
+		}
+	}
+	waitFor(t, func() bool { return f.Health().Delivered == 4 })
+	// After every record is acknowledged the spool is truncated so the file
+	// does not grow without bound during healthy operation.
+	waitFor(t, func() bool {
+		info, statErr := os.Stat(cfg.SpoolFile)
+		return statErr == nil && info.Size() == 0
+	})
+	c, err := loadCursor(cfg.SpoolFile, cfg.CursorFile)
+	if err != nil {
+		t.Fatalf("loadCursor after compaction: %v", err)
+	}
+	if c.Offset != 0 {
+		t.Fatalf("cursor offset = %d after compaction, want 0", c.Offset)
+	}
+}
+
+func TestCloseAbortsInFlightDeliveryPromptly(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		// Block until the client aborts the request (the behavior under test)
+		// or the test releases us, so srv.Close never waits on a stuck handler.
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) }) // LIFO: runs before srv.Close
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	cfg.Timeout = 30 * time.Second // Close must beat this via cancellation, not timeout
+	f, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: routeToServer(t, srv)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := f.Emit(t.Context(), testEvent(1)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("delivery did not reach the endpoint")
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = f.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked on in-flight delivery instead of cancelling it")
 	}
 }
 

@@ -7,6 +7,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -625,9 +626,16 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 				writeStoreError(w, headErr)
 				return
 			}
+			// Do not serialize the store error into the response: backend
+			// errors can carry paths/keys/operational internals. Return a
+			// stable reason plus the structured conflict code, log details
+			// server-side.
+			if h.logger != nil {
+				h.logger.ErrorContext(r.Context(), "conductor_rollback_replay_head_preview_failed", slog.String("error", headErr.Error()))
+			}
 			*eval = RollbackEvaluation{Valid: false, Conflict: RollbackConflictHeadPreviewFailed, Counter: auth.Counter}
 			result.Divergence = true
-			result.DivergenceReason = "recorded as accepted but rollback head preview failed (" + headErr.Error() + ")"
+			result.DivergenceReason = "recorded as accepted but rollback head preview failed"
 			break
 		}
 		*eval = rollbackEvaluationFrom(authPreview, headPreview, false)

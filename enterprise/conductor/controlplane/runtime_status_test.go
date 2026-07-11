@@ -1305,3 +1305,96 @@ func (s truncatedPreflightEnrollmentStore) ListFollowerRuntimeStatus(context.Con
 func (s truncatedPreflightEnrollmentStore) ListEnrolledFollowersForPreflight(context.Context, FollowerListQuery) ([]FollowerSummary, bool, error) {
 	return s.followers, s.truncated, nil
 }
+
+// TestClassifySignedAppliedState_DualFreshnessGate proves the signed
+// applied-state classifier requires BOTH the server receipt time (VerifiedAt)
+// AND the follower provenance time to be fresh. A stale applied-state
+// resubmitted inside a fresh audit batch (fresh VerifiedAt, stale provenance)
+// must classify Stale, not OK — otherwise a replayed old state masks drift.
+func TestClassifySignedAppliedState_DualFreshnessGate(t *testing.T) {
+	const staleAfter = defaultRuntimeStatusStaleAfter
+	follower := FollowerSummary{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "inst-1",
+		Active:     true,
+	}
+	// Everything is otherwise healthy so a missing freshness gate would return OK.
+	newApplied := func(provenance, observed time.Time) conductor.FollowerAppliedState {
+		a := validTestAppliedState(observed)
+		a.ProvenanceAt = provenance
+		return a
+	}
+	expected := ExpectedBundle{BundleHash: strings.Repeat("ab", 32)}
+
+	cases := []struct {
+		name       string
+		verifiedAt time.Time
+		provenance time.Time
+		observed   time.Time
+		wantHealth FleetHealth
+		wantDrift  string
+	}{
+		{
+			name:       "fresh verified and provenance is healthy",
+			verifiedAt: testNow.Add(-30 * time.Second),
+			provenance: testNow.Add(-30 * time.Second),
+			observed:   testNow.Add(-30 * time.Second),
+			wantHealth: FleetHealthOK,
+			wantDrift:  "",
+		},
+		{
+			name:       "fresh verified but stale provenance is stale",
+			verifiedAt: testNow.Add(-30 * time.Second),
+			provenance: testNow.Add(-2 * staleAfter),
+			observed:   testNow.Add(-2 * staleAfter),
+			wantHealth: FleetHealthStale,
+			wantDrift:  "signed_state_stale",
+		},
+		{
+			name:       "fresh verified but zero provenance falls back to stale observed",
+			verifiedAt: testNow.Add(-30 * time.Second),
+			provenance: time.Time{},
+			observed:   testNow.Add(-2 * staleAfter),
+			wantHealth: FleetHealthStale,
+			wantDrift:  "signed_state_stale",
+		},
+		{
+			name:       "future-skewed provenance beyond window is stale",
+			verifiedAt: testNow.Add(-30 * time.Second),
+			provenance: testNow.Add(2 * staleAfter),
+			observed:   testNow.Add(2 * staleAfter),
+			wantHealth: FleetHealthStale,
+			wantDrift:  "signed_state_stale",
+		},
+		{
+			name:       "future-skewed verified receipt beyond window is stale",
+			verifiedAt: testNow.Add(2 * staleAfter),
+			provenance: testNow.Add(-30 * time.Second),
+			observed:   testNow.Add(-30 * time.Second),
+			wantHealth: FleetHealthStale,
+			wantDrift:  "signed_state_stale",
+		},
+		{
+			name:       "stale verified receipt is stale even with fresh provenance",
+			verifiedAt: testNow.Add(-2 * staleAfter),
+			provenance: testNow.Add(-30 * time.Second),
+			observed:   testNow.Add(-30 * time.Second),
+			wantHealth: FleetHealthStale,
+			wantDrift:  "signed_state_stale",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			signed := VerifiedAppliedState{
+				AppliedState: newApplied(tc.provenance, tc.observed),
+				VerifiedAt:   tc.verifiedAt,
+				Verified:     true,
+			}
+			health, drift := classifySignedAppliedState(follower, signed, expected, testNow, staleAfter)
+			if health != tc.wantHealth || drift != tc.wantDrift {
+				t.Fatalf("classifySignedAppliedState = %q/%q, want %q/%q", health, drift, tc.wantHealth, tc.wantDrift)
+			}
+		})
+	}
+}

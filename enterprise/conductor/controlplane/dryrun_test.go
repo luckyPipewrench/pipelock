@@ -1279,6 +1279,12 @@ func TestReplayRollback_HeadPreviewFailureReturnsStructuredDivergence(t *testing
 	if !result.Divergence || result.DivergenceReason == "" {
 		t.Fatalf("rollback replay head-preview divergence=%v reason=%q, want structured divergence", result.Divergence, result.DivergenceReason)
 	}
+	// The raw backend store error must not leak into the caller-visible
+	// response: it can carry paths, keys, or operational internals. The
+	// DivergenceReason must be the stable canned string only.
+	if strings.Contains(result.DivergenceReason, errDryRunTestStore.Error()) || strings.Contains(w.Body.String(), errDryRunTestStore.Error()) {
+		t.Fatalf("raw store error leaked into replay response: reason=%q body=%s", result.DivergenceReason, w.Body.String())
+	}
 }
 
 func TestReplayRollback_HistoricalRecordedDecisionSurvivesExpiredKey(t *testing.T) {

@@ -381,10 +381,22 @@ func classifySignedAppliedState(follower FollowerSummary, signed VerifiedApplied
 	if staleAfter <= 0 {
 		staleAfter = defaultRuntimeStatusStaleAfter
 	}
-	if signed.VerifiedAt.IsZero() || now.Sub(signed.VerifiedAt) > staleAfter {
+	applied := signed.AppliedState
+	// The signed state must be fresh by BOTH the server's receipt time AND the
+	// follower's own provenance time. Relying on VerifiedAt alone lets a stale
+	// applied-state resubmitted in a fresh audit batch look current and mask
+	// drift. ProvenanceAt is the follower's freshness stamp; fall back to
+	// ObservedAt for legacy clients. Reject zero, too-old, and too-far-future.
+	if signed.VerifiedAt.IsZero() || now.Sub(signed.VerifiedAt) > staleAfter || signed.VerifiedAt.After(now.Add(staleAfter)) {
 		return FleetHealthStale, "signed_state_stale"
 	}
-	applied := signed.AppliedState
+	provenance := applied.ProvenanceAt
+	if provenance.IsZero() {
+		provenance = applied.ObservedAt
+	}
+	if provenance.IsZero() || now.Sub(provenance) > staleAfter || provenance.After(now.Add(staleAfter)) {
+		return FleetHealthStale, "signed_state_stale"
+	}
 	if applied.LastApplyErrorCode != "" || applied.LastApplyErrorMessage != "" {
 		return FleetHealthApplyFailed, "last_apply_failed"
 	}

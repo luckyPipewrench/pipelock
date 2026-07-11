@@ -1071,17 +1071,34 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeStoreError(w, err)
 		return
 	}
+	// The auth is now durably recorded as accepted. If the head does not end up
+	// at the rollback target (apply failure or a concurrent forward-publish
+	// supersede), compensate by clearing the just-created record so replay and
+	// audit never report an accepted-but-unapplied rollback. Best-effort: a
+	// failed clear is logged and the record remains for the operator clear path.
+	failClosed := func(cause error) {
+		if created {
+			if clearer, ok := h.emergencyControls.(rollbackClearer); ok && clearer != nil {
+				if _, clearErr := clearer.ClearRollbackAuthorization(r.Context(), record.Authorization.AuthorizationID); clearErr != nil && h.logger != nil {
+					h.logger.ErrorContext(r.Context(), "conductor_rollback_compensating_clear_failed",
+						slog.String("authorization_id", record.Authorization.AuthorizationID),
+						slog.String("error", clearErr.Error()))
+				}
+			}
+		}
+		writeStoreError(w, cause)
+	}
 	if err := h.store.ApplyRollbackHead(r.Context(), req.Authorization, now); err != nil {
-		writeStoreError(w, err)
+		failClosed(err)
 		return
 	}
 	applied, err := headPreviewer.PreviewRollbackHead(r.Context(), req.Authorization)
 	if err != nil {
-		writeStoreError(w, err)
+		failClosed(err)
 		return
 	}
 	if applied.CurrentHeadHash != applied.WouldRollToHash {
-		writeStoreError(w, fmt.Errorf("%w: rollback superseded by current stream head", ErrBundleConflict))
+		failClosed(fmt.Errorf("%w: rollback superseded by current stream head", ErrBundleConflict))
 		return
 	}
 	status := http.StatusOK

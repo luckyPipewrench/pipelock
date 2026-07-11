@@ -389,6 +389,7 @@ type FollowerAppliedState struct {
 	LastApplyErrorCode             string    `json:"last_apply_error_code,omitempty"`
 	LastApplyErrorMessage          string    `json:"last_apply_error_message,omitempty"`
 	ObservedAt                     time.Time `json:"observed_at"`
+	ProvenanceAt                   time.Time `json:"provenance_at,omitempty"`
 }
 
 type AuditBatchEnvelope struct {
@@ -1000,6 +1001,7 @@ func (a AuditBatchEnvelope) SignablePreimage() ([]byte, error) {
 		applied.LastPolicyPollAt = applied.LastPolicyPollAt.UTC()
 		applied.LastSuccessfulApplyAt = applied.LastSuccessfulApplyAt.UTC()
 		applied.ObservedAt = applied.ObservedAt.UTC()
+		applied.ProvenanceAt = applied.ProvenanceAt.UTC()
 		unsigned.AppliedState = &applied
 	}
 	return canonicalPreimage(unsigned, "audit_batch")

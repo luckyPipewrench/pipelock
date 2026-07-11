@@ -7,6 +7,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -29,6 +30,9 @@ const (
 	// EmergencyConflictStaleCounter: the monotonic counter does not exceed the
 	// highest counter already stored for this org/fleet.
 	EmergencyConflictStaleCounter = "stale_counter"
+	// RollbackConflictHeadPreviewFailed: the emergency authorization exists but
+	// the rollback-head preview path could not re-derive the apply side.
+	RollbackConflictHeadPreviewFailed = "head_preview_failed"
 )
 
 // PublishEvaluation is the read-only verdict a publish dry-run or replay reports.
@@ -414,7 +418,7 @@ func (h *Handler) replayPublish(w http.ResponseWriter, r *http.Request, bundle c
 		return
 	}
 	result.Recorded = recorded
-	if recorded != nil && recorded.Accepted && !eval.Valid {
+	if recorded != nil && recorded.Accepted && !eval.Valid && !result.Divergence {
 		result.Divergence = true
 		result.DivergenceReason = "recorded as accepted but re-derived decision would reject (" + eval.Conflict + ")"
 	}
@@ -482,10 +486,6 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		writeStoreError(w, err)
 		return
 	}
-	if err := msg.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
-		writeStoreError(w, err)
-		return
-	}
 	hash, err := msg.CanonicalHash()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -495,6 +495,18 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		ActionKind:   actionKindRemoteKill,
 		ArtifactHash: hash,
 		ReplayedAt:   now,
+	}
+	recorded, err := h.recordedRemoteKill(r.Context(), hash)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	result.Recorded = recorded
+	if err := msg.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
+		if recorded == nil || !recorded.Accepted {
+			writeStoreError(w, err)
+			return
+		}
 	}
 	eval := &RemoteKillEvaluation{}
 	preview, err := previewer.PreviewRemoteKill(r.Context(), msg, now)
@@ -509,14 +521,7 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		*eval = remoteKillEvaluationFrom(preview, false)
 	}
 	result.RemoteKill = eval
-
-	recorded, err := h.recordedRemoteKill(r.Context(), hash)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	result.Recorded = recorded
-	if recorded != nil && recorded.Accepted && !eval.Valid {
+	if recorded != nil && recorded.Accepted && !eval.Valid && !result.Divergence {
 		result.Divergence = true
 		result.DivergenceReason = "recorded as accepted but re-derived decision would reject (" + eval.Conflict + ")"
 	}
@@ -524,6 +529,23 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 }
 
 func (h *Handler) recordedRemoteKill(ctx context.Context, hash string) (*RecordedDecision, error) {
+	if lister, ok := h.emergencyControls.(recordedRemoteKillEnumerator); ok {
+		records, err := lister.RecordedRemoteKills(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			if record.MessageHash == hash {
+				return &RecordedDecision{
+					Present:      true,
+					Accepted:     true,
+					RecordedHash: record.MessageHash,
+					PublishedAt:  record.PublishedAt,
+				}, nil
+			}
+		}
+		return nil, nil
+	}
 	lister, ok := h.emergencyControls.(remoteKillEnumerator)
 	if !ok {
 		return nil, nil
@@ -572,10 +594,6 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		writeStoreError(w, err)
 		return
 	}
-	if err := auth.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
-		writeStoreError(w, err)
-		return
-	}
 	hash, err := auth.CanonicalHash()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -586,14 +604,39 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		ArtifactHash: hash,
 		ReplayedAt:   now,
 	}
+	recorded, err := h.recordedRollback(r.Context(), hash)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	result.Recorded = recorded
+	if err := auth.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
+		if recorded == nil || !recorded.Accepted {
+			writeStoreError(w, err)
+			return
+		}
+	}
 	eval := &RollbackEvaluation{}
 	authPreview, err := authPreviewer.PreviewRollbackAuthorization(r.Context(), auth, now)
 	switch {
 	case err == nil:
 		headPreview, headErr := headPreviewer.PreviewRollbackHead(r.Context(), auth)
 		if headErr != nil {
-			writeStoreError(w, headErr)
-			return
+			if recorded == nil || !recorded.Accepted {
+				writeStoreError(w, headErr)
+				return
+			}
+			// Do not serialize the store error into the response: backend
+			// errors can carry paths/keys/operational internals. Return a
+			// stable reason plus the structured conflict code, log details
+			// server-side.
+			if h.logger != nil {
+				h.logger.ErrorContext(r.Context(), "conductor_rollback_replay_head_preview_failed", slog.String("error", headErr.Error()))
+			}
+			*eval = RollbackEvaluation{Valid: false, Conflict: RollbackConflictHeadPreviewFailed, Counter: auth.Counter}
+			result.Divergence = true
+			result.DivergenceReason = "recorded as accepted but rollback head preview failed"
+			break
 		}
 		*eval = rollbackEvaluationFrom(authPreview, headPreview, false)
 	case errors.Is(err, ErrEmergencyConflict) || errors.Is(err, ErrEmergencyStaleCounter):
@@ -603,14 +646,7 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		return
 	}
 	result.Rollback = eval
-
-	recorded, err := h.recordedRollback(r.Context(), hash)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	result.Recorded = recorded
-	if recorded != nil && recorded.Accepted && !eval.Valid {
+	if recorded != nil && recorded.Accepted && !eval.Valid && !result.Divergence {
 		result.Divergence = true
 		result.DivergenceReason = "recorded as accepted but re-derived decision would reject (" + eval.Conflict + ")"
 	}
@@ -618,6 +654,23 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 }
 
 func (h *Handler) recordedRollback(ctx context.Context, hash string) (*RecordedDecision, error) {
+	if lister, ok := h.emergencyControls.(recordedRollbackAuthorizationEnumerator); ok {
+		records, err := lister.RecordedRollbackAuthorizations(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			if record.AuthorizationHash == hash {
+				return &RecordedDecision{
+					Present:      true,
+					Accepted:     true,
+					RecordedHash: record.AuthorizationHash,
+					PublishedAt:  record.PublishedAt,
+				}, nil
+			}
+		}
+		return nil, nil
+	}
 	lister, ok := h.emergencyControls.(rollbackAuthorizationEnumerator)
 	if !ok {
 		return nil, nil

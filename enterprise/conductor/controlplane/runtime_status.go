@@ -44,6 +44,14 @@ const (
 	FleetHealthUnknown     FleetHealth = "unknown"
 )
 
+type FleetFieldSource string
+
+const (
+	FleetFieldSourceNone               FleetFieldSource = "none"
+	FleetFieldSourceRuntimeStatus      FleetFieldSource = "runtime_status"
+	FleetFieldSourceSignedAppliedState FleetFieldSource = "signed_applied_state"
+)
+
 type FollowerRuntimeStatus struct {
 	OrgID                          string    `json:"org_id"`
 	FleetID                        string    `json:"fleet_id"`
@@ -98,8 +106,18 @@ type FollowerFleetStatus struct {
 	// prefer SignedAppliedState when present.
 	SignedAppliedState *VerifiedAppliedState `json:"signed_applied_state,omitempty"`
 	Health             FleetHealth           `json:"health"`
+	HealthSource       FleetFieldProvenance  `json:"health_source"`
 	Drift              string                `json:"drift,omitempty"`
+	DriftSource        *FleetFieldProvenance `json:"drift_source,omitempty"`
 	ExpectedBundle     ExpectedBundle        `json:"expected_bundle,omitempty"`
+}
+
+type FleetFieldProvenance struct {
+	Source       FleetFieldSource `json:"source"`
+	Verified     bool             `json:"verified"`
+	ObservedAt   *time.Time       `json:"observed_at,omitempty"`
+	VerifiedAt   *time.Time       `json:"verified_at,omitempty"`
+	ProvenanceAt *time.Time       `json:"provenance_at,omitempty"`
 }
 
 type PublishPreflightSummary struct {
@@ -112,6 +130,8 @@ type PublishPreflightSummary struct {
 	AllowFleetSkew    bool   `json:"allow_fleet_skew"`
 	FleetSkewReason   string `json:"fleet_skew_reason,omitempty"`
 	StaleAfterSeconds int    `json:"stale_after_seconds"`
+	Unavailable       bool   `json:"unavailable,omitempty"`
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 func (s FollowerRuntimeStatus) Identity() FollowerIdentity {
@@ -339,6 +359,92 @@ func classifyFollowerHealth(follower FollowerSummary, status *FollowerRuntimeSta
 		return FleetHealthStale, "inactive_enrollment"
 	}
 	return FleetHealthOK, ""
+}
+
+func classifyFollowerFleetStatus(
+	follower FollowerSummary,
+	status *FollowerRuntimeStatus,
+	signed *VerifiedAppliedState,
+	expected ExpectedBundle,
+	now time.Time,
+	staleAfter time.Duration,
+) (FleetHealth, string, FleetFieldProvenance) {
+	if signed != nil && signed.Verified {
+		health, drift := classifySignedAppliedState(follower, *signed, expected, now, staleAfter)
+		return health, drift, signedAppliedStateProvenance(*signed)
+	}
+	health, drift := classifyFollowerHealth(follower, status, expected, now, staleAfter)
+	return health, drift, runtimeStatusProvenance(status)
+}
+
+func classifySignedAppliedState(follower FollowerSummary, signed VerifiedAppliedState, expected ExpectedBundle, now time.Time, staleAfter time.Duration) (FleetHealth, string) {
+	if staleAfter <= 0 {
+		staleAfter = defaultRuntimeStatusStaleAfter
+	}
+	applied := signed.AppliedState
+	// The signed state must be fresh by BOTH the server's receipt time AND the
+	// follower's own provenance time. Relying on VerifiedAt alone lets a stale
+	// applied-state resubmitted in a fresh audit batch look current and mask
+	// drift. ProvenanceAt is the follower's freshness stamp; fall back to
+	// ObservedAt for legacy clients. Reject zero, too-old, and too-far-future.
+	if signed.VerifiedAt.IsZero() || now.Sub(signed.VerifiedAt) > staleAfter || signed.VerifiedAt.After(now.Add(staleAfter)) {
+		return FleetHealthStale, "signed_state_stale"
+	}
+	provenance := applied.ProvenanceAt
+	if provenance.IsZero() {
+		provenance = applied.ObservedAt
+	}
+	if provenance.IsZero() || now.Sub(provenance) > staleAfter || provenance.After(now.Add(staleAfter)) {
+		return FleetHealthStale, "signed_state_stale"
+	}
+	if applied.LastApplyErrorCode != "" || applied.LastApplyErrorMessage != "" {
+		return FleetHealthApplyFailed, "last_apply_failed"
+	}
+	if expected.AudienceLabelsUnavailable {
+		return FleetHealthUnknown, "audience_labels_unavailable"
+	}
+	minVersion := expected.MinPipelockVersion
+	if minVersion == "" {
+		minVersion = applied.ActiveBundleMinPipelockVersion
+	}
+	if minVersion != "" && rules.CheckMinPipelock(minVersion, applied.PipelockVersion) != nil {
+		return FleetHealthUnsupported, "runtime_below_minimum"
+	}
+	if expected.BundleHash != "" && !strings.EqualFold(applied.ActiveBundleHash, expected.BundleHash) {
+		return FleetHealthStale, "bundle_mismatch"
+	}
+	if !follower.Active {
+		return FleetHealthStale, "inactive_enrollment"
+	}
+	return FleetHealthOK, ""
+}
+
+func runtimeStatusProvenance(status *FollowerRuntimeStatus) FleetFieldProvenance {
+	p := FleetFieldProvenance{Source: FleetFieldSourceNone}
+	if status == nil {
+		return p
+	}
+	p.Source = FleetFieldSourceRuntimeStatus
+	p.ObservedAt = utcTimePtr(status.LastSeenAt)
+	return p
+}
+
+func signedAppliedStateProvenance(signed VerifiedAppliedState) FleetFieldProvenance {
+	return FleetFieldProvenance{
+		Source:       FleetFieldSourceSignedAppliedState,
+		Verified:     true,
+		ObservedAt:   utcTimePtr(signed.ObservedAt),
+		VerifiedAt:   utcTimePtr(signed.VerifiedAt),
+		ProvenanceAt: utcTimePtr(signed.AppliedState.ProvenanceAt),
+	}
+}
+
+func utcTimePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	utc := t.UTC()
+	return &utc
 }
 
 func preflightAudienceMatches(audience conductor.Audience, follower FollowerSummary) bool {

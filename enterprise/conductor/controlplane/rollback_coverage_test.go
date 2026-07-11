@@ -10,7 +10,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -459,14 +458,11 @@ func (stubBundleStore) StreamOverview(context.Context, StreamStatusQuery) ([]Str
 	return nil, nil
 }
 
-// TestApplyRollbackCeilingUnavailableBundles drives the leader-side ceiling
-// helper through the current-unavailable, target-unavailable, and cross-stream
-// branches by serving GET latest with a published rollback authorization whose
-// referenced bundles are missing or live in a different stream.
-func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
+func TestLatestPolicyBundleIgnoresRollbackAuthorizationUnavailableBundles(t *testing.T) {
 	// current unavailable: rollback references a current bundle that was never
-	// published, while the target IS present. The ceiling returns a 404-mapped
-	// error rather than serving any bundle.
+	// published, while the target IS present. Latest policy still serves the
+	// bundle-store head; the rollback-auth poller refuses to serve the residual
+	// auth because it cannot confirm the current bundle.
 	t.Run("current unavailable", func(t *testing.T) {
 		store := mustStore(t)
 		signer := newTestSigner(t)
@@ -492,14 +488,17 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 		}
 		w := latestPolicyBundle(t, handler, nil)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("current-unavailable status=%d body=%s, want 404", w.Code, w.Body.String())
+		assertLatestBundleID(t, w, "bundle-ceiling-cur-target")
+		w = latestRollbackAuthorization(t, handler, auth)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("current-unavailable rollback status=%d body=%s, want 204", w.Code, w.Body.String())
 		}
 	})
 
 	// target unavailable: rollback references a current bundle that IS present
-	// but a target bundle that was never published. The ceiling returns a
-	// 404-mapped error.
+	// but a target bundle that was never published. Latest policy still serves
+	// the current store head; the rollback-auth poller refuses to serve the
+	// residual auth because it cannot confirm the target bundle.
 	t.Run("target unavailable", func(t *testing.T) {
 		store := mustStore(t)
 		signer := newTestSigner(t)
@@ -525,8 +524,10 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 		}
 		w := latestPolicyBundle(t, handler, nil)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("target-unavailable status=%d body=%s, want 404", w.Code, w.Body.String())
+		assertLatestBundleID(t, w, "bundle-ceiling-tgt-current")
+		w = latestRollbackAuthorization(t, handler, auth)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("target-unavailable rollback status=%d body=%s, want 204", w.Code, w.Body.String())
 		}
 	})
 
@@ -581,9 +582,7 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 	})
 }
 
-// TestApplyRollbackCeilingNilEmergencyControls covers the early return when the
-// handler has no emergency controls configured.
-func TestApplyRollbackCeilingNilEmergencyControls(t *testing.T) {
+func TestLatestPolicyBundleNilEmergencyControlsServesStoreHead(t *testing.T) {
 	store := mustStore(t)
 	signer := newTestSigner(t)
 	v1 := signedControlBundle(t, signer, bundleSpec{
@@ -596,24 +595,11 @@ func TestApplyRollbackCeilingNilEmergencyControls(t *testing.T) {
 	}
 	handler := newTestHandler(t, store, nil)
 	handler.emergencyControls = nil
-	got, err := handler.applyRollbackCeiling(
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, LatestPolicyBundlePath, nil),
-		defaultFollowerIdentity(),
-		PublishedBundle{Bundle: v1},
-		testNow,
-	)
-	if err != nil {
-		t.Fatalf("applyRollbackCeiling(nil emergency) error = %v", err)
-	}
-	if got.Bundle.BundleID != "bundle-ceiling-noemerg" {
-		t.Fatalf("applyRollbackCeiling(nil emergency) bundle=%q, want latest unchanged", got.Bundle.BundleID)
-	}
+	w := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, w, "bundle-ceiling-noemerg")
 }
 
-// TestApplyRollbackCeilingActiveLookupError covers the branch where
-// ActiveRollbackForFollower returns an error: the ceiling propagates it rather
-// than serving a possibly-stale bundle.
-func TestApplyRollbackCeilingActiveLookupError(t *testing.T) {
+func TestLatestPolicyBundleIgnoresEmergencyLookupForPolicyServing(t *testing.T) {
 	store := mustStore(t)
 	signer := newTestSigner(t)
 	v1 := signedControlBundle(t, signer, bundleSpec{
@@ -626,13 +612,6 @@ func TestApplyRollbackCeilingActiveLookupError(t *testing.T) {
 	}
 	handler := newTestHandler(t, store, nil)
 	handler.emergencyControls = failingEmergencyStore{}
-	_, err := handler.applyRollbackCeiling(
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, LatestPolicyBundlePath, nil),
-		defaultFollowerIdentity(),
-		PublishedBundle{Bundle: v1},
-		testNow,
-	)
-	if err == nil || !strings.Contains(err.Error(), "emergency store failed") {
-		t.Fatalf("applyRollbackCeiling(active lookup error) err=%v, want propagated error", err)
-	}
+	w := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, w, "bundle-ceiling-activeerr")
 }

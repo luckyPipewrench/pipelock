@@ -77,6 +77,14 @@ type rawRemoteKillEnumerator interface {
 	enumerateRemoteKills(context.Context) ([]StoredRemoteKill, error)
 }
 
+type recordedRollbackAuthorizationEnumerator interface {
+	RecordedRollbackAuthorizations(context.Context) ([]StoredRollbackAuthorization, error)
+}
+
+type recordedRemoteKillEnumerator interface {
+	RecordedRemoteKills(context.Context) ([]StoredRemoteKill, error)
+}
+
 // newVerifiedEmergencyStore wraps an EmergencyStore in the signature-verifying
 // view. inner==nil yields nil (the Handler treats a nil store as "no emergency
 // controls configured", same as before). resolve may be nil/empty; in that case
@@ -335,6 +343,59 @@ func (v *verifiedEmergencyStore) verifiedRemoteKills(ctx context.Context, now ti
 		}
 	}
 	return verified, nil
+}
+
+// RecordedRollbackAuthorizations returns records that verify at their recorded
+// acceptance time. It is for replay/inspection only; live serving continues to
+// use RollbackAuthorizations, which verifies at current wall-clock time.
+func (v *verifiedEmergencyStore) RecordedRollbackAuthorizations(ctx context.Context) ([]StoredRollbackAuthorization, error) {
+	if v.enumRoll == nil {
+		return nil, nil
+	}
+	records, err := v.enumRoll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	verified := make([]StoredRollbackAuthorization, 0, len(records))
+	for _, record := range records {
+		if v.verifyRollback(record, rollbackRecordVerificationTime(record)) {
+			verified = append(verified, record)
+		}
+	}
+	return verified, nil
+}
+
+// RecordedRemoteKills mirrors RecordedRollbackAuthorizations for remote-kill
+// replay/inspection.
+func (v *verifiedEmergencyStore) RecordedRemoteKills(ctx context.Context) ([]StoredRemoteKill, error) {
+	if v.enumKills == nil {
+		return nil, nil
+	}
+	records, err := v.enumKills(ctx)
+	if err != nil {
+		return nil, err
+	}
+	verified := make([]StoredRemoteKill, 0, len(records))
+	for _, record := range records {
+		if v.verifyRemoteKill(record, remoteKillRecordVerificationTime(record)) {
+			verified = append(verified, record)
+		}
+	}
+	return verified, nil
+}
+
+func rollbackRecordVerificationTime(record StoredRollbackAuthorization) time.Time {
+	if !record.PublishedAt.IsZero() {
+		return record.PublishedAt.UTC()
+	}
+	return record.Authorization.CreatedAt.UTC()
+}
+
+func remoteKillRecordVerificationTime(record StoredRemoteKill) time.Time {
+	if !record.PublishedAt.IsZero() {
+		return record.PublishedAt.UTC()
+	}
+	return record.Message.CreatedAt.UTC()
 }
 
 // RollbackAuthorizations satisfies rollbackAuthorizationEnumerator. It returns

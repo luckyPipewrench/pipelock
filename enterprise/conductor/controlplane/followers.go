@@ -137,13 +137,20 @@ func (h *Handler) enrichFollowerStatus(r *http.Request, query FollowerListQuery,
 			signedPtr = &signedCopy
 		}
 		expected := expectedBundleForFollower(streams, follower, now)
-		health, drift := classifyFollowerHealth(follower, statusPtr, expected, now, defaultRuntimeStatusStaleAfter)
+		health, drift, source := classifyFollowerFleetStatus(follower, statusPtr, signedPtr, expected, now, defaultRuntimeStatusStaleAfter)
+		var driftSource *FleetFieldProvenance
+		if drift != "" {
+			sourceCopy := source
+			driftSource = &sourceCopy
+		}
 		out = append(out, FollowerFleetStatus{
 			FollowerSummary:    follower,
 			RuntimeStatus:      statusPtr,
 			SignedAppliedState: signedPtr,
 			Health:             health,
+			HealthSource:       source,
 			Drift:              drift,
+			DriftSource:        driftSource,
 			ExpectedBundle:     expected,
 		})
 	}

@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -67,11 +68,19 @@ type dashboardServeOptions struct {
 	rekorLogKeys        []string
 	tlsCert             string
 	tlsKey              string
+	clientCAFile        string
+	clientCertRoleMap   string
+	requireClientCert   bool
 	exemptionStore      string
 	deliveryInbox       string
 	readModelIndex      string
 	legalHoldStore      string
 	complianceTokenFile string
+	oidcIssuer          string
+	oidcAudience        string
+	oidcClientID        string
+	oidcRoleClaim       string
+	oidcRoleMap         string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -80,19 +89,20 @@ func dashboardServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Serve the read-only Evidence dashboard on a dedicated listener",
 		Long: `Serve the read-only Evidence dashboard over a flight-recorder evidence
-directory. Every request must authenticate with the operator token from
---auth-token-file, sent either as "Authorization: Bearer <token>" or as the
-password of an HTTP Basic prompt (any username). The license feature check is
-entitlement, not identity; the token is the authentication boundary.
+directory. Every request must authenticate through a configured local operator
+token, OIDC bearer token, or, when --require-client-cert is enabled, a verified
+client certificate mapped to a dashboard role. The license feature check is
+entitlement, not identity; the selected authenticator is the identity boundary.
 
 By default the view is redacted: receipt destinations and signed payloads are
 hidden, because a destination URL can carry a capability token and the payload
 is the largest exfil surface. Supply --raw-token-file to issue a second,
-higher-privilege token whose holders see the full raw detail. Every
-authenticated request is written to the access log on stderr.
+higher-privilege token whose holders see the full raw detail, or grant
+dashboard:raw:read to an OIDC role. Every authenticated request is written to
+the access log on stderr.
 
 Without --tls-cert/--tls-key the listener refuses non-loopback addresses,
-because the operator token would transit in cleartext.`,
+because credentials would transit in cleartext.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// License gate: the dashboard is a paid surface. Fail closed before
@@ -120,7 +130,7 @@ because the operator token would transit in cleartext.`,
 	cmd.Flags().StringVar(&opts.legalHoldStore, "legal-hold-store", "",
 		"optional legal-hold metadata store file for read-only compliance display")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
-		"file containing the operator token required on every dashboard request (redacted metadata view)")
+		"optional file containing a dashboard operator token (redacted metadata view); required unless OIDC or --require-client-cert is configured")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
 		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
 	cmd.Flags().StringVar(&opts.complianceTokenFile, "compliance-token-file", "",
@@ -140,8 +150,20 @@ because the operator token would transit in cleartext.`,
 		"pinned Rekor log public key used to verify SET, checkpoint, and inclusion proof; repeat for rotations")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS server private key file")
+	cmd.Flags().StringVar(&opts.clientCAFile, "client-ca-file", "", "PEM trust anchor bundle for dashboard client certificates")
+	cmd.Flags().BoolVar(&opts.requireClientCert, "require-client-cert", false, "require and verify a mapped dashboard client certificate")
+	cmd.Flags().StringVar(&opts.clientCertRoleMap, "client-cert-role-map", "", "YAML file mapping client certificate SPKI SHA-256 fingerprints to permission roles")
+	cmd.Flags().StringVar(&opts.oidcIssuer, "oidc-issuer", "",
+		"OIDC issuer URL used for discovery and exact iss validation")
+	cmd.Flags().StringVar(&opts.oidcAudience, "oidc-audience", "",
+		"expected OIDC aud value for dashboard bearer tokens")
+	cmd.Flags().StringVar(&opts.oidcClientID, "oidc-client-id", "",
+		"alias for --oidc-audience; both values must match if both are set")
+	cmd.Flags().StringVar(&opts.oidcRoleClaim, "oidc-role-claim", "",
+		"verified token claim containing role or group values")
+	cmd.Flags().StringVar(&opts.oidcRoleMap, "oidc-role-map", "",
+		`JSON object: {"claim_values":{"GROUP":"ROLE"},"roles":{"ROLE":["dashboard:evidence:read"]}}`)
 	_ = cmd.MarkFlagRequired("receipt-dir")
-	_ = cmd.MarkFlagRequired("auth-token-file")
 	return cmd
 }
 
@@ -163,9 +185,16 @@ func verifyDashboardLicenseWithOptions(in license.FleetVerifyInputs) (license.Li
 }
 
 func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {
-	token, err := loadDashboardTokenFile("--auth-token-file", opts.authTokenFile)
-	if err != nil {
+	if err := validateDashboardAuthenticatorConfig(opts); err != nil {
 		return err
+	}
+	var token string
+	var err error
+	if strings.TrimSpace(opts.authTokenFile) != "" {
+		token, err = loadDashboardTokenFile("--auth-token-file", opts.authTokenFile)
+		if err != nil {
+			return err
+		}
 	}
 	// Optional raw-access token: elevates a request from the redacted metadata
 	// view to full destinations + signed payloads. Must differ from the
@@ -191,12 +220,23 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return errors.New("--compliance-token-file must differ from operator and raw token files")
 		}
 	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
 		return err
 	}
 	if err := validateDashboardListen(opts); err != nil {
 		return err
+	}
+	var clientCertAuth *dashboardClientCertAuthorizer
+	if opts.requireClientCert {
+		clientCertAuth, err = loadDashboardClientCertRoleMap(opts.clientCertRoleMap)
+		if err != nil {
+			return err
+		}
 	}
 	info, err := os.Stat(filepath.Clean(opts.receiptDir))
 	if err != nil {
@@ -253,23 +293,32 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		}
 	}
 
-	// metaAuthorized gates all access: the metadata token OR the raw token (a
-	// raw holder is also a valid operator). rawAuthorized gates only the
-	// sensitive raw view and matches the raw token alone.
-	metaAuthorized := func(r *http.Request) bool {
-		if dashboardTokenMatches(r, token) {
-			return true
+	var oidcAuthenticator *dashboardOIDCAuthenticator
+	if strings.TrimSpace(opts.oidcIssuer) != "" {
+		oidcAuthenticator, err = newDashboardOIDCAuthenticator(ctx, dashboardOIDCOptions{
+			Issuer:      opts.oidcIssuer,
+			Audience:    dashboardOIDCAudience(opts),
+			RoleClaim:   opts.oidcRoleClaim,
+			RoleMapJSON: opts.oidcRoleMap,
+		})
+		if err != nil {
+			return err
 		}
-		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
+	authorization := newDashboardRequestAuthorization(token, rawToken, complianceToken, oidcAuthenticator)
+	// Token/OIDC auth retains its metadata/raw split. When mTLS is enabled, the
+	// verified certificate's mapped role supplies both route and raw-view
+	// permissions and takes precedence over any token or OIDC principal on the
+	// same request.
 	complianceAuthorized := func(r *http.Request) bool {
-		return complianceToken != "" && dashboardTokenMatches(r, complianceToken)
+		return clientCertAuth == nil && authorization.complianceAuthorized(r)
 	}
+	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
+		clientCertAuth, authorization.metaAuthorized, authorization.rawAuthorized, complianceAuthorized,
+	)
 	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
-	rawAuthorized := func(r *http.Request) bool {
-		return rawToken != "" && dashboardTokenMatches(r, rawToken)
-	}
 
+	auditWriter := cmd.ErrOrStderr()
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          opts.receiptDir,
 		TrustedKeys:         trusted,
@@ -282,10 +331,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		LegalHoldStore:      legalHoldStore,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
 		Authorize:           dashboardAuthorizeFunc(authenticated),
-		AuthorizePermission: dashboardAuthorizePermissionFunc(metaAuthorized, rawAuthorized, complianceAuthorized),
+		AuthorizePermission: authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
-		AuditWriter: cmd.ErrOrStderr(),
+		AuditWriter: auditWriter,
 		// TODO(DASH-3A): wire live conductor source when dashboard serve owns a
 		// conductor audit/status store handle. Until then /fleet renders the
 		// read-only empty state instead of inventing a fake conductor client.
@@ -300,11 +349,15 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		ConductorSource: nil,
 		BudgetSource:    dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})
-	handler := dashboardAuthHandler(authenticated, inner)
-
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
+	authAuditInfo := authorization.authAuditInfo
+	if clientCertAuth != nil {
+		authAuditInfo = func(r *http.Request) dashboard.AuthAuditInfo {
+			return dashboardClientCertAuthAuditInfo(clientCertAuth, r)
+		}
+	}
+	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, inner)
+	if oidcAuthenticator != nil {
+		handler = oidcAuthenticator.middleware(handler)
 	}
 	baseCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -360,10 +413,19 @@ func dashboardTLSConfig(opts dashboardServeOptions) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load dashboard TLS certificate: %w", err)
 	}
-	return &tls.Config{
+	config := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
-	}, nil
+	}
+	if opts.requireClientCert {
+		clientCAs, err := loadDashboardClientCAs(opts.clientCAFile)
+		if err != nil {
+			return nil, err
+		}
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+		config.ClientCAs = clientCAs
+	}
+	return config, nil
 }
 
 // validateDashboardListen refuses configurations that would put the operator
@@ -372,6 +434,19 @@ func dashboardTLSConfig(opts dashboardServeOptions) (*tls.Config, error) {
 func validateDashboardListen(opts dashboardServeOptions) error {
 	if (opts.tlsCert == "") != (opts.tlsKey == "") {
 		return errors.New("--tls-cert and --tls-key must be set together")
+	}
+	if opts.requireClientCert {
+		if opts.tlsCert == "" {
+			return errors.New("--require-client-cert requires --tls-cert/--tls-key")
+		}
+		if strings.TrimSpace(opts.clientCAFile) == "" {
+			return errors.New("--require-client-cert requires --client-ca-file")
+		}
+		if strings.TrimSpace(opts.clientCertRoleMap) == "" {
+			return errors.New("--require-client-cert requires --client-cert-role-map")
+		}
+	} else if strings.TrimSpace(opts.clientCAFile) != "" || strings.TrimSpace(opts.clientCertRoleMap) != "" {
+		return errors.New("--client-ca-file and --client-cert-role-map require --require-client-cert")
 	}
 	if opts.tlsCert != "" {
 		return nil
@@ -477,15 +552,75 @@ func dashboardTrustCRLSource(configuredPath string) (func() (*license.CRL, error
 // with a WWW-Authenticate challenge so browsers prompt for credentials; the
 // inner dashboard handler re-checks the same predicate via Options.Authorize as
 // defense in depth.
-func dashboardAuthHandler(authorized func(*http.Request) bool, next http.Handler) http.Handler {
+func dashboardAuthHandler(
+	authorized func(*http.Request) bool,
+	authInfo func(*http.Request) dashboard.AuthAuditInfo,
+	auditWriter io.Writer,
+	next http.Handler,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(r) {
+			recordDashboardAuthDenied(auditWriter, r, authInfo)
 			w.Header().Set("WWW-Authenticate", `Basic realm="pipelock dashboard", charset="UTF-8"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
+		if authInfo != nil {
+			r = r.WithContext(dashboard.WithAuthAuditInfo(r.Context(), authInfo(r)))
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func dashboardClientCertAuthAuditInfo(auth *dashboardClientCertAuthorizer, r *http.Request) dashboard.AuthAuditInfo {
+	info := dashboard.AuthAuditInfo{
+		Method:        "mtls",
+		FailureReason: "missing_client_certificate",
+	}
+	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return info
+	}
+	info.Subject = dashboardClientCertSPKIFingerprint(r.TLS.PeerCertificates[0])
+	if len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		info.FailureReason = "unverified_client_certificate"
+		return info
+	}
+	principal, ok := auth.principal(r)
+	if !ok {
+		info.FailureReason = "unmapped_client_certificate"
+		return info
+	}
+	info.Roles = []string{principal.role}
+	info.FailureReason = ""
+	return info
+}
+
+func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo func(*http.Request) dashboard.AuthAuditInfo) {
+	if auditWriter == nil {
+		return
+	}
+	info := dashboard.AuthAuditInfo{Method: "none", FailureReason: "missing_token"}
+	if authInfo != nil {
+		info = authInfo(r)
+	}
+	if info.FailureReason == "" {
+		info.FailureReason = "unauthorized"
+	}
+	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied method=%s path=%q auth_method=%s auth_subject=%q auth_roles=%q reason=%s remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), r.Method, r.URL.Path,
+		dashboard.AuditLogValue(info.Method), dashboard.AuditLogValue(info.Subject),
+		strings.Join(dashboardAuditLogValues(info.Roles), ","), dashboard.AuditLogValue(info.FailureReason), r.RemoteAddr)
+}
+
+func dashboardAuditLogValues(values []string) []string {
+	if len(values) == 0 {
+		return []string{"-"}
+	}
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = dashboard.AuditLogValue(value)
+	}
+	return out
 }
 
 // dashboardTokenMatches accepts the operator token as either a Bearer token

@@ -128,7 +128,7 @@ func TestDashboardCmd_Tree(t *testing.T) {
 	if err != nil || serve.Use != "serve" {
 		t.Fatalf("dashboard serve subcommand not found: %v", err)
 	}
-	for _, flag := range []string{"listen", "receipt-dir", "config", "exemption-store", "delivery-inbox", "read-model-index", "legal-hold-store", "auth-token-file", "raw-token-file", "compliance-token-file", "runtime-snapshot-file", "trusted-signer", "license-crl-file", "anchor-expected", "anchor-local-log", "rekor-log-key", "tls-cert", "tls-key"} {
+	for _, flag := range []string{"listen", "receipt-dir", "config", "exemption-store", "delivery-inbox", "read-model-index", "legal-hold-store", "auth-token-file", "raw-token-file", "compliance-token-file", "runtime-snapshot-file", "trusted-signer", "license-crl-file", "anchor-expected", "anchor-local-log", "rekor-log-key", "tls-cert", "tls-key", "client-ca-file", "require-client-cert", "client-cert-role-map"} {
 		if serve.Flags().Lookup(flag) == nil {
 			t.Errorf("serve is missing --%s", flag)
 		}
@@ -760,7 +760,7 @@ func TestDashboardGlobalAuthorizationScopesComplianceToken(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			handler := dashboardAuthHandler(authorized, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handler := dashboardAuthHandler(authorized, nil, nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusNoContent)
 			}))

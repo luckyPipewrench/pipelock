@@ -6,8 +6,25 @@ package playground
 import (
 	"context"
 	"net/http"
+	"slices"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestLiveRunProxyConfig_StrictLabAllowlist(t *testing.T) {
+	cfg, err := liveRunProxyConfig(LiveRunOpts{StrictLabAllowlist: true})
+	if err != nil {
+		t.Fatalf("liveRunProxyConfig: %v", err)
+	}
+	if cfg.Mode != config.ModeStrict {
+		t.Fatalf("Mode = %q, want %q", cfg.Mode, config.ModeStrict)
+	}
+	wantAllowlist := []string{liveRunSafeHost, liveRunExfilHost}
+	if !slices.Equal(cfg.APIAllowlist, wantAllowlist) {
+		t.Fatalf("APIAllowlist = %v, want %v", cfg.APIAllowlist, wantAllowlist)
+	}
+}
 
 // TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning is the
 // independent-attestation centerpiece: it proves that being an APPROVED
@@ -36,8 +53,9 @@ func TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning(t *testing.
 
 	const runNonce = "collector-beat-run"
 	lr, err := StartLiveRun(context.Background(), LiveRunOpts{
-		ScenarioID: LiveDemoScenarioID,
-		RunNonce:   runNonce,
+		ScenarioID:         LiveDemoScenarioID,
+		RunNonce:           runNonce,
+		StrictLabAllowlist: true,
 	})
 	if err != nil {
 		t.Fatalf("StartLiveRun: %v", err)

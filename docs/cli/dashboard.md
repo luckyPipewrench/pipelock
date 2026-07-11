@@ -68,7 +68,7 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 |---|---|---|
 | `--receipt-dir` | (required) | Flight-recorder evidence directory holding action receipts (the runtime's `flight_recorder.dir`). |
 | `--config` | none | Optional Pipelock config file for the read-only Exemptions inventory. When omitted, `/exemptions` renders an explicit "no config loaded" state and the Evidence view still works. |
-| `--auth-token-file` | (required) | File containing the operator token required on every request. Grants the redacted metadata view. |
+| `--auth-token-file` | none | File containing the operator token for token-authenticated requests. Required unless OIDC or `--require-client-cert` is configured. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
 | `--compliance-token-file` | none | Optional distinct auditor token granting only `dashboard:compliance:read`; it cannot reach evidence, raw, fleet-control preparation, or signed-action routes. |
 | `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by `/compliance`. |
@@ -76,6 +76,73 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 | `--trusted-signer` | none | Trusted receipt signing key: `(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,source=LABEL]`. Repeatable. `source` is shown in the UI as the reason the key is trusted. |
 | `--license-crl-file` | none | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
 | `--tls-cert`, `--tls-key` | none | TLS server certificate and key. Both or neither. |
+| `--oidc-issuer` | none | OIDC issuer URL used for discovery and exact issuer validation. |
+| `--oidc-audience` | none | Expected OIDC audience. Required with `--oidc-issuer` unless `--oidc-client-id` is set. |
+| `--oidc-client-id` | none | Alias for `--oidc-audience`; both values must match when both are set. |
+| `--oidc-role-claim` | none | Verified token claim containing role or group values. Required with `--oidc-issuer`. |
+| `--oidc-role-map` | none | JSON mapping of verified claim values to bounded dashboard permissions. Required with `--oidc-issuer`. |
+| `--require-client-cert` | `false` | Require a verified client certificate on every TLS connection and authorize it through the role map. Requires all three mTLS file flags below. |
+| `--client-ca-file` | none | PEM bundle of trust anchors used by TLS to verify client certificates. |
+| `--client-cert-role-map` | none | YAML file mapping client-certificate SPKI SHA-256 fingerprints to roles and bounded dashboard permissions. |
+
+### Mutual TLS client authentication
+
+Mutual TLS is additive: token-only deployments keep their existing behavior,
+while an operator can enable verified client-certificate authentication with
+all of `--require-client-cert`, `--client-ca-file`, and
+`--client-cert-role-map`. Server TLS (`--tls-cert` and `--tls-key`) is also
+required. When enabled, TLS requires a client certificate on every connection;
+the certificate therefore cannot be replaced by a bearer token at the TLS
+handshake.
+
+The role map uses the SHA-256 fingerprint of the leaf certificate's DER-encoded
+SubjectPublicKeyInfo (SPKI). This identity remains stable when a certificate is
+renewed with the same key. Role permissions must come from the dashboard's
+bounded permission vocabulary. Grant `dashboard:raw:read` only to roles that
+may view raw destinations and signed payloads.
+
+<!-- dashboard-mtls-role-map-start -->
+```yaml
+version: 1
+roles:
+  metadata:
+    permissions:
+      - dashboard:evidence:read
+      - dashboard:exemptions:read
+  raw:
+    permissions:
+      - dashboard:evidence:read
+      - dashboard:exemptions:read
+      - dashboard:raw:read
+certificates:
+  0000000000000000000000000000000000000000000000000000000000000000: metadata
+```
+<!-- dashboard-mtls-role-map-end -->
+
+Replace the all-zero example key with the client certificate's SPKI SHA-256
+fingerprint. The map also accepts colon-separated hexadecimal and an optional
+`sha256:` prefix. Unknown permissions, roles, fields, or fingerprints are hard
+startup errors; an empty certificate map is never treated as allow-all.
+
+Start the dashboard with client-certificate verification:
+
+```bash
+pipelock dashboard serve \
+  --receipt-dir /var/lib/pipelock/evidence \
+  --auth-token-file /etc/pipelock/dashboard.token \
+  --tls-cert /etc/pipelock/dashboard-server.pem \
+  --tls-key /etc/pipelock/dashboard-server.key \
+  --require-client-cert \
+  --client-ca-file /etc/pipelock/dashboard-client-ca.pem \
+  --client-cert-role-map /etc/pipelock/dashboard-client-roles.yaml
+```
+
+The standard library verifies the chain, validity period, and client-auth key
+usage before HTTP handling. Pipelock then maps only the verified leaf SPKI. A
+missing, expired, wrong-CA, or unmapped certificate is denied. If a request
+also carries a token, its certificate role remains authoritative for route and
+raw-view permissions; a metadata certificate cannot use a raw token to
+escalate.
 
 ### License resolution
 
@@ -99,17 +166,20 @@ the server is running stops serving.
   `kill_switch.api_listen`: an agent routed through the proxy has no path to
   its own evidence view. Isolation from an agent running on the same host as
   a different user is deployment guidance (containment/network policy), not a
-  property this command can enforce by itself — which is why the token is
+  property this command can enforce by itself — which is why authentication is
   required even on loopback.
-- **The license check is entitlement, not identity.** Every request must also
-  carry the operator token (constant-time comparison), as a `Bearer` header or
-  as the Basic-auth password. Requests without it get `401` and no evidence.
+- **The license check is entitlement, not identity.** Token-only mode requires
+  the operator token (constant-time comparison), as a `Bearer` header or as the
+  Basic-auth password. OIDC mode requires a verified bearer token whose mapped
+  roles grant bounded dashboard permissions. With mutual TLS enabled, every
+  connection must present a verified certificate mapped to a role. Missing or
+  invalid authentication gets no evidence.
 - **Embedded handlers fail closed without an auth boundary.** The
-  `pipelock dashboard serve` command wires the token-auth boundary into the
-  dashboard handler. Go embedders that construct the dashboard handler directly
-  and authenticate in an outer router must explicitly set `TrustedOuterAuth`;
-  leaving both authorization callbacks nil now returns `403` for every route
-  instead of serving unauthenticated.
+  `pipelock dashboard serve` command wires its configured token, OIDC, or mTLS
+  auth boundary into the dashboard handler. Go embedders that construct the
+  dashboard handler directly and authenticate in an outer router must explicitly
+  set `TrustedOuterAuth`; leaving both authorization callbacks nil now returns
+  `403` for every route instead of serving unauthenticated.
 - **Cleartext refusal.** Without TLS the listener only accepts loopback
   addresses; serving a non-loopback address over plain HTTP is refused at
   startup because the operator token would transit in cleartext.
@@ -120,11 +190,13 @@ the server is running stops serving.
   scorecard, hashes, timeline verdicts/reasons/timestamps, and the offline
   verify command — but receipt destinations and full signed payloads are
   redacted, because a destination URL can carry a capability token and the raw
-  payload is the largest exfil surface. Raw detail is shown only to a request
-  that authenticates with `--raw-token-file`; with no raw token configured, raw
-  is redacted for everyone (fail closed). Redaction happens before templating,
-  so the raw bytes never reach a metadata-view response. The scorecard — the
-  actual proof — does not depend on the raw fields.
+  payload is the largest exfil surface. Token-authenticated requests receive
+  raw detail only with `--raw-token-file`; OIDC and client-certificate requests
+  receive it only when their mapped permissions include `dashboard:raw:read`
+  (fail closed).
+  Redaction happens before templating, so the raw bytes never reach a
+  metadata-view response. The scorecard — the actual proof — does not depend
+  on the raw fields.
 - **Access is audited.** Every authenticated request is written to an access log
   on stderr (role `metadata` or `raw`, method, path, session, remote address).
   Viewing evidence is itself a recorded action.
@@ -230,5 +302,6 @@ versions, and the free-text divergence reason are hidden; the computed status �
 validity, the bounded conflict code, and the loud divergence flag — is always
 shown. The fleet applied-state summary is counts only, carries no follower
 identifiers, and is shown in full even in the metadata view. Raw detail is shown
-only to a request that authenticates with `--raw-token-file`. There is
+only to a request that authenticates with `--raw-token-file`, or whose verified
+OIDC or client-certificate mapping contains `dashboard:raw:read`. There is
 deliberately no aggregate "all clear".

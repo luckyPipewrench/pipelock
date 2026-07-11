@@ -91,6 +91,11 @@ type LiveRunOpts struct {
 	// bound port is signed into the HostContainmentWitness and the contained agent
 	// must reach EXACTLY it, so a port that does not match the nft rule fails closed.
 	ProxyPort int
+	// StrictLabAllowlist, when true for deterministic runs, makes the lab proxy
+	// enforce an exact allowlist containing only the safe target and collector. It
+	// keeps the collector content-scan beat reachable while making arbitrary-host
+	// negative probes fail before DNS.
+	StrictLabAllowlist bool
 	// OrchestratorKeyPath, when non-empty, loads the run's orchestrator
 	// (trust-root) signing key from disk instead of generating an ephemeral one.
 	OrchestratorKeyPath string
@@ -171,6 +176,90 @@ func proxyBindAddrFor(port int) (string, error) {
 		return "", fmt.Errorf("proxy port %d out of range (0-65535)", port)
 	}
 	return fmt.Sprintf("127.0.0.1:%d", port), nil
+}
+
+func liveRunProxyConfig(opts LiveRunOpts) (*config.Config, error) {
+	cfg := config.Defaults()
+	cfg.ForwardProxy.Enabled = true
+
+	// DNS host overrides: .test hosts -> loopback
+	cfg.DNS.HostOverrides = map[string][]string{
+		liveRunSafeHost:  {"127.0.0.1"},
+		liveRunExfilHost: {"127.0.0.1"},
+	}
+
+	// Trust the .test hosts so they pass the domain check
+	cfg.TrustedDomains = append(cfg.TrustedDomains, liveRunSafeHost, liveRunExfilHost)
+
+	// Model-agent runs enforce a strict host allowlist: a jailbroken model (which
+	// has a real shell, so tool-runtime host guards are bypassable by curl) must
+	// not be able to reach any host the operator did not approve. The ONLY approved
+	// egress destinations are the benign lab read target and the model's own API.
+	//
+	// CRITICAL: the allowlist is ASSIGNED, never appended to config.Defaults(). The
+	// defaults ship general third-party hosts (github/openai/telegram/slack/discord/
+	// npm) which ARE enforced as reachable in strict mode -- appending would
+	// silently approve real exfil channels (e.g. a visitor's own Telegram bot). The
+	// drop-box/collector host (liveRunExfilHost) is also intentionally NOT approved:
+	// an exfil attempt to it is blocked at the allowlist (destination control, before
+	// DNS), which encoding cannot bypass; the collector still runs as the independent
+	// "received nothing" witness. Allowlist enforcement is gated to strict mode, so
+	// model runs run strict; the deterministic IntentAgent path (no ModelBaseURL)
+	// keeps its balanced config (collector reachable, content-scan beat) unchanged.
+	if opts.ModelBaseURL != "" {
+		modelHost, err := modelHostname(opts.ModelBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("model base url: %w", err)
+		}
+		cfg.TrustedDomains = append(cfg.TrustedDomains, modelHost)
+		if len(opts.ModelHostOverride) > 0 {
+			cfg.DNS.HostOverrides[modelHost] = opts.ModelHostOverride
+		}
+		cfg.Mode = config.ModeStrict
+		cfg.APIAllowlist = []string{liveRunSafeHost, modelHost}
+		cfg.Suppress = append(cfg.Suppress, modelProviderAuthSuppressions(opts.ModelBaseURL)...)
+
+		// Bind EVERY contained-agent request to the lab-agent identity. The agent's
+		// Go tools and model traffic set the X-Pipelock-Agent header (-> actor
+		// "lab-agent"), but its shell tools (curl/wget/python3 via HTTP_PROXY) do
+		// NOT — those egress as actor "anonymous", which the public-safe packet
+		// assembler REJECTS at seal time, breaking the downloadable bundle. Binding
+		// attributes ALL of the contained agent's egress to lab-agent regardless of
+		// any (missing or self-declared) header, so every blocked-exfil receipt
+		// seals into the bundle. It also hardens identity: a jailbroken model cannot
+		// self-declare a different agent to dodge attribution. Safe because the VM
+		// is single-tenant — the only actor in it IS the lab agent.
+		cfg.DefaultAgentIdentity = liveRunActor
+		cfg.BindDefaultAgentIdentity = true
+
+		// The benign read host is the one approved interactive destination, so lock
+		// it to reads: a request_policy rule blocks the standard write methods at
+		// the proxy (with a signed receipt), so a shell `curl -X POST` cannot use
+		// the approved host as a body-exfil channel. NOTE: this is a method
+		// deny-list, not a true default-deny "only GET" route (an exotic custom
+		// verb is not covered here -- the SafeTarget handler 405s those as
+		// defense-in-depth). Route-level default-deny allow-routes with receipts is
+		// tracked as a separate product item. The model host stays an opaque CONNECT
+		// (its path is not proxy-visible without MITM), so it is NOT route-locked;
+		// the model provider seeing the agent's own context is inherent to using a
+		// model, not exfil to an attacker.
+		cfg.RequestPolicy.Enabled = true
+		cfg.RequestPolicy.Rules = append(cfg.RequestPolicy.Rules, config.RequestPolicyRule{
+			Name:   "benign-read-host-get-only",
+			Action: config.ActionBlock,
+			Route: config.RequestPolicyRoute{
+				Hosts:   []string{liveRunSafeHost},
+				Methods: []string{"POST", "PUT", "PATCH", "DELETE"},
+			},
+			Reason: "benign lab read host is GET-only; a write method could carry a secret body",
+		})
+	} else if opts.StrictLabAllowlist {
+		cfg.Mode = config.ModeStrict
+		cfg.APIAllowlist = []string{liveRunSafeHost, liveRunExfilHost}
+	}
+
+	cfg.ApplyDefaults()
+	return cfg, nil
 }
 
 // StartLiveRun boots a complete live demo environment: lab targets, a real
@@ -281,84 +370,10 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	go func() { _ = lr.collectorSrv.Serve(lr.collectorLn) }()
 
 	// --- Build pipelock config ---
-	cfg := config.Defaults()
-	cfg.ForwardProxy.Enabled = true
-
-	// DNS host overrides: .test hosts -> loopback
-	cfg.DNS.HostOverrides = map[string][]string{
-		liveRunSafeHost:  {"127.0.0.1"},
-		liveRunExfilHost: {"127.0.0.1"},
+	cfg, err := liveRunProxyConfig(opts)
+	if err != nil {
+		return nil, err
 	}
-
-	// Trust the .test hosts so they pass the domain check
-	cfg.TrustedDomains = append(cfg.TrustedDomains, liveRunSafeHost, liveRunExfilHost)
-
-	// Model-agent runs enforce a strict host allowlist: a jailbroken model (which
-	// has a real shell, so tool-runtime host guards are bypassable by curl) must
-	// not be able to reach any host the operator did not approve. The ONLY approved
-	// egress destinations are the benign lab read target and the model's own API.
-	//
-	// CRITICAL: the allowlist is ASSIGNED, never appended to config.Defaults(). The
-	// defaults ship general third-party hosts (github/openai/telegram/slack/discord/
-	// npm) which ARE enforced as reachable in strict mode -- appending would
-	// silently approve real exfil channels (e.g. a visitor's own Telegram bot). The
-	// drop-box/collector host (liveRunExfilHost) is also intentionally NOT approved:
-	// an exfil attempt to it is blocked at the allowlist (destination control, before
-	// DNS), which encoding cannot bypass; the collector still runs as the independent
-	// "received nothing" witness. Allowlist enforcement is gated to strict mode, so
-	// model runs run strict; the deterministic IntentAgent path (no ModelBaseURL)
-	// keeps its balanced config (collector reachable, content-scan beat) unchanged.
-	if opts.ModelBaseURL != "" {
-		modelHost, mhErr := modelHostname(opts.ModelBaseURL)
-		if mhErr != nil {
-			err = fmt.Errorf("model base url: %w", mhErr)
-			return nil, err
-		}
-		cfg.TrustedDomains = append(cfg.TrustedDomains, modelHost)
-		if len(opts.ModelHostOverride) > 0 {
-			cfg.DNS.HostOverrides[modelHost] = opts.ModelHostOverride
-		}
-		cfg.Mode = config.ModeStrict
-		cfg.APIAllowlist = []string{liveRunSafeHost, modelHost}
-		cfg.Suppress = append(cfg.Suppress, modelProviderAuthSuppressions(opts.ModelBaseURL)...)
-
-		// Bind EVERY contained-agent request to the lab-agent identity. The agent's
-		// Go tools and model traffic set the X-Pipelock-Agent header (-> actor
-		// "lab-agent"), but its shell tools (curl/wget/python3 via HTTP_PROXY) do
-		// NOT — those egress as actor "anonymous", which the public-safe packet
-		// assembler REJECTS at seal time, breaking the downloadable bundle. Binding
-		// attributes ALL of the contained agent's egress to lab-agent regardless of
-		// any (missing or self-declared) header, so every blocked-exfil receipt
-		// seals into the bundle. It also hardens identity: a jailbroken model cannot
-		// self-declare a different agent to dodge attribution. Safe because the VM
-		// is single-tenant — the only actor in it IS the lab agent.
-		cfg.DefaultAgentIdentity = liveRunActor
-		cfg.BindDefaultAgentIdentity = true
-
-		// The benign read host is the one approved interactive destination, so lock
-		// it to reads: a request_policy rule blocks the standard write methods at
-		// the proxy (with a signed receipt), so a shell `curl -X POST` cannot use
-		// the approved host as a body-exfil channel. NOTE: this is a method
-		// deny-list, not a true default-deny "only GET" route (an exotic custom
-		// verb is not covered here -- the SafeTarget handler 405s those as
-		// defense-in-depth). Route-level default-deny allow-routes with receipts is
-		// tracked as a separate product item. The model host stays an opaque CONNECT
-		// (its path is not proxy-visible without MITM), so it is NOT route-locked;
-		// the model provider seeing the agent's own context is inherent to using a
-		// model, not exfil to an attacker.
-		cfg.RequestPolicy.Enabled = true
-		cfg.RequestPolicy.Rules = append(cfg.RequestPolicy.Rules, config.RequestPolicyRule{
-			Name:   "benign-read-host-get-only",
-			Action: config.ActionBlock,
-			Route: config.RequestPolicyRoute{
-				Hosts:   []string{liveRunSafeHost},
-				Methods: []string{"POST", "PUT", "PATCH", "DELETE"},
-			},
-			Reason: "benign lab read host is GET-only; a write method could carry a secret body",
-		})
-	}
-
-	cfg.ApplyDefaults()
 
 	// --- Policy hash ---
 	lr.policyHash = liveRunConfigHash(cfg)

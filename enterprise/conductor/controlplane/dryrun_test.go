@@ -1255,6 +1255,89 @@ func TestReplayRollback_Divergence(t *testing.T) {
 	}
 }
 
+func TestReplayRollback_HeadPreviewFailureReturnsStructuredDivergence(t *testing.T) {
+	store := mustStore(t)
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-head-preview")
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-preview", current, target, testNow)
+	emergency := mustEmergencyStore(t)
+	if _, created, err := emergency.PublishRollbackAuthorization(context.Background(), auth, testNow); err != nil || !created {
+		t.Fatalf("seed rollback created=%v err=%v, want created", created, err)
+	}
+	handler := newDryRunTestHandler(t, rollbackHeadPreviewErrorStore{BundleStore: store, err: errDryRunTestStore}, emergency, resolver)
+
+	w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rollback replay head-preview code=%d body=%s, want 200 structured divergence", w.Code, w.Body.String())
+	}
+	result := decodeReplay(t, w)
+	if result.Recorded == nil || !result.Recorded.Accepted {
+		t.Fatalf("rollback replay head-preview recorded=%+v, want present+accepted", result.Recorded)
+	}
+	if result.Rollback == nil || result.Rollback.Valid || result.Rollback.Conflict != RollbackConflictHeadPreviewFailed {
+		t.Fatalf("rollback replay head-preview eval=%+v, want valid=false conflict=head_preview_failed", result.Rollback)
+	}
+	if !result.Divergence || result.DivergenceReason == "" {
+		t.Fatalf("rollback replay head-preview divergence=%v reason=%q, want structured divergence", result.Divergence, result.DivergenceReason)
+	}
+	// The raw backend store error must not leak into the caller-visible
+	// response: it can carry paths, keys, or operational internals. The
+	// DivergenceReason must be the stable canned string only.
+	if strings.Contains(result.DivergenceReason, errDryRunTestStore.Error()) || strings.Contains(w.Body.String(), errDryRunTestStore.Error()) {
+		t.Fatalf("raw store error leaked into replay response: reason=%q body=%s", result.DivergenceReason, w.Body.String())
+	}
+}
+
+func TestReplayRollback_HistoricalRecordedDecisionSurvivesExpiredKey(t *testing.T) {
+	store := mustStore(t)
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-historical-key")
+	recordedAt := testNow.Add(-30 * time.Minute)
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-historical-key", current, target, recordedAt)
+	expiringResolver := resolverWithKeyNotAfter(t, resolver, testNow.Add(-15*time.Minute))
+	emergency := mustEmergencyStore(t)
+	if _, created, err := emergency.PublishRollbackAuthorization(context.Background(), auth, recordedAt); err != nil || !created {
+		t.Fatalf("seed rollback created=%v err=%v, want created", created, err)
+	}
+	handler := newDryRunTestHandler(t, store, emergency, expiringResolver)
+
+	w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rollback replay expired-key code=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	result := decodeReplay(t, w)
+	if result.Recorded == nil || !result.Recorded.Accepted {
+		t.Fatalf("rollback replay expired-key recorded=%+v, want present+accepted historical decision", result.Recorded)
+	}
+}
+
+func TestReplayRollback_HistoricalRecordedDecisionRejectsRevokedKey(t *testing.T) {
+	store := mustStore(t)
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-revoked-key")
+	recordedAt := testNow.Add(-30 * time.Minute)
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-revoked-key", current, target, recordedAt)
+	revokedResolver := resolverWithKeyRevokedAt(t, resolver, testNow.Add(-15*time.Minute))
+	emergency := mustEmergencyStore(t)
+	if _, created, err := emergency.PublishRollbackAuthorization(context.Background(), auth, recordedAt); err != nil || !created {
+		t.Fatalf("seed rollback created=%v err=%v, want created", created, err)
+	}
+	handler := newDryRunTestHandler(t, store, emergency, revokedResolver)
+	hash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	recorded, err := handler.recordedRollback(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("recordedRollback(revoked): %v", err)
+	}
+	if recorded != nil {
+		t.Fatalf("recordedRollback(revoked) = %+v, want nil because revocation overrides historical replay", recorded)
+	}
+
+	w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("rollback replay revoked-key code=%d body=%s, want 422", w.Code, w.Body.String())
+	}
+}
+
 func TestReplayRollback_UnknownArtifact_EvaluationOnly(t *testing.T) {
 	store := mustStore(t)
 	current, target := seedRollbackReplayBundles(t, store, "rb-replay-unknown")
@@ -1592,6 +1675,31 @@ func resignRollbackAuthorization(t *testing.T, auth *conductor.RollbackAuthoriza
 		t.Fatalf("rollback authorization VerifySignaturesAt() error = %v", err)
 	}
 	return resolver
+}
+
+func resolverWithKeyNotAfter(t *testing.T, inner conductor.SignatureKeyResolver, notAfter time.Time) conductor.SignatureKeyResolver {
+	t.Helper()
+	return func(keyID string) (conductor.SignatureKey, error) {
+		key, err := inner(keyID)
+		if err != nil {
+			return conductor.SignatureKey{}, err
+		}
+		key.NotAfter = notAfter.UTC()
+		return key, nil
+	}
+}
+
+func resolverWithKeyRevokedAt(t *testing.T, inner conductor.SignatureKeyResolver, revokedAt time.Time) conductor.SignatureKeyResolver {
+	t.Helper()
+	revoked := revokedAt.UTC()
+	return func(keyID string) (conductor.SignatureKey, error) {
+		key, err := inner(keyID)
+		if err != nil {
+			return conductor.SignatureKey{}, err
+		}
+		key.RevokedAt = &revoked
+		return key, nil
+	}
 }
 
 // TestDryRunReplay_NoSecretsInResponsesOrLogs proves invariant 6: no signing

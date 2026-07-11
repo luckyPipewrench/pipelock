@@ -789,10 +789,14 @@ func (h *Handler) publishPreflight(r *http.Request, bundle conductor.PolicyBundl
 		StaleAfterSeconds: int(defaultRuntimeStatusStaleAfter / time.Second),
 	}
 	if h.enrollments == nil {
+		baseSummary.Unavailable = true
+		baseSummary.UnavailableReason = "enrollment_store_unavailable"
 		return baseSummary, fmt.Errorf("%w: enrollment store unavailable", ErrRuntimeStatusStoreRequired)
 	}
 	statusStore, ok := h.enrollments.(RuntimeStatusStore)
 	if !ok || statusStore == nil {
+		baseSummary.Unavailable = true
+		baseSummary.UnavailableReason = "runtime_status_store_unavailable"
 		return baseSummary, fmt.Errorf("%w: runtime status store unavailable", ErrRuntimeStatusStoreRequired)
 	}
 	followerQuery := FollowerListQuery{
@@ -897,11 +901,6 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 		writeStoreError(w, err)
 		return
 	}
-	record, err = h.applyRollbackCeiling(r, identity, record, now)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
 	etag := fmt.Sprintf("%q", record.BundleHash)
 	if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
 		w.Header().Set("ETag", etag)
@@ -910,41 +909,6 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("ETag", etag)
 	writeJSON(w, http.StatusOK, record.Bundle)
-}
-
-func (h *Handler) applyRollbackCeiling(r *http.Request, identity FollowerIdentity, latest PublishedBundle, now time.Time) (PublishedBundle, error) {
-	if h.emergencyControls == nil {
-		return latest, nil
-	}
-	rollback, ok, err := h.emergencyControls.ActiveRollbackForFollower(r.Context(), identity, now)
-	if err != nil {
-		return PublishedBundle{}, err
-	}
-	if !ok {
-		return latest, nil
-	}
-	auth := rollback.Authorization
-	if latest.Bundle.Version > auth.CurrentVersion {
-		return latest, nil
-	}
-	current, err := h.store.BundleByIDVersion(r.Context(), auth.CurrentBundleID, auth.CurrentVersion)
-	if err != nil {
-		if errors.Is(err, ErrBundleNotFound) {
-			return PublishedBundle{}, fmt.Errorf("active rollback current unavailable: %w", err)
-		}
-		return PublishedBundle{}, err
-	}
-	target, err := h.store.BundleByIDVersion(r.Context(), auth.TargetBundleID, auth.TargetVersion)
-	if err != nil {
-		if errors.Is(err, ErrBundleNotFound) {
-			return PublishedBundle{}, fmt.Errorf("active rollback target unavailable: %w", err)
-		}
-		return PublishedBundle{}, err
-	}
-	if current.StreamKey != latest.StreamKey || target.StreamKey != latest.StreamKey {
-		return latest, nil
-	}
-	return target, nil
 }
 
 func (h *Handler) handleRemoteKill(w http.ResponseWriter, r *http.Request) {
@@ -1087,13 +1051,65 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		h.respondRollbackDryRun(w, r, req.Authorization, now)
 		return
 	}
+	headPreviewer, ok := h.store.(rollbackHeadPreviewer)
+	if !ok || headPreviewer == nil {
+		writeError(w, http.StatusInternalServerError, ErrRollbackHeadPreviewUnsupported)
+		return
+	}
+	prePreview, err := headPreviewer.PreviewRollbackHead(r.Context(), req.Authorization)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	// Fail fast when the rollback is already superseded by a later forward
+	// publish at preview time. Noop is set only for that case (an already-at-
+	// target idempotent retry returns a non-noop apply verdict), and the
+	// hash-mismatch guard keeps the legitimate already-at-target case out. This
+	// avoids durably accepting then compensating-clearing an authorization that
+	// cannot move the head, mirroring the post-apply supersession check below.
+	if prePreview.Noop && prePreview.CurrentHeadHash != prePreview.WouldRollToHash {
+		writeStoreError(w, fmt.Errorf("%w: rollback superseded by current stream head", ErrBundleConflict))
+		return
+	}
+	if previewer, ok := h.emergencyControls.(rollbackAuthPreviewer); ok && previewer != nil {
+		if _, err := previewer.PreviewRollbackAuthorization(r.Context(), req.Authorization, now); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+	}
 	record, created, err := h.emergencyControls.PublishRollbackAuthorization(r.Context(), req.Authorization, now)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
+	// The auth is now durably recorded as accepted. If the head does not end up
+	// at the rollback target (apply failure or a concurrent forward-publish
+	// supersede), compensate by clearing the just-created record so replay and
+	// audit never report an accepted-but-unapplied rollback. Best-effort: a
+	// failed clear is logged and the record remains for the operator clear path.
+	failClosed := func(cause error) {
+		if created {
+			if clearer, ok := h.emergencyControls.(rollbackClearer); ok && clearer != nil {
+				if _, clearErr := clearer.ClearRollbackAuthorization(r.Context(), record.Authorization.AuthorizationID); clearErr != nil && h.logger != nil {
+					h.logger.ErrorContext(r.Context(), "conductor_rollback_compensating_clear_failed",
+						slog.String("authorization_id", record.Authorization.AuthorizationID),
+						slog.String("error", clearErr.Error()))
+				}
+			}
+		}
+		writeStoreError(w, cause)
+	}
 	if err := h.store.ApplyRollbackHead(r.Context(), req.Authorization, now); err != nil {
-		writeStoreError(w, err)
+		failClosed(err)
+		return
+	}
+	applied, err := headPreviewer.PreviewRollbackHead(r.Context(), req.Authorization)
+	if err != nil {
+		failClosed(err)
+		return
+	}
+	if applied.CurrentHeadHash != applied.WouldRollToHash {
+		failClosed(fmt.Errorf("%w: rollback superseded by current stream head", ErrBundleConflict))
 		return
 	}
 	status := http.StatusOK
@@ -1194,7 +1210,44 @@ func (h *Handler) handleLatestRollbackAuthorization(w http.ResponseWriter, r *ht
 		writeStoreError(w, err)
 		return
 	}
+	active, err := h.rollbackAuthorizationActiveOnBundleHead(r.Context(), identity, record.Authorization, h.now())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !active {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	writeJSON(w, http.StatusOK, record.Authorization)
+}
+
+func (h *Handler) rollbackAuthorizationActiveOnBundleHead(ctx context.Context, identity FollowerIdentity, auth conductor.RollbackAuthorization, now time.Time) (bool, error) {
+	latest, err := h.store.Latest(ctx, identity, now)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	current, err := h.store.BundleByIDVersion(ctx, auth.CurrentBundleID, auth.CurrentVersion)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	target, err := h.store.BundleByIDVersion(ctx, auth.TargetBundleID, auth.TargetVersion)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if current.StreamKey != latest.StreamKey || target.StreamKey != latest.StreamKey {
+		return false, nil
+	}
+	return latest.BundleHash == target.BundleHash, nil
 }
 
 func rollbackLookupFromRequest(r *http.Request) (RollbackLookup, error) {

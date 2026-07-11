@@ -289,6 +289,72 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	}
 }
 
+func TestRollbackHeadReconciliationDoesNotRearmSupersededAuthorization(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	emergencyStore, err := OpenFileEmergencyStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-reconcile-superseded-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-reconcile-superseded-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - reconcile-superseded2.example.com\n",
+	})
+	r2, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-reconcile-superseded", v2, v1, testNow)
+	if _, created, err := emergencyStore.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
+	}
+	v3 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-reconcile-superseded-v3",
+		version:      3,
+		previousHash: r2.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - reconcile-superseded3.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v3, PublishOptions{Now: testNow.Add(2 * time.Minute)}); err != nil {
+		t.Fatalf("Publish(v3) error = %v", err)
+	}
+
+	reopenedStore, err := OpenFileBundleStore(store.dir)
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore(reopen) error = %v", err)
+	}
+	reopenedEmergency, err := OpenFileEmergencyStore(emergencyStore.dir)
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)
+	}
+	verified := newVerifiedEmergencyStore(reopenedEmergency, resolver, nil, nil)
+	if err := reconcileRollbackHeads(reopenedStore, verified, testNow.Add(3*time.Minute), nil); err != nil {
+		t.Fatalf("reconcileRollbackHeads(superseded) error = %v", err)
+	}
+	latest, err := reopenedStore.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("Latest(after superseded reconcile) error = %v", err)
+	}
+	if latest.Bundle.BundleID != "bundle-reconcile-superseded-v3" {
+		t.Fatalf("Latest(after superseded reconcile) bundle=%q, want bundle-reconcile-superseded-v3", latest.Bundle.BundleID)
+	}
+}
+
 func TestRollbackHeadReconciliationLoadsLegacyAudienceEmergencyState(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {

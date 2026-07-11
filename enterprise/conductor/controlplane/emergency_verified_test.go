@@ -9,9 +9,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -326,8 +328,16 @@ func TestVerifiedEmergencyStore_LegitRecordStillApplies(t *testing.T) {
 	}
 	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "vstore-rollback", v2, v1, testNow)
 	handler := newTestHandlerWithOptions(t, store, nil, resolver)
-	if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
-		t.Fatalf("PublishRollbackAuthorization created=%v err=%v", created, err)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, bytes.NewReader(body))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("rollback publish status=%d body=%s, want 201", resp.Code, resp.Body.String())
 	}
 	w := latestPolicyBundle(t, handler, nil)
 	assertLatestBundleID(t, w, "vstore-v1")

@@ -9,11 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,7 +79,7 @@ func TestHandlerPublishesAndServesLatestBundle(t *testing.T) {
 	}
 }
 
-func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
+func TestHandlerLatestPolicyBundleRequiresRollbackHead(t *testing.T) {
 	store := mustStore(t)
 	signer := newTestSigner(t)
 	audience := conductor.Audience{InstanceIDs: []string{"*"}}
@@ -97,8 +99,7 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 		audience:     audience,
 		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
 	})
-	r2, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)})
-	if err != nil {
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
 	// The rollback ceiling is served through the signature-verifying view, so
@@ -110,10 +111,24 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 	}
 
 	w := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, w, rollbackCeilingBundleV2)
+	w = latestRollbackAuthorization(t, handler, auth)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("residual rollback auth status=%d body=%s, want 204 until bundle head is rolled back", w.Code, w.Body.String())
+	}
+
+	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); err != nil {
+		t.Fatalf("ApplyRollbackHead() error = %v", err)
+	}
+	w = latestPolicyBundle(t, handler, nil)
 	assertLatestBundleID(t, w, rollbackCeilingBundleV1)
 	etag := w.Header().Get("ETag")
 	if etag == "" {
 		t.Fatal("rollback-ceiling latest ETag empty")
+	}
+	w = latestRollbackAuthorization(t, handler, auth)
+	if w.Code != http.StatusOK {
+		t.Fatalf("active rollback auth status=%d body=%s, want 200 after bundle head is rolled back", w.Code, w.Body.String())
 	}
 	w304 := latestPolicyBundle(t, handler, map[string]string{"If-None-Match": etag})
 	if w304.Code != http.StatusNotModified {
@@ -173,18 +188,17 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 		t.Fatalf("PublishRollbackAuthorization(missing target) created=%v err=%v, want created", created, err)
 	}
 	w = latestPolicyBundle(t, missingHandler, nil)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("missing rollback target status=%d body=%s, want 404", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), rollbackCeilingBundleV2) {
-		t.Fatalf("missing rollback target served current bundle body=%s", w.Body.String())
+	assertLatestBundleID(t, w, rollbackCeilingBundleV2)
+	w = latestRollbackAuthorization(t, missingHandler, missingAuth)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("missing rollback target auth status=%d body=%s, want 204", w.Code, w.Body.String())
 	}
 
 	handler.followerIdentity = nil
 	v3 := signedControlBundle(t, signer, bundleSpec{
 		id:           rollbackCeilingBundleV3,
 		version:      3,
-		previousHash: r2.BundleHash,
+		previousHash: r1.BundleHash,
 		audience:     audience,
 		configYAML:   "mode: strict\napi_allowlist:\n  - api3.example.com\n",
 	})
@@ -295,6 +309,413 @@ func TestHandlerPublishRollbackAuthorizationMissingTargetDoesNotRecord(t *testin
 	}
 	if _, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyNotFound) {
 		t.Fatalf("LatestRollbackAuthorization(after missing target) err=%v, want ErrEmergencyNotFound", err)
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationApplyFailureRecordIsNotServed(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-apply-fail-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-apply-fail-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	if _, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-apply-fail", v2, v1, testNow)
+	handler := newTestHandlerWithOptions(t, applyRollbackFailureStore{BundleStore: base, err: errHandlerApplyRollbackFailed}, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("rollback apply-fail status=%d body=%s, want 500", w.Code, w.Body.String())
+	}
+	latest := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, latest, "bundle-handler-apply-fail-v2")
+	servedAuth := latestRollbackAuthorization(t, handler, auth)
+	if servedAuth.Code != http.StatusNoContent {
+		t.Fatalf("rollback auth after apply failure status=%d body=%s, want 204", servedAuth.Code, servedAuth.Body.String())
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	// The apply failed, so the just-created authorization record is
+	// compensating-cleared: replay and audit must never surface an
+	// accepted-but-unapplied rollback (split-brain). The record must be gone,
+	// not merely un-served.
+	if _, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(after apply failure) err=%v, want ErrEmergencyNotFound (compensating clear)", err)
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationConcurrentForwardPublishSupersedesRollback(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-race-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-race-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	r2, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	v3 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-race-v3",
+		version:      3,
+		previousHash: r2.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api3.example.com\n",
+	})
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-race", v2, v1, testNow)
+	handler := newTestHandlerWithOptions(t, &publishBeforeRollbackApplyStore{FileBundleStore: base, bundle: v3}, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("rollback race status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	latest := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, latest, "bundle-handler-race-v3")
+	servedAuth := latestRollbackAuthorization(t, handler, auth)
+	if servedAuth.Code != http.StatusNoContent {
+		t.Fatalf("rollback auth after race status=%d body=%s, want 204", servedAuth.Code, servedAuth.Body.String())
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationAppliedThenSupersededKeepsRollbackMarker(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-applied-superseded-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-applied-superseded-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - applied-superseded2.example.com\n",
+	})
+	if _, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	v3 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-applied-superseded-v3",
+		version:      3,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - applied-superseded3.example.com\n",
+	})
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-applied-superseded", v2, v1, testNow)
+	handler := newTestHandlerWithOptions(t, &publishAfterRollbackApplyStore{FileBundleStore: base, bundle: v3}, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("rollback applied-then-superseded status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	latest := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, latest, "bundle-handler-applied-superseded-v3")
+	if _, ok := base.rollbackHeads[r1.StreamKey]; !ok {
+		t.Fatal("rollback marker missing after applied rollback was superseded")
+	}
+	servedAuth := latestRollbackAuthorization(t, handler, auth)
+	if servedAuth.Code != http.StatusNoContent {
+		t.Fatalf("rollback auth after applied supersede status=%d body=%s, want 204", servedAuth.Code, servedAuth.Body.String())
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	if _, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(after applied supersede) err=%v, want ErrEmergencyNotFound", err)
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationClearFailureResidualRecordIsNotServed(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-clear-fail-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-clear-fail-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - clear-fail2.example.com\n",
+	})
+	if _, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-clear-fail", v2, v1, testNow)
+	handler := newTestHandlerWithOptions(t, applyRollbackFailureStore{BundleStore: base, err: errHandlerApplyRollbackFailed}, nil, resolver)
+	handler.emergencyControls = newVerifiedEmergencyStore(rollbackClearFailureEmergencyStore{
+		FileEmergencyStore: mustEmergencyStore(t),
+		err:                errors.New("forced rollback clear failure"),
+	}, resolver, nil, nil)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("rollback clear-fail status=%d body=%s, want 500", w.Code, w.Body.String())
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	if record, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); err != nil || record.Authorization.AuthorizationID != auth.AuthorizationID {
+		t.Fatalf("LatestRollbackAuthorization(clear failure) = %+v, %v; want residual record %q", record.Authorization, err, auth.AuthorizationID)
+	}
+	servedAuth := latestRollbackAuthorization(t, handler, auth)
+	if servedAuth.Code != http.StatusNoContent {
+		t.Fatalf("rollback residual auth after clear failure status=%d body=%s, want 204", servedAuth.Code, servedAuth.Body.String())
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationSupersededAtPreviewFailsFastWithoutRecord(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-preview-superseded-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-preview-superseded-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	r2, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	v3 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-preview-superseded-v3",
+		version:      3,
+		previousHash: r2.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api3.example.com\n",
+	})
+	if _, _, err := base.Publish(t.Context(), v3, PublishOptions{Now: testNow.Add(2 * time.Minute)}); err != nil {
+		t.Fatalf("Publish(v3) error = %v", err)
+	}
+	// The authorization was signed to roll v2 -> v1, but the stream head has
+	// already advanced to v3, so the rollback can never move the head. The
+	// request must fail fast at preview time and never durably accept an
+	// authorization it cannot apply (no accept-then-compensating-clear churn).
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-preview-superseded", v2, v1, testNow)
+	// Spy on ApplyRollbackHead: the fast-fail must reject the superseded request
+	// before any apply is attempted. Without the fast-fail the request would
+	// still end at 409 (via the post-apply supersession check) after a wasted
+	// accept+apply+compensating-clear, so asserting apply is never called is
+	// what actually pins the fast-fail behavior.
+	store := &applyRollbackSpyStore{FileBundleStore: base}
+	handler := newTestHandlerWithOptions(t, store, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("rollback superseded-at-preview status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if got := store.applyCalls(); got != 0 {
+		t.Fatalf("ApplyRollbackHead called %d times for a superseded-at-preview request, want 0 (fast-fail before apply)", got)
+	}
+	latest := latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, latest, "bundle-handler-preview-superseded-v3")
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	// The fast-fail runs before PublishRollbackAuthorization, so no record is
+	// ever created for the superseded authorization.
+	if _, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(superseded at preview) err=%v, want ErrEmergencyNotFound (no record created)", err)
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationReplayApplyFailureKeepsPersistedRecord(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-replay-fail-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-replay-fail-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	if _, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-replay-fail", v2, v1, testNow)
+	// Apply succeeds on the first request (head moves to the target and the
+	// authorization is durably recorded) and errors on the replay.
+	store := &applyRollbackFailOnReplayStore{FileBundleStore: base, err: errHandlerApplyRollbackFailed}
+	handler := newTestHandlerWithOptions(t, store, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	first := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	first.Header.Set("X-Pipelock-Admin", "ok")
+	fw := httptest.NewRecorder()
+	handler.ServeHTTP(fw, first)
+	if fw.Code != http.StatusCreated {
+		t.Fatalf("rollback first publish status=%d body=%s, want 201", fw.Code, fw.Body.String())
+	}
+
+	// Replay the same authorization: PublishRollbackAuthorization reports
+	// created=false, and the re-apply errors. Because the compensating clear is
+	// gated on created, the replay must NOT clear the legitimately-persisted
+	// record; the still-active rollback (head at target) keeps it servable.
+	replay := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	replay.Header.Set("X-Pipelock-Admin", "ok")
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, replay)
+	if rw.Code != http.StatusInternalServerError {
+		t.Fatalf("rollback replay apply-fail status=%d body=%s, want 500", rw.Code, rw.Body.String())
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	if record, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); err != nil || record.Authorization.AuthorizationID != auth.AuthorizationID {
+		t.Fatalf("LatestRollbackAuthorization(after replay apply failure) = %+v, %v; want persisted record %q (created=false must skip compensating clear)", record.Authorization, err, auth.AuthorizationID)
+	}
+	servedAuth := latestRollbackAuthorization(t, handler, auth)
+	if servedAuth.Code != http.StatusOK {
+		t.Fatalf("rollback auth after replay apply failure status=%d body=%s, want 200 (still active on head)", servedAuth.Code, servedAuth.Body.String())
+	}
+}
+
+func TestHandlerPublishRollbackAuthorizationRecordFailureDoesNotMoveHead(t *testing.T) {
+	base := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-record-fail-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := base.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-record-fail-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	if _, _, err := base.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-record-fail", v2, v1, testNow)
+	handler := newTestHandlerWithOptions(t, base, nil, resolver)
+	handler.emergencyControls = failingEmergencyStore{}
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("rollback record-fail status=%d body=%s, want 500", w.Code, w.Body.String())
+	}
+	latest, err := base.Latest(t.Context(), defaultFollowerIdentity(), testNow)
+	if err != nil {
+		t.Fatalf("Latest(after record failure) error = %v", err)
+	}
+	if latest.Bundle.BundleID != "bundle-handler-record-fail-v2" {
+		t.Fatalf("Latest(after record failure) bundle_id = %q, want bundle-handler-record-fail-v2", latest.Bundle.BundleID)
 	}
 }
 
@@ -951,6 +1372,21 @@ func latestPolicyBundle(t *testing.T, handler *Handler, headers map[string]strin
 	return w
 }
 
+func latestRollbackAuthorization(t *testing.T, handler *Handler, auth conductor.RollbackAuthorization) *httptest.ResponseRecorder {
+	t.Helper()
+	target := fmt.Sprintf("%s?current_bundle_id=%s&current_version=%d&target_bundle_id=%s&target_version=%d",
+		RollbackAuthorizationsPath,
+		auth.CurrentBundleID,
+		auth.CurrentVersion,
+		auth.TargetBundleID,
+		auth.TargetVersion,
+	)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
 func assertLatestBundleID(t *testing.T, w *httptest.ResponseRecorder, want string) {
 	t.Helper()
 	if w.Code != http.StatusOK {
@@ -1032,6 +1468,110 @@ func publishRollbackTargetAndCurrent(t *testing.T, handler *Handler, auth conduc
 	if _, _, err := handler.store.Publish(t.Context(), current, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
 		t.Fatalf("Publish(rollback current) error = %v", err)
 	}
+}
+
+var errHandlerApplyRollbackFailed = errors.New("forced rollback head apply failure")
+
+type applyRollbackFailureStore struct {
+	BundleStore
+	err error
+}
+
+func (s applyRollbackFailureStore) ApplyRollbackHead(context.Context, conductor.RollbackAuthorization, time.Time) error {
+	return s.err
+}
+
+func (s applyRollbackFailureStore) PreviewRollbackHead(ctx context.Context, auth conductor.RollbackAuthorization) (RollbackHeadPreview, error) {
+	previewer, ok := s.BundleStore.(rollbackHeadPreviewer)
+	if !ok {
+		return RollbackHeadPreview{}, ErrRollbackHeadPreviewUnsupported
+	}
+	return previewer.PreviewRollbackHead(ctx, auth)
+}
+
+// applyRollbackSpyStore counts ApplyRollbackHead invocations while otherwise
+// delegating to the real store, so a test can assert apply was never reached.
+type applyRollbackSpyStore struct {
+	*FileBundleStore
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *applyRollbackSpyStore) ApplyRollbackHead(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) error {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	return s.FileBundleStore.ApplyRollbackHead(ctx, auth, now)
+}
+
+func (s *applyRollbackSpyStore) applyCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// applyRollbackFailOnReplayStore applies the rollback normally on the first
+// ApplyRollbackHead call and errors on every subsequent call, modeling a replay
+// whose re-apply fails after the authorization was already durably recorded.
+type applyRollbackFailOnReplayStore struct {
+	*FileBundleStore
+	err   error
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *applyRollbackFailOnReplayStore) ApplyRollbackHead(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) error {
+	s.mu.Lock()
+	s.calls++
+	n := s.calls
+	s.mu.Unlock()
+	if n > 1 {
+		return s.err
+	}
+	return s.FileBundleStore.ApplyRollbackHead(ctx, auth, now)
+}
+
+type publishBeforeRollbackApplyStore struct {
+	*FileBundleStore
+	bundle conductor.PolicyBundle
+	once   sync.Once
+}
+
+func (s *publishBeforeRollbackApplyStore) ApplyRollbackHead(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) error {
+	var publishErr error
+	s.once.Do(func() {
+		_, _, publishErr = s.Publish(ctx, s.bundle, PublishOptions{Now: now.Add(time.Second)})
+	})
+	if publishErr != nil {
+		return publishErr
+	}
+	return s.FileBundleStore.ApplyRollbackHead(ctx, auth, now)
+}
+
+type publishAfterRollbackApplyStore struct {
+	*FileBundleStore
+	bundle conductor.PolicyBundle
+	once   sync.Once
+}
+
+func (s *publishAfterRollbackApplyStore) ApplyRollbackHead(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) error {
+	if err := s.FileBundleStore.ApplyRollbackHead(ctx, auth, now); err != nil {
+		return err
+	}
+	var publishErr error
+	s.once.Do(func() {
+		_, _, publishErr = s.Publish(ctx, s.bundle, PublishOptions{Now: now.Add(time.Second)})
+	})
+	return publishErr
+}
+
+type rollbackClearFailureEmergencyStore struct {
+	*FileEmergencyStore
+	err error
+}
+
+func (s rollbackClearFailureEmergencyStore) ClearRollbackAuthorization(context.Context, string) (bool, error) {
+	return false, s.err
 }
 
 func newTestHandler(t *testing.T, store BundleStore, identity FollowerIdentityResolver) *Handler {

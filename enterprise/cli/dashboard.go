@@ -44,6 +44,9 @@ func DashboardCmd() *cobra.Command {
 		Short: "Web dashboard over Pipelock evidence (Pro/Enterprise)",
 	}
 	cmd.AddCommand(dashboardServeCmd())
+	cmd.AddCommand(dashboardBackupCmd())
+	cmd.AddCommand(dashboardRestoreCmd())
+	cmd.AddCommand(dashboardRebuildReadModelCmd())
 	cmd.AddCommand(coverageCertCmd())
 	cmd.AddCommand(exemptionCmd())
 	cmd.AddCommand(legalHoldCmd())
@@ -65,6 +68,8 @@ type dashboardServeOptions struct {
 	tlsCert             string
 	tlsKey              string
 	exemptionStore      string
+	deliveryInbox       string
+	readModelIndex      string
 	legalHoldStore      string
 	complianceTokenFile string
 }
@@ -108,6 +113,10 @@ because the operator token would transit in cleartext.`,
 		"optional Pipelock config file for the read-only exemptions inventory")
 	cmd.Flags().StringVar(&opts.exemptionStore, "exemption-store", "",
 		"optional exemption lifecycle store file; overlays owner/reason/expiry/status onto the read-only exemptions inventory")
+	cmd.Flags().StringVar(&opts.deliveryInbox, "delivery-inbox", "",
+		"optional alert delivery inbox file for read-only delivery health")
+	cmd.Flags().StringVar(&opts.readModelIndex, "read-model-index", "",
+		"optional rebuilt index metadata file for read-only freshness status")
 	cmd.Flags().StringVar(&opts.legalHoldStore, "legal-hold-store", "",
 		"optional legal-hold metadata store file for read-only compliance display")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
@@ -268,6 +277,8 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		AnchorResolver:      anchorResolver,
 		Config:              loadedConfig,
 		ExemptionStore:      exemptionStore,
+		DeliveryInboxPath:   opts.deliveryInbox,
+		ReadModelIndexPath:  opts.readModelIndex,
 		LegalHoldStore:      legalHoldStore,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
 		Authorize:           dashboardAuthorizeFunc(authenticated),

@@ -111,6 +111,10 @@ type Options struct {
 	// onto the read-only exemptions inventory. Its records add
 	// owner/reason/expiry/status/last-matched to matching entries.
 	ExemptionStore *ExemptionStore
+	// DeliveryInboxPath and ReadModelIndexPath are read-only health inputs.
+	// The dashboard does not mutate either store.
+	DeliveryInboxPath  string
+	ReadModelIndexPath string
 	// LegalHoldStore, when non-nil, supplies operator-authored retention hold
 	// metadata for read-only display on the compliance console. Dashboard HTTP
 	// handlers never mutate it; operators use the dashboard legal-hold CLI.
@@ -121,21 +125,23 @@ type Options struct {
 
 // ReadModel builds dashboard views over recorder sessions and receipts.
 type ReadModel struct {
-	receiptDir        string
-	trustedKeys       map[string]TrustedKey
-	trustCRLSource    func() (*license.CRL, error)
-	anchorResolver    AnchorResolver
-	cfg               *config.Config
-	receiptReadLimit  int
-	timelineLimit     int
-	filterPresets     map[string]FilterSpec
-	fleetSource       FleetDataSource
-	conductorSource   ConductorDecisionSource
-	budgetSource      BudgetDataSource
-	fleetRedactionKey [fleetRedactionKeySize]byte
-	exemptionStore    *ExemptionStore
-	legalHoldStore    *LegalHoldStore
-	now               func() time.Time
+	receiptDir         string
+	trustedKeys        map[string]TrustedKey
+	trustCRLSource     func() (*license.CRL, error)
+	anchorResolver     AnchorResolver
+	cfg                *config.Config
+	receiptReadLimit   int
+	timelineLimit      int
+	filterPresets      map[string]FilterSpec
+	fleetSource        FleetDataSource
+	conductorSource    ConductorDecisionSource
+	budgetSource       BudgetDataSource
+	fleetRedactionKey  [fleetRedactionKeySize]byte
+	exemptionStore     *ExemptionStore
+	legalHoldStore     *LegalHoldStore
+	deliveryInboxPath  string
+	readModelIndexPath string
+	now                func() time.Time
 }
 
 // NewReadModel creates a dashboard read model from Options.
@@ -157,21 +163,23 @@ func NewReadModel(opts Options) *ReadModel {
 		now = time.Now
 	}
 	return &ReadModel{
-		receiptDir:        opts.ReceiptDir,
-		trustedKeys:       cloneTrustedKeys(opts.TrustedKeys),
-		trustCRLSource:    opts.TrustCRLSource,
-		anchorResolver:    opts.AnchorResolver,
-		cfg:               opts.Config,
-		receiptReadLimit:  receiptReadLimit,
-		timelineLimit:     timelineLimit,
-		filterPresets:     opts.FilterPresets,
-		fleetSource:       opts.FleetSource,
-		conductorSource:   opts.ConductorSource,
-		budgetSource:      opts.BudgetSource,
-		fleetRedactionKey: fleetRedactionKey,
-		exemptionStore:    opts.ExemptionStore,
-		legalHoldStore:    opts.LegalHoldStore,
-		now:               now,
+		receiptDir:         opts.ReceiptDir,
+		trustedKeys:        cloneTrustedKeys(opts.TrustedKeys),
+		trustCRLSource:     opts.TrustCRLSource,
+		anchorResolver:     opts.AnchorResolver,
+		cfg:                opts.Config,
+		receiptReadLimit:   receiptReadLimit,
+		timelineLimit:      timelineLimit,
+		filterPresets:      opts.FilterPresets,
+		fleetSource:        opts.FleetSource,
+		conductorSource:    opts.ConductorSource,
+		budgetSource:       opts.BudgetSource,
+		fleetRedactionKey:  fleetRedactionKey,
+		exemptionStore:     opts.ExemptionStore,
+		legalHoldStore:     opts.LegalHoldStore,
+		deliveryInboxPath:  opts.DeliveryInboxPath,
+		readModelIndexPath: opts.ReadModelIndexPath,
+		now:                now,
 	}
 }
 

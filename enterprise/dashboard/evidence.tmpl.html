@@ -243,6 +243,23 @@
     </aside>
     <main>
       <div class="panel">
+        {{if .Operability.DeliveryConfigured}}
+          <section class="section callout">
+            <h2>Alert delivery health</h2>
+            {{if .Operability.DeliveryError}}
+              <div class="value">{{.Operability.DeliveryError}}</div>
+            {{else}}
+              <div class="muted">queued {{.Operability.Delivery.Queued}} · delivered {{.Operability.Delivery.Delivered}} · failed {{.Operability.Delivery.Failed}} · dead-letter {{.Operability.Delivery.DeadLetters}} · dropped under backpressure {{.Operability.Delivery.Dropped}}</div>
+            {{end}}
+          </section>
+        {{end}}
+        {{if .Operability.IndexConfigured}}
+          <section class="section callout">
+            <h2>Disposable read model</h2>
+            <div class="value">{{.Operability.IndexStatus}}</div>
+            <div class="muted">The recorder evidence remains the source of truth. Rebuild version {{.Operability.Index.RebuildVersion}} · {{.Operability.Index.EntryCount}} indexed entries.</div>
+          </section>
+        {{end}}
         {{if .HasEvidence}}
           <div class="heading">
             <div>

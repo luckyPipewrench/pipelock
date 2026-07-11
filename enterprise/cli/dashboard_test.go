@@ -108,6 +108,19 @@ func writeDashTokenFile(t *testing.T) string {
 
 func TestDashboardCmd_Tree(t *testing.T) {
 	cmd := DashboardCmd()
+	wantCommands := map[string]bool{
+		"backup": false, "restore": false, "rebuild-read-model": false,
+	}
+	for _, child := range cmd.Commands() {
+		if _, ok := wantCommands[child.Name()]; ok {
+			wantCommands[child.Name()] = true
+		}
+	}
+	for name, found := range wantCommands {
+		if !found {
+			t.Errorf("dashboard command missing %q", name)
+		}
+	}
 	if cmd.Use != "dashboard" {
 		t.Fatalf("Use = %q, want dashboard", cmd.Use)
 	}
@@ -115,7 +128,7 @@ func TestDashboardCmd_Tree(t *testing.T) {
 	if err != nil || serve.Use != "serve" {
 		t.Fatalf("dashboard serve subcommand not found: %v", err)
 	}
-	for _, flag := range []string{"listen", "receipt-dir", "config", "auth-token-file", "raw-token-file", "runtime-snapshot-file", "trusted-signer", "license-crl-file", "anchor-expected", "anchor-local-log", "rekor-log-key", "tls-cert", "tls-key"} {
+	for _, flag := range []string{"listen", "receipt-dir", "config", "exemption-store", "delivery-inbox", "read-model-index", "legal-hold-store", "auth-token-file", "raw-token-file", "compliance-token-file", "runtime-snapshot-file", "trusted-signer", "license-crl-file", "anchor-expected", "anchor-local-log", "rekor-log-key", "tls-cert", "tls-key"} {
 		if serve.Flags().Lookup(flag) == nil {
 			t.Errorf("serve is missing --%s", flag)
 		}

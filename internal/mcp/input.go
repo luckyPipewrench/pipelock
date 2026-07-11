@@ -1205,7 +1205,7 @@ func ForwardScannedInput(
 				},
 			})
 			if holdErr != nil {
-				errorMessage := emitHoldFailureResolution(opts, logW, holdErr, holdFailureResolution{
+				errorMessage, emitErr := emitHoldFailureResolution(opts, logW, holdErr, holdFailureResolution{
 					DeferID: actionID,
 					Authority: deferred.AuthoritySnapshot{
 						SessionID:         receiptSessionID,
@@ -1216,6 +1216,7 @@ func ForwardScannedInput(
 					Method: verdict.Method,
 					Reason: reasonStr,
 				})
+				logHoldFailureReceiptGap(logW, actionID, emitErr)
 				if !isNotification {
 					blockedCh <- BlockedRequest{
 						ID:           verdict.ID,

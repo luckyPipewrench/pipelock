@@ -78,7 +78,13 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	m := metrics.New()
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
-	p, err := New(cfg, audit.NewNop(), sc, m)
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	t.Cleanup(func() { logger.Close() })
+	p, err := New(cfg, logger, sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -113,6 +119,16 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	}
 	if got := rr.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
 		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	logger.Close()
+	auditLog, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	for _, want := range []string{"event=receipt_channel_broken", "audit_gap=true", "phase=intent"} {
+		if !strings.Contains(string(auditLog), want) {
+			t.Fatalf("audit log %q missing %q", string(auditLog), want)
+		}
 	}
 	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="intercept"} 1`)

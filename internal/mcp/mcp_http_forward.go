@@ -303,7 +303,7 @@ func RunHTTPProxy(
 				},
 			})
 			if holdErr != nil {
-				errorMessage := emitHoldFailureResolution(fwdOpts, safeLogW, holdErr, holdFailureResolution{
+				errorMessage, emitErr := emitHoldFailureResolution(fwdOpts, safeLogW, holdErr, holdFailureResolution{
 					DeferID: deferredReq.DeferID,
 					Authority: deferred.AuthoritySnapshot{
 						SessionID:         deferredReq.SessionID,
@@ -314,6 +314,7 @@ func RunHTTPProxy(
 					Method: deferredReq.Method,
 					Reason: deferredReq.Reason,
 				})
+				logHoldFailureReceiptGap(safeLogW, deferredReq.DeferID, emitErr)
 				if !deferredReq.IsNotification {
 					_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
 						ID:           deferredReq.ID,

@@ -189,27 +189,7 @@ func TestLoadFileMissingReturnsZeroBinding(t *testing.T) {
 }
 
 func TestLoadFileDerivesContainmentBinding(t *testing.T) {
-	_, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	capsule, err := posture.Emit(config.Defaults(), posture.Options{
-		SigningKey: priv,
-		Containment: &posture.ContainmentEvidence{
-			Mode:                     posture.ContainmentModeKernelNFTOwnerMatch,
-			BoundaryVerified:         true,
-			ProbeRefusedDirectEgress: true,
-			KernelRuleHash:           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			TargetUID:                "966",
-		},
-	})
-	if err != nil {
-		t.Fatalf("posture.Emit: %v", err)
-	}
-	data, err := json.Marshal(capsule)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	capsule, data := mintContainmentCapsule(t)
 	path := filepath.Join(t.TempDir(), "proof.json")
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -219,9 +199,17 @@ func TestLoadFileDerivesContainmentBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
-	sum := sha256.Sum256(data)
-	if got.CapsuleSHA256 != hex.EncodeToString(sum[:]) {
-		t.Fatalf("CapsuleSHA256 = %q, want hash of proof", got.CapsuleSHA256)
+	canonicalSum := sha256.Sum256(data)
+	if got.CapsuleSHA256 != hex.EncodeToString(canonicalSum[:]) {
+		t.Fatalf("CapsuleSHA256 = %q, want canonical capsule hash", got.CapsuleSHA256)
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	rawSum := sha256.Sum256(raw)
+	if got.CapsuleSHA256 == hex.EncodeToString(rawSum[:]) {
+		t.Fatal("CapsuleSHA256 unexpectedly matched raw proof file hash; want canonical capsule hash")
 	}
 	if got.SignerKeyID != capsule.SignerKeyID || got.ContainmentNonce != capsule.Signature || got.ContainedUID != "966" {
 		t.Fatalf("binding = %+v, want signer/signature/uid from capsule", got)

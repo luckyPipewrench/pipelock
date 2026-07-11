@@ -767,6 +767,70 @@ func TestForwardScanned_ResponseReceiptFailureOmitsParentWhenOriginalNotDurable(
 	}
 }
 
+func TestForwardScanned_BlockResponseReceiptFailureEmitsReplacementBlockReceipt(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	var out, log bytes.Buffer
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`42`))
+
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(injectionResponse+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		tracker,
+		MCPProxyOpts{
+			Scanner:          sc,
+			ReceiptEmitter:   emitter,
+			V2ReceiptEmitter: v2,
+			Transport:        transportMCPStdio,
+			RequireReceipts:  true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+	if !strings.Contains(out.String(), "prompt injection detected") {
+		t.Fatalf("expected original block response to remain intact, got: %s", out.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	var replacement, original receipt.Receipt
+	for _, rcpt := range receipts {
+		switch {
+		case rcpt.ActionRecord.Verdict == config.ActionBlock &&
+			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
+			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed"):
+			replacement = rcpt
+		case rcpt.ActionRecord.Verdict == config.ActionBlock:
+			original = rcpt
+		}
+	}
+	if replacement.ActionRecord.ActionID == "" {
+		t.Fatalf("missing replacement block receipt in %d receipts", len(receipts))
+	}
+	// The original v1 block receipt persisted here (only the v2 emit failed), so
+	// the replacement marker must link to it via ParentActionID for audit chaining.
+	if original.ActionRecord.ActionID != "" &&
+		replacement.ActionRecord.ParentActionID != original.ActionRecord.ActionID {
+		t.Fatalf("replacement parent_action_id = %q, want original action_id %q",
+			replacement.ActionRecord.ParentActionID, original.ActionRecord.ActionID)
+	}
+}
+
 func TestForwardScanned_Notification(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	var out, log bytes.Buffer

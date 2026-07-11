@@ -332,6 +332,54 @@ func TestEmitRequiredReceipt_UnavailableEmitterRecordsMetric(t *testing.T) {
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="fetch"} 1`)
 }
 
+func TestEmitRequiredReceipt_V1FailureLogsReceiptChannelBrokenAuditGap(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	t.Cleanup(func() { logger.Close() })
+	m := metrics.New()
+	rph := newReceiptProxyHelperWithMetrics(t, m)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	err = p.emitRequiredReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: TransportFetch,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/required",
+		RequestID: "req-required-v1-failed",
+		Agent:     "agent",
+	})
+	if err == nil {
+		t.Fatal("emitRequiredReceipt error = nil, want v1 recorder failure")
+	}
+	logger.Close()
+	auditLog, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	for _, want := range []string{"event=receipt_channel_broken", "audit_gap=true", "phase=intent"} {
+		if !strings.Contains(string(auditLog), want) {
+			t.Fatalf("audit log %q missing %q", string(auditLog), want)
+		}
+	}
+	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="fetch"} 1`)
+}
+
 func TestReceiptEmissionError_OmitsRawTargetAndAgent(t *testing.T) {
 	t.Parallel()
 

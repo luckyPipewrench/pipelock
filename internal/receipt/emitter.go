@@ -102,6 +102,7 @@ type Emitter struct {
 	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
 	closeEmitted  bool      // true after session_close; prevents duplicate closes
 	closeErr      error     // sticky error for a written session_close whose durability confirmation failed
+	openErr       error     // sticky error for a written session_open whose durability confirmation failed
 	openNonce     string
 	heartbeatBeat uint64
 
@@ -663,6 +664,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		if openControl && e.receiptHashRecorded(receiptHash) {
 			e.sessionOpenEmitted = true
 			e.openNonce = sessionControl.Open.OpenNonce
+			if durable && errors.Is(recordErr, recorder.ErrDurability) {
+				e.openErr = emitErr
+			}
 		}
 		if closeControl && e.receiptHashRecorded(receiptHash) {
 			e.closeEmitted = true
@@ -743,6 +747,9 @@ func (e *Emitter) prepareSessionControlLocked(in *SessionControl) (*SessionContr
 		return cloneSessionControl(in), chainPrevHash, nil
 	}
 	if e.sessionOpenEmitted {
+		if e.openErr != nil {
+			return nil, "", e.openErr
+		}
 		e.recordFailure(FailReasonRecord)
 		return nil, "", ErrSessionOpenAlreadyEmitted
 	}

@@ -78,6 +78,169 @@ func TestNewManager_Defaults(t *testing.T) {
 	}
 }
 
+func TestReadRegularFileNoSymlinkReadsRegularFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("secure no-follow baseline reads fail closed on Windows; see the Windows-specific fail-closed test")
+	}
+	path := filepath.Join(t.TempDir(), "profile.json")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := readRegularFileNoSymlink(path, "baseline profile", 1024)
+	if err != nil {
+		t.Fatalf("readRegularFileNoSymlink: %v", err)
+	}
+	if string(got) != "profile" {
+		t.Fatalf("data = %q, want profile", got)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires privileges on some CI hosts")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "profile.json")
+	if err := os.WriteFile(target, []byte("profile"), 0o600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, err := readRegularFileNoSymlink(link, "baseline profile", 1024); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("readRegularFileNoSymlink symlink error = %v, want symlink rejection", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsSymlinkParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires privileges on some CI hosts")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o750); err != nil {
+		t.Fatalf("Mkdir realDir: %v", err)
+	}
+	path := filepath.Join(realDir, "profile.json")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatalf("WriteFile profile: %v", err)
+	}
+	linkDir := filepath.Join(root, "linked")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("Symlink parent: %v", err)
+	}
+	_, err := readRegularFileNoSymlinkInRoot(filepath.Join(linkDir, "profile.json"), root, "baseline profile", 1024)
+	if err == nil || !strings.Contains(err.Error(), "parent directory") || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("readRegularFileNoSymlink parent symlink error = %v, want parent symlink rejection", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkAllowsSymlinkedPrefixAboveTrustedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires privileges on some CI hosts")
+	}
+	dir := t.TempDir()
+	realPrefix := filepath.Join(dir, "real-prefix")
+	if err := os.Mkdir(realPrefix, 0o750); err != nil {
+		t.Fatalf("Mkdir realPrefix: %v", err)
+	}
+	trustedRoot := filepath.Join(realPrefix, "baseline")
+	if err := os.Mkdir(trustedRoot, 0o750); err != nil {
+		t.Fatalf("Mkdir trustedRoot: %v", err)
+	}
+	path := filepath.Join(trustedRoot, "profile.json")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatalf("WriteFile profile: %v", err)
+	}
+	prefixLink := filepath.Join(dir, "linked-prefix")
+	if err := os.Symlink(realPrefix, prefixLink); err != nil {
+		t.Fatalf("Symlink prefix: %v", err)
+	}
+
+	rootThroughPrefix := filepath.Join(prefixLink, "baseline")
+	got, err := readRegularFileNoSymlinkInRoot(filepath.Join(rootThroughPrefix, "profile.json"), rootThroughPrefix, "baseline profile", 1024)
+	if err != nil {
+		t.Fatalf("readRegularFileNoSymlinkInRoot through symlinked prefix: %v", err)
+	}
+	if string(got) != "profile" {
+		t.Fatalf("data = %q, want profile", got)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsSymlinkSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows lacks O_NOFOLLOW for a deterministic post-Lstat symlink swap rejection")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profile.json")
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatalf("WriteFile profile: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+	_, err := readRegularFileNoSymlinkWithOpenHook(path, "baseline profile", 1024, func() error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		return os.Symlink(target, path)
+	})
+	if err == nil {
+		t.Fatal("readRegularFileNoSymlinkWithOpenHook succeeded after symlink swap")
+	}
+	if !strings.Contains(err.Error(), "symlink raced into place") && !strings.Contains(err.Error(), "changed during read") {
+		t.Fatalf("swap error = %v, want symlink race or changed-file rejection", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsParentSymlinkSwapWithinTrustedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows lacks O_NOFOLLOW for a deterministic parent symlink swap rejection")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	profiles := filepath.Join(root, "profiles")
+	if err := os.Mkdir(profiles, 0o750); err != nil {
+		t.Fatalf("Mkdir profiles: %v", err)
+	}
+	path := filepath.Join(profiles, "profile.json")
+	if err := os.WriteFile(path, []byte("profile"), 0o600); err != nil {
+		t.Fatalf("WriteFile profile: %v", err)
+	}
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o750); err != nil {
+		t.Fatalf("Mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "profile.json"), []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("WriteFile outside profile: %v", err)
+	}
+
+	_, err := readRegularFileNoSymlinkInRootWithOpenHook(path, root, "baseline profile", 1024, func() error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		if err := os.Remove(profiles); err != nil {
+			return err
+		}
+		return os.Symlink(outside, profiles)
+	})
+	if err == nil {
+		t.Fatal("readRegularFileNoSymlinkInRootWithOpenHook succeeded after parent symlink swap")
+	}
+	if !strings.Contains(err.Error(), "symlink raced into place") && !strings.Contains(err.Error(), "parent directory") {
+		t.Fatalf("swap error = %v, want parent symlink race rejection", err)
+	}
+}
+
 func TestBaseline_InvalidDeviationActionRejected(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3671,4 +3834,127 @@ func TestBaseline_PersistIntegrityManifestProfileFaults(t *testing.T) {
 			t.Fatal("persistIntegrityManifest: want missing high-water generation error")
 		}
 	})
+}
+
+func TestReadRegularFileNoSymlinkRejectsPathEscapingTrustedRoot(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	outside := filepath.Join(dir, "outside.json")
+	if err := os.WriteFile(outside, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile outside: %v", err)
+	}
+	_, err := readRegularFileNoSymlinkInRoot(outside, root, "baseline profile", 1024)
+	if err == nil || !strings.Contains(err.Error(), "escapes trusted root") {
+		t.Fatalf("escape error = %v, want escapes trusted root", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsEmptyTrustedRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profile.json")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := readRegularFileNoSymlinkInRoot(path, "", "baseline profile", 1024)
+	if err == nil || !strings.Contains(err.Error(), "trusted root is empty") {
+		t.Fatalf("empty root error = %v, want trusted root is empty", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkBeforeOpenHookError(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	path := filepath.Join(root, "profile.json")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sentinel := errors.New("prepare failed")
+	_, err := readRegularFileNoSymlinkInRootWithOpenHook(path, root, "baseline profile", 1024, func() error { return sentinel })
+	if err == nil || !strings.Contains(err.Error(), "prepare open") {
+		t.Fatalf("beforeOpen error = %v, want prepare open", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsOversizeFile(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	path := filepath.Join(root, "profile.json")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := readRegularFileNoSymlinkInRoot(path, root, "baseline profile", 4)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("oversize error = %v, want exceeds maximum size", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsPostOpenFileSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("secure no-follow baseline reads fail closed on Windows")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	path := filepath.Join(root, "profile.json")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Pre-create a distinct file so the swap has a guaranteed-different inode
+	// (os.Remove + os.WriteFile can reuse the original inode on some
+	// filesystems, which would defeat the os.SameFile check and flake).
+	other := filepath.Join(root, "other-profile.json")
+	if err := os.WriteFile(other, []byte("swapped"), 0o600); err != nil {
+		t.Fatalf("WriteFile other: %v", err)
+	}
+	// The open hook fires after the pre-open Lstat but before the open, so
+	// renaming a different inode over the path makes the opened file a
+	// different inode and the post-open os.SameFile check must reject the read.
+	swap := func() error {
+		return os.Rename(other, path)
+	}
+	_, err := readRegularFileNoSymlinkInRootWithOpenHook(path, root, "baseline profile", 1024, swap)
+	if err == nil || !strings.Contains(err.Error(), "changed during read") {
+		t.Fatalf("post-open swap error = %v, want changed-during-read rejection", err)
+	}
+}
+
+func TestReadRegularFileNoSymlinkRejectsPostOpenGrowthPastLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("secure no-follow baseline reads fail closed on Windows")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir root: %v", err)
+	}
+	path := filepath.Join(root, "profile.json")
+	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Append past the limit in the open hook (same inode, so SameFile passes)
+	// to exercise the post-open size check.
+	grow := func() error {
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		_, err = f.Write([]byte("0123456789"))
+		return err
+	}
+	_, err := readRegularFileNoSymlinkInRootWithOpenHook(path, root, "baseline profile", 4, grow)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("post-open growth error = %v, want exceeds maximum size", err)
+	}
 }

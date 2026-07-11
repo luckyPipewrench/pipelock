@@ -254,7 +254,7 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseIntent
 	if err := e.EmitDurable(opts); err != nil {
-		ic.Proxy.logReceiptEmissionFailure(opts, err)
+		ic.Proxy.logReceiptChannelBroken(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
@@ -291,7 +291,7 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 		return
 	}
 	if err := e.Emit(opts); err != nil {
-		ic.Proxy.logReceiptEmissionFailure(opts, err)
+		ic.Proxy.logReceiptChannelBroken(opts, err)
 		return
 	}
 	if err := emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {

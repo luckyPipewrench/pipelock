@@ -935,7 +935,7 @@ func (m *Manager) integrityGenerationDigest(generation uint64, manifestHMAC stri
 
 func (m *Manager) loadIntegrityKey(create bool) ([]byte, error) {
 	path := filepath.Clean(m.cfg.IntegrityKeyPath)
-	data, err := readRegularFileNoSymlink(path, "baseline integrity key", integrityStateMaxSize)
+	data, err := readRegularFileNoSymlinkInRoot(path, filepath.Dir(path), "baseline integrity key", integrityStateMaxSize)
 	if err == nil {
 		key, decodeErr := hex.DecodeString(strings.TrimSpace(string(data)))
 		if decodeErr != nil {
@@ -965,7 +965,7 @@ func (m *Manager) loadIntegrityKey(create bool) ([]byte, error) {
 
 func (m *Manager) readIntegrityHighWater(key []byte) (uint64, string, bool, error) {
 	path := m.integrityHighWaterPath()
-	data, err := readRegularFileNoSymlink(path, "baseline integrity generation high-water", integrityStateMaxSize)
+	data, err := readRegularFileNoSymlinkInRoot(path, filepath.Dir(path), "baseline integrity generation high-water", integrityStateMaxSize)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, "", false, nil
@@ -1130,6 +1130,18 @@ func (m *Manager) integrityTrustedStateExists() (bool, error) {
 }
 
 func readRegularFileNoSymlink(path, label string, maxSize int64) ([]byte, error) {
+	return readRegularFileNoSymlinkInRootWithOpenHook(path, filepath.Dir(filepath.Clean(path)), label, maxSize, nil)
+}
+
+func readRegularFileNoSymlinkWithOpenHook(path, label string, maxSize int64, beforeOpen func() error) ([]byte, error) {
+	return readRegularFileNoSymlinkInRootWithOpenHook(path, filepath.Dir(filepath.Clean(path)), label, maxSize, beforeOpen)
+}
+
+func readRegularFileNoSymlinkInRoot(path, trustedRoot, label string, maxSize int64) ([]byte, error) {
+	return readRegularFileNoSymlinkInRootWithOpenHook(path, trustedRoot, label, maxSize, nil)
+}
+
+func readRegularFileNoSymlinkInRootWithOpenHook(path, trustedRoot, label string, maxSize int64, beforeOpen func() error) ([]byte, error) {
 	cleanPath := filepath.Clean(path)
 	info, err := os.Lstat(cleanPath)
 	if err != nil {
@@ -1144,11 +1156,103 @@ func readRegularFileNoSymlink(path, label string, maxSize int64) ([]byte, error)
 	if maxSize > 0 && info.Size() > maxSize {
 		return nil, fmt.Errorf("%s exceeds maximum size", label)
 	}
-	data, err := os.ReadFile(cleanPath)
+	canonicalRoot, relPath, err := trustedRootRelativePath(trustedRoot, cleanPath, label)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectSymlinkParents(canonicalRoot, relPath, label); err != nil {
+		return nil, err
+	}
+	if beforeOpen != nil {
+		if err := beforeOpen(); err != nil {
+			return nil, fmt.Errorf("prepare open %s: %w", label, err)
+		}
+	}
+	f, err := openRegularFileNoSymlinkBelowRoot(canonicalRoot, relPath, cleanPath)
+	if err != nil {
+		if errors.Is(err, errELOOP) {
+			return nil, fmt.Errorf("%s symlink raced into place", label)
+		}
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	defer func() { _ = f.Close() }()
+	after, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat opened %s: %w", label, err)
+	}
+	if !after.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", label)
+	}
+	if !os.SameFile(info, after) {
+		return nil, fmt.Errorf("%s changed during read; retry after quiescing writes", label)
+	}
+	if maxSize > 0 && after.Size() > maxSize {
+		return nil, fmt.Errorf("%s exceeds maximum size", label)
+	}
+	reader := io.Reader(f)
+	if maxSize > 0 {
+		reader = io.LimitReader(f, maxSize+1)
+	}
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", label, err)
 	}
+	if maxSize > 0 && int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("%s exceeds maximum size", label)
+	}
 	return data, nil
+}
+
+func trustedRootRelativePath(trustedRoot, cleanPath, label string) (string, string, error) {
+	if trustedRoot == "" {
+		return "", "", fmt.Errorf("%s trusted root is empty", label)
+	}
+	rootAbs, err := filepath.Abs(filepath.Clean(trustedRoot))
+	if err != nil {
+		return "", "", fmt.Errorf("resolve trusted root for %s: %w", label, err)
+	}
+	pathAbs, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve path for %s: %w", label, err)
+	}
+	relPath, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve relative path for %s: %w", label, err)
+	}
+	if relPath == "." || relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		return "", "", fmt.Errorf("%s path %q escapes trusted root %q", label, cleanPath, trustedRoot)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize trusted root for %s: %w", label, err)
+	}
+	return canonicalRoot, relPath, nil
+}
+
+func rejectSymlinkParents(canonicalRoot, relPath, label string) error {
+	if relPath == "." || relPath == "" {
+		return nil
+	}
+
+	current := canonicalRoot
+	parts := strings.Split(filepath.Clean(relPath), string(os.PathSeparator))
+	for _, part := range parts[:len(parts)-1] {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("stat parent directory for %s: %w", label, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s parent directory %q must not be a symlink", label, current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s parent path %q must be a directory", label, current)
+		}
+	}
+	return nil
 }
 
 func readExistingRegularFileForRestore(path, label string, maxSize int64) ([]byte, bool, error) {
@@ -1465,7 +1569,7 @@ func (m *Manager) persistIntegrityManifestLocked(exclude map[string]bool) error 
 			return fmt.Errorf("refusing to manifest baseline profile: %w", err)
 		}
 		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
-		data, err := readRegularFileNoSymlink(path, "baseline profile", baselineProfileMaxSize)
+		data, err := readRegularFileNoSymlinkInRoot(path, m.cfg.ProfileDir, "baseline profile", baselineProfileMaxSize)
 		if err != nil {
 			return m.logIntegrityPersistenceFailure("profile_read_failed", fmt.Errorf("reading profile %q for integrity manifest: %w", agentKey, err), "agent_key", agentKey)
 		}
@@ -1572,7 +1676,7 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 func (m *Manager) verifyPersistedProfileIntegrity(agentKey string) error {
 	const wantState = StateRatify
 
-	manifestData, err := readRegularFileNoSymlink(m.integrityManifestPath(), "baseline integrity manifest", baselineProfileMaxSize)
+	manifestData, err := readRegularFileNoSymlinkInRoot(m.integrityManifestPath(), m.cfg.ProfileDir, "baseline integrity manifest", baselineProfileMaxSize)
 	if err != nil {
 		return fmt.Errorf("reading baseline integrity manifest: %w", err)
 	}
@@ -1592,7 +1696,7 @@ func (m *Manager) verifyPersistedProfileIntegrity(agentKey string) error {
 			return fmt.Errorf("baseline integrity manifest entry for agent %q has state %q, want %q", agentKey, expected.State, wantState)
 		}
 		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
-		data, err := readRegularFileNoSymlink(path, "pending baseline profile", baselineProfileMaxSize)
+		data, err := readRegularFileNoSymlinkInRoot(path, m.cfg.ProfileDir, "pending baseline profile", baselineProfileMaxSize)
 		if err != nil {
 			return fmt.Errorf("reading pending baseline profile %q required by integrity manifest: %w", agentKey, err)
 		}
@@ -1633,7 +1737,7 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 		hasProfileFiles = true
 	}
 
-	manifestData, err := readRegularFileNoSymlink(m.integrityManifestPath(), "baseline integrity manifest", baselineProfileMaxSize)
+	manifestData, err := readRegularFileNoSymlinkInRoot(m.integrityManifestPath(), m.cfg.ProfileDir, "baseline integrity manifest", baselineProfileMaxSize)
 	if errors.Is(err, os.ErrNotExist) {
 		if hasProfileFiles {
 			err := fmt.Errorf("baseline integrity manifest missing while persisted profiles exist under enforcing deviation_action %q", m.cfg.DeviationAction)
@@ -1681,7 +1785,7 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 		}
 
 		path := filepath.Join(m.cfg.ProfileDir, expected.AgentKey+profileFileExt)
-		data, err := readRegularFileNoSymlink(path, "integrity-bound baseline profile", baselineProfileMaxSize)
+		data, err := readRegularFileNoSymlinkInRoot(path, m.cfg.ProfileDir, "integrity-bound baseline profile", baselineProfileMaxSize)
 		if err != nil {
 			err := fmt.Errorf("reading integrity-bound baseline profile %q required by integrity manifest: %w", expected.AgentKey, err)
 			return nil, m.logIntegrityVerificationFailure("profile_read_failed", err, "agent_key", expected.AgentKey, "generation", manifest.Generation)
@@ -1751,7 +1855,7 @@ func (m *Manager) loadProfiles() error {
 			profile = verifiedProfile
 		} else {
 			path := filepath.Join(m.cfg.ProfileDir, entry.Name())
-			data, err := readRegularFileNoSymlink(path, "persisted baseline profile", baselineProfileMaxSize)
+			data, err := readRegularFileNoSymlinkInRoot(path, m.cfg.ProfileDir, "persisted baseline profile", baselineProfileMaxSize)
 			if err != nil {
 				// A persisted profile that exists but cannot be read may be a
 				// locked, enforcing profile. Under an enforcing action we cannot

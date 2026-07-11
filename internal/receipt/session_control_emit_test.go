@@ -108,6 +108,13 @@ func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 		t.Fatalf("DurabilityBlocks = %d, want 1 after gated session_open", e.DurabilityBlocks())
 	}
 	rec.SetSyncForTest(nil)
+	retryErr := e.EmitSessionOpen()
+	if !errors.Is(retryErr, recorder.ErrDurability) {
+		t.Fatalf("retry EmitSessionOpen error = %v, want sticky ErrDurability", retryErr)
+	}
+	if !errors.Is(retryErr, syncErr) {
+		t.Fatalf("retry EmitSessionOpen error = %v, want original sync error", retryErr)
+	}
 
 	// The bytes still reached disk (fsync failed, not the write), so the chain
 	// opens correctly and a heartbeat can snapshot it.

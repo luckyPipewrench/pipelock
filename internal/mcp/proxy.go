@@ -680,10 +680,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		originalReceiptPersisted := emitErr != nil && errors.Is(emitErr, errMCPV2ReceiptEmit)
 		if emitErr != nil {
 			logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), effectiveAction)
-			if opts.requireReceipts() && effectiveAction != config.ActionBlock {
-				outbound = blockResponseReason(verdict.ID, "receipt emission failed")
-				effectiveAction = config.ActionBlock
-				writeContext = "writing block response"
+			if opts.requireReceipts() {
+				if effectiveAction != config.ActionBlock {
+					outbound = blockResponseReason(verdict.ID, "receipt emission failed")
+					effectiveAction = config.ActionBlock
+					writeContext = "writing block response"
+				}
 				replacementOpts := opts.withReceiptPolicyHash(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,

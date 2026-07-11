@@ -384,6 +384,16 @@ func logBlockReceiptAuditGap(logW io.Writer, err error) {
 	_, _ = fmt.Fprintf(logW, "pipelock: warning event=block_receipt_emit_failed audit_gap=true %v\n", err)
 }
 
+// logHoldFailureReceiptGap records the audit gap when a hold-failure resolution
+// receipt cannot be emitted. The denial itself stays fail-closed; this makes a
+// journaled resolution without its receipt detectable across both transports.
+func logHoldFailureReceiptGap(logW io.Writer, deferID string, err error) {
+	if logW == nil || err == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: warning event=hold_failure_receipt_emit_failed audit_gap=true defer_id=%s: %v\n", deferID, err)
+}
+
 // pickAttribution derives the receipt Layer / Pattern / Severity for a
 // block verdict, based on which gate inside MCPInputEvaluation fired.
 //

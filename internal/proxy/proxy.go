@@ -1038,7 +1038,7 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseIntent
 	if err := e.EmitDurable(opts); err != nil {
-		p.logReceiptEmissionFailure(opts, err)
+		p.logReceiptChannelBroken(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record, so a
 		// proxy_decision never outlives its action_receipt sibling.
 		return err
@@ -1086,7 +1086,7 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 		return
 	}
 	if err := e.Emit(opts); err != nil {
-		p.logReceiptEmissionFailure(opts, err)
+		p.logReceiptChannelBroken(opts, err)
 		return
 	}
 	if err := p.emitV2Receipt(opts); err != nil {
@@ -1168,10 +1168,33 @@ func (p *Proxy) logReceiptEmissionFailure(opts receipt.EmitOpts, err error) {
 	p.logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, err))
 }
 
+// logReceiptChannelBrokenTo records the out-of-band receipt-channel-broken audit
+// marker. Shared by the forward Proxy and the ReverseProxyHandler so the
+// security-significant marker format cannot drift between them.
+func logReceiptChannelBrokenTo(logger *audit.Logger, opts receipt.EmitOpts, err error) {
+	if logger == nil || err == nil {
+		return
+	}
+	logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptChannelBrokenError(opts, err))
+}
+
+func (p *Proxy) logReceiptChannelBroken(opts receipt.EmitOpts, err error) {
+	if p == nil {
+		return
+	}
+	logReceiptChannelBrokenTo(p.logger, opts, err)
+}
+
 func receiptEmissionError(opts receipt.EmitOpts, err error) error {
 	return fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s: %w",
 		opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
 		opts.Transport, opts.Method, err)
+}
+
+func receiptChannelBrokenError(opts receipt.EmitOpts, err error) error {
+	return fmt.Errorf("event=receipt_channel_broken audit_gap=true action_id=%s verdict=%s phase=%s layer=%s pattern=%q transport=%s method=%s: %w",
+		opts.ActionID, opts.Verdict, opts.DecisionPhase, opts.Layer,
+		opts.Pattern, opts.Transport, opts.Method, err)
 }
 
 // receiptEmitterStage is the staged result of a receipt-emitter reload.

@@ -92,6 +92,12 @@ func LoadFile(path string) (receipt.PostureBinding, error) {
 	if err := posture.VerifyAt(&capsule, ed25519.PublicKey(pub), time.Now().UTC()); err != nil {
 		return receipt.PostureBinding{}, fmt.Errorf("verify posture proof: %w", err)
 	}
+	// CapsuleSHA256 binds the canonical posture capsule, not the raw proof.json
+	// bytes. That matches contain-run proofs and verifier-side canonical capsule
+	// hashing: insignificant JSON whitespace/key-order differences in a
+	// hand-written proof file do not change the signed receipt binding. Operators
+	// comparing the receipt field directly to sha256sum(proof.json) must
+	// canonicalize the file first.
 	canonical, err := json.Marshal(&capsule)
 	if err != nil {
 		return receipt.PostureBinding{}, fmt.Errorf("marshal posture proof: %w", err)

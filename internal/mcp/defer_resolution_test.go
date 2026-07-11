@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -173,4 +174,63 @@ func TestEmitDeferredResolutionReceiptBlockFailureLogsAuditGap(t *testing.T) {
 	if !strings.Contains(log.String(), "audit_gap=true") {
 		t.Fatalf("missing audit_gap marker in log: %s", log.String())
 	}
+}
+
+func TestEmitHoldFailureResolutionSurfacesReceiptEmitError(t *testing.T) {
+	emitter, rec, _ := newTestReceiptEmitter(t)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	opts := MCPProxyOpts{
+		ReceiptEmitter:  emitter,
+		RequireReceipts: true,
+		Transport:       deferred.SurfaceMCPStdio,
+	}
+	var log bytes.Buffer
+	msg, err := emitHoldFailureResolution(opts, &log, deferred.ErrCapacity, holdFailureResolution{
+		DeferID: "capacity-defer",
+		Authority: deferred.AuthoritySnapshot{
+			SessionID:         "session-a",
+			SessionIDOriginal: "session-a",
+		},
+		Policy: deferred.ResolutionPolicy{
+			Timeout:              2 * time.Second,
+			MaxPending:           1,
+			MaxPendingPerSession: 1,
+			MaxPendingBytes:      8,
+			MaxCascadeDepth:      2,
+		},
+		Target: "neutral_tool",
+		Method: "tools/call",
+		Reason: "capacity",
+	})
+	if msg != "pipelock: defer capacity exceeded" {
+		t.Fatalf("message = %q, want capacity exceeded", msg)
+	}
+	if err == nil {
+		t.Fatal("emitHoldFailureResolution error = nil, want receipt emission failure")
+	}
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("emitHoldFailureResolution error = %v, want ErrReceiptRequired", err)
+	}
+	if !strings.Contains(log.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("log = %q, want block_receipt_emit_failed", log.String())
+	}
+}
+
+func TestLogHoldFailureReceiptGap(t *testing.T) {
+	var log bytes.Buffer
+	logHoldFailureReceiptGap(&log, "defer-xyz", errors.New("emit boom"))
+	got := log.String()
+	for _, want := range []string{"audit_gap=true", "defer_id=defer-xyz", "emit boom"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log = %q, want %q", got, want)
+		}
+	}
+	log.Reset()
+	logHoldFailureReceiptGap(&log, "defer-xyz", nil)
+	if log.String() != "" {
+		t.Fatalf("expected no log on nil error, got %q", log.String())
+	}
+	logHoldFailureReceiptGap(nil, "defer-xyz", errors.New("x")) // must not panic on nil writer
 }

@@ -44,6 +44,60 @@ const (
 	// nouns like "message" remain clean false-positive fixes.
 	MarkdownLinkCredentialValueExfilRegex = `(?is)\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:the\s+)?values?\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 
+	// markdownLinkCredentialCollectVerbAlt anchors the collection half of
+	// MarkdownLinkCredentialFollowExfilRegex: an instruction to gather up a
+	// credential, distinct from the transmit verbs above.
+	markdownLinkCredentialCollectVerbAlt = `collect|gather|grab|copy`
+	// markdownLinkCredentialFollowCollectedMaterial keeps the indirect
+	// follow-link pattern scoped to suspicious collection phrases: sweeping
+	// "any/all" credential collection, credentials from this session, or
+	// session secrets. Plain setup docs usually say "your API token from the
+	// console" or "the recovery token", which stays outside this fragment.
+	markdownLinkCredentialFollowCollectedMaterial = `(?:(?:any|all)\b(?:[^\n.!?]|\.\S){0,40}\b(?:` + markdownLinkCredentialExfilNounAlt + `)|(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\bfrom\s+this\s+session|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?)`
+	// markdownLinkCredentialFollowVerbAlt anchors the second, INDIRECT half:
+	// an instruction to open/follow a link rather than to transmit the
+	// credential to it. The credential is never named as the object of this
+	// verb - the link itself is the exfiltration channel.
+	markdownLinkCredentialFollowVerbAlt = `open|follow|visit|go\s+to|navigate\s+to`
+	// markdownLinkCredentialFollowCueAlt requires the link-follow to be
+	// framed as an objectless hand-over cue (sync/upload/send), not an
+	// ordinary setup/doc noun phrase like "continue setup" or "sync your
+	// devices". "continue" is deliberately not a cue here: benign setup docs
+	// naturally say "open this link to continue: [finish setup](...)".
+	markdownLinkCredentialFollowCueAlt = `sync|upload|send`
+
+	// MarkdownLinkCredentialFollowExfilRegex detects an INDIRECT markdown-link
+	// exfiltration shape that MarkdownLinkCredentialExfilRegex above does not
+	// cover: the credential is never the object of a transmit verb (send,
+	// upload, submit, ...) at all. Instead the response separately instructs
+	// the reader to (1) collect/gather/grab/copy scoped credential material
+	// ("any/all" credentials, credentials from this session, or session
+	// secrets), then (2) open/follow/visit/go-to/navigate-to a link, with
+	// the link-follow framed as a sync/upload/send hand-over. The link itself
+	// is the exfiltration channel (for example the collected value riding in
+	// a query parameter), so no "send it to the link" phrasing is required.
+	//
+	// The literal "link" noun anchor after the follow verb is what keeps
+	// this narrow: ordinary setup docs name what they are opening ("open
+	// the docs", "open the setup guide", "open the dashboard"), they do not
+	// say "open this link" bare, and requiring a sync/upload/send
+	// cue further ensures the link-follow reads as completing a hand-over
+	// rather than reading more documentation. The cue must be the whole
+	// phrase before the markdown link ("to sync: [continue](...)"), not a
+	// benign object phrase ("to sync your devices") or generic onboarding
+	// language ("to continue: [finish setup](...)"). Benign prose like
+	// "gather the API keys you need from the console, then open the docs
+	// [...](...) for setup" or "copy the token into your .env, then open the
+	// guide [...](...)" stays clean because neither names "link" as the
+	// object of the follow verb. Every gap uses the same clause-aware
+	// character class ([^\n.!?] or \.\S for abbreviations) as the sibling
+	// markdown-link patterns above, so a two-clause sentence split by a
+	// period does not bridge into a false match.
+	// Deliberately has NO redaction-class mirror: like
+	// MarkdownLinkCredentialExfilRegex above, this matches a whole
+	// collect-then-follow instruction, not a bare credential-secret shape.
+	MarkdownLinkCredentialFollowExfilRegex = `(?is)\b(?:` + markdownLinkCredentialCollectVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialFollowCollectedMaterial + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialFollowVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,15}?\blink\b(?:[^\n.!?]|\.\S){0,20}?\bto\s+(?:` + markdownLinkCredentialFollowCueAlt + `)\b\s*[:,-]?\s*(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+
 	// MarkdownLinkCredentialExfilRegex detects injected instructions that pair
 	// credential transfer with an exfiltration-destination cue anchored directly
 	// to an external markdown, angle, or reference-style link. The branches cover:
@@ -321,6 +375,7 @@ func Defaults() *Config {
 				{Name: "Credential Solicitation", Regex: CredentialSolicitationRegex},
 				{Name: "Markdown Link Credential Exfiltration", Regex: MarkdownLinkCredentialExfilRegex},
 				{Name: "Markdown Link Credential Value Exfiltration", Regex: MarkdownLinkCredentialValueExfilRegex},
+				{Name: "Markdown Link Credential Follow Exfiltration", Regex: MarkdownLinkCredentialFollowExfilRegex},
 				{Name: "Credential Path Directive", Regex: CredentialPathDirectiveRegex},
 				{Name: "Auth Material Requirement", Regex: AuthMaterialRequirementRegex},
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`},

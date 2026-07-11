@@ -280,7 +280,14 @@ const (
 	// narrow Markdown Link Credential Value Exfiltration sibling for
 	// "copy credential, then submit the value to [link]" without changing the
 	// preset YAML regex bytes.
-	goldenHashDefaults = "fb4bf54d3df636718c2d5cf0a6f88909a6642ec0de1f60aec25d64ce72b08873"
+	// Re-bumped to close an indirect markdown-link exfiltration gap: the
+	// default/core floor adds a new "Markdown Link Credential Follow
+	// Exfiltration" sibling pattern for "collect credential, then
+	// open/follow/visit this link to sync/upload/send: [...](...)",
+	// a shape the existing transmit-verb-anchored patterns above do not
+	// cover because the link is never the direct object of a send/upload/
+	// submit verb. See TestCore_MarkdownLinkCredentialFollowExfiltrationIntentAnchor.
+	goldenHashDefaults = "7a7dd1b8c55488dd13d62a7c346e985bbac6fa37396e6627837274b9937c9781"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -414,7 +421,11 @@ const (
 	// Material Requirement precision fixes: see goldenHashDefaults note above;
 	// the rich fixture inherits the default response-scanning pattern set, so
 	// the hash shifts in lockstep.
-	goldenHashRichConfig = "42230ece1769335a5d418cfa42b860e55b7b1be5b0f17daa8f5b08a42507e76f"
+	// Re-bumped for the new Markdown Link Credential Follow Exfiltration
+	// sibling pattern: see goldenHashDefaults note above; the rich fixture
+	// inherits the default response-scanning pattern set, so the hash
+	// shifts in lockstep.
+	goldenHashRichConfig = "293a83a53d2c2ff736761c5949a162c5f43938408aeb8466f25e8a3e2d37dd3d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -285,6 +285,25 @@ type dashboardHandler struct {
 
 type rawAllowedContextKey struct{}
 
+type authAuditInfoContextKey struct{}
+
+// AuthAuditInfo is the bounded identity metadata appended to dashboard access
+// logs. Callers must pass only sanitized values, never bearer tokens or raw
+// claims.
+type AuthAuditInfo struct {
+	Method        string
+	Subject       string
+	Roles         []string
+	FailureReason string
+}
+
+// WithAuthAuditInfo attaches dashboard authentication metadata to a request
+// context for access logging.
+func WithAuthAuditInfo(ctx context.Context, info AuthAuditInfo) context.Context {
+	info.Roles = append([]string(nil), info.Roles...)
+	return context.WithValue(ctx, authAuditInfoContextKey{}, info)
+}
+
 // rawAllowed reports whether this request may see the raw view (destinations
 // and full signed payloads). Fail closed: raw is shown only when an authorizer
 // is configured and accepts the request.
@@ -303,9 +322,23 @@ func rawAllowedFromContext(r *http.Request) bool {
 	return raw
 }
 
+func authAuditInfoFromRequest(r *http.Request) AuthAuditInfo {
+	info, _ := r.Context().Value(authAuditInfoContextKey{}).(AuthAuditInfo)
+	info.Method = auditLogValue(info.Method)
+	info.Subject = auditLogValue(info.Subject)
+	if len(info.Roles) == 0 {
+		info.Roles = []string{"-"}
+	}
+	for i, role := range info.Roles {
+		info.Roles[i] = auditLogValue(role)
+	}
+	info.FailureReason = auditLogValue(info.FailureReason)
+	return info
+}
+
 // recordAudit writes one access-log line for an authenticated request. Viewing
 // evidence is itself an audited action. No-op when no writer is configured.
-func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
+func (d *dashboardHandler) recordAudit(r *http.Request, raw bool, permission Permission) {
 	if d.auditWriter == nil {
 		return
 	}
@@ -328,12 +361,13 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
 		session = "-"
 	}
 	sessionDisplay, sessionHash := auditSessionField(session)
+	auth := authAuditInfoFromRequest(r)
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()
-	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q session_sha256=%s org_sha256=%s fleet_sha256=%s artifact_sha256=%s remote=%s\n",
-		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, sessionDisplay, sessionHash,
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s permission=%q method=%s path=%q session=%q session_sha256=%s org_sha256=%s fleet_sha256=%s artifact_sha256=%s auth_method=%s auth_subject=%q auth_roles=%q remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), role, permission, r.Method, r.URL.Path, sessionDisplay, sessionHash,
 		auditHashField(r.URL.Query().Get("org_id")), auditHashField(r.URL.Query().Get("fleet_id")),
-		auditHashField(r.URL.Query().Get("artifact_hash")), r.RemoteAddr)
+		auditHashField(r.URL.Query().Get("artifact_hash")), auth.Method, auth.Subject, strings.Join(auth.Roles, ","), r.RemoteAddr)
 }
 
 func auditSessionField(session string) (display, hash string) {
@@ -370,6 +404,25 @@ func auditHashField(value string) string {
 	}
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func auditLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 0x20 && r <= 0x7e {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('?')
+	}
+	if b.Len() == 0 {
+		return "-"
+	}
+	return b.String()
 }
 
 func (d *dashboardHandler) recordDecisionScopeAudit(r *http.Request, raw bool, scope DecisionScope, page any) {
@@ -460,7 +513,7 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 			}
 		}
 		raw := d.rawAllowed(r)
-		d.recordAudit(r, raw)
+		d.recordAudit(r, raw, spec.permission)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), rawAllowedContextKey{}, raw)))
 	})
 }

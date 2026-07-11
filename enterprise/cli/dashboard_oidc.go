@@ -300,14 +300,16 @@ func requireJSONEOF(decoder *json.Decoder) error {
 }
 
 type dashboardJWKSCache struct {
-	mu        sync.Mutex
-	uri       string
-	client    *http.Client
-	now       func() time.Time
-	ttl       time.Duration
-	keys      map[string]*rsa.PublicKey
-	expiresAt time.Time
-	lastMiss  time.Time
+	mu         sync.Mutex
+	uri        string
+	client     *http.Client
+	now        func() time.Time
+	ttl        time.Duration
+	keys       map[string]*rsa.PublicKey
+	expiresAt  time.Time
+	lastMiss   time.Time
+	refreshCh  chan struct{}
+	refreshErr error
 }
 
 type dashboardJWKS struct {
@@ -326,26 +328,32 @@ type dashboardJWK struct {
 
 func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.PublicKey, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.keys == nil || !c.now().Before(c.expiresAt) {
-		if err := c.refreshLocked(ctx); err != nil {
+		c.mu.Unlock()
+		if err := c.refresh(ctx); err != nil {
 			return nil, err
 		}
+		c.mu.Lock()
 	}
 	if key := c.keys[keyID]; key != nil {
+		c.mu.Unlock()
 		return key, nil
 	}
 	// An unknown kid commonly means the provider rotated keys before this
 	// cache entry expired. Refresh at a bounded rate; attacker-chosen kids must
 	// not turn the dashboard into a JWKS request amplifier.
 	if !c.lastMiss.IsZero() && c.now().Before(c.lastMiss.Add(dashboardOIDCMinKeyRefresh)) {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("OIDC signing key %q not found", keyID)
 	}
 	c.lastMiss = c.now()
-	if err := c.refreshLocked(ctx); err != nil {
+	c.mu.Unlock()
+	if err := c.refresh(ctx); err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
 	key := c.keys[keyID]
+	c.mu.Unlock()
 	if key == nil {
 		return nil, fmt.Errorf("OIDC signing key %q not found", keyID)
 	}
@@ -354,11 +362,34 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 
 func (c *dashboardJWKSCache) refresh(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.refreshLocked(ctx)
+	if c.refreshCh != nil {
+		refreshCh := c.refreshCh
+		c.mu.Unlock()
+		select {
+		case <-refreshCh:
+			c.mu.Lock()
+			err := c.refreshErr
+			c.mu.Unlock()
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	refreshCh := make(chan struct{})
+	c.refreshCh = refreshCh
+	c.mu.Unlock()
+
+	err := c.fetchAndStore(ctx)
+
+	c.mu.Lock()
+	c.refreshErr = err
+	close(refreshCh)
+	c.refreshCh = nil
+	c.mu.Unlock()
+	return err
 }
 
-func (c *dashboardJWKSCache) refreshLocked(ctx context.Context) error {
+func (c *dashboardJWKSCache) fetchAndStore(ctx context.Context) error {
 	var set dashboardJWKS
 	if err := fetchDashboardOIDCJSON(ctx, c.client, c.uri, &set); err != nil {
 		return err
@@ -380,6 +411,8 @@ func (c *dashboardJWKSCache) refreshLocked(ctx context.Context) error {
 	if len(keys) == 0 {
 		return errors.New("OIDC JWKS contains no usable RS256 signing keys")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.keys = keys
 	c.expiresAt = c.now().Add(c.ttl)
 	return nil
@@ -643,9 +676,16 @@ func containsString(values []string, want string) bool {
 
 type dashboardOIDCPrincipalContextKey struct{}
 
+type dashboardOIDCFailureContextKey struct{}
+
 func dashboardOIDCPrincipalFromRequest(r *http.Request) *dashboardOIDCPrincipal {
 	principal, _ := r.Context().Value(dashboardOIDCPrincipalContextKey{}).(*dashboardOIDCPrincipal)
 	return principal
+}
+
+func dashboardOIDCFailureReasonFromRequest(r *http.Request) string {
+	reason, _ := r.Context().Value(dashboardOIDCFailureContextKey{}).(string)
+	return reason
 }
 
 func (a *dashboardOIDCAuthenticator) middleware(next http.Handler) http.Handler {
@@ -654,9 +694,36 @@ func (a *dashboardOIDCAuthenticator) middleware(next http.Handler) http.Handler 
 		if err == nil {
 			ctx := context.WithValue(r.Context(), dashboardOIDCPrincipalContextKey{}, principal)
 			r = r.WithContext(ctx)
+		} else if dashboardBearerAttempted(r) {
+			ctx := context.WithValue(r.Context(), dashboardOIDCFailureContextKey{}, dashboardOIDCFailureCategory(err))
+			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func dashboardBearerAttempted(r *http.Request) bool {
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	return len(parts) > 0 && strings.EqualFold(parts[0], "Bearer")
+}
+
+func dashboardOIDCFailureCategory(err error) string {
+	if err == nil {
+		return "-"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "missing"):
+		return "missing_token"
+	case strings.Contains(msg, "signature"):
+		return "invalid_signature"
+	case strings.Contains(msg, "expired"):
+		return "expired"
+	case strings.Contains(msg, "role claim has no mapped value"):
+		return "permission_denied"
+	default:
+		return "invalid_token"
+	}
 }
 
 type dashboardRequestAuthorization struct {
@@ -675,26 +742,30 @@ func newDashboardRequestAuthorization(metadataToken, rawToken, complianceToken s
 		oidc:            oidc,
 		legacy: dashboardAuthorizePermissionFunc(
 			func(req *http.Request) bool {
-				return dashboardTokenMatches(req, metadataToken) || dashboardTokenMatches(req, rawToken)
+				return dashboardConfiguredTokenMatches(req, metadataToken) || dashboardConfiguredTokenMatches(req, rawToken)
 			},
-			func(req *http.Request) bool { return dashboardTokenMatches(req, rawToken) },
+			func(req *http.Request) bool { return dashboardConfiguredTokenMatches(req, rawToken) },
 			func(req *http.Request) bool {
-				return complianceToken != "" && dashboardTokenMatches(req, complianceToken)
+				return dashboardConfiguredTokenMatches(req, complianceToken)
 			},
 		),
 	}
 }
 
+func dashboardConfiguredTokenMatches(r *http.Request, token string) bool {
+	return token != "" && dashboardTokenMatches(r, token)
+}
+
 func (a *dashboardRequestAuthorization) metaAuthorized(r *http.Request) bool {
-	return dashboardTokenMatches(r, a.metadataToken) ||
-		dashboardTokenMatches(r, a.rawToken) ||
+	return dashboardConfiguredTokenMatches(r, a.metadataToken) ||
+		dashboardConfiguredTokenMatches(r, a.rawToken) ||
 		dashboardOIDCPrincipalFromRequest(r) != nil
 }
 
 // complianceAuthorized recognizes the optional auditor token, which is scoped to
 // the compliance path by authenticated/dashboardGlobalAuthorized.
 func (a *dashboardRequestAuthorization) complianceAuthorized(r *http.Request) bool {
-	return a.complianceToken != "" && dashboardTokenMatches(r, a.complianceToken)
+	return dashboardConfiguredTokenMatches(r, a.complianceToken)
 }
 
 // authenticated is the global gate: any operator/OIDC identity, or the
@@ -707,7 +778,7 @@ func (a *dashboardRequestAuthorization) authenticated(r *http.Request) bool {
 }
 
 func (a *dashboardRequestAuthorization) rawAuthorized(r *http.Request) bool {
-	return dashboardTokenMatches(r, a.rawToken) ||
+	return dashboardConfiguredTokenMatches(r, a.rawToken) ||
 		dashboardOIDCPrincipalFromRequest(r).hasPermission(dashboard.PermissionRawRead)
 }
 
@@ -721,8 +792,26 @@ func (a *dashboardRequestAuthorization) authorizePermission(r *http.Request, per
 	return fmt.Errorf("dashboard permission %q denied", permission)
 }
 
-func (a *dashboardRequestAuthorization) wrap(next http.Handler) http.Handler {
-	handler := dashboardAuthHandler(a.authenticated, next)
+func (a *dashboardRequestAuthorization) authAuditInfo(r *http.Request) dashboard.AuthAuditInfo {
+	if principal := dashboardOIDCPrincipalFromRequest(r); principal != nil {
+		return dashboard.AuthAuditInfo{Method: "oidc", Subject: principal.Subject, Roles: principal.Roles}
+	}
+	switch {
+	case dashboardConfiguredTokenMatches(r, a.rawToken):
+		return dashboard.AuthAuditInfo{Method: "static-raw-token"}
+	case dashboardConfiguredTokenMatches(r, a.metadataToken):
+		return dashboard.AuthAuditInfo{Method: "static-metadata-token"}
+	case dashboardConfiguredTokenMatches(r, a.complianceToken):
+		return dashboard.AuthAuditInfo{Method: "static-compliance-token"}
+	case dashboardOIDCFailureReasonFromRequest(r) != "":
+		return dashboard.AuthAuditInfo{Method: "oidc", FailureReason: dashboardOIDCFailureReasonFromRequest(r)}
+	default:
+		return dashboard.AuthAuditInfo{Method: "none", FailureReason: "missing_token"}
+	}
+}
+
+func (a *dashboardRequestAuthorization) wrap(next http.Handler, auditWriter io.Writer) http.Handler {
+	handler := dashboardAuthHandler(a.authenticated, a.authAuditInfo, auditWriter, next)
 	if a.oidc != nil {
 		return a.oidc.middleware(handler)
 	}

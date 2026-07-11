@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ const (
 type oidcTestProvider struct {
 	server    *httptest.Server
 	private   *rsa.PrivateKey
+	jwksDelay time.Duration
 	jwksReads atomic.Int32
 }
 
@@ -49,6 +51,9 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 				p.server.URL, p.server.URL+"/jwks", p.server.URL+"/authorize")
 		case "/jwks":
 			p.jwksReads.Add(1)
+			if p.jwksDelay > 0 {
+				time.Sleep(p.jwksDelay)
+			}
 			w.Header().Set("Cache-Control", "max-age=3600")
 			n := base64.RawURLEncoding.EncodeToString(private.N.Bytes())
 			e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(private.PublicKey.E)).Bytes())
@@ -367,7 +372,7 @@ func TestDashboardOIDC_RoutePermissionsOnly(t *testing.T) {
 		AuthorizePermission: authorization.authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(authorization.rawAuthorized),
 	})
-	handler := authorization.wrap(inner)
+	handler := authorization.wrap(inner, nil)
 	token := p.token(t, p.validClaims(now))
 
 	tests := []struct {
@@ -396,10 +401,10 @@ func TestDashboardOIDC_OIDCOnlyModeRejectsEmptyCredentials(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	// OIDC-only deployment: both static operator tokens are empty. Every token
-	// comparison routes through dashboardTokenMatches, which fails closed on an
-	// empty configured token, so a missing, empty, or malformed credential must
-	// never authorize; only a verified OIDC bearer may.
+	// OIDC-only deployment: all static operator tokens are empty, so every
+	// optional-token match must fail at the call site before comparing request
+	// credentials. Missing, empty, or malformed credentials must never
+	// authorize; only a verified OIDC bearer may.
 	authorization := newDashboardRequestAuthorization("", "", "", auth)
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),
@@ -408,7 +413,7 @@ func TestDashboardOIDC_OIDCOnlyModeRejectsEmptyCredentials(t *testing.T) {
 		AuthorizePermission: authorization.authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(authorization.rawAuthorized),
 	})
-	handler := authorization.wrap(inner)
+	handler := authorization.wrap(inner, nil)
 
 	newReq := func(mutate func(*http.Request)) *http.Request {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/", nil)
@@ -442,6 +447,60 @@ func TestDashboardOIDC_OIDCOnlyModeRejectsEmptyCredentials(t *testing.T) {
 	}
 }
 
+func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	authorization := newDashboardRequestAuthorization("", "", "", auth)
+	var audit strings.Builder
+	inner := dashboard.New(dashboard.Options{
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          func(string) bool { return true },
+		Authorize:           dashboardAuthorizeFunc(authorization.metaAuthorized),
+		AuthorizePermission: authorization.authorizePermission,
+		AuthorizeRaw:        dashboardAuthorizeFunc(authorization.rawAuthorized),
+		AuditWriter:         &audit,
+	})
+	handler := authorization.wrap(inner, &audit)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, requestWithBearer(t, p.token(t, p.validClaims(now))))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid OIDC request status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	log := audit.String()
+	for _, want := range []string{
+		"pipelock-dashboard access",
+		"permission=\"dashboard:evidence:read\"",
+		"auth_method=oidc",
+		"auth_subject=\"operator-a\"",
+		"auth_roles=\"evidence-reader\"",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("audit log missing %q: %s", want, log)
+		}
+	}
+	if strings.Contains(log, p.token(t, p.validClaims(now))) {
+		t.Fatalf("audit log leaked bearer token: %s", log)
+	}
+
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, requestWithBearer(t, "not-a-jwt"))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("malformed OIDC request status = %d, want 401", rr.Code)
+	}
+	log = audit.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"auth_method=oidc",
+		"reason=invalid_token",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("denied audit log missing %q: %s", want, log)
+		}
+	}
+}
+
 func TestDashboardOIDC_RawPermission(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
@@ -460,7 +519,7 @@ func TestDashboardOIDC_RawPermission(t *testing.T) {
 			t.Errorf("raw-mapped OIDC principal denied raw permission: %v", err)
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	}), nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
 	}
@@ -502,6 +561,40 @@ func TestDashboardOIDC_UnknownKeyRefreshIsRateLimited(t *testing.T) {
 	}
 }
 
+func TestDashboardOIDC_JWKSCacheCoalescesConcurrentRefresh(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	p.jwksDelay = 50 * time.Millisecond
+	auth := newOIDCTestAuthenticator(t, p, now)
+	token := p.token(t, p.validClaims(now))
+
+	auth.keys.mu.Lock()
+	auth.keys.expiresAt = now.Add(-time.Second)
+	auth.keys.mu.Unlock()
+
+	const requests = 8
+	errs := make(chan error, requests)
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := auth.authenticate(requestWithBearer(t, token))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("authenticate during coalesced refresh: %v", err)
+		}
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads = %d, want initial fetch plus one coalesced refresh", got)
+	}
+}
+
 func TestDashboardOIDC_StaticTokenRemainsAdditive(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
@@ -514,7 +607,7 @@ func TestDashboardOIDC_StaticTokenRemainsAdditive(t *testing.T) {
 			t.Error("existing static token was denied when OIDC was also configured")
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, requestWithBearer(t, dashTestToken))
+	}), nil).ServeHTTP(rr, requestWithBearer(t, dashTestToken))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
 	}

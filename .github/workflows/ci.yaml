@@ -261,6 +261,9 @@ jobs:
       - name: Key-free MCP capture writer smoke (#696)
         run: go test -count=1 -run "TestBuildCaptureWriter|TestParseCaptureEscrowKey" ./internal/cli/runtime/...
 
+      - name: Baseline no-follow reads work on Windows
+        run: go test -count=1 -run "TestWindows" ./internal/proxy/baseline/...
+
   lint:
     needs: [security-scan]
     runs-on: ubuntu-latest

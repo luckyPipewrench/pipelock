@@ -287,7 +287,13 @@ const (
 	// a shape the existing transmit-verb-anchored patterns above do not
 	// cover because the link is never the direct object of a send/upload/
 	// submit verb. See TestCore_MarkdownLinkCredentialFollowExfiltrationIntentAnchor.
-	goldenHashDefaults = "7a7dd1b8c55488dd13d62a7c346e985bbac6fa37396e6627837274b9937c9781"
+	// Re-bumped for the Markdown Link Credential Exfiltration verb-to-noun
+	// separator: ordinary direct gaps are short again, while comma-set-off
+	// parenthetical padding still blocks. This catches padded single-clause
+	// exfiltration without bridging coordinated objects like "send your invoice
+	// and include your account token ... [billing]". See
+	// TestCore_MarkdownLinkCredentialExfiltrationIntentAnchor.
+	goldenHashDefaults = "f0368215f7fc693880af230b3f7a41bdfbc0b78adb9244418a532a817ff76a0f"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -425,7 +431,9 @@ const (
 	// sibling pattern: see goldenHashDefaults note above; the rich fixture
 	// inherits the default response-scanning pattern set, so the hash
 	// shifts in lockstep.
-	goldenHashRichConfig = "293a83a53d2c2ff736761c5949a162c5f43938408aeb8466f25e8a3e2d37dd3d"
+	// Re-bumped for the Markdown Link Credential Exfiltration verb-to-noun
+	// separator. See goldenHashDefaults note above.
+	goldenHashRichConfig = "21595dabe082d838709dd9af8a6871e491672a77a056862e00ca7c2ccb0ee568"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

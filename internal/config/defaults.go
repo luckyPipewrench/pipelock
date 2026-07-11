@@ -27,6 +27,7 @@ const (
 	markdownLinkCredentialExfilLink    = `\[[^\n]{1,160}\]\(\s*https?://[^)\s]+|<\s*https?://[^>\s]+>|\[[^\n]{1,160}\]\s*\[[^\]\n]{1,80}\](?:[^\n]|\n[ \t]*){0,240}\[[^\]\n]{1,80}\]:\s*https?://[^\s]+`                                                                                                                                                                                                                                // #nosec G101 -- detection regex fragment, not a hardcoded credential
 	markdownLinkCredentialDestination  = `(?:the\s+following\s+|(?:(?:this|that|our|my|their|a|an|the)\s+)?(?:(?:secure|external|collection|upload|remote)\s+)*(?:link|url|endpoint|server|form|page|address)\b\s*[:,-]?\s*)?`
 	markdownLinkCredentialTerminalCue  = `(?:\s*(?:[.!?]|$)|\s+(?:here|there)\b)` // #nosec G101 -- detection regex fragment, not a hardcoded credential
+	markdownLinkVerbNounGap            = `(?:[^\n.!?]|\.\S){0,80}`
 	// markdownLinkCredentialTransmitObjectAlt anchors the "collect/copy/include
 	// NOUN, then VERB ... link" branch so the transfer verb must act on the
 	// credential itself (a pronoun referring back to it, or the credential noun
@@ -42,7 +43,7 @@ const (
 	// a real exfiltration object that the tightened object anchor no longer
 	// accepts. It intentionally only adds values? as the anaphoric object; broad
 	// nouns like "message" remain clean false-positive fixes.
-	MarkdownLinkCredentialValueExfilRegex = `(?is)\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:the\s+)?values?\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+	MarkdownLinkCredentialValueExfilRegex = `(?is)\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:the\s+)?values?\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 
 	// markdownLinkCredentialCollectVerbAlt anchors the collection half of
 	// MarkdownLinkCredentialFollowExfilRegex: an instruction to gather up a
@@ -96,7 +97,7 @@ const (
 	// Deliberately has NO redaction-class mirror: like
 	// MarkdownLinkCredentialExfilRegex above, this matches a whole
 	// collect-then-follow instruction, not a bare credential-secret shape.
-	MarkdownLinkCredentialFollowExfilRegex = `(?is)\b(?:` + markdownLinkCredentialCollectVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialFollowCollectedMaterial + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialFollowVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,15}?\blink\b(?:[^\n.!?]|\.\S){0,20}?\bto\s+(?:` + markdownLinkCredentialFollowCueAlt + `)\b\s*[:,-]?\s*(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+	MarkdownLinkCredentialFollowExfilRegex = `(?is)\b(?:` + markdownLinkCredentialCollectVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialFollowCollectedMaterial + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialFollowVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,15}?\b(?:link|url|address)\b(?:[^\n.!?]|\.\S){0,20}?\bto\s+(?:` + markdownLinkCredentialFollowCueAlt + `)\b\s*[:,-]?\s*(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 
 	// MarkdownLinkCredentialExfilRegex detects injected instructions that pair
 	// credential transfer with an exfiltration-destination cue anchored directly
@@ -109,17 +110,19 @@ const (
 	// app. Credential nouns allow whitespace, underscore, and hyphen spacing
 	// between letters so normalized evasions still match; destination terms stay
 	// narrow so ordinary setup docs with benign links do not block.
-	// Every verb<->noun gap uses a clause-aware character class ([^\n.!?] or
-	// \.\S for abbreviations), never a bare DOTALL '.', so the transfer verb
-	// and the credential noun must co-occur in the SAME clause: a benign
-	// two-clause sentence like
+	// Every verb<->noun gap uses either a short clause-aware gap or a
+	// comma-set-off parenthetical gap, never a bare DOTALL '.', so the transfer
+	// verb and the credential noun must co-occur in the SAME clause without
+	// crossing coordinated objects: a benign two-clause sentence like
 	// "Please send your invoice and include your account token in the email to
 	// [billing]" no longer matches, because "send" and "token" sit in different
-	// coordinated clauses split by "and". The "collect/copy/include NOUN, then
-	// VERB ... link" branch additionally requires the verb's object to be the
-	// credential itself (markdownLinkCredentialTransmitObjectAlt) so a second,
-	// unrelated action in the same sentence ("copy your token, then send us a
-	// message via [link]") does not match on the verb alone.
+	// coordinated objects split by "and include". A same-clause parenthetical
+	// like "send, after copying it exactly, the API key to [link]" still blocks.
+	// The "collect/copy/include NOUN, then VERB ... link" branch additionally
+	// requires the verb's object to be the credential itself
+	// (markdownLinkCredentialTransmitObjectAlt) so a second, unrelated action in
+	// the same sentence ("copy your token, then send us a message via [link]")
+	// does not match on the verb alone.
 	// Scanner response matching depends on the invariant that this regex can only
 	// match content containing a literal http:// or https:// link; broaden URL
 	// schemes only with matching updates to responsePatternRequiredLiterals and
@@ -136,7 +139,7 @@ const (
 	// same shape and likewise has no redaction mirror; only DLP/secret-value
 	// patterns (AWS keys, GitHub tokens, connection strings, ...) do. This
 	// pattern is block-only by design, not by omission.
-	MarkdownLinkCredentialExfilRegex = `(?is)(?:(?:\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `|\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialTransmitObjectAlt + `|` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `)(?:` + markdownLinkCredentialExfilLink + `)|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b` + markdownLinkCredentialTerminalCue + `|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+	MarkdownLinkCredentialExfilRegex = `(?is)(?:(?:\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b` + markdownLinkVerbNounGap + `\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `|\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialTransmitObjectAlt + `|` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `)(?:` + markdownLinkCredentialExfilLink + `)|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:` + markdownLinkCredentialExfilVerbAlt + `)\b` + markdownLinkVerbNounGap + `\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b` + markdownLinkCredentialTerminalCue + `|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b` + markdownLinkVerbNounGap + `\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 )
 
 const (

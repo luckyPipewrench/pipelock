@@ -1077,6 +1077,13 @@ func TestScanHTTPInputDecision_A2APolicyDeferStoresRedactedParams(t *testing.T) 
 	if !strings.Contains(decision.Deferred.Arguments, mcpPlaceholderAWS) {
 		t.Fatalf("deferred A2A arguments missing redaction placeholder: %s", decision.Deferred.Arguments)
 	}
+	forwardMessage := string(decision.Deferred.ForwardMessage)
+	if strings.Contains(forwardMessage, secret) {
+		t.Fatalf("deferred A2A forward message leaked secret: %s", forwardMessage)
+	}
+	if !strings.Contains(forwardMessage, mcpPlaceholderAWS) {
+		t.Fatalf("deferred A2A forward message missing redaction placeholder: %s", forwardMessage)
+	}
 }
 
 func TestScanHTTPInput_PolicyRedirectMissingProfileBlocks(t *testing.T) {

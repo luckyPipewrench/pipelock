@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 )
 
 type walkedLeaf struct {
@@ -302,8 +304,9 @@ func TestIsA2AMethod(t *testing.T) {
 }
 
 func TestIsA2AMethod_KnownMethodsDetectAfterCaseFold(t *testing.T) {
-	normalized := make(map[string]string, len(a2aMethods))
-	for method := range a2aMethods {
+	known := a2amethods.Known()
+	normalized := make(map[string]string, len(known))
+	for method := range known {
 		folded := strings.ToLower(method)
 		if previous, ok := normalized[folded]; ok && previous != method {
 			t.Fatalf("A2A methods %q and %q collide after case fold", previous, method)

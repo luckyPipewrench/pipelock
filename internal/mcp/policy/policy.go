@@ -26,6 +26,7 @@ import (
 const (
 	uninspectableJSONDepthRule = "uninspectable_json_depth"
 	duplicateJSONKeyRule       = "duplicate_json_object_key"
+	malformedA2AParamsRule     = "malformed_a2a_params"
 )
 
 // shellExpansionRe matches shell variable expansions used as whitespace substitutes.
@@ -676,6 +677,9 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		errors.Is(err, &redact.BlockError{Reason: redact.ReasonDuplicateKey}) {
 		return duplicateJSONKeyVerdict()
 	}
+	if hasMalformedA2AParams(line) {
+		return malformedA2AParamsVerdict()
+	}
 	tc := parsePolicyCallable(line)
 	if tc == nil {
 		return Verdict{}
@@ -728,6 +732,40 @@ func duplicateJSONKeyVerdict() Verdict {
 		Action:  config.ActionBlock,
 		Rules:   []string{duplicateJSONKeyRule},
 	}
+}
+
+// malformedA2AParamsVerdict is a fail-closed result for known A2A methods with
+// present, non-null params that are not a JSON object. A2A policy rules inspect
+// object params; scalar and array params are malformed enough that skipping
+// policy would be fail-open.
+func malformedA2AParamsVerdict() Verdict {
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   []string{malformedA2AParamsRule},
+	}
+}
+
+func hasMalformedA2AParams(line []byte) bool {
+	var rpc struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(line, &rpc); err != nil {
+		return false
+	}
+	if _, ok := a2amethods.Canonical(rpc.Method); !ok {
+		return false
+	}
+	if len(rpc.Params) == 0 || bytes.Equal(bytes.TrimSpace(rpc.Params), []byte(jsonrpc.Null)) {
+		return false
+	}
+	return !rawMessageIsJSONObject(rpc.Params)
+}
+
+func rawMessageIsJSONObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) != 0 && trimmed[0] == '{'
 }
 
 func uninspectableStructuralArgsVerdict(ruleName string) Verdict {

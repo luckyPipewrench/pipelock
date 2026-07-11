@@ -451,9 +451,65 @@ func TestCheckRequest_A2AMethodPolicyMatch(t *testing.T) {
 		})
 	}
 
-	nonA2A := []byte(`{"jsonrpc":"2.0","id":1,"method":"not/a2a","params":{"message":{"parts":[{"kind":"text","text":"deploy now"}]}}}`)
-	if v := pc.CheckRequest(nonA2A); v.Matched {
-		t.Fatalf("non-A2A method matched policy: %+v", v)
+	rejectPolicy := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{{
+			Name:        "any-deploy",
+			ToolPattern: mustCompile(`.*`),
+			ArgPattern:  mustCompile(`deploy`),
+		}},
+	}
+	rejects := map[string][]byte{
+		"non-callable": []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///deploy"}}`),
+		"unknown-a2a":  []byte(`{"jsonrpc":"2.0","id":1,"method":"not/a2a","params":{"message":{"parts":[{"kind":"text","text":"deploy now"}]}}}`),
+	}
+	for name, req := range rejects {
+		t.Run(name, func(t *testing.T) {
+			if v := rejectPolicy.CheckRequest(req); v.Matched {
+				t.Fatalf("%s matched policy: %+v", name, v)
+			}
+		})
+	}
+}
+
+func TestCheckRequest_A2AMalformedParamsFailClosed(t *testing.T) {
+	pc := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{{
+			Name:        "a2a-send",
+			ToolPattern: mustCompile(`^message/send$`),
+		}},
+	}
+
+	blocked := map[string][]byte{
+		"scalar": []byte(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":"x"}`),
+		"array":  []byte(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":[]}`),
+	}
+	for name, req := range blocked {
+		t.Run(name, func(t *testing.T) {
+			v := pc.CheckRequest(req)
+			if !v.Matched {
+				t.Fatal("malformed A2A params did not fail closed")
+			}
+			if v.Action != config.ActionBlock {
+				t.Fatalf("action = %q, want block", v.Action)
+			}
+			if got := strings.Join(v.Rules, ","); got != malformedA2AParamsRule {
+				t.Fatalf("rules = %q, want %s", got, malformedA2AParamsRule)
+			}
+		})
+	}
+
+	validObject := []byte(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"text","text":"x"}]}}}`)
+	v := pc.CheckRequest(validObject)
+	if !v.Matched {
+		t.Fatal("valid A2A object params did not match policy")
+	}
+	if v.Action != config.ActionWarn {
+		t.Fatalf("action = %q, want warn", v.Action)
+	}
+	if got := strings.Join(v.Rules, ","); got != "a2a-send" {
+		t.Fatalf("rules = %q, want a2a-send", got)
 	}
 }
 

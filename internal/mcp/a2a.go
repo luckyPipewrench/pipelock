@@ -275,9 +275,6 @@ func classifyKeyAsLeaf(key string) FieldClass {
 
 // --- A2A Detection ---
 
-// a2aMethods is the set of JSON-RPC method names used by A2A.
-var a2aMethods = a2amethods.Known()
-
 // IsA2AMethod returns true if the JSON-RPC method name is an A2A method.
 func IsA2AMethod(method string) bool {
 	return a2amethods.Is(method)

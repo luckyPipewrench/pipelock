@@ -148,6 +148,28 @@ func TestWriteBundleRejectsBadFilesystemTargets(t *testing.T) {
 	}
 }
 
+func TestWriteBundleUnderDirRejectsSymlinkComponents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
+	if err := WriteBundleUnderDir(root, filepath.Join("link", "bundle.json"), bundle); err == nil {
+		t.Fatal("WriteBundleUnderDir accepted a symlinked parent")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("ReadDir outside: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("symlinked parent received bundle data: %v", entries)
+	}
+}
+
 func TestWriteStateMarkerWritesCanonicalPrivateJSON(t *testing.T) {
 	dir := t.TempDir()
 	anchoredAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
@@ -206,6 +228,38 @@ func TestWriteStateMarkerWritesCanonicalPrivateJSON(t *testing.T) {
 		got.BundleSHA256 != marker.BundleSHA256 ||
 		got.BundlePath != marker.BundlePath {
 		t.Fatalf("anchor-state marker = %+v, want fields from %+v with canonical schema", got, marker)
+	}
+}
+
+func TestLoadStateMarkersIgnoresWriterTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	marker := StateMarker{
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "bundle.json",
+	}
+	if err := WriteStateMarker(dir, marker); err != nil {
+		t.Fatalf("WriteStateMarker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "anchor-state.d", ".anchor-state-123456789.tmp"), []byte("partial"), 0o600); err != nil {
+		t.Fatalf("WriteFile temp marker: %v", err)
+	}
+	markers, err := LoadStateMarkers(dir)
+	if err != nil {
+		t.Fatalf("LoadStateMarkers: %v", err)
+	}
+	if len(markers) != 1 || markers[0].SessionID != marker.SessionID {
+		t.Fatalf("markers = %+v, want only the committed marker", markers)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "anchor-state.d", ".anchor-state-leftover.tmp"), []byte("partial"), 0o600); err != nil {
+		t.Fatalf("WriteFile foreign temp: %v", err)
+	}
+	if _, err := LoadStateMarkers(dir); err == nil || !strings.Contains(err.Error(), "unexpected marker") {
+		t.Fatalf("LoadStateMarkers foreign temp err = %v, want unexpected marker", err)
 	}
 }
 

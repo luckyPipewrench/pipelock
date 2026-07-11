@@ -6,6 +6,7 @@ package anchor
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -241,14 +242,22 @@ func WriteBundle(path string, b Bundle) error {
 	if err != nil {
 		return fmt.Errorf("marshal anchor bundle: %w", err)
 	}
-	clean := filepath.Clean(path)
-	if err := os.MkdirAll(filepath.Dir(clean), dirPermissions); err != nil {
-		return fmt.Errorf("create anchor bundle directory: %w", err)
+	return writeBundleFile(filepath.Clean(path), append(data, '\n'))
+}
+
+// WriteBundleUnderDir writes an anchor bundle under root without trusting
+// pathnames after the caller has resolved policy. On Unix-like platforms it uses
+// descriptor-relative no-follow operations for every component.
+func WriteBundleUnderDir(root, rel string, b Bundle) error {
+	cleanRel := filepath.Clean(filepath.FromSlash(rel))
+	if filepath.IsAbs(cleanRel) || cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("anchor bundle path must stay under receipt directory")
 	}
-	if err := os.WriteFile(clean, append(data, '\n'), filePermissions); err != nil {
-		return fmt.Errorf("write anchor bundle: %w", err)
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal anchor bundle: %w", err)
 	}
-	return nil
+	return writeBundleFileUnderDir(filepath.Clean(root), cleanRel, append(data, '\n'))
 }
 
 func WriteStateMarker(dir string, marker StateMarker) error {
@@ -261,42 +270,7 @@ func WriteStateMarker(dir string, marker StateMarker) error {
 		return fmt.Errorf("marshal anchor-state marker: %w", err)
 	}
 	cleanDir := filepath.Clean(dir)
-	indexDir := filepath.Join(cleanDir, stateMarkerIndexDir)
-	path, err := StateMarkerPath(cleanDir, marker)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(indexDir, dirPermissions); err != nil {
-		return fmt.Errorf("create anchor-state directory: %w", err)
-	}
-	if err := validateStateMarkerIndexDir(indexDir); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(indexDir, ".anchor-state-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create anchor-state temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write anchor-state temp file: %w", err)
-	}
-	if err := tmp.Chmod(filePermissions); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod anchor-state temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync anchor-state temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close anchor-state temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("rename anchor-state marker: %w", err)
-	}
-	return nil
+	return writeStateMarkerFile(cleanDir, marker, append(data, '\n'))
 }
 
 func StateMarkerPath(dir string, marker StateMarker) (string, error) {
@@ -349,6 +323,9 @@ func LoadStateMarkers(dir string) ([]StateMarker, error) {
 		seen[key] = legacyStateMarker
 	}
 	for _, entry := range entries {
+		if IsStateMarkerTempName(entry.Name()) {
+			continue
+		}
 		if entry.IsDir() {
 			return nil, fmt.Errorf("read anchor-state index: %s is not a regular marker", entry.Name())
 		}
@@ -385,6 +362,47 @@ func LoadStateMarkers(dir string) ([]StateMarker, error) {
 		markers = append(markers, marker)
 	}
 	return markers, nil
+}
+
+// IsStateMarkerTempName reports whether name matches the private temp-file
+// pattern produced by WriteStateMarker before the final atomic rename.
+func IsStateMarkerTempName(name string) bool {
+	const (
+		prefix = ".anchor-state-"
+		suffix = ".tmp"
+	)
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	random := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+	if len(random) == 0 {
+		return false
+	}
+	if len(random) <= 10 {
+		for _, r := range random {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	if len(random) != 32 {
+		return false
+	}
+	for _, r := range random {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func stateMarkerTempName() (string, error) {
+	var raw [16]byte
+	if _, err := crand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate anchor-state temp name: %w", err)
+	}
+	return ".anchor-state-" + hex.EncodeToString(raw[:]) + ".tmp", nil
 }
 
 func loadStateMarkerFile(path string) (StateMarker, bool, error) {

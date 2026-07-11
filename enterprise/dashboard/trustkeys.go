@@ -218,6 +218,9 @@ func loadAnchorIndexMarkers(baseDir string) ([]indexedAnchorMarker, error) {
 	markers := make([]indexedAnchorMarker, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
+		if anchor.IsStateMarkerTempName(name) {
+			continue
+		}
 		if entry.IsDir() || filepath.Ext(name) != ".json" {
 			return nil, fmt.Errorf("read anchor-state index: unexpected marker %q", name)
 		}

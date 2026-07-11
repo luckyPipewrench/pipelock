@@ -112,7 +112,7 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 		return err
 	}
 	bundle := anchorpkg.NewBundle(checkpoint, proof)
-	if err := anchorpkg.WriteBundle(output.bundlePath, bundle); err != nil {
+	if err := anchorpkg.WriteBundleUnderDir(output.receiptDir, output.markerPath, bundle); err != nil {
 		return err
 	}
 	if err := writeAnchorStateMarker(output, checkpoint, proof); err != nil {

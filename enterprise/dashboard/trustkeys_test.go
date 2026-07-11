@@ -225,6 +225,52 @@ func TestFileAnchorResolver_VerifiesExistingMarkerMaterial(t *testing.T) {
 	}
 }
 
+func TestLoadAnchorMarkersIgnoresWriterTempFiles(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateDashboardKey(t)
+	keyHex := hex.EncodeToString(pub)
+	chain := buildDashboardChain(t, priv, 2)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "anchors.jsonl")
+	bundlePath := filepath.Join(dir, "bundle.json")
+	backend := anchor.LocalLog{Path: logPath, LogID: "resolver-test-log"}
+	checkpoint, err := anchor.BuildCheckpoint(testSessionID, chain, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	proof, err := backend.Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	bundle := anchor.NewBundle(checkpoint, proof)
+	if err := anchor.WriteBundle(bundlePath, bundle); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+	bundleBytes, err := os.ReadFile(filepath.Clean(bundlePath))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	bundleSum := sha256.Sum256(bundleBytes)
+	if err := anchor.WriteStateMarker(dir, anchor.StateMarker{
+		SessionID: testSessionID, FinalSeq: checkpoint.FinalSeq, RootHash: checkpoint.RootHash,
+		Backend: proof.Backend, LogIndex: proof.LogIndex, AnchoredAt: time.Now().Add(-time.Minute),
+		BundleSHA256: hex.EncodeToString(bundleSum[:]), BundlePath: filepath.Base(bundlePath),
+	}); err != nil {
+		t.Fatalf("WriteStateMarker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "anchor-state.d", ".anchor-state-123456789.tmp"), []byte("partial"), anchorTestFileMode); err != nil {
+		t.Fatalf("WriteFile temp marker: %v", err)
+	}
+	markers, err := loadAnchorMarkers(dir)
+	if err != nil {
+		t.Fatalf("loadAnchorMarkers: %v", err)
+	}
+	if len(markers) != 1 || markers[0].SessionID != testSessionID {
+		t.Fatalf("markers = %+v, want committed marker only", markers)
+	}
+}
+
 func TestFileAnchorResolverDiscoversIndexedIndependentSessions(t *testing.T) {
 	t.Parallel()
 

@@ -533,10 +533,38 @@ type anchorState struct {
 	BundlePath   string    `json:"bundle_path"`
 }
 
+const maxEvidenceAnchorStateBytes = 64 * 1024
+
 func readAnchorState(path string) (anchorState, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	clean := filepath.Clean(path)
+	info, err := os.Lstat(clean)
 	if err != nil {
 		return anchorState{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return anchorState{}, errors.New("anchor-state is not a regular file")
+	}
+	if info.Size() > maxEvidenceAnchorStateBytes {
+		return anchorState{}, fmt.Errorf("anchor-state exceeds size limit of %d bytes", maxEvidenceAnchorStateBytes)
+	}
+	file, err := os.Open(clean) // #nosec G304 -- lstat/fstat below fail closed on local replacement races.
+	if err != nil {
+		return anchorState{}, err
+	}
+	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return anchorState{}, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return anchorState{}, errors.New("anchor-state changed during validation")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxEvidenceAnchorStateBytes+1))
+	if err != nil {
+		return anchorState{}, err
+	}
+	if int64(len(data)) > maxEvidenceAnchorStateBytes {
+		return anchorState{}, fmt.Errorf("anchor-state exceeds size limit of %d bytes", maxEvidenceAnchorStateBytes)
 	}
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return anchorState{}, err

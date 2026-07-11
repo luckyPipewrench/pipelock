@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -340,6 +341,95 @@ func TestReceiptsCmdRejectsOutsideBundleOutput(t *testing.T) {
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "under the receipt directory") {
 		t.Fatalf("Execute err = %v, want outside --out refusal", err)
+	}
+}
+
+func TestResolveBundleOutputRejectsHostilePaths(t *testing.T) {
+	receiptsPath, _ := cliReceiptJSONL(t)
+	receiptDir := filepath.Dir(receiptsPath)
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) string
+		wantErr string
+		wantRel string
+	}{
+		{
+			name: "output symlink",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				if runtime.GOOS == "windows" {
+					t.Skip("symlink creation needs privileges on Windows")
+				}
+				target := filepath.Join(receiptDir, "target-bundle.json")
+				if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+					t.Fatalf("WriteFile target: %v", err)
+				}
+				link := filepath.Join(receiptDir, "bundle-link.json")
+				if err := os.Symlink(filepath.Base(target), link); err != nil {
+					t.Fatalf("Symlink bundle: %v", err)
+				}
+				return link
+			},
+			wantErr: "must not be a symlink",
+		},
+		{
+			name: "parent symlink",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				if runtime.GOOS == "windows" {
+					t.Skip("symlink creation needs privileges on Windows")
+				}
+				outside := t.TempDir()
+				link := filepath.Join(receiptDir, "linked-parent")
+				if err := os.Symlink(outside, link); err != nil {
+					t.Fatalf("Symlink parent: %v", err)
+				}
+				return filepath.Join(link, "bundle.json")
+			},
+			wantErr: "parent is not a directory",
+		},
+		{
+			name: "absolute dotdot outside",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return filepath.Join(receiptDir, "..", "outside-bundle.json")
+			},
+			wantErr: "under the receipt directory",
+		},
+		{
+			name: "receipt directory",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return receiptDir
+			},
+			wantErr: "must name an anchor bundle file",
+		},
+		{
+			name: "missing parent chain",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return filepath.Join("nested", "new", "bundle.json")
+			},
+			wantRel: filepath.ToSlash(filepath.Join("nested", "new", "bundle.json")),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := resolveBundleOutput(receiptsPath, receiptsOptions{output: tc.setup(t)})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("resolveBundleOutput err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveBundleOutput: %v", err)
+			}
+			if output.markerPath != tc.wantRel {
+				t.Fatalf("markerPath = %q, want %q", output.markerPath, tc.wantRel)
+			}
+		})
 	}
 }
 

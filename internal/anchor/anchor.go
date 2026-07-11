@@ -253,6 +253,9 @@ func WriteBundle(path string, b Bundle) error {
 
 func WriteStateMarker(dir string, marker StateMarker) error {
 	marker.Schema = stateMarkerSchema
+	if err := validateStateMarker(marker); err != nil {
+		return err
+	}
 	data, err := json.Marshal(marker)
 	if err != nil {
 		return fmt.Errorf("marshal anchor-state marker: %w", err)

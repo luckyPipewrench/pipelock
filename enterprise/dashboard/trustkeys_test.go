@@ -409,6 +409,56 @@ func TestFileAnchorResolver_FailsClosedOnMalformedState(t *testing.T) {
 	})
 }
 
+func TestFileAnchorResolver_FailsClosedOnResolverMaterialMismatches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		localLogPath func(string) string
+		mutateMarker func(anchor.StateMarker) anchor.StateMarker
+		wantErr      string
+	}{
+		{
+			name: "bundle marker field mismatch",
+			localLogPath: func(dir string) string {
+				return filepath.Join(dir, "anchors.jsonl")
+			},
+			mutateMarker: func(marker anchor.StateMarker) anchor.StateMarker {
+				marker.RootHash = strings.Repeat("c", 64)
+				return marker
+			},
+			wantErr: "does not match anchor-state marker",
+		},
+		{
+			name: "backend error",
+			localLogPath: func(string) string {
+				return ""
+			},
+			wantErr: "local anchor log path is required",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, bundleBytes, marker := resolverFixture(t)
+			if tc.mutateMarker != nil {
+				marker = tc.mutateMarker(marker)
+			}
+			if err := os.WriteFile(filepath.Join(dir, marker.BundlePath), bundleBytes, anchorTestFileMode); err != nil {
+				t.Fatalf("WriteFile bundle: %v", err)
+			}
+			writeResolverMarker(t, dir, marker)
+			resolver, err := NewFileAnchorResolver(dir, tc.localLogPath(dir), nil, false)
+			if err != nil {
+				t.Fatalf("NewFileAnchorResolver: %v", err)
+			}
+			if _, _, _, err := resolver(testSessionID); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("resolver err = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestFileAnchorResolver_ConfinesAndBoundsEvidenceFiles(t *testing.T) {
 	t.Parallel()
 

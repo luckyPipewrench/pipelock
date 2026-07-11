@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -445,6 +446,138 @@ func TestReadAnchorStateStrictJSON(t *testing.T) {
 	}
 	if _, err := readAnchorState(filepath.Join(t.TempDir(), "missing.json")); err == nil {
 		t.Fatal("readAnchorState missing file err = nil, want failure")
+	}
+}
+
+func TestReadAnchorStateFilesystemGuards(t *testing.T) {
+	valid := validEvidenceHealthAnchorState()
+	valid.AnchoredAt = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	validData, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("Marshal valid anchor state: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir string) string
+		wantErr string
+	}{
+		{
+			name: "symlink",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				if runtime.GOOS == "windows" {
+					t.Skip("symlink creation needs privileges on Windows")
+				}
+				target := filepath.Join(dir, "target-anchor-state.json")
+				if err := os.WriteFile(target, append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile target: %v", err)
+				}
+				link := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.Symlink(filepath.Base(target), link); err != nil {
+					t.Fatalf("Symlink anchor state: %v", err)
+				}
+				return link
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "non regular",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatalf("Mkdir anchor state: %v", err)
+				}
+				return path
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "oversized",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.WriteFile(path, make([]byte, maxEvidenceAnchorStateBytes+1), 0o600); err != nil {
+					t.Fatalf("WriteFile oversized anchor state: %v", err)
+				}
+				return path
+			},
+			wantErr: "exceeds size limit",
+		},
+		{
+			name: "valid",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.WriteFile(path, append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile valid anchor state: %v", err)
+				}
+				return path
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := readAnchorState(tc.setup(t, t.TempDir()))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("readAnchorState err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readAnchorState: %v", err)
+			}
+			if got.SessionID != valid.SessionID || got.BundleSHA256 != valid.BundleSHA256 {
+				t.Fatalf("readAnchorState = %+v, want valid marker", got)
+			}
+		})
+	}
+}
+
+func TestReadAnchorStateForSessionFailsClosedOnConflicts(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir string)
+		wantErr string
+	}{
+		{
+			name: "legacy session mismatch",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				state := validEvidenceHealthAnchorState()
+				state.SessionID = "different-session"
+				writeEvidenceHealthAnchorState(t, dir, state)
+			},
+			wantErr: "does not match",
+		},
+		{
+			name: "ambiguous indexed markers",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				first := anchorStateToMarker(validEvidenceHealthAnchorState())
+				if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
+					t.Fatalf("WriteStateMarker first: %v", err)
+				}
+				second := first
+				second.RootHash = strings.Repeat("c", 64)
+				second.BundleSHA256 = strings.Repeat("d", 64)
+				if err := anchorpkg.WriteStateMarker(dir, second); err != nil {
+					t.Fatalf("WriteStateMarker second: %v", err)
+				}
+			},
+			wantErr: "ambiguous anchor-state markers",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.setup(t, dir)
+			if _, found, err := readAnchorStateForSession(dir, transcriptRootSessionID); err == nil || found || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("readAnchorStateForSession found=%v err=%v, want %q", found, err, tc.wantErr)
+			}
+		})
 	}
 }
 

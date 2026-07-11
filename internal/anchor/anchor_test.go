@@ -410,6 +410,137 @@ func TestLoadStateMarkersFailsClosedOnHostileFilesystemState(t *testing.T) {
 	}
 }
 
+func TestLoadStateMarkerFileRejectsMalformedFiles(t *testing.T) {
+	valid := StateMarker{
+		Schema:       stateMarkerSchema,
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "bundle.json",
+	}
+	validData, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("Marshal valid marker: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, path string)
+		wantErr string
+	}{
+		{
+			name: "symlink",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if runtime.GOOS == "windows" {
+					t.Skip("symlink creation needs privileges on Windows")
+				}
+				target := filepath.Join(filepath.Dir(path), "target-marker.json")
+				if err := os.WriteFile(target, append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile target: %v", err)
+				}
+				if err := os.Symlink(filepath.Base(target), path); err != nil {
+					t.Fatalf("Symlink marker: %v", err)
+				}
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "non regular",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatalf("Mkdir marker path: %v", err)
+				}
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "oversized",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, make([]byte, maxStateMarkerBytes+1), 0o600); err != nil {
+					t.Fatalf("WriteFile oversized marker: %v", err)
+				}
+			},
+			wantErr: "exceeds size limit",
+		},
+		{
+			name: "corrupt JSON",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(`{"schema":`), 0o600); err != nil {
+					t.Fatalf("WriteFile corrupt marker: %v", err)
+				}
+			},
+			wantErr: "parse anchor-state marker",
+		},
+		{
+			name: "schema mismatch",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				invalid := valid
+				invalid.Schema = "wrong-schema"
+				data, err := json.Marshal(invalid)
+				if err != nil {
+					t.Fatalf("Marshal invalid marker: %v", err)
+				}
+				if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile invalid marker: %v", err)
+				}
+			},
+			wantErr: "schema",
+		},
+		{
+			name: "blank required field",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				invalid := valid
+				invalid.BundlePath = " "
+				data, err := json.Marshal(invalid)
+				if err != nil {
+					t.Fatalf("Marshal invalid marker: %v", err)
+				}
+				if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile invalid marker: %v", err)
+				}
+			},
+			wantErr: "bundle_path is empty",
+		},
+		{
+			name: "valid",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile valid marker: %v", err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "anchor-state.json")
+			tc.setup(t, path)
+			got, found, err := loadStateMarkerFile(path)
+			if tc.wantErr != "" {
+				if err == nil || found || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("loadStateMarkerFile found=%v err=%v, want %q", found, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || !found {
+				t.Fatalf("loadStateMarkerFile found=%v err=%v, want valid marker", found, err)
+			}
+			if got.SessionID != valid.SessionID || got.BundleSHA256 != valid.BundleSHA256 {
+				t.Fatalf("loadStateMarkerFile = %+v, want valid marker", got)
+			}
+		})
+	}
+}
+
 func TestWriteStateMarkerRejectsBadFilesystemTarget(t *testing.T) {
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "not-a-directory")
@@ -832,5 +963,46 @@ func TestWriteStateMarkerRejectsMarkerWithoutIdentity(t *testing.T) {
 	t.Parallel()
 	if err := WriteStateMarker(t.TempDir(), StateMarker{RootHash: "abc"}); err == nil {
 		t.Fatal("WriteStateMarker accepted marker with empty session id")
+	}
+}
+
+func TestWriteStateMarkerRejectsInvalidMarkerDigests(t *testing.T) {
+	valid := StateMarker{
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "bundle.json",
+	}
+	tests := []struct {
+		name   string
+		mutate func(StateMarker) StateMarker
+		want   string
+	}{
+		{
+			name: "short root hash",
+			mutate: func(marker StateMarker) StateMarker {
+				marker.RootHash = "abc"
+				return marker
+			},
+			want: "root_hash is invalid",
+		},
+		{
+			name: "short bundle sha",
+			mutate: func(marker StateMarker) StateMarker {
+				marker.BundleSHA256 = "abc"
+				return marker
+			},
+			want: "bundle_sha256 is invalid",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := WriteStateMarker(t.TempDir(), tc.mutate(valid)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("WriteStateMarker err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }

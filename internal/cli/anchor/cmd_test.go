@@ -387,7 +387,7 @@ func TestResolveBundleOutputRejectsHostilePaths(t *testing.T) {
 				}
 				return filepath.Join(link, "bundle.json")
 			},
-			wantErr: "parent is not a directory",
+			wantErr: "parent must not be a symlink",
 		},
 		{
 			name: "absolute dotdot outside",

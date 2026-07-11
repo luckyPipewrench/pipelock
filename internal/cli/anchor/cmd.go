@@ -208,11 +208,11 @@ func validateBundleOutputPath(receiptDir, bundlePath string) error {
 	for {
 		info, err := os.Lstat(parent)
 		if err == nil {
-			if !info.IsDir() {
-				return fmt.Errorf("--out parent is not a directory")
-			}
 			if info.Mode()&os.ModeSymlink != 0 {
 				return fmt.Errorf("--out parent must not be a symlink")
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("--out parent is not a directory")
 			}
 			resolved, err := filepath.EvalSymlinks(parent)
 			if err != nil {

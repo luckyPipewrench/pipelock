@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -317,6 +318,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	)
 	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
 
+	auditWriter := cmd.ErrOrStderr()
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          opts.receiptDir,
 		TrustedKeys:         trusted,
@@ -332,7 +334,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		AuthorizePermission: authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
-		AuditWriter: cmd.ErrOrStderr(),
+		AuditWriter: auditWriter,
 		// TODO(DASH-3A): wire live conductor source when dashboard serve owns a
 		// conductor audit/status store handle. Until then /fleet renders the
 		// read-only empty state instead of inventing a fake conductor client.
@@ -347,7 +349,21 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		ConductorSource: nil,
 		BudgetSource:    dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})
-	handler := dashboardAuthHandler(authenticated, inner)
+	authAuditInfo := authorization.authAuditInfo
+	if clientCertAuth != nil {
+		authAuditInfo = func(r *http.Request) dashboard.AuthAuditInfo {
+			principal, ok := clientCertAuth.principal(r)
+			if !ok {
+				return dashboard.AuthAuditInfo{Method: "mtls", FailureReason: "missing_client_certificate"}
+			}
+			var subject string
+			if r != nil && r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
+				subject = dashboardClientCertSPKIFingerprint(r.TLS.VerifiedChains[0][0])
+			}
+			return dashboard.AuthAuditInfo{Method: "mtls", Subject: subject, Roles: []string{principal.role}}
+		}
+	}
+	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, inner)
 	if oidcAuthenticator != nil {
 		handler = oidcAuthenticator.middleware(handler)
 	}
@@ -544,15 +560,71 @@ func dashboardTrustCRLSource(configuredPath string) (func() (*license.CRL, error
 // with a WWW-Authenticate challenge so browsers prompt for credentials; the
 // inner dashboard handler re-checks the same predicate via Options.Authorize as
 // defense in depth.
-func dashboardAuthHandler(authorized func(*http.Request) bool, next http.Handler) http.Handler {
+func dashboardAuthHandler(
+	authorized func(*http.Request) bool,
+	authInfo func(*http.Request) dashboard.AuthAuditInfo,
+	auditWriter io.Writer,
+	next http.Handler,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(r) {
+			recordDashboardAuthDenied(auditWriter, r, authInfo)
 			w.Header().Set("WWW-Authenticate", `Basic realm="pipelock dashboard", charset="UTF-8"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
+		if authInfo != nil {
+			r = r.WithContext(dashboard.WithAuthAuditInfo(r.Context(), authInfo(r)))
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo func(*http.Request) dashboard.AuthAuditInfo) {
+	if auditWriter == nil {
+		return
+	}
+	info := dashboard.AuthAuditInfo{Method: "none", FailureReason: "missing_token"}
+	if authInfo != nil {
+		info = authInfo(r)
+	}
+	if info.FailureReason == "" {
+		info.FailureReason = "unauthorized"
+	}
+	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied method=%s path=%q auth_method=%s auth_subject=%q auth_roles=%q reason=%s remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), r.Method, r.URL.Path,
+		dashboardAuditLogValue(info.Method), dashboardAuditLogValue(info.Subject),
+		strings.Join(dashboardAuditLogValues(info.Roles), ","), dashboardAuditLogValue(info.FailureReason), r.RemoteAddr)
+}
+
+func dashboardAuditLogValues(values []string) []string {
+	if len(values) == 0 {
+		return []string{"-"}
+	}
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = dashboardAuditLogValue(value)
+	}
+	return out
+}
+
+func dashboardAuditLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 0x20 && r <= 0x7e {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('?')
+	}
+	if b.Len() == 0 {
+		return "-"
+	}
+	return b.String()
 }
 
 // dashboardTokenMatches accepts the operator token as either a Bearer token

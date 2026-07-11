@@ -760,7 +760,7 @@ func TestDashboardGlobalAuthorizationScopesComplianceToken(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			handler := dashboardAuthHandler(authorized, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handler := dashboardAuthHandler(authorized, nil, nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusNoContent)
 			}))

@@ -477,7 +477,7 @@ func TestDashboardMTLS_RoutePermissionsAndRaw(t *testing.T) {
 		AuthorizePermission: authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 	})
-	server := httptest.NewUnstartedServer(dashboardAuthHandler(metaAuthorized, inner))
+	server := httptest.NewUnstartedServer(dashboardAuthHandler(metaAuthorized, nil, nil, inner))
 	server.TLS = &tls.Config{
 		Certificates: []tls.Certificate{pki.serverCert},
 		ClientAuth:   tls.RequireAndVerifyClientCert,

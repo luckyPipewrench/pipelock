@@ -16,13 +16,19 @@ import (
 )
 
 func TestWriteStateMarkerRejectsTempFileWriteFailure(t *testing.T) {
+	if raceEnabled {
+		t.Skip("RLIMIT_FSIZE is process-wide and can interfere with the race test harness")
+	}
 	var old syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
 		t.Fatalf("Getrlimit: %v", err)
 	}
 	signal.Ignore(syscall.SIGXFSZ)
-	t.Cleanup(func() {
+	restoreLimit := func() {
 		_ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &old)
+	}
+	t.Cleanup(func() {
+		restoreLimit()
 		signal.Reset(syscall.SIGXFSZ)
 	})
 	limited := old
@@ -40,10 +46,11 @@ func TestWriteStateMarkerRejectsTempFileWriteFailure(t *testing.T) {
 		BundleSHA256: strings.Repeat("b", 64),
 		BundlePath:   filepath.Join(dir, "bundle.json"),
 	})
+	restoreLimit()
 	if err == nil || !strings.Contains(err.Error(), "write anchor-state temp file") {
 		t.Fatalf("WriteStateMarker err = %v, want temp write failure", err)
 	}
-	matches, globErr := filepath.Glob(filepath.Join(dir, ".anchor-state-*.tmp"))
+	matches, globErr := filepath.Glob(filepath.Join(dir, "anchor-state.d", ".anchor-state-*.tmp"))
 	if globErr != nil {
 		t.Fatalf("Glob temp markers: %v", globErr)
 	}
@@ -71,7 +78,7 @@ func TestWriteStateMarkerRejectsUnwritableDirectory(t *testing.T) {
 		BundleSHA256: strings.Repeat("b", 64),
 		BundlePath:   filepath.Join(dir, "bundle.json"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "create anchor-state temp file") {
-		t.Fatalf("WriteStateMarker err = %v, want create temp file failure", err)
+	if err == nil || !strings.Contains(err.Error(), "create anchor-state directory") {
+		t.Fatalf("WriteStateMarker err = %v, want create directory failure", err)
 	}
 }

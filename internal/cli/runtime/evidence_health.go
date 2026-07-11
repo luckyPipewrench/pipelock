@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -183,11 +184,13 @@ func (h *evidenceHealthMonitor) refreshAnchor() {
 		h.setAnchor(nil)
 		return
 	}
-	state, err := readAnchorState(filepath.Join(h.recorder.Dir(), evidenceAnchorStateFile))
+	state, found, err := readAnchorStateForSession(h.recorder.Dir(), transcriptRootSessionID)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			h.fail("sampler_error", err)
-		}
+		h.setAnchor(nil)
+		h.fail("sampler_error", err)
+		return
+	}
+	if !found {
 		h.setAnchor(nil)
 		return
 	}
@@ -549,6 +552,51 @@ func readAnchorState(path string) (anchorState, error) {
 		return anchorState{}, errors.New("anchor-state has trailing JSON")
 	}
 	return state, nil
+}
+
+func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error) {
+	legacy, err := readAnchorState(filepath.Join(dir, evidenceAnchorStateFile))
+	if err == nil && legacy.SessionID != sessionID {
+		return anchorState{}, false, fmt.Errorf("anchor-state session_id %q does not match %q", legacy.SessionID, sessionID)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return anchorState{}, false, err
+	}
+	markers, err := anchor.LoadStateMarkers(dir)
+	if err != nil {
+		return anchorState{}, false, err
+	}
+	var selected anchorState
+	found := false
+	for _, marker := range markers {
+		if marker.SessionID != sessionID {
+			continue
+		}
+		state := anchorStateFromMarker(marker)
+		if !found || state.FinalSeq > selected.FinalSeq {
+			selected = state
+			found = true
+			continue
+		}
+		if state.FinalSeq == selected.FinalSeq && state.RootHash != selected.RootHash {
+			return anchorState{}, false, fmt.Errorf("ambiguous anchor-state markers for session %q at final_seq %d", sessionID, state.FinalSeq)
+		}
+	}
+	return selected, found, nil
+}
+
+func anchorStateFromMarker(marker anchor.StateMarker) anchorState {
+	return anchorState{
+		Schema:       marker.Schema,
+		SessionID:    marker.SessionID,
+		FinalSeq:     marker.FinalSeq,
+		RootHash:     marker.RootHash,
+		Backend:      marker.Backend,
+		LogIndex:     marker.LogIndex,
+		AnchoredAt:   marker.AnchoredAt,
+		BundleSHA256: marker.BundleSHA256,
+		BundlePath:   marker.BundlePath,
+	}
 }
 
 func validateAnchorStateMarker(state anchorState, now time.Time) error {

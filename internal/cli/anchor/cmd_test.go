@@ -73,7 +73,7 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	receiptsPath, keyHex := cliReceiptJSONL(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "anchor.jsonl")
-	bundlePath := filepath.Join(dir, "bundle.json")
+	bundlePath := filepath.Join(filepath.Dir(receiptsPath), "bundle.json")
 
 	cmd := receiptsCmd()
 	var out bytes.Buffer
@@ -98,6 +98,13 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	if bundle.Proof.Backend != anchorpkg.LocalBackend || bundle.Proof.LogIndex != 0 {
 		t.Fatalf("unexpected bundle proof: %+v", bundle.Proof)
 	}
+	markers, err := anchorpkg.LoadStateMarkers(filepath.Dir(receiptsPath))
+	if err != nil {
+		t.Fatalf("LoadStateMarkers: %v", err)
+	}
+	if len(markers) != 1 || markers[0].BundlePath != "bundle.json" {
+		t.Fatalf("anchor markers = %+v, want receipt-directory-relative bundle path", markers)
+	}
 	entries, err := anchorpkg.ReadLocalLog(logPath)
 	if err != nil {
 		t.Fatalf("ReadLocalLog: %v", err)
@@ -110,7 +117,7 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 	receiptsPath, keyHex := cliReceiptJSONL(t)
 	dir := t.TempDir()
-	bundlePath := filepath.Join(dir, "bundle.json")
+	bundlePath := filepath.Join(filepath.Dir(receiptsPath), "bundle.json")
 	rekorKey := writeRekorKey(t, dir)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/log/entries" {
@@ -205,6 +212,7 @@ func TestCmdRegistersReceiptsSubcommand(t *testing.T) {
 
 func TestReceiptsCmdRequiresLocalLogAndOutput(t *testing.T) {
 	receiptsPath, keyHex := cliReceiptJSONL(t)
+	receiptDir := filepath.Dir(receiptsPath)
 	tests := []struct {
 		name string
 		args []string
@@ -212,7 +220,7 @@ func TestReceiptsCmdRequiresLocalLogAndOutput(t *testing.T) {
 	}{
 		{
 			name: "local log",
-			args: []string{receiptsPath, "--key", keyHex, "--out", filepath.Join(t.TempDir(), "bundle.json")},
+			args: []string{receiptsPath, "--key", keyHex, "--out", filepath.Join(receiptDir, "bundle.json")},
 			want: "--local-log is required",
 		},
 		{
@@ -241,7 +249,7 @@ func TestReceiptsCmdRequiresRekorKey(t *testing.T) {
 		receiptsPath,
 		"--key", keyHex,
 		"--backend", anchorpkg.RekorBackend,
-		"--out", filepath.Join(t.TempDir(), "bundle.json"),
+		"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--rekor-key is required") {
 		t.Fatalf("Execute err = %v, want Rekor key error", err)
@@ -258,7 +266,7 @@ func TestReceiptsCmdRequiresRekorRemoteAcknowledgement(t *testing.T) {
 		"--key", keyHex,
 		"--backend", anchorpkg.RekorBackend,
 		"--rekor-key", writeRekorKey(t, dir),
-		"--out", filepath.Join(dir, "bundle.json"),
+		"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--yes-send-to-remote-log is required") {
 		t.Fatalf("Execute err = %v, want Rekor acknowledgement error", err)
@@ -272,7 +280,7 @@ func TestReceiptsCmdRequiresPinnedKey(t *testing.T) {
 	cmd.SetArgs([]string{
 		receiptsPath,
 		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
-		"--out", filepath.Join(t.TempDir(), "bundle.json"),
+		"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "at least one --key") {
 		t.Fatalf("Execute err = %v, want pinned-key error", err)
@@ -290,7 +298,7 @@ func TestReceiptsCmdRejectsBlankPinnedKey(t *testing.T) {
 				"--key", key,
 				"--key", keyHex,
 				"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
-				"--out", filepath.Join(t.TempDir(), "bundle.json"),
+				"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
 			})
 			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "public key is empty") {
 				t.Fatalf("Execute err = %v, want blank-key error", err)
@@ -308,7 +316,7 @@ func TestReceiptsCmdReturnsFallbackExtractionError(t *testing.T) {
 		missingPath,
 		"--key", keyHex,
 		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
-		"--out", filepath.Join(t.TempDir(), "bundle.json"),
+		"--out", "bundle.json",
 	})
 	err := cmd.Execute()
 	if err == nil {
@@ -316,6 +324,22 @@ func TestReceiptsCmdReturnsFallbackExtractionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reading raw receipts") {
 		t.Fatalf("Execute err = %v, want fallback raw-receipt error", err)
+	}
+}
+
+func TestReceiptsCmdRejectsOutsideBundleOutput(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	outside := filepath.Join(t.TempDir(), "bundle.json")
+	cmd := receiptsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", outside,
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "under the receipt directory") {
+		t.Fatalf("Execute err = %v, want outside --out refusal", err)
 	}
 }
 

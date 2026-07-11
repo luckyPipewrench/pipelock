@@ -96,19 +96,30 @@ func newFileAnchorResolver(
 		return nil, errors.New("receipt directory is not a directory")
 	}
 	return func(sessionID string) (*anchor.Bundle, anchor.Backend, bool, error) {
-		marker, found, loadErr := loadAnchorMarker(baseDir)
+		markers, loadErr := loadAnchorMarkers(baseDir)
 		if loadErr != nil {
 			return nil, nil, true, loadErr
 		}
-		if !found {
+		if len(markers) == 0 {
 			return nil, nil, expected, nil
 		}
-		if marker.SessionID != sessionID {
-			// A marker proves anchoring is in use in this receipt directory. Since
-			// the v1 state format has only one slot, a later session can overwrite
-			// an older session's marker. Treat the displaced session as expected-
-			// but-missing instead of letting the overwrite downgrade it to "not
-			// expected" when the global policy flag is false.
+		var marker anchorStateMarker
+		found := false
+		for _, candidate := range markers {
+			if candidate.SessionID != sessionID {
+				continue
+			}
+			if found {
+				return nil, nil, true, fmt.Errorf("ambiguous anchor-state markers for session %q", sessionID)
+			}
+			marker = candidate
+			found = true
+		}
+		if !found {
+			// A marker proves anchoring is in use in this receipt directory. Treat
+			// sessions without their own marker as expected-but-missing instead of
+			// downgrading them to "not expected" when the global policy flag is
+			// false.
 			return nil, nil, true, nil
 		}
 		bundleBytes, readErr := readConfinedRegularFile(
@@ -138,20 +149,106 @@ func newFileAnchorResolver(
 	}, nil
 }
 
-type anchorStateMarker struct {
-	Schema       string    `json:"schema"`
-	SessionID    string    `json:"session_id"`
-	FinalSeq     uint64    `json:"final_seq"`
-	RootHash     string    `json:"root_hash"`
-	Backend      string    `json:"backend"`
-	LogIndex     uint64    `json:"log_index"`
-	AnchoredAt   time.Time `json:"anchored_at"`
-	BundleSHA256 string    `json:"bundle_sha256"`
-	BundlePath   string    `json:"bundle_path"`
-}
+type anchorStateMarker = anchor.StateMarker
 
 func loadAnchorMarker(baseDir string) (anchorStateMarker, bool, error) {
-	data, err := readConfinedRegularFile(baseDir, "anchor-state.json", maxAnchorMarkerBytes, "anchor-state marker")
+	markers, err := loadAnchorMarkers(baseDir)
+	if err != nil {
+		return anchorStateMarker{}, false, err
+	}
+	if len(markers) == 0 {
+		return anchorStateMarker{}, false, nil
+	}
+	if len(markers) > 1 {
+		return anchorStateMarker{}, false, errors.New("anchor-state index has multiple markers")
+	}
+	return markers[0], true, nil
+}
+
+func loadAnchorMarkers(baseDir string) ([]anchorStateMarker, error) {
+	var markers []anchorStateMarker
+	legacy, found, err := loadAnchorMarkerFile(baseDir, "anchor-state.json")
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		markers = append(markers, legacy)
+	}
+	indexMarkers, err := loadAnchorIndexMarkers(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]string, len(markers)+len(indexMarkers))
+	for _, marker := range markers {
+		seen[anchorStateIdentity(marker)] = "anchor-state.json"
+	}
+	for _, indexed := range indexMarkers {
+		key := anchorStateIdentity(indexed.marker)
+		if previous, ok := seen[key]; ok {
+			return nil, fmt.Errorf("anchor-state marker %q duplicates %q", indexed.name, previous)
+		}
+		seen[key] = indexed.name
+		markers = append(markers, indexed.marker)
+	}
+	return markers, nil
+}
+
+type indexedAnchorMarker struct {
+	name   string
+	marker anchorStateMarker
+}
+
+func loadAnchorIndexMarkers(baseDir string) ([]indexedAnchorMarker, error) {
+	indexDir := filepath.Join(baseDir, "anchor-state.d")
+	indexInfo, err := os.Lstat(indexDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect anchor-state index: %w", err)
+	}
+	if indexInfo.Mode()&os.ModeSymlink != 0 || !indexInfo.IsDir() {
+		return nil, errors.New("anchor-state index is not a regular directory")
+	}
+	entries, err := os.ReadDir(indexDir)
+	if err != nil {
+		return nil, fmt.Errorf("read anchor-state index: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	markers := make([]indexedAnchorMarker, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".json" {
+			return nil, fmt.Errorf("read anchor-state index: unexpected marker %q", name)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("inspect anchor-state marker %q: %w", name, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("read anchor-state marker %q: not a regular file", name)
+		}
+		marker, found, err := loadAnchorMarkerFile(baseDir, filepath.Join("anchor-state.d", name))
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		wantPath, err := anchor.StateMarkerPath(baseDir, marker)
+		if err != nil {
+			return nil, err
+		}
+		if filepath.Base(wantPath) != name {
+			return nil, fmt.Errorf("anchor-state marker %q does not match marker identity", name)
+		}
+		markers = append(markers, indexedAnchorMarker{name: name, marker: marker})
+	}
+	return markers, nil
+}
+
+func loadAnchorMarkerFile(baseDir, relativePath string) (anchorStateMarker, bool, error) {
+	data, err := readConfinedRegularFile(baseDir, relativePath, maxAnchorMarkerBytes, "anchor-state marker")
 	if errors.Is(err, os.ErrNotExist) {
 		return anchorStateMarker{}, false, nil
 	}
@@ -178,6 +275,10 @@ func loadAnchorMarker(baseDir string) (anchorStateMarker, bool, error) {
 		return anchorStateMarker{}, false, errors.New("anchor-state marker has invalid required fields")
 	}
 	return marker, true, nil
+}
+
+func anchorStateIdentity(marker anchorStateMarker) string {
+	return marker.SessionID + "\x00" + fmt.Sprint(marker.FinalSeq) + "\x00" + marker.RootHash
 }
 
 func readConfinedRegularFile(baseDir, relativePath string, maxBytes int64, label string) ([]byte, error) {

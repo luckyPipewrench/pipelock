@@ -17,6 +17,7 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 
+	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -544,6 +545,45 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	}
 }
 
+func TestEvidenceHealthReadsIndexedAnchorStateMarkers(t *testing.T) {
+	h, _, e, _ := newEvidenceHealthTestMonitor(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+	if _, err := os.Stat(filepath.Join(h.recorder.Dir(), evidenceAnchorStateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy anchor-state presence err = %v, want absent legacy marker", err)
+	}
+
+	older := validEvidenceHealthAnchorState()
+	older.FinalSeq = 0
+	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(older)); err != nil {
+		t.Fatalf("WriteStateMarker older: %v", err)
+	}
+	newer := validEvidenceHealthAnchorState()
+	newer.FinalSeq = 1
+	newer.RootHash = strings.Repeat("c", 64)
+	newer.BundleSHA256 = strings.Repeat("d", 64)
+	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(newer)); err != nil {
+		t.Fatalf("WriteStateMarker newer: %v", err)
+	}
+
+	h.runPass()
+
+	stats, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable")
+	}
+	if stats.Anchor == nil {
+		t.Fatal("indexed anchor-state marker did not produce anchor stats")
+	}
+	if stats.Anchor.FinalSeq != newer.FinalSeq || stats.Anchor.RootHash != newer.RootHash {
+		t.Fatalf("anchor stats = %+v, want latest indexed marker final_seq/root", stats.Anchor)
+	}
+	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
+		t.Fatal("fresh indexed marker did not set anchoring_fresh")
+	}
+}
+
 func newEvidenceHealthTestMonitor(
 	t *testing.T,
 	mutate func(*config.Config),
@@ -648,6 +688,20 @@ func writeEvidenceHealthAnchorState(t *testing.T, dir string, state anchorState)
 	}
 	if err := os.WriteFile(filepath.Join(dir, evidenceAnchorStateFile), append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func anchorStateToMarker(state anchorState) anchorpkg.StateMarker {
+	return anchorpkg.StateMarker{
+		Schema:       state.Schema,
+		SessionID:    state.SessionID,
+		FinalSeq:     state.FinalSeq,
+		RootHash:     state.RootHash,
+		Backend:      state.Backend,
+		LogIndex:     state.LogIndex,
+		AnchoredAt:   state.AnchoredAt,
+		BundleSHA256: state.BundleSHA256,
+		BundlePath:   state.BundlePath,
 	}
 }
 

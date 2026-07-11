@@ -33,7 +33,9 @@ const (
 type oidcTestProvider struct {
 	server    *httptest.Server
 	private   *rsa.PrivateKey
-	jwksDelay time.Duration
+	mu        sync.Mutex
+	jwksBlock <-chan struct{}
+	jwksStart chan<- struct{}
 	jwksReads atomic.Int32
 }
 
@@ -51,8 +53,9 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 				p.server.URL, p.server.URL+"/jwks", p.server.URL+"/authorize")
 		case "/jwks":
 			p.jwksReads.Add(1)
-			if p.jwksDelay > 0 {
-				time.Sleep(p.jwksDelay)
+			if err := p.waitForJWKSBlock(r.Context()); err != nil {
+				http.Error(w, err.Error(), http.StatusGatewayTimeout)
+				return
 			}
 			w.Header().Set("Cache-Control", "max-age=3600")
 			n := base64.RawURLEncoding.EncodeToString(private.N.Bytes())
@@ -65,6 +68,35 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 	}))
 	t.Cleanup(p.server.Close)
 	return p
+}
+
+func (p *oidcTestProvider) setJWKSBlock(block <-chan struct{}, start chan<- struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.jwksBlock = block
+	p.jwksStart = start
+}
+
+func (p *oidcTestProvider) waitForJWKSBlock(ctx context.Context) error {
+	p.mu.Lock()
+	block := p.jwksBlock
+	start := p.jwksStart
+	p.mu.Unlock()
+	if block == nil {
+		return nil
+	}
+	if start != nil {
+		select {
+		case start <- struct{}{}:
+		default:
+		}
+	}
+	select {
+	case <-block:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *oidcTestProvider) token(t *testing.T, claims map[string]any) string {
@@ -564,9 +596,12 @@ func TestDashboardOIDC_UnknownKeyRefreshIsRateLimited(t *testing.T) {
 func TestDashboardOIDC_JWKSCacheCoalescesConcurrentRefresh(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
-	p.jwksDelay = 50 * time.Millisecond
 	auth := newOIDCTestAuthenticator(t, p, now)
 	token := p.token(t, p.validClaims(now))
+	block := make(chan struct{})
+	start := make(chan struct{}, 1)
+	p.setJWKSBlock(block, start)
+	defer p.setJWKSBlock(nil, nil)
 
 	auth.keys.mu.Lock()
 	auth.keys.expiresAt = now.Add(-time.Second)
@@ -583,6 +618,12 @@ func TestDashboardOIDC_JWKSCacheCoalescesConcurrentRefresh(t *testing.T) {
 			errs <- err
 		}()
 	}
+	select {
+	case <-start:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for JWKS refresh to start")
+	}
+	close(block)
 	wg.Wait()
 	close(errs)
 	for err := range errs {

@@ -1680,6 +1680,8 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	oldCfg.Conductor.ConductorURL = "https://boss-old.example"
 	oldCfg.FileSentry.Enabled = true
 	oldCfg.FileSentry.Action = config.ActionWarn
+	oldCfg.DashboardSnapshot.Path = "/tmp/old-runtime-snapshot.json"
+	oldCfg.DashboardSnapshot.Interval = "10s"
 
 	newCfg := oldCfg.Clone()
 	newCfg.FetchProxy.Listen = "127.0.0.1:28079"
@@ -1692,6 +1694,8 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	newCfg.FlightRecorder.RequireReceipts = true
 	newCfg.Conductor.ConductorURL = "https://boss-new.example"
 	newCfg.FileSentry.Action = config.ActionBlock // file_sentry is restart-only; this change must be ignored
+	newCfg.DashboardSnapshot.Path = "/tmp/new-runtime-snapshot.json"
+	newCfg.DashboardSnapshot.Interval = "2s"
 	newCfg.ReverseProxy.Listen = "127.0.0.1:28084"
 	newCfg.ReverseProxy.Upstream = "http://127.0.0.1:2"
 
@@ -1725,6 +1729,9 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	if !reflect.DeepEqual(live.FileSentry, oldCfg.FileSentry) {
 		t.Fatalf("file_sentry settings not preserved (watcher cannot rebind at runtime): %+v", live.FileSentry)
 	}
+	if !reflect.DeepEqual(live.DashboardSnapshot, oldCfg.DashboardSnapshot) {
+		t.Fatalf("dashboard_snapshot settings not preserved (writer cannot rebind at runtime): %+v", live.DashboardSnapshot)
+	}
 	if !reflect.DeepEqual(live.ReverseProxy, oldCfg.ReverseProxy) {
 		t.Fatalf("reverse proxy settings not preserved: %+v", live.ReverseProxy)
 	}
@@ -1737,6 +1744,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		"flight_recorder.signing_key_path changed",
 		"reverse_proxy settings changed",
 		"file_sentry settings changed",
+		"dashboard_snapshot settings changed",
 	} {
 		if !buf.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, buf.String())

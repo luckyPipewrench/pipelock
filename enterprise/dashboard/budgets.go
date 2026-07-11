@@ -77,12 +77,15 @@ type AgentBudgetSessionView struct {
 
 // BudgetsOverview is the rendered budgets page.
 type BudgetsOverview struct {
-	SourceConfigured bool
-	Claim            string
-	NonClaim         string
-	RawAllowed       bool
-	Agents           []AgentBudgetView
-	Truncated        bool
+	SourceConfigured     bool
+	SourceUnavailable    bool
+	Claim                string
+	NonClaim             string
+	RawAllowed           bool
+	Agents               []AgentBudgetView
+	Truncated            bool
+	SnapshotFreshness    BudgetSnapshotFreshness
+	HasSnapshotFreshness bool
 }
 
 // Budgets builds the per-agent budget overview. It nil-degrades to an empty,
@@ -100,8 +103,14 @@ func (m *ReadModel) Budgets(ctx context.Context, rawAllowed bool) (BudgetsOvervi
 	}
 	agents, err := m.budgetSource.AllAgentBudgets(ctx, budgetAgentLimit+1)
 	if err != nil {
+		if budgetUnavailable(err) {
+			overview.SourceUnavailable = true
+			overview.SnapshotFreshness, overview.HasSnapshotFreshness = budgetFreshness(m.budgetSource)
+			return overview, nil
+		}
 		return BudgetsOverview{}, fmt.Errorf("list agent budgets: %w", err)
 	}
+	overview.SnapshotFreshness, overview.HasSnapshotFreshness = budgetFreshness(m.budgetSource)
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Agent < agents[j].Agent })
 	if len(agents) > budgetAgentLimit {
 		agents = agents[:budgetAgentLimit]
@@ -113,6 +122,14 @@ func (m *ReadModel) Budgets(ctx context.Context, rawAllowed bool) (BudgetsOvervi
 	}
 	overview.Agents = agents
 	return overview, nil
+}
+
+func budgetFreshness(source BudgetDataSource) (BudgetSnapshotFreshness, bool) {
+	freshSource, ok := source.(budgetFreshnessSource)
+	if !ok {
+		return BudgetSnapshotFreshness{}, false
+	}
+	return freshSource.BudgetFreshness()
 }
 
 func limitBudgetSessions(in []AgentBudgetView) []AgentBudgetView {
@@ -221,4 +238,15 @@ func displayBudgetTime(value time.Time) string {
 		return budgetEmptyDash
 	}
 	return value.UTC().Format(time.RFC3339)
+}
+
+func (b BudgetSnapshotFreshness) ProducedAtDisplay() string {
+	return displayBudgetTime(b.ProducedAt)
+}
+
+func (b BudgetSnapshotFreshness) AgeDisplay() string {
+	if b.Age < 0 {
+		return budgetEmptyDash
+	}
+	return b.Age.Round(time.Second).String()
 }

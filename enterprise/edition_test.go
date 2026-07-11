@@ -326,3 +326,58 @@ func TestEnterpriseEdition_Close(t *testing.T) {
 	ed.Close()
 	ed.Close() // idempotent
 }
+
+func TestEnterpriseEditionAgentBudgetSnapshots(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"zulu": {
+			Budget: config.BudgetConfig{MaxRequestsPerSession: 5, WindowMinutes: 60},
+		},
+		"alpha": {
+			Budget: config.BudgetConfig{MaxBytesPerSession: 1000, WindowMinutes: 60},
+		},
+		"unlimited": {},
+	}
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	ed, err := NewEdition(cfg, sc)
+	if err != nil {
+		t.Fatalf("NewEdition: %v", err)
+	}
+	defer ed.Close()
+
+	alpha, found := ed.LookupProfile("alpha")
+	if !found {
+		t.Fatal("alpha profile not found")
+	}
+	if err := alpha.Budget.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("record alpha budget: %v", err)
+	}
+
+	provider, ok := ed.(edition.AgentBudgetSnapshotProvider)
+	if !ok {
+		t.Fatal("enterprise edition does not implement AgentBudgetSnapshotProvider")
+	}
+	all, err := provider.AgentBudgetSnapshots(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("AgentBudgetSnapshots(default limit): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("snapshots = %+v, want two budgeted agents", all)
+	}
+	if all[0].Agent != "alpha" || all[1].Agent != "zulu" {
+		t.Fatalf("snapshot order = [%s %s], want [alpha zulu]", all[0].Agent, all[1].Agent)
+	}
+	if all[0].RequestCount != 1 || all[0].ByteCount != testByteSize {
+		t.Fatalf("alpha snapshot = %+v", all[0])
+	}
+
+	bounded, err := provider.AgentBudgetSnapshots(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("AgentBudgetSnapshots(limit 1): %v", err)
+	}
+	if len(bounded) != 1 || bounded[0].Agent != "alpha" {
+		t.Fatalf("bounded snapshots = %+v, want alpha only", bounded)
+	}
+}

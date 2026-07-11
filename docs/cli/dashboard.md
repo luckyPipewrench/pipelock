@@ -68,7 +68,7 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 |---|---|---|
 | `--receipt-dir` | (required) | Flight-recorder evidence directory holding action receipts (the runtime's `flight_recorder.dir`). |
 | `--config` | none | Optional Pipelock config file for the read-only Exemptions inventory. When omitted, `/exemptions` renders an explicit "no config loaded" state and the Evidence view still works. |
-| `--auth-token-file` | (required) | File containing the operator token for token-authenticated requests. Grants the redacted metadata view. |
+| `--auth-token-file` | none | File containing the operator token for token-authenticated requests. Required unless OIDC is configured. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
 | `--compliance-token-file` | none | Optional distinct auditor token granting only `dashboard:compliance:read`; it cannot reach evidence, raw, fleet-control preparation, or signed-action routes. |
 | `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by `/compliance`. |
@@ -76,6 +76,11 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 | `--trusted-signer` | none | Trusted receipt signing key: `(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,source=LABEL]`. Repeatable. `source` is shown in the UI as the reason the key is trusted. |
 | `--license-crl-file` | none | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
 | `--tls-cert`, `--tls-key` | none | TLS server certificate and key. Both or neither. |
+| `--oidc-issuer` | none | OIDC issuer URL used for discovery and exact issuer validation. |
+| `--oidc-audience` | none | Expected OIDC audience. Required with `--oidc-issuer` unless `--oidc-client-id` is set. |
+| `--oidc-client-id` | none | Alias for `--oidc-audience`; both values must match when both are set. |
+| `--oidc-role-claim` | none | Verified token claim containing role or group values. Required with `--oidc-issuer`. |
+| `--oidc-role-map` | none | JSON mapping of verified claim values to bounded dashboard permissions. Required with `--oidc-issuer`. |
 | `--require-client-cert` | `false` | Require a verified client certificate on every TLS connection and authorize it through the role map. Requires all three mTLS file flags below. |
 | `--client-ca-file` | none | PEM bundle of trust anchors used by TLS to verify client certificates. |
 | `--client-cert-role-map` | none | YAML file mapping client-certificate SPKI SHA-256 fingerprints to roles and bounded dashboard permissions. |
@@ -161,13 +166,14 @@ the server is running stops serving.
   `kill_switch.api_listen`: an agent routed through the proxy has no path to
   its own evidence view. Isolation from an agent running on the same host as
   a different user is deployment guidance (containment/network policy), not a
-  property this command can enforce by itself — which is why the token is
+  property this command can enforce by itself — which is why authentication is
   required even on loopback.
-- **The license check is entitlement, not identity.** In the default mode,
-  every request must carry the operator token (constant-time comparison), as a
-  `Bearer` header or as the Basic-auth password. With mutual TLS enabled, every
-  connection must instead present a verified certificate mapped to a role.
-  Missing or invalid authentication gets no evidence.
+- **The license check is entitlement, not identity.** Token-only mode requires
+  the operator token (constant-time comparison), as a `Bearer` header or as the
+  Basic-auth password. OIDC mode requires a verified bearer token whose mapped
+  roles grant bounded dashboard permissions. With mutual TLS enabled, every
+  connection must present a verified certificate mapped to a role. Missing or
+  invalid authentication gets no evidence.
 - **Cleartext refusal.** Without TLS the listener only accepts loopback
   addresses; serving a non-loopback address over plain HTTP is refused at
   startup because the operator token would transit in cleartext.
@@ -179,8 +185,9 @@ the server is running stops serving.
   verify command — but receipt destinations and full signed payloads are
   redacted, because a destination URL can carry a capability token and the raw
   payload is the largest exfil surface. Token-authenticated requests receive
-  raw detail only with `--raw-token-file`; client-certificate requests receive
-  it only when their mapped role includes `dashboard:raw:read` (fail closed).
+  raw detail only with `--raw-token-file`; OIDC and client-certificate requests
+  receive it only when their mapped permissions include `dashboard:raw:read`
+  (fail closed).
   Redaction happens before templating, so the raw bytes never reach a
   metadata-view response. The scorecard — the actual proof — does not depend
   on the raw fields.
@@ -289,6 +296,6 @@ versions, and the free-text divergence reason are hidden; the computed status �
 validity, the bounded conflict code, and the loud divergence flag — is always
 shown. The fleet applied-state summary is counts only, carries no follower
 identifiers, and is shown in full even in the metadata view. Raw detail is shown
-only to a request that authenticates with `--raw-token-file` or a mapped client
-certificate role containing `dashboard:raw:read`. There is
+only to a request that authenticates with `--raw-token-file`, or whose verified
+OIDC or client-certificate mapping contains `dashboard:raw:read`. There is
 deliberately no aggregate "all clear".

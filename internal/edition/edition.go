@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -85,6 +86,50 @@ func (noopBudget) CheckAdmission(string) error       { return nil }
 func (noopBudget) RecordBytes(int64) error           { return nil }
 func (noopBudget) RecordRequest(string, int64) error { return nil }
 func (noopBudget) RemainingBytes() int64             { return -1 }
+
+// BudgetSnapshot is a read-only, point-in-time view of a per-agent budget
+// tracker's consumption and configured limits, for observability surfaces
+// such as the Pro dashboard. It never affects enforcement. Limit fields of 0
+// mean unlimited for that dimension.
+type BudgetSnapshot struct {
+	RequestCount      int
+	ByteCount         int64
+	UniqueDomainCount int
+	WindowStart       time.Time
+
+	MaxRequests      int
+	MaxBytes         int
+	MaxUniqueDomains int
+	WindowMinutes    int
+}
+
+// BudgetSnapshotProvider is an OPT-IN, read-only observability interface a
+// BudgetChecker may additionally implement to expose current consumption. It
+// is intentionally separate from BudgetChecker so the enforcement contract
+// stays minimal and NoopBudget (unlimited) simply does not implement it.
+// Callers must type-assert and degrade gracefully when the assertion fails.
+type BudgetSnapshotProvider interface {
+	Snapshot() BudgetSnapshot
+}
+
+// AgentBudgetSnapshot pairs an agent's display name with its point-in-time
+// forward-budget snapshot, for read-only observability surfaces such as the
+// Pro dashboard. It never affects enforcement.
+type AgentBudgetSnapshot struct {
+	Agent string
+	BudgetSnapshot
+}
+
+// AgentBudgetSnapshotProvider is an OPT-IN, read-only interface an Edition may
+// additionally implement to enumerate per-agent forward-budget snapshots for an
+// observability surface. It is intentionally separate from Edition so the core
+// Edition contract stays minimal and the noop edition simply does not implement
+// it; callers type-assert and degrade gracefully when the assertion fails.
+// limit bounds the number of agents returned; a limit <= 0 means the provider's
+// own safe default cap.
+type AgentBudgetSnapshotProvider interface {
+	AgentBudgetSnapshots(ctx context.Context, limit int) ([]AgentBudgetSnapshot, error)
+}
 
 // AgentIdentity carries the resolved agent name and profile key.
 type AgentIdentity struct {

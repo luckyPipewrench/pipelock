@@ -7,6 +7,7 @@ package enterprise
 import (
 	"context"
 	"net/http"
+	"sort"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -79,6 +80,44 @@ func (e *enterpriseEdition) KnownProfiles() map[string]bool {
 		m[name] = true
 	}
 	return m
+}
+
+// defaultAgentBudgetSnapshotLimit caps how many per-agent budget snapshots are
+// returned when the caller passes a non-positive limit, bounding output
+// cardinality for the read-only observability surface.
+const defaultAgentBudgetSnapshotLimit = 1000
+
+// AgentBudgetSnapshots implements edition.AgentBudgetSnapshotProvider. It walks
+// configured profiles and returns a read-only, point-in-time forward-budget
+// snapshot for each agent whose budget tracker exposes one. NoopBudget does not
+// implement edition.BudgetSnapshotProvider, so agents without a configured
+// forward budget are omitted. It never mutates budget or enforcement state.
+// Profiles are sorted for deterministic output and bounded by limit.
+func (e *enterpriseEdition) AgentBudgetSnapshots(_ context.Context, limit int) ([]edition.AgentBudgetSnapshot, error) {
+	if limit <= 0 {
+		limit = defaultAgentBudgetSnapshotLimit
+	}
+	names := append([]string(nil), e.registry.Profiles()...)
+	sort.Strings(names)
+	out := make([]edition.AgentBudgetSnapshot, 0, len(names))
+	for _, name := range names {
+		if len(out) >= limit {
+			break
+		}
+		ra := e.registry.Lookup(name)
+		if ra == nil {
+			continue
+		}
+		sp, ok := ra.Budget.(edition.BudgetSnapshotProvider)
+		if !ok {
+			continue
+		}
+		out = append(out, edition.AgentBudgetSnapshot{
+			Agent:          name,
+			BudgetSnapshot: sp.Snapshot(),
+		})
+	}
+	return out, nil
 }
 
 // Ports returns address->profile mappings for per-agent listeners.

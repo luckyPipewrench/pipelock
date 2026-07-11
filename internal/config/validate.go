@@ -322,6 +322,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateFlightRecorder(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateDashboardSnapshot(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateMCPBinaryIntegrity(); err != nil {
 		return warnings, err
 	}
@@ -3031,6 +3034,24 @@ func (c *Config) validateFlightRecorder() error {
 	}
 	if c.FlightRecorder.RawEscrow && c.FlightRecorder.EscrowPublicKey == "" {
 		return fmt.Errorf("flight_recorder.escrow_public_key is required when raw_escrow is enabled")
+	}
+	return nil
+}
+
+func (c *Config) validateDashboardSnapshot() error {
+	raw := strings.TrimSpace(c.DashboardSnapshot.Interval)
+	if raw != "" {
+		interval, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("dashboard_snapshot.interval must parse as a duration: %w", err)
+		}
+		if interval < time.Second {
+			return fmt.Errorf("dashboard_snapshot.interval must be >= 1s")
+		}
+	}
+	if c.DashboardSnapshot.EnabledWithRecorderDir(c.FlightRecorder.Dir) &&
+		c.DashboardSnapshot.PathWithRecorderDir(c.FlightRecorder.Dir) == "" {
+		return fmt.Errorf("dashboard_snapshot.path is required when dashboard_snapshot.enabled is true and flight_recorder.dir is empty")
 	}
 	return nil
 }

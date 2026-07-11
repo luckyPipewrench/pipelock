@@ -101,9 +101,16 @@
       <h1>Per-agent budgets</h1>
       <p class="claim">Scope: {{ .Claim }}.</p>
       <p class="nonclaim">This {{ .NonClaim }}.</p>
+      {{ if .HasSnapshotFreshness }}
+        <p class="note">
+          Snapshot produced at {{ .SnapshotFreshness.ProducedAtDisplay }} (age {{ .SnapshotFreshness.AgeDisplay }}{{ if .SnapshotFreshness.Stale }}, stale{{ end }}).
+        </p>
+      {{ end }}
 
       {{ if not .SourceConfigured }}
         <div class="empty">No budget source is configured for this dashboard.</div>
+      {{ else if .SourceUnavailable }}
+        <div class="empty">Budget snapshot source unavailable. Counters are not shown because the snapshot is missing, invalid, oversized, future-dated, or stale.</div>
       {{ else if not .Agents }}
         <div class="empty">No agents have a configured forward-proxy budget or live MCP sessions.</div>
       {{ else }}

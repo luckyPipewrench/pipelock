@@ -355,6 +355,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if cfg.FlightRecorder.EvidenceHealthEnabled() && s.recorder != nil && s.metrics != nil {
 		newEvidenceHealthMonitor(s.recorder, s.metrics, s.liveReceiptEmitter, s.currentConfig, s.opts.Stderr).start(ctx, &lifecycleWG)
 	}
+	s.startDashboardRuntimeSnapshot(ctx, &lifecycleWG, cfg)
 	stopFileSentry, fsErr := s.startFileSentry(ctx, cfg, cancel)
 	if fsErr != nil {
 		return fsErr

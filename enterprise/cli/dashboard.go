@@ -130,7 +130,7 @@ because credentials would transit in cleartext.`,
 	cmd.Flags().StringVar(&opts.legalHoldStore, "legal-hold-store", "",
 		"optional legal-hold metadata store file for read-only compliance display")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
-		"optional file containing a dashboard operator token (redacted metadata view); required unless OIDC is configured")
+		"optional file containing a dashboard operator token (redacted metadata view); required unless OIDC or --require-client-cert is configured")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
 		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
 	cmd.Flags().StringVar(&opts.complianceTokenFile, "compliance-token-file", "",
@@ -352,15 +352,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	authAuditInfo := authorization.authAuditInfo
 	if clientCertAuth != nil {
 		authAuditInfo = func(r *http.Request) dashboard.AuthAuditInfo {
-			principal, ok := clientCertAuth.principal(r)
-			if !ok {
-				return dashboard.AuthAuditInfo{Method: "mtls", FailureReason: "missing_client_certificate"}
-			}
-			var subject string
-			if r != nil && r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
-				subject = dashboardClientCertSPKIFingerprint(r.TLS.VerifiedChains[0][0])
-			}
-			return dashboard.AuthAuditInfo{Method: "mtls", Subject: subject, Roles: []string{principal.role}}
+			return dashboardClientCertAuthAuditInfo(clientCertAuth, r)
 		}
 	}
 	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, inner)
@@ -580,6 +572,29 @@ func dashboardAuthHandler(
 	})
 }
 
+func dashboardClientCertAuthAuditInfo(auth *dashboardClientCertAuthorizer, r *http.Request) dashboard.AuthAuditInfo {
+	info := dashboard.AuthAuditInfo{
+		Method:        "mtls",
+		FailureReason: "missing_client_certificate",
+	}
+	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return info
+	}
+	info.Subject = dashboardClientCertSPKIFingerprint(r.TLS.PeerCertificates[0])
+	if len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		info.FailureReason = "unverified_client_certificate"
+		return info
+	}
+	principal, ok := auth.principal(r)
+	if !ok {
+		info.FailureReason = "unmapped_client_certificate"
+		return info
+	}
+	info.Roles = []string{principal.role}
+	info.FailureReason = ""
+	return info
+}
+
 func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo func(*http.Request) dashboard.AuthAuditInfo) {
 	if auditWriter == nil {
 		return
@@ -593,8 +608,8 @@ func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo 
 	}
 	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied method=%s path=%q auth_method=%s auth_subject=%q auth_roles=%q reason=%s remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), r.Method, r.URL.Path,
-		dashboardAuditLogValue(info.Method), dashboardAuditLogValue(info.Subject),
-		strings.Join(dashboardAuditLogValues(info.Roles), ","), dashboardAuditLogValue(info.FailureReason), r.RemoteAddr)
+		dashboard.AuditLogValue(info.Method), dashboard.AuditLogValue(info.Subject),
+		strings.Join(dashboardAuditLogValues(info.Roles), ","), dashboard.AuditLogValue(info.FailureReason), r.RemoteAddr)
 }
 
 func dashboardAuditLogValues(values []string) []string {
@@ -603,28 +618,9 @@ func dashboardAuditLogValues(values []string) []string {
 	}
 	out := make([]string, len(values))
 	for i, value := range values {
-		out[i] = dashboardAuditLogValue(value)
+		out[i] = dashboard.AuditLogValue(value)
 	}
 	return out
-}
-
-func dashboardAuditLogValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "-"
-	}
-	var b strings.Builder
-	for _, r := range value {
-		if r >= 0x20 && r <= 0x7e {
-			b.WriteRune(r)
-			continue
-		}
-		b.WriteByte('?')
-	}
-	if b.Len() == 0 {
-		return "-"
-	}
-	return b.String()
 }
 
 // dashboardTokenMatches accepts the operator token as either a Bearer token

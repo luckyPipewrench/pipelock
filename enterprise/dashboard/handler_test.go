@@ -28,6 +28,27 @@ const (
 	hostileJSON   = `</script><script>alert("json")</script>`
 )
 
+func TestAuditLogValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"empty", "", "-"},
+		{"trimmed empty", " \t\n ", "-"},
+		{"printable", " operator-1 ", "operator-1"},
+		{"control characters", "operator\nadmin\trole", "operator?admin?role"},
+		{"non ascii", "role-\u2603", "role-?"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AuditLogValue(tc.value); got != tc.want {
+				t.Fatalf("AuditLogValue(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHandler_Gating(t *testing.T) {
 	t.Parallel()
 
@@ -796,6 +817,48 @@ func TestHandler_AuditNotWrittenForUnauthorized(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("denied request must not be audited as access; got %q", buf.String())
+	}
+}
+
+func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var buf strings.Builder
+	handler := New(Options{
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
+		AuthorizePermission: func(*http.Request, Permission) error {
+			return errors.New("permission denied")
+		},
+		AuditWriter: &buf,
+	})
+	ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
+		Method:  "mtls",
+		Subject: "spki-sha256",
+		Roles:   []string{"metadata"},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	log := buf.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"permission=\"dashboard:evidence:read\"",
+		"auth_method=mtls",
+		"auth_subject=\"spki-sha256\"",
+		"auth_roles=\"metadata\"",
+		"reason=permission_denied",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("permission-denied audit missing %q: %s", want, log)
+		}
+	}
+	if strings.Contains(log, "pipelock-dashboard access") {
+		t.Fatalf("permission-denied request must not be audited as access: %s", log)
 	}
 }
 

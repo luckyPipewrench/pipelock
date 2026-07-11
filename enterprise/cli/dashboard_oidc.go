@@ -231,6 +231,9 @@ func newDashboardOIDCAuthenticator(ctx context.Context, opts dashboardOIDCOption
 	if err := validateDashboardOIDCURL("OIDC jwks_uri", discovery.JWKSURI); err != nil {
 		return nil, err
 	}
+	if err := validateDashboardOIDCJWKSOrigin(issuer, discovery.JWKSURI); err != nil {
+		return nil, err
+	}
 	keys := &dashboardJWKSCache{
 		uri:    discovery.JWKSURI,
 		client: client,
@@ -264,6 +267,41 @@ func validateDashboardOIDCURL(label, value string) error {
 		}
 	}
 	return fmt.Errorf("%s must use HTTPS (HTTP is allowed only for a loopback test issuer)", label)
+}
+
+func validateDashboardOIDCJWKSOrigin(issuer, jwksURI string) error {
+	issuerURL, err := url.Parse(issuer)
+	if err != nil {
+		return fmt.Errorf("--oidc-issuer: %w", err)
+	}
+	jwksURL, err := url.Parse(jwksURI)
+	if err != nil {
+		return fmt.Errorf("OIDC jwks_uri: %w", err)
+	}
+	if !sameDashboardOIDCOrigin(issuerURL, jwksURL) {
+		return fmt.Errorf("OIDC jwks_uri origin %q does not match configured issuer origin %q", jwksURL.Scheme+"://"+jwksURL.Host, issuerURL.Scheme+"://"+issuerURL.Host)
+	}
+	return nil
+}
+
+func sameDashboardOIDCOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		dashboardOIDCPort(a) == dashboardOIDCPort(b)
+}
+
+func dashboardOIDCPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 func fetchDashboardOIDCJSON(ctx context.Context, client *http.Client, endpoint string, dst any) error {
@@ -713,7 +751,7 @@ func dashboardOIDCFailureCategory(err error) string {
 	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "missing"):
+	case strings.Contains(msg, "bearer token is missing"):
 		return "missing_token"
 	case strings.Contains(msg, "signature"):
 		return "invalid_signature"

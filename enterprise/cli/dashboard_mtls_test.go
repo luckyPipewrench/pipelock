@@ -304,6 +304,73 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 	})
 }
 
+func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
+	pki := newDashboardMTLSTestPKI(t)
+	now := time.Now()
+	_, mappedLeaf := issueDashboardMTLSTestCert(t, pki.caCert, pki.caKey, dashboardMTLSTestCertOptions{
+		serial: 103, commonName: "mapped operator", notBefore: now.Add(-time.Hour), notAfter: now.Add(time.Hour),
+	})
+	_, unmappedLeaf := issueDashboardMTLSTestCert(t, pki.caCert, pki.caKey, dashboardMTLSTestCertOptions{
+		serial: 104, commonName: "unmapped operator", notBefore: now.Add(-time.Hour), notAfter: now.Add(time.Hour),
+	})
+	roleMap := writeDashboardMTLSRoleMap(t, map[string]string{
+		dashboardClientCertSPKIFingerprint(mappedLeaf): "metadata",
+	}, "  metadata:\n    permissions:\n      - dashboard:evidence:read\n")
+	authorizer, err := loadDashboardClientCertRoleMap(roleMap)
+	if err != nil {
+		t.Fatalf("load role map: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		req         *http.Request
+		wantReason  string
+		wantSubject string
+		wantRoles   []string
+	}{
+		{
+			name:       "missing certificate",
+			req:        httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil),
+			wantReason: "missing_client_certificate",
+		},
+		{
+			name:        "unverified certificate",
+			req:         dashboardMTLSTestRequest(t, mappedLeaf, false),
+			wantReason:  "unverified_client_certificate",
+			wantSubject: dashboardClientCertSPKIFingerprint(mappedLeaf),
+		},
+		{
+			name:        "verified unmapped certificate",
+			req:         dashboardMTLSTestRequest(t, unmappedLeaf, true),
+			wantReason:  "unmapped_client_certificate",
+			wantSubject: dashboardClientCertSPKIFingerprint(unmappedLeaf),
+		},
+		{
+			name:        "verified mapped certificate",
+			req:         dashboardMTLSTestRequest(t, mappedLeaf, true),
+			wantSubject: dashboardClientCertSPKIFingerprint(mappedLeaf),
+			wantRoles:   []string{"metadata"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dashboardClientCertAuthAuditInfo(authorizer, tc.req)
+			if got.Method != "mtls" {
+				t.Fatalf("Method = %q, want mtls", got.Method)
+			}
+			if got.FailureReason != tc.wantReason {
+				t.Fatalf("FailureReason = %q, want %q", got.FailureReason, tc.wantReason)
+			}
+			if got.Subject != tc.wantSubject {
+				t.Fatalf("Subject = %q, want %q", got.Subject, tc.wantSubject)
+			}
+			if strings.Join(got.Roles, ",") != strings.Join(tc.wantRoles, ",") {
+				t.Fatalf("Roles = %v, want %v", got.Roles, tc.wantRoles)
+			}
+		})
+	}
+}
+
 func TestDashboardClientCertRoleMap_DocumentedExampleParses(t *testing.T) {
 	const docPath = "../../docs/cli/dashboard.md"
 	doc, err := os.ReadFile(docPath)

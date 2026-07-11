@@ -324,15 +324,15 @@ func rawAllowedFromContext(r *http.Request) bool {
 
 func authAuditInfoFromRequest(r *http.Request) AuthAuditInfo {
 	info, _ := r.Context().Value(authAuditInfoContextKey{}).(AuthAuditInfo)
-	info.Method = auditLogValue(info.Method)
-	info.Subject = auditLogValue(info.Subject)
+	info.Method = AuditLogValue(info.Method)
+	info.Subject = AuditLogValue(info.Subject)
 	if len(info.Roles) == 0 {
 		info.Roles = []string{"-"}
 	}
 	for i, role := range info.Roles {
-		info.Roles[i] = auditLogValue(role)
+		info.Roles[i] = AuditLogValue(role)
 	}
-	info.FailureReason = auditLogValue(info.FailureReason)
+	info.FailureReason = AuditLogValue(info.FailureReason)
 	return info
 }
 
@@ -368,6 +368,30 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool, permission Per
 		time.Now().UTC().Format(time.RFC3339), role, permission, r.Method, r.URL.Path, sessionDisplay, sessionHash,
 		auditHashField(r.URL.Query().Get("org_id")), auditHashField(r.URL.Query().Get("fleet_id")),
 		auditHashField(r.URL.Query().Get("artifact_hash")), auth.Method, auth.Subject, strings.Join(auth.Roles, ","), r.RemoteAddr)
+}
+
+func (d *dashboardHandler) recordPermissionDeniedAudit(r *http.Request, permission Permission) {
+	if d.auditWriter == nil {
+		return
+	}
+	session := r.URL.Query().Get("session")
+	if session == "" {
+		rest := strings.TrimPrefix(r.URL.Path, "/session/")
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			rest = rest[:i]
+		}
+		session = rest
+	}
+	if session == "" {
+		session = "-"
+	}
+	sessionDisplay, sessionHash := auditSessionField(session)
+	auth := authAuditInfoFromRequest(r)
+	d.auditMu.Lock()
+	defer d.auditMu.Unlock()
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q session=%q session_sha256=%s auth_method=%s auth_subject=%q auth_roles=%q reason=permission_denied remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), permission, r.Method, r.URL.Path,
+		sessionDisplay, sessionHash, auth.Method, auth.Subject, strings.Join(auth.Roles, ","), r.RemoteAddr)
 }
 
 func auditSessionField(session string) (display, hash string) {
@@ -406,7 +430,8 @@ func auditHashField(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func auditLogValue(value string) string {
+// AuditLogValue normalizes untrusted values before they are written to dashboard audit logs.
+func AuditLogValue(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "-"
@@ -506,6 +531,7 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 		}
 		if d.authorizePermission != nil {
 			if err := d.authorizePermission(r, spec.permission); err != nil {
+				d.recordPermissionDeniedAudit(r, spec.permission)
 				w.Header().Set("Content-Type", contentTypeText)
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte("forbidden\n"))

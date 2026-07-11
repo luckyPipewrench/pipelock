@@ -68,7 +68,7 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 |---|---|---|
 | `--receipt-dir` | (required) | Flight-recorder evidence directory holding action receipts (the runtime's `flight_recorder.dir`). |
 | `--config` | none | Optional Pipelock config file for the read-only Exemptions inventory. When omitted, `/exemptions` renders an explicit "no config loaded" state and the Evidence view still works. |
-| `--auth-token-file` | none | File containing the operator token for token-authenticated requests. Required unless OIDC is configured. Grants the redacted metadata view. |
+| `--auth-token-file` | none | File containing the operator token for token-authenticated requests. Required unless OIDC or `--require-client-cert` is configured. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
 | `--compliance-token-file` | none | Optional distinct auditor token granting only `dashboard:compliance:read`; it cannot reach evidence, raw, fleet-control preparation, or signed-action routes. |
 | `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by `/compliance`. |

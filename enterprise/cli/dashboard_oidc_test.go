@@ -12,10 +12,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +31,30 @@ const (
 	oidcTestAudience = "pipelock-dashboard"
 	oidcTestKeyID    = "test-signing-key"
 )
+
+func TestDashboardOIDCFailureCategory(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, "-"},
+		{"missing bearer", errors.New("bearer token is missing"), "missing_token"},
+		{"missing issuer claim is invalid token", errors.New("OIDC issuer claim is missing or does not match"), "invalid_token"},
+		{"missing audience claim is invalid token", errors.New("OIDC audience claim is missing or does not match"), "invalid_token"},
+		{"missing subject claim is invalid token", errors.New("OIDC subject claim is missing or invalid"), "invalid_token"},
+		{"signature", errors.New("token signature is invalid"), "invalid_signature"},
+		{"expired", errors.New("token has expired"), "expired"},
+		{"permission denied", errors.New("role claim has no mapped value"), "permission_denied"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dashboardOIDCFailureCategory(tc.err); got != tc.want {
+				t.Fatalf("dashboardOIDCFailureCategory(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 
 type oidcTestProvider struct {
 	server    *httptest.Server
@@ -945,7 +971,7 @@ func TestDashboardOIDCAuthenticator_RejectsRedirects(t *testing.T) {
 }
 
 func TestDashboardOIDCAuthenticatorValidatesDiscoveryMetadata(t *testing.T) {
-	for _, mode := range []string{"issuer mismatch", "insecure JWKS", "empty JWKS"} {
+	for _, mode := range []string{"issuer mismatch", "insecure JWKS", "cross scheme JWKS", "cross host JWKS", "cross port JWKS", "empty JWKS"} {
 		t.Run(mode, func(t *testing.T) {
 			var server *httptest.Server
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -959,6 +985,23 @@ func TestDashboardOIDCAuthenticatorValidatesDiscoveryMetadata(t *testing.T) {
 				}
 				if mode == "insecure JWKS" {
 					jwksURI = "http://issuer.example/jwks"
+				}
+				if mode == "cross scheme JWKS" {
+					u, err := url.Parse(server.URL)
+					if err != nil {
+						t.Fatalf("parse server URL: %v", err)
+					}
+					jwksURI = "https://" + u.Host + "/jwks"
+				}
+				if mode == "cross host JWKS" {
+					jwksURI = "https://issuer.example/jwks"
+				}
+				if mode == "cross port JWKS" {
+					u, err := url.Parse(server.URL)
+					if err != nil {
+						t.Fatalf("parse server URL: %v", err)
+					}
+					jwksURI = u.Scheme + "://" + u.Hostname() + ":1/jwks"
 				}
 				_, _ = fmt.Fprintf(w, `{"issuer":%q,"jwks_uri":%q}`, issuer, jwksURI)
 			}))

@@ -5,11 +5,9 @@
 package dashboard
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,7 +18,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
-	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -96,19 +93,30 @@ func newFileAnchorResolver(
 		return nil, errors.New("receipt directory is not a directory")
 	}
 	return func(sessionID string) (*anchor.Bundle, anchor.Backend, bool, error) {
-		marker, found, loadErr := loadAnchorMarker(baseDir)
+		markers, loadErr := loadAnchorMarkers(baseDir)
 		if loadErr != nil {
 			return nil, nil, true, loadErr
 		}
-		if !found {
+		if len(markers) == 0 {
 			return nil, nil, expected, nil
 		}
-		if marker.SessionID != sessionID {
-			// A marker proves anchoring is in use in this receipt directory. Since
-			// the v1 state format has only one slot, a later session can overwrite
-			// an older session's marker. Treat the displaced session as expected-
-			// but-missing instead of letting the overwrite downgrade it to "not
-			// expected" when the global policy flag is false.
+		var marker anchorStateMarker
+		found := false
+		for _, candidate := range markers {
+			if candidate.SessionID != sessionID {
+				continue
+			}
+			if found {
+				return nil, nil, true, fmt.Errorf("ambiguous anchor-state markers for session %q", sessionID)
+			}
+			marker = candidate
+			found = true
+		}
+		if !found {
+			// A marker proves anchoring is in use in this receipt directory. Treat
+			// sessions without their own marker as expected-but-missing instead of
+			// downgrading them to "not expected" when the global policy flag is
+			// false.
 			return nil, nil, true, nil
 		}
 		bundleBytes, readErr := readConfinedRegularFile(
@@ -138,46 +146,34 @@ func newFileAnchorResolver(
 	}, nil
 }
 
-type anchorStateMarker struct {
-	Schema       string    `json:"schema"`
-	SessionID    string    `json:"session_id"`
-	FinalSeq     uint64    `json:"final_seq"`
-	RootHash     string    `json:"root_hash"`
-	Backend      string    `json:"backend"`
-	LogIndex     uint64    `json:"log_index"`
-	AnchoredAt   time.Time `json:"anchored_at"`
-	BundleSHA256 string    `json:"bundle_sha256"`
-	BundlePath   string    `json:"bundle_path"`
-}
+type anchorStateMarker = anchor.StateMarker
 
 func loadAnchorMarker(baseDir string) (anchorStateMarker, bool, error) {
-	data, err := readConfinedRegularFile(baseDir, "anchor-state.json", maxAnchorMarkerBytes, "anchor-state marker")
-	if errors.Is(err, os.ErrNotExist) {
-		return anchorStateMarker{}, false, nil
-	}
+	markers, err := loadAnchorMarkers(baseDir)
 	if err != nil {
 		return anchorStateMarker{}, false, err
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return anchorStateMarker{}, false, fmt.Errorf("parse anchor-state marker: %w", err)
+	if len(markers) == 0 {
+		return anchorStateMarker{}, false, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var marker anchorStateMarker
-	if err := dec.Decode(&marker); err != nil {
-		return anchorStateMarker{}, false, fmt.Errorf("parse anchor-state marker: %w", err)
+	if len(markers) > 1 {
+		return anchorStateMarker{}, false, errors.New("anchor-state index has multiple markers")
 	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return anchorStateMarker{}, false, errors.New("parse anchor-state marker: trailing JSON")
+	return markers[0], true, nil
+}
+
+func loadAnchorMarkers(baseDir string) ([]anchorStateMarker, error) {
+	markers, err := anchor.LoadStateMarkers(baseDir)
+	if err != nil {
+		return nil, err
 	}
-	if marker.Schema != "pipelock.anchorstate.v1" || strings.TrimSpace(marker.SessionID) == "" ||
-		strings.TrimSpace(marker.BundlePath) == "" || marker.AnchoredAt.IsZero() || marker.AnchoredAt.After(time.Now()) ||
-		len(marker.RootHash) != sha256.Size*2 ||
-		len(marker.BundleSHA256) != sha256.Size*2 {
-		return anchorStateMarker{}, false, errors.New("anchor-state marker has invalid required fields")
+	now := time.Now()
+	for _, marker := range markers {
+		if marker.AnchoredAt.IsZero() || marker.AnchoredAt.After(now) {
+			return nil, errors.New("anchor-state marker has invalid required fields")
+		}
 	}
-	return marker, true, nil
+	return markers, nil
 }
 
 func readConfinedRegularFile(baseDir, relativePath string, maxBytes int64, label string) ([]byte, error) {

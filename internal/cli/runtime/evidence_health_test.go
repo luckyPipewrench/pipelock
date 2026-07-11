@@ -11,12 +11,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
 
+	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -447,6 +449,163 @@ func TestReadAnchorStateStrictJSON(t *testing.T) {
 	}
 }
 
+func TestReadAnchorStateFilesystemGuards(t *testing.T) {
+	valid := validEvidenceHealthAnchorState()
+	valid.AnchoredAt = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	validData, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("Marshal valid anchor state: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir string) string
+		wantErr string
+	}{
+		{
+			name: "symlink",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				if runtime.GOOS == "windows" {
+					t.Skip("symlink creation needs privileges on Windows")
+				}
+				target := filepath.Join(dir, "target-anchor-state.json")
+				if err := os.WriteFile(target, append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile target: %v", err)
+				}
+				link := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.Symlink(filepath.Base(target), link); err != nil {
+					t.Fatalf("Symlink anchor state: %v", err)
+				}
+				return link
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "non regular",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatalf("Mkdir anchor state: %v", err)
+				}
+				return path
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "oversized",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.WriteFile(path, make([]byte, maxEvidenceAnchorStateBytes+1), 0o600); err != nil {
+					t.Fatalf("WriteFile oversized anchor state: %v", err)
+				}
+				return path
+			},
+			wantErr: "exceeds size limit",
+		},
+		{
+			name: "valid",
+			setup: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, evidenceAnchorStateFile)
+				if err := os.WriteFile(path, append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile valid anchor state: %v", err)
+				}
+				return path
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := readAnchorState(tc.setup(t, t.TempDir()))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("readAnchorState err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readAnchorState: %v", err)
+			}
+			if got.SessionID != valid.SessionID || got.BundleSHA256 != valid.BundleSHA256 {
+				t.Fatalf("readAnchorState = %+v, want valid marker", got)
+			}
+		})
+	}
+}
+
+func TestReadAnchorStateForSessionFailsClosedOnConflicts(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir string)
+		wantErr string
+	}{
+		{
+			name: "legacy session mismatch",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				state := validEvidenceHealthAnchorState()
+				state.SessionID = "different-session"
+				writeEvidenceHealthAnchorState(t, dir, state)
+			},
+			wantErr: "does not match",
+		},
+		{
+			name: "ambiguous indexed markers",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				first := anchorStateToMarker(validEvidenceHealthAnchorState())
+				if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
+					t.Fatalf("WriteStateMarker first: %v", err)
+				}
+				second := first
+				second.RootHash = strings.Repeat("c", 64)
+				second.BundleSHA256 = strings.Repeat("d", 64)
+				if err := anchorpkg.WriteStateMarker(dir, second); err != nil {
+					t.Fatalf("WriteStateMarker second: %v", err)
+				}
+			},
+			wantErr: "ambiguous anchor-state markers",
+		},
+		{
+			name: "ambiguous lower sequence markers",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				first := anchorStateToMarker(validEvidenceHealthAnchorState())
+				first.FinalSeq = 1
+				if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
+					t.Fatalf("WriteStateMarker first: %v", err)
+				}
+				higher := first
+				higher.FinalSeq = 2
+				higher.RootHash = strings.Repeat("c", 64)
+				higher.BundleSHA256 = strings.Repeat("d", 64)
+				if err := anchorpkg.WriteStateMarker(dir, higher); err != nil {
+					t.Fatalf("WriteStateMarker higher: %v", err)
+				}
+				conflictingLower := first
+				conflictingLower.RootHash = strings.Repeat("e", 64)
+				conflictingLower.BundleSHA256 = strings.Repeat("f", 64)
+				if err := anchorpkg.WriteStateMarker(dir, conflictingLower); err != nil {
+					t.Fatalf("WriteStateMarker conflicting lower: %v", err)
+				}
+			},
+			wantErr: "ambiguous anchor-state markers",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.setup(t, dir)
+			if _, found, err := readAnchorStateForSession(dir, transcriptRootSessionID); err == nil || found || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("readAnchorStateForSession found=%v err=%v, want %q", found, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestEvidenceHealthNilGuardHelpers(t *testing.T) {
 	var nilMonitor *evidenceHealthMonitor
 	if got := nilMonitor.interval(); got != config.DefaultEvidenceHealthSelfAuditInterval {
@@ -541,6 +700,45 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	}
 	if afterStale.CurrentAEL != 2 {
 		t.Fatalf("current AEL = %d, want 2 for stale marker", afterStale.CurrentAEL)
+	}
+}
+
+func TestEvidenceHealthReadsIndexedAnchorStateMarkers(t *testing.T) {
+	h, _, e, _ := newEvidenceHealthTestMonitor(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+	if _, err := os.Stat(filepath.Join(h.recorder.Dir(), evidenceAnchorStateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy anchor-state presence err = %v, want absent legacy marker", err)
+	}
+
+	older := validEvidenceHealthAnchorState()
+	older.FinalSeq = 0
+	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(older)); err != nil {
+		t.Fatalf("WriteStateMarker older: %v", err)
+	}
+	newer := validEvidenceHealthAnchorState()
+	newer.FinalSeq = 1
+	newer.RootHash = strings.Repeat("c", 64)
+	newer.BundleSHA256 = strings.Repeat("d", 64)
+	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(newer)); err != nil {
+		t.Fatalf("WriteStateMarker newer: %v", err)
+	}
+
+	h.runPass()
+
+	stats, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable")
+	}
+	if stats.Anchor == nil {
+		t.Fatal("indexed anchor-state marker did not produce anchor stats")
+	}
+	if stats.Anchor.FinalSeq != newer.FinalSeq || stats.Anchor.RootHash != newer.RootHash {
+		t.Fatalf("anchor stats = %+v, want latest indexed marker final_seq/root", stats.Anchor)
+	}
+	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
+		t.Fatal("fresh indexed marker did not set anchoring_fresh")
 	}
 }
 
@@ -648,6 +846,20 @@ func writeEvidenceHealthAnchorState(t *testing.T, dir string, state anchorState)
 	}
 	if err := os.WriteFile(filepath.Join(dir, evidenceAnchorStateFile), append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func anchorStateToMarker(state anchorState) anchorpkg.StateMarker {
+	return anchorpkg.StateMarker{
+		Schema:       state.Schema,
+		SessionID:    state.SessionID,
+		FinalSeq:     state.FinalSeq,
+		RootHash:     state.RootHash,
+		Backend:      state.Backend,
+		LogIndex:     state.LogIndex,
+		AnchoredAt:   state.AnchoredAt,
+		BundleSHA256: state.BundleSHA256,
+		BundlePath:   state.BundlePath,
 	}
 }
 

@@ -32,6 +32,14 @@ func Load(path string) (*Config, error) {
 	return load(path, loadOptions{resolveLicense: true})
 }
 
+// LoadBytes parses, defaults, and validates a Pipelock config from memory using
+// the same post-read pipeline as Load. Relative companion-file paths resolve
+// from the current working directory because there is no on-disk config path.
+func LoadBytes(data []byte) (*Config, error) {
+	copied := append([]byte(nil), data...)
+	return loadBytes(copied, "<memory>", ".", loadOptions{resolveLicense: true})
+}
+
 // LoadForRules reads config for rules subcommands. It preserves strict YAML
 // parsing, defaults, path resolution, and validation, but intentionally skips
 // license_file resolution because rules operations only need rules/trusted-key
@@ -67,7 +75,14 @@ func load(path string, opts loadOptions) (*Config, error) {
 			return nil, fmt.Errorf("reading config %s: %w", path, err)
 		}
 	}
+	configDir := "."
+	if path != "-" {
+		configDir = filepath.Dir(path)
+	}
+	return loadBytes(data, path, configDir, opts)
+}
 
+func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Config, error) {
 	cfg := &Config{}
 	// Strict parse: reject unknown top-level and nested fields so typos like
 	// `sentinel_path` (should be `sentinel_file`) or `escalation_threshold`
@@ -77,7 +92,7 @@ func load(path string, opts loadOptions) (*Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, fmt.Errorf("parsing config %s: %w", sourceName, err)
 	}
 	// Reject trailing documents. yaml.v3 Decoder.Decode consumes exactly one
 	// document per call, so a config with `---`-separated extra documents
@@ -86,9 +101,9 @@ func load(path string, opts loadOptions) (*Config, error) {
 	// config. Require a single document.
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
-		return nil, fmt.Errorf("parsing config %s: multiple YAML documents not supported (pipelock config must be a single document)", path)
+		return nil, fmt.Errorf("parsing config %s: multiple YAML documents not supported (pipelock config must be a single document)", sourceName)
 	} else if !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, fmt.Errorf("parsing config %s: %w", sourceName, err)
 	}
 
 	cfg.rawBytes = data
@@ -104,10 +119,10 @@ func load(path string, opts loadOptions) (*Config, error) {
 		// - PIPELOCK_LICENSE_KEY env var (containers, CI)
 		// - license_file config field (file path, read at startup)
 		// - license_key config field (inline YAML, lowest priority)
-		if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
+		if err := cfg.resolveLicenseKey(configDir); err != nil {
 			return nil, fmt.Errorf("license key: %w", err)
 		}
-		cfg.resolveLicenseIntermediate(filepath.Dir(path))
+		cfg.resolveLicenseIntermediate(configDir)
 		cfg.resolveLicenseRuntimeVerification()
 
 		// Soft-gate premium features: disable agents section if no license key.
@@ -132,13 +147,12 @@ func load(path string, opts loadOptions) (*Config, error) {
 
 	// Resolve relative secrets_file path relative to config file directory.
 	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
-		cfg.DLP.SecretsFile = filepath.Join(filepath.Dir(path), cfg.DLP.SecretsFile)
+		cfg.DLP.SecretsFile = filepath.Join(configDir, cfg.DLP.SecretsFile)
 	}
 
 	// Resolve relative CA cert/key paths relative to config file directory.
 	// This ensures TLS interception works under systemd (CWD=/), containers,
 	// and when --config points to a non-local path.
-	configDir := filepath.Dir(path)
 	if cfg.TLSInterception.CACertPath != "" && !filepath.IsAbs(cfg.TLSInterception.CACertPath) {
 		cfg.TLSInterception.CACertPath = filepath.Join(configDir, cfg.TLSInterception.CACertPath)
 	}

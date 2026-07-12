@@ -8,7 +8,6 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -326,45 +325,84 @@ func TestPolicyBundlePayloadPolicyHashAcceptsBalancedPresetFractionalFloats(t *t
 	if first == "" || first != second {
 		t.Fatalf("PolicyHash not deterministic: first=%q second=%q", first, second)
 	}
+	loaded, err := config.LoadBytes(presetYAML)
+	if err != nil {
+		t.Fatalf("config.LoadBytes(balanced preset): %v", err)
+	}
+	if want := loaded.CanonicalPolicyHash(); first != want {
+		t.Fatalf("PolicyHash() = %s, want loaded CanonicalPolicyHash %s", first, want)
+	}
 }
 
-func TestPolicyBundlePayloadPolicyHashNumericCanonicalizationEdges(t *testing.T) {
-	t.Run("integral_float_preserves_integer_hash", func(t *testing.T) {
-		intPayload := PolicyBundlePayload{ConfigYAML: "threshold: 4\n"}
-		floatPayload := PolicyBundlePayload{ConfigYAML: "threshold: 4.0\n"}
-		intHash, err := intPayload.PolicyHash()
+func TestPolicyBundlePayloadPolicyHashUsesLoadedConfig(t *testing.T) {
+	yamlSrc := "mode: strict\napi_allowlist:\n  - api.vendor.example\nfetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n"
+	payload := PolicyBundlePayload{ConfigYAML: yamlSrc}
+	hash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(): %v", err)
+	}
+	loadedFromBytes, err := config.LoadBytes([]byte(yamlSrc))
+	if err != nil {
+		t.Fatalf("config.LoadBytes(): %v", err)
+	}
+	loadedFromDisk, err := loadConfigFromYAML(t, yamlSrc)
+	if err != nil {
+		t.Fatalf("config.Load(): %v", err)
+	}
+	if want := loadedFromBytes.CanonicalPolicyHash(); hash != want {
+		t.Fatalf("PolicyHash() = %s, want LoadBytes CanonicalPolicyHash %s", hash, want)
+	}
+	if want := loadedFromDisk.CanonicalPolicyHash(); hash != want {
+		t.Fatalf("PolicyHash() = %s, want follower Load CanonicalPolicyHash %s", hash, want)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashLoadedConfigEquivalence(t *testing.T) {
+	t.Run("field_order_and_set_order_are_deterministic", func(t *testing.T) {
+		first := PolicyBundlePayload{ConfigYAML: "mode: balanced\nfetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    max_requests_per_minute: 120\napi_allowlist:\n  - b.vendor.example\n  - a.vendor.example\n"}
+		second := PolicyBundlePayload{ConfigYAML: "api_allowlist:\n  - a.vendor.example\n  - b.vendor.example\nfetch_proxy:\n  monitoring:\n    max_requests_per_minute: 120\n    entropy_threshold: 4.5\nmode: balanced\n"}
+		firstHash, err := first.PolicyHash()
 		if err != nil {
-			t.Fatalf("PolicyHash(int): %v", err)
+			t.Fatalf("PolicyHash(first): %v", err)
 		}
-		floatHash, err := floatPayload.PolicyHash()
+		for i := 0; i < 20; i++ {
+			got, err := first.PolicyHash()
+			if err != nil {
+				t.Fatalf("PolicyHash repeat %d: %v", i, err)
+			}
+			if got != firstHash {
+				t.Fatalf("PolicyHash repeat %d changed: got %s want %s", i, got, firstHash)
+			}
+		}
+		secondHash, err := second.PolicyHash()
 		if err != nil {
-			t.Fatalf("PolicyHash(integral float): %v", err)
+			t.Fatalf("PolicyHash(second): %v", err)
 		}
-		if floatHash != intHash {
-			t.Fatalf("integral float hash drifted from integer spelling:\nint=%s\nfloat=%s", intHash, floatHash)
+		if secondHash != firstHash {
+			t.Fatalf("equivalent loaded configs diverged:\nfirst=%s\nsecond=%s", firstHash, secondHash)
 		}
 	})
 
-	t.Run("negative_zero_collapses_to_zero", func(t *testing.T) {
-		zeroPayload := PolicyBundlePayload{ConfigYAML: "threshold: 0\n"}
-		negZeroPayload := PolicyBundlePayload{ConfigYAML: "threshold: -0.0\n"}
-		zeroHash, err := zeroPayload.PolicyHash()
+	t.Run("omitted_default_matches_explicit_default", func(t *testing.T) {
+		omitted := PolicyBundlePayload{ConfigYAML: "mode: balanced\nlearn:\n  inference: {}\n"}
+		explicit := PolicyBundlePayload{ConfigYAML: "mode: balanced\nlearn:\n  inference:\n    floors:\n      min_sessions: 5\n      min_events: 20\n      min_windows: 3\n"}
+		omittedHash, err := omitted.PolicyHash()
 		if err != nil {
-			t.Fatalf("PolicyHash(zero): %v", err)
+			t.Fatalf("PolicyHash(omitted): %v", err)
 		}
-		negZeroHash, err := negZeroPayload.PolicyHash()
+		explicitHash, err := explicit.PolicyHash()
 		if err != nil {
-			t.Fatalf("PolicyHash(negative zero): %v", err)
+			t.Fatalf("PolicyHash(explicit): %v", err)
 		}
-		if negZeroHash != zeroHash {
-			t.Fatalf("negative zero hash drifted from zero:\nzero=%s\nnegative_zero=%s", zeroHash, negZeroHash)
+		if explicitHash != omittedHash {
+			t.Fatalf("default-equivalent configs diverged:\nomitted=%s\nexplicit=%s", omittedHash, explicitHash)
 		}
 	})
 
-	t.Run("fractional_forms_collapse", func(t *testing.T) {
-		plain := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\n"}
-		trailingZero := PolicyBundlePayload{ConfigYAML: "threshold: 4.50\n"}
-		scientific := PolicyBundlePayload{ConfigYAML: "threshold: 45e-1\n"}
+	t.Run("equivalent_float_spellings_match_typed_config", func(t *testing.T) {
+		plain := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n"}
+		trailingZero := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.50\n"}
+		scientific := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 45e-1\n"}
 		plainHash, err := plain.PolicyHash()
 		if err != nil {
 			t.Fatalf("PolicyHash(plain): %v", err)
@@ -378,311 +416,66 @@ func TestPolicyBundlePayloadPolicyHashNumericCanonicalizationEdges(t *testing.T)
 			t.Fatalf("PolicyHash(scientific): %v", err)
 		}
 		if trailingHash != plainHash || scientificHash != plainHash {
-			t.Fatalf("equivalent fractional hashes diverged:\nplain=%s\ntrailing=%s\nscientific=%s", plainHash, trailingHash, scientificHash)
+			t.Fatalf("equivalent typed float configs diverged:\nplain=%s\ntrailing=%s\nscientific=%s", plainHash, trailingHash, scientificHash)
 		}
 	})
 
-	t.Run("decimal_and_scientific_tiny_forms_collapse", func(t *testing.T) {
-		for _, tc := range []struct {
-			name       string
-			scientific string
-			decimal    string
-		}{
-			{
-				name:       "small",
-				scientific: "threshold: 1e-308\n",
-				decimal:    "threshold: 0." + strings.Repeat("0", 307) + "1\n",
-			},
-			{
-				name:       "subnormal",
-				scientific: "threshold: 5e-324\n",
-				decimal:    "threshold: 0." + strings.Repeat("0", 323) + "5\n",
-			},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				scientificHash, err := (PolicyBundlePayload{ConfigYAML: tc.scientific}).PolicyHash()
-				if err != nil {
-					t.Fatalf("PolicyHash(scientific): %v", err)
-				}
-				decimalHash, err := (PolicyBundlePayload{ConfigYAML: tc.decimal}).PolicyHash()
-				if err != nil {
-					t.Fatalf("PolicyHash(decimal): %v", err)
-				}
-				if scientificHash != decimalHash {
-					t.Fatalf("equivalent tiny hashes diverged:\nscientific=%s\ndecimal=%s", scientificHash, decimalHash)
-				}
-			})
-		}
-	})
-
-	t.Run("distinct_float64_boundary_decimals_do_not_collapse", func(t *testing.T) {
-		plain := PolicyBundlePayload{ConfigYAML: "threshold: 0.3\n"}
-		next := PolicyBundlePayload{ConfigYAML: "threshold: 0.30000000000000004\n"}
-		plainHash, err := plain.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(plain decimal): %v", err)
-		}
-		nextHash, err := next.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(next decimal): %v", err)
-		}
-		if plainHash == nextHash {
-			t.Fatalf("distinct float64-boundary decimal values collided: %s", plainHash)
-		}
-	})
-
-	t.Run("unsafe_integral_float_does_not_collide_with_neighbor_integer", func(t *testing.T) {
-		roundedFloat := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740993.0\n"}
-		neighborInteger := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740992\n"}
-		roundedHash, err := roundedFloat.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(unsafe integral float): %v", err)
-		}
-		neighborHash, err := neighborInteger.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(neighbor integer): %v", err)
-		}
-		if roundedHash == neighborHash {
-			t.Fatalf("unsafe integral float collided with lower neighbor integer: %s", roundedHash)
-		}
-	})
-
-	t.Run("unsafe_integral_float_matches_exact_integer_value", func(t *testing.T) {
-		floatPayload := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740993.0\n"}
-		intPayload := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740993\n"}
-		floatHash, err := floatPayload.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(unsafe integral float): %v", err)
-		}
-		intHash, err := intPayload.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(exact integer): %v", err)
-		}
-		if floatHash != intHash {
-			t.Fatalf("unsafe integral float drifted from exact integer value:\nfloat=%s\nint=%s", floatHash, intHash)
-		}
-	})
-
-	t.Run("fractional_decimal_precision_does_not_collapse", func(t *testing.T) {
-		left := PolicyBundlePayload{ConfigYAML: "threshold: 123456789.123456789\n"}
-		right := PolicyBundlePayload{ConfigYAML: "threshold: 123456789.123456790\n"}
-		leftHash, err := left.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(left precise decimal): %v", err)
-		}
-		rightHash, err := right.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(right precise decimal): %v", err)
-		}
-		if leftHash == rightHash {
-			t.Fatalf("distinct precise decimal values collided: %s", leftHash)
-		}
-	})
-
-	t.Run("map_order_deterministic", func(t *testing.T) {
-		first := PolicyBundlePayload{ConfigYAML: "outer:\n  b: 0.1\n  a: 0.2\n"}
-		second := PolicyBundlePayload{ConfigYAML: "outer:\n  a: 0.2\n  b: 0.1\n"}
-		firstHash, err := first.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(first map order): %v", err)
-		}
-		for i := 0; i < 20; i++ {
-			got, err := first.PolicyHash()
-			if err != nil {
-				t.Fatalf("PolicyHash repeat %d: %v", i, err)
-			}
-			if got != firstHash {
-				t.Fatalf("PolicyHash repeat %d changed: got %s want %s", i, got, firstHash)
-			}
-		}
-		secondHash, err := second.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(second map order): %v", err)
-		}
-		if secondHash != firstHash {
-			t.Fatalf("map insertion/order changed policy hash:\nfirst=%s\nsecond=%s", firstHash, secondHash)
-		}
-	})
-
-	t.Run("yaml_merge_key_preserves_expanded_hash", func(t *testing.T) {
-		withMerge := PolicyBundlePayload{ConfigYAML: "outer:\n  <<: &defaults\n    a: 0.1\n    b: 0.2\n  b: 0.3\n"}
-		expanded := PolicyBundlePayload{ConfigYAML: "outer:\n  a: 0.1\n  b: 0.3\n"}
-		mergeHash, err := withMerge.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(with merge): %v", err)
-		}
-		expandedHash, err := expanded.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(expanded merge): %v", err)
-		}
-		if mergeHash != expandedHash {
-			t.Fatalf("YAML merge hash drifted from expanded form:\nmerge=%s\nexpanded=%s", mergeHash, expandedHash)
-		}
-	})
-
-	t.Run("non_finite_rejected", func(t *testing.T) {
-		for _, yamlSrc := range []string{
-			"threshold: .nan\n",
-			"threshold: .inf\n",
-			"threshold: -.inf\n",
-		} {
-			payload := PolicyBundlePayload{ConfigYAML: yamlSrc}
-			if _, err := payload.PolicyHash(); !errors.Is(err, ErrInvalidHash) {
-				t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(yamlSrc), err)
-			}
-		}
-	})
-}
-
-func TestPolicyBundlePayloadPolicyHashYAMLNodeTreeEdges(t *testing.T) {
-	t.Run("quoted_numeric_string_does_not_collide_with_bare_number", func(t *testing.T) {
-		quoted := PolicyBundlePayload{ConfigYAML: `threshold: "4.5"` + "\n"}
-		bare := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\n"}
-		quotedHash, err := quoted.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(quoted numeric string): %v", err)
-		}
-		bareHash, err := bare.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(bare number): %v", err)
-		}
-		if quotedHash == bareHash {
-			t.Fatalf("quoted numeric string collided with bare number: %s", quotedHash)
-		}
-	})
-
-	t.Run("explicit_numeric_tags_match_equivalent_plain_scalars", func(t *testing.T) {
-		for _, tc := range []struct {
-			name  string
-			left  string
-			right string
-		}{
-			{name: "float integer", left: "threshold: !!float 4\n", right: "threshold: 4\n"},
-			{name: "int", left: "threshold: !!int 4\n", right: "threshold: 4\n"},
-			{name: "null", left: "threshold: !!null \"\"\n", right: "threshold: null\n"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				leftHash, err := (PolicyBundlePayload{ConfigYAML: tc.left}).PolicyHash()
-				if err != nil {
-					t.Fatalf("PolicyHash(left): %v", err)
-				}
-				rightHash, err := (PolicyBundlePayload{ConfigYAML: tc.right}).PolicyHash()
-				if err != nil {
-					t.Fatalf("PolicyHash(right): %v", err)
-				}
-				if leftHash != rightHash {
-					t.Fatalf("equivalent tagged scalar hash drift:\nleft=%s\nright=%s", leftHash, rightHash)
-				}
-			})
-		}
-	})
-
-	t.Run("explicit_string_tag_does_not_collide_with_number", func(t *testing.T) {
-		taggedString := PolicyBundlePayload{ConfigYAML: "threshold: !!str 4.5\n"}
-		bare := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\n"}
-		taggedHash, err := taggedString.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(tagged string): %v", err)
-		}
-		bareHash, err := bare.PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(bare number): %v", err)
-		}
-		if taggedHash == bareHash {
-			t.Fatalf("tagged string collided with bare number: %s", taggedHash)
-		}
-	})
-
-	t.Run("anchors_and_aliases_match_expanded_form", func(t *testing.T) {
-		withAlias := PolicyBundlePayload{ConfigYAML: "threshold: &a 4.5\nother: *a\n"}
-		expanded := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\nother: 4.5\n"}
-		aliasHash, err := withAlias.PolicyHash()
+	t.Run("alias_matches_expanded_typed_config", func(t *testing.T) {
+		withAlias := "fetch_proxy:\n  monitoring:\n    entropy_threshold: &threshold !!float 4.5\n    subdomain_entropy_threshold: *threshold\n"
+		expanded := "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    subdomain_entropy_threshold: 4.5\n"
+		aliasHash, err := (PolicyBundlePayload{ConfigYAML: withAlias}).PolicyHash()
 		if err != nil {
 			t.Fatalf("PolicyHash(alias): %v", err)
 		}
-		expandedHash, err := expanded.PolicyHash()
+		expandedHash, err := (PolicyBundlePayload{ConfigYAML: expanded}).PolicyHash()
 		if err != nil {
 			t.Fatalf("PolicyHash(expanded): %v", err)
 		}
 		if aliasHash != expandedHash {
-			t.Fatalf("alias hash drifted from expanded form:\nalias=%s\nexpanded=%s", aliasHash, expandedHash)
-		}
-	})
-
-	t.Run("loadable_alias_and_tag_forms_match_apply_time_config", func(t *testing.T) {
-		withAliasAndTag := "fetch_proxy:\n  monitoring:\n    entropy_threshold: &threshold !!float 4.5\n    subdomain_entropy_threshold: *threshold\n"
-		expanded := "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    subdomain_entropy_threshold: 4.5\n"
-		aliasHash, err := (PolicyBundlePayload{ConfigYAML: withAliasAndTag}).PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(alias/tag config): %v", err)
-		}
-		expandedHash, err := (PolicyBundlePayload{ConfigYAML: expanded}).PolicyHash()
-		if err != nil {
-			t.Fatalf("PolicyHash(expanded config): %v", err)
-		}
-		if aliasHash != expandedHash {
-			t.Fatalf("alias/tag config hash drifted from expanded config:\nalias=%s\nexpanded=%s", aliasHash, expandedHash)
-		}
-		aliasConfig, err := loadConfigFromYAML(t, withAliasAndTag)
-		if err != nil {
-			t.Fatalf("config.Load(alias/tag config): %v", err)
-		}
-		expandedConfig, err := loadConfigFromYAML(t, expanded)
-		if err != nil {
-			t.Fatalf("config.Load(expanded config): %v", err)
-		}
-		if aliasConfig.CanonicalPolicyHash() != expandedConfig.CanonicalPolicyHash() {
-			t.Fatalf("apply-time canonical hash drifted:\nalias=%s\nexpanded=%s", aliasConfig.CanonicalPolicyHash(), expandedConfig.CanonicalPolicyHash())
-		}
-	})
-
-	t.Run("duplicate_keys_rejected_to_match_apply_time_parser", func(t *testing.T) {
-		duplicate := "mode: strict\nmode: balanced\n"
-		if _, err := loadConfigFromYAML(t, duplicate); err == nil {
-			t.Fatal("config.Load(duplicate key) = nil, want error")
-		}
-		if _, err := (PolicyBundlePayload{ConfigYAML: duplicate}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
-			t.Fatalf("PolicyHash(duplicate key) = %v, want ErrInvalidHash", err)
-		}
-	})
-
-	t.Run("duplicate_keys_inside_alias_rejected", func(t *testing.T) {
-		duplicate := "outer: &dup\n  a: 1\n  a: 2\nexpanded: *dup\n"
-		if _, err := (PolicyBundlePayload{ConfigYAML: duplicate}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
-			t.Fatalf("PolicyHash(duplicate key inside alias) = %v, want ErrInvalidHash", err)
-		}
-	})
-
-	t.Run("recursive_alias_rejected", func(t *testing.T) {
-		recursive := "outer: &outer\n  nested: *outer\n"
-		if _, err := (PolicyBundlePayload{ConfigYAML: recursive}).PolicyHash(); err == nil {
-			t.Fatal("PolicyHash(recursive alias) = nil, want fail-closed error")
-		}
-	})
-
-	t.Run("quoted_numeric_float_rejected_by_apply_time_parser", func(t *testing.T) {
-		quoted := "fetch_proxy:\n  monitoring:\n    entropy_threshold: \"4.5\"\n"
-		if _, err := loadConfigFromYAML(t, quoted); err == nil {
-			t.Fatal("config.Load(quoted numeric float) = nil, want error")
+			t.Fatalf("alias hash drifted from expanded loaded config:\nalias=%s\nexpanded=%s", aliasHash, expandedHash)
 		}
 	})
 }
 
-func TestPolicyBundlePayloadPolicyHashScientificNotationCaps(t *testing.T) {
-	for _, yamlSrc := range []string{
-		"threshold: 1e308\n",
-		"threshold: 1e-308\n",
-		"threshold: 5e-324\n",
-		"threshold: 1e6\n",
+func TestPolicyBundlePayloadPolicyHashLoadedConfigFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "unknown field", yaml: "threshold: 4.5\n"},
+		{name: "quoted numeric float", yaml: "fetch_proxy:\n  monitoring:\n    entropy_threshold: \"4.5\"\n"},
+		{name: "duplicate top level key", yaml: "mode: strict\nmode: balanced\n"},
+		{name: "malformed yaml", yaml: "mode: [\n"},
+		{name: "multiple documents", yaml: "mode: strict\n---\nmode: balanced\n"},
+		{name: "recursive alias", yaml: "api_allowlist: &hosts\n  - *hosts\n"},
+		{name: "unsafe huge float rejected by typed validation", yaml: "learn:\n  inference:\n    normalization:\n      entropy_threshold_bits: 9007199254740993.0\n"},
 	} {
-		if _, err := (PolicyBundlePayload{ConfigYAML: yamlSrc}).PolicyHash(); err != nil {
-			t.Fatalf("PolicyHash(%q) = %v, want nil", strings.TrimSpace(yamlSrc), err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := (PolicyBundlePayload{ConfigYAML: tc.yaml}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+				t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(tc.yaml), err)
+			}
+		})
 	}
+}
+
+func TestPolicyBundlePayloadPolicyHashDistinctLoadedConfigsDiffer(t *testing.T) {
+	left := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n"}
+	right := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.6\n"}
+	leftHash, err := left.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(left): %v", err)
+	}
+	rightHash, err := right.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(right): %v", err)
+	}
+	if leftHash == rightHash {
+		t.Fatalf("different enforced configs collided: %s", leftHash)
+	}
+
 	for _, yamlSrc := range []string{
-		"threshold: 1e1000000\n",
-		"threshold: -1e1000000\n",
-		"threshold: 1e-1000000\n",
+		"learn:\n  inference:\n    normalization:\n      entropy_threshold_bits: 9007199254740993.0\n",
+		"learn:\n  inference:\n    normalization:\n      entropy_threshold_bits: 9007199254740992\n",
 	} {
 		if _, err := (PolicyBundlePayload{ConfigYAML: yamlSrc}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
 			t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(yamlSrc), err)
@@ -690,46 +483,41 @@ func TestPolicyBundlePayloadPolicyHashScientificNotationCaps(t *testing.T) {
 	}
 }
 
-func TestNormalizePolicyHashYAMLNumbersCoversNumericTypes(t *testing.T) {
-	normalized, err := normalizePolicyHashYAMLNumbers(map[any]any{
-		"json_fraction": json.Number("4.50"),
-		"json_integer":  json.Number("42"),
-		"small_int":     int32(-7),
-		"small_uint":    uint16(8),
-		"nested": []any{
-			json.Number("45e-1"),
-			float32(0.5),
-		},
-	})
+func TestPolicyBundlePolicyHashVerifiesAndMatchesFollowerLoad(t *testing.T) {
+	yamlSrc := "mode: strict\napi_allowlist:\n  - api.vendor.example\nrequest_body_scanning:\n  max_body_bytes: 1048576\n"
+	payload := PolicyBundlePayload{ConfigYAML: yamlSrc}
+	policyHash, err := payload.PolicyHash()
 	if err != nil {
-		t.Fatalf("normalizePolicyHashYAMLNumbers: %v", err)
+		t.Fatalf("PolicyHash(): %v", err)
 	}
-	got, ok := normalized.(map[string]any)
-	if !ok {
-		t.Fatalf("normalized type = %T, want map[string]any", normalized)
+	payloadHash, err := payload.PayloadHash()
+	if err != nil {
+		t.Fatalf("PayloadHash(): %v", err)
 	}
-	if got["json_fraction"] != policyHashYAMLNumber("4.5") {
-		t.Fatalf("json_fraction = %#v, want canonical decimal string", got["json_fraction"])
+	followerConfig, err := loadConfigFromYAML(t, yamlSrc)
+	if err != nil {
+		t.Fatalf("follower config.Load(): %v", err)
 	}
-	if got["json_integer"] != int64(42) {
-		t.Fatalf("json_integer = %#v, want int64(42)", got["json_integer"])
-	}
-	if got["small_int"] != int64(-7) {
-		t.Fatalf("small_int = %#v, want int64(-7)", got["small_int"])
-	}
-	if got["small_uint"] != uint64(8) {
-		t.Fatalf("small_uint = %#v, want uint64(8)", got["small_uint"])
-	}
-	nested, ok := got["nested"].([]any)
-	if !ok || len(nested) != 2 {
-		t.Fatalf("nested = %#v, want two normalized values", got["nested"])
-	}
-	if nested[0] != policyHashYAMLNumber("4.5") || nested[1] != policyHashYAMLNumber("0.5") {
-		t.Fatalf("nested = %#v, want canonical fractional strings", nested)
+	if got := followerConfig.CanonicalPolicyHash(); got != policyHash {
+		t.Fatalf("follower CanonicalPolicyHash() = %s, want published policy hash %s", got, policyHash)
 	}
 
-	if _, err := normalizePolicyHashYAMLNumbers(json.Number("not-a-number")); !errors.Is(err, ErrInvalidHash) {
-		t.Fatalf("invalid json.Number error = %v, want ErrInvalidHash", err)
+	bundle := testPolicyBundle()
+	bundle.Payload = payload
+	bundle.PayloadSHA256 = payloadHash
+	bundle.PolicyHash = policyHash
+	bundle.Signatures = nil
+	pub, proof := signedProof(t, bundle.SignablePreimage, "policy-signer-1", signing.PurposePolicyBundleSigning)
+	bundle.Signatures = []SignatureProof{proof}
+
+	resolver := mapResolver(map[string]SignatureKey{
+		"policy-signer-1": {PublicKey: pub, KeyPurpose: signing.PurposePolicyBundleSigning},
+	})
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("Validate(): %v", err)
+	}
+	if err := bundle.VerifySignaturesAt(testNow, resolver); err != nil {
+		t.Fatalf("VerifySignaturesAt(): %v", err)
 	}
 }
 
@@ -766,7 +554,7 @@ func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {
 
 func testPolicyBundle() PolicyBundle {
 	payload := PolicyBundlePayload{
-		ConfigYAML: "mode: strict\nmcp_tool_policy:\n  enabled: true\n",
+		ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n",
 		RuleBundles: []RuleBundleRef{{
 			Name:    "official",
 			Version: "2026.05.23",
@@ -1314,13 +1102,19 @@ func TestMessageIdentifiersAreBounded(t *testing.T) {
 }
 
 func TestPolicyBundlePayload_PolicyHashYAMLDocumentHandling(t *testing.T) {
-	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\n---\n"}
+	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n"}
 	if _, err := payload.PolicyHash(); err != nil {
-		t.Fatalf("PolicyHash(empty trailing doc) = %v, want nil", err)
+		t.Fatalf("PolicyHash(single document) = %v, want nil", err)
 	}
 
-	payload.ConfigYAML = "mode: strict\n---\nmode: balanced\n"
+	payload.ConfigYAML = "mode: strict\napi_allowlist:\n  - api.vendor.example\n---\n"
 	_, err := payload.PolicyHash()
+	if !errors.Is(err, ErrInvalidHash) {
+		t.Fatalf("PolicyHash(empty trailing doc) = %v, want ErrInvalidHash", err)
+	}
+
+	payload.ConfigYAML = "mode: strict\napi_allowlist:\n  - api.vendor.example\n---\nmode: balanced\n"
+	_, err = payload.PolicyHash()
 	if !errors.Is(err, ErrInvalidHash) {
 		t.Fatalf("PolicyHash(non-empty trailing doc) = %v, want ErrInvalidHash", err)
 	}

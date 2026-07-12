@@ -540,7 +540,7 @@ func TestBuildSignedBundle_ForbiddenConfigSectionRejectedLocally(t *testing.T) {
 	dir := t.TempDir()
 	opts := baseOpts(t, dir, "https://conductor.example:8895")
 	// 'kill_switch' is NOT in the allowed policy-bundle sections allowlist.
-	opts.configFile = writeFile(t, dir, "bad.yaml", "mode: strict\nkill_switch:\n  enabled: true\n")
+	opts.configFile = writeFile(t, dir, "bad.yaml", "mode: strict\napi_allowlist:\n  - api.vendor.example\nkill_switch:\n  enabled: true\n")
 	_, _, _, err := buildSignedBundle(opts)
 	if err == nil || !strings.Contains(err.Error(), "local validation") {
 		t.Fatalf("want local-validation failure for forbidden section, got %v", err)

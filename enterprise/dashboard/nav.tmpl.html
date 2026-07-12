@@ -21,6 +21,13 @@
 .topbar .nav a:hover{background:rgba(255,255,255,0.05);border-color:var(--border,rgba(255,255,255,0.07));color:var(--text,#e2e8f0);opacity:1;}
 .topbar .nav a.active{color:var(--accent,#00e5a0);background:rgba(0,229,160,0.12);border-color:rgba(0,229,160,0.30);font-weight:600;}
 .topbar .nav .nav-badge{font-family:var(--font-mono,ui-monospace,monospace);font-size:0.66rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--text-dim,#64748b);background:transparent;border:1px solid var(--border,rgba(255,255,255,0.09));border-radius:999px;padding:0.22rem 0.6rem;margin-left:0.35rem;}
+/* Always reserve the root scrollbar track so the usable viewport width is
+   identical on every view. Without this, document-scroll views (overview,
+   agents, ...) show a viewport scrollbar while inner-scroll app-shell views
+   (evidence) do not, and that ~10px width delta flips the marginal-fit nav
+   between one and two rows - the "nav jump" when switching tabs. The track is
+   transparent when idle (see scrollbar-track rule below), so no visible gutter. */
+html{overflow-y:scroll;}
 html,.table-wrap,.table,.opaque-cell,pre,main{scrollbar-color:rgba(0,229,160,0.45) transparent;scrollbar-width:thin;}
 *::-webkit-scrollbar{width:10px;height:10px;}
 *::-webkit-scrollbar-track{background:transparent;}

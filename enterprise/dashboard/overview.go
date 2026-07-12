@@ -242,7 +242,7 @@ func (m *ReadModel) Overview(ctx context.Context, rawAllowed bool) (OverviewPage
 		Budget:       budget,
 		ReadOnlyText: overviewReadOnlyFooter,
 	}
-	page.Attention = overviewAttention(page)
+	page.Attention = m.overviewAttention(page)
 	for _, item := range page.Attention {
 		switch item.Severity {
 		case "red":
@@ -710,11 +710,14 @@ func budgetPressure(agent AgentBudgetView) (int, string) {
 	return best, basis
 }
 
-func overviewAttention(page OverviewPage) []OverviewAttentionItem {
+func (m *ReadModel) overviewAttention(page OverviewPage) []OverviewAttentionItem {
 	var items []OverviewAttentionItem
 	add := func(severity, kind, fact string, count int, label, link string) {
 		if count <= 0 {
 			return
+		}
+		if !m.hasFleetFeature() && fleetGatedOverviewLink(link) {
+			link = ""
 		}
 		items = append(items, OverviewAttentionItem{
 			Severity:   severity,
@@ -745,6 +748,19 @@ func overviewAttention(page OverviewPage) []OverviewAttentionItem {
 	add("amber", "FLEET", "the configured fleet source is unreachable, so follower posture is unknown", fleetUnreachable, "source", "/fleet")
 	add("amber", "GAP", "sessions or configured agents have no receipts in loaded evidence", len(page.Coverage.NoReceiptAgents), pluralize(len(page.Coverage.NoReceiptAgents), "agent", "agents"), "/agents")
 	return items
+}
+
+func (m *ReadModel) hasFleetFeature() bool {
+	return m != nil && m.hasFeature != nil && m.hasFeature(license.FeatureFleet)
+}
+
+func fleetGatedOverviewLink(link string) bool {
+	switch link {
+	case "/fleet", "/workbench", "/incident", CompliancePath:
+		return true
+	default:
+		return false
+	}
 }
 
 func appendUnique(values []string, value string) []string {

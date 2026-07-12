@@ -333,7 +333,7 @@
             <span class="stripe {{.Severity}}"></span>
             <span class="kind {{.Severity}}">{{.Kind}}</span>
             <span class="attention-fact">{{.Fact}}</span>
-            <a class="attention-link" href="{{.Link}}">{{.Count}} {{.CountLabel}} →</a>
+            {{if .Link}}<a class="attention-link" href="{{.Link}}">{{.Count}} {{.CountLabel}} →</a>{{else}}<span class="attention-link">{{.Count}} {{.CountLabel}}</span>{{end}}
           </div>
         {{end}}
       {{else}}

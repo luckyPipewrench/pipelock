@@ -292,6 +292,14 @@ func TestOverviewAgentsOnlyWithFleetSourceDoesNotQueryFleetPosture(t *testing.T)
 			t.Fatalf("agents-only overview rendered fleet posture data %q: %s", leaked, body)
 		}
 	}
+	if !strings.Contains(body, "no conductor source is configured") {
+		t.Fatalf("agents-only overview should keep the conductor-source attention fact: %s", body)
+	}
+	for _, blocked := range []string{`href="/fleet"`, `href="/workbench"`, `href="/incident"`, `href="` + CompliancePath + `"`} {
+		if strings.Contains(body, blocked) {
+			t.Fatalf("agents-only overview rendered fleet-gated link %q: %s", blocked, body)
+		}
+	}
 	if source.gotOrgID != "" || source.gotFleet != "" || source.gotLimit != 0 {
 		t.Fatalf("agents-only overview queried fleet source: org=%q fleet=%q limit=%d", source.gotOrgID, source.gotFleet, source.gotLimit)
 	}
@@ -323,6 +331,9 @@ func TestOverviewFleetLicensedRendersFleetPosture(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("fleet-licensed overview missing %q: %s", want, body)
 		}
+	}
+	if !strings.Contains(body, `href="/workbench"`) {
+		t.Fatalf("fleet-licensed overview should link conductor-source attention to workbench: %s", body)
 	}
 }
 

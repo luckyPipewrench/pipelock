@@ -118,6 +118,7 @@ type FleetCoverageRollup struct {
 }
 
 type CompliancePage struct {
+	Nav        NavContext
 	Frameworks []FrameworkMapping
 	LegalHolds []LegalHold
 	Fleet      FleetCoverageRollup

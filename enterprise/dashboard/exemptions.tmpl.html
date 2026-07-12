@@ -39,9 +39,11 @@
     }
     .brand { font-weight: 650; }
     .brand span { color: var(--text-muted); font-weight: 500; }
-    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; }
+    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
     .nav a { color: var(--text-muted); text-decoration: none; }
-    .nav a:hover { color: var(--text); }
+    .nav a:hover, .nav a.active { color: var(--text); }
+    .nav a.active { font-weight: 700; }
+    .nav-badge { color: var(--text-dim); }
     main {
       min-width: 0;
       padding: 24px;
@@ -152,6 +154,9 @@
     }
     tr:last-child td { border-bottom: 0; }
     .scope, .detail { overflow-wrap: anywhere; }
+    .opaque-cell { display: block; max-width: 260px; overflow-x: auto; }
+    .attrs .opaque-cell { display: inline-block; max-width: 100%; vertical-align: top; }
+    .opaque-value { display: inline-block; min-width: 0; max-width: 100%; word-break: break-all; overflow-wrap: anywhere; }
     .attrs { display: grid; gap: 4px; }
     .attr-name { color: var(--text-dim); }
     .empty {
@@ -170,10 +175,7 @@
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">Pipelock <span>- Operator Console / Exemptions</span></div>
-    <div class="nav"><a href="/">Evidence</a><a href="/trust-keys">Trust &amp; Keys</a><span class="mono">air-gapped - self-hosted</span></div>
-  </header>
+  {{template "dashboardHeader" .Nav}}
   <main>
     <div class="panel">
       <div class="heading">
@@ -225,8 +227,8 @@
                 <article class="finding">
                   <div class="finding-head">
                     <div>
-                      <strong>{{.Knob}}</strong>
-                      <div class="dim mono">{{.Scope}}</div>
+                      <strong><span class="opaque-cell"><span class="opaque-value">{{.Knob}}</span></span></strong>
+                      <div class="dim mono opaque-cell"><span class="opaque-value">{{.Scope}}</span></div>
                     </div>
                     <span class="chip {{.State}}">{{.State}}</span>
                   </div>
@@ -264,13 +266,13 @@
                   {{range .Inventory.Entries}}
                     <tr>
                       <td>{{.Scanner}}</td>
-                      <td class="mono">{{.Knob}}</td>
-                      <td class="scope mono">{{.Scope}}</td>
+                      <td class="mono"><div class="opaque-cell"><span class="opaque-value">{{.Knob}}</span></div></td>
+                      <td class="scope mono"><div class="opaque-cell"><span class="opaque-value">{{.Scope}}</span></div></td>
                       <td>
                         {{if .Attributes}}
                           <div class="attrs">
                             {{range .Attributes}}
-                              <div><span class="attr-name">{{.Name}}:</span> <span class="mono">{{.Value}}</span></div>
+                              <div><span class="attr-name">{{.Name}}:</span> <span class="mono opaque-cell"><span class="opaque-value">{{.Value}}</span></span></div>
                             {{end}}
                           </div>
                         {{else}}

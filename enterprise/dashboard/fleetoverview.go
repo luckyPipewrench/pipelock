@@ -94,6 +94,7 @@ type FleetFollowerView struct {
 }
 
 type FleetOverview struct {
+	Nav              NavContext
 	SourceConfigured bool
 	OrgID            string
 	FleetID          string

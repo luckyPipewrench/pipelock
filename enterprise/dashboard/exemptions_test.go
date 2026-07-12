@@ -6,6 +6,7 @@ package dashboard
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -535,6 +536,49 @@ func TestHandler_ExemptionsMetadataViewRedactsRawValues(t *testing.T) {
 		if !strings.Contains(rawBody, s) {
 			t.Fatalf("raw view missing value %q", s)
 		}
+	}
+}
+
+func TestHandler_ExemptionsLongOpaqueValuesUseOverflowGuards(t *testing.T) {
+	t.Parallel()
+
+	longGlob := "/artifacts/" + strings.Repeat("abcdef0123456789", 16) + "/\"><script>alert(1)</script>/*.tar.gz"
+	longInertDomain := "responses-" + strings.Repeat("0123456789abcdef", 16) + ".vendor.example\"><script>alert(1)</script>"
+	longRule := "dlp_" + strings.Repeat("0123456789abcdef", 16)
+	cfg := &config.Config{
+		ResponseScanning: config.ResponseScanning{
+			Enabled:       false,
+			ExemptDomains: []string{longInertDomain},
+		},
+		Suppress: []config.SuppressEntry{{
+			Rule:   longRule,
+			Path:   longGlob,
+			Reason: "operator-approved-test-fixture",
+		}},
+	}
+
+	body := serveExemptionsBody(t, cfg, true)
+	escapedGlob := html.EscapeString(longGlob)
+	escapedInertDomain := html.EscapeString(longInertDomain)
+	for _, want := range []string{
+		`<div class="opaque-cell"><span class="opaque-value">` + escapedGlob + `</span></div>`,
+		`<div class="dim mono opaque-cell"><span class="opaque-value">` + escapedInertDomain + `</span></div>`,
+		`<span class="mono opaque-cell"><span class="opaque-value">` + longRule + `</span></span>`,
+		`word-break: break-all`,
+		`overflow-x: auto`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("exemptions overflow guard missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, longGlob) {
+		t.Fatalf("long hostile scope rendered without escaping: %s", body)
+	}
+	if strings.Contains(body, longInertDomain) {
+		t.Fatalf("long hostile attention scope rendered without escaping: %s", body)
+	}
+	if strings.Contains(body, `<td class="scope mono">`+escapedGlob+`</td>`) {
+		t.Fatalf("long scope rendered as raw table-cell text: %s", body)
 	}
 }
 

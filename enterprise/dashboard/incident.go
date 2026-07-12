@@ -17,6 +17,7 @@ import (
 
 // IncidentPage is the rendered incident cockpit view.
 type IncidentPage struct {
+	Nav      NavContext
 	Claim    string
 	NonClaim string
 

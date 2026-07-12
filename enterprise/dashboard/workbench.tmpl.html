@@ -42,7 +42,9 @@
     .brand span { color: var(--text-muted); font-weight: 500; }
     .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
     .nav a { color: var(--text-muted); text-decoration: none; }
-    .nav a:hover { color: var(--text); }
+    .nav a:hover, .nav a.active { color: var(--text); }
+    .nav a.active { font-weight: 700; }
+    .nav-badge { color: var(--text-dim); }
     main { min-width: 0; padding: 24px; }
     .panel { max-width: 1100px; margin: 0 auto; }
     h1, h2 { margin: 0; letter-spacing: 0; }
@@ -118,10 +120,7 @@
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">Pipelock <span>- Operator Console / Workbench</span></div>
-    <div class="nav"><a href="/">Evidence</a><a href="/fleet">Fleet</a><a href="/incident">Incident</a><a href="/exemptions">Exemptions</a><a href="/trust-keys">Trust &amp; Keys</a><span class="mono">read-only</span></div>
-  </header>
+  {{template "dashboardHeader" .Nav}}
   <main>
     <div class="panel">
       <h1>Signed Action Workbench</h1>

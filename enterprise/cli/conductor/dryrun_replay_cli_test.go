@@ -719,6 +719,39 @@ func TestRunReplayRemoteKillRequiresExplicitState(t *testing.T) {
 	}
 }
 
+func TestParseReplayRemoteKillState(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    conductorcore.KillSwitchState
+		wantErr string
+	}{
+		{name: "active", raw: "active", want: conductorcore.KillSwitchActive},
+		{name: "kill_alias", raw: " kill ", want: conductorcore.KillSwitchActive},
+		{name: "inactive", raw: "inactive", want: conductorcore.KillSwitchInactive},
+		{name: "resume_alias", raw: " RESUME ", want: conductorcore.KillSwitchInactive},
+		{name: "empty", raw: "", wantErr: "--state is required"},
+		{name: "invalid", raw: "paused", wantErr: "--state must be"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseReplayRemoteKillState(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseReplayRemoteKillState(%q) error = %v, want %q", tt.raw, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseReplayRemoteKillState(%q) error = %v", tt.raw, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseReplayRemoteKillState(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunReplayRollbackPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	rb := newRollbackRig(t, 0)
 	srv, ok := rb.transport.(*testServer)

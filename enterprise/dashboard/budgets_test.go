@@ -136,6 +136,10 @@ func TestBudgets_NilSourceDegrades(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Runtime &middot; Budgets",
+		"Per-agent budgets",
+		"Read-only; this page does not change limits, sessions, or enforcement state.",
+		"agents with loaded budget rows",
 		"Budget pressure proves only mediated per-agent budget consumption",
 		"No budget source is connected",
 		"--runtime-snapshot-file",
@@ -163,6 +167,10 @@ func TestBudgets_ConnectedEmptySourceExplainsSnapshotRows(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Runtime &middot; Budgets",
+		"Per-agent budgets",
+		"Read-only; this page does not change limits, sessions, or enforcement state.",
+		"agents with loaded budget rows",
 		"Budget pressure proves only mediated per-agent budget consumption",
 		"The source is connected",
 		"no agents with configured forward-proxy budgets or live MCP sessions",

@@ -179,6 +179,10 @@ func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Fleet &middot; Followers",
+		"Fleet Overview",
+		"Absence, stale reporting, or unsigned rows are amber/neutral evidence gaps, not success.",
+		"followers loaded from accepted reports",
 		"No conductor fleet source configured",
 		"Fleet Overview proves mediated fleet state",
 		"--conductor-url",
@@ -210,6 +214,10 @@ func TestFleetOverview_ConnectedSourceNoFollowersExplainsScope(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Fleet &middot; Followers",
+		"Fleet Overview",
+		"Absence, stale reporting, or unsigned rows are amber/neutral evidence gaps, not success.",
+		"followers loaded from accepted reports",
 		"Fleet Overview proves mediated fleet state",
 		"The conductor source is connected",
 		"no enrolled followers matched",

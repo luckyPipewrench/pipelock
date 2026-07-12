@@ -955,6 +955,11 @@ func TestTrustKeysEmptyStatesExplainSources(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Evidence &middot; Trust",
+		"Trust &amp; Keys",
+		"Read-only registry provenance and evidence-derived signing blast radius",
+		"trusted keys",
+		"chain audits",
 		"The trusted-key registry proves which receipt signing keys",
 		"No trusted signer keys are configured",
 		"--trusted-signer",

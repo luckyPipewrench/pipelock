@@ -282,6 +282,10 @@ func TestWorkbench_PrepareGuidanceAndNeverAuthority(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Fleet &middot; Signed Actions",
+		"Signed Action Workbench",
+		"Prepare guidance and read-only replay for signed conductor actions",
+		"operator-run command templates",
 		workbenchNeverAuthority,
 		"pipelock conductor publish",
 		"pipelock conductor kill",

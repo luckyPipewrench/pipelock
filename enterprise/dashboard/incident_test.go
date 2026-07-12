@@ -30,6 +30,9 @@ func TestIncident_ScopePromptWhenEmpty(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"Fleet &middot; Incident",
+		"Incident Cockpit",
+		"Read-only; this cockpit correlates sources and has no kill, publish, or fleet mutation path.",
 		incidentClaim,
 		incidentNonClaim,
 		`<form class="scope-form" method="get" action="/incident">`,
@@ -105,6 +108,7 @@ func TestIncident_CorrelatesDecisionAndAppliedSummary(t *testing.T) {
 	body := rec.Body.String()
 	// testFleetFollowers(): 1 verified, 1 signed-unverified, 1 unsigned.
 	for _, want := range []string{
+		"followers in the correlated applied-state counts",
 		"Rollback", "Divergence",
 		"verified applied", "signed, unverified", "unsigned/self-reported",
 		"followers",

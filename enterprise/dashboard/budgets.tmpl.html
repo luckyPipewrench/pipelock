@@ -28,8 +28,12 @@
     .panel { max-width: 1320px; margin: 0 auto; }
     h1 { margin: 0 0 4px; font-size: 20px; }
     h2 { margin: 0; font-size: 15px; color: var(--text-muted); }
-    .claim { color: var(--text-muted); font-size: 12.5px; margin: 6px 0 2px; }
-    .nonclaim { color: var(--text-dim); font-size: 12px; margin: 0 0 18px; }
+    .page-head { margin-bottom: 22px; }
+    .eyebrow { color: var(--accent); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 8px; }
+    .page-head h1 { font-size: 26px; margin-bottom: 8px; }
+    .lead { color: var(--text-muted); max-width: 72ch; margin: 0 0 12px; font-size: 13.5px; line-height: 1.5; }
+    .summary { color: var(--text-dim); font-size: 12px; }
+    .summary b { color: var(--text); font-weight: 700; }
     .note { color: var(--text-dim); font-size: 12px; margin: 10px 0 0; }
     .empty {
       border: 1px dashed var(--border-strong);
@@ -73,9 +77,12 @@
   {{template "dashboardHeader" .Nav}}
   <main>
     <div class="panel">
-      <h1>Per-agent budgets</h1>
-      <p class="claim">Scope: {{ .Claim }}.</p>
-      <p class="nonclaim">This {{ .NonClaim }}.</p>
+      <header class="page-head">
+        <div class="eyebrow mono">Runtime &middot; Budgets</div>
+        <h1>Per-agent budgets</h1>
+        <p class="lead">Budget pressure proves {{ .Claim }}. It {{ .NonClaim }}. Read-only; this page does not change limits, sessions, or enforcement state.</p>
+        <div class="summary mono"><b>{{len .Agents}}</b> agent{{if ne (len .Agents) 1}}s{{end}} with loaded budget rows{{if .Truncated}} &middot; truncated{{end}}</div>
+      </header>
       {{ if .HasSnapshotFreshness }}
         <p class="note">
           Snapshot produced at {{ .SnapshotFreshness.ProducedAtDisplay }} (age {{ .SnapshotFreshness.AgeDisplay }}{{ if .SnapshotFreshness.Stale }}, stale{{ end }}).

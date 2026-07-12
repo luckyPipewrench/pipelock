@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,6 +337,108 @@ func TestViewCmd_ExplicitSession(t *testing.T) {
 	// No Pro note when session is explicit.
 	if strings.Contains(stderr.String(), "Pro") {
 		t.Error("stderr should not mention Pro when --session is explicit")
+	}
+}
+
+func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	dir := emitMultiSessionDir(t, priv)
+
+	sessionID, err := resolveServeSession(dir, "bravo")
+	if err != nil {
+		t.Fatalf("resolveServeSession: %v", err)
+	}
+	handler := evidenceServeHandler(dir, sessionID)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, testActorBravo) {
+		t.Fatalf("GET / missing bound agent %q: %s", testActorBravo, body)
+	}
+	if strings.Contains(body, testActorAlpha) {
+		t.Fatalf("GET / rendered unbound agent %q: %s", testActorAlpha, body)
+	}
+}
+
+func TestServeCmd_MultiSessionRequiresExplicitSession(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	dir := emitMultiSessionDir(t, priv)
+
+	var buf bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	err := runServe(cmd, serveOptions{
+		receiptDir: dir,
+		listen:     defaultEvidenceServeListen,
+	})
+	if err == nil {
+		t.Fatal("serve without --session must error for a multi-session receipt directory")
+	}
+	for _, want := range []string{"sessions found", "pass --session"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to contain %q", err, want)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("serve should not start or print a listen address on multi-session error, got: %s", buf.String())
+	}
+}
+
+func TestServeCmd_NoEndpointCanSwitchBoundSession(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	dir := emitMultiSessionDir(t, priv)
+
+	handler := evidenceServeHandler(dir, "bravo")
+	for _, target := range []string{"/", "/?session=alpha", "/?agent=agent-alpha"} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want 200; body=%s", target, rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, testActorBravo) {
+				t.Fatalf("GET %s missing bound agent %q: %s", target, testActorBravo, body)
+			}
+			if strings.Contains(body, testActorAlpha) {
+				t.Fatalf("GET %s rendered unbound agent %q: %s", target, testActorAlpha, body)
+			}
+		})
+	}
+
+	for _, target := range []string{"/session/alpha", "/session/bravo", "/agent/agent-alpha"} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("GET %s status = %d, want 404; body=%s", target, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestServeCmd_NonGETRootReturnsMethodNotAllowed(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	dir := t.TempDir()
+	writeEvidenceSession(t, dir, priv, "alpha", testActorAlpha, 1)
+
+	handler := evidenceServeHandler(dir, "alpha")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST / status = %d, want 405; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("Allow = %q, want GET", rec.Header().Get("Allow"))
 	}
 }
 

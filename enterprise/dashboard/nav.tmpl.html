@@ -17,6 +17,10 @@
 .summary b { color: var(--text); font-weight: 700; }
 {{end}}
 
+{{define "dashboardFavicon"}}
+<link rel="icon" href="{{dashboardFaviconDataURL}}" type="image/svg+xml">
+{{end}}
+
 {{define "dashboardHeader"}}
 <style>
 /* Shared operator-console top bar. Higher specificity than the per-view base

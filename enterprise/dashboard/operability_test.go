@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -95,6 +96,151 @@ func TestBackupRestore_RestartAndCorruptionAtomicity(t *testing.T) {
 	}
 }
 
+func TestBackupRestore_RoundTripsConfiguredLegalHoldStore(t *testing.T) {
+	stateDir := t.TempDir()
+	legalHoldPath := filepath.Join(stateDir, "governance", "holds.json")
+	store, err := OpenLegalHoldStore(legalHoldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	if err := store.Add(LegalHold{
+		ID:      "hold-af-95",
+		Scope:   "session:agent-a",
+		Reason:  "preserve evidence for review",
+		Created: created,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(t.TempDir(), "dashboard-backup.tar")
+	result, err := BackupStateWithOptions(BackupOptions{
+		StateDir:           stateDir,
+		ArchivePath:        archive,
+		LegalHoldStorePath: legalHoldPath,
+	})
+	if err != nil {
+		t.Fatalf("BackupStateWithOptions: %v", err)
+	}
+	if !stringSliceContains(result.CapturedStores, backupStoreLegalHolds) {
+		t.Fatalf("captured stores = %v, want %s", result.CapturedStores, backupStoreLegalHolds)
+	}
+
+	restoreDir := t.TempDir()
+	restoredLegalHoldPath := filepath.Join(restoreDir, "restored-holds.json")
+	if _, err := RestoreStateWithOptions(RestoreOptions{
+		StateDir:           restoreDir,
+		ArchivePath:        archive,
+		LegalHoldStorePath: restoredLegalHoldPath,
+	}); err != nil {
+		t.Fatalf("RestoreStateWithOptions: %v", err)
+	}
+	restored, err := OpenLegalHoldStore(restoredLegalHoldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holds := restored.List()
+	if len(holds) != 1 || holds[0].ID != "hold-af-95" || holds[0].Scope != "session:agent-a" || !holds[0].Created.Equal(created) {
+		t.Fatalf("restored legal holds = %#v", holds)
+	}
+}
+
+func TestBackupRestore_HonorsConfiguredStorePaths(t *testing.T) {
+	stateDir := t.TempDir()
+	sourceDir := t.TempDir()
+	exemptionPath := filepath.Join(sourceDir, "custom-exemptions.json")
+	deliveryPath := filepath.Join(sourceDir, "custom-delivery.json")
+	legalHoldPath := filepath.Join(sourceDir, "custom-legal-holds.json")
+	when := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	exemptions, err := OpenExemptionStore(exemptionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exemptions.Add(ExemptionRecord{
+		ID:      "custom-exm",
+		Scope:   "api.vendor.example",
+		Owner:   "security",
+		Reason:  "temporary maintenance",
+		Created: when,
+		Expiry:  when.Add(24 * time.Hour),
+	}, when); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := OpenDeliveryInbox(DeliveryInboxOptions{Path: deliveryPath, QueueSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inbox.Record(DeliveryAttempt{ID: "custom-delivery", AlertID: "alert", Status: DeliveryDelivered, AttemptedAt: when}) {
+		t.Fatal("delivery attempt was dropped")
+	}
+	if err := inbox.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	holds, err := OpenLegalHoldStore(legalHoldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := holds.Add(LegalHold{ID: "custom-hold", Scope: "agent:one", Reason: "retention", Created: when}); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(t.TempDir(), "dashboard-backup.tar")
+	result, err := BackupStateWithOptions(BackupOptions{
+		StateDir:           stateDir,
+		ArchivePath:        archive,
+		ExemptionStorePath: exemptionPath,
+		DeliveryInboxPath:  deliveryPath,
+		LegalHoldStorePath: legalHoldPath,
+	})
+	if err != nil {
+		t.Fatalf("BackupStateWithOptions: %v", err)
+	}
+	for _, want := range []string{backupStoreExemptions, backupStoreDelivery, backupStoreLegalHolds} {
+		if !stringSliceContains(result.CapturedStores, want) {
+			t.Fatalf("captured stores = %v, missing %s", result.CapturedStores, want)
+		}
+	}
+
+	restoreDir := t.TempDir()
+	restoredExemptionPath := filepath.Join(restoreDir, "configured", "exemptions.json")
+	restoredDeliveryPath := filepath.Join(restoreDir, "configured", "delivery.json")
+	restoredLegalHoldPath := filepath.Join(restoreDir, "configured", "holds.json")
+	if _, err := RestoreStateWithOptions(RestoreOptions{
+		StateDir:           filepath.Join(restoreDir, "state"),
+		ArchivePath:        archive,
+		ExemptionStorePath: restoredExemptionPath,
+		DeliveryInboxPath:  restoredDeliveryPath,
+		LegalHoldStorePath: restoredLegalHoldPath,
+	}); err != nil {
+		t.Fatalf("RestoreStateWithOptions: %v", err)
+	}
+	restoredExemptions, err := OpenExemptionStore(restoredExemptionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := restoredExemptions.List(); len(records) != 1 || records[0].ID != "custom-exm" {
+		t.Fatalf("restored exemptions = %#v", records)
+	}
+	health, err := LoadDeliveryHealth(restoredDeliveryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Delivered != 1 {
+		t.Fatalf("restored delivery health = %#v", health)
+	}
+	restoredHolds, err := OpenLegalHoldStore(restoredLegalHoldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := restoredHolds.List(); len(records) != 1 || records[0].ID != "custom-hold" {
+		t.Fatalf("restored legal holds = %#v", records)
+	}
+	if _, err := os.Stat(filepath.Join(restoreDir, "state", ExemptionStateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default exemption restore path exists or stat failed: %v", err)
+	}
+}
+
 func TestBackupState_RejectsArchivePathThatOverwritesDurableState(t *testing.T) {
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, ExemptionStateFile)
@@ -112,6 +258,15 @@ func TestBackupState_RejectsArchivePathThatOverwritesDurableState(t *testing.T) 
 	if !bytes.Equal(after, original) {
 		t.Fatalf("durable state changed after rejected backup: %q", after)
 	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRestoreState_RejectsTraversalAndUnknownFiles(t *testing.T) {

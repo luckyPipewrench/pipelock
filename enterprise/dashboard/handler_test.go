@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -150,9 +152,49 @@ func TestHandler_FaviconServedWithoutDashboardRoute404(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != contentTypeSVG {
 		t.Fatalf("favicon content type = %q, want %q", got, contentTypeSVG)
 	}
-	for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `#00e5a0`} {
+	for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 400 480"`, `PIPELOCK`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("favicon body missing %q: %s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestHandler_FaviconUsesEmbeddedBrandAsset(t *testing.T) {
+	t.Parallel()
+
+	asset, err := os.ReadFile(filepath.Join("..", "..", "assets", "pipelock-logo.svg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(dashboardFaviconSVG) != string(asset) {
+		t.Fatal("embedded dashboard favicon does not match assets/pipelock-logo.svg")
+	}
+	if !strings.HasPrefix(dashboardFaviconDataURL, "data:image/svg+xml;base64,") {
+		t.Fatalf("favicon data URL = %q", dashboardFaviconDataURL)
+	}
+	if !strings.Contains(contentSecurityPolicy, "img-src 'self' data:") {
+		t.Fatalf("CSP does not allow embedded SVG favicon: %q", contentSecurityPolicy)
+	}
+}
+
+func TestDashboardTemplatesIncludeEmbeddedBrandFavicon(t *testing.T) {
+	t.Parallel()
+
+	entries, err := templateFS.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".tmpl.html") || name == "nav.tmpl.html" {
+			continue
+		}
+		data, err := templateFS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `{{template "dashboardFavicon" .}}`) {
+			t.Fatalf("%s does not include dashboardFavicon", name)
 		}
 	}
 }

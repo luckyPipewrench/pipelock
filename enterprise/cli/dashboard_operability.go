@@ -6,6 +6,7 @@ package entcli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -13,28 +14,45 @@ import (
 )
 
 func dashboardBackupCmd() *cobra.Command {
-	var stateDir, output string
+	var stateDir, output, exemptionStore, deliveryInbox, legalHoldStore string
 	cmd := &cobra.Command{
 		Use:   "backup",
 		Short: "Back up non-reconstructible dashboard state",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := dashboard.BackupState(stateDir, output); err != nil {
+			result, err := dashboard.BackupStateWithOptions(dashboard.BackupOptions{
+				StateDir:           stateDir,
+				ArchivePath:        output,
+				ExemptionStorePath: exemptionStore,
+				DeliveryInboxPath:  deliveryInbox,
+				LegalHoldStorePath: legalHoldStore,
+			})
+			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dashboard durable state backed up to %s\n", output)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dashboard durable state backed up to %s (captured stores: %s)\n",
+				output, formatDashboardStoreList(result.CapturedStores))
+			if len(result.MissingStores) > 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dashboard durable state stores not present: %s\n", formatDashboardStoreList(result.MissingStores))
+			}
+			if strings.TrimSpace(legalHoldStore) == "" {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "legal holds not captured: --legal-hold-store was not set")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&stateDir, "state-dir", "", "dashboard state directory containing durable JSON stores")
 	cmd.Flags().StringVar(&output, "output", "", "output tar archive (created with mode 0600)")
+	cmd.Flags().StringVar(&exemptionStore, "exemption-store", "", "optional exemption lifecycle store file; defaults to <state-dir>/exemptions.json")
+	cmd.Flags().StringVar(&deliveryInbox, "delivery-inbox", "", "optional alert delivery inbox file; defaults to <state-dir>/delivery-inbox.json")
+	cmd.Flags().StringVar(&legalHoldStore, "legal-hold-store", "", "optional legal-hold metadata store file to include")
 	_ = cmd.MarkFlagRequired("state-dir")
 	_ = cmd.MarkFlagRequired("output")
 	return cmd
 }
 
 func dashboardRestoreCmd() *cobra.Command {
-	var stateDir, input string
+	var stateDir, input, exemptionStore, deliveryInbox, legalHoldStore string
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Validate and restore dashboard durable state (per-file atomic write, rollback on failure)",
@@ -46,18 +64,36 @@ single cross-file transaction: a process crash between file writes can leave a m
 generation on disk. Re-run restore to converge.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := dashboard.RestoreState(stateDir, input); err != nil {
+			result, err := dashboard.RestoreStateWithOptions(dashboard.RestoreOptions{
+				StateDir:           stateDir,
+				ArchivePath:        input,
+				ExemptionStorePath: exemptionStore,
+				DeliveryInboxPath:  deliveryInbox,
+				LegalHoldStorePath: legalHoldStore,
+			})
+			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dashboard durable state restored from %s\n", input)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dashboard durable state restored from %s (restored stores: %s)\n",
+				input, formatDashboardStoreList(result.RestoredStores))
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&stateDir, "state-dir", "", "dashboard state directory to restore")
 	cmd.Flags().StringVar(&input, "input", "", "validated dashboard backup tar archive")
+	cmd.Flags().StringVar(&exemptionStore, "exemption-store", "", "optional exemption lifecycle store file; defaults to <state-dir>/exemptions.json")
+	cmd.Flags().StringVar(&deliveryInbox, "delivery-inbox", "", "optional alert delivery inbox file; defaults to <state-dir>/delivery-inbox.json")
+	cmd.Flags().StringVar(&legalHoldStore, "legal-hold-store", "", "optional legal-hold metadata store file to restore")
 	_ = cmd.MarkFlagRequired("state-dir")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
+}
+
+func formatDashboardStoreList(stores []string) string {
+	if len(stores) == 0 {
+		return "none"
+	}
+	return strings.Join(stores, ", ")
 }
 
 func dashboardRebuildReadModelCmd() *cobra.Command {

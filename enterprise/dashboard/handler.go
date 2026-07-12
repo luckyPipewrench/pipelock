@@ -27,14 +27,19 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 	contentTypeHTML       = "text/html; charset=utf-8"
 	contentTypeSVG        = "image/svg+xml; charset=utf-8"
 	contentTypeText       = "text/plain; charset=utf-8"
 	auditSessionMaxBytes  = 128
 )
 
-const dashboardFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#09090b"/><path d="M20 30v-8c0-7 5-12 12-12s12 5 12 12v8" fill="none" stroke="#00e5a0" stroke-width="6" stroke-linecap="round"/><rect x="16" y="28" width="32" height="24" rx="5" fill="#00e5a0"/><circle cx="32" cy="40" r="4" fill="#09090b"/></svg>`
+const (
+	dashboardFaviconSVGBase64 = `PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNDgwIiBmaWxsPSJub25lIj4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0ic2hhY2tsZS1ncmFkIiB4MT0iMjAwIiB5MT0iNDAiIHgyPSIyMDAiIHkyPSIxODAiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwZmZjOCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMGI4OTQiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImJvZHktZ3JhZCIgeDE9IjIwMCIgeTE9IjE2MCIgeDI9IjIwMCIgeTI9IjM0MCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjMWExYTJlIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzBmMGYxYSIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICAgIDxmaWx0ZXIgaWQ9Imdsb3ciPgogICAgICA8ZmVHYXVzc2lhbkJsdXIgc3RkRGV2aWF0aW9uPSI2IiByZXN1bHQ9ImJsdXIiLz4KICAgICAgPGZlTWVyZ2U+CiAgICAgICAgPGZlTWVyZ2VOb2RlIGluPSJibHVyIi8+CiAgICAgICAgPGZlTWVyZ2VOb2RlIGluPSJTb3VyY2VHcmFwaGljIi8+CiAgICAgIDwvZmVNZXJnZT4KICAgIDwvZmlsdGVyPgogICAgPGZpbHRlciBpZD0iZ2xvdy10ZXh0Ij4KICAgICAgPGZlR2F1c3NpYW5CbHVyIHN0ZERldmlhdGlvbj0iMyIgcmVzdWx0PSJibHVyIi8+CiAgICAgIDxmZU1lcmdlPgogICAgICAgIDxmZU1lcmdlTm9kZSBpbj0iYmx1ciIvPgogICAgICAgIDxmZU1lcmdlTm9kZSBpbj0iU291cmNlR3JhcGhpYyIvPgogICAgICA8L2ZlTWVyZ2U+CiAgICA8L2ZpbHRlcj4KICA8L2RlZnM+CgogIDwhLS0gU2hhY2tsZSAocGlwZS1zdHlsZSkgLS0+CiAgPHBhdGggZD0iTTEzMCAxODAgTDEzMCAxMTAgQzEzMCA2NSAxNjAgNDAgMjAwIDQwIEMyNDAgNDAgMjcwIDY1IDI3MCAxMTAgTDI3MCAxODAiCiAgICAgICAgc3Ryb2tlPSJ1cmwoI3NoYWNrbGUtZ3JhZCkiIHN0cm9rZS13aWR0aD0iMjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgZmlsbD0ibm9uZSIgZmlsdGVyPSJ1cmwoI2dsb3cpIi8+CgogIDwhLS0gUGlwZSBqb2ludHMgb24gc2hhY2tsZSBlbmRzIC0tPgogIDxyZWN0IHg9IjExNCIgeT0iMTY1IiB3aWR0aD0iMzIiIGhlaWdodD0iMTYiIHJ4PSIzIiBmaWxsPSIjMDBmZmM4IiBvcGFjaXR5PSIwLjciLz4KICA8cmVjdCB4PSIyNTQiIHk9IjE2NSIgd2lkdGg9IjMyIiBoZWlnaHQ9IjE2IiByeD0iMyIgZmlsbD0iIzAwZmZjOCIgb3BhY2l0eT0iMC43Ii8+CgogIDwhLS0gTG9jayBib2R5IC0tPgogIDxyZWN0IHg9IjkwIiB5PSIxODAiIHdpZHRoPSIyMjAiIGhlaWdodD0iMTYwIiByeD0iMTYiIGZpbGw9InVybCgjYm9keS1ncmFkKSIKICAgICAgICBzdHJva2U9IiMwMGZmYzgiIHN0cm9rZS13aWR0aD0iMi41IiBmaWx0ZXI9InVybCgjZ2xvdykiLz4KCiAgPCEtLSBCb2R5IGlubmVyIGJvcmRlciBhY2NlbnQgLS0+CiAgPHJlY3QgeD0iMTAwIiB5PSIxOTAiIHdpZHRoPSIyMDAiIGhlaWdodD0iMTQwIiByeD0iMTAiIGZpbGw9Im5vbmUiCiAgICAgICAgc3Ryb2tlPSIjMDBmZmM4IiBzdHJva2Utd2lkdGg9IjAuNSIgb3BhY2l0eT0iMC4yIi8+CgogIDwhLS0gS2V5aG9sZSAtLT4KICA8Y2lyY2xlIGN4PSIyMDAiIGN5PSIyNDgiIHI9IjE4IiBmaWxsPSIjMDBmZmM4IiBvcGFjaXR5PSIwLjkiIGZpbHRlcj0idXJsKCNnbG93KSIvPgogIDxjaXJjbGUgY3g9IjIwMCIgY3k9IjI0OCIgcj0iMTAiIGZpbGw9IiMwZjBmMWEiLz4KICA8cmVjdCB4PSIxOTYiIHk9IjI1NiIgd2lkdGg9IjgiIGhlaWdodD0iMjQiIHJ4PSIzIiBmaWxsPSIjMDBmZmM4IiBvcGFjaXR5PSIwLjkiLz4KICA8cmVjdCB4PSIxOTYiIHk9IjI1NiIgd2lkdGg9IjgiIGhlaWdodD0iMjQiIHJ4PSIzIiBmaWxsPSIjMGYwZjFhIiBvcGFjaXR5PSIwLjQiLz4KCiAgPCEtLSBQaXBlIHRocmVhZCBsaW5lcyBvbiBib2R5IHNpZGVzIC0tPgogIDxsaW5lIHgxPSI5NSIgeTE9IjIxMCIgeDI9Ijk1IiB5Mj0iMjE1IiBzdHJva2U9IiMwMGZmYzgiIHN0cm9rZS13aWR0aD0iMSIgb3BhY2l0eT0iMC4zIi8+CiAgPGxpbmUgeDE9Ijk1IiB5MT0iMjIyIiB4Mj0iOTUiIHkyPSIyMjciIHN0cm9rZT0iIzAwZmZjOCIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjMiLz4KICA8bGluZSB4MT0iOTUiIHkxPSIyMzQiIHgyPSI5NSIgeTI9IjIzOSIgc3Ryb2tlPSIjMDBmZmM4IiBzdHJva2Utd2lkdGg9IjEiIG9wYWNpdHk9IjAuMyIvPgogIDxsaW5lIHgxPSIzMDUiIHkxPSIyMTAiIHgyPSIzMDUiIHkyPSIyMTUiIHN0cm9rZT0iIzAwZmZjOCIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjMiLz4KICA8bGluZSB4MT0iMzA1IiB5MT0iMjIyIiB4Mj0iMzA1IiB5Mj0iMjI3IiBzdHJva2U9IiMwMGZmYzgiIHN0cm9rZS13aWR0aD0iMSIgb3BhY2l0eT0iMC4zIi8+CiAgPGxpbmUgeDE9IjMwNSIgeTE9IjIzNCIgeDI9IjMwNSIgeTI9IjIzOSIgc3Ryb2tlPSIjMDBmZmM4IiBzdHJva2Utd2lkdGg9IjEiIG9wYWNpdHk9IjAuMyIvPgoKICA8IS0tICJQSVBFTE9DSyIgdGV4dCAtLT4KICA8dGV4dCB4PSIyMDAiIHk9IjQyMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IidKZXRCcmFpbnMgTW9ubycsICdGaXJhIENvZGUnLCAnQ291cmllciBOZXcnLCBtb25vc3BhY2UiCiAgICAgICAgZm9udC1zaXplPSI1MiIgZm9udC13ZWlnaHQ9IjcwMCIgbGV0dGVyLXNwYWNpbmc9IjYiIGZpbGw9IiMwMGZmYzgiIGZpbHRlcj0idXJsKCNnbG93LXRleHQpIj5QSVBFTE9DSzwvdGV4dD4KCiAgPCEtLSBTdWJ0bGUgdGFnbGluZSAtLT4KICA8dGV4dCB4PSIyMDAiIHk9IjQ1NSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IidJbnRlcicsICdIZWx2ZXRpY2EgTmV1ZScsIHNhbnMtc2VyaWYiCiAgICAgICAgZm9udC1zaXplPSIxNCIgZm9udC13ZWlnaHQ9IjQwMCIgbGV0dGVyLXNwYWNpbmc9IjQiIGZpbGw9IiM5NGEzYjgiIHRleHQtdHJhbnNmb3JtPSJ1cHBlcmNhc2UiPkFHRU5UIEZJUkVXQUxMPC90ZXh0Pgo8L3N2Zz4K`
+	dashboardFaviconDataURL   = "data:image/svg+xml;base64," + dashboardFaviconSVGBase64
+)
+
+var dashboardFaviconSVG = mustDecodeDashboardFavicon()
 
 //go:embed nav.tmpl.html overview.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html
 var templateFS embed.FS
@@ -53,7 +58,19 @@ var (
 )
 
 func parseDashboardTemplate(name string) *template.Template {
-	return template.Must(template.ParseFS(templateFS, name, "nav.tmpl.html"))
+	return template.Must(template.New(name).Funcs(template.FuncMap{
+		"dashboardFaviconDataURL": func() template.URL {
+			return template.URL(dashboardFaviconDataURL)
+		},
+	}).ParseFS(templateFS, name, "nav.tmpl.html"))
+}
+
+func mustDecodeDashboardFavicon() []byte {
+	data, err := base64.StdEncoding.DecodeString(dashboardFaviconSVGBase64)
+	if err != nil {
+		panic(fmt.Sprintf("decode dashboard favicon: %v", err))
+	}
+	return data
 }
 
 type pageData struct {
@@ -341,7 +358,7 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write([]byte(dashboardFaviconSVG))
+	_, _ = w.Write(dashboardFaviconSVG)
 }
 
 type dashboardHandler struct {

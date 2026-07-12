@@ -32,6 +32,8 @@ const (
 	chainAny     = "any"
 	chainNoMatch = "__invalid_chain__"
 
+	agentFilterMaxRunes = 128
+
 	pipUntampered = "U"
 )
 
@@ -270,7 +272,7 @@ func (m *ReadModel) ReceiptDetail(sessionID string, seq uint64) (evidenceview.De
 func (m *ReadModel) ResolveFilter(r *http.Request) FilterSpec {
 	q := r.URL.Query()
 	verdict := q.Get("verdict")
-	agent := q.Get("agent")
+	agent := truncateFilterValue(q.Get("agent"), agentFilterMaxRunes)
 	chain := q.Get("chain")
 	preset := q.Get("preset")
 
@@ -293,6 +295,19 @@ func overrideIfSet(explicit, preset string) string {
 		return explicit
 	}
 	return preset
+}
+
+func truncateFilterValue(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	for i := range value {
+		if maxRunes == 0 {
+			return value[:i]
+		}
+		maxRunes--
+	}
+	return value
 }
 
 // normalizeFilter clamps filter values to the enumerated bounded set.

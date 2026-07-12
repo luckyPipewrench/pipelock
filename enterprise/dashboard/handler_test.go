@@ -13,6 +13,7 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -792,6 +793,31 @@ func TestHandler_SharedNavDoesNotReflectRequestPayloads(t *testing.T) {
 	}
 	if label := navLabel(activeNavKey(`/"><script>alert(1)</script>`)); label != "Dashboard" {
 		t.Fatalf("hostile unknown path label = %q, want Dashboard", label)
+	}
+}
+
+func TestHandler_AgentsFilterBoundsAgentInput(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAllDashboardFeatures,
+	})
+	bounded := strings.Repeat("a", agentFilterMaxRunes)
+	oversized := bounded + `"><script>alert(1)</script>`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents?agent="+url.QueryEscape(oversized), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="agent" value="`+bounded+`" maxlength="128"`) {
+		t.Fatalf("agents filter did not render the bounded value with maxlength: %s", body)
+	}
+	if strings.Contains(body, html.EscapeString(oversized[len(bounded):])) {
+		t.Fatal("agents filter rendered the truncated suffix")
 	}
 }
 

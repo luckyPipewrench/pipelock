@@ -121,7 +121,7 @@
     <form class="filter-form" method="get" action="/agents">
       <div>
         <label for="f-agent">Agent</label><br>
-        <input type="text" id="f-agent" name="agent" value="{{.Filter.Agent}}">
+        <input type="text" id="f-agent" name="agent" value="{{.Filter.Agent}}" maxlength="128">
       </div>
       <div>
         <label for="f-chain">Chain</label><br>

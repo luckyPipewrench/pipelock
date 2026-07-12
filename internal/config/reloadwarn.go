@@ -51,6 +51,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "DLP patterns removed or regex-swapped on reload: " + strings.Join(removed, ", "),
 		})
 	}
+	if removed := removedOrWeakenedResponsePatterns(old.ResponseScanning.Patterns, updated.ResponseScanning.Patterns); len(removed) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "response_scanning.patterns",
+			Message: "response scanning patterns removed or regex-swapped on reload: " + strings.Join(removed, ", "),
+		})
+	}
 
 	// DLP include_defaults disabled
 	oldInclude := old.DLP.IncludeDefaults == nil || *old.DLP.IncludeDefaults
@@ -1417,6 +1423,24 @@ func checkEscalationWeakening(old, updated *EscalationLevels, warnings *[]Reload
 // which is the point. Renames appear as both a removal (old name) and an
 // implicit add (new name), which the reload surface does not warn about.
 func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
+	updatedByName := make(map[string]string, len(updated))
+	for _, p := range updated {
+		updatedByName[p.Name] = p.Regex
+	}
+	var changed []string
+	for _, p := range old {
+		newRegex, ok := updatedByName[p.Name]
+		switch {
+		case !ok:
+			changed = append(changed, p.Name)
+		case newRegex != p.Regex:
+			changed = append(changed, p.Name+" (regex changed)")
+		}
+	}
+	return changed
+}
+
+func removedOrWeakenedResponsePatterns(old, updated []ResponseScanPattern) []string {
 	updatedByName := make(map[string]string, len(updated))
 	for _, p := range updated {
 		updatedByName[p.Name] = p.Regex

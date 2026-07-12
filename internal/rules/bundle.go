@@ -394,61 +394,185 @@ func NamespacedID(bundleName, ruleID string) string {
 
 // CheckMinPipelock verifies that currentVersion meets the minimum required
 // pipelock version. If minVersion is empty, the check always passes.
-// Both versions are parsed as semver (major.minor.patch), with any
-// pre-release/build suffix (after first "-" or "+") stripped before comparison.
 func CheckMinPipelock(minVersion, currentVersion string) error {
 	if minVersion == "" {
 		return nil
 	}
 
-	minMajor, minMinor, minPatch, err := parseSemver(minVersion)
+	minSemver, err := parseSemverVersion(minVersion)
 	if err != nil {
 		return fmt.Errorf("check min pipelock: invalid min_pipelock %q: %w", minVersion, err)
 	}
 
-	curMajor, curMinor, curPatch, err := parseSemver(currentVersion)
+	if isDevelopmentCurrentVersion(currentVersion) {
+		return nil
+	}
+	curSemver, err := parseSemverVersion(currentVersion)
 	if err != nil {
-		return fmt.Errorf("check min pipelock: invalid current version %q: %w", currentVersion, err)
+		// A current version that is not orderable semver is a development build
+		// (a `git describe` string like "2-147-gabc1234", a `go install`
+		// pseudo-version, or an unset build). It carries no release number to
+		// compare against, so treat it as newest and let the bundle load. A real
+		// tagged release always carries a clean major.minor.patch, so this never
+		// weakens the minimum gate for a shipped release. (minVersion is still
+		// parsed strictly above, so a malformed bundle min_pipelock still errors.)
+		return nil
 	}
 
-	if compareSemver(curMajor, curMinor, curPatch, minMajor, minMinor, minPatch) < 0 {
+	if compareSemverVersion(curSemver, minSemver) < 0 {
 		return fmt.Errorf("check min pipelock: current version %q is below minimum %q", currentVersion, minVersion)
 	}
 
 	return nil
 }
 
+type semverVersion struct {
+	major      int
+	minor      int
+	patch      int
+	prerelease string
+}
+
 // parseSemver parses a semver string into major, minor, patch integers.
 // Pre-release/build suffixes (anything after the first "-" or "+") are stripped.
 func parseSemver(s string) (major, minor, patch int, err error) {
+	v, err := parseSemverVersion(s)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return v.major, v.minor, v.patch, nil
+}
+
+func parseSemverVersion(s string) (semverVersion, error) {
 	// Strip "v" prefix (e.g. "v2.1.0" → "2.1.0").
 	s = strings.TrimPrefix(s, "v")
-	// Strip pre-release/build suffix.
-	if idx := strings.IndexAny(s, "-+"); idx >= 0 {
+	prerelease := ""
+	if idx := strings.Index(s, "+"); idx >= 0 {
+		s = s[:idx]
+	}
+	if idx := strings.Index(s, "-"); idx >= 0 {
+		prerelease = s[idx+1:]
 		s = s[:idx]
 	}
 
 	parts := strings.Split(s, ".")
 	if len(parts) != 3 {
-		return 0, 0, 0, fmt.Errorf("expected 3 segments, got %d in %q", len(parts), s)
+		return semverVersion{}, fmt.Errorf("expected 3 segments, got %d in %q", len(parts), s)
 	}
 
-	major, err = strconv.Atoi(parts[0])
+	major, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid major %q: %w", parts[0], err)
+		return semverVersion{}, fmt.Errorf("invalid major %q: %w", parts[0], err)
 	}
 
-	minor, err = strconv.Atoi(parts[1])
+	minor, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid minor %q: %w", parts[1], err)
+		return semverVersion{}, fmt.Errorf("invalid minor %q: %w", parts[1], err)
 	}
 
-	patch, err = strconv.Atoi(parts[2])
+	patch, err := strconv.Atoi(parts[2])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid patch %q: %w", parts[2], err)
+		return semverVersion{}, fmt.Errorf("invalid patch %q: %w", parts[2], err)
 	}
 
-	return major, minor, patch, nil
+	return semverVersion{major: major, minor: minor, patch: patch, prerelease: prerelease}, nil
+}
+
+func isDevelopmentCurrentVersion(s string) bool {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if s == "" || s == "devel" || s == "(devel)" {
+		return true
+	}
+	v, err := parseSemverVersion(s)
+	if err == nil && prereleaseHasIdentifier(v.prerelease, "dev") {
+		return true
+	}
+	return isGitDescribeVersion(s)
+}
+
+func prereleaseHasIdentifier(prerelease, ident string) bool {
+	for _, part := range strings.FieldsFunc(prerelease, func(r rune) bool { return r == '.' || r == '-' }) {
+		if strings.EqualFold(part, ident) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGitDescribeVersion(s string) bool {
+	core, rest, ok := strings.Cut(s, "-")
+	if !ok {
+		return false
+	}
+	if _, _, _, err := parseSemver(core); err != nil {
+		return false
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) < 2 {
+		return false
+	}
+	if _, err := strconv.ParseUint(parts[0], 10, 64); err != nil {
+		return false
+	}
+	if !strings.HasPrefix(parts[1], "g") || len(parts[1]) == 1 {
+		return false
+	}
+	return isHexString(parts[1][1:])
+}
+
+func isHexString(s string) bool {
+	for _, r := range s {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func compareSemverVersion(a, b semverVersion) int {
+	if cmp := compareSemver(a.major, a.minor, a.patch, b.major, b.minor, b.patch); cmp != 0 {
+		return cmp
+	}
+	if a.prerelease == b.prerelease {
+		return 0
+	}
+	if a.prerelease == "" {
+		return 1
+	}
+	if b.prerelease == "" {
+		return -1
+	}
+	return comparePrerelease(a.prerelease, b.prerelease)
+}
+
+func comparePrerelease(a, b string) int {
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	for i := 0; i < len(aParts) && i < len(bParts); i++ {
+		if aParts[i] == bParts[i] {
+			continue
+		}
+		aNum, aErr := strconv.ParseUint(aParts[i], 10, 64)
+		bNum, bErr := strconv.ParseUint(bParts[i], 10, 64)
+		switch {
+		case aErr == nil && bErr == nil:
+			if aNum < bNum {
+				return -1
+			}
+			if aNum == bNum {
+				continue
+			}
+			return 1
+		case aErr == nil:
+			return -1
+		case bErr == nil:
+			return 1
+		default:
+			return strings.Compare(aParts[i], bParts[i])
+		}
+	}
+	return cmpInt(len(aParts), len(bParts))
 }
 
 // compareSemver returns -1 if a < b, 0 if equal, 1 if a > b.

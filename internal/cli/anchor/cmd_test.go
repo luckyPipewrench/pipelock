@@ -242,6 +242,26 @@ func TestReceiptsCmdRequiresLocalLogAndOutput(t *testing.T) {
 	}
 }
 
+func TestReceiptsCmdRequiresRekorURL(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	dir := t.TempDir()
+	cmd := receiptsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	// Rekor backend with a key and the remote acknowledgement but NO --rekor-url
+	// must fail closed rather than silently defaulting to the public log.
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--backend", anchorpkg.RekorBackend,
+		"--rekor-key", writeRekorKey(t, dir),
+		"--yes-send-to-remote-log",
+		"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--rekor-url is required") {
+		t.Fatalf("Execute err = %v, want Rekor URL error", err)
+	}
+}
+
 func TestReceiptsCmdRequiresRekorKey(t *testing.T) {
 	receiptsPath, keyHex := cliReceiptJSONL(t)
 	cmd := receiptsCmd()
@@ -250,6 +270,7 @@ func TestReceiptsCmdRequiresRekorKey(t *testing.T) {
 		receiptsPath,
 		"--key", keyHex,
 		"--backend", anchorpkg.RekorBackend,
+		"--rekor-url", "https://rekor.internal.example",
 		"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--rekor-key is required") {
@@ -266,6 +287,7 @@ func TestReceiptsCmdRequiresRekorRemoteAcknowledgement(t *testing.T) {
 		receiptsPath,
 		"--key", keyHex,
 		"--backend", anchorpkg.RekorBackend,
+		"--rekor-url", "https://rekor.internal.example",
 		"--rekor-key", writeRekorKey(t, dir),
 		"--out", filepath.Join(filepath.Dir(receiptsPath), "bundle.json"),
 	})

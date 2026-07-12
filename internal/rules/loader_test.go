@@ -69,11 +69,11 @@ func testDLPRule(id, confidence, status string) Rule {
 }
 
 // testInjectionRule creates a valid injection rule.
-func testInjectionRule(id, confidence, status string) Rule {
+func testInjectionRule(id, confidence string) Rule {
 	return Rule{
 		ID:          id,
 		Type:        RuleTypeInjection,
-		Status:      status,
+		Status:      StatusStable,
 		Name:        "Test Injection Rule " + id,
 		Description: "Detects injection pattern " + id,
 		Severity:    severityMedium,
@@ -225,7 +225,7 @@ func TestLoadBundles_ValidUnsignedBundle(t *testing.T) {
 
 	b := testBundle(testBundleName, []Rule{
 		testDLPRule("dlp-rule-001", confidenceHigh, StatusStable),
-		testInjectionRule("inj-rule-001", confidenceMedium, StatusStable),
+		testInjectionRule("inj-rule-001", confidenceMedium),
 		testToolPoisonRule("tp-rule-001", confidenceHigh, StatusStable, scanFieldDescription),
 	})
 	writeUnsignedBundle(t, bundleDir, b)
@@ -700,7 +700,7 @@ func TestLoadBundles_DisabledByGlobPattern(t *testing.T) {
 	b := testBundle("glob-test", []Rule{
 		testDLPRule("dlp-rule-001", confidenceHigh, StatusStable),
 		testDLPRule("dlp-rule-002", confidenceHigh, StatusStable),
-		testInjectionRule("inj-rule-001", confidenceHigh, StatusStable),
+		testInjectionRule("inj-rule-001", confidenceHigh),
 	})
 	writeUnsignedBundle(t, bundleDir, b)
 
@@ -883,7 +883,7 @@ func TestLoadBundles_RuleTypeRouting(t *testing.T) {
 	b := testBundle("routing-test", []Rule{
 		testDLPRule("dlp-001", confidenceHigh, StatusStable),
 		testDLPRule("dlp-002", confidenceHigh, StatusStable),
-		testInjectionRule("inj-001", confidenceHigh, StatusStable),
+		testInjectionRule("inj-001", confidenceHigh),
 		testToolPoisonRule("tp-001", confidenceHigh, StatusStable, scanFieldName),
 	})
 	writeUnsignedBundle(t, bundleDir, b)

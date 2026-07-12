@@ -192,6 +192,7 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 	// standard DLP defaults while keeping standard response defaults.
 
 	// DLP subsystem.
+	cfg.DLP.Patterns = removeBundleDLP(cfg.DLP.Patterns)
 	if dlpDefaultsDisabled {
 		result.StandardDLP = StandardSourceNone
 	} else if standardLoaded {
@@ -199,10 +200,12 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		cfg.DLP.Patterns = append(cfg.DLP.Patterns, standardDLP...)
 		result.StandardDLP = StandardSourceBundle
 	} else {
+		cfg.DLP.Patterns = restoreCompiledStandardDLP(cfg.DLP.Patterns)
 		result.StandardDLP = StandardSourceCompiled
 	}
 
 	// Response subsystem.
+	cfg.ResponseScanning.Patterns = removeBundleResponse(cfg.ResponseScanning.Patterns)
 	if responseDefaultsDisabled {
 		result.StandardResponse = StandardSourceNone
 	} else if standardLoaded {
@@ -210,6 +213,7 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, standardInj...)
 		result.StandardResponse = StandardSourceBundle
 	} else {
+		cfg.ResponseScanning.Patterns = restoreCompiledStandardResponse(cfg.ResponseScanning.Patterns)
 		result.StandardResponse = StandardSourceCompiled
 	}
 
@@ -218,6 +222,104 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, otherInj...)
 
 	return result
+}
+
+func removeBundleDLP(patterns []config.DLPPattern) []config.DLPPattern {
+	kept := make([]config.DLPPattern, 0, len(patterns))
+	for _, p := range patterns {
+		if p.Bundle != "" {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept
+}
+
+func removeBundleResponse(patterns []config.ResponseScanPattern) []config.ResponseScanPattern {
+	kept := make([]config.ResponseScanPattern, 0, len(patterns))
+	for _, p := range patterns {
+		if p.Bundle != "" {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept
+}
+
+func restoreCompiledStandardDLP(patterns []config.DLPPattern) []config.DLPPattern {
+	defaultNames := make(map[string]struct{}, len(config.Defaults().DLP.Patterns))
+	for _, p := range config.Defaults().DLP.Patterns {
+		defaultNames[p.Name] = struct{}{}
+	}
+
+	existingCompiledDefaults := make(map[string]struct{}, len(patterns))
+	userOverrides := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if _, ok := defaultNames[p.Name]; ok && p.Compiled {
+			existingCompiledDefaults[p.Name] = struct{}{}
+		}
+		if !p.Compiled {
+			userOverrides[p.Name] = struct{}{}
+		}
+	}
+
+	restored := make([]config.DLPPattern, 0, len(patterns)+len(compiledStandardDLPNames))
+	for _, p := range config.Defaults().DLP.Patterns {
+		if _, overridden := userOverrides[p.Name]; overridden {
+			continue
+		}
+		if !compiledStandardDLPNames[p.Name] {
+			if _, present := existingCompiledDefaults[p.Name]; !present {
+				continue
+			}
+		}
+		restored = append(restored, p)
+	}
+	for _, p := range patterns {
+		if _, isDefault := defaultNames[p.Name]; isDefault && p.Compiled {
+			continue
+		}
+		restored = append(restored, p)
+	}
+	return restored
+}
+
+func restoreCompiledStandardResponse(patterns []config.ResponseScanPattern) []config.ResponseScanPattern {
+	defaultNames := make(map[string]struct{}, len(config.Defaults().ResponseScanning.Patterns))
+	for _, p := range config.Defaults().ResponseScanning.Patterns {
+		defaultNames[p.Name] = struct{}{}
+	}
+
+	existingCompiledDefaults := make(map[string]struct{}, len(patterns))
+	userOverrides := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if _, ok := defaultNames[p.Name]; ok && p.Compiled {
+			existingCompiledDefaults[p.Name] = struct{}{}
+		}
+		if !p.Compiled {
+			userOverrides[p.Name] = struct{}{}
+		}
+	}
+
+	restored := make([]config.ResponseScanPattern, 0, len(patterns)+len(compiledStandardResponseNames))
+	for _, p := range config.Defaults().ResponseScanning.Patterns {
+		if _, overridden := userOverrides[p.Name]; overridden {
+			continue
+		}
+		if !compiledStandardResponseNames[p.Name] {
+			if _, present := existingCompiledDefaults[p.Name]; !present {
+				continue
+			}
+		}
+		restored = append(restored, p)
+	}
+	for _, p := range patterns {
+		if _, isDefault := defaultNames[p.Name]; isDefault && p.Compiled {
+			continue
+		}
+		restored = append(restored, p)
+	}
+	return restored
 }
 
 // removeStandardTierDLP removes compiled standard-tier DLP patterns, keeping

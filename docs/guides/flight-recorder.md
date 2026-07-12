@@ -99,6 +99,7 @@ Because the recorder is on by default, two footguns are bounded by the defaults 
 
 - **Disk growth.** Evidence files rotate at `max_entries_per_file` (default 10000) and can auto-expire with `retention_days`. Leave rotation on so a busy proxy cannot silently fill the disk; set `retention_days` for a hard cap.
 - **Privacy.** Receipts record the *targets* of mediated traffic. `redact` (default `true`) DLP-scrubs each entry before it touches disk so secrets are not persisted in the clear. Do not disable it unless you have a separate control around the evidence directory.
+- **Sign-without-a-key.** `sign_checkpoints` defaults to `true`, so once you set a `dir` the recorder expects a signing key. Starting a persisting recorder with `sign_checkpoints: true` and no `signing_key_path` is a hard startup error (it would otherwise write checkpoints with an empty signature that `verify-receipt` later rejects as "missing signature"). Provide `signing_key_path`, or set `sign_checkpoints: false` for an explicitly unsigned hash-chained recorder. `pipelock init` sets both, so this only bites hand-written configs.
 
 ### Completeness anchor (transcript root)
 
@@ -374,3 +375,39 @@ hash, err := recorder.ComputeFileHash("/var/lib/pipelock/evidence/evidence-abc12
 ```
 
 This hash can be committed to an external ledger or included in an assessment artifact manifest to prove the evidence file has not been modified.
+
+### Verify a live receipt chain end-to-end
+
+Signed action receipts are produced once `flight_recorder` is enabled with a
+`dir` and a `signing_key_path` (all three are needed — without a key the
+recorder can only hash-chain, not sign). Setting `require_receipts: true`
+additionally makes a successful signed emission a precondition for allow-path
+traffic, so a receipt failure fails closed instead of forwarding silently.
+
+The full loop uses only shipped commands and verifies offline against the public
+key — no server, no account:
+
+```bash
+# 1. Provision the recorder: pipelock init writes flight_recorder.enabled/dir/
+#    signing_key_path into the config, generates the Ed25519 signing key, and
+#    writes the shareable public-key sidecar at <signing_key_path>.pub.
+pipelock init
+
+# 2. Run the proxy. Every mediated allow/block decision is signed into the
+#    hash-linked chain under flight_recorder.dir.
+pipelock run --config /etc/pipelock/pipelock.yaml
+
+# 3. Stop it cleanly (Ctrl-C / SIGTERM). Graceful shutdown seals the chain with
+#    a transcript_root completeness anchor; a SIGKILL skips the seal and leaves
+#    the tail unsealed (verification then reports no root rather than VALID).
+
+# 4. Verify the entire chain offline with the public-key sidecar. Use the dir
+#    and .pub path that step 1 wrote into your config.
+pipelock verify-receipt --chain /var/lib/pipelock/evidence \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub
+```
+
+`--chain` walks every evidence file in the directory (across rotations and
+restarts), checks `prev_hash` linkage and sequence continuity, verifies each
+signature against the pinned key, and confirms the sealed `transcript_root`. If
+the chain rotated its signing key, pass each public key with a repeated `--key`.

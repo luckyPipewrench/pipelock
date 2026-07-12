@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Operator Overview</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 26px 24px 104px;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      margin-bottom: 8px;
+      font-size: 28px;
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+    h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    a { color: inherit; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .eyebrow {
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .hero p {
+      max-width: 760px;
+      margin-bottom: 0;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+    .claim-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(150px, 1fr)) minmax(260px, 1.5fr);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.015);
+      margin-bottom: 22px;
+    }
+    .claim-cell {
+      padding: 15px 18px;
+      border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+    .claim-cell:last-child { border-right: 0; }
+    .count {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 8px;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+    }
+    .count strong { font-size: 26px; line-height: 1; }
+    .count span {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+    }
+    .red { color: var(--danger); }
+    .amber { color: var(--warn); }
+    .proven { color: var(--accent); }
+    .section {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0b0b0e;
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      padding: 15px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-num {
+      color: var(--text-dim);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px;
+    }
+    .proof {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      color: var(--text-dim);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+    .proof b {
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .proof b.not { color: var(--warn); }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      color: var(--text-muted);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .badge.red { border-color: rgba(239,68,68,0.35); background: rgba(239,68,68,0.10); color: var(--danger); }
+    .badge.amber { border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.10); color: var(--warn); }
+    .badge.proven { border-color: rgba(0,229,160,0.30); background: rgba(0,229,160,0.08); color: var(--accent); }
+    .attention-row {
+      display: grid;
+      grid-template-columns: 4px 76px 1fr auto;
+      gap: 0 14px;
+      align-items: stretch;
+      border-bottom: 1px solid var(--border);
+      min-height: 48px;
+    }
+    .attention-row:last-child { border-bottom: 0; }
+    .stripe.red { background: var(--danger); }
+    .stripe.amber { background: var(--warn); }
+    .kind {
+      align-self: center;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
+    .attention-fact {
+      align-self: center;
+      color: var(--text);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 13px;
+      min-width: 0;
+    }
+    .attention-link {
+      align-self: center;
+      padding-right: 18px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .attention-link:hover { color: var(--accent); }
+    .empty {
+      margin: 0;
+      padding: 20px;
+      color: var(--text-muted);
+      border: 1px dashed var(--border-strong);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.015);
+    }
+    .section-body { padding: 16px 18px 18px; }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .metric {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 13px;
+      background: rgba(255,255,255,0.018);
+      min-width: 0;
+    }
+    .metric-value {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1;
+      margin-bottom: 5px;
+    }
+    .metric-label {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      font-size: 13px;
+    }
+    th {
+      color: var(--text-dim);
+      font-weight: 600;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    td code {
+      color: var(--text-muted);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 12px;
+    }
+    .cols {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .list {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--text-muted);
+    }
+    .list li { margin: 4px 0; }
+    .footer-banner {
+      position: fixed;
+      left: 18px;
+      right: 18px;
+      bottom: 16px;
+      z-index: 20;
+      max-width: 1404px;
+      margin: 0 auto;
+      border: 1px solid rgba(0,229,160,0.30);
+      border-radius: 10px;
+      background: rgba(9,9,11,0.94);
+      color: var(--text-muted);
+      padding: 11px 14px;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11.5px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+    }
+    .footer-banner b { color: var(--accent); }
+    @media (max-width: 900px) {
+      main { padding: 20px 14px 120px; }
+      .claim-grid { grid-template-columns: 1fr; }
+      .claim-cell { border-right: 0; border-bottom: 1px solid var(--border); }
+      .claim-cell:last-child { border-bottom: 0; }
+      .attention-row { grid-template-columns: 4px 62px 1fr; }
+      .attention-link { grid-column: 3; padding: 0 0 10px; }
+    }
+  </style>
+</head>
+<body>
+  {{template "dashboardHeader" .Nav}}
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow mono">Operator Overview</div>
+        <h1>Where do I need to look, and what can I prove?</h1>
+        <p>A read-only lens over {{.Claim}}. It {{.NonClaim}}. There is no rolled-up verdict here.</p>
+      </div>
+      <span class="badge proven">read-only lens</span>
+    </header>
+
+    <div class="claim-grid" aria-label="Fact counters">
+      <div class="claim-cell">
+        <div class="count"><strong class="red">{{.Header.RedFacts}}</strong><span>red facts</span></div>
+        <div class="dim mono">in loaded evidence</div>
+      </div>
+      <div class="claim-cell">
+        <div class="count"><strong class="amber">{{.Header.AmberFacts}}</strong><span>amber facts</span></div>
+        <div class="dim mono">uncertain, stale, or absent</div>
+      </div>
+      <div class="claim-cell">
+        <div class="count"><strong class="proven">{{.Header.Proven}}</strong><span>proven</span></div>
+        <div class="dim mono">signed or verified facts only</div>
+      </div>
+      <div class="claim-cell">
+        <p class="dim mono" style="margin:0"><span class="muted">No aggregate score.</span> Counts describe evidence on hand, not fleet health. Absence is amber or red, never green.</p>
+      </div>
+    </div>
+
+    <section class="section" id="attention">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">01</span><h2>Attention Now</h2></div>
+          <div class="proof"><span><b>RANKS</b> red then amber facts by severity</span><span><b class="not">DOES NOT</b> run or complete actions for you</span></div>
+        </div>
+        <span class="badge red">{{.Header.RedFacts}} red</span>
+      </div>
+      {{if .Attention}}
+        {{range .Attention}}
+          <div class="attention-row">
+            <span class="stripe {{.Severity}}"></span>
+            <span class="kind {{.Severity}}">{{.Kind}}</span>
+            <span class="attention-fact">{{.Fact}}</span>
+            <a class="attention-link" href="{{.Link}}">{{.Count}} {{.CountLabel}} →</a>
+          </div>
+        {{end}}
+      {{else}}
+        <div class="section-body">
+          <p class="empty">No red facts in the currently loaded evidence. This is not a fleet-wide clearance.</p>
+        </div>
+      {{end}}
+      <div class="section-body">
+        <p class="dim mono" style="margin:0">If this list has no red rows, read that as “no red facts in the currently loaded evidence”, never as fleet-wide clearance.</p>
+      </div>
+    </section>
+
+    <section class="section" id="fleet-posture">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">02</span><h2>Fleet Reporting Posture</h2></div>
+          <div class="proof"><span><b>PROVES</b> {{.Fleet.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Fleet.NonClaim}}</span></div>
+        </div>
+        {{if .Fleet.Truncated}}<span class="badge amber">truncated</span>{{end}}
+      </div>
+      <div class="section-body">
+        {{if not .Fleet.SourceConfigured}}
+          <p class="empty">{{.Fleet.EmptyTitle}}. {{.Fleet.EmptyDetail}}</p>
+        {{else if not .Fleet.ScopeConfigured}}
+          <p class="empty">{{.Fleet.EmptyTitle}}. {{.Fleet.EmptyDetail}}</p>
+        {{else}}
+          <p class="dim mono">Scope {{.Fleet.OrgID}} / {{.Fleet.FleetID}} · {{.Fleet.TotalAcceptedRows}} accepted follower rows.</p>
+          <div class="cols">
+            <div>
+              <h3>Reporting freshness</h3>
+              <div class="metric-grid">
+                <div class="metric"><div class="metric-value proven">{{.Fleet.Reporting}}</div><div class="metric-label">reporting</div></div>
+                <div class="metric"><div class="metric-value amber">{{.Fleet.Stale}}</div><div class="metric-label">stale</div></div>
+                <div class="metric"><div class="metric-value red">{{.Fleet.Dark}}</div><div class="metric-label">dark</div></div>
+                <div class="metric"><div class="metric-value amber">{{.Fleet.NeverReported}}</div><div class="metric-label">never reported</div></div>
+              </div>
+            </div>
+            <div>
+              <h3>Applied-state trust</h3>
+              <div class="metric-grid">
+                <div class="metric"><div class="metric-value proven">{{.Fleet.VerifiedApplied}}</div><div class="metric-label">verified applied</div></div>
+                <div class="metric"><div class="metric-value amber">{{.Fleet.UnsignedSelf}}</div><div class="metric-label">unsigned self-report</div></div>
+                <div class="metric"><div class="metric-value amber">{{.Fleet.Drift}}</div><div class="metric-label">drift</div></div>
+                <div class="metric"><div class="metric-value red">{{.Fleet.ApplyFailed}}</div><div class="metric-label">apply failed</div></div>
+              </div>
+            </div>
+          </div>
+        {{end}}
+      </div>
+    </section>
+
+    <section class="section" id="enforcement">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">03</span><h2>Recent Enforcement Decisions</h2></div>
+          <div class="proof"><span><b>PROVES</b> {{.Enforcement.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Enforcement.NonClaim}}</span></div>
+        </div>
+        <span class="badge">{{len .Enforcement.Rows}} groups</span>
+      </div>
+      <div class="section-body">
+        {{if .Enforcement.Rows}}
+          <table>
+            <thead><tr><th>Decision</th><th>Scanner / rule</th><th>Agent</th><th>Count</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {{range .Enforcement.Rows}}
+                <tr><td class="mono">{{.Verdict}}</td><td>{{.Scanner}}</td><td><a href="{{.Link}}">{{.Agent}}</a></td><td>{{.Count}}</td><td><code>{{.LastSeen}}</code></td></tr>
+              {{end}}
+            </tbody>
+          </table>
+        {{else}}
+          <p class="empty">No block, warn, or defer receipts in the currently loaded evidence. Quiet is not clean.</p>
+        {{end}}
+      </div>
+    </section>
+
+    <section class="section" id="evidence-integrity">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">04</span><h2>Evidence Integrity</h2></div>
+          <div class="proof"><span><b>PROVES</b> {{.Evidence.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Evidence.NonClaim}}</span></div>
+        </div>
+        <span class="badge amber">differentiator</span>
+      </div>
+      <div class="section-body">
+        <div class="metric-grid" style="margin-bottom:14px">
+          <div class="metric"><div class="metric-value red">{{.Evidence.BrokenChains}}</div><div class="metric-label">broken chain</div></div>
+          <div class="metric"><div class="metric-value amber">{{.Evidence.MissingAnchors}}</div><div class="metric-label">missing anchor</div></div>
+          <div class="metric"><div class="metric-value red">{{.Evidence.Untrusted}}</div><div class="metric-label">untrusted signer</div></div>
+          <div class="metric"><div class="metric-value amber">{{.Evidence.NoReceipts}}</div><div class="metric-label">no receipts</div></div>
+        </div>
+        {{if .Evidence.Rows}}
+          <table>
+            <thead><tr><th>Session</th><th>Agent</th><th>Chain</th><th>Anchor</th><th>Signer</th><th>Receipts</th></tr></thead>
+            <tbody>
+              {{range .Evidence.Rows}}
+                <tr><td><a href="{{.Link}}"><code>{{.SessionID}}</code></a></td><td>{{.Agent}}</td><td class="{{.Severity}}">{{.Chain}}</td><td>{{.Anchor}}</td><td>{{.Signer}}</td><td>{{.Receipts}}</td></tr>
+              {{end}}
+            </tbody>
+          </table>
+        {{else}}
+          <p class="empty">No sessions are loaded. Absence of receipts is not proof of clean activity.</p>
+        {{end}}
+      </div>
+    </section>
+
+    <section class="section" id="incidents">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">05</span><h2>Incidents / Replay Queue</h2></div>
+          <div class="proof"><span><b>PROVES</b> {{.Incidents.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Incidents.NonClaim}}</span></div>
+        </div>
+      </div>
+      <div class="section-body">
+        {{if .Incidents.Rows}}
+          <table><tbody>{{range .Incidents.Rows}}<tr><td>{{.Label}}</td><td>{{.Detail}}</td><td><a href="{{.Link}}">open</a></td></tr>{{end}}</tbody></table>
+        {{else}}
+          <p class="empty">{{.Incidents.EmptyTitle}}. {{.Incidents.EmptyDetail}}</p>
+        {{end}}
+      </div>
+    </section>
+
+    <section class="section" id="coverage">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">06</span><h2>Coverage / Blind Spots</h2></div>
+          <div class="proof"><span><b>SHOWS</b> {{.Coverage.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Coverage.NonClaim}}</span></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="cols">
+          <div><h3>No receipts</h3>{{if .Coverage.NoReceiptAgents}}<ul class="list">{{range .Coverage.NoReceiptAgents}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="dim">No no-receipt agents in the loaded evidence.</p>{{end}}</div>
+          <div><h3>No heartbeat</h3>{{if .Coverage.NoHeartbeatAgents}}<ul class="list">{{range .Coverage.NoHeartbeatAgents}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="dim">{{if .Coverage.FleetSourceNote}}{{.Coverage.FleetSourceNote}}{{else}}No heartbeat blind spots reported by the loaded fleet evidence.{{end}}</p>{{end}}</div>
+          <div><h3>Monitor-only</h3>{{if .Coverage.MonitorOnlyAgents}}<ul class="list">{{range .Coverage.MonitorOnlyAgents}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="dim">No explicit monitor-only agent profiles in the loaded config.</p>{{end}}</div>
+        </div>
+        <p class="dim mono" style="margin:14px 0 0">No receipt means no evidence, not no activity.</p>
+      </div>
+    </section>
+
+    <section class="section" id="governance">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">07</span><h2>Governance Debt</h2></div>
+          <div class="proof"><span><b>PROVES</b> {{.Governance.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Governance.NonClaim}}</span></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="metric-grid">
+          <div class="metric"><div class="metric-value red">{{.Governance.ExpiredExemptions}}</div><div class="metric-label">expired active exemptions</div></div>
+          <div class="metric"><div class="metric-value amber">{{.Governance.InertExemptions}}</div><div class="metric-label">inert exemptions</div></div>
+          <div class="metric"><div class="metric-value amber">{{.Governance.MisdirectedExemptions}}</div><div class="metric-label">misdirected exemptions</div></div>
+          <div class="metric"><div class="metric-value red">{{.Governance.AlertFailures}}</div><div class="metric-label">alert delivery failures</div></div>
+        </div>
+        <div class="cols" style="margin-top:14px">
+          <div><h3>CRL status</h3><p class="muted">{{.Governance.CRLStatus}}</p>{{if .Governance.CRLDetail}}<p class="dim">{{.Governance.CRLDetail}}</p>{{end}}</div>
+          <div><h3>Legal holds</h3>{{if .Governance.LegalHoldConfigured}}{{if .Governance.LegalHoldError}}<p class="amber">{{.Governance.LegalHoldError}}</p>{{else}}<p class="muted">{{.Governance.ActiveLegalHolds}} active holds</p>{{end}}{{else}}<p class="dim">No legal-hold store configured; no hold claim is made.</p>{{end}}</div>
+          <div><h3>Delivery source</h3>{{if .Governance.DeliveryConfigured}}{{if .Governance.DeliveryError}}<p class="red">{{.Governance.DeliveryError}}</p>{{else}}<p class="muted">delivery inbox loaded</p>{{end}}{{else}}<p class="dim">No alert-delivery inbox configured.</p>{{end}}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="budget">
+      <div class="section-head">
+        <div>
+          <div class="section-title"><span class="section-num">08</span><h2>Spend / Budget Pressure</h2></div>
+          <div class="proof"><span><b>PROVES</b> {{.Budget.Claim}}</span><span><b class="not">DOES NOT</b> prove {{.Budget.NonClaim}}</span></div>
+        </div>
+        {{if .Budget.SnapshotStale}}<span class="badge amber">stale snapshot</span>{{end}}
+      </div>
+      <div class="section-body">
+        {{if .Budget.HasSnapshotFreshness}}<p class="dim mono">Snapshot age {{.Budget.SnapshotAge}}{{if .Budget.SnapshotStale}} · stale{{end}}.</p>{{end}}
+        {{if .Budget.Rows}}
+          <table>
+            <thead><tr><th>Agent</th><th>Pressure</th><th>Basis</th></tr></thead>
+            <tbody>{{range .Budget.Rows}}<tr><td><a href="{{.Link}}">{{.Agent}}</a></td><td class="amber mono">{{.Percent}}%</td><td>{{.Basis}}</td></tr>{{end}}</tbody>
+          </table>
+        {{else}}
+          <p class="empty">{{.Budget.EmptyTitle}}. {{.Budget.EmptyDetail}}</p>
+        {{end}}
+      </div>
+    </section>
+  </main>
+  <div class="footer-banner"><b>Read-only.</b> {{.ReadOnlyText}}</div>
+</body>
+</html>

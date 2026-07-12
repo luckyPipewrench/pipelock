@@ -416,7 +416,10 @@ func TestHandler_NavSpecsUseTopLevelRouteSpecs(t *testing.T) {
 		routes[spec.pattern] = spec
 	}
 	seen := map[string]struct{}{}
-	for _, navSpec := range dashboardNavRouteSpecs {
+	for i, navSpec := range dashboardNavRouteSpecs {
+		if i == 0 && navSpec.key != "overview" {
+			t.Fatalf("first nav route = %q, want overview", navSpec.key)
+		}
 		if navSpec.key == "" || navSpec.label == "" || navSpec.pattern == "" {
 			t.Fatalf("invalid dashboard nav spec: %+v", navSpec)
 		}
@@ -435,8 +438,8 @@ func TestHandler_NavSpecsUseTopLevelRouteSpecs(t *testing.T) {
 		}
 		seen[navSpec.pattern] = struct{}{}
 	}
-	if len(seen) != 9 {
-		t.Fatalf("nav route count = %d, want 9", len(seen))
+	if len(seen) != 10 {
+		t.Fatalf("nav route count = %d, want 10", len(seen))
 	}
 }
 

@@ -36,10 +36,11 @@ const (
 
 const dashboardFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#09090b"/><path d="M20 30v-8c0-7 5-12 12-12s12 5 12 12v8" fill="none" stroke="#00e5a0" stroke-width="6" stroke-linecap="round"/><rect x="16" y="28" width="32" height="24" rx="5" fill="#00e5a0"/><circle cx="32" cy="40" r="4" fill="#09090b"/></svg>`
 
-//go:embed nav.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html compliance.tmpl.html
+//go:embed nav.tmpl.html overview.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html compliance.tmpl.html
 var templateFS embed.FS
 
 var (
+	overviewTemplate      = parseDashboardTemplate("overview.tmpl.html")
 	evidenceTemplate      = parseDashboardTemplate("evidence.tmpl.html")
 	exemptionsTemplate    = parseDashboardTemplate("exemptions.tmpl.html")
 	agentsTemplate        = parseDashboardTemplate("agents.tmpl.html")
@@ -126,6 +127,7 @@ type navRouteSpec struct {
 }
 
 var dashboardNavRouteSpecs = []navRouteSpec{
+	{key: "overview", label: "Overview", pattern: "/overview"},
 	{key: "evidence", label: "Evidence", pattern: "/"},
 	{key: "exemptions", label: "Exemptions", pattern: "/exemptions"},
 	{key: "agents", label: "Agents", pattern: "/agents"},
@@ -144,6 +146,15 @@ const CompliancePath = "/compliance"
 
 func dashboardRouteSpecs() []routeSpec {
 	return []routeSpec{
+		{
+			pattern:          "/overview",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionEvidenceRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleOverview)
+			},
+		},
 		{
 			pattern:          "/",
 			feature:          license.FeatureAgents,
@@ -715,6 +726,8 @@ func (d *dashboardHandler) navContext(r *http.Request, cache *routeAuthorization
 
 func activeNavKey(path string) string {
 	switch {
+	case path == "/overview":
+		return "overview"
 	case path == "/", strings.HasPrefix(path, "/session/"):
 		return "evidence"
 	case path == "/exemptions":
@@ -754,6 +767,35 @@ func knownPermission(permission Permission) bool {
 		}
 	}
 	return false
+}
+
+func (d *dashboardHandler) handleOverview(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/overview" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	scope := d.model.defaultFleetScope
+	if d.model.fleetSource != nil && scope.OrgID != "" && scope.FleetID != "" {
+		if !d.authorizeFleetScopeRequest(w, r, scope, true, rawAllowedFromContext(r)) {
+			return
+		}
+	}
+	page, err := d.model.Overview(r.Context(), rawAllowedFromContext(r))
+	if err != nil {
+		http.Error(w, "could not build overview", http.StatusInternalServerError)
+		return
+	}
+	page.Nav = navFromContext(r)
+	var buf bytes.Buffer
+	if err := overviewTemplate.Execute(&buf, page); err != nil {
+		http.Error(w, "could not render overview", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Request) {

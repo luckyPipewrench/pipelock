@@ -149,6 +149,7 @@ type ReadModel struct {
 	fleetSource        FleetDataSource
 	conductorSource    ConductorDecisionSource
 	budgetSource       BudgetDataSource
+	defaultFleetScope  DecisionScope
 	fleetRedactionKey  [fleetRedactionKeySize]byte
 	exemptionStore     *ExemptionStore
 	legalHoldStore     *LegalHoldStore
@@ -187,6 +188,7 @@ func NewReadModel(opts Options) *ReadModel {
 		fleetSource:        opts.FleetSource,
 		conductorSource:    opts.ConductorSource,
 		budgetSource:       opts.BudgetSource,
+		defaultFleetScope:  normalizeDecisionScope(opts.DefaultFleetScope),
 		fleetRedactionKey:  fleetRedactionKey,
 		exemptionStore:     opts.ExemptionStore,
 		legalHoldStore:     opts.LegalHoldStore,

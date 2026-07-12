@@ -32,3 +32,17 @@ func TestAgentLabel_SkipsLifecycleReceipts(t *testing.T) {
 		t.Fatalf("all-lifecycle agentLabel = %q, want %q fallback", got, "pipelock")
 	}
 }
+
+func TestAgentLabel_TrimsLifecycleFallbacks(t *testing.T) {
+	t.Parallel()
+
+	lifecycle := receipt.Receipt{ActionRecord: receipt.ActionRecord{
+		Actor:          "   ",
+		SessionID:      " agent-session ",
+		SessionControl: &receipt.SessionControl{Kind: receipt.SessionControlOpen},
+	}}
+
+	if got := agentLabel("proxy", []receipt.Receipt{lifecycle}); got != "agent-session" {
+		t.Fatalf("agentLabel = %q, want trimmed session fallback", got)
+	}
+}

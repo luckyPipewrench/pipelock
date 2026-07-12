@@ -214,11 +214,11 @@ func agentLabel(id string, receipts []receipt.Receipt) string {
 		}
 	}
 	first := receipts[0].ActionRecord
-	if first.Actor != "" {
-		return first.Actor
+	if actor := strings.TrimSpace(first.Actor); actor != "" {
+		return actor
 	}
-	if first.SessionID != "" {
-		return first.SessionID
+	if sessionID := strings.TrimSpace(first.SessionID); sessionID != "" {
+		return sessionID
 	}
 	return id
 }

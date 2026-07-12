@@ -26,14 +26,6 @@ a license that grants the `agents` feature (Pro or Enterprise); without one it
 refuses to start. The dashboard is read-only: it renders evidence and never
 mutates policy, receipts, or runtime state.
 
-The Compliance console at `/compliance` is a source-grounded mapping view over
-the same receipt scorecards, loaded config, optional live fleet coverage source,
-and operator-authored legal-hold metadata. It renders Pipelock's mapping for
-AARM R1-R9 and an illustrative generic SOC 2-style control set. It is not a
-certification, an auditor opinion, or an endorsement by a framework body.
-Coverage labels are LIMITED to mediated egress inside the declared Pipelock
-boundary.
-
 ## `pipelock dashboard serve`
 
 ```bash
@@ -42,7 +34,6 @@ pipelock dashboard serve \
   --config /etc/pipelock/pipelock.yaml \
   --legal-hold-store /var/lib/pipelock/legal-holds.json \
   --auth-token-file /etc/pipelock/dashboard.token \
-  --compliance-token-file /etc/pipelock/dashboard-auditor.token \
   --trusted-signer 'file=/etc/pipelock/receipt-signing.pub,source=ops runbook' \
   --conductor-url https://127.0.0.1:8895 \
   --conductor-token-file /etc/pipelock/conductor-auditor.token \
@@ -95,8 +86,7 @@ startup error.
 | `--config` | none | Optional Pipelock config file for the read-only Exemptions inventory. When omitted, `/exemptions` renders an explicit "no config loaded" state and the Evidence view still works. |
 | `--auth-token-file` | none | File containing the operator token for token-authenticated requests. Required unless OIDC or `--require-client-cert` is configured. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
-| `--compliance-token-file` | none | Optional distinct auditor token granting only `dashboard:compliance:read`; it cannot reach evidence, raw, fleet-control preparation, or signed-action routes. |
-| `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by `/compliance`. |
+| `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by the governance sections. |
 | `--listen` | `127.0.0.1:8896` | Dashboard listener address. Non-loopback addresses require `--tls-cert`/`--tls-key`. |
 | `--trusted-signer` | none | Trusted receipt signing key: `(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,source=LABEL]`. Repeatable. `source` is shown in the UI as the reason the key is trusted. |
 | `--license-crl-file` | none | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
@@ -267,11 +257,6 @@ the server is running stops serving.
 - **Exemptions is inventory only.** `/exemptions` is GET-only and reads the
   already-loaded config snapshot. It has no POST route, no apply/remove/renew
   controls, no config write path, and no hot-reload hook.
-- **Compliance is mapping only.** `/compliance` is GET-only. Its `covered`,
-  `partial`, and `not-covered` labels report whether the declared backing
-  evidence exists; they do not assert organizational compliance. With no live
-  fleet source, it renders an unconfigured empty state rather than local data
-  labeled as live fleet coverage.
 - **Conductor reads are scoped and read-only.** When `--conductor-url` is set,
   the dashboard uses mutual TLS plus a bearer token to issue GET requests to
   the Conductor followers roster read endpoint, enriched with runtime status,

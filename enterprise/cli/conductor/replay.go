@@ -378,6 +378,10 @@ type decisionReplayArtifact struct {
 }
 
 func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, baseURL, token string, artifact decisionReplayArtifact) (controlplane.DecisionReplayResult, error) {
+	expectedHash, err := validateDecisionReplayArtifact(artifact)
+	if err != nil {
+		return controlplane.DecisionReplayResult{}, err
+	}
 	body, err := json.Marshal(artifact)
 	if err != nil {
 		return controlplane.DecisionReplayResult{}, fmt.Errorf("marshal replay request: %w", err)
@@ -405,7 +409,7 @@ func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, base
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return controlplane.DecisionReplayResult{}, fmt.Errorf("decode replay response: %w", err)
 		}
-		if err := validateDecisionReplayResultForArtifact(result, artifact); err != nil {
+		if err := validateDecisionReplayResultForArtifact(result, artifact, expectedHash); err != nil {
 			return controlplane.DecisionReplayResult{}, err
 		}
 		return result, nil
@@ -418,13 +422,48 @@ func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, base
 	}
 }
 
-func validateDecisionReplayResultForArtifact(result controlplane.DecisionReplayResult, artifact decisionReplayArtifact) error {
+func validateDecisionReplayArtifact(artifact decisionReplayArtifact) (string, error) {
+	expectedAction, err := replayResponseActionForArtifact(artifact)
+	if err != nil {
+		return "", err
+	}
+	if len(artifact.StateSnapshot) > 0 && artifact.Bundle == nil {
+		return "", errors.New("replay request state_snapshot is only supported with a bundle artifact")
+	}
+	switch expectedAction {
+	case replayActionPublish:
+		hash, err := artifact.Bundle.CanonicalHash()
+		if err != nil {
+			return "", fmt.Errorf("hash replay bundle artifact: %w", err)
+		}
+		return hash, nil
+	case replayModeRemoteKill:
+		hash, err := artifact.RemoteKill.CanonicalHash()
+		if err != nil {
+			return "", fmt.Errorf("hash replay remote-kill artifact: %w", err)
+		}
+		return hash, nil
+	case replayModeRollback:
+		hash, err := artifact.Rollback.CanonicalHash()
+		if err != nil {
+			return "", fmt.Errorf("hash replay rollback artifact: %w", err)
+		}
+		return hash, nil
+	default:
+		return "", fmt.Errorf("unsupported replay action %q", expectedAction)
+	}
+}
+
+func validateDecisionReplayResultForArtifact(result controlplane.DecisionReplayResult, artifact decisionReplayArtifact, expectedHash string) error {
 	expectedAction, err := replayResponseActionForArtifact(artifact)
 	if err != nil {
 		return err
 	}
 	if result.ActionKind != expectedAction {
 		return fmt.Errorf("replay response action_kind=%q does not match requested action %q", result.ActionKind, expectedAction)
+	}
+	if !strings.EqualFold(result.ArtifactHash, expectedHash) {
+		return fmt.Errorf("replay response artifact_hash=%q does not match submitted artifact hash %q", result.ArtifactHash, expectedHash)
 	}
 	switch expectedAction {
 	case replayActionPublish:

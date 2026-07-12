@@ -599,6 +599,10 @@ func TestRunReplayPostsBundleAndRendersResult(t *testing.T) {
 			t.Fatalf("request missing signed bundle: %+v", body.Bundle)
 		}
 		gotSnapshot = len(body.StateSnapshot) > 0
+		artifactHash, err := body.Bundle.CanonicalHash()
+		if err != nil {
+			t.Fatalf("CanonicalHash(bundle): %v", err)
+		}
 		var raw map[string]json.RawMessage
 		if err := json.NewDecoder(bytes.NewReader(requestBody)).Decode(&raw); err != nil {
 			t.Fatalf("decode raw request: %v", err)
@@ -611,7 +615,7 @@ func TestRunReplayPostsBundleAndRendersResult(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(controlplane.DecisionReplayResult{
 			ActionKind:        "publish",
-			ArtifactHash:      strings.Repeat("b", 64),
+			ArtifactHash:      artifactHash,
 			UsedStateSnapshot: true,
 			ReplayedAt:        testFixedNow(t),
 			PublishEvaluation: &controlplane.PublishEvaluation{
@@ -684,7 +688,7 @@ func TestRunReplayRemoteKillPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	if err := json.Unmarshal(recorder.body, &body); err != nil {
 		t.Fatalf("decode remote-kill replay request: %v", err)
 	}
-	if body.RemoteKill == nil || body.RemoteKill.State != conductorcore.KillSwitchActive || len(body.RemoteKill.Signatures) == 0 {
+	if body.RemoteKill == nil || body.RemoteKill.State != conductorcore.KillSwitchActive || body.RemoteKill.Intent != conductorcore.ControlIntentReplay || len(body.RemoteKill.Signatures) == 0 {
 		t.Fatalf("remote-kill replay body = %+v, want signed active message", body.RemoteKill)
 	}
 	gotOut := out.String()
@@ -756,7 +760,7 @@ func TestRunReplayRollbackPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	if err := json.Unmarshal(recorder.body, &body); err != nil {
 		t.Fatalf("decode rollback replay request: %v", err)
 	}
-	if body.Rollback == nil || body.Rollback.TargetVersion != rb.targetVersion || len(body.Rollback.Signatures) == 0 {
+	if body.Rollback == nil || body.Rollback.TargetVersion != rb.targetVersion || body.Rollback.Intent != conductorcore.ControlIntentReplay || len(body.Rollback.Signatures) == 0 {
 		t.Fatalf("rollback replay body = %+v, want signed rollback authorization", body.Rollback)
 	}
 	gotOut := out.String()
@@ -856,6 +860,11 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			expectedHash, err := validateDecisionReplayArtifact(tt.artifact)
+			if err != nil {
+				t.Fatalf("validateDecisionReplayArtifact(): %v", err)
+			}
+			tt.result.ArtifactHash = expectedHash
 			body, err := json.Marshal(tt.result)
 			if err != nil {
 				t.Fatalf("marshal result: %v", err)
@@ -866,6 +875,71 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 				t.Fatalf("postDecisionReplay() error = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestPostDecisionReplayRejectsMalformedRequestLocally(t *testing.T) {
+	bundle := &conductorcore.PolicyBundle{}
+	msg := &conductorcore.RemoteKillMessage{}
+	snapshot := json.RawMessage(`{"followers":[]}`)
+	tests := []struct {
+		name     string
+		artifact decisionReplayArtifact
+		wantErr  string
+	}{
+		{
+			name:     "none",
+			artifact: decisionReplayArtifact{},
+			wantErr:  "exactly one artifact",
+		},
+		{
+			name:     "multiple",
+			artifact: decisionReplayArtifact{Bundle: bundle, RemoteKill: msg},
+			wantErr:  "exactly one artifact",
+		},
+		{
+			name:     "snapshot without bundle",
+			artifact: decisionReplayArtifact{RemoteKill: msg, StateSnapshot: snapshot},
+			wantErr:  "state_snapshot",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &staticEmergencyTransport{status: http.StatusOK, body: `{}`}
+			_, err := postDecisionReplay(t.Context(), client, "https://conductor.example", testAdminToken, tt.artifact)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("postDecisionReplay() error = %v, want %q", err, tt.wantErr)
+			}
+			if client.path != "" {
+				t.Fatalf("postDecisionReplay() sent malformed request to %q, want local rejection", client.path)
+			}
+		})
+	}
+}
+
+func TestPostDecisionReplayRejectsArtifactHashMismatch(t *testing.T) {
+	msg := conductorcore.RemoteKillMessage{MessageID: "kill-mismatch"}
+	expectedHash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	if expectedHash == strings.Repeat("0", 64) {
+		t.Fatal("test fixture unexpectedly matched mismatch hash")
+	}
+	result := controlplane.DecisionReplayResult{
+		ActionKind:   replayModeRemoteKill,
+		ArtifactHash: strings.Repeat("0", 64),
+		ReplayedAt:   testFixedNow(t),
+		RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	client := &staticEmergencyTransport{status: http.StatusOK, body: string(body)}
+	_, err = postDecisionReplay(t.Context(), client, "https://conductor.example", testAdminToken, decisionReplayArtifact{RemoteKill: &msg})
+	if err == nil || !strings.Contains(err.Error(), "artifact_hash") {
+		t.Fatalf("postDecisionReplay() error = %v, want artifact_hash mismatch", err)
 	}
 }
 
@@ -909,10 +983,14 @@ func TestRunReplayBundleArtifactPostsExactBundle(t *testing.T) {
 			t.Fatalf("replay bundle timestamps changed: got created=%s not_before=%s expires=%s want created=%s not_before=%s expires=%s",
 				body.Bundle.CreatedAt, body.Bundle.NotBefore, body.Bundle.ExpiresAt, bundle.CreatedAt, bundle.NotBefore, bundle.ExpiresAt)
 		}
+		artifactHash, err := body.Bundle.CanonicalHash()
+		if err != nil {
+			t.Fatalf("CanonicalHash(bundle): %v", err)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(controlplane.DecisionReplayResult{
 			ActionKind:   "publish",
-			ArtifactHash: strings.Repeat("b", 64),
+			ArtifactHash: artifactHash,
 			ReplayedAt:   testFixedNow(t),
 			PublishEvaluation: &controlplane.PublishEvaluation{
 				Valid:       true,
@@ -962,9 +1040,13 @@ func TestRunReplayResolvesPreviousHashAuto(t *testing.T) {
 				t.Fatalf("decode replay request: %v", err)
 			}
 			replayPreviousHash = body.Bundle.PreviousBundleHash
+			artifactHash, err := body.Bundle.CanonicalHash()
+			if err != nil {
+				t.Fatalf("CanonicalHash(bundle): %v", err)
+			}
 			_ = json.NewEncoder(w).Encode(controlplane.DecisionReplayResult{
 				ActionKind:   "publish",
-				ArtifactHash: strings.Repeat("b", 64),
+				ArtifactHash: artifactHash,
 				ReplayedAt:   testFixedNow(t),
 				PublishEvaluation: &controlplane.PublishEvaluation{
 					Valid:       true,

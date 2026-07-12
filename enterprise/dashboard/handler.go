@@ -778,7 +778,8 @@ func (d *dashboardHandler) handleOverview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	scope := d.model.defaultFleetScope
-	if d.model.fleetSource != nil && scope.OrgID != "" && scope.FleetID != "" {
+	if d.hasFeature != nil && d.hasFeature(license.FeatureFleet) &&
+		d.model.fleetSource != nil && scope.OrgID != "" && scope.FleetID != "" {
 		if !d.authorizeFleetScopeRequest(w, r, scope, true, rawAllowedFromContext(r)) {
 			return
 		}

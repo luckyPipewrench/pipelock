@@ -112,6 +112,20 @@ func writeEvidenceSessionWithTarget(
 	count int,
 ) {
 	t.Helper()
+	writeEvidenceSessionWithPlan(t, dir, priv, sessionID, count, func(_ int) (string, string) {
+		return actor, target
+	})
+}
+
+func writeEvidenceSessionWithPlan(
+	t *testing.T,
+	dir string,
+	priv ed25519.PrivateKey,
+	sessionID string,
+	count int,
+	receiptPlan func(int) (actor string, target string),
+) {
+	t.Helper()
 	const entryType = "action_receipt"
 	path := filepath.Join(dir, fmt.Sprintf("evidence-%s-000000.jsonl", sessionID))
 
@@ -120,6 +134,7 @@ func writeEvidenceSessionWithTarget(
 	var lines []byte
 
 	for i := range count {
+		actor, target := receiptPlan(i)
 		ar := receipt.ActionRecord{
 			Version:       receipt.ActionRecordVersion,
 			ActionID:      receipt.NewActionID(),
@@ -362,6 +377,29 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	}
 	if strings.Contains(body, testActorAlpha) {
 		t.Fatalf("GET / rendered unbound agent %q: %s", testActorAlpha, body)
+	}
+}
+
+func TestServeCmd_MixedActorSessionFailsClosed(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	dir := t.TempDir()
+	writeEvidenceSessionWithPlan(t, dir, priv, "shared", 2, func(i int) (string, string) {
+		if i == 0 {
+			return testActorAlpha, testTarget
+		}
+		return testActorBravo, "https://api.vendor.example/" + testBravoTargetSecret
+	})
+
+	handler := evidenceServeHandler(dir, "shared")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET / status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, testActorBravo) || strings.Contains(body, testBravoTargetSecret) {
+		t.Fatalf("GET / leaked mixed-actor evidence: %s", body)
 	}
 }
 

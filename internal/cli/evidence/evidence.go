@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -226,6 +227,9 @@ func renderSessionHTML(
 	if err != nil {
 		return nil, fmt.Errorf("reading receipts for session %q: %w", sessionID, err)
 	}
+	if err := validateSingleActorReceipts(sessionID, receipts); err != nil {
+		return nil, err
+	}
 
 	ev := evidenceview.SessionEvidenceOf(
 		sessionID, receipts, trusted,
@@ -255,6 +259,30 @@ func renderSessionHTML(
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) error {
+	var boundActor string
+	for _, r := range receipts {
+		actor := strings.TrimSpace(r.ActionRecord.Actor)
+		if actor == "" {
+			actor = strings.TrimSpace(r.ActionRecord.SessionID)
+		}
+		if actor == "" {
+			actor = sessionID
+		}
+		if boundActor == "" {
+			boundActor = actor
+			continue
+		}
+		if actor != boundActor {
+			return fmt.Errorf(
+				"session %q contains receipts for multiple actors (%q and %q); use the Pro/Enterprise multi-agent evidence console",
+				sessionID, boundActor, actor,
+			)
+		}
+	}
+	return nil
 }
 
 func validateReceiptDir(dir string) (string, error) {

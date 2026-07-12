@@ -264,14 +264,18 @@ func TestOverviewAgentsOnlyWithFleetSourceDoesNotQueryFleetPosture(t *testing.T)
 
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	source := &fakeFleetSource{followers: overviewFleetFollowers(now)}
+	var fleetScopeAuthCalls int
 	handler := New(Options{
-		TrustedOuterAuth:    true,
-		ReceiptDir:          t.TempDir(),
-		HasFeature:          allowAgentsFeature,
-		FleetSource:         source,
-		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
-		AuthorizeFleetScope: allowFleetScope,
-		Now:                 func() time.Time { return now },
+		TrustedOuterAuth:  true,
+		ReceiptDir:        t.TempDir(),
+		HasFeature:        allowAgentsFeature,
+		FleetSource:       source,
+		DefaultFleetScope: DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+		AuthorizeFleetScope: func(*http.Request, DecisionScope, bool) error {
+			fleetScopeAuthCalls++
+			return nil
+		},
+		Now: func() time.Time { return now },
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil))
@@ -290,6 +294,9 @@ func TestOverviewAgentsOnlyWithFleetSourceDoesNotQueryFleetPosture(t *testing.T)
 	}
 	if source.gotOrgID != "" || source.gotFleet != "" || source.gotLimit != 0 {
 		t.Fatalf("agents-only overview queried fleet source: org=%q fleet=%q limit=%d", source.gotOrgID, source.gotFleet, source.gotLimit)
+	}
+	if fleetScopeAuthCalls != 0 {
+		t.Fatalf("agents-only overview called fleet scope authorizer %d times", fleetScopeAuthCalls)
 	}
 }
 

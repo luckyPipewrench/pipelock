@@ -87,7 +87,7 @@
       {{ else if .SourceUnavailable }}
         <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. A budget source is configured, but its snapshot is missing, invalid, oversized, future-dated, or stale. Fix the configured <code>--runtime-snapshot-file</code> or refresh the default <code>--receipt-dir/dashboard/runtime-snapshot.json</code> snapshot.</div>
       {{ else if not .Agents }}
-        <div class="empty">No agents have a configured forward-proxy budget or live MCP sessions.</div>
+        <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. The source is connected, but the loaded snapshot has no agents with configured forward-proxy budgets or live MCP sessions. Configure agent budgets or create live MCP sessions in the runtime that writes <code>--runtime-snapshot-file</code>.</div>
       {{ else }}
         {{ range .Agents }}
           <div class="agent">

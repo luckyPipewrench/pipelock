@@ -147,6 +147,33 @@ func TestBudgets_NilSourceDegrades(t *testing.T) {
 	}
 }
 
+func TestBudgets_ConnectedEmptySourceExplainsSnapshotRows(t *testing.T) {
+	t.Parallel()
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+		BudgetSource:     &fakeBudgetSource{},
+		AuthorizeRaw:     allowRawAccess,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Budget pressure proves only mediated per-agent budget consumption",
+		"The source is connected",
+		"no agents with configured forward-proxy budgets or live MCP sessions",
+		"--runtime-snapshot-file",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("connected empty source body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 	t.Parallel()
 

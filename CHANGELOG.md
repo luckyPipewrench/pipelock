@@ -317,6 +317,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emission failures now block before egress on MCP, proxy, reverse, and
   TLS-intercept paths, and replacement block/gap receipts keep denied actions
   auditable. (#925, #937, #941, #942, #949, #975)
+- **Dashboard backup preserves legal-hold state.** `dashboard backup` and
+  `restore` now include the legal-hold store and capture every store by its
+  configured path, so a backup and restore cycle no longer drops legal holds;
+  restore fails closed when a backup carries legal holds and no legal-hold store
+  is configured, rather than dropping them.
+- **The operator dashboard serves the product brand favicon** instead of a
+  generic browser icon, embedded so it needs no external asset route.
 
 ### Removed
 

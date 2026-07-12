@@ -136,8 +136,8 @@ var dashboardNavRouteSpecs = []navRouteSpec{
 	{key: "incident", label: "Incident", pattern: "/incident"},
 }
 
-func dashboardRouteSpecs() []routeSpec {
-	return []routeSpec{
+var (
+	dashboardRouteSpecList = []routeSpec{
 		{
 			pattern:          "/overview",
 			feature:          license.FeatureAgents,
@@ -265,6 +265,19 @@ func dashboardRouteSpecs() []routeSpec {
 			},
 		},
 	}
+	dashboardRouteSpecsByPattern = routeSpecsByPattern(dashboardRouteSpecList)
+)
+
+func routeSpecsByPattern(specs []routeSpec) map[string]routeSpec {
+	out := make(map[string]routeSpec, len(specs))
+	for _, spec := range specs {
+		out[spec.pattern] = spec
+	}
+	return out
+}
+
+func dashboardRouteSpecs() []routeSpec {
+	return dashboardRouteSpecList
 }
 
 // AllPermissions returns the complete bounded permission vocabulary: every
@@ -275,7 +288,7 @@ func dashboardRouteSpecs() []routeSpec {
 func AllPermissions() []Permission {
 	seen := map[Permission]struct{}{PermissionRawRead: {}}
 	all := []Permission{PermissionRawRead}
-	for _, spec := range dashboardRouteSpecs() {
+	for _, spec := range dashboardRouteSpecList {
 		if _, ok := seen[spec.permission]; ok {
 			continue
 		}
@@ -310,7 +323,7 @@ func New(opts Options) http.Handler {
 		defaultFleetScope:   normalizeDecisionScope(opts.DefaultFleetScope),
 	}
 	mux.HandleFunc("/favicon.ico", handleFavicon)
-	for _, spec := range dashboardRouteSpecs() {
+	for _, spec := range dashboardRouteSpecList {
 		mux.Handle(spec.pattern, d.routeGate(spec, spec.handler(d)))
 	}
 	return mux
@@ -688,12 +701,8 @@ func (d *dashboardHandler) navContext(r *http.Request, cache *routeAuthorization
 		ActiveLabel: navLabel(active),
 		ScriptNonce: scriptNonce,
 	}
-	routesByPattern := make(map[string]routeSpec)
-	for _, spec := range dashboardRouteSpecs() {
-		routesByPattern[spec.pattern] = spec
-	}
 	for _, navSpec := range dashboardNavRouteSpecs {
-		route, ok := routesByPattern[navSpec.pattern]
+		route, ok := dashboardRouteSpecsByPattern[navSpec.pattern]
 		if !ok || !d.authorizeRoute(r, route, cache).allowed() {
 			continue
 		}

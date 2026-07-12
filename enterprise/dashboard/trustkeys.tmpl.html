@@ -10,13 +10,7 @@
     body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 Inter,system-ui,sans-serif; }
     main { max-width:1400px; margin:0 auto; padding:24px; }
     h1 { margin:0 0 4px; font-size:20px; } h2 { margin:26px 0 10px; font-size:15px; }
-    .page-head { margin-bottom: 22px; }
-    .eyebrow { color: var(--accent); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 8px; }
-    .page-head h1 { font-size: 26px; margin-bottom: 8px; }
-    .lead { color: var(--text-muted); max-width: 72ch; margin: 0 0 12px; font-size: 13.5px; line-height: 1.5; }
-    .summary { color: var(--text-dim); font-size: 12px; }
-    .summary b { color: var(--text); font-weight: 700; }
-    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    {{template "dashboardStyles" .}}
     .limit { color:var(--dim); margin:0 0 18px; font-size:12px; }
     .table { overflow-x:auto; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
     table { width:100%; border-collapse:collapse; min-width:900px; } th,td { padding:10px 12px; text-align:left; vertical-align:top; border-bottom:1px solid var(--border); }

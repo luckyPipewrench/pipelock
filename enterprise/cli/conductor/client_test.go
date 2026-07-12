@@ -241,6 +241,14 @@ func TestConductorClientGetJSONPropagatesStatusErrors(t *testing.T) {
 }
 
 func TestConductorReadClientListFollowersUsesGETAndBoundsBody(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var client *ReadClient
+		_, err := client.ListFollowers(context.Background(), "org-main", "prod", 1)
+		if err == nil || !strings.Contains(err.Error(), "nil") {
+			t.Fatalf("ListFollowers() error = %v, want nil receiver error", err)
+		}
+	})
+
 	var gotMethod, gotPath string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
@@ -272,6 +280,27 @@ func TestConductorReadClientListFollowersUsesGETAndBoundsBody(t *testing.T) {
 	}
 	if gotPath != "/api/v1/conductor/followers?fleet_id=prod&limit=25&org_id=org-main" {
 		t.Fatalf("path = %q", gotPath)
+	}
+}
+
+func TestConductorReadClientListFollowersRejectsUnboundedLimits(t *testing.T) {
+	client := &ReadClient{client: &conductorClient{}}
+	tests := []struct {
+		name    string
+		limit   int
+		wantErr string
+	}{
+		{name: "zero", limit: 0, wantErr: "positive"},
+		{name: "negative", limit: -1, wantErr: "positive"},
+		{name: "too high", limit: ReadClientFollowerLimitMax + 1, wantErr: "exceeds maximum"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := client.ListFollowers(context.Background(), "org-main", "prod", tc.limit)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ListFollowers() error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

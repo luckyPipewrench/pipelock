@@ -338,7 +338,7 @@
         {{end}}
       {{else}}
         <div class="section-body">
-          <p class="empty">No red facts in the currently loaded evidence. This is not a fleet-wide clearance.</p>
+          <p class="empty">No red facts in the currently loaded evidence; no amber facts are present either. This is not a fleet-wide clearance.</p>
         </div>
       {{end}}
       <div class="section-body">
@@ -448,7 +448,10 @@
       </div>
       <div class="section-body">
         {{if .Incidents.Rows}}
-          <table><tbody>{{range .Incidents.Rows}}<tr><td>{{.Label}}</td><td>{{.Detail}}</td><td><a href="{{.Link}}">open</a></td></tr>{{end}}</tbody></table>
+          <table>
+            <thead><tr><th>Item</th><th>Detail</th><th>Action</th></tr></thead>
+            <tbody>{{range .Incidents.Rows}}<tr><td>{{.Label}}</td><td>{{.Detail}}</td><td><a href="{{.Link}}">open</a></td></tr>{{end}}</tbody>
+          </table>
         {{else}}
           <p class="empty">{{.Incidents.EmptyTitle}}. {{.Incidents.EmptyDetail}}</p>
         {{end}}

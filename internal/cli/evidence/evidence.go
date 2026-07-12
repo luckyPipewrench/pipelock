@@ -43,6 +43,8 @@ func Cmd() *cobra.Command {
 const (
 	defaultEvidenceServeListen     = "127.0.0.1:0"
 	evidenceServeReadHeaderTimeout = 5 * time.Second
+	evidenceServeReadTimeout       = 30 * time.Second
+	evidenceServeWriteTimeout      = 30 * time.Second
 	evidenceServeShutdownTimeout   = 5 * time.Second
 )
 
@@ -167,6 +169,8 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	srv := &http.Server{
 		Handler:           evidenceServeHandler(cleanDir, sessionID),
 		ReadHeaderTimeout: evidenceServeReadHeaderTimeout,
+		ReadTimeout:       evidenceServeReadTimeout,
+		WriteTimeout:      evidenceServeWriteTimeout,
 	}
 	errCh := make(chan error, 1)
 	go func() {
@@ -207,6 +211,7 @@ func evidenceServeHandler(dir, sessionID string) http.Handler {
 		}
 		html, err := renderSessionHTML(dir, sessionID, nil, "Pipelock Evidence Report")
 		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "evidence serve: render evidence report: %v\n", err)
 			http.Error(w, "render evidence report", http.StatusInternalServerError)
 			return
 		}

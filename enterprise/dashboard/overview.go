@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -213,10 +212,7 @@ func (m *ReadModel) Overview(ctx context.Context, rawAllowed bool) (OverviewPage
 	}
 	health := m.OperabilityHealth()
 	fleet := m.overviewFleet(ctx, rawAllowed)
-	enforcement, err := m.overviewEnforcement()
-	if err != nil {
-		return OverviewPage{}, err
-	}
+	enforcement := m.overviewEnforcement(sessions)
 	evidence := overviewEvidenceIntegrity(sessions)
 	incidents := m.overviewIncidents()
 	coverage := m.overviewCoverage(sessions, fleet)
@@ -338,12 +334,8 @@ func fleetFreshnessBucket(f FleetFollowerView, now time.Time) string {
 	}
 }
 
-func (m *ReadModel) overviewEnforcement() (OverviewEnforcement, error) {
+func (m *ReadModel) overviewEnforcement(sessions []SessionSummary) OverviewEnforcement {
 	out := OverviewEnforcement{Claim: overviewEnforcementClaim, NonClaim: overviewEnforcementNonClaim}
-	sessions, err := m.Sessions()
-	if err != nil {
-		return out, err
-	}
 	type key struct {
 		verdict string
 		scanner string
@@ -356,7 +348,7 @@ func (m *ReadModel) overviewEnforcement() (OverviewEnforcement, error) {
 		}
 		evidence, readErr := m.Session(summary.ID)
 		if readErr != nil {
-			return out, readErr
+			continue
 		}
 		for _, r := range evidence.Receipts {
 			verdict := strings.ToLower(strings.TrimSpace(r.ActionRecord.Verdict))
@@ -394,7 +386,7 @@ func (m *ReadModel) overviewEnforcement() (OverviewEnforcement, error) {
 	if len(out.Rows) > 8 {
 		out.Rows = out.Rows[:8]
 	}
-	return out, nil
+	return out
 }
 
 func scannerLabel(layer, pattern string) string {
@@ -793,11 +785,7 @@ func boundedUint64ToInt(value uint64) int {
 	if value > uint64(maxInt) {
 		return maxInt
 	}
-	converted, err := strconv.Atoi(strconv.FormatUint(value, 10))
-	if err != nil {
-		return maxInt
-	}
-	return converted
+	return int(uint(value))
 }
 
 func percentInt(used, limit int64) int {

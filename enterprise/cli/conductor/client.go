@@ -29,6 +29,9 @@ const (
 	clientHTTPTimeout   = 30 * time.Second
 	clientMaxBodyBytes  = 8 << 20 // 8 MiB cap on operator read responses
 	defaultClientServer = "https://127.0.0.1:8895"
+
+	// ReadClientFollowerLimitMax is the bounded read limit for dashboard follower roster queries.
+	ReadClientFollowerLimitMax = 501
 )
 
 // clientOptions are the connection flags shared by every Conductor operator
@@ -89,12 +92,16 @@ func (c *ReadClient) ListFollowers(ctx context.Context, orgID, fleetID string, l
 	if c == nil || c.client == nil {
 		return nil, errors.New("conductor read client is nil")
 	}
+	if limit <= 0 {
+		return nil, errors.New("follower limit must be positive")
+	}
+	if limit > ReadClientFollowerLimitMax {
+		return nil, fmt.Errorf("follower limit exceeds maximum %d", ReadClientFollowerLimitMax)
+	}
 	params := map[string]string{
 		"org_id":   orgID,
 		"fleet_id": fleetID,
-	}
-	if limit > 0 {
-		params["limit"] = fmt.Sprintf("%d", limit)
+		"limit":    fmt.Sprintf("%d", limit),
 	}
 	return c.client.getJSON(ctx, controlplane.FollowersPath+encodeQuery(params))
 }
@@ -204,8 +211,8 @@ func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, err
 	if readErr != nil {
 		return nil, fmt.Errorf("read conductor response: %w", readErr)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body, c.token))
+	if err := checkClientStatus(resp, body, c.token); err != nil {
+		return nil, err
 	}
 	return body, nil
 }
@@ -245,10 +252,17 @@ func (c *conductorClient) deleteJSON(ctx context.Context, path string, body any)
 	if readErr != nil {
 		return nil, fmt.Errorf("read conductor response: %w", readErr)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(respBody, c.token))
+	if err := checkClientStatus(resp, respBody, c.token); err != nil {
+		return nil, err
 	}
 	return respBody, nil
+}
+
+func checkClientStatus(resp *http.Response, body []byte, secrets ...string) error {
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body, secrets...))
+	}
+	return nil
 }
 
 func readClientBody(r io.Reader) ([]byte, error) {

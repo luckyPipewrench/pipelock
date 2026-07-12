@@ -47,7 +47,10 @@ type backupManifestFile struct {
 	Size   int64  `json:"size"`
 }
 
-var stateDirLocks sync.Map
+var (
+	stateDirLocks           sync.Map
+	writeDashboardStateFile = atomicfile.Write
+)
 
 func stateDirLock(path string) *sync.Mutex {
 	abs, err := filepath.Abs(filepath.Clean(path))
@@ -235,7 +238,7 @@ func RestoreState(stateDir, archivePath string) error {
 		path := filepath.Join(stateDir, name)
 		file, exists := restored[name]
 		if exists {
-			err = atomicfile.Write(path, file, 0o600)
+			err = writeDashboardStateFile(path, file, 0o600)
 		} else {
 			err = os.Remove(path)
 			if errors.Is(err, os.ErrNotExist) {
@@ -309,7 +312,7 @@ func rollbackState(stateDir string, names []string, originals map[string][]byte,
 			}
 			continue
 		}
-		if err := atomicfile.Write(path, originals[name], 0o600); err != nil {
+		if err := writeDashboardStateFile(path, originals[name], 0o600); err != nil {
 			errs = append(errs, fmt.Errorf("restore %s: %w", name, err))
 		}
 	}

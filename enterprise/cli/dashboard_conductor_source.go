@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 
 	conductorcli "github.com/luckyPipewrench/pipelock/enterprise/cli/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
@@ -101,11 +102,14 @@ func (s *dashboardConductorSource) ListFleetFollowers(ctx context.Context, orgID
 	}
 	orgID = strings.TrimSpace(orgID)
 	fleetID = strings.TrimSpace(fleetID)
-	if orgID != s.orgID || fleetID != s.fleet {
-		return dashboard.FleetFollowerPage{}, fmt.Errorf("fleet scope %q/%q is not configured for this dashboard", orgID, fleetID)
+	if err := validateDashboardConductorFleetScope(orgID, fleetID, s.orgID, s.fleet); err != nil {
+		return dashboard.FleetFollowerPage{}, err
 	}
 	if limit <= 0 {
 		return dashboard.FleetFollowerPage{}, errors.New("follower limit must be positive")
+	}
+	if limit > conductorcli.ReadClientFollowerLimitMax {
+		return dashboard.FleetFollowerPage{}, fmt.Errorf("follower limit exceeds maximum %d", conductorcli.ReadClientFollowerLimitMax)
 	}
 	body, err := s.client.ListFollowers(ctx, orgID, fleetID, limit)
 	if err != nil {
@@ -123,8 +127,12 @@ func (s *dashboardConductorSource) ListFleetFollowers(ctx context.Context, orgID
 	if resp.Count != len(resp.Followers) {
 		return dashboard.FleetFollowerPage{}, fmt.Errorf("conductor followers response count=%d len=%d", resp.Count, len(resp.Followers))
 	}
+	seen := make(map[string]struct{}, len(resp.Followers))
 	followers := make([]dashboard.FleetFollowerView, len(resp.Followers))
 	for i, follower := range resp.Followers {
+		if err := validateDashboardConductorFollower(s.orgID, s.fleet, follower, seen); err != nil {
+			return dashboard.FleetFollowerPage{}, err
+		}
 		followers[i] = dashboardFollowerView(follower)
 	}
 	page := dashboard.FleetFollowerPage{Followers: followers}
@@ -135,30 +143,54 @@ func (s *dashboardConductorSource) ListFleetFollowers(ctx context.Context, orgID
 }
 
 func applyConductorCompleteness(page *dashboard.FleetFollowerPage, resp dashboardConductorFollowersResponse, limit int) error {
-	explicit := 0
+	if resp.HasMore != nil && resp.Complete != nil {
+		return errors.New("conductor followers response has conflicting completeness fields")
+	}
+	if resp.CompletenessKnown != nil && !*resp.CompletenessKnown && (resp.HasMore != nil || resp.Complete != nil) {
+		return errors.New("conductor followers response has unknown completeness with explicit completeness fields")
+	}
 	if resp.HasMore != nil {
-		explicit++
 		page.CompletenessKnown = true
 		page.HasMore = *resp.HasMore
 	}
 	if resp.Complete != nil {
-		explicit++
 		page.CompletenessKnown = true
 		page.HasMore = !*resp.Complete
 	}
 	if resp.CompletenessKnown != nil {
 		page.CompletenessKnown = *resp.CompletenessKnown
 	}
-	if explicit > 1 {
-		return errors.New("conductor followers response has conflicting completeness fields")
-	}
-	if explicit == 0 && resp.CompletenessKnown == nil {
+	if resp.HasMore == nil && resp.Complete == nil && resp.CompletenessKnown == nil {
 		page.CompletenessKnown = len(resp.Followers) < limit
 		page.HasMore = false
 	}
 	if !page.CompletenessKnown {
 		page.HasMore = false
 	}
+	return nil
+}
+
+func validateDashboardConductorFleetScope(orgID, fleetID, configuredOrgID, configuredFleetID string) error {
+	if strings.TrimSpace(orgID) != configuredOrgID || strings.TrimSpace(fleetID) != configuredFleetID {
+		return fmt.Errorf("fleet scope %q/%q is not configured for this dashboard", orgID, fleetID)
+	}
+	return nil
+}
+
+func validateDashboardConductorFollower(orgID, fleetID string, f controlplane.FollowerFleetStatus, seen map[string]struct{}) error {
+	if strings.TrimSpace(f.OrgID) != f.OrgID || f.OrgID != orgID ||
+		strings.TrimSpace(f.FleetID) != f.FleetID || f.FleetID != fleetID {
+		return errors.New("conductor returned follower outside configured scope")
+	}
+	instanceID := strings.TrimSpace(f.InstanceID)
+	if instanceID == "" || instanceID != f.InstanceID || len(instanceID) > 256 || strings.IndexFunc(instanceID, unicode.IsControl) >= 0 {
+		return errors.New("conductor returned invalid follower identity")
+	}
+	key := f.OrgID + "\x00" + f.FleetID + "\x00" + instanceID
+	if _, ok := seen[key]; ok {
+		return fmt.Errorf("conductor returned duplicate follower identity %q", instanceID)
+	}
+	seen[key] = struct{}{}
 	return nil
 }
 
@@ -221,9 +253,6 @@ func dashboardConductorFleetScopeAuthorizer(orgID, fleetID string) func(*http.Re
 	orgID = strings.TrimSpace(orgID)
 	fleetID = strings.TrimSpace(fleetID)
 	return func(_ *http.Request, scope dashboard.DecisionScope, _ bool) error {
-		if strings.TrimSpace(scope.OrgID) != orgID || strings.TrimSpace(scope.FleetID) != fleetID {
-			return fmt.Errorf("fleet scope %q/%q is not configured for this dashboard", scope.OrgID, scope.FleetID)
-		}
-		return nil
+		return validateDashboardConductorFleetScope(scope.OrgID, scope.FleetID, orgID, fleetID)
 	}
 }

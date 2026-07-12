@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -188,26 +187,25 @@ func TestRestoreState_RollsBackAfterSecondFileWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	createdFailureTarget := make(chan error, 1)
-	go func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			data, readErr := os.ReadFile(filepath.Clean(inboxPath))
-			if readErr == nil && bytes.Equal(data, replacementInbox) {
-				createdFailureTarget <- os.Mkdir(filepath.Join(stateDir, ExemptionStateFile), 0o700)
-				return
-			}
-			runtime.Gosched()
+	originalWrite := writeDashboardStateFile
+	exemptionWriteFailed := false
+	writeDashboardStateFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == ExemptionStateFile && !exemptionWriteFailed {
+			exemptionWriteFailed = true
+			return errors.New("forced exemption write failure")
 		}
-		createdFailureTarget <- errors.New("replacement inbox was not observed")
-	}()
+		return originalWrite(path, data, perm)
+	}
+	t.Cleanup(func() {
+		writeDashboardStateFile = originalWrite
+	})
 
 	err = RestoreState(stateDir, archive)
 	if err == nil || !strings.Contains(err.Error(), ExemptionStateFile) {
 		t.Fatalf("RestoreState error = %v", err)
 	}
-	if watcherErr := <-createdFailureTarget; watcherErr != nil {
-		t.Fatal(watcherErr)
+	if !exemptionWriteFailed {
+		t.Fatal("forced exemption write failure was not reached")
 	}
 	after, readErr := os.ReadFile(filepath.Clean(inboxPath))
 	if readErr != nil {

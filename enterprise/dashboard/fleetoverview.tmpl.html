@@ -32,13 +32,7 @@
     h2 { font-size: 16px; margin-bottom: 12px; }
     .muted { color: var(--text-muted); }
     .dim { color: var(--text-dim); }
-    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .page-head { margin-bottom: 22px; }
-    .eyebrow { color: var(--accent); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 8px; }
-    .page-head h1 { font-size: 26px; margin-bottom: 8px; }
-    .lead { color: var(--text-muted); max-width: 72ch; margin: 0 0 12px; font-size: 13.5px; line-height: 1.5; }
-    .summary { color: var(--text-dim); font-size: 12px; }
-    .summary b { color: var(--text); font-weight: 700; }
+    {{template "dashboardStyles" .}}
     .callout {
       border: 1px solid var(--border-strong);
       background: #0b0f0e;
@@ -108,7 +102,6 @@
     .chip.signed-unverified { background: var(--warn); }
     .chip.unsigned { background: #64748b; color: #f8fafc; }
     .chip.no-report { background: rgba(245,158,11,0.16); border: 1px solid rgba(245,158,11,0.55); color: #fde68a; }
-    .chip.missing { background: var(--danger); color: white; }
     .empty {
       color: var(--text-muted);
       padding: 26px;
@@ -149,7 +142,7 @@
       {{if not .SourceConfigured}}
         <section class="absence">
           <h2>No conductor fleet source configured</h2>
-          <p class="muted">Fleet Overview proves mediated fleet state only from accepted follower reports returned by Conductor. No conductor fleet source is connected for this dashboard. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span>, <span class="mono">--conductor-org</span>, and <span class="mono">--conductor-fleet</span>; other dashboard views do not depend on that source.</p>
+          <p class="muted">Fleet Overview proves mediated fleet state only from accepted follower reports returned by Conductor. No conductor fleet source is connected for this dashboard. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span>, <span class="mono">--conductor-org</span>, <span class="mono">--conductor-fleet</span>, <span class="mono">--conductor-token-file</span>, <span class="mono">--conductor-tls-cert</span>, <span class="mono">--conductor-tls-key</span>, and <span class="mono">--conductor-server-ca</span>; other dashboard views do not depend on that source.</p>
         </section>
       {{else if not .Followers}}
         <section class="empty">Fleet Overview proves mediated fleet state only from accepted follower reports returned by Conductor. The conductor source is connected, but no enrolled followers matched this <span class="mono">org_id</span>/<span class="mono">fleet_id</span> scope. Use the configured <span class="mono">--conductor-org</span> and <span class="mono">--conductor-fleet</span>, or query a scope that contains enrolled followers.</section>

@@ -32,13 +32,7 @@
     .dim { color: var(--text-dim); }
     /* Designed page header (matches the Operator Overview language) so the view
        reads as intentional at any density -- one agent looks as finished as many. */
-    .page-head { margin-bottom: 22px; }
-    .eyebrow { color: var(--accent); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 8px; }
-    .page-head h1 { font-size: 26px; margin-bottom: 8px; }
-    .lead { color: var(--text-muted); max-width: 72ch; margin: 0 0 12px; font-size: 13.5px; line-height: 1.5; }
-    .summary { color: var(--text-dim); font-size: 12px; }
-    .summary b { color: var(--text); font-weight: 700; }
-    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    {{template "dashboardStyles" .}}
     .filter-form {
       display: flex;
       gap: 12px;

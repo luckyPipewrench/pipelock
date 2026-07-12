@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	conductorcli "github.com/luckyPipewrench/pipelock/enterprise/cli/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
@@ -116,7 +117,7 @@ func TestDashboardConductorSourceCompletenessSignals(t *testing.T) {
 		{
 			name: "explicit exactly limit complete",
 			resp: dashboardConductorFollowersResponse{
-				Followers: []controlplane.FollowerFleetStatus{{FollowerSummary: controlplane.FollowerSummary{OrgID: "org-main", FleetID: "prod"}}},
+				Followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-main", "prod", "pl-prod-1")},
 				Count:     1,
 				Complete:  boolPtr(true),
 			},
@@ -126,7 +127,7 @@ func TestDashboardConductorSourceCompletenessSignals(t *testing.T) {
 		{
 			name: "explicit truncated",
 			resp: dashboardConductorFollowersResponse{
-				Followers: []controlplane.FollowerFleetStatus{{FollowerSummary: controlplane.FollowerSummary{OrgID: "org-main", FleetID: "prod"}}},
+				Followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-main", "prod", "pl-prod-1")},
 				Count:     1,
 				HasMore:   boolPtr(true),
 			},
@@ -137,7 +138,7 @@ func TestDashboardConductorSourceCompletenessSignals(t *testing.T) {
 		{
 			name: "legacy exact limit unknown",
 			resp: dashboardConductorFollowersResponse{
-				Followers: []controlplane.FollowerFleetStatus{{FollowerSummary: controlplane.FollowerSummary{OrgID: "org-main", FleetID: "prod"}}},
+				Followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-main", "prod", "pl-prod-1")},
 				Count:     1,
 			},
 			limit: 1,
@@ -151,6 +152,28 @@ func TestDashboardConductorSourceCompletenessSignals(t *testing.T) {
 			},
 			limit:   1,
 			wantErr: "conflicting",
+		},
+		{
+			name: "unknown completeness with explicit has more",
+			resp: dashboardConductorFollowersResponse{
+				Followers:         []controlplane.FollowerFleetStatus{},
+				Count:             0,
+				CompletenessKnown: boolPtr(false),
+				HasMore:           boolPtr(true),
+			},
+			limit:   1,
+			wantErr: "unknown completeness",
+		},
+		{
+			name: "unknown completeness with explicit complete",
+			resp: dashboardConductorFollowersResponse{
+				Followers:         []controlplane.FollowerFleetStatus{},
+				Count:             0,
+				CompletenessKnown: boolPtr(false),
+				Complete:          boolPtr(true),
+			},
+			limit:   1,
+			wantErr: "unknown completeness",
 		},
 	}
 	for _, tc := range tests {
@@ -192,6 +215,7 @@ func TestDashboardConductorSourceFailsClosed(t *testing.T) {
 	}{
 		{"scope mismatch", &fakeDashboardConductorClient{body: []byte(`{"followers":[],"count":0}`)}, "other", "prod", 1, "not configured"},
 		{"non positive limit", &fakeDashboardConductorClient{body: []byte(`{"followers":[],"count":0}`)}, "org-main", "prod", 0, "limit"},
+		{"limit too high", &fakeDashboardConductorClient{body: []byte(`{"followers":[],"count":0}`)}, "org-main", "prod", conductorcli.ReadClientFollowerLimitMax + 1, "exceeds maximum"},
 		{"client error", &fakeDashboardConductorClient{err: errors.New("status 500")}, "org-main", "prod", 1, "status 500"},
 		{"malformed json", &fakeDashboardConductorClient{body: []byte(`{"followers":[`)}, "org-main", "prod", 1, "decode"},
 		{"trailing json", &fakeDashboardConductorClient{body: []byte(`{"followers":[],"count":0}{}`)}, "org-main", "prod", 1, "trailing"},
@@ -206,6 +230,66 @@ func TestDashboardConductorSourceFailsClosed(t *testing.T) {
 			}
 			if strings.Contains(tc.wantErr, "not configured") && tc.client.calledList {
 				t.Fatal("scope mismatch reached conductor client")
+			}
+		})
+	}
+}
+
+func TestDashboardConductorSourceRejectsInvalidReturnedFollowers(t *testing.T) {
+	tests := []struct {
+		name      string
+		followers []controlplane.FollowerFleetStatus
+		wantErr   string
+	}{
+		{
+			name:      "cross org",
+			followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-other", "prod", "pl-prod-1")},
+			wantErr:   "outside configured scope",
+		},
+		{
+			name:      "cross fleet",
+			followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-main", "staging", "pl-prod-1")},
+			wantErr:   "outside configured scope",
+		},
+		{
+			name:      "scope with whitespace",
+			followers: []controlplane.FollowerFleetStatus{testConductorFollower(" org-main", "prod", "pl-prod-1")},
+			wantErr:   "outside configured scope",
+		},
+		{
+			name:      "empty instance",
+			followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-main", "prod", "")},
+			wantErr:   "invalid follower identity",
+		},
+		{
+			name:      "control character instance",
+			followers: []controlplane.FollowerFleetStatus{testConductorFollower("org-main", "prod", "pl-prod-\n1")},
+			wantErr:   "invalid follower identity",
+		},
+		{
+			name: "duplicate instance",
+			followers: []controlplane.FollowerFleetStatus{
+				testConductorFollower("org-main", "prod", "pl-prod-1"),
+				testConductorFollower("org-main", "prod", "pl-prod-1"),
+			},
+			wantErr: "duplicate follower identity",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := dashboardConductorFollowersResponse{Followers: tc.followers, Count: len(tc.followers)}
+			body, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			source := &dashboardConductorSource{
+				client: &fakeDashboardConductorClient{body: body},
+				orgID:  "org-main",
+				fleet:  "prod",
+			}
+			_, err = source.ListFleetFollowers(context.Background(), "org-main", "prod", 10)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
 			}
 		})
 	}
@@ -291,6 +375,16 @@ func writeConductorSourceClientMaterial(t *testing.T) (certFile, keyFile, caFile
 	t.Helper()
 	certFile, keyFile, _ = writeDashTLSCert(t)
 	return certFile, keyFile, certFile
+}
+
+func testConductorFollower(orgID, fleetID, instanceID string) controlplane.FollowerFleetStatus {
+	return controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{
+			OrgID:      orgID,
+			FleetID:    fleetID,
+			InstanceID: instanceID,
+		},
+	}
 }
 
 func boolPtr(v bool) *bool {

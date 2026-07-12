@@ -396,10 +396,12 @@ publish is rejected if the server's current bundle does not match). For a
 loopback dev conductor without TLS, `--allow-plaintext-loopback` permits an
 `http://127.0.0.1` URL.
 
-Add `--dry-run` to send the same signed bundle to the same publish endpoint with
-`dry_run: true`. Conductor returns the publish evaluation, including whether the
-bundle would be created, the resulting hash/version, fleet preflight summary,
-and any conflict code, without mutating the bundle store.
+Add `--dry-run` to send the same signed bundle to Conductor's read-only publish
+evaluation endpoint. Conductor returns the publish evaluation, including whether
+the bundle would be created, the resulting hash/version, fleet preflight
+summary, and any conflict code, without mutating the bundle store. Older
+Conductors that do not expose the evaluation endpoint fail closed instead of
+silently treating a dry-run as a publish.
 
 **Prove on apply:** after publishing, confirm followers picked up the new version
 (watch the follower logs for the bundle-apply line, or `pipelock conductor fleet
@@ -481,9 +483,9 @@ fail closed within one `poll_interval`; clearing it lets them recover on the
 next poll.
 
 Add `--dry-run` to `kill` or `resume` to sign the same remote-kill message and
-ask Conductor for the read-only evaluation. The response reports the would-be
-counter/hash decision and conflict code without publishing the kill/resume
-state.
+ask Conductor's read-only evaluation endpoint for the verdict. The response
+reports the would-be counter/hash decision and conflict code without publishing
+the kill/resume state.
 
 ## 9. Roll back a bad bundle
 
@@ -510,35 +512,32 @@ rollback whose window exceeds `--rollback-max-validity` (default `24h`). Because
 kill and rollback keys are purpose-scoped, a rollback key cannot issue a kill or
 vice versa.
 
-Add `--dry-run` to sign the same rollback authorization and ask Conductor for
-the read-only rollback evaluation. The response reports whether the
+Add `--dry-run` to sign the same rollback authorization and ask Conductor's
+read-only evaluation endpoint for the verdict. The response reports whether the
 authorization would be created and which bundle/version/hash the stream head
 would roll to, without writing either the authorization or stream-head mutation.
 
 ## 9a. Replay a publish decision
 
-`pipelock conductor replay` rebuilds and signs a policy-bundle artifact from the
-same bundle inputs as `conductor publish`, then POSTs it to Conductor's
-decision-replay endpoint. Replay re-derives the publish verdict under current
-store/fleet state and reports whether that diverges from any recorded accepted
-decision.
+`pipelock conductor replay --bundle-artifact <bundle.json>` POSTs an exact
+previously saved signed policy-bundle artifact to Conductor's decision-replay
+endpoint. Replay re-derives the publish verdict under current store/fleet state
+and reports whether that diverges from any recorded accepted decision.
 
 ```bash
 pipelock conductor replay \
   --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
-  --config /etc/pipelock/fleet-policy.yaml \
-  --bundle-id prod-2026-06-11 \
-  --org org-acme --fleet prod --env prod \
-  --audience '*' \
-  --version 7 \
-  --validity 720h \
-  --min-pipelock-version 2.7.0 \
-  --signing-key /etc/pipelock/fleet-keys/policy-signing.json \
+  --bundle-artifact /var/lib/pipelock/conductor/exported/prod-2026-06-11.json \
   --publisher-token-file /etc/pipelock/conductor/tokens/publisher/token \
   --tls-cert /etc/pipelock/operator.crt \
   --tls-key /etc/pipelock/operator.key \
   --server-ca /etc/pipelock/conductor-ca.pem
 ```
+
+Without `--bundle-artifact`, replay rebuilds and signs a new hypothetical bundle
+from the same inputs as `conductor publish`. Use that mode for "what would this
+input do now?" checks, not for exact audit replay, because the rebuilt artifact
+has fresh timestamps and signatures.
 
 Pass `--state-snapshot snapshot.json` to replay the publish preflight against a
 captured follower/runtime-status snapshot. The snapshot applies only to bundle

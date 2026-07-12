@@ -7,6 +7,7 @@ package conductor
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,11 +25,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
-const replayMaxStateSnapshotBytes = conductorcore.MaxConfigYAMLBytes
+const (
+	replayMaxStateSnapshotBytes  = conductorcore.MaxConfigYAMLBytes
+	replayMaxBundleArtifactBytes = conductorcore.MaxConfigYAMLBytes * 2
+)
 
 type replayOptions struct {
-	publish       publishOptions
-	stateSnapshot string
+	publish        publishOptions
+	stateSnapshot  string
+	bundleArtifact string
 }
 
 func replayCmd() *cobra.Command {
@@ -38,9 +43,12 @@ func replayCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "replay",
 		Short: "Replay a signed Conductor decision artifact against current state",
-		Long: `Replay builds and signs a policy bundle with the same inputs as
-conductor publish, then asks the Conductor decision-replay endpoint to
-re-derive the would-be publish decision under current fleet and policy state.
+		Long: `Replay sends a signed policy bundle artifact to the Conductor
+decision-replay endpoint to re-derive the publish decision under current fleet
+and policy state. Pass --bundle-artifact to replay an exact previously saved
+signed bundle. Without --bundle-artifact, replay rebuilds and signs a new
+hypothetical bundle from the same inputs as conductor publish.
+
 Pass --state-snapshot to replay the publish preflight against a captured fleet
 snapshot instead of the current roster/runtime-status view.`,
 		Args: cobra.NoArgs,
@@ -52,6 +60,7 @@ snapshot instead of the current roster/runtime-status view.`,
 		},
 	}
 	bindPublishFlags(cmd, &opts.publish, publishFlagOptions{license: true})
+	cmd.Flags().StringVar(&opts.bundleArtifact, "bundle-artifact", "", "path to an exact signed policy bundle JSON artifact to replay instead of rebuilding from publish inputs")
 	cmd.Flags().StringVar(&opts.stateSnapshot, "state-snapshot", "", "optional JSON fleet state snapshot for bundle replay preflight")
 	return cmd
 }
@@ -73,25 +82,71 @@ func runReplay(cmd *cobra.Command, opts replayOptions) error {
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(strings.TrimSpace(opts.publish.previousHash), previousHashAuto) {
-		resolved, err := resolveAutoHash(ctx, opts.publish)
+	var bundle conductorcore.PolicyBundle
+	var priv ed25519.PrivateKey
+	if strings.TrimSpace(opts.bundleArtifact) != "" {
+		bundle, err = readReplayBundleArtifact(opts.bundleArtifact)
 		if err != nil {
-			return fmt.Errorf("resolve --previous-bundle-hash auto: %w", err)
+			return err
 		}
-		opts.publish.previousHash = resolved
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "resolved --previous-bundle-hash auto to %s\n", resolved)
+	} else {
+		if strings.EqualFold(strings.TrimSpace(opts.publish.previousHash), previousHashAuto) {
+			resolved, err := resolveAutoHash(ctx, opts.publish)
+			if err != nil {
+				return fmt.Errorf("resolve --previous-bundle-hash auto: %w", err)
+			}
+			opts.publish.previousHash = resolved
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "resolved --previous-bundle-hash auto to %s\n", resolved)
+		}
+		var err error
+		bundle, _, priv, err = buildSignedBundle(opts.publish)
+		if err != nil {
+			return err
+		}
+		defer zeroizeKey(priv)
 	}
-	bundle, _, priv, err := buildSignedBundle(opts.publish)
-	if err != nil {
-		return err
-	}
-	defer zeroizeKey(priv)
 	result, err := postDecisionReplay(ctx, client, opts.publish.conductorURL, token, bundle, snapshot)
 	if err != nil {
 		return err
 	}
 	writeDecisionReplayResult(cmd.OutOrStdout(), result)
 	return nil
+}
+
+func readReplayBundleArtifact(path string) (conductorcore.PolicyBundle, error) {
+	cleanPath := filepath.Clean(path)
+	f, err := os.Open(cleanPath)
+	if err != nil {
+		return conductorcore.PolicyBundle{}, fmt.Errorf("read --bundle-artifact: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return conductorcore.PolicyBundle{}, fmt.Errorf("read --bundle-artifact: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return conductorcore.PolicyBundle{}, errors.New("--bundle-artifact must be a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, replayMaxBundleArtifactBytes+1))
+	if err != nil {
+		return conductorcore.PolicyBundle{}, fmt.Errorf("read --bundle-artifact: %w", err)
+	}
+	if len(data) > replayMaxBundleArtifactBytes {
+		return conductorcore.PolicyBundle{}, fmt.Errorf("--bundle-artifact exceeds %d bytes", replayMaxBundleArtifactBytes)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var bundle conductorcore.PolicyBundle
+	if err := dec.Decode(&bundle); err != nil {
+		return conductorcore.PolicyBundle{}, fmt.Errorf("parse --bundle-artifact: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return conductorcore.PolicyBundle{}, errors.New("parse --bundle-artifact: trailing JSON")
+	}
+	if err := bundle.Validate(); err != nil {
+		return conductorcore.PolicyBundle{}, fmt.Errorf("validate --bundle-artifact: %w", err)
+	}
+	return bundle, nil
 }
 
 func readReplayStateSnapshot(path string) (json.RawMessage, error) {
@@ -185,18 +240,13 @@ func writeDecisionReplayResult(out io.Writer, result controlplane.DecisionReplay
 		writeReplayPublishEvaluation(out, *result.PublishEvaluation)
 	}
 	if result.RemoteKill != nil {
-		writeRemoteKillEvaluation(out, *result.RemoteKill)
+		writeRemoteKillEvaluation(out, "replay", *result.RemoteKill)
 	}
 	if result.Rollback != nil {
-		writeRollbackEvaluation(out, *result.Rollback)
+		writeRollbackEvaluation(out, "replay", *result.Rollback)
 	}
 }
 
 func writeReplayPublishEvaluation(out io.Writer, eval controlplane.PublishEvaluation) {
-	_, _ = fmt.Fprintf(out, "replay publish valid=%t would_create=%t result_version=%d result_hash=%s conflict=%s\n",
-		eval.Valid, eval.WouldCreate, eval.ResultVersion, eval.ResultHash, eval.Conflict)
-	if eval.HasCurrentHead {
-		_, _ = fmt.Fprintf(out, "current head version=%d hash=%s\n", eval.CurrentHeadVersion, eval.CurrentHeadHash)
-	}
-	writePublishPreflight(out, eval.Preflight)
+	writePublishEvaluationLabeled(out, "replay publish", eval)
 }

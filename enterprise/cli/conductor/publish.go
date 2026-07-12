@@ -845,12 +845,17 @@ func postBundleDryRun(ctx context.Context, client *http.Client, baseURL, token s
 		return controlplane.PublishEvaluation{}, err
 	}
 	switch statusCode {
-	case http.StatusOK, http.StatusCreated:
+	case http.StatusOK:
 		var eval controlplane.PublishEvaluation
 		if err := json.Unmarshal(respBody, &eval); err != nil {
 			return controlplane.PublishEvaluation{}, fmt.Errorf("decode publish dry-run response: %w", err)
 		}
+		if err := requireDryRunEvaluation("publish", eval.DryRun); err != nil {
+			return controlplane.PublishEvaluation{}, err
+		}
 		return eval, nil
+	case http.StatusCreated:
+		return controlplane.PublishEvaluation{}, errors.New("conductor returned 201 Created for publish dry-run; refusing ambiguous mutating response")
 	case http.StatusForbidden, http.StatusUnauthorized:
 		return controlplane.PublishEvaluation{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", statusCode, serverErrorDetail(respBody, token))
 	default:
@@ -869,7 +874,11 @@ func postBundleRaw(ctx context.Context, client *http.Client, baseURL, token stri
 	if err != nil {
 		return 0, nil, fmt.Errorf("marshal publish request: %w", err)
 	}
-	endpoint := strings.TrimRight(baseURL, "/") + controlplane.PublishPolicyBundlePath
+	endpointPath := controlplane.PublishPolicyBundlePath
+	if opts.dryRun {
+		endpointPath = controlplane.PublishPolicyEvaluatePath
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + endpointPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build publish request: %w", err)
@@ -889,14 +898,7 @@ func postBundleRaw(ctx context.Context, client *http.Client, baseURL, token stri
 }
 
 func readPublishResponseBody(r io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r, publishMaxResponseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read conductor response: %w", err)
-	}
-	if len(body) > publishMaxResponseBytes {
-		return nil, fmt.Errorf("conductor response exceeds %d bytes", publishMaxResponseBytes)
-	}
-	return body, nil
+	return readCappedResponseBody(r, publishMaxResponseBytes)
 }
 
 type publishResult struct {
@@ -921,12 +923,24 @@ func writePublishPreflight(out io.Writer, p controlplane.PublishPreflightSummary
 }
 
 func writePublishEvaluation(out io.Writer, eval controlplane.PublishEvaluation) {
-	_, _ = fmt.Fprintf(out, "dry-run policy bundle valid=%t would_create=%t result_version=%d result_hash=%s conflict=%s\n",
+	writePublishEvaluationLabeled(out, "dry-run policy bundle", eval)
+}
+
+func writePublishEvaluationLabeled(out io.Writer, label string, eval controlplane.PublishEvaluation) {
+	_, _ = fmt.Fprintf(out, "%s valid=%t would_create=%t result_version=%d result_hash=%s conflict=%s\n",
+		label,
 		eval.Valid, eval.WouldCreate, eval.ResultVersion, eval.ResultHash, eval.Conflict)
 	if eval.HasCurrentHead {
 		_, _ = fmt.Fprintf(out, "current head version=%d hash=%s\n", eval.CurrentHeadVersion, eval.CurrentHeadHash)
 	}
 	writePublishPreflight(out, eval.Preflight)
+}
+
+func requireDryRunEvaluation(kind string, dryRun bool) error {
+	if dryRun {
+		return nil
+	}
+	return fmt.Errorf("conductor %s dry-run response missing dry_run=true; refusing ambiguous response", kind)
 }
 
 // conflictSentinel selects the distinct CLI sentinel for an HTTP 409 publish

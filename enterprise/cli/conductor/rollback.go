@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -166,11 +167,18 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 
 	if opts.dryRun {
 		var eval controlplane.RollbackEvaluation
-		if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RollbackAuthorizationsPath, adminToken,
-			publishRollbackAuthorizationRequest{Authorization: auth, DryRun: true}, &eval); err != nil {
+		status, err := postEmergencyJSONStatus(cmd.Context(), client, opts.baseURL, controlplane.RollbackEvaluatePath, adminToken,
+			publishRollbackAuthorizationRequest{Authorization: auth, DryRun: true}, &eval)
+		if err != nil {
 			return err
 		}
-		writeRollbackEvaluation(cmd.OutOrStdout(), eval)
+		if status == http.StatusCreated {
+			return errors.New("conductor returned 201 Created for rollback dry-run; refusing ambiguous mutating response")
+		}
+		if err := requireDryRunEvaluation("rollback", eval.DryRun); err != nil {
+			return err
+		}
+		writeRollbackEvaluation(cmd.OutOrStdout(), "dry-run", eval)
 		return nil
 	}
 
@@ -201,8 +209,8 @@ type publishRollbackAuthorizationResponse struct {
 	Created           bool      `json:"created"`
 }
 
-func writeRollbackEvaluation(out io.Writer, eval controlplane.RollbackEvaluation) {
+func writeRollbackEvaluation(out io.Writer, label string, eval controlplane.RollbackEvaluation) {
 	_, _ = fmt.Fprintf(out,
-		"dry-run rollback valid=%t would_create=%t counter=%d would_roll_to_bundle_id=%s would_roll_to_version=%d would_roll_to_hash=%s noop=%t conflict=%s current_head_version=%d current_head_hash=%s\n",
-		eval.Valid, eval.WouldCreate, eval.Counter, eval.WouldRollToBundleID, eval.WouldRollToVersion, eval.WouldRollToHash, eval.Noop, eval.Conflict, eval.CurrentHeadVersion, eval.CurrentHeadHash)
+		"%s rollback valid=%t would_create=%t counter=%d would_roll_to_bundle_id=%s would_roll_to_version=%d would_roll_to_hash=%s noop=%t conflict=%s current_head_version=%d current_head_hash=%s\n",
+		label, eval.Valid, eval.WouldCreate, eval.Counter, eval.WouldRollToBundleID, eval.WouldRollToVersion, eval.WouldRollToHash, eval.Noop, eval.Conflict, eval.CurrentHeadVersion, eval.CurrentHeadHash)
 }

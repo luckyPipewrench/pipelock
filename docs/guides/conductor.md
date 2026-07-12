@@ -318,6 +318,14 @@ fleet:
 Both are signed with a purpose-scoped control key, so an operator cannot reuse a
 rollback key to issue a kill (or vice versa).
 
+The publish, remote-kill, and rollback CLIs also expose `--dry-run`. Dry-runs
+send the signed action to read-only evaluation endpoints, not the mutating
+publish endpoints, so an older Conductor that lacks evaluation support fails
+closed instead of applying the action. Decision replay can use an exact signed
+bundle artifact with `--bundle-artifact`; rebuilding from publish inputs is a
+hypothetical replay because new timestamps and signatures create a different
+artifact.
+
 ## Evidence and verification
 
 Every follower emits Ed25519-signed, hash-chained evidence (the

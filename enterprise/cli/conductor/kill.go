@@ -5,8 +5,10 @@
 package conductor
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -187,11 +189,18 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 
 	if opts.dryRun {
 		var eval controlplane.RemoteKillEvaluation
-		if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RemoteKillPath, adminToken,
-			publishRemoteKillRequest{Message: msg, DryRun: true}, &eval); err != nil {
+		status, err := postEmergencyJSONStatus(cmd.Context(), client, opts.baseURL, controlplane.RemoteKillEvaluatePath, adminToken,
+			publishRemoteKillRequest{Message: msg, DryRun: true}, &eval)
+		if err != nil {
 			return err
 		}
-		writeRemoteKillEvaluation(cmd.OutOrStdout(), eval)
+		if status == http.StatusCreated {
+			return errors.New("conductor returned 201 Created for remote-kill dry-run; refusing ambiguous mutating response")
+		}
+		if err := requireDryRunEvaluation("remote-kill", eval.DryRun); err != nil {
+			return err
+		}
+		writeRemoteKillEvaluation(cmd.OutOrStdout(), "dry-run", eval)
 		return nil
 	}
 
@@ -224,8 +233,8 @@ type publishRemoteKillResponse struct {
 	Created     bool      `json:"created"`
 }
 
-func writeRemoteKillEvaluation(out io.Writer, eval controlplane.RemoteKillEvaluation) {
+func writeRemoteKillEvaluation(out io.Writer, label string, eval controlplane.RemoteKillEvaluation) {
 	_, _ = fmt.Fprintf(out,
-		"dry-run remote-kill valid=%t would_create=%t counter=%d message_hash=%s conflict=%s has_current_max_counter=%t current_max_counter=%d\n",
-		eval.Valid, eval.WouldCreate, eval.Counter, eval.MessageHash, eval.Conflict, eval.HasCurrentMaxCounter, eval.CurrentMaxCounter)
+		"%s remote-kill valid=%t would_create=%t counter=%d message_hash=%s conflict=%s has_current_max_counter=%t current_max_counter=%d\n",
+		label, eval.Valid, eval.WouldCreate, eval.Counter, eval.MessageHash, eval.Conflict, eval.HasCurrentMaxCounter, eval.CurrentMaxCounter)
 }

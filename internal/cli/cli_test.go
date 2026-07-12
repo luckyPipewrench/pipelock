@@ -102,18 +102,27 @@ func installReloadWaiter(t *testing.T) <-chan struct{} {
 // an HTTP effect rather than a stderr message.
 func awaitReloadCycle(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc) {
 	t.Helper()
+	if err := awaitReloadCycleResult(reloaded, buf, errCh); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+}
+
+func awaitReloadCycleResult(reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error) error {
 	dump := ""
 	if buf != nil {
 		dump = "\nstderr:\n" + buf.String()
 	}
 	select {
 	case <-reloaded:
+		return nil
 	case cmdErr := <-errCh:
-		cancel()
-		t.Fatalf("run exited before reload completed: %v%s", cmdErr, dump)
+		if cmdErr == nil {
+			return fmt.Errorf("run exited before reload completed%s", dump)
+		}
+		return fmt.Errorf("run exited before reload completed: %w%s", cmdErr, dump)
 	case <-time.After(reloadWaitBackstop):
-		cancel()
-		t.Fatalf("timed out waiting for config reload cycle%s", dump)
+		return fmt.Errorf("timed out waiting for config reload cycle%s", dump)
 	}
 }
 
@@ -123,11 +132,20 @@ func awaitReloadCycle(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer
 // against a wall-clock deadline.
 func requireCLIOutputAfterReload(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc, want string) {
 	t.Helper()
-	awaitReloadCycle(t, reloaded, buf, errCh, cancel)
-	if !buf.contains(want) {
+	if err := requireCLIOutputAfterReloadResult(reloaded, buf, errCh, want); err != nil {
 		cancel()
-		t.Fatalf("expected %q in stderr after reload, got:\n%s", want, buf.String())
+		t.Fatal(err)
 	}
+}
+
+func requireCLIOutputAfterReloadResult(reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, want string) error {
+	if err := awaitReloadCycleResult(reloaded, buf, errCh); err != nil {
+		return err
+	}
+	if !buf.contains(want) {
+		return fmt.Errorf("expected %q in stderr after reload, got:\n%s", want, buf.String())
+	}
+	return nil
 }
 
 func waitForRunHTTP(
@@ -2250,7 +2268,10 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "metrics_listen changed")
+		if err := requireCLIOutputAfterReloadResult(reloaded, stderr, errCh, "metrics_listen changed"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {

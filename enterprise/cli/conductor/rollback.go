@@ -146,6 +146,10 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 }
 
 func buildSignedRollbackAuthorization(opts rollbackOptions) (conductorcore.RollbackAuthorization, error) {
+	return buildSignedRollbackAuthorizationWithIntent(opts, "")
+}
+
+func buildSignedRollbackAuthorizationWithIntent(opts rollbackOptions, intent conductorcore.ControlIntent) (conductorcore.RollbackAuthorization, error) {
 	now := time.Now().UTC()
 	if opts.now != nil {
 		now = opts.now().UTC()
@@ -176,6 +180,7 @@ func buildSignedRollbackAuthorization(opts rollbackOptions) (conductorcore.Rollb
 		AuthorizationID: authID,
 		OrgID:           opts.orgID,
 		FleetID:         opts.fleetID,
+		Intent:          intent,
 		CurrentBundleID: opts.currentBundleID,
 		CurrentVersion:  opts.currentVersion,
 		TargetBundleID:  opts.targetBundleID,

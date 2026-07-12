@@ -211,6 +211,10 @@ func httpStatusLabel(status int) string {
 }
 
 func buildSignedRemoteKillMessage(opts killOptions, state conductorcore.KillSwitchState) (conductorcore.RemoteKillMessage, error) {
+	return buildSignedRemoteKillMessageWithIntent(opts, state, "")
+}
+
+func buildSignedRemoteKillMessageWithIntent(opts killOptions, state conductorcore.KillSwitchState, intent conductorcore.ControlIntent) (conductorcore.RemoteKillMessage, error) {
 	now := time.Now().UTC()
 	if opts.now != nil {
 		now = opts.now().UTC()
@@ -245,6 +249,7 @@ func buildSignedRemoteKillMessage(opts killOptions, state conductorcore.KillSwit
 		OrgID:         opts.orgID,
 		FleetID:       opts.fleetID,
 		Audience:      audience,
+		Intent:        intent,
 		State:         state,
 		Counter:       counter,
 		Reason:        opts.reason,

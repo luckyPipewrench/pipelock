@@ -1355,6 +1355,8 @@ func TestReplayRollback_UnknownArtifact_EvaluationOnly(t *testing.T) {
 	store := mustStore(t)
 	current, target := seedRollbackReplayBundles(t, store, "rb-replay-unknown")
 	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-unknown", current, target, testNow)
+	auth.Intent = conductor.ControlIntentReplay
+	resolver = resignRollbackAuthorization(t, &auth)
 	handler := newDryRunTestHandler(t, store, mustEmergencyStore(t), resolver)
 
 	w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
@@ -1403,6 +1405,8 @@ func TestReplayRemoteKill_RecordedMatchesRederived_NoDivergence(t *testing.T) {
 func TestReplayRemoteKill_StaleCounterEvaluation(t *testing.T) {
 	high := signedRemoteKillMessage(t, "kill-replay-high", 5, conductor.KillSwitchActive, testNow)
 	stale, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-stale", 3, conductor.KillSwitchActive, testNow)
+	stale.Intent = conductor.ControlIntentReplay
+	stale.Signatures, resolver = signConductorPreimage(t, stale.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-replay-a", "kill-replay-b")
 	emergency := mustEmergencyStore(t)
 	if _, created, err := emergency.PublishRemoteKill(context.Background(), high, testNow); err != nil || !created {
 		t.Fatalf("seed high remote kill created=%v err=%v, want created", created, err)
@@ -1423,6 +1427,95 @@ func TestReplayRemoteKill_StaleCounterEvaluation(t *testing.T) {
 	if result.Divergence {
 		t.Fatalf("remote-kill stale replay divergence=true, want false")
 	}
+}
+
+func TestReplayEmergency_RejectsApplyScopedUnknownArtifacts(t *testing.T) {
+	t.Run("remote_kill", func(t *testing.T) {
+		msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-apply-unknown", 1, conductor.KillSwitchActive, testNow)
+		handler := newDryRunTestHandler(t, nil, mustEmergencyStore(t), resolver)
+
+		w := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &msg}, true, false)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("apply-scoped remote-kill replay code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), conductor.ErrInvalidControlIntent.Error()) {
+			t.Fatalf("apply-scoped remote-kill replay body=%s, want invalid intent", w.Body.String())
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		store := mustStore(t)
+		current, target := seedRollbackReplayBundles(t, store, "rb-replay-apply-unknown")
+		auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-apply-unknown", current, target, testNow)
+		handler := newDryRunTestHandler(t, store, mustEmergencyStore(t), resolver)
+
+		w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("apply-scoped rollback replay code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), conductor.ErrInvalidControlIntent.Error()) {
+			t.Fatalf("apply-scoped rollback replay body=%s, want invalid intent", w.Body.String())
+		}
+	})
+}
+
+func TestReplayEmergency_RejectsReplayScopedArtifactsOnPublishEndpoints(t *testing.T) {
+	t.Run("remote_kill", func(t *testing.T) {
+		msg, _ := signedRemoteKillMessageWithResolver(t, "kill-publish-replay", 1, conductor.KillSwitchActive, testNow)
+		msg.Intent = conductor.ControlIntentReplay
+		signatures, resolver := signConductorPreimage(t, msg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-publish-replay-a", "kill-publish-replay-b")
+		msg.Signatures = signatures
+		handler := newTestHandlerWithOptions(t, mustStore(t), nil, resolver)
+		body, err := json.Marshal(publishRemoteKillRequest{Message: msg})
+		if err != nil {
+			t.Fatalf("marshal remote kill publish: %v", err)
+		}
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RemoteKillPath, bytes.NewReader(body))
+		r.Header.Set("X-Pipelock-Admin", "ok")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("replay-scoped remote-kill publish code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), conductor.ErrInvalidControlIntent.Error()) {
+			t.Fatalf("replay-scoped remote-kill publish body=%s, want invalid intent", w.Body.String())
+		}
+		if _, err := handler.emergencyControls.LatestRemoteKill(context.Background(), defaultFollowerIdentity(), testNow); !errors.Is(err, ErrEmergencyNotFound) {
+			t.Fatalf("LatestRemoteKill(after rejected replay-scoped publish) err=%v, want ErrEmergencyNotFound", err)
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		store := mustStore(t)
+		current, target := seedRollbackReplayBundles(t, store, "rb-publish-replay")
+		auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-publish-replay", current, target, testNow)
+		auth.Intent = conductor.ControlIntentReplay
+		resolver := resignRollbackAuthorization(t, &auth)
+		handler := newTestHandlerWithOptions(t, store, nil, resolver)
+		body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+		if err != nil {
+			t.Fatalf("marshal rollback publish: %v", err)
+		}
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RollbackAuthorizationsPath, bytes.NewReader(body))
+		r.Header.Set("X-Pipelock-Admin", "ok")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("replay-scoped rollback publish code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), conductor.ErrInvalidControlIntent.Error()) {
+			t.Fatalf("replay-scoped rollback publish body=%s, want invalid intent", w.Body.String())
+		}
+		lookup := RollbackLookup{
+			CurrentBundleID: auth.CurrentBundleID,
+			CurrentVersion:  auth.CurrentVersion,
+			TargetBundleID:  auth.TargetBundleID,
+			TargetVersion:   auth.TargetVersion,
+		}
+		if _, err := handler.emergencyControls.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyNotFound) {
+			t.Fatalf("LatestRollbackAuthorization(after rejected replay-scoped publish) err=%v, want ErrEmergencyNotFound", err)
+		}
+	})
 }
 
 func TestReplay_RequiresExactlyOneArtifact(t *testing.T) {
@@ -1510,6 +1603,8 @@ func TestReplayRemoteKill_ErrorBranches(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-error-"+strings.ReplaceAll(tc.name, "_", "-"), 1, conductor.KillSwitchActive, testNow)
+			msg.Intent = conductor.ControlIntentReplay
+			msg.Signatures, resolver = signConductorPreimage(t, msg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-replay-error-a", "kill-replay-error-b")
 			handler := newDryRunTestHandler(t, nil, tc.emergency, resolver)
 			w := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &msg}, true, false)
 			if w.Code != http.StatusInternalServerError {
@@ -1530,6 +1625,8 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-auth-unsupported")
 				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-auth-unsupported", current, target, testNow)
+				auth.Intent = conductor.ControlIntentReplay
+				resolver = resignRollbackAuthorization(t, &auth)
 				handler := newDryRunTestHandler(t, store, emergencyStoreNoPreview{inner: mustEmergencyStore(t)}, resolver)
 				return handler, auth
 			},
@@ -1540,6 +1637,8 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-head-unsupported")
 				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-unsupported", current, target, testNow)
+				auth.Intent = conductor.ControlIntentReplay
+				resolver = resignRollbackAuthorization(t, &auth)
 				handler := newDryRunTestHandler(t, bundleStoreNoPreview{inner: store}, mustEmergencyStore(t), resolver)
 				return handler, auth
 			},
@@ -1550,6 +1649,8 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-auth-error")
 				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-auth-error", current, target, testNow)
+				auth.Intent = conductor.ControlIntentReplay
+				resolver = resignRollbackAuthorization(t, &auth)
 				emergency := rollbackAuthPreviewErrorStore{inner: mustEmergencyStore(t), err: errDryRunTestStore}
 				handler := newDryRunTestHandler(t, store, emergency, resolver)
 				return handler, auth
@@ -1561,6 +1662,8 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-head-error")
 				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-error", current, target, testNow)
+				auth.Intent = conductor.ControlIntentReplay
+				resolver = resignRollbackAuthorization(t, &auth)
 				wrappedStore := rollbackHeadPreviewErrorStore{BundleStore: store, err: errDryRunTestStore}
 				handler := newDryRunTestHandler(t, wrappedStore, mustEmergencyStore(t), resolver)
 				return handler, auth
@@ -1572,6 +1675,8 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-recorded-error")
 				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-recorded-error", current, target, testNow)
+				auth.Intent = conductor.ControlIntentReplay
+				resolver = resignRollbackAuthorization(t, &auth)
 				emergency := mustEmergencyStore(t)
 				handler := newDryRunTestHandler(t, store, emergency, resolver)
 				handler.emergencyControls = newVerifiedEmergencyStore(
@@ -1720,27 +1825,34 @@ func resolverWithKeyRevokedAt(t *testing.T, inner conductor.SignatureKeyResolver
 // the handler's logs.
 func TestDryRunReplay_NoSecretsInResponsesOrLogs(t *testing.T) {
 	secretReason := "operator note SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE"
-	msg, _ := signedRemoteKillMessageWithResolver(t, "kill-secret", 1, conductor.KillSwitchActive, testNow)
-	msg.Reason = secretReason
-	// Re-sign after mutating the reason so the message stays valid.
-	var resolver conductor.SignatureKeyResolver
-	msg.Signatures, resolver = signConductorPreimage(t, msg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-secret-a", "kill-secret-b")
-	if err := msg.Validate(); err != nil {
+	applyMsg, _ := signedRemoteKillMessageWithResolver(t, "kill-secret", 1, conductor.KillSwitchActive, testNow)
+	applyMsg.Reason = secretReason
+	var applyResolver conductor.SignatureKeyResolver
+	applyMsg.Signatures, applyResolver = signConductorPreimage(t, applyMsg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-secret-apply-a", "kill-secret-apply-b")
+	if err := applyMsg.Validate(); err != nil {
 		t.Fatalf("secret kill Validate() error = %v", err)
 	}
-	signatureHex := msg.Signatures[0].Signature
+	replayMsg := applyMsg
+	replayMsg.MessageID = "kill-secret-replay"
+	replayMsg.Intent = conductor.ControlIntentReplay
+	var replayResolver conductor.SignatureKeyResolver
+	replayMsg.Signatures, replayResolver = signConductorPreimage(t, replayMsg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-secret-replay-a", "kill-secret-replay-b")
+	if err := replayMsg.Validate(); err != nil {
+		t.Fatalf("secret replay kill Validate() error = %v", err)
+	}
+	signatureHex := replayMsg.Signatures[0].Signature
 
 	var logBuf bytes.Buffer
-	handler := newTestHandlerWithOptions(t, mustStore(t), nil, resolver)
+	handler := newTestHandlerWithEmergencyKeys(t, applyResolver, replayResolver)
 	handler.logger = slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	// Dry-run kill.
-	dry := remoteKillJSON(t, handler, publishRemoteKillRequest{Message: msg, DryRun: true})
+	dry := remoteKillJSON(t, handler, publishRemoteKillRequest{Message: applyMsg, DryRun: true})
 	if dry.Code != http.StatusOK {
 		t.Fatalf("secret dry-run kill code=%d body=%s", dry.Code, dry.Body.String())
 	}
 	// Replay kill.
-	replay := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &msg}, true, false)
+	replay := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &replayMsg}, true, false)
 	if replay.Code != http.StatusOK {
 		t.Fatalf("secret replay kill code=%d body=%s", replay.Code, replay.Body.String())
 	}

@@ -7,6 +7,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -482,7 +483,7 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		writeError(w, http.StatusInternalServerError, ErrEmergencyPreviewUnsupported)
 		return
 	}
-	if err := validateRemoteKillPublishInput(msg, h.remoteKillMaxTTL); err != nil {
+	if err := validateRemoteKillControlInput(msg, h.remoteKillMaxTTL); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -502,6 +503,10 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		return
 	}
 	result.Recorded = recorded
+	if msg.ControlIntent() != conductor.ControlIntentReplay && (recorded == nil || !recorded.Accepted) {
+		writeStoreError(w, fmt.Errorf("%w: apply-scoped remote-kill messages are not accepted by decision replay unless already recorded", conductor.ErrInvalidControlIntent))
+		return
+	}
 	if err := msg.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
 		if recorded == nil || !recorded.Accepted {
 			writeStoreError(w, err)
@@ -590,7 +595,7 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		writeError(w, http.StatusInternalServerError, ErrDryRunUnsupported)
 		return
 	}
-	if err := validateRollbackPublishInput(auth, h.rollbackMaxTTL); err != nil {
+	if err := validateRollbackControlInput(auth, h.rollbackMaxTTL); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -610,6 +615,10 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		return
 	}
 	result.Recorded = recorded
+	if auth.ControlIntent() != conductor.ControlIntentReplay && (recorded == nil || !recorded.Accepted) {
+		writeStoreError(w, fmt.Errorf("%w: apply-scoped rollback authorizations are not accepted by decision replay unless already recorded", conductor.ErrInvalidControlIntent))
+		return
+	}
 	if err := auth.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
 		if recorded == nil || !recorded.Accepted {
 			writeStoreError(w, err)

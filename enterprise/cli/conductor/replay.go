@@ -238,7 +238,7 @@ func runRemoteKillReplay(cmd *cobra.Command, opts replayOptions) error {
 	if err != nil {
 		return err
 	}
-	msg, err := buildSignedRemoteKillMessage(opts.kill, state)
+	msg, err := buildSignedRemoteKillMessageWithIntent(opts.kill, state, conductorcore.ControlIntentReplay)
 	if err != nil {
 		return err
 	}
@@ -263,7 +263,7 @@ func runRollbackReplay(cmd *cobra.Command, opts replayOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	auth, err := buildSignedRollbackAuthorization(opts.rollback)
+	auth, err := buildSignedRollbackAuthorizationWithIntent(opts.rollback, conductorcore.ControlIntentReplay)
 	if err != nil {
 		return err
 	}

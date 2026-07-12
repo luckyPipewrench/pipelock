@@ -118,6 +118,7 @@ var (
 	ErrInvalidAudienceSelectors      = errors.New("conductor audience cannot mix instance_ids with labels")
 	ErrInvalidReason                 = errors.New("invalid conductor reason")
 	ErrInvalidIdentifier             = errors.New("invalid conductor identifier")
+	ErrInvalidControlIntent          = errors.New("invalid conductor control intent")
 	ErrSignatureVerification         = errors.New("conductor signature verification failed")
 	ErrInvalidDroppedAccounting      = errors.New("invalid conductor dropped accounting")
 	ErrInvalidAppliedState           = errors.New("invalid conductor follower applied state")
@@ -338,12 +339,20 @@ const (
 	KillSwitchActive   KillSwitchState = "active"
 )
 
+type ControlIntent string
+
+const (
+	ControlIntentApply  ControlIntent = "apply"
+	ControlIntentReplay ControlIntent = "replay"
+)
+
 type RemoteKillMessage struct {
 	SchemaVersion int              `json:"schema_version"`
 	MessageID     string           `json:"message_id"`
 	OrgID         string           `json:"org_id"`
 	FleetID       string           `json:"fleet_id"`
 	Audience      Audience         `json:"audience"`
+	Intent        ControlIntent    `json:"intent,omitempty"`
 	State         KillSwitchState  `json:"state"`
 	Counter       uint64           `json:"counter"`
 	Reason        string           `json:"reason"`
@@ -359,6 +368,7 @@ type RollbackAuthorization struct {
 	OrgID           string           `json:"org_id"`
 	FleetID         string           `json:"fleet_id"`
 	Audience        Audience         `json:"audience"`
+	Intent          ControlIntent    `json:"intent,omitempty"`
 	CurrentBundleID string           `json:"current_bundle_id"`
 	CurrentVersion  uint64           `json:"current_version"`
 	TargetBundleID  string           `json:"target_bundle_id"`
@@ -836,6 +846,10 @@ func (m RemoteKillMessage) CanonicalHash() (string, error) {
 	return canonicalHash(m.SignablePreimage)
 }
 
+func (m RemoteKillMessage) ControlIntent() ControlIntent {
+	return effectiveControlIntent(m.Intent)
+}
+
 func (m RemoteKillMessage) Validate() error {
 	if err := validateSchemaVersion(m.SchemaVersion); err != nil {
 		return err
@@ -847,6 +861,9 @@ func (m RemoteKillMessage) Validate() error {
 		return err
 	}
 	if err := m.Audience.Validate(); err != nil {
+		return err
+	}
+	if err := validateControlIntent(m.Intent); err != nil {
 		return err
 	}
 	if m.State != KillSwitchActive && m.State != KillSwitchInactive {
@@ -911,6 +928,10 @@ func (r RollbackAuthorization) CanonicalHash() (string, error) {
 	return canonicalHash(r.SignablePreimage)
 }
 
+func (r RollbackAuthorization) ControlIntent() ControlIntent {
+	return effectiveControlIntent(r.Intent)
+}
+
 func (r RollbackAuthorization) Validate() error {
 	if err := validateSchemaVersion(r.SchemaVersion); err != nil {
 		return err
@@ -919,6 +940,9 @@ func (r RollbackAuthorization) Validate() error {
 		return err
 	}
 	if err := validateOrgFleet(r.OrgID, r.FleetID); err != nil {
+		return err
+	}
+	if err := validateControlIntent(r.Intent); err != nil {
 		return err
 	}
 	if err := validateIdentifier("current_bundle_id", r.CurrentBundleID); err != nil {
@@ -1471,6 +1495,22 @@ func validateSchemaVersion(v int) error {
 		return fmt.Errorf("%w: got %d", ErrUnsupportedSchemaVersion, v)
 	}
 	return nil
+}
+
+func effectiveControlIntent(intent ControlIntent) ControlIntent {
+	if intent == "" {
+		return ControlIntentApply
+	}
+	return intent
+}
+
+func validateControlIntent(intent ControlIntent) error {
+	switch intent {
+	case "", ControlIntentApply, ControlIntentReplay:
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidControlIntent, intent)
+	}
 }
 
 // withinValidity reports whether now ∈ [notBefore, expiresAt]. notBefore and

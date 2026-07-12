@@ -1362,12 +1362,38 @@ func validateMaxValidity(start, expires time.Time, maxTTL time.Duration) error {
 }
 
 func validateRemoteKillPublishInput(msg conductor.RemoteKillMessage, maxTTL time.Duration) error {
-	return validateMaxValidity(msg.NotBefore, msg.ExpiresAt, maxTTL)
+	if err := validateRemoteKillControlInput(msg, maxTTL); err != nil {
+		return err
+	}
+	if msg.ControlIntent() == conductor.ControlIntentReplay {
+		return fmt.Errorf("%w: replay-scoped remote-kill messages are not accepted by the publish endpoint", conductor.ErrInvalidControlIntent)
+	}
+	return nil
 }
 
 func validateRollbackPublishInput(auth conductor.RollbackAuthorization, maxTTL time.Duration) error {
+	if err := validateRollbackControlInput(auth, maxTTL); err != nil {
+		return err
+	}
+	if auth.ControlIntent() == conductor.ControlIntentReplay {
+		return fmt.Errorf("%w: replay-scoped rollback authorizations are not accepted by the publish endpoint", conductor.ErrInvalidControlIntent)
+	}
+	return nil
+}
+
+func validateRemoteKillControlInput(msg conductor.RemoteKillMessage, maxTTL time.Duration) error {
+	if err := msg.Validate(); err != nil {
+		return err
+	}
+	return validateMaxValidity(msg.NotBefore, msg.ExpiresAt, maxTTL)
+}
+
+func validateRollbackControlInput(auth conductor.RollbackAuthorization, maxTTL time.Duration) error {
 	if len(auth.Audience.InstanceIDs) != 0 || len(auth.Audience.Labels) != 0 {
 		return fmt.Errorf("%w: rollback audience must be empty", conductor.ErrInvalidRollback)
+	}
+	if err := auth.Validate(); err != nil {
+		return err
 	}
 	return validateMaxValidity(auth.CreatedAt, auth.ExpiresAt, maxTTL)
 }
@@ -1474,7 +1500,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		errors.Is(err, conductor.ErrInvalidValidityWindow), errors.Is(err, conductor.ErrInvalidReason),
 		errors.Is(err, conductor.ErrThresholdRequired), errors.Is(err, conductor.ErrWrongKeyPurpose),
 		errors.Is(err, conductor.ErrInvalidIdentifier), errors.Is(err, conductor.ErrInvalidSignature),
-		errors.Is(err, conductor.ErrSignatureVerification), errors.Is(err, conductor.ErrNotYetValid):
+		errors.Is(err, conductor.ErrSignatureVerification), errors.Is(err, conductor.ErrNotYetValid),
+		errors.Is(err, conductor.ErrInvalidControlIntent):
 		writeError(w, http.StatusUnprocessableEntity, err)
 	case errors.Is(err, ErrFollowerRequired):
 		// The transport-derived identity reached the store but did not

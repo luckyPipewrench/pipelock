@@ -267,6 +267,7 @@ func New(opts Options) http.Handler {
 		authorizeFleetScope: opts.AuthorizeFleetScope,
 		trustedOuterAuth:    opts.TrustedOuterAuth,
 		auditWriter:         opts.AuditWriter,
+		defaultFleetScope:   normalizeDecisionScope(opts.DefaultFleetScope),
 	}
 	for _, spec := range dashboardRouteSpecs() {
 		mux.Handle(spec.pattern, d.routeGate(spec, spec.handler(d)))
@@ -284,6 +285,10 @@ type dashboardHandler struct {
 	trustedOuterAuth    bool
 	auditWriter         io.Writer
 	auditMu             sync.Mutex
+	// defaultFleetScope is the org/fleet the fleet view falls back to when a
+	// request supplies neither org_id nor fleet_id (a plain "Fleet" nav click).
+	// Only a fully-empty scope is defaulted; a partial scope stays an error.
+	defaultFleetScope DecisionScope
 }
 
 type rawAllowedContextKey struct{}
@@ -736,14 +741,25 @@ func (d *dashboardHandler) handleFleetOverview(w http.ResponseWriter, r *http.Re
 		return
 	}
 	q := r.URL.Query()
-	if err := validateFleetScope(q.Get("org_id"), q.Get("fleet_id"), d.model.fleetSource != nil); err != nil {
+	orgID := q.Get("org_id")
+	fleetID := q.Get("fleet_id")
+	// A plain "Fleet" nav click carries no scope. When neither is supplied,
+	// fall back to the operator-configured default (the conductor org/fleet the
+	// dashboard reads) so the view resolves instead of 400ing. A partial scope
+	// (only one supplied) is deliberately NOT defaulted; it stays an explicit
+	// error so a half-specified request never silently reads a different fleet.
+	if orgID == "" && fleetID == "" {
+		orgID = d.defaultFleetScope.OrgID
+		fleetID = d.defaultFleetScope.FleetID
+	}
+	if err := validateFleetScope(orgID, fleetID, d.model.fleetSource != nil); err != nil {
 		http.Error(w, "invalid fleet scope", http.StatusBadRequest)
 		return
 	}
-	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: q.Get("org_id"), FleetID: q.Get("fleet_id")}, d.model.fleetSource != nil, rawAllowedFromContext(r)) {
+	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: orgID, FleetID: fleetID}, d.model.fleetSource != nil, rawAllowedFromContext(r)) {
 		return
 	}
-	overview, err := d.model.FleetOverview(r.Context(), q.Get("org_id"), q.Get("fleet_id"), rawAllowedFromContext(r))
+	overview, err := d.model.FleetOverview(r.Context(), orgID, fleetID, rawAllowedFromContext(r))
 	if err != nil {
 		if errors.Is(err, errInvalidFleetScope) {
 			http.Error(w, "invalid fleet scope", http.StatusBadRequest)

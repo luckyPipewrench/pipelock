@@ -45,7 +45,7 @@ func writeServerTestConfig(t *testing.T, content string) string {
 	return path
 }
 
-func installServerTestStandardBundle(t *testing.T, xdgDataHome string) {
+func installServerTestStandardBundle(t *testing.T, xdgDataHome string, includeResponse bool) {
 	t.Helper()
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -78,7 +78,9 @@ rules:
     confidence: high
     pattern:
       regex: 'test-anthropic-[A-Za-z0-9]{8,}'
-  - id: response-new-instructions
+`
+	if includeResponse {
+		bundleYAML += `  - id: response-new-instructions
     type: injection
     status: stable
     name: New Instructions
@@ -88,6 +90,7 @@ rules:
     pattern:
       regex: '(?i)test-new-instructions'
 `
+	}
 	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
 	if err := os.WriteFile(bundlePath, []byte(bundleYAML), 0o600); err != nil {
 		t.Fatalf("write bundle.yaml: %v", err)
@@ -96,8 +99,14 @@ rules:
 	if err != nil {
 		t.Fatalf("sign bundle.yaml: %v", err)
 	}
-	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+	sigPath := bundlePath + signing.SigExtension
+	if err := signing.SaveSignature(sig, sigPath); err != nil {
 		t.Fatalf("save bundle signature: %v", err)
+	}
+	// Keep the generated signature owner-only (project file-perm convention);
+	// SaveSignature writes 0o644 and this is a test fixture in a temp dir.
+	if err := os.Chmod(sigPath, 0o600); err != nil {
+		t.Fatalf("chmod bundle signature: %v", err)
 	}
 	sum := sha256.Sum256([]byte(bundleYAML))
 	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
@@ -1114,18 +1123,20 @@ func TestServer_Reload_StrictRejectsActionDowngrade(t *testing.T) {
 func TestServer_Reload_StrictAllowsRuleBundleResolvedReloadAndRejectsRealDowngrade(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
-	installServerTestStandardBundle(t, xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
 
 	s, _ := newTestServer(t, func(o *ServerOpts) {
 		o.Mode = config.ModeStrict
 		o.ModeChanged = true
 	})
 	oldLive := s.proxy.CurrentConfig()
+	// Prove the SIGNED standard bundle was actually selected, not that compiled
+	// defaults (also nonzero) masked a discovery/signature/keyring failure: the
+	// fixture's replacement patterns must be present with the bundle name and
+	// the fixture regexes.
+	requireBundlePatternSelected(t, oldLive.DLP.Patterns, oldLive.ResponseScanning.Patterns)
 	oldDLPCount := len(oldLive.DLP.Patterns)
 	oldResponseCount := len(oldLive.ResponseScanning.Patterns)
-	if oldDLPCount == 0 || oldResponseCount == 0 {
-		t.Fatalf("test bundle startup produced empty pattern sets: dlp=%d response=%d", oldDLPCount, oldResponseCount)
-	}
 
 	rotated := oldLive.Clone()
 	rotated.KillSwitch.APIToken = "rotated-token"
@@ -1157,7 +1168,7 @@ func TestServer_Reload_StrictAllowsRuleBundleResolvedReloadAndRejectsRealDowngra
 func TestServer_Reload_StrictWithRuleBundleRejectsResponsePatternRemoval(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
-	installServerTestStandardBundle(t, xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
 
 	cfgPath := writeServerTestConfig(t, strings.Join([]string{
 		"mode: strict",
@@ -1193,6 +1204,76 @@ func TestServer_Reload_StrictWithRuleBundleRejectsResponsePatternRemoval(t *test
 	}
 	if !buf.contains("response_scanning.patterns") {
 		t.Fatalf("stderr missing response pattern downgrade warning:\n%s", buf.String())
+	}
+}
+
+// TestServer_StartupPartialStandardBundleKeepsResponseFallback proves the
+// per-surface fix (AF-81 / CodeRabbit): a standard bundle that provides ONLY
+// DLP patterns must NOT empty the response-scanning surface. Before the fix a
+// single "standard bundle loaded" flag stripped the compiled response fallback
+// and left response scanning empty (a fail-open detection loss).
+func TestServer_StartupPartialStandardBundleKeepsResponseFallback(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, false) // DLP-only standard bundle
+
+	s, _ := newTestServer(t, nil)
+	live := s.proxy.CurrentConfig()
+
+	// DLP came from the bundle...
+	if p, ok := dlpByName(live.DLP.Patterns, "Anthropic API Key"); !ok || p.Bundle != rules.StandardBundleName {
+		t.Fatalf("DLP Anthropic API Key not from the standard bundle: %+v ok=%v", p, ok)
+	}
+	// ...but the response surface, which the bundle did NOT provide, keeps its
+	// compiled fallback instead of being emptied.
+	if len(live.ResponseScanning.Patterns) == 0 {
+		t.Fatal("DLP-only standard bundle emptied the response patterns — fail-open detection loss")
+	}
+	if !hasResponsePatternNamed(live.ResponseScanning.Patterns, "New Instructions") {
+		t.Fatal("compiled response fallback (New Instructions) missing after a DLP-only standard bundle")
+	}
+	for _, p := range live.ResponseScanning.Patterns {
+		if p.Bundle == rules.StandardBundleName {
+			t.Fatalf("response pattern %q claims the standard bundle, but the bundle provided no response rules", p.Name)
+		}
+	}
+}
+
+func dlpByName(patterns []config.DLPPattern, name string) (config.DLPPattern, bool) {
+	for _, p := range patterns {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return config.DLPPattern{}, false
+}
+
+// requireBundlePatternSelected proves the signed test standard bundle (installed
+// by installServerTestStandardBundle) was actually selected: the fixture's DLP
+// "Anthropic API Key" and response "New Instructions" replacements must be
+// present, sourced from the standard bundle, with the fixture regexes.
+func requireBundlePatternSelected(t *testing.T, dlp []config.DLPPattern, resp []config.ResponseScanPattern) {
+	t.Helper()
+	var dlpOK bool
+	for _, p := range dlp {
+		if p.Name == "Anthropic API Key" {
+			if p.Bundle != rules.StandardBundleName || p.Regex != "test-anthropic-[A-Za-z0-9]{8,}" {
+				t.Fatalf("DLP %q not from the standard bundle: bundle=%q regex=%q", p.Name, p.Bundle, p.Regex)
+			}
+			dlpOK = true
+		}
+	}
+	var respOK bool
+	for _, p := range resp {
+		if p.Name == "New Instructions" {
+			if p.Bundle != rules.StandardBundleName || p.Regex != "(?i)test-new-instructions" {
+				t.Fatalf("response %q not from the standard bundle: bundle=%q regex=%q", p.Name, p.Bundle, p.Regex)
+			}
+			respOK = true
+		}
+	}
+	if !dlpOK || !respOK {
+		t.Fatalf("standard bundle not selected: dlpSelected=%v responseSelected=%v", dlpOK, respOK)
 	}
 }
 

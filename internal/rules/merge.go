@@ -152,15 +152,6 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 	dlpDefaultsDisabled := cfg.DLP.IncludeDefaults != nil && !*cfg.DLP.IncludeDefaults
 	responseDefaultsDisabled := cfg.ResponseScanning.IncludeDefaults != nil && !*cfg.ResponseScanning.IncludeDefaults
 
-	// Find the standard bundle in loaded bundles (if any).
-	standardLoaded := false
-	for _, lb := range result.Loaded {
-		if lb.Name == StandardBundleName {
-			standardLoaded = true
-			break
-		}
-	}
-
 	// Separate standard bundle patterns from community/pro patterns.
 	var standardDLP []config.DLPPattern
 	var standardInj []config.ResponseScanPattern
@@ -181,6 +172,16 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		}
 	}
 
+	// Standard-tier availability is PER SURFACE, not a single "is the standard
+	// bundle loaded" flag: a standard bundle may populate DLP but not response
+	// (or vice versa). Keying both surfaces off one flag would let a partial
+	// standard bundle strip the compiled fallback from the surface it did NOT
+	// provide and leave it empty (a fail-open detection loss). Each surface
+	// uses the bundle only when the bundle actually provided patterns for it,
+	// and otherwise restores the compiled fallback.
+	standardDLPLoaded := len(standardDLP) > 0
+	standardResponseLoaded := len(standardInj) > 0
+
 	// Standard tier source selection (per-subsystem).
 	//
 	// At this point, cfg.DLP.Patterns and cfg.ResponseScanning.Patterns
@@ -195,7 +196,7 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 	cfg.DLP.Patterns = removeBundleDLP(cfg.DLP.Patterns)
 	if dlpDefaultsDisabled {
 		result.StandardDLP = StandardSourceNone
-	} else if standardLoaded {
+	} else if standardDLPLoaded {
 		cfg.DLP.Patterns = removeStandardTierDLP(cfg.DLP.Patterns)
 		cfg.DLP.Patterns = append(cfg.DLP.Patterns, standardDLP...)
 		result.StandardDLP = StandardSourceBundle
@@ -208,7 +209,7 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 	cfg.ResponseScanning.Patterns = removeBundleResponse(cfg.ResponseScanning.Patterns)
 	if responseDefaultsDisabled {
 		result.StandardResponse = StandardSourceNone
-	} else if standardLoaded {
+	} else if standardResponseLoaded {
 		cfg.ResponseScanning.Patterns = removeStandardTierResponse(cfg.ResponseScanning.Patterns)
 		cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, standardInj...)
 		result.StandardResponse = StandardSourceBundle
@@ -224,102 +225,90 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 	return result
 }
 
-func removeBundleDLP(patterns []config.DLPPattern) []config.DLPPattern {
-	kept := make([]config.DLPPattern, 0, len(patterns))
+// removeBundlePatterns drops every bundle-sourced pattern (Bundle != "") so a
+// re-resolution can re-apply the current bundle load without doubling patterns.
+// One generic keeps the DLP and response idempotency semantics identical.
+func removeBundlePatterns[T any](patterns []T, bundleOf func(T) string) []T {
+	kept := make([]T, 0, len(patterns))
 	for _, p := range patterns {
-		if p.Bundle != "" {
+		if bundleOf(p) != "" {
 			continue
 		}
 		kept = append(kept, p)
 	}
 	return kept
+}
+
+// restoreCompiledStandardPatterns rebuilds the compiled standard-tier fallback
+// (used when no standard bundle provides this surface) in first-load order so a
+// re-resolution's canonical policy hash matches a fresh load. It restores the
+// compiled standard patterns that a prior standard-bundle resolution stripped,
+// keeps any compiled default that is still present, drops nothing the operator
+// overrode (non-compiled = user override), and preserves all non-default
+// (user/community/pro) patterns. One generic keeps DLP and response identical.
+func restoreCompiledStandardPatterns[T any](
+	patterns, defaults []T,
+	nameOf func(T) string,
+	compiledOf func(T) bool,
+	compiledStandardNames map[string]bool,
+) []T {
+	defaultNames := make(map[string]struct{}, len(defaults))
+	for _, p := range defaults {
+		defaultNames[nameOf(p)] = struct{}{}
+	}
+
+	existingCompiledDefaults := make(map[string]struct{}, len(patterns))
+	userOverrides := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if _, ok := defaultNames[nameOf(p)]; ok && compiledOf(p) {
+			existingCompiledDefaults[nameOf(p)] = struct{}{}
+		}
+		if !compiledOf(p) {
+			userOverrides[nameOf(p)] = struct{}{}
+		}
+	}
+
+	restored := make([]T, 0, len(patterns)+len(compiledStandardNames))
+	for _, p := range defaults {
+		if _, overridden := userOverrides[nameOf(p)]; overridden {
+			continue
+		}
+		if !compiledStandardNames[nameOf(p)] {
+			if _, present := existingCompiledDefaults[nameOf(p)]; !present {
+				continue
+			}
+		}
+		restored = append(restored, p)
+	}
+	for _, p := range patterns {
+		if _, isDefault := defaultNames[nameOf(p)]; isDefault && compiledOf(p) {
+			continue
+		}
+		restored = append(restored, p)
+	}
+	return restored
+}
+
+func removeBundleDLP(patterns []config.DLPPattern) []config.DLPPattern {
+	return removeBundlePatterns(patterns, func(p config.DLPPattern) string { return p.Bundle })
 }
 
 func removeBundleResponse(patterns []config.ResponseScanPattern) []config.ResponseScanPattern {
-	kept := make([]config.ResponseScanPattern, 0, len(patterns))
-	for _, p := range patterns {
-		if p.Bundle != "" {
-			continue
-		}
-		kept = append(kept, p)
-	}
-	return kept
+	return removeBundlePatterns(patterns, func(p config.ResponseScanPattern) string { return p.Bundle })
 }
 
 func restoreCompiledStandardDLP(patterns []config.DLPPattern) []config.DLPPattern {
-	defaultNames := make(map[string]struct{}, len(config.Defaults().DLP.Patterns))
-	for _, p := range config.Defaults().DLP.Patterns {
-		defaultNames[p.Name] = struct{}{}
-	}
-
-	existingCompiledDefaults := make(map[string]struct{}, len(patterns))
-	userOverrides := make(map[string]struct{}, len(patterns))
-	for _, p := range patterns {
-		if _, ok := defaultNames[p.Name]; ok && p.Compiled {
-			existingCompiledDefaults[p.Name] = struct{}{}
-		}
-		if !p.Compiled {
-			userOverrides[p.Name] = struct{}{}
-		}
-	}
-
-	restored := make([]config.DLPPattern, 0, len(patterns)+len(compiledStandardDLPNames))
-	for _, p := range config.Defaults().DLP.Patterns {
-		if _, overridden := userOverrides[p.Name]; overridden {
-			continue
-		}
-		if !compiledStandardDLPNames[p.Name] {
-			if _, present := existingCompiledDefaults[p.Name]; !present {
-				continue
-			}
-		}
-		restored = append(restored, p)
-	}
-	for _, p := range patterns {
-		if _, isDefault := defaultNames[p.Name]; isDefault && p.Compiled {
-			continue
-		}
-		restored = append(restored, p)
-	}
-	return restored
+	return restoreCompiledStandardPatterns(patterns, config.Defaults().DLP.Patterns,
+		func(p config.DLPPattern) string { return p.Name },
+		func(p config.DLPPattern) bool { return p.Compiled },
+		compiledStandardDLPNames)
 }
 
 func restoreCompiledStandardResponse(patterns []config.ResponseScanPattern) []config.ResponseScanPattern {
-	defaultNames := make(map[string]struct{}, len(config.Defaults().ResponseScanning.Patterns))
-	for _, p := range config.Defaults().ResponseScanning.Patterns {
-		defaultNames[p.Name] = struct{}{}
-	}
-
-	existingCompiledDefaults := make(map[string]struct{}, len(patterns))
-	userOverrides := make(map[string]struct{}, len(patterns))
-	for _, p := range patterns {
-		if _, ok := defaultNames[p.Name]; ok && p.Compiled {
-			existingCompiledDefaults[p.Name] = struct{}{}
-		}
-		if !p.Compiled {
-			userOverrides[p.Name] = struct{}{}
-		}
-	}
-
-	restored := make([]config.ResponseScanPattern, 0, len(patterns)+len(compiledStandardResponseNames))
-	for _, p := range config.Defaults().ResponseScanning.Patterns {
-		if _, overridden := userOverrides[p.Name]; overridden {
-			continue
-		}
-		if !compiledStandardResponseNames[p.Name] {
-			if _, present := existingCompiledDefaults[p.Name]; !present {
-				continue
-			}
-		}
-		restored = append(restored, p)
-	}
-	for _, p := range patterns {
-		if _, isDefault := defaultNames[p.Name]; isDefault && p.Compiled {
-			continue
-		}
-		restored = append(restored, p)
-	}
-	return restored
+	return restoreCompiledStandardPatterns(patterns, config.Defaults().ResponseScanning.Patterns,
+		func(p config.ResponseScanPattern) string { return p.Name },
+		func(p config.ResponseScanPattern) bool { return p.Compiled },
+		compiledStandardResponseNames)
 }
 
 // removeStandardTierDLP removes compiled standard-tier DLP patterns, keeping

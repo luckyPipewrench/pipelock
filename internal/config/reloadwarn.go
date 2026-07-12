@@ -1422,38 +1422,37 @@ func checkEscalationWeakening(old, updated *EscalationLevels, warnings *[]Reload
 // also triggers a warning; operators can resolve by reviewing the diff,
 // which is the point. Renames appear as both a removal (old name) and an
 // implicit add (new name), which the reload surface does not warn about.
-func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
+// removedOrWeakenedPatterns is the shared name+regex reload-downgrade diff for
+// any named-regex pattern set (DLP, response scanning). One helper so the two
+// security surfaces cannot drift: a pattern present in old but absent in
+// updated is "removed", and a matching name with a changed regex is "regex
+// changed". Both are downgrades a strict reload rejects.
+func removedOrWeakenedPatterns[T any](old, updated []T, nameOf, regexOf func(T) string) []string {
 	updatedByName := make(map[string]string, len(updated))
 	for _, p := range updated {
-		updatedByName[p.Name] = p.Regex
+		updatedByName[nameOf(p)] = regexOf(p)
 	}
 	var changed []string
 	for _, p := range old {
-		newRegex, ok := updatedByName[p.Name]
+		newRegex, ok := updatedByName[nameOf(p)]
 		switch {
 		case !ok:
-			changed = append(changed, p.Name)
-		case newRegex != p.Regex:
-			changed = append(changed, p.Name+" (regex changed)")
+			changed = append(changed, nameOf(p))
+		case newRegex != regexOf(p):
+			changed = append(changed, nameOf(p)+" (regex changed)")
 		}
 	}
 	return changed
 }
 
+func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
+	return removedOrWeakenedPatterns(old, updated,
+		func(p DLPPattern) string { return p.Name },
+		func(p DLPPattern) string { return p.Regex })
+}
+
 func removedOrWeakenedResponsePatterns(old, updated []ResponseScanPattern) []string {
-	updatedByName := make(map[string]string, len(updated))
-	for _, p := range updated {
-		updatedByName[p.Name] = p.Regex
-	}
-	var changed []string
-	for _, p := range old {
-		newRegex, ok := updatedByName[p.Name]
-		switch {
-		case !ok:
-			changed = append(changed, p.Name)
-		case newRegex != p.Regex:
-			changed = append(changed, p.Name+" (regex changed)")
-		}
-	}
-	return changed
+	return removedOrWeakenedPatterns(old, updated,
+		func(p ResponseScanPattern) string { return p.Name },
+		func(p ResponseScanPattern) string { return p.Regex })
 }

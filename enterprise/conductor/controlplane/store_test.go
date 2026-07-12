@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
-	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
-	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"gopkg.in/yaml.v3"
@@ -123,40 +121,64 @@ func TestFileBundleStoreLoadsLegacyPolicyHashBundleAndServesLatest(t *testing.T)
 		t.Fatalf("served bundle id/hash = %q/%s, want %q/%s", served.BundleID, served.PolicyHash, bundle.BundleID, bundle.PolicyHash)
 	}
 	resolver := resolverForSigner(signer)
-	if err := served.ValidateAtTime(testNow); err != nil {
-		t.Fatalf("served legacy bundle ValidateAtTime() error = %v, want nil", err)
+	if err := served.ValidateAllowLegacyPolicyHash(); err != nil {
+		t.Fatalf("served legacy bundle ValidateAllowLegacyPolicyHash() error = %v, want nil", err)
 	}
 	if err := served.VerifySignaturesAt(testNow, resolver); err != nil {
 		t.Fatalf("served legacy bundle VerifySignaturesAt() error = %v, want nil", err)
 	}
-	cache, err := applycache.Open(applycache.Config{Dir: filepath.Join(t.TempDir(), "apply-cache")})
-	if err != nil {
-		t.Fatalf("applycache.Open() error = %v", err)
-	}
-	boundary := applycache.Boundary{
-		Cache: cache,
-		Identity: applycache.Identity{
-			OrgID:      "org-main",
-			FleetID:    "prod",
-			InstanceID: "pl-prod-1",
-		},
-		Resolver:     resolver,
-		LocalVersion: "9.9.9",
-		Now:          func() time.Time { return testNow },
-		Reload:       func(*config.Config) error { return nil },
-	}
-	if _, err := boundary.Apply(served, applycache.ApplyOptions{}); err != nil {
-		t.Fatalf("follower apply of served legacy bundle error = %v, want nil", err)
-	}
 
 	tampered := served
 	tampered.Payload.ConfigYAML = strings.Replace(tampered.Payload.ConfigYAML, "mode: strict", "mode: balanced", 1)
-	if _, err := boundary.Apply(tampered, applycache.ApplyOptions{}); err == nil {
-		t.Fatal("follower apply of tampered legacy bundle error = nil, want rejection")
+	if err := tampered.ValidateAllowLegacyPolicyHash(); !errors.Is(err, conductor.ErrHashMismatch) {
+		t.Fatalf("tampered legacy bundle ValidateAllowLegacyPolicyHash() error = %v, want ErrHashMismatch", err)
 	}
 	wrongSigner := newTestSigner(t)
 	if err := served.VerifySignaturesAt(testNow, resolverForSigner(wrongSigner)); !errors.Is(err, conductor.ErrSignatureVerification) {
 		t.Fatalf("served legacy bundle VerifySignaturesAt(wrong key) error = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestFileBundleStoreRejectsLegacyPolicyHashBundleOnPublish(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	bundle := signedLegacyPolicyHashControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "legacy-policy-hash-publish",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML: "mode: strict\napi_allowlist:\n" +
+			"  - b.vendor.example\n" +
+			"  - a.vendor.example\n",
+	})
+	if err := bundle.ValidateAllowLegacyPolicyHash(); err != nil {
+		t.Fatalf("legacy bundle ValidateAllowLegacyPolicyHash() error = %v", err)
+	}
+	if _, _, err := store.Publish(t.Context(), bundle, PublishOptions{Now: testNow}); !errors.Is(err, conductor.ErrHashMismatch) {
+		t.Fatalf("Publish(legacy policy_hash) error = %v, want ErrHashMismatch", err)
+	}
+}
+
+func TestReadBundleRecordOnlyStartupLoadAllowsLegacyPolicyHash(t *testing.T) {
+	dir := t.TempDir()
+	bundle := signedLegacyPolicyHashControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "legacy-policy-hash-read",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML: "mode: strict\napi_allowlist:\n" +
+			"  - b.vendor.example\n" +
+			"  - a.vendor.example\n",
+	})
+	record := storedRecordForBundle(t, bundle, testNow)
+	writeRawBundleRecordForTest(t, dir, record)
+	path := filepath.Join(dir, record.BundleHash+".json")
+
+	if _, err := readBundleRecord(path); !errors.Is(err, conductor.ErrHashMismatch) {
+		t.Fatalf("readBundleRecord(legacy policy_hash) error = %v, want ErrHashMismatch", err)
+	}
+	if _, err := readBundleRecordAllowLegacyPolicyHash(path); err != nil {
+		t.Fatalf("readBundleRecordAllowLegacyPolicyHash() error = %v, want nil", err)
 	}
 }
 

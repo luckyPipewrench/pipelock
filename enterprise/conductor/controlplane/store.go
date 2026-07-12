@@ -652,7 +652,7 @@ func (s *FileBundleStore) load() error {
 	slices.Sort(names)
 	for _, name := range names {
 		path := filepath.Join(s.bundlesDir, name)
-		record, err := readBundleRecord(path)
+		record, err := readBundleRecordAllowLegacyPolicyHash(path)
 		if err != nil {
 			return err
 		}
@@ -954,6 +954,14 @@ func validatePublishableBundle(bundle conductor.PolicyBundle, now time.Time) err
 }
 
 func readBundleRecord(path string) (PublishedBundle, error) {
+	return readBundleRecordWithOptions(path, false)
+}
+
+func readBundleRecordAllowLegacyPolicyHash(path string) (PublishedBundle, error) {
+	return readBundleRecordWithOptions(path, true)
+}
+
+func readBundleRecordWithOptions(path string, allowLegacyPolicyHash bool) (PublishedBundle, error) {
 	clean := filepath.Clean(path)
 	info, err := os.Lstat(clean)
 	if err != nil {
@@ -979,7 +987,7 @@ func readBundleRecord(path string) (PublishedBundle, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return PublishedBundle{}, fmt.Errorf("%w: trailing JSON document", ErrInvalidStoreRecord)
 	}
-	if err := validateStoredRecord(record); err != nil {
+	if err := validateStoredRecordWithOptions(record, allowLegacyPolicyHash); err != nil {
 		return PublishedBundle{}, err
 	}
 	return record, nil
@@ -1071,6 +1079,10 @@ func streamHeadRecordFileName(streamKey string) string {
 }
 
 func validateStoredRecord(record PublishedBundle) error {
+	return validateStoredRecordWithOptions(record, false)
+}
+
+func validateStoredRecordWithOptions(record PublishedBundle, allowLegacyPolicyHash bool) error {
 	if record.BundleHash == "" || len(record.BundleHash) != sha256.Size*2 {
 		return fmt.Errorf("%w: invalid bundle_hash", ErrInvalidStoreRecord)
 	}
@@ -1093,6 +1105,15 @@ func validateStoredRecord(record PublishedBundle) error {
 	}
 	if record.PublishedAt.IsZero() {
 		return fmt.Errorf("%w: published_at", ErrInvalidStoreRecord)
+	}
+	if allowLegacyPolicyHash {
+		if err := record.Bundle.ValidateAllowLegacyPolicyHash(); err != nil {
+			return err
+		}
+		if record.Bundle.ExpiresAt.Before(record.PublishedAt) {
+			return conductor.ErrExpired
+		}
+		return nil
 	}
 	return validatePublishableBundle(record.Bundle, record.PublishedAt)
 }

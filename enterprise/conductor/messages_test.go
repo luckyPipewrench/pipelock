@@ -527,6 +527,57 @@ func TestPolicyBundlePayloadPolicyHashDistinctLoadedConfigsDiffer(t *testing.T) 
 	}
 }
 
+func TestPolicyBundleLegacyPolicyHashCollidesOnExactJSONNumbers(t *testing.T) {
+	left := PolicyBundlePayload{ConfigYAML: toolPolicyNumberBoundYAML("9007199254740992.0")}
+	right := PolicyBundlePayload{ConfigYAML: toolPolicyNumberBoundYAML("9007199254740993.0")}
+	leftPolicyHash, err := left.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(left): %v", err)
+	}
+	rightPolicyHash, err := right.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(right): %v", err)
+	}
+	if leftPolicyHash == rightPolicyHash {
+		t.Fatalf("current loaded-config policy hashes collided: %s", leftPolicyHash)
+	}
+
+	leftLegacyHash, err := left.LegacyPolicyHash()
+	if err != nil {
+		t.Fatalf("LegacyPolicyHash(left): %v", err)
+	}
+	rightLegacyHash, err := right.LegacyPolicyHash()
+	if err != nil {
+		t.Fatalf("LegacyPolicyHash(right): %v", err)
+	}
+	if leftLegacyHash != rightLegacyHash {
+		t.Fatalf("legacy collision attempt did not collide:\nleft=%s\nright=%s", leftLegacyHash, rightLegacyHash)
+	}
+
+	bundle := testPolicyBundle()
+	bundle.Payload = right
+	bundle.PayloadSHA256 = mustPayloadHash(right)
+	bundle.PolicyHash = leftLegacyHash
+	if err := bundle.Validate(); !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("Validate(legacy collision policy_hash) = %v, want ErrHashMismatch", err)
+	}
+	if err := bundle.ValidateAllowLegacyPolicyHash(); err != nil {
+		t.Fatalf("ValidateAllowLegacyPolicyHash(legacy collision policy_hash) = %v, want nil", err)
+	}
+}
+
+func toolPolicyNumberBoundYAML(bound string) string {
+	return "mcp_tool_policy:\n" +
+		"  enabled: true\n" +
+		"  action: block\n" +
+		"  rules:\n" +
+		"    - name: exact-number-bound\n" +
+		"      tool_pattern: '^db_query$'\n" +
+		"      arg_key: '^amount$'\n" +
+		"      arg_type: number\n" +
+		"      arg_number_gt: " + bound + "\n"
+}
+
 func TestPolicyBundlePayloadPolicyHashRejectsLocalCompanionFields(t *testing.T) {
 	cwd := t.TempDir()
 	secretsPath := filepath.Join(cwd, "secrets.env")

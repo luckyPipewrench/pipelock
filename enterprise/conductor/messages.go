@@ -643,6 +643,17 @@ func (b PolicyBundle) CanonicalHash() (string, error) {
 }
 
 func (b PolicyBundle) Validate() error {
+	return b.validate(false)
+}
+
+// ValidateAllowLegacyPolicyHash validates a bundle while tolerating the
+// pre-loaded-config policy_hash scheme. This is only for reading already stored
+// upgrade-era bundles; network publish/apply paths must use Validate.
+func (b PolicyBundle) ValidateAllowLegacyPolicyHash() error {
+	return b.validate(true)
+}
+
+func (b PolicyBundle) validate(allowLegacyPolicyHash bool) error {
 	if err := validateSchemaVersion(b.SchemaVersion); err != nil {
 		return err
 	}
@@ -724,13 +735,13 @@ func (b PolicyBundle) Validate() error {
 			return err
 		}
 	}
-	if err := b.validateHashes(); err != nil {
+	if err := b.validateHashes(allowLegacyPolicyHash); err != nil {
 		return err
 	}
 	return validateSignatureThreshold(b.Signatures, signing.PurposePolicyBundleSigning, RequiredStandardSigners)
 }
 
-func (b PolicyBundle) validateHashes() error {
+func (b PolicyBundle) validateHashes(allowLegacyPolicyHash bool) error {
 	payloadHash, err := b.Payload.PayloadHash()
 	if err != nil {
 		return err
@@ -743,6 +754,9 @@ func (b PolicyBundle) validateHashes() error {
 		return err
 	}
 	if !strings.EqualFold(b.PolicyHash, policyHash) {
+		if !allowLegacyPolicyHash {
+			return fmt.Errorf("%w: policy_hash", ErrHashMismatch)
+		}
 		legacyPolicyHash, legacyErr := b.Payload.LegacyPolicyHash()
 		if legacyErr != nil || !strings.EqualFold(b.PolicyHash, legacyPolicyHash) {
 			return fmt.Errorf("%w: policy_hash", ErrHashMismatch)

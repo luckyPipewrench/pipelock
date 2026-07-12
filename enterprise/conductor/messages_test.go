@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -379,6 +380,144 @@ func TestPolicyBundlePayloadPolicyHashNumericCanonicalizationEdges(t *testing.T)
 		}
 	})
 
+	t.Run("decimal_and_scientific_tiny_forms_collapse", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			scientific string
+			decimal    string
+		}{
+			{
+				name:       "small",
+				scientific: "threshold: 1e-308\n",
+				decimal:    "threshold: 0." + strings.Repeat("0", 307) + "1\n",
+			},
+			{
+				name:       "subnormal",
+				scientific: "threshold: 5e-324\n",
+				decimal:    "threshold: 0." + strings.Repeat("0", 323) + "5\n",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				scientificHash, err := (PolicyBundlePayload{ConfigYAML: tc.scientific}).PolicyHash()
+				if err != nil {
+					t.Fatalf("PolicyHash(scientific): %v", err)
+				}
+				decimalHash, err := (PolicyBundlePayload{ConfigYAML: tc.decimal}).PolicyHash()
+				if err != nil {
+					t.Fatalf("PolicyHash(decimal): %v", err)
+				}
+				if scientificHash != decimalHash {
+					t.Fatalf("equivalent tiny hashes diverged:\nscientific=%s\ndecimal=%s", scientificHash, decimalHash)
+				}
+			})
+		}
+	})
+
+	t.Run("distinct_float64_boundary_decimals_do_not_collapse", func(t *testing.T) {
+		plain := PolicyBundlePayload{ConfigYAML: "threshold: 0.3\n"}
+		next := PolicyBundlePayload{ConfigYAML: "threshold: 0.30000000000000004\n"}
+		plainHash, err := plain.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(plain decimal): %v", err)
+		}
+		nextHash, err := next.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(next decimal): %v", err)
+		}
+		if plainHash == nextHash {
+			t.Fatalf("distinct float64-boundary decimal values collided: %s", plainHash)
+		}
+	})
+
+	t.Run("unsafe_integral_float_does_not_collide_with_neighbor_integer", func(t *testing.T) {
+		roundedFloat := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740993.0\n"}
+		neighborInteger := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740992\n"}
+		roundedHash, err := roundedFloat.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(unsafe integral float): %v", err)
+		}
+		neighborHash, err := neighborInteger.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(neighbor integer): %v", err)
+		}
+		if roundedHash == neighborHash {
+			t.Fatalf("unsafe integral float collided with lower neighbor integer: %s", roundedHash)
+		}
+	})
+
+	t.Run("unsafe_integral_float_matches_exact_integer_value", func(t *testing.T) {
+		floatPayload := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740993.0\n"}
+		intPayload := PolicyBundlePayload{ConfigYAML: "threshold: 9007199254740993\n"}
+		floatHash, err := floatPayload.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(unsafe integral float): %v", err)
+		}
+		intHash, err := intPayload.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(exact integer): %v", err)
+		}
+		if floatHash != intHash {
+			t.Fatalf("unsafe integral float drifted from exact integer value:\nfloat=%s\nint=%s", floatHash, intHash)
+		}
+	})
+
+	t.Run("fractional_decimal_precision_does_not_collapse", func(t *testing.T) {
+		left := PolicyBundlePayload{ConfigYAML: "threshold: 123456789.123456789\n"}
+		right := PolicyBundlePayload{ConfigYAML: "threshold: 123456789.123456790\n"}
+		leftHash, err := left.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(left precise decimal): %v", err)
+		}
+		rightHash, err := right.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(right precise decimal): %v", err)
+		}
+		if leftHash == rightHash {
+			t.Fatalf("distinct precise decimal values collided: %s", leftHash)
+		}
+	})
+
+	t.Run("map_order_deterministic", func(t *testing.T) {
+		first := PolicyBundlePayload{ConfigYAML: "outer:\n  b: 0.1\n  a: 0.2\n"}
+		second := PolicyBundlePayload{ConfigYAML: "outer:\n  a: 0.2\n  b: 0.1\n"}
+		firstHash, err := first.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(first map order): %v", err)
+		}
+		for i := 0; i < 20; i++ {
+			got, err := first.PolicyHash()
+			if err != nil {
+				t.Fatalf("PolicyHash repeat %d: %v", i, err)
+			}
+			if got != firstHash {
+				t.Fatalf("PolicyHash repeat %d changed: got %s want %s", i, got, firstHash)
+			}
+		}
+		secondHash, err := second.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(second map order): %v", err)
+		}
+		if secondHash != firstHash {
+			t.Fatalf("map insertion/order changed policy hash:\nfirst=%s\nsecond=%s", firstHash, secondHash)
+		}
+	})
+
+	t.Run("yaml_merge_key_preserves_expanded_hash", func(t *testing.T) {
+		withMerge := PolicyBundlePayload{ConfigYAML: "outer:\n  <<: &defaults\n    a: 0.1\n    b: 0.2\n  b: 0.3\n"}
+		expanded := PolicyBundlePayload{ConfigYAML: "outer:\n  a: 0.1\n  b: 0.3\n"}
+		mergeHash, err := withMerge.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(with merge): %v", err)
+		}
+		expandedHash, err := expanded.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(expanded merge): %v", err)
+		}
+		if mergeHash != expandedHash {
+			t.Fatalf("YAML merge hash drifted from expanded form:\nmerge=%s\nexpanded=%s", mergeHash, expandedHash)
+		}
+	})
+
 	t.Run("non_finite_rejected", func(t *testing.T) {
 		for _, yamlSrc := range []string{
 			"threshold: .nan\n",
@@ -391,6 +530,49 @@ func TestPolicyBundlePayloadPolicyHashNumericCanonicalizationEdges(t *testing.T)
 			}
 		}
 	})
+}
+
+func TestNormalizePolicyHashYAMLNumbersCoversNumericTypes(t *testing.T) {
+	normalized, err := normalizePolicyHashYAMLNumbers(map[any]any{
+		"json_fraction": json.Number("4.50"),
+		"json_integer":  json.Number("42"),
+		"small_int":     int32(-7),
+		"small_uint":    uint16(8),
+		"nested": []any{
+			json.Number("45e-1"),
+			float32(0.5),
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalizePolicyHashYAMLNumbers: %v", err)
+	}
+	got, ok := normalized.(map[string]any)
+	if !ok {
+		t.Fatalf("normalized type = %T, want map[string]any", normalized)
+	}
+	if got["json_fraction"] != "4.5" {
+		t.Fatalf("json_fraction = %#v, want canonical decimal string", got["json_fraction"])
+	}
+	if got["json_integer"] != int64(42) {
+		t.Fatalf("json_integer = %#v, want int64(42)", got["json_integer"])
+	}
+	if got["small_int"] != int64(-7) {
+		t.Fatalf("small_int = %#v, want int64(-7)", got["small_int"])
+	}
+	if got["small_uint"] != uint64(8) {
+		t.Fatalf("small_uint = %#v, want uint64(8)", got["small_uint"])
+	}
+	nested, ok := got["nested"].([]any)
+	if !ok || len(nested) != 2 {
+		t.Fatalf("nested = %#v, want two normalized values", got["nested"])
+	}
+	if nested[0] != "4.5" || nested[1] != "0.5" {
+		t.Fatalf("nested = %#v, want canonical fractional strings", nested)
+	}
+
+	if _, err := normalizePolicyHashYAMLNumbers(json.Number("not-a-number")); !errors.Is(err, ErrInvalidHash) {
+		t.Fatalf("invalid json.Number error = %v, want ErrInvalidHash", err)
+	}
 }
 
 func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {

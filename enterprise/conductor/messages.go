@@ -248,7 +248,7 @@ func (p PolicyBundlePayload) PayloadHash() (string, error) {
 }
 
 func (p PolicyBundlePayload) PolicyHash() (string, error) {
-	var cfg any
+	var cfg yaml.Node
 	decoder := yaml.NewDecoder(strings.NewReader(p.ConfigYAML))
 	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("parse policy bundle config_yaml for policy hash: %w", err)
@@ -261,7 +261,7 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 	} else if !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("parse policy bundle config_yaml trailing document: %w", err)
 	}
-	canonicalConfig, err := normalizePolicyHashYAMLNumbers(cfg)
+	canonicalConfig, err := normalizePolicyHashYAMLNodeNumbers(&cfg)
 	if err != nil {
 		return "", fmt.Errorf("normalize policy bundle config_yaml for policy hash: %w", err)
 	}
@@ -275,10 +275,138 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 	return canonicalValueHash(view, "policy_bundle_policy")
 }
 
+func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
+	if node == nil {
+		return nil, nil
+	}
+	switch node.Kind {
+	case 0:
+		return nil, nil
+	case yaml.DocumentNode:
+		if len(node.Content) == 0 {
+			return nil, nil
+		}
+		return normalizePolicyHashYAMLNodeNumbers(node.Content[0])
+	case yaml.SequenceNode:
+		out := make([]any, len(node.Content))
+		for i, item := range node.Content {
+			normalized, err := normalizePolicyHashYAMLNodeNumbers(item)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = normalized
+		}
+		return out, nil
+	case yaml.MappingNode:
+		out := make(map[string]any, len(node.Content)/2)
+		for i := 0; i < len(node.Content); i += 2 {
+			if i+1 >= len(node.Content) {
+				return nil, fmt.Errorf("%w: malformed YAML mapping", ErrInvalidHash)
+			}
+			if node.Content[i].Tag == "!!merge" {
+				merged, err := normalizePolicyHashYAMLMergeNode(node.Content[i+1])
+				if err != nil {
+					return nil, err
+				}
+				for key, value := range merged {
+					if _, exists := out[key]; !exists {
+						out[key] = value
+					}
+				}
+				continue
+			}
+			var key any
+			if err := node.Content[i].Decode(&key); err != nil {
+				return nil, fmt.Errorf("decode YAML map key: %w", err)
+			}
+			keyString, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("unsupported non-string YAML map key %T", key)
+			}
+			normalized, err := normalizePolicyHashYAMLNodeNumbers(node.Content[i+1])
+			if err != nil {
+				return nil, err
+			}
+			out[keyString] = normalized
+		}
+		return out, nil
+	case yaml.AliasNode:
+		return normalizePolicyHashYAMLNodeNumbers(node.Alias)
+	case yaml.ScalarNode:
+		if node.Tag == "!!float" {
+			return canonicalPolicyHashYAMLFloatLiteral(node.Value)
+		}
+		var decoded any
+		if err := node.Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("decode YAML scalar: %w", err)
+		}
+		return normalizePolicyHashYAMLNumbers(decoded)
+	default:
+		var decoded any
+		if err := node.Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("decode YAML node: %w", err)
+		}
+		return normalizePolicyHashYAMLNumbers(decoded)
+	}
+}
+
+func normalizePolicyHashYAMLMergeNode(node *yaml.Node) (map[string]any, error) {
+	switch node.Kind {
+	case yaml.AliasNode:
+		return normalizePolicyHashYAMLMergeNode(node.Alias)
+	case yaml.MappingNode:
+		normalized, err := normalizePolicyHashYAMLNodeNumbers(node)
+		if err != nil {
+			return nil, err
+		}
+		merged, ok := normalized.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: YAML merge value is %T, want map", ErrInvalidHash, normalized)
+		}
+		return merged, nil
+	case yaml.SequenceNode:
+		out := make(map[string]any)
+		for _, item := range node.Content {
+			merged, err := normalizePolicyHashYAMLMergeNode(item)
+			if err != nil {
+				return nil, err
+			}
+			for key, value := range merged {
+				if _, exists := out[key]; !exists {
+					out[key] = value
+				}
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("%w: YAML merge value is %s, want map or sequence", ErrInvalidHash, node.ShortTag())
+	}
+}
+
 func normalizePolicyHashYAMLNumbers(v any) (any, error) {
 	switch x := v.(type) {
 	case nil, bool, string, int, int64, uint64:
 		return x, nil
+	case int8:
+		return int64(x), nil
+	case int16:
+		return int64(x), nil
+	case int32:
+		return int64(x), nil
+	case uint:
+		return uint64(x), nil
+	case uint8:
+		return uint64(x), nil
+	case uint16:
+		return uint64(x), nil
+	case uint32:
+		return uint64(x), nil
+	case json.Number:
+		normalized, ok, err := canonicalPolicyHashDecimalFloatLiteral(x.String())
+		if ok || err != nil {
+			return normalized, err
+		}
+		return nil, fmt.Errorf("%w: invalid json number %q", ErrInvalidHash, x.String())
 	case float32:
 		return canonicalPolicyHashFloat(float64(x), 32)
 	case float64:
@@ -320,6 +448,140 @@ func normalizePolicyHashYAMLNumbers(v any) (any, error) {
 	default:
 		return x, nil
 	}
+}
+
+func canonicalPolicyHashYAMLFloatLiteral(raw string) (any, error) {
+	value, ok, err := canonicalPolicyHashDecimalFloatLiteral(raw)
+	if ok || err != nil {
+		return value, err
+	}
+	f, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(raw), "_", ""), 64)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid float %q", ErrInvalidHash, raw)
+	}
+	return canonicalPolicyHashFloat(f, 64)
+}
+
+func canonicalPolicyHashDecimalFloatLiteral(raw string) (any, bool, error) {
+	s := strings.ReplaceAll(strings.TrimSpace(raw), "_", "")
+	if s == "" {
+		return nil, false, nil
+	}
+	lower := strings.ToLower(s)
+	switch lower {
+	case ".nan", "+.nan", "-.nan", ".inf", "+.inf", "-.inf", ".infinity", "+.infinity", "-.infinity":
+		return "", true, fmt.Errorf("%w: non-finite float", ErrInvalidHash)
+	}
+
+	negative := false
+	if s[0] == '+' || s[0] == '-' {
+		negative = s[0] == '-'
+		s = s[1:]
+		if s == "" {
+			return nil, false, nil
+		}
+	}
+	if strings.Contains(s, ":") {
+		return nil, false, nil
+	}
+
+	exponent := int64(0)
+	if idx := strings.LastIndexAny(s, "eE"); idx >= 0 {
+		if strings.ContainsAny(s[:idx], "eE") {
+			return nil, false, nil
+		}
+		exp, err := strconv.ParseInt(s[idx+1:], 10, 32)
+		if err != nil {
+			return "", true, fmt.Errorf("%w: invalid float exponent %q", ErrInvalidHash, raw)
+		}
+		exponent = exp
+		s = s[:idx]
+	}
+
+	var intPart, fracPart string
+	switch dot := strings.IndexByte(s, '.'); {
+	case dot < 0:
+		intPart = s
+	case strings.IndexByte(s[dot+1:], '.') >= 0:
+		return nil, false, nil
+	default:
+		intPart = s[:dot]
+		fracPart = s[dot+1:]
+	}
+	if intPart == "" && fracPart == "" {
+		return nil, false, nil
+	}
+	if !policyHashAllDecimalDigits(intPart) || !policyHashAllDecimalDigits(fracPart) {
+		return nil, false, nil
+	}
+
+	digits := strings.TrimLeft(intPart+fracPart, "0")
+	if digits == "" {
+		return int64(0), true, nil
+	}
+	scale := int64(len(fracPart)) - exponent
+	value, err := canonicalPolicyHashDecimalNumber(negative, digits, scale)
+	return value, true, err
+}
+
+func policyHashAllDecimalDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalPolicyHashDecimalNumber(negative bool, digits string, scale int64) (any, error) {
+	var out string
+	if scale <= 0 {
+		zeros := -scale
+		if int64(len(digits))+zeros > MaxConfigYAMLBytes {
+			return "", fmt.Errorf("%w: canonical float literal too large", ErrInvalidHash)
+		}
+		out = digits + strings.Repeat("0", int(zeros))
+		return canonicalPolicyHashDecimalInteger(negative, out), nil
+	}
+	if scale > MaxConfigYAMLBytes {
+		return "", fmt.Errorf("%w: canonical float literal too large", ErrInvalidHash)
+	}
+	if int64(len(digits)) > scale {
+		split := len(digits) - int(scale)
+		intPart := strings.TrimLeft(digits[:split], "0")
+		if intPart == "" {
+			intPart = "0"
+		}
+		fracPart := strings.TrimRight(digits[split:], "0")
+		if fracPart == "" {
+			return canonicalPolicyHashDecimalInteger(negative, intPart), nil
+		}
+		out = intPart + "." + fracPart
+	} else {
+		fracPart := strings.Repeat("0", int(scale)-len(digits)) + digits
+		fracPart = strings.TrimRight(fracPart, "0")
+		if fracPart == "" {
+			return int64(0), nil
+		}
+		out = "0." + fracPart
+	}
+	if negative {
+		out = "-" + out
+	}
+	if len(out) > MaxConfigYAMLBytes {
+		return "", fmt.Errorf("%w: canonical float literal too large", ErrInvalidHash)
+	}
+	return out, nil
+}
+
+func canonicalPolicyHashDecimalInteger(negative bool, digits string) any {
+	if negative {
+		digits = "-" + digits
+	}
+	if i, err := strconv.ParseInt(digits, 10, 64); err == nil {
+		return i
+	}
+	return digits
 }
 
 func canonicalPolicyHashFloat(f float64, bitSize int) (any, error) {

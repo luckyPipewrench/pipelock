@@ -145,6 +145,7 @@ type ReadModel struct {
 	trustCRLSource     func() (*license.CRL, error)
 	anchorResolver     AnchorResolver
 	cfg                *config.Config
+	hasFeature         func(string) bool
 	receiptReadLimit   int
 	timelineLimit      int
 	filterPresets      map[string]FilterSpec
@@ -184,6 +185,7 @@ func NewReadModel(opts Options) *ReadModel {
 		trustCRLSource:     opts.TrustCRLSource,
 		anchorResolver:     opts.AnchorResolver,
 		cfg:                opts.Config,
+		hasFeature:         opts.HasFeature,
 		receiptReadLimit:   receiptReadLimit,
 		timelineLimit:      timelineLimit,
 		filterPresets:      opts.FilterPresets,

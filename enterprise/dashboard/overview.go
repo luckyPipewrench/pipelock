@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 const (
@@ -263,6 +264,12 @@ func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) (Overvie
 		EmptyDetail:      "Fleet posture is not fabricated. Attach a FleetSource to show accepted follower reports.",
 	}
 	if m.fleetSource == nil {
+		return out, nil
+	}
+	if m.hasFeature == nil || !m.hasFeature(license.FeatureFleet) {
+		out.ScopeConfigured = false
+		out.EmptyTitle = "Enterprise fleet feature required"
+		out.EmptyDetail = "Fleet posture requires the Enterprise fleet feature. This section stays empty instead of querying fleet sources for this license tier."
 		return out, nil
 	}
 	scope := m.defaultFleetScope

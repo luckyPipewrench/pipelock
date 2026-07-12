@@ -216,6 +216,45 @@ func TestComplianceReadPrincipalReachesOnlyComplianceRoutes(t *testing.T) {
 	}
 }
 
+func TestComplianceRequiresFleetFeatureAndNavIsHiddenForAgentsOnly(t *testing.T) {
+	t.Parallel()
+
+	agentsOnly := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAgentsFeature,
+	})
+	rec := httptest.NewRecorder()
+	agentsOnly.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, CompliancePath, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("agents-only /compliance status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != fleetFeatureForbidden {
+		t.Fatalf("agents-only /compliance body = %q, want fleet feature message", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	agentsOnly.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agents-only /overview status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	nav := extractDashboardNav(t, rec.Body.String())
+	if strings.Contains(nav, fmt.Sprintf(`href="%s"`, CompliancePath)) {
+		t.Fatalf("agents-only nav rendered compliance link: %s", nav)
+	}
+
+	fleetLicensed := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAllDashboardFeatures,
+	})
+	rec = httptest.NewRecorder()
+	fleetLicensed.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, CompliancePath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fleet-licensed /compliance status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestComplianceHTTPHasNoLegalHoldMutationAuthority(t *testing.T) {
 	t.Parallel()
 
@@ -257,7 +296,7 @@ func TestComplianceRejectsMalformedScopeBeforeFleetAuthorization(t *testing.T) {
 	handler := New(Options{
 		TrustedOuterAuth: true,
 		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAgentsFeature,
+		HasFeature:       allowFleetFeature,
 		FleetSource:      &complianceFleetFake{},
 		AuthorizeFleetScope: func(*http.Request, DecisionScope, bool) error {
 			called = true

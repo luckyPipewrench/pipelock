@@ -467,6 +467,7 @@ func TestHandler_RoutePermissionFailsClosed(t *testing.T) {
 		"/agent/agent-one",
 		"/budgets",
 		"/trust-keys",
+		CompliancePath,
 		"/fleet",
 		"/workbench",
 		"/incident",
@@ -507,6 +508,7 @@ func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
 		{path: "/agents", want: PermissionAgentsRead},
 		{path: "/budgets", want: PermissionBudgetsRead},
 		{path: "/trust-keys", want: PermissionTrustKeysRead},
+		{path: CompliancePath, want: PermissionComplianceRead},
 		{path: "/fleet", want: PermissionFleetRead},
 		{path: "/workbench", want: PermissionSignedActionRead},
 		{path: "/incident", want: PermissionIncidentRead},
@@ -836,7 +838,7 @@ func expectedNavRouteSpecsForGate(t *testing.T, d *dashboardHandler, req *http.R
 
 func allowAgentsNavPermissions(_ *http.Request, permission Permission) error {
 	switch permission {
-	case PermissionEvidenceRead, PermissionExemptionsRead, PermissionAgentsRead, PermissionBudgetsRead, PermissionTrustKeysRead, PermissionComplianceRead:
+	case PermissionEvidenceRead, PermissionExemptionsRead, PermissionAgentsRead, PermissionBudgetsRead, PermissionTrustKeysRead:
 		return nil
 	default:
 		return errors.New("permission denied")
@@ -845,7 +847,7 @@ func allowAgentsNavPermissions(_ *http.Request, permission Permission) error {
 
 func allowFleetNavPermissions(_ *http.Request, permission Permission) error {
 	switch permission {
-	case PermissionFleetRead, PermissionSignedActionRead, PermissionIncidentRead:
+	case PermissionComplianceRead, PermissionFleetRead, PermissionSignedActionRead, PermissionIncidentRead:
 		return nil
 	default:
 		return errors.New("permission denied")

@@ -220,8 +220,8 @@ func dashboardRouteSpecs() []routeSpec {
 		},
 		{
 			pattern:          CompliancePath,
-			feature:          license.FeatureAgents,
-			forbiddenMessage: agentsFeatureForbidden,
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
 			permission:       PermissionComplianceRead,
 			handler: func(d *dashboardHandler) http.Handler {
 				return http.HandlerFunc(d.handleCompliance)

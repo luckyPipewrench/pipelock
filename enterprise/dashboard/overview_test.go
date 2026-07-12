@@ -48,6 +48,7 @@ func TestOverviewReadModelAggregatesExistingSources(t *testing.T) {
 		ReceiptDir:          dir,
 		TrustedKeys:         trusted,
 		Config:              cfg,
+		HasFeature:          allowAllDashboardFeatures,
 		ExemptionStore:      store,
 		FleetSource:         fleetSource,
 		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
@@ -228,6 +229,7 @@ func TestOverviewFleetSourceUnreachableDegradesToAmber(t *testing.T) {
 
 	model := NewReadModel(Options{
 		ReceiptDir:        t.TempDir(),
+		HasFeature:        allowFleetFeature,
 		FleetSource:       &fakeFleetSource{err: errors.New("conductor unreachable")},
 		DefaultFleetScope: DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
 	})
@@ -254,6 +256,66 @@ func TestOverviewFleetSourceUnreachableDegradesToAmber(t *testing.T) {
 	}
 	if !amberFleet {
 		t.Fatal("expected an amber FLEET attention fact when the fleet source is unreachable")
+	}
+}
+
+func TestOverviewAgentsOnlyWithFleetSourceDoesNotQueryFleetPosture(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	source := &fakeFleetSource{followers: overviewFleetFollowers(now)}
+	handler := New(Options{
+		TrustedOuterAuth:    true,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowAgentsFeature,
+		FleetSource:         source,
+		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+		AuthorizeFleetScope: allowFleetScope,
+		Now:                 func() time.Time { return now },
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agents-only /overview status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Enterprise fleet feature required") ||
+		!strings.Contains(body, "Fleet posture requires the Enterprise fleet feature") {
+		t.Fatalf("overview missing fleet-required empty state: %s", body)
+	}
+	for _, leaked := range []string{"Scope " + fleetTestOrgID, "4 accepted follower rows", "verified applied"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("agents-only overview rendered fleet posture data %q: %s", leaked, body)
+		}
+	}
+	if source.gotOrgID != "" || source.gotFleet != "" || source.gotLimit != 0 {
+		t.Fatalf("agents-only overview queried fleet source: org=%q fleet=%q limit=%d", source.gotOrgID, source.gotFleet, source.gotLimit)
+	}
+}
+
+func TestOverviewFleetLicensedRendersFleetPosture(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	handler := New(Options{
+		TrustedOuterAuth:    true,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowAllDashboardFeatures,
+		FleetSource:         &fakeFleetSource{followers: overviewFleetFollowers(now)},
+		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+		AuthorizeFleetScope: allowFleetScope,
+		Now:                 func() time.Time { return now },
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fleet-licensed /overview status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Scope redacted / redacted", "4 accepted follower rows", "verified applied"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("fleet-licensed overview missing %q: %s", want, body)
+		}
 	}
 }
 

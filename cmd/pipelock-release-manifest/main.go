@@ -40,7 +40,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("pipelock-release-manifest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dist := fs.String("dist", "dist", "GoReleaser dist directory")
-	tag := fs.String("tag", "", "release tag, e.g. v3.0.0")
+	tag := fs.String("tag", "", "release tag, e.g. v3.1.0")
 	commit := fs.String("commit", "", "release commit SHA")
 	keyHex := fs.String("private-key-hex", "", "hex Ed25519 private key or 32-byte seed; required only with --sign-only")
 	signerKeyID := fs.String("signer-key-id", firstReleaseKey(os.Getenv("RELEASE_KEYRING_HEX")), "hex Ed25519 public key expected to sign release.json")

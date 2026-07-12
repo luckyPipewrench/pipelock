@@ -40,6 +40,28 @@ The remediation guidance is the point of the command: a hint must name a knob th
 | `--config`, `-c` | built-in defaults | Config file to load. Without it, the built-in default config is used. |
 | `--json` | `false` | Emit a structured report instead of human-readable text. |
 
+## `pipelock explain event`
+
+`pipelock explain event <id>` looks up a past decision in a Pipelock JSONL audit
+log and explains the operator-facing reason. It matches `request_id` first,
+then `event_id` and `id`, and it uses the configured DLP rules when redacting
+untrusted log content before printing it.
+
+```bash
+pipelock explain event req-abc-123 \
+  --config /etc/pipelock/pipelock.yaml \
+  --log /var/log/pipelock/audit.jsonl
+
+pipelock explain event req-abc-123 \
+  --config /etc/pipelock/pipelock.yaml \
+  --log /var/log/pipelock/audit.jsonl \
+  --json
+```
+
+When `--log` is omitted, the command uses `logging.file` from the config when
+that config writes JSONL audit events to a file. The command is read-only: it
+does not contact the proxy and does not mutate the log.
+
 ## Exit codes
 
 | Exit code | Meaning |

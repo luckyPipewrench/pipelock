@@ -9,26 +9,391 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Enterprise Evidence dashboard now supports a two-tier token model:
-  `--auth-token-file` grants the redacted metadata view, while optional
-  `--raw-token-file` unlocks raw destinations and signed payloads.
-- Enterprise Evidence dashboard access is audited on stderr with role, method,
-  path, session, `session_sha256`, and remote address for each authenticated
-  request.
-
 ### Changed
-
-- Enterprise Evidence dashboard redacts receipt destinations and signed payloads
-  by default before template rendering.
-- Enterprise Evidence dashboard handlers constructed directly from Go now fail
-  closed when both authorization callbacks are nil unless `TrustedOuterAuth` is
-  explicitly set. Embedders that rely on an already-authenticated outer router
-  must opt in to `TrustedOuterAuth`; `pipelock dashboard serve` wires its token
-  auth boundary itself.
 
 ### Fixed
 
 ### Removed
+
+## [3.1.0] - 2026-07-12
+
+### Added
+
+- **Operator dashboard showcase for Pro and Enterprise.** `pipelock dashboard
+  serve` now provides an authorization-filtered operator console with Overview,
+  Evidence, Exemptions, Agents, Budgets, Trust & Keys, Fleet, Workbench, and
+  Incident views. Pro (`agents`) licenses get the agent/evidence surfaces;
+  Enterprise (`fleet`) adds live fleet, workbench, and incident surfaces.
+  Unconnected sources render explicit unknown/empty states instead of implying
+  health. (#885, #888, #923, #946, #966, #991, #951, #960, #968, #970)
+- **Free single-agent evidence serving.** `pipelock evidence serve` serves one
+  selected recorder session as a read-only HTML evidence view without a license
+  and without any route that can enumerate other sessions. Offline single-agent
+  evidence reports are also available through `pipelock evidence view`. (#946,
+  #991)
+- **Dashboard authentication expanded to three modes.** Operator token files,
+  OIDC bearer tokens, and mutual TLS client certificates can each authenticate
+  the dashboard. OIDC validates issuer, audience, and `azp`; mTLS maps verified
+  client-certificate SPKI fingerprints to bounded dashboard permissions. (#973,
+  #982, #985)
+- **Dashboard RBAC, raw-view separation, and access audit.** Dashboard routes
+  now have stable permissions for evidence, raw data, exemptions, agents,
+  budgets, fleet, signed actions, incidents, and trust/keys. Metadata access
+  redacts destinations and signed payloads before template rendering; raw access
+  requires `dashboard:raw:read`. Authenticated requests are audited on stderr
+  with bounded identity and route details. (#967, #978, #991)
+- **Exemption lifecycle and coverage certificates.** Operators can manage
+  exemption owner/reason/expiry/last-match records with `pipelock dashboard
+  exemption ...`, overlay that store in the read-only Exemptions view, generate
+  Pro coverage certificates with `dashboard coverage-cert generate`, and verify
+  certificates offline for free with `dashboard coverage-cert verify` or
+  `evidence verify-cert`. The Exemptions inventory also flags inert or
+  wrong-knob exemptions instead of implying they are active. (#923, #947)
+- **Dashboard durable-state operations.** `dashboard backup`, `dashboard
+  restore`, and `dashboard rebuild-read-model` cover non-reconstructible state,
+  restore validation, disposable index rebuilds, and local alert-delivery
+  health. (#971)
+- **Enterprise SIEM forwarding.** Enterprise builds can use `emit.forwarder` for
+  durable HTTP event delivery with an exact-host destination allowlist,
+  SSRF-resistant connection handling, a bounded spool, replay cursor, health
+  metrics, and at-least-once delivery semantics. CEF syslog output and
+  action-aware export filters are also available. (#920, #972)
+- **Conductor fleet drift guardrails.** Followers report runtime and
+  applied-state status, `conductor fleet status` shows health/drift fields, and
+  `conductor publish` now preflights stale, unseen, failed, or unsupported
+  followers before accepting a bundle. Operators can explicitly override with
+  `--allow-fleet-skew` plus a reason. (#910)
+- **Conductor day-2 operations and recovery commands.** Enterprise fleets now
+  have follower removal, store backup/restore, cross-stream retarget
+  authorization, bounded stream-switch validity, remote-kill replay-state
+  migration, clock-skew inventory, and clearer follower recovery/remediation
+  output including `conductor follower reset-replay-state`. (#827, #828)
+- **Conductor dry-run and decision replay.** `conductor publish`, `kill`,
+  `resume`, and `rollback` support `--dry-run` with the same signing,
+  authorization, and preflight path as real actions but no state mutation.
+  `conductor replay` re-derives signed policy-bundle decisions with an optional
+  state snapshot. (#950, #989)
+- **Bootstrapped Conductor fleets can publish immediately.** `conductor
+  bootstrap` now creates and trusts a policy-bundle signing key, prints the
+  required serve flags, and hashes the loaded typed config so the signed policy
+  hash matches what followers enforce. (#986)
+- **Signed fleet applied-state evidence.** Followers include applied-state in
+  signed audit batches, giving the dashboard and Conductor a verified source of
+  active bundle/version/hash and last-apply outcome instead of relying only on
+  unsigned runtime polls. (#948, #977)
+- **Receipt lifecycle and completeness verification.** Recorder sessions now
+  have signed `session_open`, heartbeat, and `session_close` lifecycle records,
+  durable intent before egress on every mediated transport, and a
+  `pipelock-verifier completeness` command whose best result is LIMITED, never
+  COMPLETE. Receipt failure stats and metrics identify unavailable emitters and
+  required-receipt blocks across proxy transports. (#842, #857, #924, #925,
+  #937, #941, #942, #949, #975)
+- **Exact-byte receipt verification foundation.** New byte-taking verifier APIs
+  preserve and verify the exact JSON bytes stored on disk, rejecting duplicate
+  keys, reordered fields, trailing tokens, null payloads, and signature/version
+  mismatches as groundwork for cross-language strict receipt parity. (#915)
+- **Evidence-health observability and honest scorecards.** Evidence health now
+  exposes sequence-gap, chain-head-age, anchor-lag, durability, self-audit, and
+  evidence-assurance metrics; dashboard/verifier scorecards report Authentic,
+  Untampered, Anchored, and Completeness as separate facts. Evidence displays
+  annotate bidirectional, zero-width, control, confusable, mixed-script, and
+  punycode anomalies without changing signed bytes. (#930, #931)
+- **Receipt verifier parity across languages.** Go, Rust, TypeScript, Python,
+  and the wasm verifier now agree on bound-genesis session-control records,
+  rotated chains, post-close records, and strict signed-field validation. (#926,
+  #929, #935, #952, #963)
+- **Receipt anchoring controls.** `pipelock anchor receipts` can write local
+  anchor bundles, submit Rekor checkpoint anchors, verify Rekor inclusion
+  proofs, pin Rekor log keys through `pipelock-verifier independent`, and use
+  algorithm-aware Rekor hashedrekord signing/verification, including SHA-512 for
+  Ed25519 Rekor v1 logs. (#858, #861, #866, #979, #987, #992)
+- **Operator read commands.** `pipelock presets`, `pipelock quickstart`,
+  `pipelock status`, and `pipelock explain event` give operators preset
+  inventory, setup guidance, local posture summaries, and audit-log decision
+  explanations without mutating runtime state. All seven built-in presets are
+  selectable with `--preset`, `explain` covers command/tool/file hook blocks,
+  and operator remediation guidance now comes from one audience-separated
+  table. (#874, #875, #877, #921, #922)
+- **MCP and A2A policy controls are broader.** MCP tool policy can match
+  structural argument type, numeric range, length, and value constraints; taint
+  trust can be scoped by MCP server name; and A2A methods now flow through the
+  same denial-of-wallet, chain-detection, session-binding, taint, contract, and
+  request-body gates as tool calls. (#865, #881, #900, #903, #909)
+- **Deferred-action operator steering.** Held MCP actions have cascade-depth
+  limits, pending-ancestor linkage, verifier linting for cascade metadata, and
+  operator-only API/CLI commands to list, approve, or deny held actions without
+  exposing raw request bytes. (#887, #905)
+- **Contained launch path.** `pipelock contain run -- ...` verifies the
+  installed containment boundary, emits signed posture evidence, and launches a
+  registered tool as the contained agent only after preflight succeeds. (#846)
+- **Public playground verification tooling.** The playground demo gained
+  per-visitor Fly Machine sessions, broker-side human/abuse gates, browser WASM
+  verification, OS-specific verify kits, signed receipts in bundles, retained
+  download retry, warm-pool hardening, demo replay scenarios, and public-serving
+  fixes for the verifier assets. (#826, #831, #832, #834, #837, #838, #839,
+  #883, #896)
+- **Endpoint-specific query-entropy exemptions.** Operators can suppress
+  query-value entropy for an exact HTTPS scheme/host/path/parameter tuple while
+  keeping DLP, SSRF, adjacent parameters, path/subdomain entropy, rate limits,
+  and data budgets active. (#916)
+- **Official rule bundles on source installs.** Source and `go install` builds
+  can verify official signed bundles using the compiled public rules keyring,
+  and development-version strings no longer break bundle loading. (#955, #983)
+- **Example coverage.** New verified examples cover Cursor integration,
+  WebSocket proxying, canary tokens, Docker Compose proxy deployment, and
+  offline-verifiable Make It Leak replay-capture scenarios. (#896, #927, #932,
+  #933, #945)
+
+### Changed
+
+- **Reload protects live bundle coverage in every mode.** Hot reloads now keep
+  the previous config when a bundle-resolution error would drop currently live
+  DLP, response, or MCP tool-poison rules, even outside strict mode. (#988)
+- **Required security reloads fail closed on downgrades.** Hot reload now
+  rejects warning-level downgrades when strict mode or explicit required
+  security contracts are active, including required receipts, MCP binary
+  integrity/provenance, inbound mediation verification, and behavioral-baseline
+  action weakening. (#860, #879)
+- **Policy hashes are bound to the deciding config snapshot.** Receipts now
+  stamp the policy hash from the request's resolved config snapshot across
+  fetch, forward, CONNECT, TLS intercept, reverse, WebSocket, and MCP surfaces,
+  so a concurrent hot reload cannot relabel an in-flight decision. (#961)
+- **Receipt verification is stricter.** Signed v1 receipt objects reject
+  unknown fields recursively; only the unsigned top-level `ext` bag remains as
+  a forward-compatible advisory surface. Recorder readers distinguish
+  receipt-chain mode from whole-recorder mode. (#963)
+- **Containment wording is more honest.** Point-in-time containment evidence is
+  reported as `kernel_observed` instead of `kernel_enforced`; the stronger
+  label is reserved for a future continuously enforced kernel gate. (#938)
+- **Media passthrough and exempt-domain blind spots are labeled honestly.**
+  Unscanned reverse-proxy media streams now record
+  `media_passthrough_unscanned`, and `response_scanning.exempt_domains` emits
+  warnings/metrics when it creates a full-trust unscanned path. (#936, #962)
+- **Crash reporting is opt-in and minimized.** Shipped presets no longer enable
+  crash reporting by default; enabled reports are rebuilt through a small
+  allowlist and unsafe payloads fail closed. (#917, #918)
+- **DLP and response pattern sources are centralized.** Built-in DLP patterns
+  now have one generated source of truth for defaults, core floors, preset YAML,
+  quickstart redaction mirrors, and parity tests. Dotted-token patterns use
+  case-sensitive structural anchors for Discord, SendGrid, and JWT forms to cut
+  prose false positives while preserving valid-token detection. (#836, #919)
+- **Scanner false positives were narrowed without lowering the safety floor.**
+  Credential-path, auth-material, and markdown-link exfiltration detectors now
+  require stronger handoff/exfiltration intent for documentation-prone shapes
+  while preserving high-signal secret-file and collection-link attacks.
+  Documentation-example credential exemptions are whole-token and
+  context-bound, and inbound AWS ID OCR/prose filtering is limited to
+  low-confidence inbound matches. (#878, #902, #906, #911, #912, #981)
+- **Scanner coverage was expanded across encoded and fragmented inputs.**
+  Encoded DLP candidates normalize common separators before bounded decode,
+  invisible-split keywords and seed phrases are reassembled across config and
+  decoded response passes, embedded URLs are URL-scanned from text, A2A card
+  URLs and file-part URIs enter SSRF policy, and confusable MCP tool-name
+  collisions are detected. (#847, #882, #891)
+- **A2A and MCP enforcement identity are clearer.** A2A params receive redaction
+  parity with MCP `tools/call`, A2A method inventory is separated from MCP tool
+  inventory, and reserved-prefix MCP tool names are namespaced before budget and
+  chain enforcement. MCP provenance and drift hashing now cover full tool
+  objects, and MCP `resources/read` HTTP(S) URIs are URL-policy scanned with
+  block-reason attribution. (#853, #854, #900, #903, #909, #934, #976)
+- **Taint ask/local-gateway behavior is documented and safer.** Taint
+  `permissive` mode is observe-only, terminal approval wiring avoids consuming
+  MCP stdio protocol input, and local model gateway tuning guidance is clearer.
+  Fail-safe taint classification can treat low-confidence reads as protected,
+  and trust can be scoped by server name. (#865, #876, #879, #965)
+- **Baseline profile integrity is stronger.** Baseline integrity state uses a
+  cross-process high-water lock and keyed digest, covers pending ratification
+  profiles, and reads profile/manifest/key/high-water files with no-follow
+  protections. Runtime baseline enforcement now applies across HTTP, MCP, and
+  A2A identities, learns only executed tool calls, rejects unreadable/corrupt
+  enforcing profiles, and fails closed on signed-manifest tamper or rollback.
+  (#876, #879, #880, #892, #894, #897, #914, #975, #980)
+- **Response scanning treats exemptions and streaming more explicitly.**
+  Response suppressions are applied inside each scan cascade pass so an early
+  suppressed match cannot mask a later decoded finding; generic SSE scans keep a
+  bounded rolling tail across events; joined SSE `data:` payloads have a
+  cumulative cap; and over-cap size-exempt responses are scanned with bounded
+  per-response and in-flight memory before delivery. (#844, #848, #850, #899)
+- **Audit and event emission have stronger operator visibility.** Operational
+  lifecycle/security events reach configured external sinks with explicit
+  severities, syslog delivery uses a bounded async queue, and slow or full sinks
+  fail fast with drain-on-close behavior instead of blocking callers. (#843,
+  #845)
+- **Git and installer surfaces are stricter.** `pipelock git scan-diff` rejects
+  malformed, unsupported, binary, or unattributed diffs; generated hooks avoid
+  external diff-driver/textconv blind spots; rules commands use secure config
+  discovery; and installers embed resolved config paths for Claude, Cursor,
+  Codex, JetBrains, and git hooks. (#872, #873)
+- **Release and CI hygiene improved.** Linux race tests are sharded with
+  package-level progress, dependency downloads are retried, failed Go test
+  details are preserved, Go toolchains and dependencies were refreshed, and
+  release-note grouping/filtering was improved. Release prep, docs accuracy,
+  matched AGENTS/CLAUDE guidance, CI review triggers, OSV Renovate fast-tracks,
+  config-consumption/test-parity guardrails, and the liveproof test harness were
+  also tightened. (#822, #829, #830, #833, #835, #862, #863, #864, #867, #886,
+  #898, #901, #907, #908, #928, #939, #944, #953, #954, #956, #957, #958,
+  #959, #990)
+
+### Fixed
+
+- **MCP input envelopes and JSON parser differentials fail closed.** MCP
+  mediation now rejects non-object or null params that cannot be safely stamped,
+  normalizes malformed `_meta`, preserves recovered request IDs on duplicate-key
+  blocks, keeps literal `<`, `>`, and `&` bytes when rewriting, and rejects
+  duplicate JSON keys across MCP, A2A, and playground proof artifacts. (#840,
+  #841, #855, #856)
+- **MCP binary integrity blocks by default when enabled.** With
+  `mcp_binary_integrity.enabled: true`, an omitted or empty action now blocks on
+  missing, unreadable, incomplete, or mismatched manifests unless the operator
+  explicitly sets `action: warn`. (#849)
+- **MCP audit and drift gaps are closed.** Split DLP across A2A task-update
+  events blocks before the completing event is forwarded, blocked MCP tool
+  drift no longer updates the trusted baseline, and required-receipt audit gaps
+  fail closed without leaking mediation envelopes. (#851, #852, #895)
+- **Containment drift proofs are stricter.** nftables verification is
+  order-aware, rejects unexpected accept rules before the agent catch-all drop,
+  validates live rules against current proxy/agent/operator UIDs, and repairs
+  stale or unsafe live rules during install. (#859, #868)
+- **Response scanning parity and false-positive fixes landed.** Reverse proxy
+  honors size-exempt response parity, verified PNG/JPEG data URLs avoid binary
+  DLP false positives while preserving embedded-secret detection, multipart
+  uploads with undecodable or unsupported content-transfer encodings block
+  fail-closed, and the immutable core response floor mirrors decoded
+  normalization/suppression ordering. (#869, #870, #884, #893)
+- **Deferred session-less holds no longer cross-link.** A held action without a
+  stable session ID is treated as an independent root, so denying one
+  session-less hold cannot cascade-block an unrelated one or mint false parent
+  receipt metadata. (#889)
+- **Dashboard raw evidence access is separated and audited.** Evidence views
+  are redacted by default; raw destinations and signed payloads require a
+  separate raw token, identical metadata/raw token files are rejected, and
+  authenticated access is audited by role, path, session, and remote address.
+  (#890)
+- **Conductor audit and enrollment edge cases fail closed.** Audit queries
+  reject empty or whitespace-only scopes before store access, enrollment tokens
+  are single-use under concurrent consumption, and rollback output exposes the
+  derived counter for operator correlation. (#904)
+- **Baseline diagnostics are safe to log.** Baseline integrity failure logs
+  sanitize control characters, Unicode line separators, and ANSI/control runes
+  in agent-influenced fields, while preserving fingerprinted diagnostics for
+  operator correlation. (#940, #943)
+- **Evidence and Rekor reads are bounded.** Recorder resume enumeration, tail
+  reads, file hashing, envelope-emitter zero-max reads, and raw receipt-chain
+  fallbacks now fail closed above size or entry caps; Rekor hashedrekord
+  submission and independent verification use the artifact digest expected by
+  Rekor v1 Ed25519 verification. (#992)
+- **Coverage-certificate trust pinning now fails closed.** Verification returns
+  non-zero when a trusted-signer set is supplied and the certificate signer is
+  not in that set. (#984)
+- **Rekor anchoring no longer has an undeclared public default.** Empty Rekor
+  URLs fail closed; operators must name the log and acknowledge remote
+  submission. (#983)
+- **Signed checkpoint configuration now fails closed.** A persisting recorder
+  with `sign_checkpoints: true` and no signing key refuses to start instead of
+  writing checkpoints that later fail verification. (#983)
+- **Rule-bundle re-resolution is idempotent.** Hot reload and Conductor policy
+  apply no longer re-append bundle patterns or falsely trip strict-mode pattern
+  downgrade checks. (#983)
+- **Policy bundles reject ambiguous local companion files.** Bundle publishing
+  rejects relative local companion-file fields that would make the signed hash
+  depend on the publisher's working directory. (#986)
+- **Deferred-action depth denials are journaled.** Cascade-depth rejections now
+  write terminal `deferred-actions.jsonl` entries, so journal-only audits see
+  the same denial recorded in the signed receipt. (#913)
+- **Dashboard mTLS can be the sole authenticator.** `dashboard serve
+  --require-client-cert` no longer requires a token or OIDC issuer, and the
+  dashboard Workbench command templates use existing flags. (#982)
+- **Dashboard storage and request reads are bounded.** Dashboard stores now
+  strict-decode, reject unsafe paths/duplicates, use no-follow bounded opens,
+  and fail closed when embedded without an explicit auth boundary. (#978)
+- **Conductor rollback and emergency-control paths fail closed on partial
+  failure.** Rollback authorization is recorded before head application,
+  concurrent publish supersession is rejected, and unsigned/ambiguous fleet
+  provenance is not labeled verified. (#977)
+- **Windows baseline reads work again.** Windows baseline profile reads now open
+  normal regular files while still rejecting final-component symlinks/reparse
+  points and preserving shared path checks. (#980)
+- **Receipt completeness gaps close across transports.** Required receipt
+  emission failures now block before egress on MCP, proxy, reverse, and
+  TLS-intercept paths, and replacement block/gap receipts keep denied actions
+  auditable. (#925, #937, #941, #942, #949, #975)
+
+### Removed
+
+- **The AARM compliance dashboard page was removed.** The page is withheld until
+  a version-aware, multi-framework redesign is ready; the earlier compliance
+  console slice is not part of the final v3.1.0 operator surface. (#969, #991)
+
+### Breaking Changes / Upgrade Notes
+
+- **mTLS dashboard role maps must remove `dashboard:compliance:read`.** The
+  compliance page and permission were removed in #991. `dashboard serve` fails
+  closed at startup with `unknown permission "dashboard:compliance:read"` if a
+  `--client-cert-role-map` still lists it.
+- **Containment/evidence grade parsers must update
+  `kernel_enforced` -> `kernel_observed`.** The emitted verifier/dashboard grade
+  now describes point-in-time observed containment, not continuous kernel
+  enforcement. Anything matching the old string must accept the new one. (#938)
+- **Receipts with unknown signed fields are now invalid.** v1 signed receipt
+  objects, action records, session-control payloads, and nested signed payloads
+  reject unknown fields. Older verifiers may have accepted-and-ignored those
+  fields; v3.1.0 verifiers reject them. Use the unsigned top-level `ext` bag
+  only for advisory forward-compatible data. (#963)
+- **Recorder chain verification has two explicit modes.** Receipt-chain mode
+  certifies a valid receipt subsequence and skips only a fixed allowlist of
+  operational entry types; whole-recorder mode validates the full recorder
+  hash-chain and rejects unknown entry types. A file with unknown recorder entry
+  types that older tooling silently skipped may now fail closed. (#963)
+- **Rekor submission is explicit.** Empty Rekor URLs no longer default to a
+  public transparency log; configure `--rekor-url`/`RekorLog.URL` and pass
+  `--yes-send-to-remote-log` for remote anchoring. (#983)
+- **Rekor hashedrekord signing is algorithm-aware.** Ed25519 Rekor v1
+  submissions and independent verification use the SHA-512 artifact digest that
+  Rekor verifies; legacy SHA-256 Ed25519 hashedrekord bodies now fail closed.
+  Unsupported algorithms still fail before submission. (#987, #992)
+- **Hot reload may reject bundle-resolution errors in balanced/audit mode.** A
+  reload that would drop currently live bundle-sourced detections is now refused
+  and the previous config stays active. This is intentional fail-closed
+  behavior; fix the bundle/signature/lock/min-version problem or remove the
+  currently-live dependency deliberately. (#988)
+- **Required security reload downgrades may now be refused.** Reloads that
+  weaken required receipts, MCP binary integrity/provenance, inbound mediation
+  verification, or behavioral-baseline enforcement are rejected when those
+  contracts are active. (#860, #879)
+- **Enabled MCP binary integrity now blocks by default.** Operators using
+  `mcp_binary_integrity.enabled: true` without an explicit action must set
+  `action: warn` to preserve a warning-only rollout; otherwise manifest load,
+  hash, and signature failures block subprocess launch. (#849)
+- **Behavioral baseline enforcement fails closed on unsafe persisted state.**
+  Enforcing baseline profiles now refuse unreadable, corrupt, tampered,
+  downgraded, rolled-back, or invalid-action state at startup/reload instead of
+  silently dropping enforcement. (#876, #892, #897)
+- **Over-cap size-exempt responses are scanned or blocked.** Hosts listed in
+  `response_scanning.size_exempt_domains` no longer get an unscanned over-cap
+  passthrough path; bodies are scanned within the new bounded memory caps or
+  fail closed. Use `response_scanning.unscannable_passthrough` only for
+  explicitly reasoned, expiring opaque-response exceptions. (#899)
+- **Generated defaults and selected security gates are stricter.** Regenerated
+  configs no longer include Slack, Discord, or Telegram in the default
+  `api_allowlist`; `PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE` deployments with an
+  intermediate must configure a CRL; and cross-stream Conductor retargeting now
+  requires bounded stream-switch authorization. (#827)
+- **Git diff scanning rejects more unverifiable input.** Automation that feeds
+  malformed, unsupported, binary, externally transformed, or unattributed diffs
+  to `pipelock git scan-diff` should expect a fail-closed rejection instead of a
+  best-effort scan. (#872)
+- **Coverage-certificate verifier exit codes are stricter.** With
+  `--trusted-signer`, a certificate signed by an untrusted key now exits
+  non-zero instead of warning and exiting 0. Automation should treat that as a
+  failed trust decision. (#984)
+- **Persisting signed recorders require a signing key.** If `flight_recorder.dir`
+  is set and `sign_checkpoints: true`, startup now fails unless
+  `flight_recorder.signing_key_path` is configured. Set the key or explicitly
+  set `sign_checkpoints: false` for unsigned hash-chain-only evidence. (#983)
+- **Baseline integrity high-water state changed format.** An existing high-water
+  file from the prior digest format is treated as invalid under enforcing
+  baseline deviation actions until the operator runs the documented baseline
+  reset/wipe procedure. (#914)
 
 ## [3.0.0] - 2026-06-23
 

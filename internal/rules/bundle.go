@@ -500,7 +500,7 @@ func prereleaseHasIdentifier(prerelease, ident string) bool {
 }
 
 // isGitDescribeVersion recognizes a `git describe --tags` string by its SHAPE:
-// "<tag>-<commits>-g<shorthash>" (e.g. "v3.0.0-146-gabc1234" or "2-147-gf1c242a0"
+// "<tag>-<commits>-g<shorthash>" (e.g. "v3.1.0-146-gabc1234" or "2-147-gf1c242a0"
 // with a bare-number tag). It keys off the trailing "-<digits>-g<hex>" so a
 // source/CI build is recognized regardless of the tag's own format. It does NOT
 // match arbitrary malformed strings ("abc") or Go pseudo-versions (whose short

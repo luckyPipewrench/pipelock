@@ -26,6 +26,26 @@ a license that grants the `agents` feature (Pro or Enterprise); without one it
 refuses to start. The dashboard is read-only: it renders evidence and never
 mutates policy, receipts, or runtime state.
 
+## Views and license tiers
+
+All views use the same dedicated listener, authentication boundary, CSP, access
+audit, and metadata-versus-raw redaction model.
+
+| View | Route | License feature | Permission | What it proves |
+|---|---|---|---|---|
+| Overview | `/overview` | `agents` | `dashboard:evidence:read` | Ranked red/amber facts from the loaded evidence, fleet, governance, budget, and trust sources; no rolled-up green verdict. |
+| Evidence | `/` and `/session/...` | `agents` | `dashboard:evidence:read` | Per-session receipt scorecard, timeline, and decision explanation from the configured recorder directory. |
+| Exemptions | `/exemptions` | `agents` | `dashboard:exemptions:read` | Read-only exemption inventory from `--config`, with lifecycle metadata overlaid from `--exemption-store` when configured. |
+| Agents | `/agents` and `/agent/...` | `agents` | `dashboard:agents:read` | Cross-session agent grouping and bounded scorecard rollups; absence means no loaded receipts, not proof the agent was idle. |
+| Budgets | `/budgets` | `agents` | `dashboard:budgets:read` | Counts-only per-agent budget pressure from `--runtime-snapshot-file` or the default runtime snapshot. |
+| Trust & Keys | `/trust-keys` | `agents` | `dashboard:trust_keys:read` | Trusted-key provenance, receipt blast radius, revocation status where verifiable, and local/Rekor anchor consistency. |
+| Fleet | `/fleet` | `fleet` | `dashboard:fleet:read` | Enrolled follower runtime and signed applied-state status from the configured Conductor read source. |
+| Workbench | `/workbench` | `fleet` | `dashboard:signed_action:read` | Prepare, dry-run, and replay guidance for signed Conductor actions; no write path. |
+| Incident | `/incident` | `fleet` | `dashboard:incident:read` | Read-only correlation of a conductor decision, replay divergence, and fleet applied-state summary. |
+
+Grant `dashboard:raw:read` only as an extra elevation. It is never enough by
+itself to reach a route; the principal also needs that route's read permission.
+
 ## `pipelock dashboard serve`
 
 ```bash
@@ -33,6 +53,7 @@ pipelock dashboard serve \
   --receipt-dir /var/lib/pipelock/evidence \
   --config /etc/pipelock/pipelock.yaml \
   --legal-hold-store /var/lib/pipelock/legal-holds.json \
+  --exemption-store /var/lib/pipelock/exemptions.json \
   --auth-token-file /etc/pipelock/dashboard.token \
   --trusted-signer 'file=/etc/pipelock/receipt-signing.pub,source=ops runbook' \
   --conductor-url https://127.0.0.1:8895 \
@@ -87,8 +108,15 @@ startup error.
 | `--auth-token-file` | none | File containing the operator token for token-authenticated requests. Required unless OIDC or `--require-client-cert` is configured. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
 | `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by the governance sections. |
+| `--exemption-store` | none | Optional exemption lifecycle store. Overlays owner, reason, expiry, and last-match metadata onto the read-only Exemptions inventory. |
+| `--delivery-inbox` | none | Optional alert delivery inbox file for read-only delivery-health and dead-letter status. |
+| `--read-model-index` | none | Optional rebuilt dashboard read-model index file for freshness/source-hash status. Rebuild with `pipelock dashboard rebuild-read-model`. |
+| `--runtime-snapshot-file` | `<receipt-dir>/dashboard/runtime-snapshot.json` | Counts-only proxy runtime snapshot used by the Budgets view. |
 | `--listen` | `127.0.0.1:8896` | Dashboard listener address. Non-loopback addresses require `--tls-cert`/`--tls-key`. |
 | `--trusted-signer` | none | Trusted receipt signing key: `(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,source=LABEL]`. Repeatable. `source` is shown in the UI as the reason the key is trusted. |
+| `--anchor-expected` | `false` | Treat a session with no anchor-state marker as an anchor audit failure in Trust & Keys. |
+| `--anchor-local-log` | none | Local anchor log used to verify anchor bundles produced with the local backend. |
+| `--rekor-log-key` | none | Pinned Rekor log public key for verifying Rekor SET, checkpoint, and inclusion proof. Repeat for rotations. |
 | `--license-crl-file` | none | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
 | `--tls-cert`, `--tls-key` | none | TLS server certificate and key. Both or neither. |
 | `--oidc-issuer` | none | OIDC issuer URL used for discovery and exact issuer validation. |
@@ -132,11 +160,23 @@ roles:
     permissions:
       - dashboard:evidence:read
       - dashboard:exemptions:read
+      - dashboard:agents:read
+      - dashboard:budgets:read
+      - dashboard:trust_keys:read
   raw:
     permissions:
       - dashboard:evidence:read
       - dashboard:exemptions:read
+      - dashboard:agents:read
+      - dashboard:budgets:read
+      - dashboard:trust_keys:read
       - dashboard:raw:read
+  fleet-auditor:
+    permissions:
+      - dashboard:evidence:read
+      - dashboard:fleet:read
+      - dashboard:signed_action:read
+      - dashboard:incident:read
 certificates:
   0000000000000000000000000000000000000000000000000000000000000000: metadata
 ```
@@ -197,6 +237,25 @@ permissions with `--oidc-role-map`. The role claim can be `azp` (the client ID,
 useful for a single-client deployment) or a groups/roles claim your provider
 adds to the token. As with the mTLS role map, permissions must come from the
 dashboard's bounded vocabulary and an unmapped principal is denied.
+
+Example OIDC role map:
+
+```json
+{
+  "claim_values": {
+    "pipelock-dashboard-auditor": "auditor"
+  },
+  "roles": {
+    "auditor": [
+      "dashboard:evidence:read",
+      "dashboard:exemptions:read",
+      "dashboard:agents:read",
+      "dashboard:budgets:read",
+      "dashboard:trust_keys:read"
+    ]
+  }
+}
+```
 
 ### License resolution
 
@@ -274,6 +333,106 @@ offline `pipelock-verifier verify-run` command that re-verifies the same
 receipts against the trusted key, so anything the dashboard claims can be
 independently re-checked against the signed evidence — without trusting this
 server.
+
+## Free single-session evidence server
+
+`pipelock evidence serve` is the no-license, single-agent counterpart to the
+Pro dashboard Evidence view. It binds exactly one session at startup and has no
+route or query parameter that can switch to another session.
+
+```bash
+pipelock evidence serve \
+  --receipt-dir /var/lib/pipelock/evidence \
+  --session agent-a \
+  --listen 127.0.0.1:8897
+```
+
+If the receipt directory contains only one session, `--session` can be omitted.
+If it contains multiple sessions, `--session` is required so the free viewer
+cannot enumerate other agents.
+
+## Exemption lifecycle store
+
+The Exemptions page reads config state; lifecycle mutation stays in the CLI.
+Create and maintain lifecycle records with the `dashboard exemption` command
+family, then point `dashboard serve` at the same store:
+
+```bash
+pipelock dashboard exemption add \
+  --store /var/lib/pipelock/exemptions.json \
+  --scope response_scanning.exempt_domains:api.vendor.example \
+  --owner security-team \
+  --reason "vendor docs include benign instruction-like examples" \
+  --expiry 2026-10-01T00:00:00Z
+
+pipelock dashboard exemption list --store /var/lib/pipelock/exemptions.json
+pipelock dashboard exemption renew --store /var/lib/pipelock/exemptions.json --id exm_0123456789abcdef --expiry 2026-12-01T00:00:00Z
+pipelock dashboard exemption expire --store /var/lib/pipelock/exemptions.json --id exm_0123456789abcdef
+```
+
+`add`, `renew`, `expire`, `touch`, `remove`, and `list` are the mutation and
+inspection surface. Use the `exm_...` ID printed by `add` or `list` when
+renewing or expiring a record. The HTTP dashboard overlays
+owner/reason/expiry/status read-only and redacts owner/reason unless the
+request has raw access.
+
+## Coverage certificates
+
+A coverage certificate is a signed statement about one agent over a time window.
+It summarizes mediated-egress receipt integrity and completeness for that agent
+only; it does not claim all agent activity or no bypass outside Pipelock.
+
+Generate requires the Pro `agents` feature:
+
+```bash
+pipelock dashboard coverage-cert generate \
+  --receipt-dir /var/lib/pipelock/evidence \
+  --agent agent-a \
+  --window-start 2026-07-01T00:00:00Z \
+  --window-end 2026-07-12T00:00:00Z \
+  --signing-key /etc/pipelock/keys/coverage-cert.key \
+  --out agent-a-coverage.json
+```
+
+Verify is free and offline:
+
+```bash
+pipelock evidence verify-cert \
+  --cert agent-a-coverage.json \
+  --trusted-signer file=/etc/pipelock/keys/coverage-cert.pub,source=security-team
+```
+
+With a `--trusted-signer` set, verification exits non-zero when the certificate
+signer is not trusted. With no trusted signer, verification is structural-only.
+
+## Backup, restore, and read-model rebuild
+
+Dashboard durable stores are the JSON files that cannot be reconstructed from
+receipts, such as exemption lifecycle state, legal holds, and delivery inbox
+state. Keep those stores under one state directory and back up that directory:
+
+```bash
+pipelock dashboard backup \
+  --state-dir /var/lib/pipelock/dashboard \
+  --output /var/backups/pipelock-dashboard-state.tar
+
+pipelock dashboard restore \
+  --state-dir /var/lib/pipelock/dashboard \
+  --input /var/backups/pipelock-dashboard-state.tar
+```
+
+Restore validates the archive and writes each file atomically with best-effort
+whole-set rollback. It is not a cross-file transaction; if a process crashes
+between file writes, re-run restore to converge.
+
+The read model is disposable and should be rebuilt from recorder evidence, not
+backed up as authority:
+
+```bash
+pipelock dashboard rebuild-read-model \
+  --receipt-dir /var/lib/pipelock/evidence \
+  --output /var/lib/pipelock/dashboard/read-model-index.json
+```
 
 ## Legal-hold metadata
 

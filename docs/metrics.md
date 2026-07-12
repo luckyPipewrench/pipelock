@@ -119,6 +119,31 @@ investigation.
 | `pipelock_kill_switch_denials_total` | counter | `transport`, `endpoint` | Requests denied by the kill switch. |
 | `pipelock_chain_detections_total` | counter | `pattern`, `severity`, `action` | Tool call chain pattern detections. |
 
+## Evidence Health Metrics
+
+These metrics summarize the live evidence pipeline. They are observability only:
+they do not make traffic decisions, and a missing value means the evidence
+health sampler is not measuring that fact in the current runtime.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_evidence_current_ael` | gauge | (none) | Current evidence assurance level, 0 through 4. The level is a minimum over enabled requirements and must not be read as a green completeness claim. |
+| `pipelock_evidence_ael_requirement_ok` | gauge | `requirement` | One when a bounded evidence requirement is currently satisfied. Requirement labels are `recorder_enabled`, `emitter_healthy`, `durability_gate`, `heartbeats`, `anchoring_fresh`, `cpc_active`, and `selfaudit_ok`. |
+| `pipelock_evidence_chain_head_seq` | gauge | (none) | Last emitted in-memory receipt sequence, omitted when evidence health is not measured. |
+| `pipelock_evidence_chain_head_age_seconds` | gauge | (none) | Seconds since the last durable chain entry, omitted when evidence health is not measured. |
+| `pipelock_evidence_heartbeat_interval_seconds` | gauge | (none) | Configured receipt heartbeat interval in seconds; absent from JSON stats until heartbeats are enabled. |
+| `pipelock_evidence_anchor_lag_receipts` | gauge | (none) | Receipts between the live chain head and the latest accepted anchor-state marker. |
+| `pipelock_evidence_last_anchor_timestamp_seconds` | gauge | (none) | Unix timestamp of the latest accepted local anchor-state marker, or zero when never anchored. |
+| `pipelock_evidence_anchored_final_seq` | gauge | (none) | Final receipt sequence covered by the latest accepted local anchor-state marker. |
+| `pipelock_evidence_sequence_gaps_total` | counter | `source` | Observed sequence gaps by bounded source. Source labels are `resume`, `self_audit`, and `unknown`. |
+| `pipelock_evidence_fsync_errors_total` | counter | `gated` | Per-action durability confirmation failures. `gated=true` means fail-closed receipt gating was active. |
+| `pipelock_evidence_selfaudit_ok` | gauge | (none) | One while evidence self-audit checks pass; latches to zero after a failure in the process. |
+| `pipelock_evidence_selfaudit_failures_total` | counter | `check` | Evidence self-audit failures by bounded check label: `durability_invariant`, `tail_divergence`, or `sampler_error`. |
+
+The `/stats` endpoint also includes a nullable `evidence_health` object with
+the same chain-head, sequence-gap, fsync, anchor, durability, and requirement
+state. Treat `null` as "not measured," not as healthy.
+
 ## Session Profiling Metrics
 
 Pipelock tracks per-session behavioral profiles. Sessions that deviate

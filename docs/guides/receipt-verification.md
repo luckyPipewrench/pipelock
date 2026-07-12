@@ -184,15 +184,38 @@ Chain verification checks:
 
 - Every receipt's Ed25519 signature is valid against its signer key.
 - `chain_seq` increments by exactly 1 from 0 to N-1 (per segment; see rotation below).
-- The first receipt has `chain_prev_hash: "genesis"`.
+- The first receipt either has the legacy `chain_prev_hash: "genesis"` or a
+  v3.1 bound-genesis `g1:<sha256>` value derived from the signed
+  `session_open` record.
 - Each subsequent receipt's `chain_prev_hash` equals the SHA-256 hash of
   the previous receipt's canonical JSON.
+- Signed v1 objects reject unknown fields. Only the unsigned top-level `ext`
+  object may carry advisory forward-compatible metadata, and it never
+  contributes to a verified claim.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning
 the key is what proves the chain came from a signer you trust.
 
 If any check fails, the output reports which sequence number broke the chain.
+
+### Completeness analysis
+
+`pipelock-verifier completeness` analyzes the signed session lifecycle evidence
+in a receipt chain. The best possible result is LIMITED, never COMPLETE, PASS,
+or OK: Pipelock can bound mediated egress it observed, but cannot prove the
+agent had no path outside that boundary.
+
+```bash
+pipelock-verifier completeness /var/lib/pipelock/evidence \
+  --session agent-a \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub
+```
+
+Exit code 0 means the analysis ran and the chain was not classified BROKEN;
+LIMITED and UNVERIFIED are successful analyses. Exit code 1 means broken
+completeness evidence, an unpinned non-empty chain without
+`--allow-unpinned`, or another verifier failure.
 
 ### Chains that rotated the signing key
 
@@ -251,6 +274,60 @@ An empty evidence file — zero receipts — fails with a non-zero exit code
 rather than silently printing a valid-looking root, so scripts can trust
 an exit-0 status to mean "receipts were present and the chain verified."
 
+## Anchoring receipts
+
+`pipelock anchor receipts` verifies a receipt chain with pinned signer keys,
+writes the verified chain head to an anchor backend, and emits an anchor bundle
+for later offline verification.
+
+The local backend is deterministic test/development plumbing, not an
+operator-independent witness:
+
+```bash
+pipelock anchor receipts /var/lib/pipelock/evidence \
+  --dir \
+  --session agent-a \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
+  --backend local \
+  --local-log /var/lib/pipelock/anchors/local-log.jsonl \
+  --out /var/lib/pipelock/evidence/agent-a.anchor.json
+```
+
+The Rekor backend submits checkpoint material to a remote transparency log. It
+has no public default URL: name the log explicitly and acknowledge the remote
+submission. The hashedrekord data hash defaults to `sha256`; set
+`--rekor-hash-algorithm sha512` only when your Rekor deployment requires it.
+
+```bash
+pipelock anchor receipts /var/lib/pipelock/evidence \
+  --dir \
+  --session agent-a \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
+  --backend rekor \
+  --rekor-url https://rekor.vendor.example \
+  --rekor-key /etc/pipelock/keys/rekor-checkpoint.key \
+  --rekor-hash-algorithm sha256 \
+  --yes-send-to-remote-log \
+  --out /var/lib/pipelock/evidence/agent-a.rekor-anchor.json
+```
+
+Offline independent verification requires the receipt signer key and a pinned
+Rekor log public key. Without `--rekor-log-key`, Rekor inclusion material is not
+trusted.
+
+```bash
+pipelock-verifier independent /var/lib/pipelock/evidence \
+  --dir \
+  --session agent-a \
+  --bundle /var/lib/pipelock/evidence/agent-a.rekor-anchor.json \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
+  --rekor-log-key /etc/pipelock/keys/rekor-log.pub
+```
+
+Honest limit: anchoring narrows post-anchor omission and tampering windows, but
+it does not prove real-time truth by whoever held the receipt signing key and
+does not prove traffic outside the mediated boundary did not happen.
+
 ## How the chain works
 
 Each receipt contains:
@@ -268,7 +345,7 @@ Each receipt contains:
 The chain links receipts via `chain_prev_hash`:
 
 ```
-Receipt 0:  chain_seq=0, chain_prev_hash="genesis"
+Receipt 0:  chain_seq=0, chain_prev_hash="genesis" (legacy) or "g1:<sha256>"
 Receipt 1:  chain_seq=1, chain_prev_hash=sha256(receipt_0)
 Receipt 2:  chain_seq=2, chain_prev_hash=sha256(receipt_1)
 ...

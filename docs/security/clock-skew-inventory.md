@@ -3,9 +3,9 @@ Copyright 2026 Josh Waldrep
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# v3.0.0 Clock-Skew Inventory
+# v3.1.0 Clock-Skew Inventory
 
-This inventory records the v3.0.0 sweep for the class where one host stamps a
+This inventory records the v3.1.0 sweep for the class where one host stamps a
 time and another host validates it with its own clock. The rule used here:
 
 - Cross-host `not_before` / created-time gates may tolerate bounded positive
@@ -43,7 +43,7 @@ Run these from the repository root:
 go test -tags enterprise -count=1 ./enterprise/conductor ./enterprise/conductor/controlplane ./enterprise/conductor/emergency ./enterprise/conductor/policysync
 ```
 
-The conductor package includes the v3.0.0 regression coverage for bounded
-`not_before` skew while keeping expiry strict. The control-plane, emergency, and
+The conductor package includes regression coverage for bounded `not_before`
+skew while keeping expiry strict. The control-plane, emergency, and
 poller packages exercise the same validity helpers through handler/store/poller
 paths.

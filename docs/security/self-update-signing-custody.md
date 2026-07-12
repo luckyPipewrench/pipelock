@@ -21,8 +21,8 @@ referenced by the release workflow.
    then transfer it to the offline signing machine on removable media. The signing
    machine stays air-gapped and never connects to the network.
 
-2. Unlock the offline release signing key from USB `PIPELOCK-KEYS2`, using the
-   same custody handling as the license signer.
+2. Unlock the offline release signing key from the designated removable media,
+   using the same custody handling as the license signer.
 
 3. Sign the manifest:
 
@@ -43,7 +43,7 @@ unset PIPELOCK_RELEASE_PRIVATE_KEY_HEX
 5. Confirm the release contains both files:
 
 ```bash
-gh release view v3.0.0 --json assets --jq '.assets[].name' | sort
+gh release view v3.1.0 --json assets --jq '.assets[].name' | sort
 ```
 
 The client verification path is unchanged: `pipelock update` downloads

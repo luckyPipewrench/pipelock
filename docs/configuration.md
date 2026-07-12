@@ -870,16 +870,16 @@ response_scanning:
 | `enabled` | `true` | Enable response scanning |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
-| `include_defaults` | `true` | Merge with 29 built-in patterns |
+| `include_defaults` | `true` | Merge with 32 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
 | `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy, TLS-intercepted, or reverse-proxy responses use the larger bounded whole-buffer scan ceiling instead of failing the normal scan cap. |
 | `size_exempt_scan_max_bytes` | `67108864` | Maximum bytes read into memory for one over-cap response from a `size_exempt_domains` host before the existing response scanners run. Exceeding this ceiling blocks fail-closed with no upstream bytes delivered. |
 | `size_exempt_scan_max_inflight_bytes` | `268435456` | Per-proxy-instance memory reservation budget for concurrent over-cap size-exempt scans. If a scan cannot reserve its ceiling immediately, the response blocks fail-closed instead of waiting. |
 | `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. |
 | `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. Omitted, missing, malformed, or non-matching servers are treated as `untrusted` and block response-injection findings. `reasoning` is an explicit opt-in that logs/warns but forwards the response. |
-| `patterns` | 29 built-in | Injection and state/control poisoning patterns |
+| `patterns` | 32 built-in | Injection and state/control poisoning patterns |
 
-**Built-in patterns (29):** Prompt-injection and state/control poisoning coverage includes jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation, credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, covert-action directives, silent credential handling, and CJK-language override patterns. All patterns use DOTALL mode to match across newlines in multiline tool output.
+**Built-in patterns (32):** Prompt-injection and state/control poisoning coverage includes jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation, credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, covert-action directives, silent credential handling, and CJK-language override patterns. All patterns use DOTALL mode to match across newlines in multiline tool output.
 
 **Actions:**
 - **block:** reject the response entirely, agent gets an error
@@ -2317,6 +2317,17 @@ flight_recorder:
   max_entries_per_file: 10000
   raw_escrow: false
   escrow_public_key: ""
+  completeness:
+    heartbeat_interval: 60s
+  evidence_health:
+    enabled: true
+    self_audit_interval: 30s
+    max_anchor_lag: 24h
+
+dashboard_snapshot:
+  enabled: true
+  path: /var/lib/pipelock/evidence/dashboard/runtime-snapshot.json
+  interval: 10s
 ```
 
 | Field | Default | Description |
@@ -2332,8 +2343,24 @@ flight_recorder:
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
 | `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
 | `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |
+| `completeness.heartbeat_interval` | `60s` | Restart-only interval for signed session heartbeat records. Must parse as a positive duration and be no more than 24h. |
+| `evidence_health.enabled` | `true` | Enable observability-only evidence health grading and `/stats` evidence-health output. This does not gate traffic. |
+| `evidence_health.self_audit_interval` | `30s` | Evidence self-audit interval. Must be between 5s and 10m. |
+| `evidence_health.max_anchor_lag` | `24h` | Maximum accepted age/lag window for anchor freshness reporting. A stale or missing anchor lowers the reported grade; it cannot fabricate health. |
 
-Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Action receipts form a second chain within the evidence log (each receipt links to the previous receipt via `chain_prev_hash`). Breaking either chain is detectable by `pipelock integrity verify`.
+### Dashboard Runtime Snapshot
+
+`dashboard_snapshot` controls the proxy-produced, counts-only runtime snapshot
+used by `pipelock dashboard serve` for the Budgets view. It is operational
+state, excluded from the canonical policy hash, and restart-only on reload.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | omitted | Tri-state. Omitted writes a snapshot when `flight_recorder.dir` is configured; `false` disables it; `true` forces it and requires either `path` or `flight_recorder.dir`. |
+| `path` | `<flight_recorder.dir>/dashboard/runtime-snapshot.json` | Snapshot path. Counts and limits only; no destinations, bodies, arguments, or tokens. |
+| `interval` | `10s` | Snapshot write interval. Must parse as a duration and be at least 1s. |
+
+Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Action receipts form a second chain within the evidence log (each receipt links to the previous receipt via `chain_prev_hash`). Breaking the receipt chain is detectable by `pipelock verify-receipt --chain /var/lib/pipelock/evidence --key /etc/pipelock/keys/receipt.pub`; file-manifest drift is checked separately with `pipelock integrity check /path/to/workspace`.
 
 ## Learn and Lock
 

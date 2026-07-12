@@ -174,7 +174,7 @@
 
         <h2>Fleet applied state</h2>
         {{if not .FleetSourceConfigured}}
-          <section class="absence"><h2>No conductor fleet source configured</h2><p class="muted">Applied-state correlation proves follower report counts for the requested fleet scope. No conductor fleet source is connected. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span>, <span class="mono">--conductor-org</span>, and <span class="mono">--conductor-fleet</span>.</p></section>
+          <section class="absence"><h2>No conductor fleet source configured</h2><p class="muted">Applied-state correlation proves follower report counts for the requested fleet scope. No conductor fleet source is connected. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span>, <span class="mono">--conductor-org</span>, <span class="mono">--conductor-fleet</span>, <span class="mono">--conductor-token-file</span>, <span class="mono">--conductor-tls-cert</span>, <span class="mono">--conductor-tls-key</span>, and <span class="mono">--conductor-server-ca</span>.</p></section>
         {{else if .HasFleet}}
           {{with .Applied}}
           {{if .Truncated}}<div class="callout muted">Showing counts for the first 500 followers returned by this scoped query.</div>{{end}}

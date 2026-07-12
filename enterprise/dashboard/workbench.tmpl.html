@@ -192,9 +192,14 @@
         if (!code) {
           return;
         }
+        var previous = button.textContent;
         navigator.clipboard.writeText(code.textContent).then(function() {
-          var previous = button.textContent;
           button.textContent = "Copied";
+          window.setTimeout(function() {
+            button.textContent = previous;
+          }, 1200);
+        }).catch(function() {
+          button.textContent = "Copy failed";
           window.setTimeout(function() {
             button.textContent = previous;
           }, 1200);

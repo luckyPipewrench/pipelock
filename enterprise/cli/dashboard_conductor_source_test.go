@@ -105,6 +105,41 @@ func TestDashboardConductorSourceListFleetFollowersMapsFollowers(t *testing.T) {
 	}
 }
 
+func TestDashboardFollowerViewDoesNotTrustUnverifiedSignedAppliedState(t *testing.T) {
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	view := dashboardFollowerView(controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{
+			OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1",
+		},
+		RuntimeStatus: &controlplane.FollowerRuntimeStatus{
+			LastSeenAt: now, ActiveBundleID: "runtime-bundle", ActiveBundleVersion: 7,
+			ActiveBundleHash: strings.Repeat("a", 64), ActiveBundleMinPipelockVersion: "1.2.3",
+			PipelockVersion: "1.2.4", GitCommit: "runtime-commit", BuildDate: "2026-07-12",
+			LastPolicyPollAt: now.Add(-time.Minute), LastSuccessfulApplyAt: now.Add(-2 * time.Minute),
+		},
+		SignedAppliedState: &controlplane.VerifiedAppliedState{
+			SignerKeyID: "signer-1", BatchID: "batch-1", EnvelopeHash: "env-hash",
+			ObservedAt: now.Add(-30 * time.Second), VerifiedAt: now,
+			Verified: false,
+			AppliedState: conductor.FollowerAppliedState{
+				ActiveBundleID: "unverified-bundle", ActiveBundleVersion: 99, ActiveBundleHash: strings.Repeat("b", 64),
+				ActiveBundleMinPipelockVersion: "9.9.9", PipelockVersion: "9.9.9",
+				LastApplyErrorCode: "unverified_error", LastApplyErrorMessage: "do not display as runtime state",
+			},
+		},
+	})
+	if !view.RuntimeReported || !view.SignedStatePresent || view.Verified {
+		t.Fatalf("flags = runtime:%t signed:%t verified:%t", view.RuntimeReported, view.SignedStatePresent, view.Verified)
+	}
+	if view.SignerKeyID != "signer-1" || view.BatchID != "batch-1" || view.EnvelopeHash != "env-hash" {
+		t.Fatalf("signed metadata missing: %+v", view)
+	}
+	if view.ActiveBundleID != "runtime-bundle" || view.ActiveBundleVersion != 7 || view.ActiveBundleHash != strings.Repeat("a", 64) ||
+		view.PipelockVersion != "1.2.4" || view.GitCommit != "runtime-commit" || view.LastApplyErrorCode != "" {
+		t.Fatalf("unverified signed state overrode runtime fields: %+v", view)
+	}
+}
+
 func TestDashboardConductorSourceCompletenessSignals(t *testing.T) {
 	tests := []struct {
 		name      string

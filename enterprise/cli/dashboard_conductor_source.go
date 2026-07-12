@@ -234,6 +234,9 @@ func dashboardFollowerView(f controlplane.FollowerFleetStatus) dashboard.FleetFo
 		view.EnvelopeHash = f.SignedAppliedState.EnvelopeHash
 		view.ObservedAt = f.SignedAppliedState.ObservedAt
 		view.VerifiedAt = f.SignedAppliedState.VerifiedAt
+		if !f.SignedAppliedState.Verified {
+			return view
+		}
 		view.ActiveBundleID = applied.ActiveBundleID
 		view.ActiveBundleVersion = applied.ActiveBundleVersion
 		view.ActiveBundleHash = applied.ActiveBundleHash

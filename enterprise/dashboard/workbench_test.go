@@ -293,6 +293,7 @@ func TestWorkbench_PrepareGuidanceAndNeverAuthority(t *testing.T) {
 		"No conductor decision source configured",
 		`type="button" class="copy-command" hidden>Copy</button>`,
 		"navigator.clipboard.writeText(code.textContent)",
+		".catch(function()",
 		"white-space: pre-wrap",
 		"overflow-wrap: anywhere",
 		`<script nonce="`,

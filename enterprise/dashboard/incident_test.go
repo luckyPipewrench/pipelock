@@ -73,6 +73,10 @@ func TestIncident_UnconfiguredSourcesRenderAbsence(t *testing.T) {
 		"Applied-state correlation proves follower report counts",
 		"--conductor-org",
 		"--conductor-fleet",
+		"--conductor-token-file",
+		"--conductor-tls-cert",
+		"--conductor-tls-key",
+		"--conductor-server-ca",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("incident body missing %q: %s", want, body)

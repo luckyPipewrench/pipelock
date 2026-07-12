@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -97,6 +98,14 @@ func (c *ReadClient) ListFollowers(ctx context.Context, orgID, fleetID string, l
 	}
 	if limit > ReadClientFollowerLimitMax {
 		return nil, fmt.Errorf("follower limit exceeds maximum %d", ReadClientFollowerLimitMax)
+	}
+	orgID = strings.TrimSpace(orgID)
+	fleetID = strings.TrimSpace(fleetID)
+	if orgID == "" || fleetID == "" {
+		return nil, errors.New("org_id and fleet_id are required")
+	}
+	if strings.IndexFunc(orgID, unicode.IsControl) >= 0 || strings.IndexFunc(fleetID, unicode.IsControl) >= 0 {
+		return nil, errors.New("org_id and fleet_id must not contain control characters")
 	}
 	params := map[string]string{
 		"org_id":   orgID,

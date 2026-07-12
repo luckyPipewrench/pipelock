@@ -304,6 +304,30 @@ func TestConductorReadClientListFollowersRejectsUnboundedLimits(t *testing.T) {
 	}
 }
 
+func TestConductorReadClientListFollowersRejectsInvalidScope(t *testing.T) {
+	client := &ReadClient{client: &conductorClient{}}
+	tests := []struct {
+		name    string
+		orgID   string
+		fleetID string
+		wantErr string
+	}{
+		{name: "empty org", fleetID: "prod", wantErr: "required"},
+		{name: "empty fleet", orgID: "org-main", wantErr: "required"},
+		{name: "blank org", orgID: " \t", fleetID: "prod", wantErr: "required"},
+		{name: "org control", orgID: "org\nmain", fleetID: "prod", wantErr: "control characters"},
+		{name: "fleet control", orgID: "org-main", fleetID: "prod\rwest", wantErr: "control characters"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := client.ListFollowers(context.Background(), tc.orgID, tc.fleetID, 1)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ListFollowers() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestConductorClientGetJSONRefusesRedirects(t *testing.T) {
 	redirectTargetHit := false
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

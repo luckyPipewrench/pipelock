@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -532,6 +534,162 @@ func TestPolicyBundlePayloadPolicyHashNumericCanonicalizationEdges(t *testing.T)
 	})
 }
 
+func TestPolicyBundlePayloadPolicyHashYAMLNodeTreeEdges(t *testing.T) {
+	t.Run("quoted_numeric_string_does_not_collide_with_bare_number", func(t *testing.T) {
+		quoted := PolicyBundlePayload{ConfigYAML: `threshold: "4.5"` + "\n"}
+		bare := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\n"}
+		quotedHash, err := quoted.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(quoted numeric string): %v", err)
+		}
+		bareHash, err := bare.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(bare number): %v", err)
+		}
+		if quotedHash == bareHash {
+			t.Fatalf("quoted numeric string collided with bare number: %s", quotedHash)
+		}
+	})
+
+	t.Run("explicit_numeric_tags_match_equivalent_plain_scalars", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			left  string
+			right string
+		}{
+			{name: "float integer", left: "threshold: !!float 4\n", right: "threshold: 4\n"},
+			{name: "int", left: "threshold: !!int 4\n", right: "threshold: 4\n"},
+			{name: "null", left: "threshold: !!null \"\"\n", right: "threshold: null\n"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				leftHash, err := (PolicyBundlePayload{ConfigYAML: tc.left}).PolicyHash()
+				if err != nil {
+					t.Fatalf("PolicyHash(left): %v", err)
+				}
+				rightHash, err := (PolicyBundlePayload{ConfigYAML: tc.right}).PolicyHash()
+				if err != nil {
+					t.Fatalf("PolicyHash(right): %v", err)
+				}
+				if leftHash != rightHash {
+					t.Fatalf("equivalent tagged scalar hash drift:\nleft=%s\nright=%s", leftHash, rightHash)
+				}
+			})
+		}
+	})
+
+	t.Run("explicit_string_tag_does_not_collide_with_number", func(t *testing.T) {
+		taggedString := PolicyBundlePayload{ConfigYAML: "threshold: !!str 4.5\n"}
+		bare := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\n"}
+		taggedHash, err := taggedString.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(tagged string): %v", err)
+		}
+		bareHash, err := bare.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(bare number): %v", err)
+		}
+		if taggedHash == bareHash {
+			t.Fatalf("tagged string collided with bare number: %s", taggedHash)
+		}
+	})
+
+	t.Run("anchors_and_aliases_match_expanded_form", func(t *testing.T) {
+		withAlias := PolicyBundlePayload{ConfigYAML: "threshold: &a 4.5\nother: *a\n"}
+		expanded := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\nother: 4.5\n"}
+		aliasHash, err := withAlias.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(alias): %v", err)
+		}
+		expandedHash, err := expanded.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(expanded): %v", err)
+		}
+		if aliasHash != expandedHash {
+			t.Fatalf("alias hash drifted from expanded form:\nalias=%s\nexpanded=%s", aliasHash, expandedHash)
+		}
+	})
+
+	t.Run("loadable_alias_and_tag_forms_match_apply_time_config", func(t *testing.T) {
+		withAliasAndTag := "fetch_proxy:\n  monitoring:\n    entropy_threshold: &threshold !!float 4.5\n    subdomain_entropy_threshold: *threshold\n"
+		expanded := "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    subdomain_entropy_threshold: 4.5\n"
+		aliasHash, err := (PolicyBundlePayload{ConfigYAML: withAliasAndTag}).PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(alias/tag config): %v", err)
+		}
+		expandedHash, err := (PolicyBundlePayload{ConfigYAML: expanded}).PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(expanded config): %v", err)
+		}
+		if aliasHash != expandedHash {
+			t.Fatalf("alias/tag config hash drifted from expanded config:\nalias=%s\nexpanded=%s", aliasHash, expandedHash)
+		}
+		aliasConfig, err := loadConfigFromYAML(t, withAliasAndTag)
+		if err != nil {
+			t.Fatalf("config.Load(alias/tag config): %v", err)
+		}
+		expandedConfig, err := loadConfigFromYAML(t, expanded)
+		if err != nil {
+			t.Fatalf("config.Load(expanded config): %v", err)
+		}
+		if aliasConfig.CanonicalPolicyHash() != expandedConfig.CanonicalPolicyHash() {
+			t.Fatalf("apply-time canonical hash drifted:\nalias=%s\nexpanded=%s", aliasConfig.CanonicalPolicyHash(), expandedConfig.CanonicalPolicyHash())
+		}
+	})
+
+	t.Run("duplicate_keys_rejected_to_match_apply_time_parser", func(t *testing.T) {
+		duplicate := "mode: strict\nmode: balanced\n"
+		if _, err := loadConfigFromYAML(t, duplicate); err == nil {
+			t.Fatal("config.Load(duplicate key) = nil, want error")
+		}
+		if _, err := (PolicyBundlePayload{ConfigYAML: duplicate}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+			t.Fatalf("PolicyHash(duplicate key) = %v, want ErrInvalidHash", err)
+		}
+	})
+
+	t.Run("duplicate_keys_inside_alias_rejected", func(t *testing.T) {
+		duplicate := "outer: &dup\n  a: 1\n  a: 2\nexpanded: *dup\n"
+		if _, err := (PolicyBundlePayload{ConfigYAML: duplicate}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+			t.Fatalf("PolicyHash(duplicate key inside alias) = %v, want ErrInvalidHash", err)
+		}
+	})
+
+	t.Run("recursive_alias_rejected", func(t *testing.T) {
+		recursive := "outer: &outer\n  nested: *outer\n"
+		if _, err := (PolicyBundlePayload{ConfigYAML: recursive}).PolicyHash(); err == nil {
+			t.Fatal("PolicyHash(recursive alias) = nil, want fail-closed error")
+		}
+	})
+
+	t.Run("quoted_numeric_float_rejected_by_apply_time_parser", func(t *testing.T) {
+		quoted := "fetch_proxy:\n  monitoring:\n    entropy_threshold: \"4.5\"\n"
+		if _, err := loadConfigFromYAML(t, quoted); err == nil {
+			t.Fatal("config.Load(quoted numeric float) = nil, want error")
+		}
+	})
+}
+
+func TestPolicyBundlePayloadPolicyHashScientificNotationCaps(t *testing.T) {
+	for _, yamlSrc := range []string{
+		"threshold: 1e308\n",
+		"threshold: 1e-308\n",
+		"threshold: 5e-324\n",
+		"threshold: 1e6\n",
+	} {
+		if _, err := (PolicyBundlePayload{ConfigYAML: yamlSrc}).PolicyHash(); err != nil {
+			t.Fatalf("PolicyHash(%q) = %v, want nil", strings.TrimSpace(yamlSrc), err)
+		}
+	}
+	for _, yamlSrc := range []string{
+		"threshold: 1e1000000\n",
+		"threshold: -1e1000000\n",
+		"threshold: 1e-1000000\n",
+	} {
+		if _, err := (PolicyBundlePayload{ConfigYAML: yamlSrc}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+			t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(yamlSrc), err)
+		}
+	}
+}
+
 func TestNormalizePolicyHashYAMLNumbersCoversNumericTypes(t *testing.T) {
 	normalized, err := normalizePolicyHashYAMLNumbers(map[any]any{
 		"json_fraction": json.Number("4.50"),
@@ -550,7 +708,7 @@ func TestNormalizePolicyHashYAMLNumbersCoversNumericTypes(t *testing.T) {
 	if !ok {
 		t.Fatalf("normalized type = %T, want map[string]any", normalized)
 	}
-	if got["json_fraction"] != "4.5" {
+	if got["json_fraction"] != policyHashYAMLNumber("4.5") {
 		t.Fatalf("json_fraction = %#v, want canonical decimal string", got["json_fraction"])
 	}
 	if got["json_integer"] != int64(42) {
@@ -566,13 +724,23 @@ func TestNormalizePolicyHashYAMLNumbersCoversNumericTypes(t *testing.T) {
 	if !ok || len(nested) != 2 {
 		t.Fatalf("nested = %#v, want two normalized values", got["nested"])
 	}
-	if nested[0] != "4.5" || nested[1] != "0.5" {
+	if nested[0] != policyHashYAMLNumber("4.5") || nested[1] != policyHashYAMLNumber("0.5") {
 		t.Fatalf("nested = %#v, want canonical fractional strings", nested)
 	}
 
 	if _, err := normalizePolicyHashYAMLNumbers(json.Number("not-a-number")); !errors.Is(err, ErrInvalidHash) {
 		t.Fatalf("invalid json.Number error = %v, want ErrInvalidHash", err)
 	}
+}
+
+func loadConfigFromYAML(t *testing.T, yamlSrc string) (*config.Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlSrc), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return config.Load(path)
 }
 
 func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {

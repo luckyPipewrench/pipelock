@@ -82,6 +82,9 @@ const (
 	// compromised operator CLI cannot mint a long-lived cross-stream retarget
 	// capability that a follower would honor.
 	DefaultStreamSwitchMaxValidity = 24 * time.Hour
+
+	policyHashYAMLStringPrefix = "\x00pipelock:policy-hash-yaml-string:"
+	policyHashYAMLNumberPrefix = "\x00pipelock:policy-hash-yaml-number:"
 )
 
 // acceptedSchemaVersions mirrors internal/recorder/entry.go's v1+v2 coexistence
@@ -276,9 +279,19 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 }
 
 func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
+	return normalizePolicyHashYAMLNodeNumbersSeen(node, map[*yaml.Node]bool{})
+}
+
+func normalizePolicyHashYAMLNodeNumbersSeen(node *yaml.Node, path map[*yaml.Node]bool) (any, error) {
 	if node == nil {
 		return nil, nil
 	}
+	if path[node] {
+		return nil, fmt.Errorf("%w: recursive YAML alias", ErrInvalidHash)
+	}
+	path[node] = true
+	defer delete(path, node)
+
 	switch node.Kind {
 	case 0:
 		return nil, nil
@@ -286,11 +299,11 @@ func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
 		if len(node.Content) == 0 {
 			return nil, nil
 		}
-		return normalizePolicyHashYAMLNodeNumbers(node.Content[0])
+		return normalizePolicyHashYAMLNodeNumbersSeen(node.Content[0], path)
 	case yaml.SequenceNode:
 		out := make([]any, len(node.Content))
 		for i, item := range node.Content {
-			normalized, err := normalizePolicyHashYAMLNodeNumbers(item)
+			normalized, err := normalizePolicyHashYAMLNodeNumbersSeen(item, path)
 			if err != nil {
 				return nil, err
 			}
@@ -299,12 +312,18 @@ func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
 		return out, nil
 	case yaml.MappingNode:
 		out := make(map[string]any, len(node.Content)/2)
+		seenKeys := make(map[string]struct{}, len(node.Content)/2)
+		seenMerge := false
 		for i := 0; i < len(node.Content); i += 2 {
 			if i+1 >= len(node.Content) {
 				return nil, fmt.Errorf("%w: malformed YAML mapping", ErrInvalidHash)
 			}
 			if node.Content[i].Tag == "!!merge" {
-				merged, err := normalizePolicyHashYAMLMergeNode(node.Content[i+1])
+				if seenMerge {
+					return nil, fmt.Errorf("%w: duplicate YAML merge key", ErrInvalidHash)
+				}
+				seenMerge = true
+				merged, err := normalizePolicyHashYAMLMergeNode(node.Content[i+1], path)
 				if err != nil {
 					return nil, err
 				}
@@ -323,7 +342,11 @@ func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
 			if !ok {
 				return nil, fmt.Errorf("unsupported non-string YAML map key %T", key)
 			}
-			normalized, err := normalizePolicyHashYAMLNodeNumbers(node.Content[i+1])
+			if _, exists := seenKeys[keyString]; exists {
+				return nil, fmt.Errorf("%w: duplicate YAML key %q", ErrInvalidHash, keyString)
+			}
+			seenKeys[keyString] = struct{}{}
+			normalized, err := normalizePolicyHashYAMLNodeNumbersSeen(node.Content[i+1], path)
 			if err != nil {
 				return nil, err
 			}
@@ -331,16 +354,30 @@ func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
 		}
 		return out, nil
 	case yaml.AliasNode:
-		return normalizePolicyHashYAMLNodeNumbers(node.Alias)
+		return normalizePolicyHashYAMLNodeNumbersSeen(node.Alias, path)
 	case yaml.ScalarNode:
-		if node.Tag == "!!float" {
-			return canonicalPolicyHashYAMLFloatLiteral(node.Value)
+		switch node.Tag {
+		case "!!float", "!!int":
+			value, ok, err := canonicalPolicyHashDecimalFloatLiteral(node.Value)
+			if ok || err != nil {
+				return value, err
+			}
+			if node.Tag == "!!float" {
+				return canonicalPolicyHashYAMLFloatLiteral(node.Value)
+			}
+		case "!!str":
+			if node.Style == 0 {
+				value, ok, err := canonicalPolicyHashDecimalFloatLiteral(node.Value)
+				if ok || err != nil {
+					return value, err
+				}
+			}
 		}
 		var decoded any
 		if err := node.Decode(&decoded); err != nil {
 			return nil, fmt.Errorf("decode YAML scalar: %w", err)
 		}
-		return normalizePolicyHashYAMLNumbers(decoded)
+		return normalizePolicyHashYAMLScalarValue(decoded)
 	default:
 		var decoded any
 		if err := node.Decode(&decoded); err != nil {
@@ -350,12 +387,12 @@ func normalizePolicyHashYAMLNodeNumbers(node *yaml.Node) (any, error) {
 	}
 }
 
-func normalizePolicyHashYAMLMergeNode(node *yaml.Node) (map[string]any, error) {
+func normalizePolicyHashYAMLMergeNode(node *yaml.Node, path map[*yaml.Node]bool) (map[string]any, error) {
 	switch node.Kind {
 	case yaml.AliasNode:
-		return normalizePolicyHashYAMLMergeNode(node.Alias)
+		return normalizePolicyHashYAMLMergeNode(node.Alias, path)
 	case yaml.MappingNode:
-		normalized, err := normalizePolicyHashYAMLNodeNumbers(node)
+		normalized, err := normalizePolicyHashYAMLNodeNumbersSeen(node, path)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +404,7 @@ func normalizePolicyHashYAMLMergeNode(node *yaml.Node) (map[string]any, error) {
 	case yaml.SequenceNode:
 		out := make(map[string]any)
 		for _, item := range node.Content {
-			merged, err := normalizePolicyHashYAMLMergeNode(item)
+			merged, err := normalizePolicyHashYAMLMergeNode(item, path)
 			if err != nil {
 				return nil, err
 			}
@@ -381,6 +418,21 @@ func normalizePolicyHashYAMLMergeNode(node *yaml.Node) (map[string]any, error) {
 	default:
 		return nil, fmt.Errorf("%w: YAML merge value is %s, want map or sequence", ErrInvalidHash, node.ShortTag())
 	}
+}
+
+func normalizePolicyHashYAMLScalarValue(v any) (any, error) {
+	if s, ok := v.(string); ok {
+		return policyHashYAMLString(s), nil
+	}
+	return normalizePolicyHashYAMLNumbers(v)
+}
+
+func policyHashYAMLString(s string) string {
+	return policyHashYAMLStringPrefix + s
+}
+
+func policyHashYAMLNumber(s string) string {
+	return policyHashYAMLNumberPrefix + s
 }
 
 func normalizePolicyHashYAMLNumbers(v any) (any, error) {
@@ -490,7 +542,19 @@ func canonicalPolicyHashDecimalFloatLiteral(raw string) (any, bool, error) {
 		if strings.ContainsAny(s[:idx], "eE") {
 			return nil, false, nil
 		}
-		exp, err := strconv.ParseInt(s[idx+1:], 10, 32)
+		mantissa := s[:idx]
+		if !policyHashDecimalMantissaShape(mantissa) {
+			return nil, false, nil
+		}
+		expPart := s[idx+1:]
+		expDigits := expPart
+		if expDigits != "" && (expDigits[0] == '+' || expDigits[0] == '-') {
+			expDigits = expDigits[1:]
+		}
+		if expDigits == "" || !policyHashAllDecimalDigits(expDigits) {
+			return "", true, fmt.Errorf("%w: invalid float exponent %q", ErrInvalidHash, raw)
+		}
+		exp, err := strconv.ParseInt(expPart, 10, 32)
 		if err != nil {
 			return "", true, fmt.Errorf("%w: invalid float exponent %q", ErrInvalidHash, raw)
 		}
@@ -522,6 +586,22 @@ func canonicalPolicyHashDecimalFloatLiteral(raw string) (any, bool, error) {
 	scale := int64(len(fracPart)) - exponent
 	value, err := canonicalPolicyHashDecimalNumber(negative, digits, scale)
 	return value, true, err
+}
+
+func policyHashDecimalMantissaShape(s string) bool {
+	var intPart, fracPart string
+	switch dot := strings.IndexByte(s, '.'); {
+	case dot < 0:
+		intPart = s
+	case strings.IndexByte(s[dot+1:], '.') >= 0:
+		return false
+	default:
+		intPart = s[:dot]
+		fracPart = s[dot+1:]
+	}
+	return (intPart != "" || fracPart != "") &&
+		policyHashAllDecimalDigits(intPart) &&
+		policyHashAllDecimalDigits(fracPart)
 }
 
 func policyHashAllDecimalDigits(s string) bool {
@@ -571,7 +651,7 @@ func canonicalPolicyHashDecimalNumber(negative bool, digits string, scale int64)
 	if len(out) > MaxConfigYAMLBytes {
 		return "", fmt.Errorf("%w: canonical float literal too large", ErrInvalidHash)
 	}
-	return out, nil
+	return policyHashYAMLNumber(out), nil
 }
 
 func canonicalPolicyHashDecimalInteger(negative bool, digits string) any {
@@ -581,7 +661,7 @@ func canonicalPolicyHashDecimalInteger(negative bool, digits string) any {
 	if i, err := strconv.ParseInt(digits, 10, 64); err == nil {
 		return i
 	}
-	return digits
+	return policyHashYAMLNumber(digits)
 }
 
 func canonicalPolicyHashFloat(f float64, bitSize int) (any, error) {
@@ -591,7 +671,7 @@ func canonicalPolicyHashFloat(f float64, bitSize int) (any, error) {
 	if math.Trunc(f) == f && f >= -9223372036854775808.0 && f < 9223372036854775808.0 {
 		return int64(f), nil
 	}
-	return strconv.FormatFloat(f, 'f', -1, bitSize), nil
+	return policyHashYAMLNumber(strconv.FormatFloat(f, 'f', -1, bitSize)), nil
 }
 
 type PolicyBundle struct {

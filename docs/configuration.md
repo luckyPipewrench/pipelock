@@ -21,7 +21,7 @@ Config changes are picked up automatically via file watcher or SIGHUP signal (10
 
 On reload, the scanner and session manager are atomically swapped. Kill switch state (all 4 sources) is preserved. Existing MCP sessions retain the old scanner until the next request.
 
-If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged.
+If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged. A reload is also rejected, in any mode, when a rule-bundle resolution error (bad signature, missing lock file, version mismatch, filesystem error) would drop detection rules that are currently live: the previous config is kept so a transient bundle failure cannot silently weaken coverage. An unrelated bundle error that does not remove any live rule does not block the reload. At startup there is no prior config to preserve, so a bundle resolution error is surfaced loudly and the proxy runs on its remaining (core plus compiled) patterns rather than refusing to start.
 
 **Reload exceptions:** the Sentry crash-report sanitizer captures the DLP pattern list at startup and does **not** update on reload. If you add DLP patterns used to scrub Sentry events, restart pipelock to propagate them. A warning is logged on any reload that changes `dlp.patterns` while Sentry is enabled: `DLP patterns changed; Sentry scrubber uses init-time patterns until restart`.
 

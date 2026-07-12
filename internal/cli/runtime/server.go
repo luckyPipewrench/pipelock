@@ -181,6 +181,13 @@ type Server struct {
 	// pointer out of sync with the running config.
 	conductorApplyMu sync.Mutex
 
+	// reloadMu serializes the whole hot-reload activation boundary: old-state
+	// snapshot, bundle downgrade gates, proxy publication, and runtime mirror
+	// refresh. proxy.Reload has its own lock, but that only covers lower-level
+	// pointer publication; the server-level gates also depend on s.stateMu-backed
+	// mirrors such as mcpToolExtraPoison.
+	reloadMu sync.Mutex
+
 	stateMu            sync.RWMutex
 	toolPolicyCfg      *policy.Config
 	mcpChainMatcher    *chains.Matcher
@@ -341,6 +348,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: %s\n", w)
 	}
 	if bundleResult.Degraded {
+		// Startup has no previous live bundle-resolved config to preserve, so a
+		// corrupt installed bundle is surfaced loudly but does not hard-fail the
+		// proxy. Hard-failing here would let one bad optional bundle deny service
+		// for the whole control. Hot reload has a separate activation-boundary
+		// gate that rejects bundle errors only when they would drop live coverage.
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 	}
 	if hasMCPListen {

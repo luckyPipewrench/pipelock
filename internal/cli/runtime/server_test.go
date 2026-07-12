@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,6 +117,66 @@ rules:
 		SignerFingerprint: rules.KeyFingerprint(pub),
 	}); err != nil {
 		t.Fatalf("write bundle.lock: %v", err)
+	}
+}
+
+func installServerTestToolPoisonBundle(t *testing.T, xdgDataHome string) string {
+	t.Helper()
+
+	bundleDir := filepath.Join(xdgDataHome, "pipelock", "rules", "community-tool-poison")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir tool-poison bundle dir: %v", err)
+	}
+	bundleYAML := `format_version: 1
+name: community-tool-poison
+version: "2026.07.0"
+author: Test Author
+description: Test tool-poison bundle
+license: Apache-2.0
+rules:
+  - id: tool-poison-shell
+    type: tool-poison
+    status: stable
+    name: Shell Tool Poison
+    description: Detects shell-like tool poison
+    severity: critical
+    confidence: high
+    pattern:
+      regex: 'test-tool-poison'
+      scan_field: description
+`
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, []byte(bundleYAML), 0o600); err != nil {
+		t.Fatalf("write tool-poison bundle.yaml: %v", err)
+	}
+	sum := sha256.Sum256([]byte(bundleYAML))
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
+		InstalledVersion: "2026.07.0",
+		Source:           "test",
+		BundleSHA256:     hex.EncodeToString(sum[:]),
+		Unsigned:         true,
+	}); err != nil {
+		t.Fatalf("write tool-poison bundle.lock: %v", err)
+	}
+	return bundleDir
+}
+
+func installServerTestBrokenBundle(t *testing.T, xdgDataHome string) {
+	t.Helper()
+
+	bundleDir := filepath.Join(xdgDataHome, "pipelock", "rules", "broken-community")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir broken bundle dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), []byte(`format_version: 1
+name: broken-community
+version: "2026.07.0"
+author: Test Author
+description: Broken bundle without a lock file
+license: Apache-2.0
+rules: []
+`), 0o600); err != nil {
+		t.Fatalf("write broken bundle.yaml: %v", err)
 	}
 }
 
@@ -1118,6 +1179,241 @@ func TestServer_Reload_StrictRejectsActionDowngrade(t *testing.T) {
 	if !buf.contains("response_scanning.action") {
 		t.Fatalf("stderr missing action downgrade warning:\n%s", buf.String())
 	}
+}
+
+func TestServer_Reload_BundleResolutionErrorRejectsBalancedCoverageDrop(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	requireBundlePatternSelected(t, oldLive.DLP.Patterns, oldLive.ResponseScanning.Patterns)
+
+	if err := os.Remove(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.lock")); err != nil {
+		t.Fatalf("remove standard bundle lock: %v", err)
+	}
+	buf.reset()
+
+	reloaded := config.Defaults()
+	reloaded.KillSwitch.APIToken = "should-not-activate"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("balanced reload with bundle error dropping live bundle patterns should reject")
+	}
+	if !strings.Contains(err.Error(), "bundle resolution error would drop live detection rules") {
+		t.Fatalf("error = %q, want bundle-resolution coverage-drop rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected bundle-resolution reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected bundle-resolution reload")
+	}
+	requireBundlePatternSelected(t, s.proxy.CurrentConfig().DLP.Patterns, s.proxy.CurrentConfig().ResponseScanning.Patterns)
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken == "should-not-activate" {
+		t.Fatal("rejected bundle-resolution reload activated unrelated config edit")
+	}
+	if !buf.contains("dlp.patterns") || !buf.contains("response_scanning.patterns") {
+		t.Fatalf("stderr missing bundle pattern removal warnings:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_CleanBundleResolutionStillApplies(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, _ := newTestServer(t, nil)
+	requireBundlePatternSelected(t, s.proxy.CurrentConfig().DLP.Patterns, s.proxy.CurrentConfig().ResponseScanning.Patterns)
+
+	reloaded := config.Defaults()
+	reloaded.KillSwitch.APIToken = "clean-reload-token"
+	if err := s.Reload(reloaded); err != nil {
+		t.Fatalf("clean bundle-resolved reload should apply: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if live.KillSwitch.APIToken != "clean-reload-token" {
+		t.Fatalf("api token = %q, want clean-reload-token", live.KillSwitch.APIToken)
+	}
+	requireBundlePatternSelected(t, live.DLP.Patterns, live.ResponseScanning.Patterns)
+}
+
+func TestServer_Reload_StrictBundleResolutionErrorStillUsesStrictDowngradeGate(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	requireBundlePatternSelected(t, oldLive.DLP.Patterns, oldLive.ResponseScanning.Patterns)
+
+	if err := os.Remove(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.lock")); err != nil {
+		t.Fatalf("remove standard bundle lock: %v", err)
+	}
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	err := s.Reload(reloaded)
+	if err == nil || !strings.Contains(err.Error(), "security downgrade from strict mode") {
+		t.Fatalf("strict bundle-error reload error = %v, want strict security downgrade rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected strict bundle reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected strict bundle reload")
+	}
+}
+
+func TestServer_Reload_UnrelatedBundleErrorWithoutLiveBundleCoverageApplies(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestBrokenBundle(t, xdgDataHome)
+
+	s, buf := newTestServer(t, nil)
+	for _, p := range s.proxy.CurrentConfig().DLP.Patterns {
+		if p.Bundle != "" {
+			t.Fatalf("test setup unexpectedly has live bundle DLP pattern: %+v", p)
+		}
+	}
+	for _, p := range s.proxy.CurrentConfig().ResponseScanning.Patterns {
+		if p.Bundle != "" {
+			t.Fatalf("test setup unexpectedly has live bundle response pattern: %+v", p)
+		}
+	}
+
+	buf.reset()
+	reloaded := config.Defaults()
+	reloaded.KillSwitch.APIToken = "allowed-with-unrelated-bundle-error"
+	if err := s.Reload(reloaded); err != nil {
+		t.Fatalf("bundle error with no live bundle coverage drop should not wedge reload: %v", err)
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "allowed-with-unrelated-bundle-error" {
+		t.Fatalf("api token = %q, want reload to apply", live.KillSwitch.APIToken)
+	}
+	if !buf.contains("bundle broken-community") {
+		t.Fatalf("stderr missing broken bundle warning:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_BundleResolutionErrorRejectsToolPoisonCoverageDrop(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	bundleDir := installServerTestToolPoisonBundle(t, xdgDataHome)
+
+	s, _ := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	if got := s.currentMCPToolExtraPoison(); len(got) != 1 || got[0].Name != "community-tool-poison:tool-poison-shell" {
+		t.Fatalf("live tool-poison patterns = %+v, want installed bundle pattern", got)
+	}
+	if err := os.Remove(filepath.Join(bundleDir, "bundle.lock")); err != nil {
+		t.Fatalf("remove tool-poison bundle lock: %v", err)
+	}
+
+	reloaded := config.Defaults()
+	reloaded.KillSwitch.APIToken = "tool-poison-drop"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("reload dropping live bundle tool-poison patterns should reject")
+	}
+	if !strings.Contains(err.Error(), "mcp_tool_scanning.tool_poison") {
+		t.Fatalf("error = %q, want tool-poison coverage-drop rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected tool-poison reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected tool-poison reload")
+	}
+	if got := s.currentMCPToolExtraPoison(); len(got) != 1 || got[0].Name != "community-tool-poison:tool-poison-shell" {
+		t.Fatalf("live tool-poison patterns after rejection = %+v, want preserved bundle pattern", got)
+	}
+}
+
+func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+
+	s, _ := newTestServer(t, nil)
+	if got := s.currentMCPToolExtraPoison(); len(got) != 0 {
+		t.Fatalf("initial tool-poison patterns = %+v, want none", got)
+	}
+	bundleDir := installServerTestToolPoisonBundle(t, xdgDataHome)
+
+	firstPaused := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var hookCalls atomic.Int32
+	restoreHook := setReloadAfterProxySwapHookForTest(func(*Server) {
+		if hookCalls.Add(1) != 1 {
+			return
+		}
+		close(firstPaused)
+		<-releaseFirst
+	})
+	defer restoreHook()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- s.Reload(loadServerTestReloadConfig(t, "first-clean-tool-poison"))
+	}()
+
+	<-firstPaused
+	if err := os.Remove(filepath.Join(bundleDir, "bundle.lock")); err != nil {
+		t.Fatalf("remove tool-poison bundle lock: %v", err)
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- s.Reload(loadServerTestReloadConfig(t, "second-should-not-activate"))
+	}()
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second reload completed before first reload refreshed runtime mirrors: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first clean reload: %v", err)
+	}
+	if got := s.currentMCPToolExtraPoison(); len(got) != 1 || got[0].Name != "community-tool-poison:tool-poison-shell" {
+		t.Fatalf("tool-poison patterns after first reload = %+v, want installed bundle pattern", got)
+	}
+
+	err := <-secondDone
+	if err == nil {
+		t.Fatal("second bundle-error reload should reject after seeing refreshed live tool-poison coverage")
+	}
+	if !strings.Contains(err.Error(), "mcp_tool_scanning.tool_poison") {
+		t.Fatalf("second reload error = %q, want tool-poison coverage-drop rejection", err.Error())
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "first-clean-tool-poison" {
+		t.Fatalf("live api token = %q, want first reload preserved", live.KillSwitch.APIToken)
+	}
+}
+
+func loadServerTestReloadConfig(t *testing.T, apiToken string) *config.Config {
+	t.Helper()
+
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"kill_switch:",
+		"  api_token: " + apiToken,
+		"",
+	}, "\n"))
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load reload config: %v", err)
+	}
+	return cfg
 }
 
 func TestServer_Reload_StrictAllowsRuleBundleResolvedReloadAndRejectsRealDowngrade(t *testing.T) {

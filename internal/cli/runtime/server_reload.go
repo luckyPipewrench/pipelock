@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -32,6 +33,9 @@ import (
 // "proxy kept the previous config" fail-safe path when proxy.Reload aborts its
 // internal swap. Silent no-ops (dedup, restart-only field changes) return nil.
 func (s *Server) Reload(newCfg *config.Config) (err error) {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
 	defer func() {
 		if r := recover(); r != nil {
 			ReloadPanicHandler(r, s.sentry, s.logger, s.opts.ConfigFile)
@@ -354,6 +358,18 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
 		}
+		// Bundle load failures are warning-only at startup because there is no
+		// previous live bundle coverage to preserve. At reload there is: a fresh
+		// config that fails bundle resolution must not activate if it would drop
+		// currently-live bundle rules. This gate is mode-independent so balanced
+		// and audit deployments fail closed for the real weakening without
+		// rejecting unrelated bundle errors that do not remove live coverage.
+		if reason := bundleResolutionRejectReason(oldCfg, newCfg, warnings, reloadBundleResult, s.currentMCPToolExtraPoison()); reason != "" {
+			rejectErr := fmt.Errorf("rejected: bundle resolution error would drop live detection rules: %s", reason)
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
+			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+			return rejectErr
+		}
 	}
 	newSc := scanner.New(newCfg)
 	newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
@@ -362,6 +378,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	if !s.proxy.Reload(newCfg, newSc) {
 		return errors.New("reload failed: proxy kept previous config")
 	}
+	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())
 	if reloadErr := s.proxy.LoadCertCache(newCfg); reloadErr != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
@@ -517,6 +534,128 @@ func reloadDowngradeRejectReason(oldCfg *config.Config, warnings []config.Reload
 		return ""
 	}
 	return "required security mode (" + strings.Join(required, ", ") + ")"
+}
+
+func bundleResolutionRejectReason(
+	oldCfg, newCfg *config.Config,
+	warnings []config.ReloadWarning,
+	result *rules.LoadResult,
+	oldToolPoison []*tools.ExtraPoisonPattern,
+) string {
+	if oldCfg == nil || newCfg == nil || result == nil || len(result.Errors) == 0 {
+		return ""
+	}
+
+	var reasons []string
+	if reloadWarningsContainField(warnings, "dlp.patterns") {
+		if dropped := removedBundleDLPPatterns(oldCfg.DLP.Patterns, newCfg.DLP.Patterns); len(dropped) > 0 {
+			reasons = append(reasons, "dlp.patterns: "+strings.Join(dropped, ", "))
+		}
+	}
+	if reloadWarningsContainField(warnings, "response_scanning.patterns") {
+		if dropped := removedBundleResponsePatterns(oldCfg.ResponseScanning.Patterns, newCfg.ResponseScanning.Patterns); len(dropped) > 0 {
+			reasons = append(reasons, "response_scanning.patterns: "+strings.Join(dropped, ", "))
+		}
+	}
+	if dropped := removedBundleToolPoisonPatterns(oldToolPoison, rules.ConvertToolPoison(result.ToolPoison)); len(dropped) > 0 {
+		reasons = append(reasons, "mcp_tool_scanning.tool_poison: "+strings.Join(dropped, ", "))
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+
+	names := make([]string, 0, len(result.Errors))
+	for _, e := range result.Errors {
+		names = append(names, e.Name)
+	}
+	return strings.Join(reasons, "; ") + " (bundle errors: " + strings.Join(names, ", ") + ")"
+}
+
+func reloadWarningsContainField(warnings []config.ReloadWarning, field string) bool {
+	for _, w := range warnings {
+		if w.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func removedBundleDLPPatterns(old, updated []config.DLPPattern) []string {
+	return removedBundleNamedRegexPatterns(old, updated,
+		func(p config.DLPPattern) string { return p.Name },
+		func(p config.DLPPattern) string { return p.Regex },
+		func(p config.DLPPattern) string { return p.Bundle })
+}
+
+func removedBundleResponsePatterns(old, updated []config.ResponseScanPattern) []string {
+	return removedBundleNamedRegexPatterns(old, updated,
+		func(p config.ResponseScanPattern) string { return p.Name },
+		func(p config.ResponseScanPattern) string { return p.Regex },
+		func(p config.ResponseScanPattern) string { return p.Bundle })
+}
+
+func removedBundleNamedRegexPatterns[T any](
+	old, updated []T,
+	nameOf func(T) string,
+	regexOf func(T) string,
+	bundleOf func(T) string,
+) []string {
+	updatedByName := make(map[string]string, len(updated))
+	for _, p := range updated {
+		updatedByName[nameOf(p)] = regexOf(p)
+	}
+
+	var removed []string
+	for _, p := range old {
+		if bundleOf(p) == "" {
+			continue
+		}
+		name := nameOf(p)
+		newRegex, ok := updatedByName[name]
+		switch {
+		case !ok:
+			removed = append(removed, name)
+		case newRegex != regexOf(p):
+			removed = append(removed, name+" (regex changed)")
+		}
+	}
+	return removed
+}
+
+func removedBundleToolPoisonPatterns(old, updated []*tools.ExtraPoisonPattern) []string {
+	updatedByName := make(map[string]string, len(updated))
+	for _, p := range updated {
+		if p == nil {
+			continue
+		}
+		updatedByName[p.Name] = toolPoisonPatternIdentity(p)
+	}
+
+	var removed []string
+	for _, p := range old {
+		if p == nil || p.Bundle == "" {
+			continue
+		}
+		identity, ok := updatedByName[p.Name]
+		switch {
+		case !ok:
+			removed = append(removed, p.Name)
+		case identity != toolPoisonPatternIdentity(p):
+			removed = append(removed, p.Name+" (regex or scan_field changed)")
+		}
+	}
+	return removed
+}
+
+func toolPoisonPatternIdentity(p *tools.ExtraPoisonPattern) string {
+	if p == nil {
+		return ""
+	}
+	regex := ""
+	if p.Re != nil {
+		regex = p.Re.String()
+	}
+	return regex + "\x00" + p.ScanField
 }
 
 func hasRejectableDowngradeWarning(warnings []config.ReloadWarning) bool {

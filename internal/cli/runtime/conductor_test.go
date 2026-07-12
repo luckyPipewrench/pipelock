@@ -876,6 +876,29 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	}
 }
 
+func TestApplyConductorPolicyBundleWithBundleResolutionErrorPreservesCoverage(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, signer := newConductorApplyTestServer(t)
+	requireBundlePatternSelected(t, s.proxy.CurrentConfig().DLP.Patterns, s.proxy.CurrentConfig().ResponseScanning.Patterns)
+	if err := os.Remove(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.lock")); err != nil {
+		t.Fatalf("remove standard bundle lock: %v", err)
+	}
+
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-with-broken-rules-dir", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"",
+	}, "\n"))
+	if _, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()}); err != nil {
+		t.Fatalf("valid conductor apply should preserve local bundle coverage and reload despite rules-dir error: %v", err)
+	}
+	requireBundlePatternSelected(t, s.proxy.CurrentConfig().DLP.Patterns, s.proxy.CurrentConfig().ResponseScanning.Patterns)
+}
+
 func TestApplyConductorPolicyBundleFailsClosed(t *testing.T) {
 	if _, err := (*Server)(nil).ApplyConductorPolicyBundle(conductor.PolicyBundle{}, ConductorApplyOptions{}); err == nil {
 		t.Fatal("nil server ApplyConductorPolicyBundle() = nil, want error")

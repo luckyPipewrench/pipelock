@@ -274,7 +274,12 @@ func coverageCertVerifyCmd() *cobra.Command {
 		Short: "Verify a coverage certificate offline",
 		Long: `Verify a coverage certificate's Ed25519 signature and check the signer
 against the trusted-signer set. Re-derives aggregate counts from the sessions
-and flags any mismatch. Fully offline: no license, no server.`,
+and flags any mismatch. Fully offline: no license, no server.
+
+Fails closed with a non-zero exit if the signature is invalid, the aggregate
+counts do not match, or a trusted-signer set is supplied and the certificate
+signer is not in it. With no trusted-signer set, verification is
+structural-only and exits zero.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCoverageCertVerify(cmd, opts)
@@ -293,6 +298,5 @@ func runCoverageCertVerify(cmd *cobra.Command, opts coverageCertVerifyOptions) e
 		CertFile:       opts.certFile,
 		TrustedSigners: opts.trustedSigners,
 		Out:            cmd.OutOrStdout(),
-		Err:            cmd.ErrOrStderr(),
 	})
 }

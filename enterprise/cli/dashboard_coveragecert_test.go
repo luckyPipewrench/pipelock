@@ -388,19 +388,16 @@ func TestRunCoverageCertVerify(t *testing.T) {
 		}
 	})
 
-	t.Run("untrusted signer warns but does not fail", func(t *testing.T) {
+	t.Run("untrusted signer fails closed", func(t *testing.T) {
 		_, otherPriv, _ := signing.GenerateKeyPair()
 		otherPub := otherPriv.Public().(ed25519.PublicKey)
-		cmd, buf := newCmd()
+		cmd, _ := newCmd()
 		err := runCoverageCertVerify(cmd, coverageCertVerifyOptions{
 			certFile:       certFile,
 			trustedSigners: []string{"inline=" + hex.EncodeToString(otherPub)},
 		})
-		if err != nil {
-			t.Fatalf("verify (untrusted) should not error: %v", err)
-		}
-		if !strings.Contains(buf.String(), "not in the trusted-signer set") {
-			t.Errorf("expected untrusted-signer warning, got: %s", buf.String())
+		if err == nil || !strings.Contains(err.Error(), "not in the trusted-signer set") {
+			t.Fatalf("verify (untrusted) err = %v, want fail-closed error", err)
 		}
 	})
 

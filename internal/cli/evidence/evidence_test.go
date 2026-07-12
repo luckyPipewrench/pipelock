@@ -612,17 +612,15 @@ func TestVerifyCertCmd_UntrustedSigner_Reported(t *testing.T) {
 		"--trusted-signer", "inline=" + otherKeyHex,
 	})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	execErr := cmd.Execute()
+	if execErr == nil || !strings.Contains(execErr.Error(), "not in the trusted-signer set") {
+		t.Fatalf("Execute err = %v, want fail-closed untrusted-signer error", execErr)
 	}
 
+	// The diagnostic line is still emitted to stdout before the fail-closed return.
 	out := stdout.String()
 	if !strings.Contains(out, "Signer: NOT TRUSTED") {
 		t.Error("output should report untrusted signer")
-	}
-	// Stderr should warn.
-	if !strings.Contains(stderr.String(), "not in the trusted-signer set") {
-		t.Error("stderr should warn about untrusted signer")
 	}
 }
 

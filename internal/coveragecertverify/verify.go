@@ -21,7 +21,6 @@ type Options struct {
 	CertFile       string
 	TrustedSigners []string
 	Out            io.Writer
-	Err            io.Writer
 }
 
 // Run reads and verifies a coverage certificate, prints bounded verification
@@ -67,12 +66,13 @@ func Run(opts Options) error {
 		return errors.New("coverage certificate aggregate counts do not match sessions")
 	}
 	if !result.SignerTrusted && len(trustedKeySet) > 0 {
-		errOut := opts.Err
-		if errOut == nil {
-			errOut = io.Discard
-		}
-		_, _ = fmt.Fprintln(errOut,
-			"pipelock: warning: the certificate signer is not in the trusted-signer set")
+		// Fail closed: the caller pinned a trusted-signer set and the certificate
+		// signer is not in it. A cryptographically valid signature from an
+		// untrusted key must not verify, or an operator scripting on exit code
+		// would accept a certificate signed by an unrecognized key. (When no
+		// trusted set is provided the check above is skipped: that is the
+		// explicit unpinned/structural case.)
+		return errors.New("coverage certificate signer is not in the trusted-signer set")
 	}
 	return nil
 }

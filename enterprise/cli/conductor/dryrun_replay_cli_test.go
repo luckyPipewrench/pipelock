@@ -70,6 +70,25 @@ func TestConductorDryRunFlagsAndReplayCommandRegistered(t *testing.T) {
 			t.Fatalf("replay remote-kill --state default = %q, want empty required value", got)
 		}
 	})
+	t.Run("rollback replay flags stay in parity with rollback flags", func(t *testing.T) {
+		rollback := findCommandPath(t, root, "rollback")
+		replayRollback := findCommandPath(t, root, "replay", "rollback")
+		rollback.Flags().VisitAll(func(flag *pflag.Flag) {
+			if flag.Name == "dry-run" {
+				if replayRollback.Flags().Lookup(flag.Name) != nil {
+					t.Fatalf("replay rollback unexpectedly exposes %q", flag.Name)
+				}
+				return
+			}
+			replayFlag := replayRollback.Flags().Lookup(flag.Name)
+			if replayFlag == nil {
+				t.Fatalf("replay rollback missing %q flag from rollback command", flag.Name)
+			}
+			if replayFlag.Value.Type() != flag.Value.Type() {
+				t.Fatalf("replay rollback %q type = %q, want %q", flag.Name, replayFlag.Value.Type(), flag.Value.Type())
+			}
+		})
+	})
 	t.Run("replay emergency output is not mislabeled as dry-run", func(t *testing.T) {
 		var out bytes.Buffer
 		writeDecisionReplayResult(&out, controlplane.DecisionReplayResult{

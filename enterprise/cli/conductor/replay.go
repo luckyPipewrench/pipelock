@@ -155,30 +155,9 @@ func bindReplayRemoteKillFlags(cmd *cobra.Command, opts *replayOptions) {
 }
 
 func bindReplayRollbackFlags(cmd *cobra.Command, opts *rollbackOptions) {
-	cmd.Flags().StringVar(&opts.baseURL, "conductor-url", "", "base URL of the Conductor control plane (required)")
-	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing the Conductor admin bearer token (required)")
-	cmd.Flags().StringArrayVar(&opts.signingKeys, "signing-key", nil,
-		"path to a policy-bundle-rollback keypair file from `pipelock signing key generate`; repeat to supply the M-of-N signers")
-	cmd.Flags().StringVar(&opts.orgID, "org", "", "fleet org id the authorization targets (required)")
-	cmd.Flags().StringVar(&opts.fleetID, "fleet", "", "fleet id the authorization targets (required)")
-	cmd.Flags().StringVar(&opts.authorizationID, "authorization-id", "", "authorization id (defaults to rollback-<current>-to-<target>-<counter>)")
-	cmd.Flags().StringVar(&opts.currentBundleID, "current-bundle-id", "", "bundle id currently applied on the followers (required)")
-	cmd.Flags().Uint64Var(&opts.currentVersion, "current-version", 0, "version currently applied on the followers (required, must be > target)")
-	cmd.Flags().StringVar(&opts.targetBundleID, "target-bundle-id", "", "bundle id to roll back to (required)")
-	cmd.Flags().Uint64Var(&opts.targetVersion, "target-version", 0, "version to roll back to (required, must be < current)")
-	cmd.Flags().Uint64Var(&opts.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each replay supersedes the prior authorization shape")
-	cmd.Flags().StringVar(&opts.reason, "reason", "", "operator reason recorded in the signed authorization")
-	cmd.Flags().DurationVar(&opts.ttl, "ttl", rollbackDefaultTTL, "validity window; must not exceed the Conductor's configured rollback max validity")
-	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
-	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
-	cmd.Flags().StringVar(&opts.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")
-	cmd.Flags().StringVar(&opts.serverName, "server-name", "", "server name to verify in the Conductor TLS certificate (defaults to the host in --conductor-url)")
-	cmd.Flags().StringVar(&opts.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
-	_ = cmd.MarkFlagRequired("conductor-url")
-	_ = cmd.MarkFlagRequired("org")
-	_ = cmd.MarkFlagRequired("fleet")
-	_ = cmd.MarkFlagRequired("current-bundle-id")
-	_ = cmd.MarkFlagRequired("target-bundle-id")
+	bindRollbackFlagsWithOptions(cmd, opts, rollbackFlagOptions{
+		counterHelp: "monotonic counter; defaults to the current Unix time so each replay supersedes the prior authorization shape",
+	})
 }
 
 func runPolicyBundleReplay(cmd *cobra.Command, opts replayOptions) error {

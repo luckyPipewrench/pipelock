@@ -890,6 +890,42 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			},
 			wantErr: "missing rollback_evaluation",
 		},
+		{
+			name:     "publish response included extra emergency evaluation",
+			artifact: decisionReplayArtifact{Bundle: &conductorcore.PolicyBundle{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:        replayActionPublish,
+				ArtifactHash:      strings.Repeat("g", 64),
+				ReplayedAt:        resultTime,
+				PublishEvaluation: &controlplane.PublishEvaluation{Valid: true},
+				RemoteKill:        &controlplane.RemoteKillEvaluation{Valid: true},
+			},
+			wantErr: "included an emergency evaluation",
+		},
+		{
+			name:     "remote kill response included extra publish evaluation",
+			artifact: decisionReplayArtifact{RemoteKill: &conductorcore.RemoteKillMessage{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:        replayModeRemoteKill,
+				ArtifactHash:      strings.Repeat("h", 64),
+				ReplayedAt:        resultTime,
+				RemoteKill:        &controlplane.RemoteKillEvaluation{Valid: true},
+				PublishEvaluation: &controlplane.PublishEvaluation{Valid: true},
+			},
+			wantErr: "included a different evaluation",
+		},
+		{
+			name:     "rollback response included extra emergency evaluation",
+			artifact: decisionReplayArtifact{Rollback: &conductorcore.RollbackAuthorization{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:   replayModeRollback,
+				ArtifactHash: strings.Repeat("i", 64),
+				ReplayedAt:   resultTime,
+				Rollback:     &controlplane.RollbackEvaluation{Valid: true},
+				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+			},
+			wantErr: "included a different evaluation",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

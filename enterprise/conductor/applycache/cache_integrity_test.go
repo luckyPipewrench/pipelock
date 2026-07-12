@@ -316,6 +316,54 @@ func TestActivateRejectsMismatchedStagedBundle(t *testing.T) {
 	}
 }
 
+func TestActivateRejectsLegacyPolicyHashCollisionMismatch(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+	leftPayload := conductor.PolicyBundlePayload{ConfigYAML: toolPolicyNumberBoundYAML("9007199254740992.0")}
+	rightPayload := conductor.PolicyBundlePayload{ConfigYAML: toolPolicyNumberBoundYAML("9007199254740993.0")}
+	left := signedLegacyPolicyHashBundle(t, key, "legacy-collision", 1, leftPayload)
+	right := signedLegacyPolicyHashBundle(t, key, "legacy-collision", 1, rightPayload)
+	if left.PolicyHash != right.PolicyHash {
+		t.Fatalf("legacy policy hashes differ: left=%s right=%s", left.PolicyHash, right.PolicyHash)
+	}
+	leftHash, err := left.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(left): %v", err)
+	}
+	rightHash, err := right.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(right): %v", err)
+	}
+	if leftHash == rightHash {
+		t.Fatalf("legacy collision fixtures have identical bundle_hash: %s", leftHash)
+	}
+
+	record := diskBundleRecord{
+		Version:    recordVersion,
+		VerifiedAt: testNow,
+		BundleHash: rightHash,
+		Bundle:     right,
+	}
+	recordBytes, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal bundle record: %v", err)
+	}
+	if err := durableWrite(filepath.Join(cache.bundlesDir, rightHash+recordExt), recordBytes); err != nil {
+		t.Fatalf("write right bundle record: %v", err)
+	}
+	if err := durableWrite(filepath.Join(cache.configsDir, rightHash+configExt), []byte(right.Payload.ConfigYAML)); err != nil {
+		t.Fatalf("write right config: %v", err)
+	}
+
+	err = cache.activate(VerifiedBundle{Bundle: left, BundleHash: rightHash, VerifiedAt: testNow})
+	if !errors.Is(err, ErrInvalidActiveRecord) {
+		t.Fatalf("activate(colliding legacy policy_hash mismatch) = %v, want ErrInvalidActiveRecord", err)
+	}
+	if _, activeErr := cache.Active(); !errors.Is(activeErr, ErrNoValidBundle) {
+		t.Fatalf("Active() after rejected collision = %v, want ErrNoValidBundle", activeErr)
+	}
+}
+
 func TestActivateRejectsNonHexHash(t *testing.T) {
 	cache := openTestCache(t)
 	if err := cache.activate(VerifiedBundle{BundleHash: "not-a-hash"}); !errors.Is(err, conductor.ErrInvalidHash) {
@@ -952,6 +1000,51 @@ func TestStreamSwitchMaxValidityFollower(t *testing.T) {
 			}
 		})
 	}
+}
+
+func signedLegacyPolicyHashBundle(t *testing.T, key testKey, id string, version uint64, payload conductor.PolicyBundlePayload) conductor.PolicyBundle {
+	t.Helper()
+	payloadHash, err := payload.PayloadHash()
+	if err != nil {
+		t.Fatalf("PayloadHash() error = %v", err)
+	}
+	policyHash, err := payload.LegacyPolicyHash()
+	if err != nil {
+		t.Fatalf("LegacyPolicyHash() error = %v", err)
+	}
+	bundle := conductor.PolicyBundle{
+		SchemaVersion:      conductor.SchemaVersion,
+		BundleID:           id,
+		OrgID:              "org-1",
+		FleetID:            "fleet-1",
+		Environment:        "prod",
+		Audience:           conductor.Audience{InstanceIDs: []string{"instance-1"}},
+		Version:            version,
+		CreatedAt:          testNow.Add(-time.Minute),
+		NotBefore:          testNow.Add(-time.Minute),
+		ExpiresAt:          testNow.Add(time.Hour),
+		MinPipelockVersion: "1.2.3",
+		PolicyHash:         policyHash,
+		PayloadSHA256:      payloadHash,
+		Payload:            payload,
+	}
+	bundle.Signatures = []conductor.SignatureProof{signProof(t, key, bundle.SignablePreimage)}
+	if err := bundle.ValidateAllowLegacyPolicyHash(); err != nil {
+		t.Fatalf("ValidateAllowLegacyPolicyHash() error = %v", err)
+	}
+	return bundle
+}
+
+func toolPolicyNumberBoundYAML(bound string) string {
+	return "mcp_tool_policy:\n" +
+		"  enabled: true\n" +
+		"  action: block\n" +
+		"  rules:\n" +
+		"    - name: exact-number-bound\n" +
+		"      tool_pattern: '^db_query$'\n" +
+		"      arg_key: '^amount$'\n" +
+		"      arg_type: number\n" +
+		"      arg_number_gt: " + bound + "\n"
 }
 
 func TestResetActiveBundleStateRejectsWrongEntryKind(t *testing.T) {

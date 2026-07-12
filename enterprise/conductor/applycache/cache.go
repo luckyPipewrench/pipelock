@@ -238,6 +238,13 @@ func (c *Cache) activate(verified VerifiedBundle) error {
 	if err := validateHash(verified.BundleHash); err != nil {
 		return err
 	}
+	verifiedHash, err := verified.Bundle.CanonicalHash()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(verifiedHash, verified.BundleHash) {
+		return fmt.Errorf("%w: activation request bundle hash mismatch", ErrInvalidActiveRecord)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	record, err := readBundleRecord(filepath.Join(c.bundlesDir, verified.BundleHash+recordExt))
@@ -246,7 +253,7 @@ func (c *Cache) activate(verified VerifiedBundle) error {
 	}
 	if record.Bundle.BundleID != verified.Bundle.BundleID ||
 		record.Bundle.Version != verified.Bundle.Version ||
-		record.Bundle.PolicyHash != verified.Bundle.PolicyHash {
+		!strings.EqualFold(record.BundleHash, verified.BundleHash) {
 		return fmt.Errorf("%w: staged bundle does not match activation request", ErrInvalidActiveRecord)
 	}
 	current, currentErr := c.readActiveLocked()
@@ -357,8 +364,7 @@ func (c *Cache) readActiveLocked() (VerifiedBundle, error) {
 	}
 	if bundleRecord.BundleHash != active.BundleHash ||
 		bundleRecord.Bundle.BundleID != active.BundleID ||
-		bundleRecord.Bundle.Version != active.BundleVersion ||
-		bundleRecord.Bundle.PolicyHash != active.PolicyHash {
+		bundleRecord.Bundle.Version != active.BundleVersion {
 		return VerifiedBundle{}, fmt.Errorf("%w: active pointer does not match bundle record", ErrInvalidActiveRecord)
 	}
 	configPath := filepath.Join(c.dir, filepath.FromSlash(active.ConfigFile))
@@ -632,7 +638,7 @@ func readBundleRecord(path string) (diskBundleRecord, error) {
 	if !strings.EqualFold(hash, record.BundleHash) {
 		return diskBundleRecord{}, fmt.Errorf("%w: bundle hash mismatch", ErrInvalidActiveRecord)
 	}
-	if err := record.Bundle.Validate(); err != nil {
+	if err := record.Bundle.ValidateAllowLegacyPolicyHash(); err != nil {
 		return diskBundleRecord{}, err
 	}
 	return record, nil

@@ -148,6 +148,19 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		TierKeyMapping:      buildTierKeyMapping(cfg.Rules.TrustedKeys),
 	})
 
+	// Fail closed on a bundle LOAD failure. A bundle that failed to load
+	// (signature, lockfile, min-version, or filesystem error) is NOT in the
+	// resolved sets built below, so proceeding would strip previously-validated
+	// bundle patterns from an already-resolved config (re-resolution happens on
+	// every hot reload and conductor policy apply) and fall back to compiled
+	// defaults — a fail-open weakening triggered by a transient error. Preserve
+	// the caller's existing resolved patterns instead; the caller surfaces
+	// result.Errors, and the reload downgrade guard still rejects any real
+	// weakening under strict mode.
+	if len(result.Errors) > 0 {
+		return result
+	}
+
 	// Check if include_defaults is explicitly false (disables standard tier).
 	dlpDefaultsDisabled := cfg.DLP.IncludeDefaults != nil && !*cfg.DLP.IncludeDefaults
 	responseDefaultsDisabled := cfg.ResponseScanning.IncludeDefaults != nil && !*cfg.ResponseScanning.IncludeDefaults

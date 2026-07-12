@@ -190,8 +190,11 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	// unaffected, and the key-load path already fails closed on a
 	// set-but-unloadable key upstream, so a nil key here means no key was
 	// configured at all.
-	if cfg.SignCheckpoints && privKey == nil {
-		return nil, fmt.Errorf("flight recorder sign_checkpoints is enabled but no signing key was provided; " +
+	// Validate the key LENGTH, not just non-nil: ed25519.PrivateKey is a byte
+	// slice, so a non-nil zero-length or truncated key would pass a bare nil
+	// check and then panic (or produce an unverifiable signature) at sign time.
+	if cfg.SignCheckpoints && len(privKey) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("flight recorder sign_checkpoints is enabled but no valid signing key was provided; " +
 			"set flight_recorder.signing_key_path, or set flight_recorder.sign_checkpoints: false for an " +
 			"unsigned hash-chained recorder")
 	}

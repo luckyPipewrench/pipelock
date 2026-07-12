@@ -344,6 +344,46 @@ func TestMergeIntoConfig_RestoresCompiledStandardFallbackAfterStandardBundleRemo
 	}
 }
 
+func TestMergeIntoConfig_PreservesResolvedPatternsOnBundleLoadError(t *testing.T) {
+	// A bundle that fails to load (here: missing bundle.lock) produces
+	// result.Errors and contributes no patterns. Re-resolving an
+	// already-bundle-resolved config must NOT strip its previously-validated
+	// bundle patterns and degrade to compiled fallback — that would be a
+	// fail-open weakening triggered by a transient load error.
+	rulesDir := t.TempDir()
+	bundleDir := filepath.Join(rulesDir, "community-x")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// bundle.yaml with NO bundle.lock -> loader appends a load error and skips.
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), []byte(
+		"format_version: 1\nname: community-x\nversion: \"1.0.0\"\nauthor: t\ndescription: d\nlicense: Apache-2.0\nrules:\n  - id: dlp-1\n    type: dlp\n    status: stable\n    name: X\n    description: d\n    severity: high\n    confidence: high\n    pattern:\n      regex: 'abc'\n"),
+		0o600); err != nil {
+		t.Fatalf("write bundle.yaml: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Rules.RulesDir = rulesDir
+	// Simulate an already-resolved config carrying a validated bundle pattern.
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Prior Bundle DLP", Regex: `prior-secret-[0-9]+`,
+		Severity: config.SeverityHigh, Bundle: "prior-bundle", BundleVersion: "1.0.0",
+	})
+	before := append([]config.DLPPattern(nil), cfg.DLP.Patterns...)
+	beforeResp := append([]config.ResponseScanPattern(nil), cfg.ResponseScanning.Patterns...)
+
+	result := MergeIntoConfig(cfg, "1.0.0")
+	if len(result.Errors) == 0 {
+		t.Fatal("expected a load error from the lock-less bundle")
+	}
+	if !reflect.DeepEqual(cfg.DLP.Patterns, before) {
+		t.Fatalf("bundle load error stripped previously-resolved DLP patterns (fail-open); got %d want %d", len(cfg.DLP.Patterns), len(before))
+	}
+	if !reflect.DeepEqual(cfg.ResponseScanning.Patterns, beforeResp) {
+		t.Fatal("bundle load error mutated response patterns")
+	}
+}
+
 func installUnsignedMergeTestBundle(t *testing.T, rulesDir, name string, rules []Rule) string {
 	t.Helper()
 	bundleDir := filepath.Join(rulesDir, name)

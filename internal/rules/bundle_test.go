@@ -780,12 +780,16 @@ func TestCheckMinPipelock_InvalidVersions(t *testing.T) {
 		minVersion string
 		curVersion string
 	}{
-		// Only a malformed min_pipelock (bundle-authored) is an error. A
-		// malformed CURRENT version is a dev build and passes (covered in
-		// TestCheckMinPipelock as "treated as newest"), so it is intentionally
-		// absent here.
+		// A malformed min_pipelock (bundle-authored) errors. A malformed CURRENT
+		// version that is NOT a recognized development build (git-describe, -dev,
+		// devel, unset) now also fails closed: a mis-stamped binary must not be
+		// treated as newest and silently load bundles requiring a newer Pipelock.
+		// Recognized dev builds still pass — see TestCheckMinPipelock.
 		{"invalid min", "abc", "1.3.0"},
 		{"both invalid falls to min", "abc", "def"},
+		{"malformed current fails closed", "1.3.0", "abc"},
+		{"unrecognized current fails closed", "1.3.0", "not-a-version"},
+		{"pseudo-version zero base below min", "3.0.0", "v0.0.0-20260101000000-abcdef123456"},
 	}
 
 	for _, tc := range tests {

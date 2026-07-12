@@ -2218,6 +2218,18 @@ func TestNew_SignCheckpointsWithoutKeyFailsClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("dir set, sign on, wrong-length key -> error", func(t *testing.T) {
+		// A non-nil but truncated key must be rejected too: it would pass a bare
+		// nil check and then panic (or sign unverifiably) at checkpoint time.
+		_, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, ed25519.PrivateKey{1, 2, 3})
+		if err == nil {
+			t.Fatal("expected error for a wrong-length signing key")
+		}
+		if !strings.Contains(err.Error(), "sign_checkpoints") {
+			t.Fatalf("error = %q, want it to mention sign_checkpoints", err)
+		}
+	})
+
 	t.Run("dir set, sign on, key provided -> ok", func(t *testing.T) {
 		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, priv)
 		if err != nil {

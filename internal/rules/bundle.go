@@ -409,14 +409,14 @@ func CheckMinPipelock(minVersion, currentVersion string) error {
 	}
 	curSemver, err := parseSemverVersion(currentVersion)
 	if err != nil {
-		// A current version that is not orderable semver is a development build
-		// (a `git describe` string like "2-147-gabc1234", a `go install`
-		// pseudo-version, or an unset build). It carries no release number to
-		// compare against, so treat it as newest and let the bundle load. A real
-		// tagged release always carries a clean major.minor.patch, so this never
-		// weakens the minimum gate for a shipped release. (minVersion is still
-		// parsed strictly above, so a malformed bundle min_pipelock still errors.)
-		return nil
+		// Not orderable semver AND not a recognized development build
+		// (isDevelopmentCurrentVersion above already returned true for those:
+		// git-describe strings, `-dev`, `devel`, unset). A version that reaches
+		// here is genuinely malformed, so fail CLOSED (skip the bundle) rather
+		// than treating it as newest — a mis-stamped binary must not silently
+		// load bundles requiring a newer Pipelock. minVersion is parsed strictly
+		// above, so a malformed bundle min_pipelock still errors too.
+		return fmt.Errorf("check min pipelock: unrecognized current version %q (not a release or a known development build)", currentVersion)
 	}
 
 	if compareSemverVersion(curSemver, minSemver) < 0 {
@@ -499,25 +499,27 @@ func prereleaseHasIdentifier(prerelease, ident string) bool {
 	return false
 }
 
+// isGitDescribeVersion recognizes a `git describe --tags` string by its SHAPE:
+// "<tag>-<commits>-g<shorthash>" (e.g. "v3.0.0-146-gabc1234" or "2-147-gf1c242a0"
+// with a bare-number tag). It keys off the trailing "-<digits>-g<hex>" so a
+// source/CI build is recognized regardless of the tag's own format. It does NOT
+// match arbitrary malformed strings ("abc") or Go pseudo-versions (whose short
+// hash carries no "g" prefix); those fall through to strict parsing and fail
+// closed rather than being treated as a dev build.
 func isGitDescribeVersion(s string) bool {
-	core, rest, ok := strings.Cut(s, "-")
-	if !ok {
+	parts := strings.Split(s, "-")
+	if len(parts) < 3 {
 		return false
 	}
-	if _, _, _, err := parseSemver(core); err != nil {
+	commits := parts[len(parts)-2]
+	shorthash := parts[len(parts)-1]
+	if _, err := strconv.ParseUint(commits, 10, 64); err != nil {
 		return false
 	}
-	parts := strings.Split(rest, "-")
-	if len(parts) < 2 {
+	if !strings.HasPrefix(shorthash, "g") || len(shorthash) == 1 {
 		return false
 	}
-	if _, err := strconv.ParseUint(parts[0], 10, 64); err != nil {
-		return false
-	}
-	if !strings.HasPrefix(parts[1], "g") || len(parts[1]) == 1 {
-		return false
-	}
-	return isHexString(parts[1][1:])
+	return isHexString(shorthash[1:])
 }
 
 func isHexString(s string) bool {

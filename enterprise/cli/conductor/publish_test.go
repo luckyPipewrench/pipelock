@@ -101,6 +101,110 @@ func TestLoadPolicySigningKeyAcceptsBootstrapKeyFile(t *testing.T) {
 	}
 }
 
+func TestBootstrapEmergencyKeysLoadAndSignControlMessages(t *testing.T) {
+	base, err := os.MkdirTemp(".", ".emergency-bootstrap-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir, err := filepath.Abs(filepath.Join(base, "fleet"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	res, err := bootstrap.Run(context.Background(), bootstrap.Options{
+		Dir:         dir,
+		OrgID:       testOrg,
+		FleetID:     testFleet,
+		InstanceID:  "instance-1",
+		Environment: testEnv,
+		SkipProof:   true,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap Run(SkipProof): %v", err)
+	}
+
+	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	remoteKey, err := loadSigningKeyFile(res.Layout.RemoteKillKeyPath, signing.PurposeRemoteKillSigning)
+	if err != nil {
+		t.Fatalf("load bootstrap remote-kill key: %v", err)
+	}
+	defer zeroizeKey(remoteKey.priv)
+	remoteKill := conductorcore.RemoteKillMessage{
+		SchemaVersion: conductorcore.SchemaVersion,
+		MessageID:     "bootstrap-kill",
+		OrgID:         testOrg,
+		FleetID:       testFleet,
+		Audience:      conductorcore.Audience{InstanceIDs: []string{"*"}},
+		State:         conductorcore.KillSwitchActive,
+		Counter:       1,
+		Reason:        "bootstrap key smoke test",
+		CreatedAt:     now,
+		NotBefore:     now.Add(-time.Minute),
+		ExpiresAt:     now.Add(time.Minute),
+	}
+	assertBootstrapKeySignsPreimage(t, remoteKill.SignablePreimage, signing.PurposeRemoteKillSigning, remoteKey)
+
+	rollbackKey, err := loadSigningKeyFile(res.Layout.RollbackKeyPath, signing.PurposePolicyBundleRollback)
+	if err != nil {
+		t.Fatalf("load bootstrap rollback key: %v", err)
+	}
+	defer zeroizeKey(rollbackKey.priv)
+	rollback := conductorcore.RollbackAuthorization{
+		SchemaVersion:   conductorcore.SchemaVersion,
+		AuthorizationID: "bootstrap-rollback",
+		OrgID:           testOrg,
+		FleetID:         testFleet,
+		CurrentBundleID: "bundle-2",
+		CurrentVersion:  2,
+		TargetBundleID:  "bundle-1",
+		TargetVersion:   1,
+		Counter:         1,
+		Reason:          "bootstrap key smoke test",
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(time.Minute),
+	}
+	assertBootstrapKeySignsPreimage(t, rollback.SignablePreimage, signing.PurposePolicyBundleRollback, rollbackKey)
+}
+
+func assertBootstrapKeySignsPreimage(
+	t *testing.T,
+	preimage func() ([]byte, error),
+	purpose signing.KeyPurpose,
+	key loadedSigningKey,
+) {
+	t.Helper()
+	proofs, err := signEmergencyPreimage(preimage, purpose, []loadedSigningKey{key})
+	if err != nil {
+		t.Fatalf("signEmergencyPreimage(%s): %v", purpose, err)
+	}
+	if len(proofs) != 1 {
+		t.Fatalf("proof count = %d, want 1", len(proofs))
+	}
+	proof := proofs[0]
+	if err := proof.Validate(purpose); err != nil {
+		t.Fatalf("proof Validate(%s): %v", purpose, err)
+	}
+	data, err := preimage()
+	if err != nil {
+		t.Fatalf("preimage: %v", err)
+	}
+	sigHex, ok := strings.CutPrefix(proof.Signature, conductorcore.SignaturePrefixEd25519)
+	if !ok {
+		t.Fatalf("signature %q missing Ed25519 prefix", proof.Signature)
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	pub, ok := key.priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("private key did not expose Ed25519 public key")
+	}
+	if !ed25519.Verify(pub, data, sig) {
+		t.Fatal("bootstrap key signature did not verify")
+	}
+}
+
 // selfSignedCertKey generates a throwaway self-signed cert + key in PEM form so
 // the mTLS client-builder tests can exercise LoadX509KeyPair and the CA pool
 // without a live dial.

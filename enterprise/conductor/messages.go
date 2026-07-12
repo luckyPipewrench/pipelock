@@ -266,11 +266,21 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 	if err := rejectPolicyBundleCompanionFields(p.ConfigYAML); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidHash, err)
 	}
-	cfg, err := config.LoadBytes([]byte(p.ConfigYAML))
+	cfg, err := config.LoadPolicyBundleBytes([]byte(p.ConfigYAML))
 	if err != nil {
 		return "", fmt.Errorf("%w: load policy bundle config_yaml: %w", ErrInvalidHash, err)
 	}
-	return cfg.CanonicalPolicyHash(), nil
+	configPolicyHash := cfg.CanonicalPolicyHash()
+	if len(p.RuleBundles) == 0 {
+		return configPolicyHash, nil
+	}
+	return canonicalValueHash(struct {
+		ConfigPolicyHash string          `json:"config_policy_hash"`
+		RuleBundles      []RuleBundleRef `json:"rule_bundles"`
+	}{
+		ConfigPolicyHash: configPolicyHash,
+		RuleBundles:      p.RuleBundles,
+	}, "policy_bundle_policy")
 }
 
 type PolicyBundle struct {
@@ -1729,39 +1739,47 @@ func rejectPolicyBundleCompanionFields(configYAML string) error {
 	if len(doc.Content) == 0 {
 		return nil
 	}
-	return walkRejectPolicyBundleCompanionFieldsAt(doc.Content[0], "")
+	return walkRejectPolicyBundleCompanionFieldsAt(doc.Content[0], "", make(map[*yaml.Node]bool))
 }
 
-func walkRejectPolicyBundleCompanionFieldsAt(n *yaml.Node, path string) error {
+func walkRejectPolicyBundleCompanionFieldsAt(n *yaml.Node, path string, seen map[*yaml.Node]bool) error {
 	if n == nil {
 		return nil
 	}
 	switch n.Kind {
 	case yaml.DocumentNode:
 		for _, c := range n.Content {
-			if err := walkRejectPolicyBundleCompanionFieldsAt(c, path); err != nil {
+			if err := walkRejectPolicyBundleCompanionFieldsAt(c, path, seen); err != nil {
 				return err
 			}
 		}
+	case yaml.AliasNode:
+		return walkRejectPolicyBundleCompanionFieldsAlias(n, path, seen)
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			key := n.Content[i]
 			val := n.Content[i+1]
+			if isYAMLMergeKey(key) {
+				if err := walkRejectPolicyBundleCompanionFieldsMerge(val, path, seen); err != nil {
+					return err
+				}
+				continue
+			}
 			childPath := path + "." + key.Value
 			if path == "" {
 				childPath = key.Value
 			}
-			if _, forbidden := forbiddenPolicyBundleCompanionFields[childPath]; forbidden && yamlNodeHasNonEmptyValue(val) {
+			if _, forbidden := forbiddenPolicyBundleCompanionFields[childPath]; forbidden && yamlNodeHasNonEmptyValue(val, seen) {
 				return fmt.Errorf("%w: %s", ErrForbiddenBundleCompanionField, childPath)
 			}
-			if err := walkRejectPolicyBundleCompanionFieldsAt(val, childPath); err != nil {
+			if err := walkRejectPolicyBundleCompanionFieldsAt(val, childPath, seen); err != nil {
 				return err
 			}
 		}
 	case yaml.SequenceNode:
 		for i, c := range n.Content {
 			childPath := fmt.Sprintf("%s[%d]", path, i)
-			if err := walkRejectPolicyBundleCompanionFieldsAt(c, childPath); err != nil {
+			if err := walkRejectPolicyBundleCompanionFieldsAt(c, childPath, seen); err != nil {
 				return err
 			}
 		}
@@ -1769,13 +1787,52 @@ func walkRejectPolicyBundleCompanionFieldsAt(n *yaml.Node, path string) error {
 	return nil
 }
 
-func yamlNodeHasNonEmptyValue(n *yaml.Node) bool {
+func walkRejectPolicyBundleCompanionFieldsMerge(n *yaml.Node, path string, seen map[*yaml.Node]bool) error {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.SequenceNode {
+		for _, c := range n.Content {
+			if err := walkRejectPolicyBundleCompanionFieldsAt(c, path, seen); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walkRejectPolicyBundleCompanionFieldsAt(n, path, seen)
+}
+
+func walkRejectPolicyBundleCompanionFieldsAlias(n *yaml.Node, path string, seen map[*yaml.Node]bool) error {
+	if n.Alias == nil {
+		return nil
+	}
+	if seen[n.Alias] {
+		return fmt.Errorf("%w: YAML alias cycle at %s", ErrForbiddenBundleCompanionField, path)
+	}
+	seen[n.Alias] = true
+	defer delete(seen, n.Alias)
+	return walkRejectPolicyBundleCompanionFieldsAt(n.Alias, path, seen)
+}
+
+func isYAMLMergeKey(n *yaml.Node) bool {
+	return n != nil && n.Kind == yaml.ScalarNode && (n.Value == "<<" || n.Tag == "!!merge")
+}
+
+func yamlNodeHasNonEmptyValue(n *yaml.Node, seen map[*yaml.Node]bool) bool {
 	if n == nil {
 		return false
 	}
 	switch n.Kind {
 	case yaml.AliasNode:
-		return yamlNodeHasNonEmptyValue(n.Alias)
+		if n.Alias == nil {
+			return false
+		}
+		if seen[n.Alias] {
+			return true
+		}
+		seen[n.Alias] = true
+		defer delete(seen, n.Alias)
+		return yamlNodeHasNonEmptyValue(n.Alias, seen)
 	case yaml.ScalarNode:
 		if n.Tag == "!!null" {
 			return false

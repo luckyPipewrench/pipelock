@@ -22,8 +22,10 @@ import (
 )
 
 type loadOptions struct {
-	resolveLicense bool
-	skipValidate   bool
+	resolveLicense             bool
+	skipValidate               bool
+	skipRuntimePathResolution  bool
+	fullValidateWithoutLicense bool
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
@@ -38,6 +40,20 @@ func Load(path string) (*Config, error) {
 func LoadBytes(data []byte) (*Config, error) {
 	copied := append([]byte(nil), data...)
 	return loadBytes(copied, "<memory>", ".", loadOptions{resolveLicense: true})
+}
+
+// LoadPolicyBundleBytes parses, defaults, and validates a signed policy-bundle
+// config from memory without reading ambient license state or materializing
+// runtime-local companion paths. The resulting hash is a pure function of the
+// signed payload bytes plus schema defaults, not of the publisher/follower CWD,
+// environment, or filesystem.
+func LoadPolicyBundleBytes(data []byte) (*Config, error) {
+	copied := append([]byte(nil), data...)
+	return loadBytes(copied, "<policy-bundle>", ".", loadOptions{
+		resolveLicense:             false,
+		skipRuntimePathResolution:  true,
+		fullValidateWithoutLicense: true,
+	})
 }
 
 // LoadForRules reads config for rules subcommands. It preserves strict YAML
@@ -145,49 +161,51 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 		cfg.LicensePublicKey = ""
 	}
 
-	// Resolve relative secrets_file path relative to config file directory.
-	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
-		cfg.DLP.SecretsFile = filepath.Join(configDir, cfg.DLP.SecretsFile)
-	}
+	if !opts.skipRuntimePathResolution {
+		// Resolve relative secrets_file path relative to config file directory.
+		if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
+			cfg.DLP.SecretsFile = filepath.Join(configDir, cfg.DLP.SecretsFile)
+		}
 
-	// Resolve relative CA cert/key paths relative to config file directory.
-	// This ensures TLS interception works under systemd (CWD=/), containers,
-	// and when --config points to a non-local path.
-	if cfg.TLSInterception.CACertPath != "" && !filepath.IsAbs(cfg.TLSInterception.CACertPath) {
-		cfg.TLSInterception.CACertPath = filepath.Join(configDir, cfg.TLSInterception.CACertPath)
-	}
-	if cfg.TLSInterception.CAKeyPath != "" && !filepath.IsAbs(cfg.TLSInterception.CAKeyPath) {
-		cfg.TLSInterception.CAKeyPath = filepath.Join(configDir, cfg.TLSInterception.CAKeyPath)
-	}
+		// Resolve relative CA cert/key paths relative to config file directory.
+		// This ensures TLS interception works under systemd (CWD=/), containers,
+		// and when --config points to a non-local path.
+		if cfg.TLSInterception.CACertPath != "" && !filepath.IsAbs(cfg.TLSInterception.CACertPath) {
+			cfg.TLSInterception.CACertPath = filepath.Join(configDir, cfg.TLSInterception.CACertPath)
+		}
+		if cfg.TLSInterception.CAKeyPath != "" && !filepath.IsAbs(cfg.TLSInterception.CAKeyPath) {
+			cfg.TLSInterception.CAKeyPath = filepath.Join(configDir, cfg.TLSInterception.CAKeyPath)
+		}
 
-	// Resolve relative file_sentry.watch_paths against config file directory.
-	// "." in the config means the project directory, not whatever CWD the
-	// process happens to have (systemd sets CWD=/, containers vary).
-	//
-	// Relative paths with ".." traversal are rejected to prevent
-	// unintentional escapes. Absolute paths are allowed as-is since the
-	// user explicitly chose the target directory.
-	for i, wp := range cfg.FileSentry.WatchPaths {
-		p := wp.Path
-		if !filepath.IsAbs(p) {
-			resolved := filepath.Clean(filepath.Join(configDir, p))
-			// Verify the resolved path is still under the config directory.
-			// filepath.Rel returns a ".." prefix if the target escapes.
-			rel, err := filepath.Rel(configDir, resolved)
-			// Separator-aware escape check: exact ".." or a path segment
-			// starting with ".." + os.PathSeparator. Plain HasPrefix(rel, "..")
-			// would reject valid names like "..cache" inside the config dir.
-			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q escapes config directory (use absolute path instead)", i, p)
+		// Resolve relative file_sentry.watch_paths against config file directory.
+		// "." in the config means the project directory, not whatever CWD the
+		// process happens to have (systemd sets CWD=/, containers vary).
+		//
+		// Relative paths with ".." traversal are rejected to prevent
+		// unintentional escapes. Absolute paths are allowed as-is since the
+		// user explicitly chose the target directory.
+		for i, wp := range cfg.FileSentry.WatchPaths {
+			p := wp.Path
+			if !filepath.IsAbs(p) {
+				resolved := filepath.Clean(filepath.Join(configDir, p))
+				// Verify the resolved path is still under the config directory.
+				// filepath.Rel returns a ".." prefix if the target escapes.
+				rel, err := filepath.Rel(configDir, resolved)
+				// Separator-aware escape check: exact ".." or a path segment
+				// starting with ".." + os.PathSeparator. Plain HasPrefix(rel, "..")
+				// would reject valid names like "..cache" inside the config dir.
+				if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+					return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q escapes config directory (use absolute path instead)", i, p)
+				}
+				cfg.FileSentry.WatchPaths[i].Path = resolved
+			} else {
+				cfg.FileSentry.WatchPaths[i].Path = filepath.Clean(p)
 			}
-			cfg.FileSentry.WatchPaths[i].Path = resolved
-		} else {
-			cfg.FileSentry.WatchPaths[i].Path = filepath.Clean(p)
 		}
 	}
 
 	if !opts.skipValidate {
-		if opts.resolveLicense {
+		if opts.resolveLicense || opts.fullValidateWithoutLicense {
 			if err := cfg.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid config: %w", err)
 			}

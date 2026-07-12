@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"gopkg.in/yaml.v3"
 )
 
 var testNow = time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
@@ -357,6 +358,49 @@ func TestPolicyBundlePayloadPolicyHashUsesLoadedConfig(t *testing.T) {
 	}
 }
 
+func TestPolicyBundlePayloadPolicyHashDoesNotUseAmbientLicenseGate(t *testing.T) {
+	oldGate := config.EnforceLicenseGateFunc
+	config.EnforceLicenseGateFunc = func(*config.Config) {
+		t.Fatal("PolicyHash must not run ambient license gating")
+	}
+	t.Cleanup(func() { config.EnforceLicenseGateFunc = oldGate })
+	t.Setenv(config.EnvLicenseKey, "ambient-license-value")
+
+	if _, err := (PolicyBundlePayload{ConfigYAML: "mode: balanced\n"}).PolicyHash(); err != nil {
+		t.Fatalf("PolicyHash(): %v", err)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashIncludesRuleBundles(t *testing.T) {
+	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n"}
+	configOnlyHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(config only): %v", err)
+	}
+
+	payload.RuleBundles = []RuleBundleRef{{
+		Name:    "official",
+		Version: "2026.07.12",
+		SHA256:  testHash("10"),
+	}}
+	withRulesHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(with rules): %v", err)
+	}
+	if withRulesHash == configOnlyHash {
+		t.Fatalf("rule bundle refs did not affect policy hash: %s", withRulesHash)
+	}
+
+	payload.RuleBundles[0].SHA256 = testHash("11")
+	changedRulesHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(changed rules): %v", err)
+	}
+	if changedRulesHash == withRulesHash {
+		t.Fatalf("changed rule bundle ref did not affect policy hash: %s", changedRulesHash)
+	}
+}
+
 func TestPolicyBundlePayloadPolicyHashLoadedConfigEquivalence(t *testing.T) {
 	t.Run("field_order_and_set_order_are_deterministic", func(t *testing.T) {
 		first := PolicyBundlePayload{ConfigYAML: "mode: balanced\nfetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    max_requests_per_minute: 120\napi_allowlist:\n  - b.vendor.example\n  - a.vendor.example\n"}
@@ -521,6 +565,11 @@ func TestPolicyBundlePayloadPolicyHashRejectsLocalCompanionFields(t *testing.T) 
 			yaml: "mode: balanced\nlearn_lock:\n  roster_path: /etc/pipelock/roster.json\n",
 			path: "learn_lock.roster_path",
 		},
+		{
+			name: "merged dlp secrets file",
+			yaml: "mode: balanced\ndlp_defaults: &dlp_defaults\n  secrets_file: secrets.env\ndlp:\n  <<: *dlp_defaults\n",
+			path: "dlp.secrets_file",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := (PolicyBundlePayload{ConfigYAML: tc.yaml}).PolicyHash()
@@ -532,6 +581,87 @@ func TestPolicyBundlePayloadPolicyHashRejectsLocalCompanionFields(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestPolicyBundlePayloadPolicyHashRejectsMergedCompanionFieldsAllForbidden(t *testing.T) {
+	for path := range forbiddenPolicyBundleCompanionFields {
+		t.Run(path, func(t *testing.T) {
+			_, err := (PolicyBundlePayload{ConfigYAML: yamlWithMergedCompanionPath(path)}).PolicyHash()
+			if !errors.Is(err, ErrForbiddenBundleCompanionField) {
+				t.Fatalf("PolicyHash() = %v, want ErrForbiddenBundleCompanionField", err)
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Fatalf("error should name merged path %s, got %v", path, err)
+			}
+		})
+	}
+}
+
+func TestPolicyBundleValidateRejectsCompanionField(t *testing.T) {
+	bundle := testPolicyBundle()
+	bundle.Payload.ConfigYAML = "mode: balanced\ndlp:\n  secrets_file: secrets.env\n"
+	err := bundle.Validate()
+	if !errors.Is(err, ErrForbiddenBundleCompanionField) {
+		t.Fatalf("Validate() = %v, want ErrForbiddenBundleCompanionField", err)
+	}
+}
+
+func TestRejectPolicyBundleCompanionFieldsEdgeCases(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		wantErr error
+	}{
+		{name: "empty", yaml: "", wantErr: ErrForbiddenBundleCompanionField},
+		{name: "malformed", yaml: "mode: [\n", wantErr: ErrForbiddenBundleCompanionField},
+		{name: "extra document", yaml: "mode: balanced\n---\nmode: strict\n", wantErr: ErrForbiddenLicenseField},
+		{
+			name:    "merge sequence",
+			yaml:    "mode: balanced\ndlp_empty: &dlp_empty\n  secrets_file: ''\ndlp_forbidden: &dlp_forbidden\n  secrets_file: secrets.env\ndlp:\n  <<: [*dlp_empty, *dlp_forbidden]\n",
+			wantErr: ErrForbiddenBundleCompanionField,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectPolicyBundleCompanionFields(tc.yaml)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("rejectPolicyBundleCompanionFields() = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+
+	if err := walkRejectPolicyBundleCompanionFieldsAt(nil, "", map[*yaml.Node]bool{}); err != nil {
+		t.Fatalf("walk nil node: %v", err)
+	}
+	if err := walkRejectPolicyBundleCompanionFieldsAlias(&yaml.Node{Kind: yaml.AliasNode}, "root", map[*yaml.Node]bool{}); err != nil {
+		t.Fatalf("walk nil alias: %v", err)
+	}
+	aliasCycle := &yaml.Node{Kind: yaml.AliasNode}
+	aliasCycle.Alias = aliasCycle
+	if err := walkRejectPolicyBundleCompanionFieldsAlias(aliasCycle, "root", map[*yaml.Node]bool{}); !errors.Is(err, ErrForbiddenBundleCompanionField) {
+		t.Fatalf("walk alias cycle = %v, want ErrForbiddenBundleCompanionField", err)
+	}
+	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Value: "ok"}}}
+	if err := walkRejectPolicyBundleCompanionFieldsAt(doc, "", map[*yaml.Node]bool{}); err != nil {
+		t.Fatalf("walk document node: %v", err)
+	}
+}
+
+func yamlWithMergedCompanionPath(path string) string {
+	var b strings.Builder
+	parts := strings.Split(path, ".")
+	b.WriteString("mode: balanced\nx_forbidden: &forbidden\n")
+	for i, part := range parts {
+		b.WriteString(strings.Repeat("  ", i+1))
+		b.WriteString(part)
+		b.WriteString(":")
+		if i == len(parts)-1 {
+			b.WriteString(" local-file\n")
+		} else {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("<<: *forbidden\n")
+	return b.String()
 }
 
 func TestPolicyBundlePolicyHashVerifiesAndMatchesFollowerLoad(t *testing.T) {

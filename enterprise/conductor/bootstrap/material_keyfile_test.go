@@ -23,6 +23,11 @@ func TestWriteDeploymentKeyFile_RejectsInvalidInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey other: %v", err)
 	}
+	corruptPriv := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	copy(corruptPriv, priv)
+	for i := ed25519.SeedSize; i < ed25519.PrivateKeySize; i++ {
+		corruptPriv[i] ^= 0xFF
+	}
 	dir := t.TempDir()
 	const now = "2026-07-12T00:00:00Z"
 
@@ -38,6 +43,7 @@ func TestWriteDeploymentKeyFile_RejectsInvalidInputs(t *testing.T) {
 		{"empty key id", signing.PurposePolicyBundleSigning, "   ", pub, priv, "key id is empty"},
 		{"wrong public key length", signing.PurposePolicyBundleSigning, "k1", ed25519.PublicKey{1, 2, 3}, priv, "public key length"},
 		{"public key does not match private", signing.PurposePolicyBundleSigning, "k1", otherPub, priv, "does not match public key"},
+		{"corrupt private key", signing.PurposePolicyBundleSigning, "k1", pub, corruptPriv, "seed does not derive"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(dir, "bad-"+tc.name+".json")

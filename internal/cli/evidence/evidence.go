@@ -261,6 +261,14 @@ func renderSessionHTML(
 	return buf.Bytes(), nil
 }
 
+// anonymousActor is pipelock's default actor for unattributed requests (no agent
+// identity supplied). It is not a distinct agent, so it must not trip the
+// single-agent guard: a normal single-agent session routinely mixes its named
+// agent's receipts with unattributed ("anonymous") traffic, and rejecting that
+// would break the free view on legitimate real data. The guard rejects only when
+// two or more DISTINCT NAMED actors appear (the real cross-agent leak).
+const anonymousActor = "anonymous"
+
 func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) error {
 	var boundActor string
 	for _, r := range receipts {
@@ -271,13 +279,16 @@ func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) e
 		if actor == "" {
 			actor = sessionID
 		}
+		if actor == anonymousActor {
+			continue
+		}
 		if boundActor == "" {
 			boundActor = actor
 			continue
 		}
 		if actor != boundActor {
 			return fmt.Errorf(
-				"session %q contains receipts for multiple actors (%q and %q); use the Pro/Enterprise multi-agent evidence console",
+				"session %q contains receipts for multiple named agents (%q and %q); use the Pro/Enterprise multi-agent evidence console",
 				sessionID, boundActor, actor,
 			)
 		}

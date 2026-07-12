@@ -403,6 +403,25 @@ func TestServeCmd_MixedActorSessionFailsClosed(t *testing.T) {
 	}
 }
 
+// A single named agent mixed with unattributed ("anonymous") traffic is a normal
+// single-agent session and must render, while two distinct NAMED agents must still
+// be rejected. anonymous is pipelock's default actor, not a second agent.
+func TestValidateSingleActorReceipts_AnonymousIsNotADistinctAgent(t *testing.T) {
+	t.Parallel()
+	mk := func(actor string) receipt.Receipt {
+		return receipt.Receipt{ActionRecord: receipt.ActionRecord{Actor: actor}}
+	}
+	if err := validateSingleActorReceipts("proxy", []receipt.Receipt{mk("pipelock"), mk("anonymous"), mk("pipelock")}); err != nil {
+		t.Fatalf("named agent + anonymous traffic must render, got: %v", err)
+	}
+	if err := validateSingleActorReceipts("proxy", []receipt.Receipt{mk("anonymous"), mk("anonymous")}); err != nil {
+		t.Fatalf("all-anonymous session must render, got: %v", err)
+	}
+	if err := validateSingleActorReceipts("proxy", []receipt.Receipt{mk("agent-alpha"), mk("anonymous"), mk("agent-bravo")}); err == nil {
+		t.Fatal("two distinct named agents must be rejected even with anonymous present")
+	}
+}
+
 func TestServeCmd_MultiSessionRequiresExplicitSession(t *testing.T) {
 	t.Parallel()
 	_, priv := genKey(t)

@@ -368,6 +368,12 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		AuditWriter:         auditWriter,
 		AuthorizeFleetScope: authorizeFleetScope,
 		FleetSource:         fleetSource,
+		// A plain "Fleet" nav click carries no org_id/fleet_id. Default it to the
+		// operator-configured conductor org/fleet the dashboard reads, so the
+		// view resolves instead of returning "invalid fleet scope". Empty when no
+		// conductor source is configured (the view then renders its honest
+		// unconfigured empty state, unchanged).
+		DefaultFleetScope: dashboard.DecisionScope{OrgID: opts.conductorOrg, FleetID: opts.conductorFleet},
 		// TODO(DASH-3B): wire the read-only conductor decision replay/dry-run
 		// source when the dashboard's artifact_hash-only interface can be
 		// resolved to the signed artifact required by the Conductor replay

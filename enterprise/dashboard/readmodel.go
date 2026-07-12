@@ -97,6 +97,13 @@ type Options struct {
 	// the access log.
 	AuditWriter io.Writer
 	FleetSource FleetDataSource
+	// DefaultFleetScope is the org/fleet the fleet views fall back to when a
+	// request omits both org_id and fleet_id (e.g. a plain nav click on
+	// "Fleet"). It is the operator-configured conductor org/fleet the dashboard
+	// is allowed to read. A partial scope (only one of the two) is never
+	// defaulted; it stays an explicit error. Empty when no conductor source is
+	// configured.
+	DefaultFleetScope DecisionScope
 	// ConductorSource, when non-nil, is the read-only conductor decision
 	// dry-run/replay seam (BE-2) consumed by the Signed Action Workbench and
 	// Incident Cockpit. It exposes no publish/kill/rollback method, so no write

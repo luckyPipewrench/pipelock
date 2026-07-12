@@ -185,6 +185,52 @@ func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 	}
 }
 
+func TestFleetOverview_DefaultScopeFallbackWhenNoQueryScope(t *testing.T) {
+	t.Parallel()
+
+	allowScope := func(*http.Request, DecisionScope, bool) error { return nil }
+
+	// With a configured source AND a default scope, a plain "/fleet" nav click
+	// (no org_id/fleet_id) resolves via the default instead of 400ing.
+	withDefault := New(Options{
+		TrustedOuterAuth:    true,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{followers: testFleetFollowers()},
+		AuthorizeFleetScope: allowScope,
+		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+	})
+	rec := httptest.NewRecorder()
+	withDefault.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("with default: status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	// Without a default scope, the same scope-less request still fails closed
+	// (400) when a source is configured. This proves the default is what makes
+	// the bare nav click resolve.
+	noDefault := New(Options{
+		TrustedOuterAuth:    true,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{followers: testFleetFollowers()},
+		AuthorizeFleetScope: allowScope,
+	})
+	rec = httptest.NewRecorder()
+	noDefault.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("no default: status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	// A partial scope (only org_id) is never defaulted; it stays an error so a
+	// half-specified request cannot silently read a different fleet.
+	rec = httptest.NewRecorder()
+	withDefault.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID, nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("partial scope: status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestFleetOverview_FailClosedScopeAuthorization(t *testing.T) {
 	t.Parallel()
 

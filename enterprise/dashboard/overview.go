@@ -75,15 +75,16 @@ type OverviewAttentionItem struct {
 }
 
 type OverviewFleetPosture struct {
-	SourceConfigured bool
-	ScopeConfigured  bool
-	Truncated        bool
-	OrgID            string
-	FleetID          string
-	Claim            string
-	NonClaim         string
-	EmptyTitle       string
-	EmptyDetail      string
+	SourceConfigured  bool
+	ScopeConfigured   bool
+	SourceUnavailable bool
+	Truncated         bool
+	OrgID             string
+	FleetID           string
+	Claim             string
+	NonClaim          string
+	EmptyTitle        string
+	EmptyDetail       string
 
 	Reporting         int
 	Stale             int
@@ -272,7 +273,14 @@ func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) (Overvie
 	}
 	view, err := m.FleetOverview(ctx, scope.OrgID, scope.FleetID, rawAllowed)
 	if err != nil {
-		return OverviewFleetPosture{}, err
+		// The fleet source is configured but could not be read (for example the
+		// conductor is unreachable). Degrade to an explicit unavailable/unknown
+		// state rather than failing the whole overview or fabricating a clean
+		// posture. Honesty rule: an unreachable source is unknown, never green.
+		out.SourceUnavailable = true
+		out.EmptyTitle = "Fleet source unreachable"
+		out.EmptyDetail = "The configured fleet source could not be read, so follower reporting posture is unknown. Treat this as unverified, not as a clean fleet."
+		return out, nil
 	}
 	out.ScopeConfigured = true
 	out.Truncated = view.Truncated
@@ -723,6 +731,11 @@ func overviewAttention(page OverviewPage) []OverviewAttentionItem {
 	add("amber", "BUDGET", "agents are near configured budget limits", len(page.Budget.Rows), pluralize(len(page.Budget.Rows), "agent", "agents"), "/budgets")
 	add("amber", "UNSIGN", "followers self-report applied state without verification", page.Fleet.UnsignedSelf+page.Fleet.SignedUnverified, pluralize(page.Fleet.UnsignedSelf+page.Fleet.SignedUnverified, "follower", "followers"), "/fleet")
 	add("amber", "DRIFT", "followers report config drift", page.Fleet.Drift, pluralize(page.Fleet.Drift, "follower", "followers"), "/fleet")
+	fleetUnreachable := 0
+	if page.Fleet.SourceUnavailable {
+		fleetUnreachable = 1
+	}
+	add("amber", "FLEET", "the configured fleet source is unreachable, so follower posture is unknown", fleetUnreachable, "source", "/fleet")
 	add("amber", "GAP", "sessions or configured agents have no receipts in loaded evidence", len(page.Coverage.NoReceiptAgents), pluralize(len(page.Coverage.NoReceiptAgents), "agent", "agents"), "/agents")
 	return items
 }

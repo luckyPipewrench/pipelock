@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -216,6 +217,43 @@ func TestOverviewNilSourcesRenderHonestEmptySections(t *testing.T) {
 	}
 	if page.Incidents.EmptyTitle != "No conductor decision source configured" {
 		t.Fatalf("incidents empty title = %q", page.Incidents.EmptyTitle)
+	}
+}
+
+// A configured-but-unreachable fleet source (for example a down conductor) must
+// degrade the fleet section to an explicit unavailable/unknown state, never fail
+// the whole overview and never fabricate a clean fleet.
+func TestOverviewFleetSourceUnreachableDegradesToAmber(t *testing.T) {
+	t.Parallel()
+
+	model := NewReadModel(Options{
+		ReceiptDir:        t.TempDir(),
+		FleetSource:       &fakeFleetSource{err: errors.New("conductor unreachable")},
+		DefaultFleetScope: DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+	})
+	page, err := model.Overview(context.Background(), true)
+	if err != nil {
+		t.Fatalf("Overview must degrade, not error, when the fleet source is unreachable: %v", err)
+	}
+	if !page.Fleet.SourceUnavailable {
+		t.Fatal("expected Fleet.SourceUnavailable=true when the fleet source errors")
+	}
+	if page.Fleet.EmptyTitle != "Fleet source unreachable" {
+		t.Fatalf("fleet empty title = %q, want %q", page.Fleet.EmptyTitle, "Fleet source unreachable")
+	}
+	if page.Fleet.TotalAcceptedRows != 0 || page.Fleet.Reporting != 0 || page.Fleet.VerifiedApplied != 0 {
+		t.Fatalf("degraded fleet must not fabricate followers: rows=%d reporting=%d verified=%d",
+			page.Fleet.TotalAcceptedRows, page.Fleet.Reporting, page.Fleet.VerifiedApplied)
+	}
+	// Honesty: an unreachable source surfaces as an amber fact, never silently clean.
+	var amberFleet bool
+	for _, item := range page.Attention {
+		if item.Kind == "FLEET" && item.Severity == "amber" && item.Count >= 1 {
+			amberFleet = true
+		}
+	}
+	if !amberFleet {
+		t.Fatal("expected an amber FLEET attention fact when the fleet source is unreachable")
 	}
 }
 

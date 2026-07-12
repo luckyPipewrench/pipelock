@@ -141,8 +141,15 @@ func TestHandler_AgentsRendersGroups(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Cross-Agent Evidence Explorer") {
+	if !strings.Contains(body, "Agent evidence") {
 		t.Fatal("body should contain the agents page heading")
+	}
+	// The designed header carries the honest what-this-proves lead, not a bare title.
+	if !strings.Contains(body, "produced signed receipts in the configured evidence source") {
+		t.Fatal("body should contain the honest agents-page intent lead")
+	}
+	if !strings.Contains(body, "with loaded evidence") {
+		t.Fatal("body should contain the agent-count summary line")
 	}
 	if !strings.Contains(body, testActor) {
 		t.Fatalf("body should contain agent name %q", testActor)

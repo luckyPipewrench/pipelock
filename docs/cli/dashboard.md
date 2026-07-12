@@ -64,8 +64,8 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 
 ### Authentication modes
 
-The dashboard requires exactly one of three authenticators, and each is a
-complete sole authenticator — none depends on the others:
+The dashboard requires at least one of three authenticators, and each is a
+complete authenticator on its own — none depends on the others:
 
 - **Operator token** (`--auth-token-file`): a bearer token, optionally paired
   with a higher-privilege `--raw-token-file`.

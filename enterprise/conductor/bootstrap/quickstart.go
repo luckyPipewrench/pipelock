@@ -52,6 +52,8 @@ func writeQuickstart(out io.Writer, r *Result) {
 	w("  pipelock conductor serve \\\n")
 	w("    --listen %s \\\n", trimScheme(r.ConductorURL))
 	w("    --conductor-id %s \\\n", r.ConductorID)
+	w("    --auditor-org %s \\\n", r.Identity.OrgID)
+	w("    --admin-org %s \\\n", r.Identity.OrgID)
 	w("    --follower-trust-domain %s \\\n", r.TrustDomain)
 	w("    --storage-dir %s \\\n", r.Layout.ConductorStorageDir)
 	w("    --tls-cert %s --tls-key %s \\\n", r.Layout.ConductorServerCertPath, r.Layout.ConductorServerKeyPath)

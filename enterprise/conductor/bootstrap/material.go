@@ -31,15 +31,17 @@ import (
 )
 
 const (
-	rosterRootKeyID = "fleet-roster-root"
-	remoteKillKeyID = "conductor-remote-kill-1"
-	rollbackKeyID   = "conductor-rollback-1"
+	rosterRootKeyID    = "fleet-roster-root"
+	policySigningKeyID = "conductor-policy-bundle-signing-1"
+	remoteKillKeyID    = "conductor-remote-kill-1"
+	rollbackKeyID      = "conductor-rollback-1"
 
 	certPEMType   = "CERTIFICATE"
 	ecKeyPEMType  = "EC PRIVATE KEY"
 	tokenRandSize = 32
 
-	ed25519SigPrefix = "ed25519:"
+	ed25519SigPrefix     = "ed25519:"
+	keyFileSchemaVersion = 1
 
 	licenseEmail = "fleet-bootstrap@pipelock.local"
 	licenseTier  = "enterprise"
@@ -229,29 +231,38 @@ func generateTrust(layout Layout, opts Options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate remote-kill key: %w", err)
 	}
+	psPub, psKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("generate policy bundle signing key: %w", err)
+	}
 	rbPub, rbKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", fmt.Errorf("generate rollback key: %w", err)
 	}
+	createdAt := opts.Now().UTC().Format(time.RFC3339)
 	for _, kp := range []struct {
 		priv    ed25519.PrivateKey
 		pub     ed25519.PublicKey
+		id      string
+		purpose signing.KeyPurpose
 		keyPath string
 		pubPath string
 	}{
-		{rootKey, rootPub, layout.RosterRootKeyPath, layout.RosterRootPubPath},
-		{rkKey, rkPub, layout.RemoteKillKeyPath, layout.RemoteKillPubPath},
-		{rbKey, rbPub, layout.RollbackKeyPath, layout.RollbackPubPath},
+		{rootKey, rootPub, rosterRootKeyID, signing.PurposeRosterRoot, layout.RosterRootKeyPath, layout.RosterRootPubPath},
+		{psKey, psPub, policySigningKeyID, signing.PurposePolicyBundleSigning, layout.PolicySigningKeyPath, ""},
+		{rkKey, rkPub, remoteKillKeyID, signing.PurposeRemoteKillSigning, layout.RemoteKillKeyPath, layout.RemoteKillPubPath},
+		{rbKey, rbPub, rollbackKeyID, signing.PurposePolicyBundleRollback, layout.RollbackKeyPath, layout.RollbackPubPath},
 	} {
-		if err := writePrivateKey(kp.keyPath, kp.priv); err != nil {
+		if err := writeDeploymentKeyFile(kp.keyPath, kp.purpose, kp.id, kp.pub, kp.priv, createdAt); err != nil {
 			return "", err
 		}
-		if err := writePublicKey(kp.pubPath, kp.pub); err != nil {
-			return "", err
+		if kp.pubPath != "" {
+			if err := writePublicKey(kp.pubPath, kp.pub); err != nil {
+				return "", err
+			}
 		}
 	}
 
-	now := opts.Now().UTC().Format(time.RFC3339)
 	body := contract.KeyRoster{
 		SchemaVersion:  1,
 		RosterSignedBy: rosterRootKeyID,
@@ -261,15 +272,23 @@ func generateTrust(layout Layout, opts Options) (string, error) {
 				KeyID:        rosterRootKeyID,
 				KeyPurpose:   string(signing.PurposeRosterRoot),
 				PublicKeyHex: hex.EncodeToString(rootPub),
-				ValidFrom:    now,
+				ValidFrom:    createdAt,
 				Status:       contract.KeyStatusRoot,
 				Principal:    "root",
+			},
+			{
+				KeyID:        policySigningKeyID,
+				KeyPurpose:   string(signing.PurposePolicyBundleSigning),
+				PublicKeyHex: hex.EncodeToString(psPub),
+				ValidFrom:    createdAt,
+				Status:       contract.KeyStatusActive,
+				Principal:    "conductor",
 			},
 			{
 				KeyID:        remoteKillKeyID,
 				KeyPurpose:   string(signing.PurposeRemoteKillSigning),
 				PublicKeyHex: hex.EncodeToString(rkPub),
-				ValidFrom:    now,
+				ValidFrom:    createdAt,
 				Status:       contract.KeyStatusActive,
 				Principal:    "conductor",
 			},
@@ -277,7 +296,7 @@ func generateTrust(layout Layout, opts Options) (string, error) {
 				KeyID:        rollbackKeyID,
 				KeyPurpose:   string(signing.PurposePolicyBundleRollback),
 				PublicKeyHex: hex.EncodeToString(rbPub),
-				ValidFrom:    now,
+				ValidFrom:    createdAt,
 				Status:       contract.KeyStatusActive,
 				Principal:    "conductor",
 			},
@@ -426,6 +445,47 @@ func writeCertKeyPEM(certPath, keyPath string, cert *tls.Certificate) error {
 
 func writePrivateKey(path string, key ed25519.PrivateKey) error {
 	return writeFile(path, []byte(signing.EncodePrivateKey(key)))
+}
+
+type deploymentKeyFile struct {
+	SchemaVersion int    `json:"schema_version"`
+	Purpose       string `json:"purpose"`
+	KeyID         string `json:"key_id"`
+	Public        string `json:"public"`
+	Private       string `json:"private"`
+	CreatedAt     string `json:"created_at"`
+}
+
+func writeDeploymentKeyFile(path string, purpose signing.KeyPurpose, keyID string, pub ed25519.PublicKey, priv ed25519.PrivateKey, createdAt string) error {
+	if err := purpose.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(keyID) == "" {
+		return errors.New("deployment key id is empty")
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("deployment key %s public key length got %d, want %d", keyID, len(pub), ed25519.PublicKeySize)
+	}
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		return fmt.Errorf("deployment key %s: %w", keyID, err)
+	}
+	derived, ok := priv.Public().(ed25519.PublicKey)
+	if !ok || !strings.EqualFold(hex.EncodeToString(derived), hex.EncodeToString(pub)) {
+		return fmt.Errorf("deployment key %s private key does not match public key", keyID)
+	}
+	data, err := json.MarshalIndent(deploymentKeyFile{
+		SchemaVersion: keyFileSchemaVersion,
+		Purpose:       string(purpose),
+		KeyID:         keyID,
+		Public:        hex.EncodeToString(pub),
+		Private:       hex.EncodeToString(priv),
+		CreatedAt:     createdAt,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal deployment key %s: %w", keyID, err)
+	}
+	data = append(data, '\n')
+	return writeFile(path, data)
 }
 
 func writePublicKey(path string, key ed25519.PublicKey) error {

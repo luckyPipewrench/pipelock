@@ -93,6 +93,8 @@ func TestBootstrapCmd_StandsUpFleet(t *testing.T) {
 		"fleets/demo/",
 		"--follower-trust-domain demo.example",
 		"--conductor-id conductor-demo",
+		"--auditor-org org-local",
+		"--admin-org org-local",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("bootstrap output missing %q\n--- output ---\n%s", want, got)

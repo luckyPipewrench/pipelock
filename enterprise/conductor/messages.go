@@ -21,6 +21,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -91,34 +92,35 @@ const (
 var acceptedSchemaVersions = map[int]bool{1: true}
 
 var (
-	ErrUnsupportedSchemaVersion  = errors.New("unsupported conductor schema_version")
-	ErrMissingField              = errors.New("missing required conductor field")
-	ErrInvalidAudience           = errors.New("invalid conductor audience")
-	ErrAudienceMismatch          = errors.New("conductor audience does not match follower")
-	ErrInvalidHash               = errors.New("invalid conductor hash")
-	ErrInvalidSignature          = errors.New("invalid conductor signature")
-	ErrWrongKeyPurpose           = errors.New("conductor signature key_purpose mismatch")
-	ErrThresholdRequired         = errors.New("conductor signature threshold not met")
-	ErrForbiddenLicenseField     = errors.New("policy bundle contains forbidden license field")
-	ErrForbiddenBundleSection    = errors.New("policy bundle contains a config section not permitted in a signed bundle")
-	ErrInvalidValidityWindow     = errors.New("invalid conductor validity window")
-	ErrInvalidSequenceRange      = errors.New("invalid conductor sequence range")
-	ErrInvalidState              = errors.New("invalid conductor state")
-	ErrInvalidRollback           = errors.New("invalid conductor rollback authorization")
-	ErrStreamSwitchWindowTooLong = errors.New("conductor stream switch authorization validity window exceeds maximum")
-	ErrNotYetValid               = errors.New("conductor message not yet valid (not_before in future)")
-	ErrExpired                   = errors.New("conductor message expired")
-	ErrSkewExceeded              = errors.New("conductor message exceeds allowed clock skew")
-	ErrInvalidMinVersion         = errors.New("invalid min_pipelock_version")
-	ErrHashMismatch              = errors.New("conductor hash mismatch")
-	ErrPayloadTooLarge           = errors.New("conductor payload exceeds size cap")
-	ErrInvalidAudienceWildcard   = errors.New("conductor audience cannot mix wildcard with explicit instance_ids")
-	ErrInvalidAudienceSelectors  = errors.New("conductor audience cannot mix instance_ids with labels")
-	ErrInvalidReason             = errors.New("invalid conductor reason")
-	ErrInvalidIdentifier         = errors.New("invalid conductor identifier")
-	ErrSignatureVerification     = errors.New("conductor signature verification failed")
-	ErrInvalidDroppedAccounting  = errors.New("invalid conductor dropped accounting")
-	ErrInvalidAppliedState       = errors.New("invalid conductor follower applied state")
+	ErrUnsupportedSchemaVersion      = errors.New("unsupported conductor schema_version")
+	ErrMissingField                  = errors.New("missing required conductor field")
+	ErrInvalidAudience               = errors.New("invalid conductor audience")
+	ErrAudienceMismatch              = errors.New("conductor audience does not match follower")
+	ErrInvalidHash                   = errors.New("invalid conductor hash")
+	ErrInvalidSignature              = errors.New("invalid conductor signature")
+	ErrWrongKeyPurpose               = errors.New("conductor signature key_purpose mismatch")
+	ErrThresholdRequired             = errors.New("conductor signature threshold not met")
+	ErrForbiddenLicenseField         = errors.New("policy bundle contains forbidden license field")
+	ErrForbiddenBundleSection        = errors.New("policy bundle contains a config section not permitted in a signed bundle")
+	ErrForbiddenBundleCompanionField = errors.New("policy bundle contains a local companion-file field")
+	ErrInvalidValidityWindow         = errors.New("invalid conductor validity window")
+	ErrInvalidSequenceRange          = errors.New("invalid conductor sequence range")
+	ErrInvalidState                  = errors.New("invalid conductor state")
+	ErrInvalidRollback               = errors.New("invalid conductor rollback authorization")
+	ErrStreamSwitchWindowTooLong     = errors.New("conductor stream switch authorization validity window exceeds maximum")
+	ErrNotYetValid                   = errors.New("conductor message not yet valid (not_before in future)")
+	ErrExpired                       = errors.New("conductor message expired")
+	ErrSkewExceeded                  = errors.New("conductor message exceeds allowed clock skew")
+	ErrInvalidMinVersion             = errors.New("invalid min_pipelock_version")
+	ErrHashMismatch                  = errors.New("conductor hash mismatch")
+	ErrPayloadTooLarge               = errors.New("conductor payload exceeds size cap")
+	ErrInvalidAudienceWildcard       = errors.New("conductor audience cannot mix wildcard with explicit instance_ids")
+	ErrInvalidAudienceSelectors      = errors.New("conductor audience cannot mix instance_ids with labels")
+	ErrInvalidReason                 = errors.New("invalid conductor reason")
+	ErrInvalidIdentifier             = errors.New("invalid conductor identifier")
+	ErrSignatureVerification         = errors.New("conductor signature verification failed")
+	ErrInvalidDroppedAccounting      = errors.New("invalid conductor dropped accounting")
+	ErrInvalidAppliedState           = errors.New("invalid conductor follower applied state")
 )
 
 // allowedPolicyBundleSections is the default-deny allowlist of top-level config
@@ -189,6 +191,17 @@ var forbiddenLicenseFields = map[string]struct{}{
 	"license_revocation_reason": {},
 }
 
+var forbiddenPolicyBundleCompanionFields = map[string]struct{}{
+	"dlp.secrets_file":                    {},
+	"learn.privacy.salt_source":           {},
+	"mcp_binary_integrity.manifest_path":  {},
+	"mcp_binary_integrity.signature_path": {},
+	"mcp_binary_integrity.keystore":       {},
+	"behavioral_baseline.profile_dir":     {},
+	"learn_lock.store_dir":                {},
+	"learn_lock.roster_path":              {},
+}
+
 // SignatureKey carries the verification material plus the lifecycle metadata
 // the spec mandates ("key_id, purpose, created_at, not_before, not_after,
 // revoked_at"). The roster must populate NotBefore/NotAfter for every key; an
@@ -247,27 +260,27 @@ func (p PolicyBundlePayload) PayloadHash() (string, error) {
 }
 
 func (p PolicyBundlePayload) PolicyHash() (string, error) {
-	var cfg any
-	decoder := yaml.NewDecoder(strings.NewReader(p.ConfigYAML))
-	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("parse policy bundle config_yaml for policy hash: %w", err)
+	if err := rejectLicenseFields(p.ConfigYAML); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidHash, err)
 	}
-	var extra yaml.Node
-	if err := decoder.Decode(&extra); err == nil {
-		if !isEmptyYAMLDocument(extra) {
-			return "", fmt.Errorf("%w: config_yaml has multiple YAML documents", ErrInvalidHash)
-		}
-	} else if !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("parse policy bundle config_yaml trailing document: %w", err)
+	if err := rejectPolicyBundleCompanionFields(p.ConfigYAML); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidHash, err)
 	}
-	view := struct {
-		ConfigYAML  any             `json:"config_yaml"`
-		RuleBundles []RuleBundleRef `json:"rule_bundles,omitempty"`
+	cfg, err := config.LoadPolicyBundleBytes([]byte(p.ConfigYAML))
+	if err != nil {
+		return "", fmt.Errorf("%w: load policy bundle config_yaml: %w", ErrInvalidHash, err)
+	}
+	configPolicyHash := cfg.CanonicalPolicyHash()
+	if len(p.RuleBundles) == 0 {
+		return configPolicyHash, nil
+	}
+	return canonicalValueHash(struct {
+		ConfigPolicyHash string          `json:"config_policy_hash"`
+		RuleBundles      []RuleBundleRef `json:"rule_bundles"`
 	}{
-		ConfigYAML:  cfg,
-		RuleBundles: p.RuleBundles,
-	}
-	return canonicalValueHash(view, "policy_bundle_policy")
+		ConfigPolicyHash: configPolicyHash,
+		RuleBundles:      p.RuleBundles,
+	}, "policy_bundle_policy")
 }
 
 type PolicyBundle struct {
@@ -670,6 +683,9 @@ func (b PolicyBundle) Validate() error {
 		return err
 	}
 	if err := rejectLicenseFields(b.Payload.ConfigYAML); err != nil {
+		return err
+	}
+	if err := rejectPolicyBundleCompanionFields(b.Payload.ConfigYAML); err != nil {
 		return err
 	}
 	if err := rejectDisallowedBundleSections(b.Payload.ConfigYAML); err != nil {
@@ -1709,6 +1725,122 @@ func walkRejectLicenseFieldsAt(n *yaml.Node, path string) error {
 		}
 	}
 	return nil
+}
+
+func rejectPolicyBundleCompanionFields(configYAML string) error {
+	dec := yaml.NewDecoder(bytes.NewReader([]byte(configYAML)))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		return fmt.Errorf("%w: parse config payload: %w", ErrForbiddenBundleCompanionField, err)
+	}
+	if err := rejectExtraYAMLDocuments(dec); err != nil {
+		return err
+	}
+	if len(doc.Content) == 0 {
+		return nil
+	}
+	return walkRejectPolicyBundleCompanionFieldsAt(doc.Content[0], "", make(map[*yaml.Node]bool))
+}
+
+func walkRejectPolicyBundleCompanionFieldsAt(n *yaml.Node, path string, seen map[*yaml.Node]bool) error {
+	if n == nil {
+		return nil
+	}
+	switch n.Kind {
+	case yaml.DocumentNode:
+		for _, c := range n.Content {
+			if err := walkRejectPolicyBundleCompanionFieldsAt(c, path, seen); err != nil {
+				return err
+			}
+		}
+	case yaml.AliasNode:
+		return walkRejectPolicyBundleCompanionFieldsAlias(n, path, seen)
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key := n.Content[i]
+			val := n.Content[i+1]
+			if isYAMLMergeKey(key) {
+				if err := walkRejectPolicyBundleCompanionFieldsMerge(val, path, seen); err != nil {
+					return err
+				}
+				continue
+			}
+			childPath := path + "." + key.Value
+			if path == "" {
+				childPath = key.Value
+			}
+			if _, forbidden := forbiddenPolicyBundleCompanionFields[childPath]; forbidden && yamlNodeHasNonEmptyValue(val, seen) {
+				return fmt.Errorf("%w: %s", ErrForbiddenBundleCompanionField, childPath)
+			}
+			if err := walkRejectPolicyBundleCompanionFieldsAt(val, childPath, seen); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode:
+		for i, c := range n.Content {
+			childPath := fmt.Sprintf("%s[%d]", path, i)
+			if err := walkRejectPolicyBundleCompanionFieldsAt(c, childPath, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func walkRejectPolicyBundleCompanionFieldsMerge(n *yaml.Node, path string, seen map[*yaml.Node]bool) error {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.SequenceNode {
+		for _, c := range n.Content {
+			if err := walkRejectPolicyBundleCompanionFieldsAt(c, path, seen); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walkRejectPolicyBundleCompanionFieldsAt(n, path, seen)
+}
+
+func walkRejectPolicyBundleCompanionFieldsAlias(n *yaml.Node, path string, seen map[*yaml.Node]bool) error {
+	if n.Alias == nil {
+		return nil
+	}
+	if seen[n.Alias] {
+		return fmt.Errorf("%w: YAML alias cycle at %s", ErrForbiddenBundleCompanionField, path)
+	}
+	seen[n.Alias] = true
+	defer delete(seen, n.Alias)
+	return walkRejectPolicyBundleCompanionFieldsAt(n.Alias, path, seen)
+}
+
+func isYAMLMergeKey(n *yaml.Node) bool {
+	return n != nil && n.Kind == yaml.ScalarNode && (n.Value == "<<" || n.Tag == "!!merge")
+}
+
+func yamlNodeHasNonEmptyValue(n *yaml.Node, seen map[*yaml.Node]bool) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Kind {
+	case yaml.AliasNode:
+		if n.Alias == nil {
+			return false
+		}
+		if seen[n.Alias] {
+			return true
+		}
+		seen[n.Alias] = true
+		defer delete(seen, n.Alias)
+		return yamlNodeHasNonEmptyValue(n.Alias, seen)
+	case yaml.ScalarNode:
+		if n.Tag == "!!null" {
+			return false
+		}
+		return strings.TrimSpace(n.Value) != ""
+	default:
+		return true
+	}
 }
 
 // rejectDisallowedBundleSections enforces the default-deny

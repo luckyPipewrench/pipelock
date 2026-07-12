@@ -166,6 +166,36 @@ also carries a token, its certificate role remains authoritative for route and
 raw-view permissions; a metadata certificate cannot use a raw token to
 escalate.
 
+### OIDC identity-provider setup
+
+In OIDC mode the dashboard validates every bearer token against the configured
+issuer and audience before authorizing it. Three claim checks are relevant when
+wiring an identity provider:
+
+- `iss` must exactly equal `--oidc-issuer`.
+- `aud` must contain `--oidc-audience` (aliased by `--oidc-client-id`).
+- `azp`, when present, must equal that same audience; a token with multiple
+  audiences and no `azp` is rejected.
+
+The common setup failure is the `aud` check. Many providers do not put the
+client ID in the access token's audience by default, so the token is rejected
+even though sign-in succeeds. Keycloak, for example, issues access tokens with
+`aud: "account"` unless you add an audience mapper. To use the dashboard with
+Keycloak, add an **Audience** protocol mapper to the client (or to a client
+scope it uses) whose included client audience is the dashboard client ID, then
+set `--oidc-audience` to that same client ID. The issued token then includes
+the client ID in its `aud` claim (alongside any audiences the provider already
+sets, such as `account`), so the "aud contains `--oidc-audience`" check passes.
+A token that then carries multiple audiences must also set `azp` to the client
+ID, which Keycloak does for the client that obtained the token; the dashboard
+requires that `azp` match when more than one audience is present.
+
+Pick a role source with `--oidc-role-claim` and map it to bounded dashboard
+permissions with `--oidc-role-map`. The role claim can be `azp` (the client ID,
+useful for a single-client deployment) or a groups/roles claim your provider
+adds to the token. As with the mTLS role map, permissions must come from the
+dashboard's bounded vocabulary and an unmapped principal is denied.
+
 ### License resolution
 
 `dashboard serve` loads `--config` only when the flag is provided, using the

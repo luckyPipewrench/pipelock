@@ -7,11 +7,61 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func assertDeploymentKeyFile(t *testing.T, path string, purpose signing.KeyPurpose, keyID string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read deployment key %s: %v", path, err)
+	}
+	var kf deploymentKeyFile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&kf); err != nil {
+		t.Fatalf("decode deployment key %s: %v", path, err)
+	}
+	if err := dec.Decode(&struct{}{}); err == nil {
+		t.Fatalf("decode deployment key %s: trailing JSON after key object", path)
+	}
+	if kf.SchemaVersion != keyFileSchemaVersion {
+		t.Fatalf("%s schema_version = %d, want %d", path, kf.SchemaVersion, keyFileSchemaVersion)
+	}
+	if kf.Purpose != string(purpose) {
+		t.Fatalf("%s purpose = %q, want %q", path, kf.Purpose, purpose)
+	}
+	if kf.KeyID != keyID {
+		t.Fatalf("%s key_id = %q, want %q", path, kf.KeyID, keyID)
+	}
+	pub, err := hex.DecodeString(kf.Public)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		t.Fatalf("%s malformed public key", path)
+	}
+	priv, err := hex.DecodeString(kf.Private)
+	if err != nil || len(priv) != ed25519.PrivateKeySize {
+		t.Fatalf("%s malformed private key", path)
+	}
+	privateKey := ed25519.PrivateKey(priv)
+	if err := signing.ValidatePrivateKeyConsistency(privateKey); err != nil {
+		t.Fatalf("%s private key consistency: %v", path, err)
+	}
+	derived, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok || !bytes.Equal(derived, pub) {
+		t.Fatalf("%s private key does not match public key", path)
+	}
+	if kf.CreatedAt == "" {
+		t.Fatalf("%s created_at is empty", path)
+	}
+}
 
 // privateFleetDir returns an absolute fleet directory whose ancestors are not
 // world-writable. The conductor config validator rejects world-writable
@@ -78,7 +128,7 @@ func TestRun_StandsUpVerifyingFleet(t *testing.T) {
 		res.Layout.ConductorServerCertPath, res.Layout.ConductorServerKeyPath,
 		res.Layout.FollowerClientCertPath, res.Layout.FollowerClientKeyPath,
 		res.Layout.FollowerAuditKeyPath, res.Layout.FollowerConfigPath,
-		res.Layout.TrustRosterPath, res.Layout.LicenseTokenPath,
+		res.Layout.TrustRosterPath, res.Layout.PolicySigningKeyPath, res.Layout.LicenseTokenPath,
 		res.Layout.PublisherTokenPath, res.Layout.AuditorTokenPath, res.Layout.AdminTokenPath,
 		res.Layout.AuditBatchPath, res.Layout.ManifestPath,
 	}
@@ -91,11 +141,16 @@ func TestRun_StandsUpVerifyingFleet(t *testing.T) {
 			t.Errorf("file %s has perm %04o, want 0600", f, perm)
 		}
 	}
+	assertDeploymentKeyFile(t, res.Layout.RosterRootKeyPath, signing.PurposeRosterRoot, rosterRootKeyID)
+	assertDeploymentKeyFile(t, res.Layout.PolicySigningKeyPath, signing.PurposePolicyBundleSigning, policySigningKeyID)
+	assertDeploymentKeyFile(t, res.Layout.RemoteKillKeyPath, signing.PurposeRemoteKillSigning, remoteKillKeyID)
+	assertDeploymentKeyFile(t, res.Layout.RollbackKeyPath, signing.PurposePolicyBundleRollback, rollbackKeyID)
 
 	// Quickstart output makes the honest claim and never prints a token value.
 	q := out.String()
 	for _, want := range []string{
 		"verifying fleet stood up", "DEPLOYMENT-ENFORCED", "pipelock conductor serve", "pipelock run -c",
+		"--auditor-org org-local", "--admin-org org-local",
 	} {
 		if !strings.Contains(q, want) {
 			t.Errorf("quickstart output missing %q", want)

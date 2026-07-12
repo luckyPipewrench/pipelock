@@ -23,6 +23,7 @@ import (
 	"time"
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/bootstrap"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -64,6 +65,142 @@ func writePolicyKeyFile(t *testing.T, dir, purpose, keyID string) (string, ed255
 		t.Fatalf("write key file: %v", err)
 	}
 	return path, pub
+}
+
+func TestLoadPolicySigningKeyAcceptsBootstrapKeyFile(t *testing.T) {
+	base, err := os.MkdirTemp(".", ".publish-bootstrap-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir, err := filepath.Abs(filepath.Join(base, "fleet"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	res, err := bootstrap.Run(context.Background(), bootstrap.Options{
+		Dir:         dir,
+		OrgID:       testOrg,
+		FleetID:     testFleet,
+		InstanceID:  "instance-1",
+		Environment: testEnv,
+		SkipProof:   true,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap Run(SkipProof): %v", err)
+	}
+	keyID, priv, err := loadPolicySigningKey(res.Layout.PolicySigningKeyPath)
+	if err != nil {
+		t.Fatalf("loadPolicySigningKey(bootstrap key): %v", err)
+	}
+	defer zeroizeKey(priv)
+	if keyID == "" {
+		t.Fatal("bootstrap policy key loaded with empty key_id")
+	}
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		t.Fatalf("bootstrap policy private key consistency: %v", err)
+	}
+}
+
+func TestBootstrapEmergencyKeysLoadAndSignControlMessages(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Setenv("TMPDIR", cwd)
+	base := t.TempDir()
+	dir := filepath.Join(base, "fleet")
+	res, err := bootstrap.Run(context.Background(), bootstrap.Options{
+		Dir:         dir,
+		OrgID:       testOrg,
+		FleetID:     testFleet,
+		InstanceID:  "instance-1",
+		Environment: testEnv,
+		SkipProof:   true,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap Run(SkipProof): %v", err)
+	}
+
+	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	remoteKey, err := loadSigningKeyFile(res.Layout.RemoteKillKeyPath, signing.PurposeRemoteKillSigning)
+	if err != nil {
+		t.Fatalf("load bootstrap remote-kill key: %v", err)
+	}
+	defer zeroizeKey(remoteKey.priv)
+	remoteKill := conductorcore.RemoteKillMessage{
+		SchemaVersion: conductorcore.SchemaVersion,
+		MessageID:     "bootstrap-kill",
+		OrgID:         testOrg,
+		FleetID:       testFleet,
+		Audience:      conductorcore.Audience{InstanceIDs: []string{"*"}},
+		State:         conductorcore.KillSwitchActive,
+		Counter:       1,
+		Reason:        "bootstrap key smoke test",
+		CreatedAt:     now,
+		NotBefore:     now.Add(-time.Minute),
+		ExpiresAt:     now.Add(time.Minute),
+	}
+	assertBootstrapKeySignsPreimage(t, remoteKill.SignablePreimage, signing.PurposeRemoteKillSigning, remoteKey)
+
+	rollbackKey, err := loadSigningKeyFile(res.Layout.RollbackKeyPath, signing.PurposePolicyBundleRollback)
+	if err != nil {
+		t.Fatalf("load bootstrap rollback key: %v", err)
+	}
+	defer zeroizeKey(rollbackKey.priv)
+	rollback := conductorcore.RollbackAuthorization{
+		SchemaVersion:   conductorcore.SchemaVersion,
+		AuthorizationID: "bootstrap-rollback",
+		OrgID:           testOrg,
+		FleetID:         testFleet,
+		CurrentBundleID: "bundle-2",
+		CurrentVersion:  2,
+		TargetBundleID:  "bundle-1",
+		TargetVersion:   1,
+		Counter:         1,
+		Reason:          "bootstrap key smoke test",
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(time.Minute),
+	}
+	assertBootstrapKeySignsPreimage(t, rollback.SignablePreimage, signing.PurposePolicyBundleRollback, rollbackKey)
+}
+
+func assertBootstrapKeySignsPreimage(
+	t *testing.T,
+	preimage func() ([]byte, error),
+	purpose signing.KeyPurpose,
+	key loadedSigningKey,
+) {
+	t.Helper()
+	proofs, err := signEmergencyPreimage(preimage, purpose, []loadedSigningKey{key})
+	if err != nil {
+		t.Fatalf("signEmergencyPreimage(%s): %v", purpose, err)
+	}
+	if len(proofs) != 1 {
+		t.Fatalf("proof count = %d, want 1", len(proofs))
+	}
+	proof := proofs[0]
+	if err := proof.Validate(purpose); err != nil {
+		t.Fatalf("proof Validate(%s): %v", purpose, err)
+	}
+	data, err := preimage()
+	if err != nil {
+		t.Fatalf("preimage: %v", err)
+	}
+	sigHex, ok := strings.CutPrefix(proof.Signature, conductorcore.SignaturePrefixEd25519)
+	if !ok {
+		t.Fatalf("signature %q missing Ed25519 prefix", proof.Signature)
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	pub, ok := key.priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("private key did not expose Ed25519 public key")
+	}
+	if !ed25519.Verify(pub, data, sig) {
+		t.Fatal("bootstrap key signature did not verify")
+	}
 }
 
 // selfSignedCertKey generates a throwaway self-signed cert + key in PEM form so
@@ -505,7 +642,7 @@ func TestBuildSignedBundle_ForbiddenConfigSectionRejectedLocally(t *testing.T) {
 	dir := t.TempDir()
 	opts := baseOpts(t, dir, "https://conductor.example:8895")
 	// 'kill_switch' is NOT in the allowed policy-bundle sections allowlist.
-	opts.configFile = writeFile(t, dir, "bad.yaml", "mode: strict\nkill_switch:\n  enabled: true\n")
+	opts.configFile = writeFile(t, dir, "bad.yaml", "mode: strict\napi_allowlist:\n  - api.vendor.example\nkill_switch:\n  enabled: true\n")
 	_, _, _, err := buildSignedBundle(opts)
 	if err == nil || !strings.Contains(err.Error(), "local validation") {
 		t.Fatalf("want local-validation failure for forbidden section, got %v", err)

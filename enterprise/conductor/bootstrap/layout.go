@@ -41,13 +41,14 @@ type Layout struct {
 	FollowerRecorderDir    string
 
 	// Trust roster + its root keypair + the Conductor control keys it pins.
-	TrustRosterPath   string
-	RosterRootKeyPath string
-	RosterRootPubPath string
-	RemoteKillKeyPath string
-	RemoteKillPubPath string
-	RollbackKeyPath   string
-	RollbackPubPath   string
+	TrustRosterPath      string
+	RosterRootKeyPath    string
+	RosterRootPubPath    string
+	PolicySigningKeyPath string
+	RemoteKillKeyPath    string
+	RemoteKillPubPath    string
+	RollbackKeyPath      string
+	RollbackPubPath      string
 
 	// Dev license keypair + fleet-flagged token.
 	LicenseKeyPath   string
@@ -90,13 +91,14 @@ func newLayout(dir string) (Layout, error) {
 		FollowerAuditQueueDir:  j("follower", "audit-queue"),
 		FollowerRecorderDir:    j("follower", "recorder"),
 
-		TrustRosterPath:   j("trust", "trust-roster.json"),
-		RosterRootKeyPath: j("trust", "roster-root.key"),
-		RosterRootPubPath: j("trust", "roster-root.pub"),
-		RemoteKillKeyPath: j("trust", "remote-kill.key"),
-		RemoteKillPubPath: j("trust", "remote-kill.pub"),
-		RollbackKeyPath:   j("trust", "rollback.key"),
-		RollbackPubPath:   j("trust", "rollback.pub"),
+		TrustRosterPath:      j("trust", "trust-roster.json"),
+		RosterRootKeyPath:    j("trust", "roster-root.key"),
+		RosterRootPubPath:    j("trust", "roster-root.pub"),
+		PolicySigningKeyPath: j("trust", "policy-bundle-signing.key"),
+		RemoteKillKeyPath:    j("trust", "remote-kill.key"),
+		RemoteKillPubPath:    j("trust", "remote-kill.pub"),
+		RollbackKeyPath:      j("trust", "rollback.key"),
+		RollbackPubPath:      j("trust", "rollback.pub"),
 
 		LicenseKeyPath:   j("license", "license.key"),
 		LicensePubPath:   j("license", "license.pub"),

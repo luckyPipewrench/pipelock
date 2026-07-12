@@ -10,11 +10,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"gopkg.in/yaml.v3"
 )
 
 var testNow = time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
@@ -288,6 +293,423 @@ func TestPolicyBundle_VerifySignatures(t *testing.T) {
 	if !errors.Is(err, ErrWrongKeyPurpose) {
 		t.Fatalf("VerifySignatures(wrong roster purpose) = %v, want ErrWrongKeyPurpose", err)
 	}
+
+	wrongPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(wrong pub): %v", err)
+	}
+	err = bundle.VerifySignatures(mapResolver(map[string]SignatureKey{
+		"policy-signer-1": {PublicKey: wrongPub, KeyPurpose: signing.PurposePolicyBundleSigning},
+	}))
+	if !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignatures(key_id collision with wrong public key) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashAcceptsBalancedPresetFractionalFloats(t *testing.T) {
+	presetYAML, err := presets.YAML(config.ModeBalanced)
+	if err != nil {
+		t.Fatalf("balanced preset YAML: %v", err)
+	}
+	if !strings.Contains(string(presetYAML), "4.5") {
+		t.Fatalf("balanced preset fixture no longer contains the fractional threshold this regression covers")
+	}
+	payload := PolicyBundlePayload{ConfigYAML: string(presetYAML)}
+	first, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(balanced preset with fractional floats): %v", err)
+	}
+	second, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash second pass: %v", err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("PolicyHash not deterministic: first=%q second=%q", first, second)
+	}
+	loaded, err := config.LoadBytes(presetYAML)
+	if err != nil {
+		t.Fatalf("config.LoadBytes(balanced preset): %v", err)
+	}
+	if want := loaded.CanonicalPolicyHash(); first != want {
+		t.Fatalf("PolicyHash() = %s, want loaded CanonicalPolicyHash %s", first, want)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashUsesLoadedConfig(t *testing.T) {
+	yamlSrc := "mode: strict\napi_allowlist:\n  - api.vendor.example\nfetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n"
+	payload := PolicyBundlePayload{ConfigYAML: yamlSrc}
+	hash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(): %v", err)
+	}
+	loadedFromBytes, err := config.LoadBytes([]byte(yamlSrc))
+	if err != nil {
+		t.Fatalf("config.LoadBytes(): %v", err)
+	}
+	loadedFromDisk, err := loadConfigFromYAML(t, yamlSrc)
+	if err != nil {
+		t.Fatalf("config.Load(): %v", err)
+	}
+	if want := loadedFromBytes.CanonicalPolicyHash(); hash != want {
+		t.Fatalf("PolicyHash() = %s, want LoadBytes CanonicalPolicyHash %s", hash, want)
+	}
+	if want := loadedFromDisk.CanonicalPolicyHash(); hash != want {
+		t.Fatalf("PolicyHash() = %s, want follower Load CanonicalPolicyHash %s", hash, want)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashDoesNotUseAmbientLicenseGate(t *testing.T) {
+	oldGate := config.EnforceLicenseGateFunc
+	config.EnforceLicenseGateFunc = func(*config.Config) {
+		t.Fatal("PolicyHash must not run ambient license gating")
+	}
+	t.Cleanup(func() { config.EnforceLicenseGateFunc = oldGate })
+	t.Setenv(config.EnvLicenseKey, "ambient-license-value")
+
+	if _, err := (PolicyBundlePayload{ConfigYAML: "mode: balanced\n"}).PolicyHash(); err != nil {
+		t.Fatalf("PolicyHash(): %v", err)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashIncludesRuleBundles(t *testing.T) {
+	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n"}
+	configOnlyHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(config only): %v", err)
+	}
+
+	payload.RuleBundles = []RuleBundleRef{{
+		Name:    "official",
+		Version: "2026.07.12",
+		SHA256:  testHash("10"),
+	}}
+	withRulesHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(with rules): %v", err)
+	}
+	if withRulesHash == configOnlyHash {
+		t.Fatalf("rule bundle refs did not affect policy hash: %s", withRulesHash)
+	}
+
+	payload.RuleBundles[0].SHA256 = testHash("11")
+	changedRulesHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(changed rules): %v", err)
+	}
+	if changedRulesHash == withRulesHash {
+		t.Fatalf("changed rule bundle ref did not affect policy hash: %s", changedRulesHash)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashLoadedConfigEquivalence(t *testing.T) {
+	t.Run("field_order_and_set_order_are_deterministic", func(t *testing.T) {
+		first := PolicyBundlePayload{ConfigYAML: "mode: balanced\nfetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    max_requests_per_minute: 120\napi_allowlist:\n  - b.vendor.example\n  - a.vendor.example\n"}
+		second := PolicyBundlePayload{ConfigYAML: "api_allowlist:\n  - a.vendor.example\n  - b.vendor.example\nfetch_proxy:\n  monitoring:\n    max_requests_per_minute: 120\n    entropy_threshold: 4.5\nmode: balanced\n"}
+		firstHash, err := first.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(first): %v", err)
+		}
+		for i := 0; i < 20; i++ {
+			got, err := first.PolicyHash()
+			if err != nil {
+				t.Fatalf("PolicyHash repeat %d: %v", i, err)
+			}
+			if got != firstHash {
+				t.Fatalf("PolicyHash repeat %d changed: got %s want %s", i, got, firstHash)
+			}
+		}
+		secondHash, err := second.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(second): %v", err)
+		}
+		if secondHash != firstHash {
+			t.Fatalf("equivalent loaded configs diverged:\nfirst=%s\nsecond=%s", firstHash, secondHash)
+		}
+	})
+
+	t.Run("omitted_default_matches_explicit_default", func(t *testing.T) {
+		omitted := PolicyBundlePayload{ConfigYAML: "mode: balanced\nlearn:\n  inference: {}\n"}
+		explicit := PolicyBundlePayload{ConfigYAML: "mode: balanced\nlearn:\n  inference:\n    floors:\n      min_sessions: 5\n      min_events: 20\n      min_windows: 3\n"}
+		omittedHash, err := omitted.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(omitted): %v", err)
+		}
+		explicitHash, err := explicit.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(explicit): %v", err)
+		}
+		if explicitHash != omittedHash {
+			t.Fatalf("default-equivalent configs diverged:\nomitted=%s\nexplicit=%s", omittedHash, explicitHash)
+		}
+	})
+
+	t.Run("equivalent_float_spellings_match_typed_config", func(t *testing.T) {
+		plain := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n"}
+		trailingZero := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.50\n"}
+		scientific := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 45e-1\n"}
+		plainHash, err := plain.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(plain): %v", err)
+		}
+		trailingHash, err := trailingZero.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(trailing zero): %v", err)
+		}
+		scientificHash, err := scientific.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(scientific): %v", err)
+		}
+		if trailingHash != plainHash || scientificHash != plainHash {
+			t.Fatalf("equivalent typed float configs diverged:\nplain=%s\ntrailing=%s\nscientific=%s", plainHash, trailingHash, scientificHash)
+		}
+	})
+
+	t.Run("alias_matches_expanded_typed_config", func(t *testing.T) {
+		withAlias := "fetch_proxy:\n  monitoring:\n    entropy_threshold: &threshold !!float 4.5\n    subdomain_entropy_threshold: *threshold\n"
+		expanded := "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n    subdomain_entropy_threshold: 4.5\n"
+		aliasHash, err := (PolicyBundlePayload{ConfigYAML: withAlias}).PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(alias): %v", err)
+		}
+		expandedHash, err := (PolicyBundlePayload{ConfigYAML: expanded}).PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(expanded): %v", err)
+		}
+		if aliasHash != expandedHash {
+			t.Fatalf("alias hash drifted from expanded loaded config:\nalias=%s\nexpanded=%s", aliasHash, expandedHash)
+		}
+	})
+}
+
+func TestPolicyBundlePayloadPolicyHashLoadedConfigFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "unknown field", yaml: "threshold: 4.5\n"},
+		{name: "quoted numeric float", yaml: "fetch_proxy:\n  monitoring:\n    entropy_threshold: \"4.5\"\n"},
+		{name: "duplicate top level key", yaml: "mode: strict\nmode: balanced\n"},
+		{name: "malformed yaml", yaml: "mode: [\n"},
+		{name: "multiple documents", yaml: "mode: strict\n---\nmode: balanced\n"},
+		{name: "recursive alias", yaml: "api_allowlist: &hosts\n  - *hosts\n"},
+		{name: "unsafe huge float rejected by typed validation", yaml: "learn:\n  inference:\n    normalization:\n      entropy_threshold_bits: 9007199254740993.0\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := (PolicyBundlePayload{ConfigYAML: tc.yaml}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+				t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(tc.yaml), err)
+			}
+		})
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashDistinctLoadedConfigsDiffer(t *testing.T) {
+	left := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.5\n"}
+	right := PolicyBundlePayload{ConfigYAML: "fetch_proxy:\n  monitoring:\n    entropy_threshold: 4.6\n"}
+	leftHash, err := left.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(left): %v", err)
+	}
+	rightHash, err := right.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(right): %v", err)
+	}
+	if leftHash == rightHash {
+		t.Fatalf("different enforced configs collided: %s", leftHash)
+	}
+
+	for _, yamlSrc := range []string{
+		"learn:\n  inference:\n    normalization:\n      entropy_threshold_bits: 9007199254740993.0\n",
+		"learn:\n  inference:\n    normalization:\n      entropy_threshold_bits: 9007199254740992\n",
+	} {
+		if _, err := (PolicyBundlePayload{ConfigYAML: yamlSrc}).PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+			t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(yamlSrc), err)
+		}
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashRejectsLocalCompanionFields(t *testing.T) {
+	cwd := t.TempDir()
+	secretsPath := filepath.Join(cwd, "secrets.env")
+	if err := os.WriteFile(secretsPath, []byte("# publisher-local companion file\n"), 0o600); err != nil {
+		t.Fatalf("write cwd secrets file: %v", err)
+	}
+	t.Chdir(cwd)
+
+	for _, tc := range []struct {
+		name string
+		yaml string
+		path string
+	}{
+		{
+			name: "relative dlp secrets file",
+			yaml: "mode: balanced\ndlp:\n  secrets_file: secrets.env\n",
+			path: "dlp.secrets_file",
+		},
+		{
+			name: "learn file salt source",
+			yaml: "mode: balanced\nlearn:\n  privacy:\n    salt_source: file:/var/lib/pipelock/learn-salt\n",
+			path: "learn.privacy.salt_source",
+		},
+		{
+			name: "mcp integrity manifest path",
+			yaml: "mode: balanced\nmcp_binary_integrity:\n  manifest_path: /var/lib/pipelock/mcp-integrity.json\n",
+			path: "mcp_binary_integrity.manifest_path",
+		},
+		{
+			name: "behavioral baseline profile dir",
+			yaml: "mode: balanced\nsession_profiling:\n  enabled: true\nbehavioral_baseline:\n  profile_dir: /var/lib/pipelock/baselines\n",
+			path: "behavioral_baseline.profile_dir",
+		},
+		{
+			name: "learn lock roster path",
+			yaml: "mode: balanced\nlearn_lock:\n  roster_path: /etc/pipelock/roster.json\n",
+			path: "learn_lock.roster_path",
+		},
+		{
+			name: "merged dlp secrets file",
+			yaml: "mode: balanced\ndlp_defaults: &dlp_defaults\n  secrets_file: secrets.env\ndlp:\n  <<: *dlp_defaults\n",
+			path: "dlp.secrets_file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := (PolicyBundlePayload{ConfigYAML: tc.yaml}).PolicyHash()
+			if !errors.Is(err, ErrForbiddenBundleCompanionField) {
+				t.Fatalf("PolicyHash() = %v, want ErrForbiddenBundleCompanionField", err)
+			}
+			if !strings.Contains(err.Error(), tc.path) {
+				t.Fatalf("error should name %s, got %v", tc.path, err)
+			}
+		})
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashRejectsMergedCompanionFieldsAllForbidden(t *testing.T) {
+	for path := range forbiddenPolicyBundleCompanionFields {
+		t.Run(path, func(t *testing.T) {
+			_, err := (PolicyBundlePayload{ConfigYAML: yamlWithMergedCompanionPath(path)}).PolicyHash()
+			if !errors.Is(err, ErrForbiddenBundleCompanionField) {
+				t.Fatalf("PolicyHash() = %v, want ErrForbiddenBundleCompanionField", err)
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Fatalf("error should name merged path %s, got %v", path, err)
+			}
+		})
+	}
+}
+
+func TestPolicyBundleValidateRejectsCompanionField(t *testing.T) {
+	bundle := testPolicyBundle()
+	bundle.Payload.ConfigYAML = "mode: balanced\ndlp:\n  secrets_file: secrets.env\n"
+	err := bundle.Validate()
+	if !errors.Is(err, ErrForbiddenBundleCompanionField) {
+		t.Fatalf("Validate() = %v, want ErrForbiddenBundleCompanionField", err)
+	}
+}
+
+func TestRejectPolicyBundleCompanionFieldsEdgeCases(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		wantErr error
+	}{
+		{name: "empty", yaml: "", wantErr: ErrForbiddenBundleCompanionField},
+		{name: "malformed", yaml: "mode: [\n", wantErr: ErrForbiddenBundleCompanionField},
+		{name: "extra document", yaml: "mode: balanced\n---\nmode: strict\n", wantErr: ErrForbiddenLicenseField},
+		{
+			name:    "merge sequence",
+			yaml:    "mode: balanced\ndlp_empty: &dlp_empty\n  secrets_file: ''\ndlp_forbidden: &dlp_forbidden\n  secrets_file: secrets.env\ndlp:\n  <<: [*dlp_empty, *dlp_forbidden]\n",
+			wantErr: ErrForbiddenBundleCompanionField,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectPolicyBundleCompanionFields(tc.yaml)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("rejectPolicyBundleCompanionFields() = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+
+	if err := walkRejectPolicyBundleCompanionFieldsAt(nil, "", map[*yaml.Node]bool{}); err != nil {
+		t.Fatalf("walk nil node: %v", err)
+	}
+	if err := walkRejectPolicyBundleCompanionFieldsAlias(&yaml.Node{Kind: yaml.AliasNode}, "root", map[*yaml.Node]bool{}); err != nil {
+		t.Fatalf("walk nil alias: %v", err)
+	}
+	aliasCycle := &yaml.Node{Kind: yaml.AliasNode}
+	aliasCycle.Alias = aliasCycle
+	if err := walkRejectPolicyBundleCompanionFieldsAlias(aliasCycle, "root", map[*yaml.Node]bool{}); !errors.Is(err, ErrForbiddenBundleCompanionField) {
+		t.Fatalf("walk alias cycle = %v, want ErrForbiddenBundleCompanionField", err)
+	}
+	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Value: "ok"}}}
+	if err := walkRejectPolicyBundleCompanionFieldsAt(doc, "", map[*yaml.Node]bool{}); err != nil {
+		t.Fatalf("walk document node: %v", err)
+	}
+}
+
+func yamlWithMergedCompanionPath(path string) string {
+	var b strings.Builder
+	parts := strings.Split(path, ".")
+	b.WriteString("mode: balanced\nx_forbidden: &forbidden\n")
+	for i, part := range parts {
+		b.WriteString(strings.Repeat("  ", i+1))
+		b.WriteString(part)
+		b.WriteString(":")
+		if i == len(parts)-1 {
+			b.WriteString(" local-file\n")
+		} else {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("<<: *forbidden\n")
+	return b.String()
+}
+
+func TestPolicyBundlePolicyHashVerifiesAndMatchesFollowerLoad(t *testing.T) {
+	yamlSrc := "mode: strict\napi_allowlist:\n  - api.vendor.example\nrequest_body_scanning:\n  max_body_bytes: 1048576\n"
+	payload := PolicyBundlePayload{ConfigYAML: yamlSrc}
+	policyHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(): %v", err)
+	}
+	payloadHash, err := payload.PayloadHash()
+	if err != nil {
+		t.Fatalf("PayloadHash(): %v", err)
+	}
+	followerConfig, err := loadConfigFromYAML(t, yamlSrc)
+	if err != nil {
+		t.Fatalf("follower config.Load(): %v", err)
+	}
+	if got := followerConfig.CanonicalPolicyHash(); got != policyHash {
+		t.Fatalf("follower CanonicalPolicyHash() = %s, want published policy hash %s", got, policyHash)
+	}
+
+	bundle := testPolicyBundle()
+	bundle.Payload = payload
+	bundle.PayloadSHA256 = payloadHash
+	bundle.PolicyHash = policyHash
+	bundle.Signatures = nil
+	pub, proof := signedProof(t, bundle.SignablePreimage, "policy-signer-1", signing.PurposePolicyBundleSigning)
+	bundle.Signatures = []SignatureProof{proof}
+
+	resolver := mapResolver(map[string]SignatureKey{
+		"policy-signer-1": {PublicKey: pub, KeyPurpose: signing.PurposePolicyBundleSigning},
+	})
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("Validate(): %v", err)
+	}
+	if err := bundle.VerifySignaturesAt(testNow, resolver); err != nil {
+		t.Fatalf("VerifySignaturesAt(): %v", err)
+	}
+}
+
+func loadConfigFromYAML(t *testing.T, yamlSrc string) (*config.Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlSrc), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return config.Load(path)
 }
 
 func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {
@@ -313,7 +735,7 @@ func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {
 
 func testPolicyBundle() PolicyBundle {
 	payload := PolicyBundlePayload{
-		ConfigYAML: "mode: strict\nmcp_tool_policy:\n  enabled: true\n",
+		ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n",
 		RuleBundles: []RuleBundleRef{{
 			Name:    "official",
 			Version: "2026.05.23",
@@ -861,13 +1283,19 @@ func TestMessageIdentifiersAreBounded(t *testing.T) {
 }
 
 func TestPolicyBundlePayload_PolicyHashYAMLDocumentHandling(t *testing.T) {
-	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\n---\n"}
+	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n"}
 	if _, err := payload.PolicyHash(); err != nil {
-		t.Fatalf("PolicyHash(empty trailing doc) = %v, want nil", err)
+		t.Fatalf("PolicyHash(single document) = %v, want nil", err)
 	}
 
-	payload.ConfigYAML = "mode: strict\n---\nmode: balanced\n"
+	payload.ConfigYAML = "mode: strict\napi_allowlist:\n  - api.vendor.example\n---\n"
 	_, err := payload.PolicyHash()
+	if !errors.Is(err, ErrInvalidHash) {
+		t.Fatalf("PolicyHash(empty trailing doc) = %v, want ErrInvalidHash", err)
+	}
+
+	payload.ConfigYAML = "mode: strict\napi_allowlist:\n  - api.vendor.example\n---\nmode: balanced\n"
+	_, err = payload.PolicyHash()
 	if !errors.Is(err, ErrInvalidHash) {
 		t.Fatalf("PolicyHash(non-empty trailing doc) = %v, want ErrInvalidHash", err)
 	}

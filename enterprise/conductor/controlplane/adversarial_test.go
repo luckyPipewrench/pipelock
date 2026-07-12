@@ -914,7 +914,7 @@ func publish(t *testing.T, handler *Handler, bundle conductor.PolicyBundle) {
 }
 
 func bundleForStream(org, fleet, env string) (conductor.PolicyBundle, error) {
-	payload := conductor.PolicyBundlePayload{ConfigYAML: "mode: strict\n"}
+	payload := conductor.PolicyBundlePayload{ConfigYAML: "mode: strict\napi_allowlist:\n  - api.vendor.example\n"}
 	payloadHash, err := payload.PayloadHash()
 	if err != nil {
 		return conductor.PolicyBundle{}, err

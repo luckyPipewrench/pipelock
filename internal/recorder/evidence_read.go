@@ -4,6 +4,7 @@
 package recorder
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -57,63 +58,55 @@ func openRegularEvidenceFile(path, label string) (*os.File, os.FileInfo, error) 
 	return file, info, nil
 }
 
+// readBoundedEvidence opens path as a regular no-follow file and copies at
+// most maxBytes into sink. It is the single fail-closed read path shared by
+// ReadEvidenceFileBounded and computeEvidenceFileHashBounded: it rejects the
+// read if the file exceeds maxBytes (both by pre-read size and by actual bytes
+// copied) or if the file changes during the read. A non-positive maxBytes
+// falls back to MaxEvidenceReadFileBytes.
+func readBoundedEvidence(path string, maxBytes int64, sink io.Writer) error {
+	if maxBytes <= 0 {
+		maxBytes = MaxEvidenceReadFileBytes
+	}
+	file, info, err := openRegularEvidenceFile(path, "evidence file")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	if info.Size() > maxBytes {
+		return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), maxBytes)
+	}
+	written, err := io.Copy(sink, io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return err
+	}
+	if written > maxBytes {
+		return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), maxBytes)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if after.Size() != info.Size() || after.ModTime() != info.ModTime() {
+		return errors.New("evidence file changed during read")
+	}
+	return nil
+}
+
 // ReadEvidenceFileBounded reads a regular evidence file through a no-follow
 // open and returns an error if the file exceeds maxBytes.
 func ReadEvidenceFileBounded(path string, maxBytes int64) ([]byte, error) {
-	if maxBytes <= 0 {
-		maxBytes = MaxEvidenceReadFileBytes
-	}
-	file, info, err := openRegularEvidenceFile(path, "evidence file")
-	if err != nil {
+	var buf bytes.Buffer
+	if err := readBoundedEvidence(path, maxBytes, &buf); err != nil {
 		return nil, err
 	}
-	defer func() { _ = file.Close() }()
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), maxBytes)
-	}
-	after, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if after.Size() != info.Size() || after.ModTime() != info.ModTime() {
-		return nil, errors.New("evidence file changed during read")
-	}
-	return data, nil
+	return buf.Bytes(), nil
 }
 
 func computeEvidenceFileHashBounded(path string, maxBytes int64) (string, error) {
-	if maxBytes <= 0 {
-		maxBytes = MaxEvidenceReadFileBytes
-	}
-	file, info, err := openRegularEvidenceFile(path, "evidence file")
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = file.Close() }()
-	if info.Size() > maxBytes {
-		return "", fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), maxBytes)
-	}
 	h := sha256.New()
-	written, err := io.Copy(h, io.LimitReader(file, maxBytes+1))
-	if err != nil {
+	if err := readBoundedEvidence(path, maxBytes, h); err != nil {
 		return "", err
-	}
-	if written > maxBytes {
-		return "", fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), maxBytes)
-	}
-	after, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	if after.Size() != info.Size() || after.ModTime() != info.ModTime() {
-		return "", errors.New("evidence file changed during read")
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -58,11 +58,7 @@ var (
 )
 
 func parseDashboardTemplate(name string) *template.Template {
-	return template.Must(template.New(name).Funcs(template.FuncMap{
-		"dashboardFaviconDataURL": func() template.URL {
-			return template.URL(dashboardFaviconDataURL)
-		},
-	}).ParseFS(templateFS, name, "nav.tmpl.html"))
+	return template.Must(template.New(name).ParseFS(templateFS, name, "nav.tmpl.html"))
 }
 
 func mustDecodeDashboardFavicon() []byte {

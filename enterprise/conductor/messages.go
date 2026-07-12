@@ -283,6 +283,34 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 	}, "policy_bundle_policy")
 }
 
+// LegacyPolicyHash returns the policy_hash scheme used before policy bundles
+// were hashed over config.LoadPolicyBundleBytes(). It is retained only for
+// rolling upgrades of already-signed bundles that were published by older
+// conductors; new publishers should use PolicyHash.
+func (p PolicyBundlePayload) LegacyPolicyHash() (string, error) {
+	var cfg any
+	decoder := yaml.NewDecoder(strings.NewReader(p.ConfigYAML))
+	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("parse legacy policy bundle config_yaml for policy hash: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err == nil {
+		if !isEmptyYAMLDocument(extra) {
+			return "", fmt.Errorf("%w: config_yaml has multiple YAML documents", ErrInvalidHash)
+		}
+	} else if !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("parse legacy policy bundle config_yaml trailing document: %w", err)
+	}
+	view := struct {
+		ConfigYAML  any             `json:"config_yaml"`
+		RuleBundles []RuleBundleRef `json:"rule_bundles,omitempty"`
+	}{
+		ConfigYAML:  cfg,
+		RuleBundles: p.RuleBundles,
+	}
+	return canonicalValueHash(view, "legacy_policy_bundle_policy")
+}
+
 type PolicyBundle struct {
 	SchemaVersion             int                        `json:"schema_version"`
 	BundleID                  string                     `json:"bundle_id"`
@@ -715,9 +743,24 @@ func (b PolicyBundle) validateHashes() error {
 		return err
 	}
 	if !strings.EqualFold(b.PolicyHash, policyHash) {
-		return fmt.Errorf("%w: policy_hash", ErrHashMismatch)
+		legacyPolicyHash, legacyErr := b.Payload.LegacyPolicyHash()
+		if legacyErr != nil || !strings.EqualFold(b.PolicyHash, legacyPolicyHash) {
+			return fmt.Errorf("%w: policy_hash", ErrHashMismatch)
+		}
 	}
 	return nil
+}
+
+// UsesLegacyPolicyHash reports whether the bundle validates only through the
+// pre-loaded-config policy_hash scheme. It is an upgrade signal for operators;
+// it is not a trust decision and must not replace signature verification.
+func (b PolicyBundle) UsesLegacyPolicyHash() bool {
+	policyHash, err := b.Payload.PolicyHash()
+	if err == nil && strings.EqualFold(b.PolicyHash, policyHash) {
+		return false
+	}
+	legacyPolicyHash, err := b.Payload.LegacyPolicyHash()
+	return err == nil && strings.EqualFold(b.PolicyHash, legacyPolicyHash)
 }
 
 // ValidateAtTime extends Validate with a freshness check: now must fall inside

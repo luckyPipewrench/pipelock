@@ -38,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -657,6 +658,15 @@ func (s *FileBundleStore) load() error {
 		}
 		if _, exists := s.records[record.BundleHash]; exists {
 			return fmt.Errorf("%w: duplicate bundle_hash %q", ErrInvalidStoreRecord, record.BundleHash)
+		}
+		if record.Bundle.UsesLegacyPolicyHash() {
+			slog.Warn("conductor_policy_bundle_legacy_policy_hash",
+				slog.String("event", "conductor_policy_bundle_legacy_policy_hash"),
+				slog.String("bundle_id", record.Bundle.BundleID),
+				slog.String("bundle_hash", record.BundleHash),
+				slog.Uint64("version", record.Bundle.Version),
+				slog.String("policy_hash", record.Bundle.PolicyHash),
+			)
 		}
 		if _, err := s.bundleByIDVersionLocked(record.Bundle.BundleID, record.Bundle.Version); err == nil {
 			return fmt.Errorf("%w: duplicate bundle_id/version %q/%d", ErrInvalidStoreRecord, record.Bundle.BundleID, record.Bundle.Version)

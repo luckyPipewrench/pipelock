@@ -6,11 +6,9 @@ package controlplane
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,9 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
-	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
-	"gopkg.in/yaml.v3"
 )
 
 var testNow = time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
@@ -1105,9 +1101,9 @@ func signedLegacyPolicyHashControlBundle(t *testing.T, signer testSigner, spec b
 	if err != nil {
 		t.Fatalf("PayloadHash() error = %v", err)
 	}
-	policyHash, err := legacyPolicyHashForTest(payload)
+	policyHash, err := payload.LegacyPolicyHash()
 	if err != nil {
-		t.Fatalf("legacyPolicyHashForTest() error = %v", err)
+		t.Fatalf("payload.LegacyPolicyHash() error = %v", err)
 	}
 	bundle := conductor.PolicyBundle{
 		SchemaVersion:      conductor.SchemaVersion,
@@ -1180,43 +1176,6 @@ func writeRawBundleRecordForTest(t *testing.T, dir string, record PublishedBundl
 	if err := os.WriteFile(filepath.Join(dir, record.BundleHash+".json"), data, bundleRecordFileMode); err != nil {
 		t.Fatalf("write raw bundle record: %v", err)
 	}
-}
-
-func legacyPolicyHashForTest(payload conductor.PolicyBundlePayload) (string, error) {
-	var cfg any
-	decoder := yaml.NewDecoder(strings.NewReader(payload.ConfigYAML))
-	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-		return "", err
-	}
-	var extra yaml.Node
-	if err := decoder.Decode(&extra); err == nil {
-		if len(extra.Content) > 0 {
-			return "", conductor.ErrInvalidHash
-		}
-	} else if !errors.Is(err, io.EOF) {
-		return "", err
-	}
-	view := struct {
-		ConfigYAML  any                       `json:"config_yaml"`
-		RuleBundles []conductor.RuleBundleRef `json:"rule_bundles,omitempty"`
-	}{
-		ConfigYAML:  cfg,
-		RuleBundles: payload.RuleBundles,
-	}
-	raw, err := json.Marshal(view)
-	if err != nil {
-		return "", err
-	}
-	tree, err := contract.ParseJSONStrict(raw)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := contract.Canonicalize(tree)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(canonical)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 func stringsOf(value string, count int) string {

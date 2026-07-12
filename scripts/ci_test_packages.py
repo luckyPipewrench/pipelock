@@ -31,13 +31,18 @@ def package_suffix(package: str) -> str:
     return "internal/" + package.rsplit(marker, 1)[1]
 
 
+def package_in_tree(package: str, root: str) -> bool:
+    suffix = package_suffix(package)
+    return suffix == root or suffix.startswith(root + "/")
+
+
 def select_packages(packages: list[str], shard: str) -> list[str]:
-    heavy_packages = set(HEAVY_SHARDS.values())
+    heavy_roots = tuple(HEAVY_SHARDS.values())
     if shard == "rest":
-        return [pkg for pkg in packages if package_suffix(pkg) not in heavy_packages]
+        return [pkg for pkg in packages if not any(package_in_tree(pkg, root) for root in heavy_roots)]
 
     wanted = HEAVY_SHARDS[shard]
-    selected = [pkg for pkg in packages if package_suffix(pkg) == wanted]
+    selected = [pkg for pkg in packages if package_in_tree(pkg, wanted)]
     if not selected:
         raise ValueError(f"no packages matched shard {shard!r}")
     return selected

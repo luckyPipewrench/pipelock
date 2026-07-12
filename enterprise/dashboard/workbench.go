@@ -79,19 +79,26 @@ func prepareSteps() []PrepareStep {
 			Kind:        actionKindPublish,
 			Title:       "Publish a policy bundle",
 			Description: "Sign a config as a policy bundle and publish it to the fleet's stream head.",
-			Command:     "pipelock conductor publish --conductor-url <url> --config <policy.yaml> --org <org> --fleet <fleet> --version <n> --signing-key <key>",
+			Command: "pipelock conductor publish --conductor-url <url> --org <org> --fleet <fleet> --audience '*' " +
+				"--config <policy.yaml> --version <n> --signing-key <policy-bundle-signing.key> " +
+				"--publisher-token-file <publisher-token> --tls-cert <client.crt> --tls-key <client.key> --server-ca <server-ca.crt>",
 		},
 		{
 			Kind:        actionKindRemoteKill,
 			Title:       "Remote kill / resume",
 			Description: "Publish a signed remote-kill (or resume) message that halts or restores follower egress.",
-			Command:     "pipelock conductor kill --conductor-url <url> --org <org> --fleet <fleet> --counter <n> --signing-key <key>",
+			Command: "pipelock conductor kill --conductor-url <url> --org <org> --fleet <fleet> --instance '*' " +
+				"--counter <n> --signing-key <remote-kill-signing.key> --admin-token-file <admin-token> " +
+				"--tls-cert <client.crt> --tls-key <client.key> --server-ca <server-ca.crt>",
 		},
 		{
 			Kind:        actionKindRollback,
 			Title:       "Roll back the stream head",
 			Description: "Publish a signed rollback authorization that moves the effective head to a prior bundle.",
-			Command:     "pipelock conductor rollback --conductor-url <url> --org <org> --fleet <fleet> --to-version <n> --counter <n> --signing-key <key>",
+			Command: "pipelock conductor rollback --conductor-url <url> --org <org> --fleet <fleet> " +
+				"--current-bundle-id <id> --current-version <n> --target-bundle-id <id> --target-version <n> " +
+				"--counter <n> --signing-key <policy-bundle-rollback.key> --admin-token-file <admin-token> " +
+				"--tls-cert <client.crt> --tls-key <client.key> --server-ca <server-ca.crt>",
 		},
 	}
 }

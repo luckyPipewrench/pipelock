@@ -714,6 +714,11 @@ func TestDashboardOIDCConfigValidation(t *testing.T) {
 	}{
 		{"token only", dashboardServeOptions{authTokenFile: "token"}, ""},
 		{"OIDC only", dashboardServeOptions{oidcIssuer: "https://issuer.example", oidcAudience: oidcTestAudience, oidcRoleClaim: "groups", oidcRoleMap: oidcTestRoleMap()}, ""},
+		// A verified client certificate is a complete sole authenticator: the
+		// mapped cert role supplies route + raw permissions and an absent/wrong/
+		// unmapped cert is denied. Rejecting cert-only contradicts the flag help.
+		{"client cert only", dashboardServeOptions{requireClientCert: true}, ""},
+		{"no authenticator lists cert mode", dashboardServeOptions{}, "require-client-cert"},
 		{"no authenticator", dashboardServeOptions{}, "auth-token-file"},
 		{"OIDC missing audience", dashboardServeOptions{oidcIssuer: "https://issuer.example", oidcRoleClaim: "groups", oidcRoleMap: oidcTestRoleMap()}, "audience"},
 		{"OIDC missing role claim", dashboardServeOptions{oidcIssuer: "https://issuer.example", oidcAudience: oidcTestAudience, oidcRoleMap: oidcTestRoleMap()}, "role-claim"},

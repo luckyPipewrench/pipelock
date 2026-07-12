@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/cli/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
@@ -518,4 +521,68 @@ func TestWorkbench_ReplayViewHelperBranches(t *testing.T) {
 	if got := (DecisionReplayView{Divergence: false}).DivergenceClass(); got != "verified" {
 		t.Fatalf("DivergenceClass = %q", got)
 	}
+}
+
+// TestPrepareSteps_TemplatesReferenceRealConductorFlags is a drift guard: every
+// --flag in a workbench prepare template must exist on the matching shipped
+// conductor subcommand. Without it, a flag rename in conductor publish/kill/
+// rollback silently leaves the dashboard telling operators to run a command
+// that no longer parses (the exact defect this replaced: rollback used the
+// nonexistent --to-version, and publish/kill omitted mandatory auth/TLS flags).
+func TestPrepareSteps_TemplatesReferenceRealConductorFlags(t *testing.T) {
+	kindToSubcommand := map[string]string{
+		actionKindPublish:    "publish",
+		actionKindRemoteKill: "kill",
+		actionKindRollback:   "rollback",
+	}
+
+	root := conductor.Cmd()
+	subcommands := make(map[string]*cobra.Command)
+	for _, c := range root.Commands() {
+		subcommands[c.Name()] = c
+	}
+
+	for _, step := range prepareSteps() {
+		step := step
+		t.Run(step.Kind, func(t *testing.T) {
+			name, ok := kindToSubcommand[step.Kind]
+			if !ok {
+				t.Fatalf("prepare step kind %q has no conductor subcommand mapping", step.Kind)
+			}
+			sub, ok := subcommands[name]
+			if !ok {
+				t.Fatalf("conductor has no %q subcommand", name)
+			}
+			flags := prepareTemplateFlags(step.Command)
+			if len(flags) == 0 {
+				t.Fatalf("template for %q defines no flags: %q", step.Kind, step.Command)
+			}
+			for _, flag := range flags {
+				if sub.Flag(flag) == nil {
+					t.Errorf("template for %q references --%s, which conductor %s does not define",
+						step.Kind, flag, name)
+				}
+			}
+		})
+	}
+}
+
+// prepareTemplateFlags extracts the long-flag names ("--foo bar" -> "foo") from
+// a shell command template. Placeholders (<...>, '*') are ignored because they
+// are not flags.
+func prepareTemplateFlags(command string) []string {
+	var flags []string
+	for _, token := range strings.Fields(command) {
+		if !strings.HasPrefix(token, "--") {
+			continue
+		}
+		name := strings.TrimPrefix(token, "--")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if name != "" {
+			flags = append(flags, name)
+		}
+	}
+	return flags
 }

@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -19,12 +20,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type dashboardMTLSTestPKI struct {
@@ -772,5 +775,135 @@ func TestDashboardMTLS_DoesNotChangeLicenseEntitlement(t *testing.T) {
 	inner.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil))
 	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), license.FeatureAgents) {
 		t.Fatalf("status/body = %d %q, want entitlement denial", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestDashboardServe_MTLSOnlyStartsAndEnforces proves the whole cert-only path
+// end-to-end through runDashboardServe: a dashboard configured with ONLY
+// --require-client-cert (no --auth-token-file, no --oidc-issuer) starts (the
+// validation gate must accept mTLS as a sole authenticator), and enforcement is
+// fail-closed — a valid mapped client certificate is allowed, an absent
+// certificate cannot complete the handshake, and a valid-CA-but-unmapped
+// certificate is denied. Before the validation fix this configuration could not
+// start at all (validateDashboardAuthenticatorConfig rejected it).
+func TestDashboardServe_MTLSOnlyStartsAndEnforces(t *testing.T) {
+	licPub, licPriv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, licPriv, []string{license.FeatureAgents}), hex.EncodeToString(licPub))
+
+	pki := newDashboardMTLSTestPKI(t)
+	now := time.Now()
+	dir := t.TempDir()
+
+	// Server certificate + key as files for --tls-cert/--tls-key.
+	serverCert, _ := issueDashboardMTLSTestCert(t, pki.caCert, pki.caKey, dashboardMTLSTestCertOptions{
+		serial: 201, commonName: "mtls-only server", server: true,
+		notBefore: now.Add(-time.Hour), notAfter: now.Add(time.Hour),
+	})
+	serverCertFile := filepath.Join(dir, "server.crt")
+	if err := os.WriteFile(serverCertFile,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverCert.Certificate[0]}), 0o600); err != nil {
+		t.Fatalf("write server cert: %v", err)
+	}
+	serverKeyDER, err := x509.MarshalPKCS8PrivateKey(serverCert.PrivateKey)
+	if err != nil {
+		t.Fatalf("marshal server key: %v", err)
+	}
+	serverKeyFile := filepath.Join(dir, "server.key")
+	if err := os.WriteFile(serverKeyFile,
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: serverKeyDER}), 0o600); err != nil {
+		t.Fatalf("write server key: %v", err)
+	}
+
+	// Client trust anchor file for --client-ca-file.
+	clientCAFile := filepath.Join(dir, "client-ca.crt")
+	if err := os.WriteFile(clientCAFile,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pki.caCert.Raw}), 0o600); err != nil {
+		t.Fatalf("write client CA: %v", err)
+	}
+
+	// One mapped client (allowed) and one unmapped client (valid CA, denied).
+	mappedCert, mappedLeaf := issueDashboardMTLSTestCert(t, pki.caCert, pki.caKey, dashboardMTLSTestCertOptions{
+		serial: 202, commonName: "mapped operator",
+		notBefore: now.Add(-time.Hour), notAfter: now.Add(time.Hour),
+	})
+	unmappedCert, _ := issueDashboardMTLSTestCert(t, pki.caCert, pki.caKey, dashboardMTLSTestCertOptions{
+		serial: 203, commonName: "unmapped operator",
+		notBefore: now.Add(-time.Hour), notAfter: now.Add(time.Hour),
+	})
+	roleMap := writeDashboardMTLSRoleMap(t, map[string]string{
+		dashboardClientCertSPKIFingerprint(mappedLeaf): "operator",
+	}, "  operator:\n    permissions:\n      - dashboard:evidence:read\n")
+
+	out := &dashSyncBuffer{}
+	errOut := &dashSyncBuffer{}
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--listen", "127.0.0.1:0",
+		"--require-client-cert",
+		"--tls-cert", serverCertFile,
+		"--tls-key", serverKeyFile,
+		"--client-ca-file", clientCAFile,
+		"--client-cert-role-map", roleMap,
+	})
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+
+	testwait.For(t, 10*time.Second, func() bool { return out.contains("dashboard listening on") },
+		"serve never printed the listening banner; stderr: %s", errOut.String())
+	m := regexp.MustCompile(`listening on https://(127\.0\.0\.1:\d+)`).FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("could not parse TLS listen address from %q", out.String())
+	}
+	base := "https://" + m[1]
+
+	serverRoots := x509.NewCertPool()
+	serverRoots.AddCert(pki.caCert)
+	get := func(t *testing.T, clientCert *tls.Certificate) (int, error) {
+		t.Helper()
+		tlsCfg := &tls.Config{RootCAs: serverRoots, MinVersion: tls.VersionTLS12}
+		if clientCert != nil {
+			tlsCfg.Certificates = []tls.Certificate{*clientCert}
+		}
+		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsCfg}}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode, nil
+	}
+
+	// Mapped certificate: authenticated and authorized for evidence read.
+	if code, err := get(t, &mappedCert); err != nil || code != http.StatusOK {
+		t.Fatalf("mapped client cert: code=%d err=%v, want 200", code, err)
+	}
+	// Valid-CA-but-unmapped certificate: handshake succeeds, authentication
+	// fails closed at the outer boundary.
+	if code, err := get(t, &unmappedCert); err != nil || code != http.StatusUnauthorized {
+		t.Fatalf("unmapped client cert: code=%d err=%v, want 401", code, err)
+	}
+	// No client certificate: RequireAndVerifyClientCert refuses the handshake.
+	if _, err := get(t, nil); err == nil {
+		t.Fatal("absent client cert: request succeeded, want TLS handshake failure")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve shutdown error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down")
 	}
 }

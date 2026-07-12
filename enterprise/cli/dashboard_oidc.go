@@ -56,8 +56,14 @@ func validateDashboardAuthenticatorConfig(opts dashboardServeOptions) error {
 	if anyOIDCOption && !issuerConfigured {
 		return errors.New("--oidc-issuer is required when any OIDC option is set")
 	}
-	if strings.TrimSpace(opts.authTokenFile) == "" && !issuerConfigured {
-		return errors.New("one authenticator is required: set --auth-token-file or --oidc-issuer")
+	// A verified mTLS client certificate is a first-class sole authenticator:
+	// with --require-client-cert the mapped certificate role supplies both route
+	// and raw-view permissions and takes precedence over any token/OIDC principal
+	// (dashboardClientCertAuthorizers), and an absent, wrong-CA, or unmapped
+	// certificate is denied by the TLS layer and the fingerprint role map. So
+	// --require-client-cert alone is a complete, fail-closed authenticator.
+	if strings.TrimSpace(opts.authTokenFile) == "" && !issuerConfigured && !opts.requireClientCert {
+		return errors.New("one authenticator is required: set --auth-token-file, --oidc-issuer, or --require-client-cert")
 	}
 	if strings.TrimSpace(opts.rawTokenFile) != "" && strings.TrimSpace(opts.authTokenFile) == "" {
 		return errors.New("--raw-token-file requires --auth-token-file")

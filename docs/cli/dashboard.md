@@ -62,6 +62,24 @@ umask 077
 openssl rand -hex 32 > /etc/pipelock/dashboard.token
 ```
 
+### Authentication modes
+
+The dashboard requires exactly one of three authenticators, and each is a
+complete sole authenticator — none depends on the others:
+
+- **Operator token** (`--auth-token-file`): a bearer token, optionally paired
+  with a higher-privilege `--raw-token-file`.
+- **OIDC** (`--oidc-issuer` plus its required options): a verified bearer token
+  whose mapped claim grants bounded permissions.
+- **Mutual TLS** (`--require-client-cert` plus the three mTLS file flags): a
+  verified client certificate authorized through the role map.
+
+You may combine token and OIDC, but mutual TLS is exclusive: when
+`--require-client-cert` is set the verified certificate is authoritative and
+supplies both route and raw-view permissions, so `--auth-token-file` and OIDC
+are neither required nor consulted. Starting with none of the three is a
+startup error.
+
 ### Flags
 
 | Flag | Default | Purpose |
@@ -87,13 +105,16 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 
 ### Mutual TLS client authentication
 
-Mutual TLS is additive: token-only deployments keep their existing behavior,
-while an operator can enable verified client-certificate authentication with
-all of `--require-client-cert`, `--client-ca-file`, and
-`--client-cert-role-map`. Server TLS (`--tls-cert` and `--tls-key`) is also
-required. When enabled, TLS requires a client certificate on every connection;
-the certificate therefore cannot be replaced by a bearer token at the TLS
-handshake.
+Mutual TLS is a complete authenticator on its own: enable it with all of
+`--require-client-cert`, `--client-ca-file`, and `--client-cert-role-map` (plus
+server TLS via `--tls-cert`/`--tls-key`), with or without an operator token or
+OIDC. When enabled, the verified client certificate is authoritative: TLS
+requires a certificate on every connection, and the certificate's mapped role
+supplies both route and raw-view permissions and takes precedence over any
+token or OIDC principal. An absent, wrong-CA, or unmapped certificate is denied
+(the TLS layer rejects the first two; the fingerprint role map rejects the
+third), so a server-wiring or ordering bug cannot silently fall back to token
+access.
 
 The role map uses the SHA-256 fingerprint of the leaf certificate's DER-encoded
 SubjectPublicKeyInfo (SPKI). This identity remains stable when a certificate is
@@ -124,12 +145,13 @@ fingerprint. The map also accepts colon-separated hexadecimal and an optional
 `sha256:` prefix. Unknown permissions, roles, fields, or fingerprints are hard
 startup errors; an empty certificate map is never treated as allow-all.
 
-Start the dashboard with client-certificate verification:
+Start the dashboard with client-certificate verification as the sole
+authenticator (no `--auth-token-file`; add one only if you also want token
+access to non-mTLS paths, though the certificate role stays authoritative):
 
 ```bash
 pipelock dashboard serve \
   --receipt-dir /var/lib/pipelock/evidence \
-  --auth-token-file /etc/pipelock/dashboard.token \
   --tls-cert /etc/pipelock/dashboard-server.pem \
   --tls-key /etc/pipelock/dashboard-server.key \
   --require-client-cert \

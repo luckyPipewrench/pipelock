@@ -100,62 +100,10 @@ are not supported. It requires at least ` + fmt.Sprintf("%d", conductorcore.Requ
 }
 
 func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
-	now := time.Now().UTC()
-	if opts.now != nil {
-		now = opts.now().UTC()
-	}
-
-	if len(opts.instanceIDs) > 0 || len(opts.labels) > 0 {
-		return errors.New("rollback is stream-wide; per-instance and per-label rollback are not supported")
-	}
-
-	counter := opts.counter
-	if counter == 0 {
-		// Guard the signed->unsigned conversion: a negative Unix time (skewed
-		// clock) would wrap to a huge counter. On a non-negative clock, adopt the
-		// seconds; otherwise leave counter 0 so Validate() rejects it and the
-		// operator must pass an explicit --counter.
-		if u := now.Unix(); u >= 0 {
-			counter = uint64(u)
-		}
-	}
-
-	authID := strings.TrimSpace(opts.authorizationID)
-	if authID == "" {
-		authID = fmt.Sprintf("rollback-%d-to-%d-%d", opts.currentVersion, opts.targetVersion, counter)
-	}
-
-	auth := conductorcore.RollbackAuthorization{
-		SchemaVersion:   conductorcore.SchemaVersion,
-		AuthorizationID: authID,
-		OrgID:           opts.orgID,
-		FleetID:         opts.fleetID,
-		CurrentBundleID: opts.currentBundleID,
-		CurrentVersion:  opts.currentVersion,
-		TargetBundleID:  opts.targetBundleID,
-		TargetVersion:   opts.targetVersion,
-		Counter:         counter,
-		Reason:          opts.reason,
-		CreatedAt:       now,
-		ExpiresAt:       now.Add(opts.ttl),
-	}
-
-	keys, err := loadSigningKeys(opts.signingKeys, conductorcore.RequiredCatastrophicSigners, signing.PurposePolicyBundleRollback)
+	auth, err := buildSignedRollbackAuthorization(opts)
 	if err != nil {
 		return err
 	}
-	defer zeroLoadedSigningKeys(keys)
-	auth.Signatures, err = signEmergencyPreimage(auth.SignablePreimage, signing.PurposePolicyBundleRollback, keys)
-	if err != nil {
-		return err
-	}
-
-	// Validate locally before transmitting so the operator gets the exact
-	// field error (e.g. target_version >= current_version) immediately.
-	if err := auth.Validate(); err != nil {
-		return fmt.Errorf("rollback authorization invalid: %w", err)
-	}
-
 	adminToken, err := loadBearerToken(opts.adminTokenFile)
 	if err != nil {
 		return err
@@ -192,6 +140,65 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 		"pipelock: conductor rollback published authorization_id=%s target_version=%d counter=%d hash=%s created=%t\n",
 		resp.AuthorizationID, opts.targetVersion, resp.Counter, resp.AuthorizationHash, resp.Created)
 	return nil
+}
+
+func buildSignedRollbackAuthorization(opts rollbackOptions) (conductorcore.RollbackAuthorization, error) {
+	now := time.Now().UTC()
+	if opts.now != nil {
+		now = opts.now().UTC()
+	}
+
+	if len(opts.instanceIDs) > 0 || len(opts.labels) > 0 {
+		return conductorcore.RollbackAuthorization{}, errors.New("rollback is stream-wide; per-instance and per-label rollback are not supported")
+	}
+
+	counter := opts.counter
+	if counter == 0 {
+		// Guard the signed->unsigned conversion: a negative Unix time (skewed
+		// clock) would wrap to a huge counter. On a non-negative clock, adopt the
+		// seconds; otherwise leave counter 0 so Validate() rejects it and the
+		// operator must pass an explicit --counter.
+		if u := now.Unix(); u >= 0 {
+			counter = uint64(u)
+		}
+	}
+
+	authID := strings.TrimSpace(opts.authorizationID)
+	if authID == "" {
+		authID = fmt.Sprintf("rollback-%d-to-%d-%d", opts.currentVersion, opts.targetVersion, counter)
+	}
+
+	auth := conductorcore.RollbackAuthorization{
+		SchemaVersion:   conductorcore.SchemaVersion,
+		AuthorizationID: authID,
+		OrgID:           opts.orgID,
+		FleetID:         opts.fleetID,
+		CurrentBundleID: opts.currentBundleID,
+		CurrentVersion:  opts.currentVersion,
+		TargetBundleID:  opts.targetBundleID,
+		TargetVersion:   opts.targetVersion,
+		Counter:         counter,
+		Reason:          opts.reason,
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(opts.ttl),
+	}
+
+	keys, err := loadSigningKeys(opts.signingKeys, conductorcore.RequiredCatastrophicSigners, signing.PurposePolicyBundleRollback)
+	if err != nil {
+		return conductorcore.RollbackAuthorization{}, err
+	}
+	defer zeroLoadedSigningKeys(keys)
+	auth.Signatures, err = signEmergencyPreimage(auth.SignablePreimage, signing.PurposePolicyBundleRollback, keys)
+	if err != nil {
+		return conductorcore.RollbackAuthorization{}, err
+	}
+
+	// Validate locally before transmitting so the operator gets the exact
+	// field error (e.g. target_version >= current_version) immediately.
+	if err := auth.Validate(); err != nil {
+		return conductorcore.RollbackAuthorization{}, fmt.Errorf("rollback authorization invalid: %w", err)
+	}
+	return auth, nil
 }
 
 // publishRollbackAuthorizationRequest/Response mirror the control-plane

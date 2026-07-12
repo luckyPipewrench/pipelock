@@ -39,6 +39,45 @@ func TestConductorDryRunFlagsAndReplayCommandRegistered(t *testing.T) {
 	if cmd := findCommandPath(t, root, "replay"); cmd == nil {
 		t.Fatal("conductor replay command is not registered")
 	}
+	for _, path := range [][]string{{"replay", "remote-kill"}, {"replay", "rollback"}} {
+		if cmd := findCommandPath(t, root, path...); cmd == nil {
+			t.Fatalf("%s replay mode is not registered", strings.Join(path, " "))
+		}
+	}
+	t.Run("replay emergency output is not mislabeled as dry-run", func(t *testing.T) {
+		var out bytes.Buffer
+		writeDecisionReplayResult(&out, controlplane.DecisionReplayResult{
+			ActionKind:   "remote_kill",
+			ArtifactHash: strings.Repeat("a", 64),
+			ReplayedAt:   testFixedNow(t),
+			RemoteKill: &controlplane.RemoteKillEvaluation{
+				Valid:       true,
+				WouldCreate: true,
+				Counter:     100,
+			},
+		})
+		writeDecisionReplayResult(&out, controlplane.DecisionReplayResult{
+			ActionKind:   "rollback",
+			ArtifactHash: strings.Repeat("b", 64),
+			ReplayedAt:   testFixedNow(t),
+			Rollback: &controlplane.RollbackEvaluation{
+				Valid:               true,
+				WouldCreate:         true,
+				Counter:             101,
+				WouldRollToVersion:  41,
+				WouldRollToBundleID: "bundle-target",
+			},
+		})
+		got := out.String()
+		for _, want := range []string{"replay remote-kill", "replay rollback"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("output %q missing %q", got, want)
+			}
+		}
+		if strings.Contains(got, "dry-run remote-kill") || strings.Contains(got, "dry-run rollback") {
+			t.Fatalf("replay output mislabeled as dry-run: %q", got)
+		}
+	})
 }
 
 func TestReplayCommandRunELicenseGateAndRunReplay(t *testing.T) {
@@ -581,6 +620,130 @@ func TestRunReplayPostsBundleAndRendersResult(t *testing.T) {
 	}
 }
 
+func TestRunReplayRemoteKillPostsEndpointShapeAndDoesNotApply(t *testing.T) {
+	rig := newKillRig(t, 0)
+	recorder := &recordingEmergencyTransport{inner: rig.srv}
+	rig.opts.transport = recorder
+
+	opts := replayOptions{
+		mode:            replayModeRemoteKill,
+		kill:            rig.opts,
+		remoteKillState: string(conductorcore.KillSwitchActive),
+	}
+	cmd, out := replayCobra(t)
+	if err := runReplay(cmd, opts); err != nil {
+		t.Fatalf("runReplay remote-kill: %v", err)
+	}
+	if recorder.method != http.MethodPost {
+		t.Fatalf("method = %q, want POST", recorder.method)
+	}
+	if recorder.path != controlplane.DecisionReplayPath {
+		t.Fatalf("path = %q, want %q", recorder.path, controlplane.DecisionReplayPath)
+	}
+	if recorder.authorization != "Bearer "+testAdminToken {
+		t.Fatalf("Authorization = %q, want admin bearer", recorder.authorization)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.body, &raw); err != nil {
+		t.Fatalf("decode replay request: %v", err)
+	}
+	for key := range raw {
+		if key != "remote_kill" {
+			t.Fatalf("remote-kill replay request included unexpected key %q", key)
+		}
+	}
+	var body struct {
+		RemoteKill *conductorcore.RemoteKillMessage `json:"remote_kill"`
+	}
+	if err := json.Unmarshal(recorder.body, &body); err != nil {
+		t.Fatalf("decode remote-kill replay request: %v", err)
+	}
+	if body.RemoteKill == nil || body.RemoteKill.State != conductorcore.KillSwitchActive || len(body.RemoteKill.Signatures) == 0 {
+		t.Fatalf("remote-kill replay body = %+v, want signed active message", body.RemoteKill)
+	}
+	gotOut := out.String()
+	for _, want := range []string{"decision replay action=remote_kill", "replay remote-kill", "valid=true", "would_create=true"} {
+		if !strings.Contains(gotOut, want) {
+			t.Fatalf("output %q missing %q", gotOut, want)
+		}
+	}
+	if strings.Contains(gotOut, "dry-run remote-kill") {
+		t.Fatalf("remote-kill replay output mislabeled as dry-run: %q", gotOut)
+	}
+
+	follower := controlplane.FollowerIdentity{OrgID: testOrgID, FleetID: testFleetID, InstanceID: testInstanceID, Environment: testEnvironment}
+	if _, err := rig.srv.emergency.LatestRemoteKill(t.Context(), follower, rig.now); !errors.Is(err, controlplane.ErrEmergencyNotFound) {
+		t.Fatalf("remote-kill replay stored a kill: err=%v, want ErrEmergencyNotFound", err)
+	}
+}
+
+func TestRunReplayRollbackPostsEndpointShapeAndDoesNotApply(t *testing.T) {
+	rb := newRollbackRig(t, 0)
+	srv, ok := rb.transport.(*testServer)
+	if !ok {
+		t.Fatalf("rollback test transport = %T, want *testServer", rb.transport)
+	}
+	recorder := &recordingEmergencyTransport{inner: srv}
+	rb.transport = recorder
+
+	opts := replayOptions{
+		mode:     replayModeRollback,
+		rollback: rb,
+	}
+	cmd, out := replayCobra(t)
+	if err := runReplay(cmd, opts); err != nil {
+		t.Fatalf("runReplay rollback: %v", err)
+	}
+	if recorder.method != http.MethodPost {
+		t.Fatalf("method = %q, want POST", recorder.method)
+	}
+	if recorder.path != controlplane.DecisionReplayPath {
+		t.Fatalf("path = %q, want %q", recorder.path, controlplane.DecisionReplayPath)
+	}
+	if recorder.authorization != "Bearer "+testAdminToken {
+		t.Fatalf("Authorization = %q, want admin bearer", recorder.authorization)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.body, &raw); err != nil {
+		t.Fatalf("decode replay request: %v", err)
+	}
+	for key := range raw {
+		if key != "rollback" {
+			t.Fatalf("rollback replay request included unexpected key %q", key)
+		}
+	}
+	var body struct {
+		Rollback *conductorcore.RollbackAuthorization `json:"rollback"`
+	}
+	if err := json.Unmarshal(recorder.body, &body); err != nil {
+		t.Fatalf("decode rollback replay request: %v", err)
+	}
+	if body.Rollback == nil || body.Rollback.TargetVersion != rb.targetVersion || len(body.Rollback.Signatures) == 0 {
+		t.Fatalf("rollback replay body = %+v, want signed rollback authorization", body.Rollback)
+	}
+	gotOut := out.String()
+	for _, want := range []string{"decision replay action=rollback", "replay rollback", "valid=true", "would_create=true", "would_roll_to_version=41"} {
+		if !strings.Contains(gotOut, want) {
+			t.Fatalf("output %q missing %q", gotOut, want)
+		}
+	}
+	if strings.Contains(gotOut, "dry-run rollback") {
+		t.Fatalf("rollback replay output mislabeled as dry-run: %q", gotOut)
+	}
+
+	follower := controlplane.FollowerIdentity{OrgID: testOrgID, FleetID: testFleetID, InstanceID: testInstanceID, Environment: testEnvironment}
+	if _, active, err := srv.emergency.ActiveRollbackForFollower(t.Context(), follower, rb.now()); err != nil || active {
+		t.Fatalf("rollback replay active rollback = %t err=%v, want none", active, err)
+	}
+	head, err := srv.store.Latest(t.Context(), follower, rb.now())
+	if err != nil {
+		t.Fatalf("latest bundle after rollback replay: %v", err)
+	}
+	if head.Bundle.Version != rb.currentVersion || head.Bundle.BundleID != rb.currentBundleID {
+		t.Fatalf("rollback replay moved stream head to %s v%d, want %s v%d", head.Bundle.BundleID, head.Bundle.Version, rb.currentBundleID, rb.currentVersion)
+	}
+}
+
 func TestRunReplayBundleArtifactPostsExactBundle(t *testing.T) {
 	dir := t.TempDir()
 	buildOpts := publishDryRunTestOptions(t, dir)
@@ -830,6 +993,29 @@ func (s *staticEmergencyTransport) Do(req *http.Request) (*http.Response, error)
 		Header:     make(http.Header),
 		Request:    req,
 	}, nil
+}
+
+type recordingEmergencyTransport struct {
+	inner         emergencyTransport
+	method        string
+	path          string
+	authorization string
+	body          []byte
+}
+
+func (r *recordingEmergencyTransport) Do(req *http.Request) (*http.Response, error) {
+	r.method = req.Method
+	r.path = req.URL.Path
+	r.authorization = req.Header.Get("Authorization")
+	if req.Body != nil {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.body = body
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	return r.inner.Do(req)
 }
 
 type errReader struct{}

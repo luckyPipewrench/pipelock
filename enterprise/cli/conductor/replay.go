@@ -28,16 +28,25 @@ import (
 const (
 	replayMaxStateSnapshotBytes  = conductorcore.MaxConfigYAMLBytes
 	replayMaxBundleArtifactBytes = conductorcore.MaxConfigYAMLBytes * 2
+
+	replayModePolicyBundle = "policy_bundle"
+	replayModeRemoteKill   = "remote_kill"
+	replayModeRollback     = "rollback"
 )
 
 type replayOptions struct {
-	publish        publishOptions
-	stateSnapshot  string
-	bundleArtifact string
+	mode            string
+	publish         publishOptions
+	kill            killOptions
+	rollback        rollbackOptions
+	remoteKillState string
+	stateSnapshot   string
+	bundleArtifact  string
 }
 
 func replayCmd() *cobra.Command {
 	opts := replayOptions{
+		mode:    replayModePolicyBundle,
 		publish: publishOptions{validity: defaultPublishValidity},
 	}
 	cmd := &cobra.Command{
@@ -50,7 +59,10 @@ signed bundle. Without --bundle-artifact, replay rebuilds and signs a new
 hypothetical bundle from the same inputs as conductor publish.
 
 Pass --state-snapshot to replay the publish preflight against a captured fleet
-snapshot instead of the current roster/runtime-status view.`,
+snapshot instead of the current roster/runtime-status view.
+
+Use the remote-kill and rollback subcommands to replay signed emergency-control
+decisions against the same decision-replay endpoint without applying them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.publish.licenseCRL}); err != nil {
@@ -62,10 +74,129 @@ snapshot instead of the current roster/runtime-status view.`,
 	bindPublishFlags(cmd, &opts.publish, publishFlagOptions{license: true})
 	cmd.Flags().StringVar(&opts.bundleArtifact, "bundle-artifact", "", "path to an exact signed policy bundle JSON artifact to replay instead of rebuilding from publish inputs")
 	cmd.Flags().StringVar(&opts.stateSnapshot, "state-snapshot", "", "optional JSON fleet state snapshot for bundle replay preflight")
+	cmd.AddCommand(replayRemoteKillCmd(), replayRollbackCmd())
 	return cmd
 }
 
 func runReplay(cmd *cobra.Command, opts replayOptions) error {
+	mode := strings.TrimSpace(opts.mode)
+	if mode == "" {
+		mode = replayModePolicyBundle
+	}
+	switch mode {
+	case replayModePolicyBundle:
+		return runPolicyBundleReplay(cmd, opts)
+	case replayModeRemoteKill:
+		return runRemoteKillReplay(cmd, opts)
+	case replayModeRollback:
+		return runRollbackReplay(cmd, opts)
+	default:
+		return fmt.Errorf("unsupported replay mode %q", opts.mode)
+	}
+}
+
+func replayRemoteKillCmd() *cobra.Command {
+	opts := replayOptions{
+		mode: replayModeRemoteKill,
+		kill: killOptions{ttl: remoteKillDefaultTTL},
+	}
+	cmd := &cobra.Command{
+		Use:     "remote-kill",
+		Aliases: []string{"remote_kill"},
+		Short:   "Replay a signed Conductor remote-kill decision without applying it",
+		Long: `remote-kill builds and signs a remote-kill message from the same inputs
+as conductor kill/resume, then posts it to the decision-replay endpoint as a
+remote_kill artifact. The Conductor re-derives and compares the decision without
+publishing or applying the message.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.kill.licenseCRLFile}); err != nil {
+				return err
+			}
+			return runReplay(cmd, opts)
+		},
+	}
+	bindReplayRemoteKillFlags(cmd, &opts)
+	return cmd
+}
+
+func replayRollbackCmd() *cobra.Command {
+	opts := replayOptions{
+		mode:     replayModeRollback,
+		rollback: rollbackOptions{ttl: rollbackDefaultTTL},
+	}
+	cmd := &cobra.Command{
+		Use:   "rollback",
+		Short: "Replay a signed Conductor rollback decision without applying it",
+		Long: `rollback builds and signs a rollback authorization from the same inputs
+as conductor rollback, then posts it to the decision-replay endpoint as a
+rollback artifact. The Conductor re-derives and compares the decision without
+publishing or applying the authorization.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.rollback.licenseCRLFile}); err != nil {
+				return err
+			}
+			return runReplay(cmd, opts)
+		},
+	}
+	bindReplayRollbackFlags(cmd, &opts.rollback)
+	return cmd
+}
+
+func bindReplayRemoteKillFlags(cmd *cobra.Command, opts *replayOptions) {
+	kill := &opts.kill
+	cmd.Flags().StringVar(&kill.baseURL, "conductor-url", "", "base URL of the Conductor control plane, e.g. https://conductor.example:8895 (required)")
+	cmd.Flags().StringVar(&kill.adminTokenFile, "admin-token-file", "", "file containing the Conductor admin bearer token (required)")
+	cmd.Flags().StringArrayVar(&kill.signingKeys, "signing-key", nil,
+		"path to a remote-kill-signing keypair file from `pipelock signing key generate`; repeat to supply the M-of-N signers")
+	cmd.Flags().StringVar(&kill.orgID, "org", "", "fleet org id the message targets (required)")
+	cmd.Flags().StringVar(&kill.fleetID, "fleet", "", "fleet id the message targets (required)")
+	cmd.Flags().StringArrayVar(&kill.instanceIDs, "instance", nil, "target follower instance id; repeat for several, or pass '*' for the whole fleet (mutually exclusive with --label)")
+	cmd.Flags().StringToStringVar(&kill.labels, "label", nil, "target followers by label selector key=value; repeat for several (mutually exclusive with --instance)")
+	cmd.Flags().StringVar(&kill.messageID, "message-id", "", "message id (defaults to a generated remote-kill-<state>-<counter> id)")
+	cmd.Flags().StringVar(&opts.remoteKillState, "state", string(conductorcore.KillSwitchActive), "remote-kill state to replay: active or inactive")
+	cmd.Flags().Uint64Var(&kill.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each replay supersedes the prior message shape")
+	cmd.Flags().StringVar(&kill.reason, "reason", "", "operator reason recorded in the signed message")
+	cmd.Flags().DurationVar(&kill.ttl, "ttl", remoteKillDefaultTTL, "validity window for the message; must not exceed the Conductor's configured remote-kill max validity")
+	cmd.Flags().StringVar(&kill.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
+	cmd.Flags().StringVar(&kill.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
+	cmd.Flags().StringVar(&kill.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")
+	cmd.Flags().StringVar(&kill.serverName, "server-name", "", "server name to verify in the Conductor TLS certificate (defaults to the host in --conductor-url)")
+	cmd.Flags().StringVar(&kill.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
+	_ = cmd.MarkFlagRequired("conductor-url")
+	_ = cmd.MarkFlagRequired("org")
+	_ = cmd.MarkFlagRequired("fleet")
+}
+
+func bindReplayRollbackFlags(cmd *cobra.Command, opts *rollbackOptions) {
+	cmd.Flags().StringVar(&opts.baseURL, "conductor-url", "", "base URL of the Conductor control plane (required)")
+	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing the Conductor admin bearer token (required)")
+	cmd.Flags().StringArrayVar(&opts.signingKeys, "signing-key", nil,
+		"path to a policy-bundle-rollback keypair file from `pipelock signing key generate`; repeat to supply the M-of-N signers")
+	cmd.Flags().StringVar(&opts.orgID, "org", "", "fleet org id the authorization targets (required)")
+	cmd.Flags().StringVar(&opts.fleetID, "fleet", "", "fleet id the authorization targets (required)")
+	cmd.Flags().StringVar(&opts.authorizationID, "authorization-id", "", "authorization id (defaults to rollback-<current>-to-<target>-<counter>)")
+	cmd.Flags().StringVar(&opts.currentBundleID, "current-bundle-id", "", "bundle id currently applied on the followers (required)")
+	cmd.Flags().Uint64Var(&opts.currentVersion, "current-version", 0, "version currently applied on the followers (required, must be > target)")
+	cmd.Flags().StringVar(&opts.targetBundleID, "target-bundle-id", "", "bundle id to roll back to (required)")
+	cmd.Flags().Uint64Var(&opts.targetVersion, "target-version", 0, "version to roll back to (required, must be < current)")
+	cmd.Flags().Uint64Var(&opts.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each replay supersedes the prior authorization shape")
+	cmd.Flags().StringVar(&opts.reason, "reason", "", "operator reason recorded in the signed authorization")
+	cmd.Flags().DurationVar(&opts.ttl, "ttl", rollbackDefaultTTL, "validity window; must not exceed the Conductor's configured rollback max validity")
+	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
+	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
+	cmd.Flags().StringVar(&opts.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")
+	cmd.Flags().StringVar(&opts.serverName, "server-name", "", "server name to verify in the Conductor TLS certificate (defaults to the host in --conductor-url)")
+	cmd.Flags().StringVar(&opts.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
+	_ = cmd.MarkFlagRequired("conductor-url")
+	_ = cmd.MarkFlagRequired("org")
+	_ = cmd.MarkFlagRequired("fleet")
+	_ = cmd.MarkFlagRequired("current-bundle-id")
+	_ = cmd.MarkFlagRequired("target-bundle-id")
+}
+
+func runPolicyBundleReplay(cmd *cobra.Command, opts replayOptions) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -105,12 +236,77 @@ func runReplay(cmd *cobra.Command, opts replayOptions) error {
 		}
 		defer zeroizeKey(priv)
 	}
-	result, err := postDecisionReplay(ctx, client, opts.publish.conductorURL, token, bundle, snapshot)
+	result, err := postDecisionReplay(ctx, client, opts.publish.conductorURL, token, decisionReplayArtifact{Bundle: &bundle, StateSnapshot: snapshot})
 	if err != nil {
 		return err
 	}
 	writeDecisionReplayResult(cmd.OutOrStdout(), result)
 	return nil
+}
+
+func runRemoteKillReplay(cmd *cobra.Command, opts replayOptions) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state, err := parseReplayRemoteKillState(opts.remoteKillState)
+	if err != nil {
+		return err
+	}
+	msg, err := buildSignedRemoteKillMessage(opts.kill, state)
+	if err != nil {
+		return err
+	}
+	adminToken, err := loadBearerToken(opts.kill.adminTokenFile)
+	if err != nil {
+		return err
+	}
+	client, err := resolveEmergencyTransport(opts.kill.transport, opts.kill.emergencyClientOptions)
+	if err != nil {
+		return err
+	}
+	result, err := postDecisionReplay(ctx, client, opts.kill.baseURL, adminToken, decisionReplayArtifact{RemoteKill: &msg})
+	if err != nil {
+		return err
+	}
+	writeDecisionReplayResult(cmd.OutOrStdout(), result)
+	return nil
+}
+
+func runRollbackReplay(cmd *cobra.Command, opts replayOptions) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	auth, err := buildSignedRollbackAuthorization(opts.rollback)
+	if err != nil {
+		return err
+	}
+	adminToken, err := loadBearerToken(opts.rollback.adminTokenFile)
+	if err != nil {
+		return err
+	}
+	client, err := resolveEmergencyTransport(opts.rollback.transport, opts.rollback.emergencyClientOptions)
+	if err != nil {
+		return err
+	}
+	result, err := postDecisionReplay(ctx, client, opts.rollback.baseURL, adminToken, decisionReplayArtifact{Rollback: &auth})
+	if err != nil {
+		return err
+	}
+	writeDecisionReplayResult(cmd.OutOrStdout(), result)
+	return nil
+}
+
+func parseReplayRemoteKillState(raw string) (conductorcore.KillSwitchState, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(conductorcore.KillSwitchActive), "kill":
+		return conductorcore.KillSwitchActive, nil
+	case string(conductorcore.KillSwitchInactive), "resume":
+		return conductorcore.KillSwitchInactive, nil
+	default:
+		return "", fmt.Errorf("--state must be %q or %q", conductorcore.KillSwitchActive, conductorcore.KillSwitchInactive)
+	}
 }
 
 func readReplayBundleArtifact(path string) (conductorcore.PolicyBundle, error) {
@@ -183,15 +379,19 @@ func readReplayStateSnapshot(path string) (json.RawMessage, error) {
 	return json.RawMessage(trimmed), nil
 }
 
-func postDecisionReplay(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, snapshot json.RawMessage) (controlplane.DecisionReplayResult, error) {
-	envelope := struct {
-		Bundle        conductorcore.PolicyBundle `json:"bundle"`
-		StateSnapshot json.RawMessage            `json:"state_snapshot,omitempty"`
-	}{
-		Bundle:        bundle,
-		StateSnapshot: snapshot,
-	}
-	body, err := json.Marshal(envelope)
+type decisionReplayHTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+type decisionReplayArtifact struct {
+	Bundle        *conductorcore.PolicyBundle          `json:"bundle,omitempty"`
+	RemoteKill    *conductorcore.RemoteKillMessage     `json:"remote_kill,omitempty"`
+	Rollback      *conductorcore.RollbackAuthorization `json:"rollback,omitempty"`
+	StateSnapshot json.RawMessage                      `json:"state_snapshot,omitempty"`
+}
+
+func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, baseURL, token string, artifact decisionReplayArtifact) (controlplane.DecisionReplayResult, error) {
+	body, err := json.Marshal(artifact)
 	if err != nil {
 		return controlplane.DecisionReplayResult{}, fmt.Errorf("marshal replay request: %w", err)
 	}

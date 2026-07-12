@@ -119,65 +119,10 @@ func bindRemoteKillFlags(cmd *cobra.Command, opts *killOptions) {
 }
 
 func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.KillSwitchState) error {
-	now := time.Now().UTC()
-	if opts.now != nil {
-		now = opts.now().UTC()
-	}
-
-	audience, err := buildAudience(opts.instanceIDs, opts.labels)
+	msg, err := buildSignedRemoteKillMessage(opts, state)
 	if err != nil {
 		return err
 	}
-
-	counter := opts.counter
-	if counter == 0 {
-		// Default to a wall-clock-derived counter so two operators publishing
-		// in sequence without coordinating still produce a monotonically
-		// increasing counter the server accepts. Guard the signed->unsigned
-		// conversion: a negative Unix time (pre-1970 / skewed clock) would wrap
-		// to a huge counter, so only adopt non-negative seconds and otherwise
-		// leave counter 0 (the operator must then pass an explicit --counter).
-		if u := now.Unix(); u >= 0 {
-			counter = uint64(u)
-		}
-	}
-
-	messageID := strings.TrimSpace(opts.messageID)
-	if messageID == "" {
-		messageID = fmt.Sprintf("remote-kill-%s-%d", state, counter)
-	}
-
-	msg := conductorcore.RemoteKillMessage{
-		SchemaVersion: conductorcore.SchemaVersion,
-		MessageID:     messageID,
-		OrgID:         opts.orgID,
-		FleetID:       opts.fleetID,
-		Audience:      audience,
-		State:         state,
-		Counter:       counter,
-		Reason:        opts.reason,
-		CreatedAt:     now,
-		NotBefore:     now.Add(-time.Minute),
-		ExpiresAt:     now.Add(opts.ttl),
-	}
-
-	keys, err := loadSigningKeys(opts.signingKeys, conductorcore.RequiredCatastrophicSigners, signing.PurposeRemoteKillSigning)
-	if err != nil {
-		return err
-	}
-	defer zeroLoadedSigningKeys(keys)
-	msg.Signatures, err = signEmergencyPreimage(msg.SignablePreimage, signing.PurposeRemoteKillSigning, keys)
-	if err != nil {
-		return err
-	}
-
-	// Validate locally before transmitting. The server re-validates, but a
-	// client-side check gives the operator the exact field error immediately
-	// instead of a round-trip and an opaque 4xx.
-	if err := msg.Validate(); err != nil {
-		return fmt.Errorf("remote-kill message invalid: %w", err)
-	}
-
 	adminToken, err := loadBearerToken(opts.adminTokenFile)
 	if err != nil {
 		return err
@@ -214,6 +159,68 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 		"pipelock: conductor remote-kill published state=%s message_id=%s counter=%d hash=%s created=%t\n",
 		state, resp.MessageID, resp.Counter, resp.MessageHash, resp.Created)
 	return nil
+}
+
+func buildSignedRemoteKillMessage(opts killOptions, state conductorcore.KillSwitchState) (conductorcore.RemoteKillMessage, error) {
+	now := time.Now().UTC()
+	if opts.now != nil {
+		now = opts.now().UTC()
+	}
+
+	audience, err := buildAudience(opts.instanceIDs, opts.labels)
+	if err != nil {
+		return conductorcore.RemoteKillMessage{}, err
+	}
+
+	counter := opts.counter
+	if counter == 0 {
+		// Default to a wall-clock-derived counter so two operators publishing
+		// in sequence without coordinating still produce a monotonically
+		// increasing counter the server accepts. Guard the signed->unsigned
+		// conversion: a negative Unix time (pre-1970 / skewed clock) would wrap
+		// to a huge counter, so only adopt non-negative seconds and otherwise
+		// leave counter 0 (the operator must then pass an explicit --counter).
+		if u := now.Unix(); u >= 0 {
+			counter = uint64(u)
+		}
+	}
+
+	messageID := strings.TrimSpace(opts.messageID)
+	if messageID == "" {
+		messageID = fmt.Sprintf("remote-kill-%s-%d", state, counter)
+	}
+
+	msg := conductorcore.RemoteKillMessage{
+		SchemaVersion: conductorcore.SchemaVersion,
+		MessageID:     messageID,
+		OrgID:         opts.orgID,
+		FleetID:       opts.fleetID,
+		Audience:      audience,
+		State:         state,
+		Counter:       counter,
+		Reason:        opts.reason,
+		CreatedAt:     now,
+		NotBefore:     now.Add(-time.Minute),
+		ExpiresAt:     now.Add(opts.ttl),
+	}
+
+	keys, err := loadSigningKeys(opts.signingKeys, conductorcore.RequiredCatastrophicSigners, signing.PurposeRemoteKillSigning)
+	if err != nil {
+		return conductorcore.RemoteKillMessage{}, err
+	}
+	defer zeroLoadedSigningKeys(keys)
+	msg.Signatures, err = signEmergencyPreimage(msg.SignablePreimage, signing.PurposeRemoteKillSigning, keys)
+	if err != nil {
+		return conductorcore.RemoteKillMessage{}, err
+	}
+
+	// Validate locally before transmitting. The server re-validates, but a
+	// client-side check gives the operator the exact field error immediately
+	// instead of a round-trip and an opaque 4xx.
+	if err := msg.Validate(); err != nil {
+		return conductorcore.RemoteKillMessage{}, fmt.Errorf("remote-kill message invalid: %w", err)
+	}
+	return msg, nil
 }
 
 // publishRemoteKillRequest/publishRemoteKillResponse mirror the control-plane

@@ -364,7 +364,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// currently-live bundle rules. This gate is mode-independent so balanced
 		// and audit deployments fail closed for the real weakening without
 		// rejecting unrelated bundle errors that do not remove live coverage.
-		if reason := bundleResolutionRejectReason(oldCfg, newCfg, warnings, reloadBundleResult, s.currentMCPToolExtraPoison()); reason != "" {
+		if reason := bundleResolutionRejectReason(oldCfg, newCfg, reloadBundleResult, s.currentMCPToolExtraPoison()); reason != "" {
 			rejectErr := fmt.Errorf("rejected: bundle resolution error would drop live detection rules: %s", reason)
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
@@ -538,7 +538,6 @@ func reloadDowngradeRejectReason(oldCfg *config.Config, warnings []config.Reload
 
 func bundleResolutionRejectReason(
 	oldCfg, newCfg *config.Config,
-	warnings []config.ReloadWarning,
 	result *rules.LoadResult,
 	oldToolPoison []*tools.ExtraPoisonPattern,
 ) string {
@@ -546,16 +545,17 @@ func bundleResolutionRejectReason(
 		return ""
 	}
 
+	// Enforce by comparing the live bundle-sourced rules against the resolved
+	// candidate directly, independent of whether ValidateReload emitted a
+	// warning for the same drop. Coupling enforcement to warning generation
+	// would be brittle: a suppressed, renamed, or missed warning must not be
+	// able to bypass this coverage-drop check.
 	var reasons []string
-	if reloadWarningsContainField(warnings, "dlp.patterns") {
-		if dropped := removedBundleDLPPatterns(oldCfg.DLP.Patterns, newCfg.DLP.Patterns); len(dropped) > 0 {
-			reasons = append(reasons, "dlp.patterns: "+strings.Join(dropped, ", "))
-		}
+	if dropped := removedBundleDLPPatterns(oldCfg.DLP.Patterns, newCfg.DLP.Patterns); len(dropped) > 0 {
+		reasons = append(reasons, "dlp.patterns: "+strings.Join(dropped, ", "))
 	}
-	if reloadWarningsContainField(warnings, "response_scanning.patterns") {
-		if dropped := removedBundleResponsePatterns(oldCfg.ResponseScanning.Patterns, newCfg.ResponseScanning.Patterns); len(dropped) > 0 {
-			reasons = append(reasons, "response_scanning.patterns: "+strings.Join(dropped, ", "))
-		}
+	if dropped := removedBundleResponsePatterns(oldCfg.ResponseScanning.Patterns, newCfg.ResponseScanning.Patterns); len(dropped) > 0 {
+		reasons = append(reasons, "response_scanning.patterns: "+strings.Join(dropped, ", "))
 	}
 	if dropped := removedBundleToolPoisonPatterns(oldToolPoison, rules.ConvertToolPoison(result.ToolPoison)); len(dropped) > 0 {
 		reasons = append(reasons, "mcp_tool_scanning.tool_poison: "+strings.Join(dropped, ", "))
@@ -569,15 +569,6 @@ func bundleResolutionRejectReason(
 		names = append(names, e.Name)
 	}
 	return strings.Join(reasons, "; ") + " (bundle errors: " + strings.Join(names, ", ") + ")"
-}
-
-func reloadWarningsContainField(warnings []config.ReloadWarning, field string) bool {
-	for _, w := range warnings {
-		if w.Field == field {
-			return true
-		}
-	}
-	return false
 }
 
 func removedBundleDLPPatterns(old, updated []config.DLPPattern) []string {

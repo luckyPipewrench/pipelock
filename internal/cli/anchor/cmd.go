@@ -75,7 +75,7 @@ verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 	cmd.Flags().StringVar(&opts.logID, "log-id", anchorpkg.DefaultLocalLogID, "local fake-log identifier")
 	cmd.Flags().StringVar(&opts.rekorURL, "rekor-url", "", "Rekor base URL (required for the rekor backend; no public default so receipt metadata stays in your trust boundary)")
 	cmd.Flags().StringVar(&opts.rekorKey, "rekor-key", "", "Ed25519 private key file used to sign the Rekor checkpoint entry")
-	cmd.Flags().StringVar(&opts.rekorHash, "rekor-hash-algorithm", anchorpkg.DefaultRekorHashAlgorithm, "hashedrekord data hash algorithm to submit (sha256 or sha512); match the target Rekor deployment's supported schema")
+	cmd.Flags().StringVar(&opts.rekorHash, "rekor-hash-algorithm", anchorpkg.DefaultRekorHashAlgorithm, "hashedrekord data hash algorithm to submit (sha512 for Ed25519 Rekor v1)")
 	cmd.Flags().BoolVar(&opts.rekorYes, "yes-send-to-remote-log", false, "acknowledge Rekor anchoring sends checkpoint material to the configured remote log")
 	cmd.Flags().StringVar(&opts.output, "out", "", "anchor bundle output path")
 	return cmd

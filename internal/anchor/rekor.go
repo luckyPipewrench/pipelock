@@ -40,11 +40,9 @@ const (
 	rekorSHA256Algorithm        = "sha256"
 	rekorSHA512Algorithm        = "sha512"
 	// rekorDefaultSubmitHashAlgorithm is used when RekorLog.HashAlgorithm is
-	// unset. It defaults to SHA-256, which the hashedrekord 0.0.1 schema has
-	// always accepted and which public/common Rekor deployments support. A
-	// deployment whose schema requires SHA-512 sets HashAlgorithm explicitly;
-	// hardcoding either algorithm would break the other class of Rekor server.
-	rekorDefaultSubmitHashAlgorithm = rekorSHA256Algorithm
+	// unset. Pipelock Rekor submissions use Ed25519 keys; Rekor v1 validates
+	// those hashedrekord signatures as Ed25519ph over a SHA-512 digest.
+	rekorDefaultSubmitHashAlgorithm = rekorSHA512Algorithm
 
 	// DefaultRekorHashAlgorithm is the hashedrekord data.hash.algorithm used
 	// when RekorLog.HashAlgorithm is unset. It is exported so CLI defaults stay
@@ -60,10 +58,9 @@ type RekorLog struct {
 	HTTPClient     *http.Client
 	Signer         ed25519.PrivateKey
 	TrustedLogKeys []crypto.PublicKey
-	// HashAlgorithm selects the hashedrekord data.hash.algorithm for
-	// submissions ("sha256" or "sha512"). Empty means the default
-	// (rekorDefaultSubmitHashAlgorithm). Set it to match the target Rekor
-	// deployment's supported schema.
+	// HashAlgorithm selects the hashedrekord data.hash.algorithm for Ed25519
+	// submissions. Rekor v1 accepts SHA-512 for this key type. Empty means the
+	// default (rekorDefaultSubmitHashAlgorithm).
 	HashAlgorithm string
 }
 
@@ -76,10 +73,12 @@ func (r RekorLog) submitHashAlgorithm() (string, error) {
 		return rekorDefaultSubmitHashAlgorithm, nil
 	}
 	switch algo {
-	case rekorSHA256Algorithm, rekorSHA512Algorithm:
+	case rekorSHA512Algorithm:
 		return algo, nil
+	case rekorSHA256Algorithm:
+		return "", fmt.Errorf("unsupported rekor hash algorithm %q for ed25519 hashedrekord submissions (want %q)", algo, rekorSHA512Algorithm)
 	default:
-		return "", fmt.Errorf("unsupported rekor hash algorithm %q (want %q or %q)", algo, rekorSHA256Algorithm, rekorSHA512Algorithm)
+		return "", fmt.Errorf("unsupported rekor hash algorithm %q (want %q)", algo, rekorSHA512Algorithm)
 	}
 }
 
@@ -152,11 +151,11 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	if err != nil {
 		return Proof{}, err
 	}
-	publicKey, signature, err := signRekorCheckpoint(checkpointBytes, r.Signer)
+	hashAlgorithm, err := r.submitHashAlgorithm()
 	if err != nil {
 		return Proof{}, err
 	}
-	hashAlgorithm, err := r.submitHashAlgorithm()
+	publicKey, signature, err := signRekorArtifact(checkpointBytes, hashAlgorithm, r.Signer)
 	if err != nil {
 		return Proof{}, err
 	}
@@ -313,9 +312,6 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyRekorSignature(checkpointBytes, proof.Rekor.PublicKey, proof.Rekor.Signature); err != nil {
-		return err
-	}
 	bodyBytes, err := base64.StdEncoding.DecodeString(proof.Rekor.Body)
 	if err != nil {
 		return fmt.Errorf("decode rekor body: %w", err)
@@ -342,6 +338,9 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	}
 	if body.Spec.Signature.PublicKey.Content != proof.Rekor.PublicKey {
 		return errors.New("rekor body public key does not match proof public key")
+	}
+	if err := verifyRekorSignature(checkpointBytes, body.Spec.Data.Hash.Algorithm, proof.Rekor.PublicKey, proof.Rekor.Signature); err != nil {
+		return err
 	}
 	return nil
 }
@@ -492,6 +491,29 @@ func rekorDigestHex(algorithm string, data []byte) string {
 	}
 }
 
+func signRekorArtifact(data []byte, algorithm string, priv ed25519.PrivateKey) (publicKey string, signature string, err error) {
+	if err := domsigning.ValidatePrivateKeyConsistency(priv); err != nil {
+		return "", "", fmt.Errorf("validate rekor signing key: %w", err)
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return "", "", errors.New("rekor signing key public key is not ed25519")
+	}
+	publicKey, err = encodeRekorPublicKey(pub)
+	if err != nil {
+		return "", "", err
+	}
+	digest, signerOpts, err := rekorSignatureDigest(algorithm, data)
+	if err != nil {
+		return "", "", err
+	}
+	sig, err := priv.Sign(nil, digest, signerOpts)
+	if err != nil {
+		return "", "", fmt.Errorf("sign rekor artifact digest: %w", err)
+	}
+	return publicKey, base64.StdEncoding.EncodeToString(sig), nil
+}
+
 func signRekorCheckpoint(data []byte, priv ed25519.PrivateKey) (publicKey string, signature string, err error) {
 	if err := domsigning.ValidatePrivateKeyConsistency(priv); err != nil {
 		return "", "", fmt.Errorf("validate rekor signing key: %w", err)
@@ -500,45 +522,75 @@ func signRekorCheckpoint(data []byte, priv ed25519.PrivateKey) (publicKey string
 	if !ok {
 		return "", "", errors.New("rekor signing key public key is not ed25519")
 	}
+	publicKey, err = encodeRekorPublicKey(pub)
+	if err != nil {
+		return "", "", err
+	}
+	return publicKey, base64.StdEncoding.EncodeToString(ed25519.Sign(priv, data)), nil
+}
+
+func encodeRekorPublicKey(pub ed25519.PublicKey) (string, error) {
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
-		return "", "", fmt.Errorf("marshal rekor public key: %w", err)
+		return "", fmt.Errorf("marshal rekor public key: %w", err)
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 	if len(pemBytes) == 0 {
-		return "", "", errors.New("encode rekor public key")
+		return "", errors.New("encode rekor public key")
 	}
-	return base64.StdEncoding.EncodeToString(pemBytes), base64.StdEncoding.EncodeToString(ed25519.Sign(priv, data)), nil
+	return base64.StdEncoding.EncodeToString(pemBytes), nil
 }
 
-func verifyRekorSignature(data []byte, publicKey, signature string) error {
+func rekorSignatureDigest(algorithm string, data []byte) ([]byte, crypto.SignerOpts, error) {
+	switch algorithm {
+	case rekorSHA512Algorithm:
+		sum := sha512.Sum512(data)
+		return sum[:], crypto.SHA512, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported rekor hash algorithm %q", algorithm)
+	}
+}
+
+func verifyRekorSignature(data []byte, algorithm, publicKey, signature string) error {
 	if publicKey == "" || signature == "" {
 		return errors.New("rekor proof public key and signature required")
 	}
-	pemBytes, err := base64.StdEncoding.DecodeString(publicKey)
+	pub, err := parseRekorEd25519PublicKey(publicKey)
 	if err != nil {
-		return fmt.Errorf("decode rekor public key: %w", err)
-	}
-	block, _ := pem.Decode(pemBytes)
-	if block == nil || block.Type != "PUBLIC KEY" {
-		return errors.New("parse rekor public key PEM")
-	}
-	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse rekor public key: %w", err)
-	}
-	pub, ok := parsed.(ed25519.PublicKey)
-	if !ok {
-		return errors.New("rekor public key is not ed25519")
+		return err
 	}
 	sig, err := base64.StdEncoding.DecodeString(signature)
 	if err != nil {
 		return fmt.Errorf("decode rekor signature: %w", err)
 	}
-	if !ed25519.Verify(pub, data, sig) {
-		return errors.New("rekor checkpoint signature invalid")
+	digest, _, err := rekorSignatureDigest(algorithm, data)
+	if err != nil {
+		return err
+	}
+	if err := ed25519.VerifyWithOptions(pub, digest, sig, &ed25519.Options{Hash: crypto.SHA512}); err != nil {
+		return errors.New("rekor hashedrekord signature invalid")
 	}
 	return nil
+}
+
+func parseRekorEd25519PublicKey(publicKey string) (ed25519.PublicKey, error) {
+	pemBytes, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("decode rekor public key: %w", err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return nil, errors.New("parse rekor public key PEM")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse rekor public key: %w", err)
+	}
+	pub, ok := parsed.(ed25519.PublicKey)
+	if !ok {
+		return nil, errors.New("rekor public key is not ed25519")
+	}
+	return pub, nil
 }
 
 func verifyRekorSET(proof Proof, keys []crypto.PublicKey) error {

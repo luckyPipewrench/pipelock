@@ -33,7 +33,11 @@
    (evidence) do not, and that ~10px width delta flips the marginal-fit nav
    between one and two rows - the "nav jump" when switching tabs. The track is
    transparent when idle (see scrollbar-track rule below), so no visible gutter. */
-html{overflow-y:scroll;}
+/* Paint the root the same dark background and let the body fill the viewport, so a
+   short page never shows a lighter "gray band" where the content ends and the
+   default html background begins. */
+html{overflow-y:scroll;background:var(--bg,#09090b);}
+body{min-height:100vh;}
 html,.table-wrap,.table,.opaque-cell,pre,main{scrollbar-color:rgba(0,229,160,0.45) transparent;scrollbar-width:thin;}
 *::-webkit-scrollbar{width:10px;height:10px;}
 *::-webkit-scrollbar-track{background:transparent;}

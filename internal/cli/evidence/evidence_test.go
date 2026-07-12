@@ -401,7 +401,7 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	handler := evidenceServeHandler(dir, sessionID)
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -491,7 +491,7 @@ func TestServeCmd_MixedActorSessionFailsClosed(t *testing.T) {
 
 	handler := evidenceServeHandler(dir, "shared")
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET / status = %d, want 500; body=%s", rec.Code, rec.Body.String())
 	}
@@ -555,7 +555,7 @@ func TestServeCmd_NoEndpointCanSwitchBoundSession(t *testing.T) {
 	for _, target := range []string{"/", "/?session=alpha", "/?agent=agent-alpha"} {
 		t.Run(target, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("GET %s status = %d, want 200; body=%s", target, rec.Code, rec.Body.String())
 			}
@@ -572,7 +572,7 @@ func TestServeCmd_NoEndpointCanSwitchBoundSession(t *testing.T) {
 	for _, target := range []string{"/session/alpha", "/session/bravo", "/agent/agent-alpha"} {
 		t.Run(target, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil))
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("GET %s status = %d, want 404; body=%s", target, rec.Code, rec.Body.String())
 			}
@@ -588,7 +588,7 @@ func TestServeCmd_NonGETRootReturnsMethodNotAllowed(t *testing.T) {
 
 	handler := evidenceServeHandler(dir, "alpha")
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST / status = %d, want 405; body=%s", rec.Code, rec.Body.String())
 	}

@@ -10,6 +10,7 @@ package evidence
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -157,7 +158,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", opts.listen)
+	ln, err := (&net.ListenConfig{}).Listen(cmd.Context(), "tcp", opts.listen)
 	if err != nil {
 		return fmt.Errorf("--listen %q: %w", opts.listen, err)
 	}
@@ -175,7 +176,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 
 	select {
 	case err := <-errCh:
-		if err == nil || err == http.ErrServerClosed {
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
@@ -186,7 +187,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 			return shutdownErr
 		}
 		err := <-errCh
-		if err == nil || err == http.ErrServerClosed {
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			return cmd.Context().Err()
 		}
 		return err

@@ -34,8 +34,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -763,6 +765,8 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.Sandbox.Workspace = "/tmp/pipelock-sandbox"
 	oldCfg.LicenseFile = "/etc/pipelock/license.token"
 	oldCfg.ApplyDefaults()
+	expectedLocal := oldCfg.Clone()
+	rules.MergeIntoConfig(expectedLocal, cliutil.Version)
 
 	// Enforcement-only bundle: policy bundles may carry only enforcement-policy
 	// sections (default-deny allowlist), so flight_recorder/conductor/etc. are
@@ -830,11 +834,11 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	if !reflect.DeepEqual(live.Sandbox, oldCfg.Sandbox) {
 		t.Fatalf("sandbox config = %+v, want preserved %+v", live.Sandbox, oldCfg.Sandbox)
 	}
-	if !reflect.DeepEqual(live.DLP, oldCfg.DLP) {
-		t.Fatalf("dlp config = %+v, want preserved %+v", live.DLP, oldCfg.DLP)
+	if !reflect.DeepEqual(live.DLP, expectedLocal.DLP) {
+		t.Fatalf("dlp config = %+v, want preserved %+v", live.DLP, expectedLocal.DLP)
 	}
-	if !reflect.DeepEqual(live.ResponseScanning, oldCfg.ResponseScanning) {
-		t.Fatalf("response_scanning = %+v, want preserved %+v", live.ResponseScanning, oldCfg.ResponseScanning)
+	if !reflect.DeepEqual(live.ResponseScanning, expectedLocal.ResponseScanning) {
+		t.Fatalf("response_scanning = %+v, want preserved %+v", live.ResponseScanning, expectedLocal.ResponseScanning)
 	}
 	if !reflect.DeepEqual(live.RequestBodyScanning, oldCfg.RequestBodyScanning) {
 		t.Fatalf("request_body_scanning = %+v, want preserved %+v", live.RequestBodyScanning, oldCfg.RequestBodyScanning)

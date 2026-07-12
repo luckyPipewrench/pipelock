@@ -72,7 +72,7 @@ verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 	cmd.Flags().StringVar(&opts.backend, "backend", anchorpkg.LocalBackend, "anchor backend: local or rekor")
 	cmd.Flags().StringVar(&opts.logPath, "local-log", "", "local fake-log JSONL path (required for local backend)")
 	cmd.Flags().StringVar(&opts.logID, "log-id", anchorpkg.DefaultLocalLogID, "local fake-log identifier")
-	cmd.Flags().StringVar(&opts.rekorURL, "rekor-url", anchorpkg.DefaultRekorURL, "Rekor base URL")
+	cmd.Flags().StringVar(&opts.rekorURL, "rekor-url", "", "Rekor base URL (required for the rekor backend; no public default so receipt metadata stays in your trust boundary)")
 	cmd.Flags().StringVar(&opts.rekorKey, "rekor-key", "", "Ed25519 private key file used to sign the Rekor checkpoint entry")
 	cmd.Flags().BoolVar(&opts.rekorYes, "yes-send-to-remote-log", false, "acknowledge Rekor anchoring sends checkpoint material to the configured remote log")
 	cmd.Flags().StringVar(&opts.output, "out", "", "anchor bundle output path")
@@ -257,6 +257,11 @@ func resolveBackend(opts receiptsOptions) (anchorpkg.Backend, error) {
 		}
 		return anchorpkg.LocalLog{Path: opts.logPath, LogID: opts.logID}, nil
 	case anchorpkg.RekorBackend:
+		if strings.TrimSpace(opts.rekorURL) == "" {
+			return nil, fmt.Errorf("--rekor-url is required for the rekor anchor backend; " +
+				"point it at your own transparency log (there is no public default, so receipt " +
+				"metadata is never silently sent to a public log)")
+		}
 		if strings.TrimSpace(opts.rekorKey) == "" {
 			return nil, fmt.Errorf("--rekor-key is required for the rekor anchor backend")
 		}

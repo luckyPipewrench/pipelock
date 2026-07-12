@@ -584,6 +584,15 @@ func TestRekorLogSubmitRejectsRequestFailures(t *testing.T) {
 	if _, err := (RekorLog{URL: "://bad-url", Signer: priv}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "parse rekor URL") {
 		t.Fatalf("Submit bad URL err = %v, want parse error", err)
 	}
+	// Empty URL must fail closed rather than defaulting to the public
+	// rekor.sigstore.dev: submission is an egress of checkpoint hash metadata
+	// and must stay inside the operator's declared trust boundary.
+	if _, err := (RekorLog{URL: "", Signer: priv}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "rekor anchor URL is required") {
+		t.Fatalf("Submit empty URL err = %v, want required-URL error", err)
+	}
+	if _, err := (RekorLog{URL: "   ", Signer: priv}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "rekor anchor URL is required") {
+		t.Fatalf("Submit blank URL err = %v, want required-URL error", err)
+	}
 	listener, err := new(net.ListenConfig).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)

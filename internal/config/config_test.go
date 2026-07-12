@@ -3900,6 +3900,34 @@ func TestValidateReload_DLPPatternRenamed_WarnsAsRemoval(t *testing.T) {
 	}
 }
 
+func TestValidateReload_ResponsePatternRemovedOrRegexSwapped_Warns(t *testing.T) {
+	old := &Config{ResponseScanning: ResponseScanning{Patterns: []ResponseScanPattern{
+		{Name: "Custom Injection", Regex: `(?i)ignore all safety rules`},
+		{Name: "Stable Injection", Regex: `(?i)stable-injection`},
+	}}}
+	updated := &Config{ResponseScanning: ResponseScanning{Patterns: []ResponseScanPattern{
+		{Name: "Custom Injection", Regex: `(?i)ignore`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field != "response_scanning.patterns" {
+			continue
+		}
+		found = true
+		if !strings.Contains(w.Message, "Custom Injection (regex changed)") {
+			t.Errorf("warning should name swapped response pattern, got: %s", w.Message)
+		}
+		if !strings.Contains(w.Message, "Stable Injection") {
+			t.Errorf("warning should name removed response pattern, got: %s", w.Message)
+		}
+	}
+	if !found {
+		t.Fatal("expected warning when response patterns are removed or regex-swapped on reload")
+	}
+}
+
 // TestValidateReload_DLPIncludeDefaultsFlipLosesPatterns_BothSignalsFire
 // pins the defense-in-depth contract flagged on PR #433: when
 // include_defaults flips true -> false and the post-merge pattern

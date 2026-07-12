@@ -737,13 +737,27 @@ func TestCheckMinPipelock(t *testing.T) {
 		{"current below min", "1.4.0", "1.3.0", true},
 		{"major below", "2.0.0", "1.3.0", true},
 		{"major above", "1.0.0", "2.0.0", false},
-		{"pre-release stripped from current", "1.3.0", "1.3.0-rc1", false},
-		{"pre-release stripped from min", "1.3.0-beta", "1.3.0", false},
+		{"pre-release current below final min", "1.3.0", "1.3.0-alpha1", true},
+		{"final current exceeds pre-release min", "1.3.0-beta", "1.3.0", false},
 		{"build metadata stripped from current", "1.3.0", "1.3.0+incompatible", false},
 		{"build metadata stripped from min", "1.3.0+metadata", "1.3.0", false},
 		{"pseudo-version below normal release", "1.0.0", "0.0.0-20260709120000-abcdefabcdef", true},
 		{"patch comparison", "1.3.1", "1.3.0", true},
 		{"patch meets", "1.3.0", "1.3.1", false},
+		{"prerelease below final min", "1.3.0", "1.3.0-beta.1", true},
+		{"prerelease meets same prerelease min", "1.3.0-beta.1", "1.3.0-beta.1", false},
+		{"prerelease numeric ordering below", "1.3.0-beta.10", "1.3.0-beta.2", true},
+		{"prerelease numeric ordering above", "1.3.0-beta.2", "1.3.0-beta.10", false},
+		// A non-semver CURRENT version is a development build (git describe,
+		// go install from source, unset) with no orderable release number, so
+		// it is treated as newest and the bundle loads. A real release always
+		// carries clean semver, so this never weakens the gate for a tagged
+		// release (see the "current below min" cases above, which still error).
+		{"git-describe current treated as newest", "3.0.0", "2-147-gf1c242a0", false},
+		{"tag-distance git-describe current treated as newest", "3.0.0", "2.0.0-147-gf1c242a0", false},
+		{"default source-build current treated as newest", "3.0.0", "0.1.0-dev", false},
+		{"go-install devel current treated as newest", "3.0.0", "devel", false},
+		{"empty current treated as newest", "3.0.0", "", false},
 	}
 
 	for _, tc := range tests {
@@ -766,9 +780,16 @@ func TestCheckMinPipelock_InvalidVersions(t *testing.T) {
 		minVersion string
 		curVersion string
 	}{
+		// A malformed min_pipelock (bundle-authored) errors. A malformed CURRENT
+		// version that is NOT a recognized development build (git-describe, -dev,
+		// devel, unset) now also fails closed: a mis-stamped binary must not be
+		// treated as newest and silently load bundles requiring a newer Pipelock.
+		// Recognized dev builds still pass — see TestCheckMinPipelock.
 		{"invalid min", "abc", "1.3.0"},
-		{"invalid current", "1.3.0", "abc"},
-		{"both invalid", "abc", "def"},
+		{"both invalid falls to min", "abc", "def"},
+		{"malformed current fails closed", "1.3.0", "abc"},
+		{"unrecognized current fails closed", "1.3.0", "not-a-version"},
+		{"pseudo-version zero base below min", "3.0.0", "v0.0.0-20260101000000-abcdef123456"},
 	}
 
 	for _, tc := range tests {

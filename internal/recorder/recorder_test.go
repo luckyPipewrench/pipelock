@@ -2195,3 +2195,93 @@ type panicEntryObserver struct{}
 func (panicEntryObserver) ObserveRecorderEntry(recorder.Entry) {
 	panic("observer panic")
 }
+
+// TestNew_SignCheckpointsWithoutKeyFailsClosed pins the sign-without-a-key
+// footgun: SignCheckpoints defaults on, so a persisted recorder with no signing
+// key would silently write empty-signature checkpoints that later verification
+// rejects as "missing signature". New must refuse to build such a recorder,
+// while still allowing the two honest configurations (a real key, or an
+// explicitly unsigned recorder) and the non-persisting default (Dir == "").
+func TestNew_SignCheckpointsWithoutKeyFailsClosed(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	t.Run("dir set, sign on, no key -> error", func(t *testing.T) {
+		_, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, nil)
+		if err == nil {
+			t.Fatal("expected error for sign_checkpoints without a signing key")
+		}
+		if !strings.Contains(err.Error(), "sign_checkpoints") {
+			t.Fatalf("error = %q, want it to mention sign_checkpoints", err)
+		}
+	})
+
+	t.Run("dir set, sign on, wrong-length key -> error", func(t *testing.T) {
+		// A non-nil but truncated key must be rejected too: it would pass a bare
+		// nil check and then panic (or sign unverifiably) at checkpoint time.
+		_, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, ed25519.PrivateKey{1, 2, 3})
+		if err == nil {
+			t.Fatal("expected error for a wrong-length signing key")
+		}
+		if !strings.Contains(err.Error(), "sign_checkpoints") {
+			t.Fatalf("error = %q, want it to mention sign_checkpoints", err)
+		}
+	})
+
+	t.Run("dir set, sign on, key provided -> ok", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, priv)
+		if err != nil {
+			t.Fatalf("New with key: %v", err)
+		}
+		_ = rec.Close()
+	})
+
+	t.Run("dir set, sign explicitly off, no key -> ok (unsigned recorder)", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: false}, nil, nil)
+		if err != nil {
+			t.Fatalf("New unsigned: %v", err)
+		}
+		_ = rec.Close()
+	})
+
+	t.Run("no dir, sign on, no key -> ok (non-persisting)", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: "", SignCheckpoints: true}, nil, nil)
+		if err != nil {
+			t.Fatalf("New non-persisting: %v", err)
+		}
+		_ = rec.Close()
+	})
+
+	t.Run("no dir, sign on, no key -> no cwd persistence", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: " \t", SignCheckpoints: true}, nil, nil)
+		if err != nil {
+			t.Fatalf("New non-persisting: %v", err)
+		}
+		if err := rec.Record(recorder.Entry{
+			SessionID: "empty-dir",
+			Type:      "decision",
+			Summary:   "should be discarded",
+		}); err != nil {
+			t.Fatalf("Record non-persisting: %v", err)
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("Close non-persisting: %v", err)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) != 0 {
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			t.Fatalf("non-persisting recorder wrote files in cwd: %v", names)
+		}
+	})
+}

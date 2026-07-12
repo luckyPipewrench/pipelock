@@ -6,6 +6,9 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -39,6 +43,90 @@ func writeServerTestConfig(t *testing.T, content string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+func installServerTestStandardBundle(t *testing.T, xdgDataHome string, includeResponse bool) {
+	t.Helper()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate bundle signing key: %v", err)
+	}
+	oldKeyring := rules.KeyringHex
+	rules.KeyringHex = strings.Join(nonEmptyStrings(oldKeyring, hex.EncodeToString(pub)), ",")
+	t.Cleanup(func() {
+		rules.KeyringHex = oldKeyring
+	})
+
+	bundleDir := filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir rules bundle dir: %v", err)
+	}
+	bundleYAML := `format_version: 1
+name: pipelock-standard
+version: "2026.07.0"
+author: Test Author
+description: Test standard bundle
+license: Apache-2.0
+rules:
+  - id: dlp-anthropic-api-key
+    type: dlp
+    status: stable
+    name: Anthropic API Key
+    description: Replaces the compiled standard Anthropic key pattern
+    severity: critical
+    confidence: high
+    pattern:
+      regex: 'test-anthropic-[A-Za-z0-9]{8,}'
+`
+	if includeResponse {
+		bundleYAML += `  - id: response-new-instructions
+    type: injection
+    status: stable
+    name: New Instructions
+    description: Replaces the compiled standard response instruction pattern
+    severity: high
+    confidence: high
+    pattern:
+      regex: '(?i)test-new-instructions'
+`
+	}
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, []byte(bundleYAML), 0o600); err != nil {
+		t.Fatalf("write bundle.yaml: %v", err)
+	}
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("sign bundle.yaml: %v", err)
+	}
+	sigPath := bundlePath + signing.SigExtension
+	if err := signing.SaveSignature(sig, sigPath); err != nil {
+		t.Fatalf("save bundle signature: %v", err)
+	}
+	// Keep the generated signature owner-only (project file-perm convention);
+	// SaveSignature writes 0o644 and this is a test fixture in a temp dir.
+	if err := os.Chmod(sigPath, 0o600); err != nil {
+		t.Fatalf("chmod bundle signature: %v", err)
+	}
+	sum := sha256.Sum256([]byte(bundleYAML))
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
+		InstalledVersion:  "2026.07.0",
+		Source:            "test",
+		BundleSHA256:      hex.EncodeToString(sum[:]),
+		SignerFingerprint: rules.KeyFingerprint(pub),
+	}); err != nil {
+		t.Fatalf("write bundle.lock: %v", err)
+	}
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func TestNeedsHITLApprover(t *testing.T) {
@@ -1030,6 +1118,182 @@ func TestServer_Reload_StrictRejectsActionDowngrade(t *testing.T) {
 	if !buf.contains("response_scanning.action") {
 		t.Fatalf("stderr missing action downgrade warning:\n%s", buf.String())
 	}
+}
+
+func TestServer_Reload_StrictAllowsRuleBundleResolvedReloadAndRejectsRealDowngrade(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldLive := s.proxy.CurrentConfig()
+	// Prove the SIGNED standard bundle was actually selected, not that compiled
+	// defaults (also nonzero) masked a discovery/signature/keyring failure: the
+	// fixture's replacement patterns must be present with the bundle name and
+	// the fixture regexes.
+	requireBundlePatternSelected(t, oldLive.DLP.Patterns, oldLive.ResponseScanning.Patterns)
+	oldDLPCount := len(oldLive.DLP.Patterns)
+	oldResponseCount := len(oldLive.ResponseScanning.Patterns)
+
+	rotated := oldLive.Clone()
+	rotated.KillSwitch.APIToken = "rotated-token"
+	if err := s.Reload(rotated); err != nil {
+		t.Fatalf("strict reload with installed standard bundle should not error, got: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if len(live.DLP.Patterns) != oldDLPCount {
+		t.Fatalf("DLP patterns changed after idempotent reload: got %d, want %d", len(live.DLP.Patterns), oldDLPCount)
+	}
+	if len(live.ResponseScanning.Patterns) != oldResponseCount {
+		t.Fatalf("response patterns changed after idempotent reload: got %d, want %d", len(live.ResponseScanning.Patterns), oldResponseCount)
+	}
+	if live.KillSwitch.APIToken != "rotated-token" {
+		t.Fatalf("api_token = %q, want rotated-token", live.KillSwitch.APIToken)
+	}
+
+	s.lastReloadAt = time.Time{}
+	downgraded := live.Clone()
+	downgraded.Mode = config.ModeBalanced
+	if err := s.Reload(downgraded); err == nil || !strings.Contains(err.Error(), "security downgrade") {
+		t.Fatalf("strict mode downgrade error = %v, want security downgrade rejection", err)
+	}
+	if got := s.proxy.CurrentConfig().Mode; got != config.ModeStrict {
+		t.Fatalf("live mode after rejected downgrade = %q, want %q", got, config.ModeStrict)
+	}
+}
+
+func TestServer_Reload_StrictWithRuleBundleRejectsResponsePatternRemoval(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.vendor.example",
+		"response_scanning:",
+		"  patterns:",
+		"    - name: Local Guard",
+		"      regex: '(?i)local-response-downgrade-sentinel'",
+		"",
+	}, "\n"))
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+	})
+	oldScanner := s.proxy.ScannerPtr().Load()
+	live := s.proxy.CurrentConfig()
+	if !hasResponsePatternNamed(live.ResponseScanning.Patterns, "Local Guard") {
+		t.Fatal("test setup missing local response pattern")
+	}
+
+	downgraded := live.Clone()
+	downgraded.ResponseScanning.Patterns = removeResponsePatternByName(downgraded.ResponseScanning.Patterns, "Local Guard")
+	buf.reset()
+	err := s.Reload(downgraded)
+	if err == nil || !strings.Contains(err.Error(), "security downgrade") {
+		t.Fatalf("strict response pattern removal error = %v, want security downgrade rejection", err)
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected response pattern removal")
+	}
+	if !hasResponsePatternNamed(s.proxy.CurrentConfig().ResponseScanning.Patterns, "Local Guard") {
+		t.Fatal("rejected reload removed local response pattern from live config")
+	}
+	if !buf.contains("response_scanning.patterns") {
+		t.Fatalf("stderr missing response pattern downgrade warning:\n%s", buf.String())
+	}
+}
+
+// TestServer_StartupPartialStandardBundleKeepsResponseFallback proves the
+// per-surface fix (AF-81 / CodeRabbit): a standard bundle that provides ONLY
+// DLP patterns must NOT empty the response-scanning surface. Before the fix a
+// single "standard bundle loaded" flag stripped the compiled response fallback
+// and left response scanning empty (a fail-open detection loss).
+func TestServer_StartupPartialStandardBundleKeepsResponseFallback(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, false) // DLP-only standard bundle
+
+	s, _ := newTestServer(t, nil)
+	live := s.proxy.CurrentConfig()
+
+	// DLP came from the bundle...
+	if p, ok := dlpByName(live.DLP.Patterns, "Anthropic API Key"); !ok || p.Bundle != rules.StandardBundleName {
+		t.Fatalf("DLP Anthropic API Key not from the standard bundle: %+v ok=%v", p, ok)
+	}
+	// ...but the response surface, which the bundle did NOT provide, keeps its
+	// compiled fallback instead of being emptied.
+	if len(live.ResponseScanning.Patterns) == 0 {
+		t.Fatal("DLP-only standard bundle emptied the response patterns — fail-open detection loss")
+	}
+	if !hasResponsePatternNamed(live.ResponseScanning.Patterns, "New Instructions") {
+		t.Fatal("compiled response fallback (New Instructions) missing after a DLP-only standard bundle")
+	}
+	for _, p := range live.ResponseScanning.Patterns {
+		if p.Bundle == rules.StandardBundleName {
+			t.Fatalf("response pattern %q claims the standard bundle, but the bundle provided no response rules", p.Name)
+		}
+	}
+}
+
+func dlpByName(patterns []config.DLPPattern, name string) (config.DLPPattern, bool) {
+	for _, p := range patterns {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return config.DLPPattern{}, false
+}
+
+// requireBundlePatternSelected proves the signed test standard bundle (installed
+// by installServerTestStandardBundle) was actually selected: the fixture's DLP
+// "Anthropic API Key" and response "New Instructions" replacements must be
+// present, sourced from the standard bundle, with the fixture regexes.
+func requireBundlePatternSelected(t *testing.T, dlp []config.DLPPattern, resp []config.ResponseScanPattern) {
+	t.Helper()
+	var dlpOK bool
+	for _, p := range dlp {
+		if p.Name == "Anthropic API Key" {
+			if p.Bundle != rules.StandardBundleName || p.Regex != "test-anthropic-[A-Za-z0-9]{8,}" {
+				t.Fatalf("DLP %q not from the standard bundle: bundle=%q regex=%q", p.Name, p.Bundle, p.Regex)
+			}
+			dlpOK = true
+		}
+	}
+	var respOK bool
+	for _, p := range resp {
+		if p.Name == "New Instructions" {
+			if p.Bundle != rules.StandardBundleName || p.Regex != "(?i)test-new-instructions" {
+				t.Fatalf("response %q not from the standard bundle: bundle=%q regex=%q", p.Name, p.Bundle, p.Regex)
+			}
+			respOK = true
+		}
+	}
+	if !dlpOK || !respOK {
+		t.Fatalf("standard bundle not selected: dlpSelected=%v responseSelected=%v", dlpOK, respOK)
+	}
+}
+
+func hasResponsePatternNamed(patterns []config.ResponseScanPattern, name string) bool {
+	for _, p := range patterns {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func removeResponsePatternByName(patterns []config.ResponseScanPattern, name string) []config.ResponseScanPattern {
+	out := make([]config.ResponseScanPattern, 0, len(patterns))
+	for _, p := range patterns {
+		if p.Name != name {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func TestServer_Reload_BalancedAllowsActionTuningWithWarning(t *testing.T) {

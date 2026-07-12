@@ -45,6 +45,12 @@ func TestNewServer_RequireReceiptsWithoutEmitterFailsClosed(t *testing.T) {
 				"flight_recorder:",
 				"  enabled: true",
 				"  require_receipts: true",
+				// sign_checkpoints: false isolates this case to the
+				// require_receipts guard: without it, the recorder's own
+				// sign-without-a-key fail-closed fires first (its own test).
+				// require_receipts still fails here because no signing key means
+				// no live signed receipt emitter.
+				"  sign_checkpoints: false",
 				"  dir: " + strconv.Quote(t.TempDir()),
 			},
 		},

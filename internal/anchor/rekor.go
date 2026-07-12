@@ -45,6 +45,11 @@ const (
 	// deployment whose schema requires SHA-512 sets HashAlgorithm explicitly;
 	// hardcoding either algorithm would break the other class of Rekor server.
 	rekorDefaultSubmitHashAlgorithm = rekorSHA256Algorithm
+
+	// DefaultRekorHashAlgorithm is the hashedrekord data.hash.algorithm used
+	// when RekorLog.HashAlgorithm is unset. It is exported so CLI defaults stay
+	// tied to the anchor package behavior.
+	DefaultRekorHashAlgorithm = rekorDefaultSubmitHashAlgorithm
 )
 
 // RekorLog submits receipt-chain checkpoints to Rekor and stores the returned

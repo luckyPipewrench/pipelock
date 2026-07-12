@@ -120,3 +120,26 @@ func TestReadEvidenceFileBounded_MissingFile(t *testing.T) {
 		t.Fatal("computeEvidenceFileHashBounded on missing file = nil error, want error")
 	}
 }
+
+func TestReadEvidenceFileBounded_UnreadableFileRejected(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read chmod 000 files")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence.jsonl")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatalf("chmod unreadable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	if _, err := ReadEvidenceFileBounded(path, MaxEvidenceReadFileBytes); err == nil {
+		t.Fatal("ReadEvidenceFileBounded on unreadable file = nil error, want error")
+	}
+	if _, err := computeEvidenceFileHashBounded(path, MaxEvidenceReadFileBytes); err == nil {
+		t.Fatal("computeEvidenceFileHashBounded on unreadable file = nil error, want error")
+	}
+}

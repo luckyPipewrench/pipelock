@@ -5,6 +5,7 @@ package recorder
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -405,18 +406,23 @@ func (shortWriteSink) Write(p []byte) (int, error) {
 	return len(p) - 1, nil
 }
 
-func TestWriteEntry_ReturnsShortWrite(t *testing.T) {
+func TestWriteEntryData_ReturnsShortWrite(t *testing.T) {
 	rec := &Recorder{writer: bufio.NewWriterSize(shortWriteSink{}, 1)}
-	err := rec.writeEntry(Entry{
+	entry := Entry{
 		Version:   EntryVersion,
 		Sequence:  0,
 		SessionID: "durable-session",
 		Type:      "request",
 		Summary:   "short write",
 		PrevHash:  GenesisHash,
-	}, false)
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	err = rec.writeEntryData(data, entry, false)
 	if !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("writeEntry error = %v, want io.ErrShortWrite", err)
+		t.Fatalf("writeEntryData error = %v, want io.ErrShortWrite", err)
 	}
 }
 

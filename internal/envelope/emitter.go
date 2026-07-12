@@ -346,9 +346,6 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 	//     upstreams later. GPT-5.4 review on PR #403 flagged the
 	//     silent case as a correctness gap.
 	if maxBytes > 0 && len(data) > maxBytes {
-		if failClosedOnOverflow {
-			return nil, fmt.Errorf("%w: request body exceeds %d bytes", ErrRequestBodyReadLimitExceeded, maxBytes)
-		}
 		req.Body = &readPreservingCloser{
 			Reader: io.MultiReader(bytes.NewReader(data), origBody),
 			Closer: origBody,
@@ -358,6 +355,9 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 			req.GetBody = origGetBody
 		} else {
 			req.GetBody = overCapGetBody
+		}
+		if failClosedOnOverflow {
+			return nil, fmt.Errorf("%w: request body exceeds %d bytes", ErrRequestBodyReadLimitExceeded, maxBytes)
 		}
 		return nil, nil
 	}

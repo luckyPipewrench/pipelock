@@ -499,11 +499,7 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 
 	e.Hash = ComputeHash(e)
 
-	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
-		return Entry{}, fmt.Errorf("opening evidence file: %w", err)
-	}
-
-	if err := r.writeEntry(e, notify); err != nil {
+	if err := r.writeEntryBounded(e, notify); err != nil {
 		return Entry{}, fmt.Errorf("writing entry: %w", err)
 	}
 	return e, nil
@@ -677,7 +673,7 @@ func (r *Recorder) checkpointLocked() error {
 	e.Hash = ComputeHash(e)
 
 	if r.file != nil {
-		if err := r.writeEntry(e, true); err != nil {
+		if err := r.writeEntryBounded(e, true); err != nil {
 			return err
 		}
 		r.fileEntryCount++
@@ -891,20 +887,33 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 
 func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 	dir := filepath.Clean(r.cfg.Dir)
-	dirEntries, err := readDirectoryEntries(dir, MaxEvidenceReadDirectoryEntries)
+	directory, err := os.Open(dir)
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
+	defer func() { _ = directory.Close() }()
 
 	prefix := "evidence-" + filepath.Base(sessionID) + "-"
 	files := make([]string, 0)
-	for _, de := range dirEntries {
-		if de.IsDir() {
-			continue
+	for {
+		dirEntries, readErr := directory.ReadDir(128)
+		for _, de := range dirEntries {
+			if de.IsDir() {
+				continue
+			}
+			name := de.Name()
+			if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
+				files = append(files, filepath.Join(dir, name))
+				if len(files) > MaxEvidenceReadDirectoryEntries {
+					return nil, fmt.Errorf("%w: evidence session %s exceeds %d matching files", ErrEvidenceReadLimitExceeded, sessionID, MaxEvidenceReadDirectoryEntries)
+				}
+			}
 		}
-		name := de.Name()
-		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
-			files = append(files, filepath.Join(dir, name))
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("reading evidence directory: %w", readErr)
 		}
 	}
 
@@ -998,12 +1007,22 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	return nil
 }
 
-// writeEntry serializes and writes a single entry as a JSONL line.
-func (r *Recorder) writeEntry(e Entry, notify bool) error {
+// writeEntryBounded serializes and writes a single entry as a JSONL line,
+// rotating or rejecting before Pipelock can create a shard its bounded readers
+// refuse to resume, hash, or verify.
+func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 	data, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("marshaling entry: %w", err)
 	}
+	lineBytes := int64(len(data) + 1)
+	if err := r.ensureEntryCapacityLocked(e.SessionID, e.Sequence, lineBytes); err != nil {
+		return err
+	}
+	return r.writeEntryData(data, e, notify)
+}
+
+func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
 	if n, err := r.writer.Write(data); err != nil {
 		return err
 	} else if n != len(data) {
@@ -1019,6 +1038,38 @@ func (r *Recorder) writeEntry(e Entry, notify bool) error {
 	}
 	if notify {
 		r.notifyObserver(e)
+	}
+	return nil
+}
+
+func (r *Recorder) ensureEntryCapacityLocked(sessionID string, seq uint64, lineBytes int64) error {
+	if lineBytes > MaxEvidenceReadFileBytes {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d bytes", ErrEvidenceReadLimitExceeded, MaxEvidenceReadFileBytes)
+	}
+	if r.file == nil {
+		if err := r.ensureFile(sessionID, seq); err != nil {
+			return fmt.Errorf("opening evidence file: %w", err)
+		}
+	}
+	info, err := r.file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size()+lineBytes <= MaxEvidenceReadFileBytes {
+		return nil
+	}
+	if err := r.rotateFile(); err != nil {
+		return err
+	}
+	if err := r.ensureFile(sessionID, seq); err != nil {
+		return fmt.Errorf("opening evidence file: %w", err)
+	}
+	info, err = r.file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size()+lineBytes > MaxEvidenceReadFileBytes {
+		return fmt.Errorf("%w: evidence file %s would exceed %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(r.file.Name()), MaxEvidenceReadFileBytes)
 	}
 	return nil
 }

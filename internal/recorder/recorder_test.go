@@ -913,7 +913,7 @@ func TestRecorder_NilDetail(t *testing.T) {
 	}
 }
 
-func TestRecorder_ResumeRejectsOverCapDirectoryEntries(t *testing.T) {
+func TestRecorder_ResumeIgnoresUnrelatedDirectoryNoise(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i <= recorder.MaxEvidenceReadDirectoryEntries; i++ {
 		path := filepath.Join(dir, fmt.Sprintf("noise-%03d.txt", i))
@@ -939,8 +939,39 @@ func TestRecorder_ResumeRejectsOverCapDirectoryEntries(t *testing.T) {
 		Summary:   "must fail closed before unbounded directory scan",
 		Detail:    map[string]string{"safe": "value"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "directory entry count exceeds") {
-		t.Fatalf("Record error = %v, want directory entry cap", err)
+	if err != nil {
+		t.Fatalf("Record with unrelated directory noise: %v", err)
+	}
+}
+
+func TestRecorder_ResumeRejectsOverCapMatchingSessionFiles(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i <= recorder.MaxEvidenceReadDirectoryEntries; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("evidence-matching-cap-%03d.jsonl", i))
+		if err := os.WriteFile(path, []byte(""), filePermissions); err != nil {
+			t.Fatalf("WriteFile(%q): %v", path, err)
+		}
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	err = rec.Record(recorder.Entry{
+		SessionID: "matching-cap",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "must cap matching evidence shards only",
+		Detail:    map[string]string{"safe": "value"},
+	})
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("Record error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
 }
 
@@ -1041,6 +1072,88 @@ func TestComputeFileHash_RejectsOverCapFile(t *testing.T) {
 	_, err := recorder.ComputeFileHash(path)
 	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("ComputeFileHash error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
+func TestRecorder_RecordRejectsSingleEntryOverReadCap(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	err = rec.Record(recorder.Entry{
+		SessionID: "oversized-entry",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   strings.Repeat("x", int(recorder.MaxEvidenceReadFileBytes)+1),
+		Detail:    map[string]string{"safe": "value"},
+	})
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("Record oversized entry error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+
+	if err := rec.Record(recorder.Entry{
+		SessionID: "oversized-entry",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "small entry after rejected oversized entry",
+		Detail:    map[string]string{"safe": "value"},
+	}); err != nil {
+		t.Fatalf("Record after rejected oversized entry: %v", err)
+	}
+}
+
+func TestRecorder_RecordRotatesBeforeEvidenceReadCap(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+		MaxEntriesPerFile:  100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i := range 2 {
+		if err := rec.Record(recorder.Entry{
+			SessionID: "byte-rotation",
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   strings.Repeat("x", 5<<20),
+			Detail:    map[string]string{"idx": fmt.Sprintf("%d", i)},
+		}); err != nil {
+			t.Fatalf("Record(%d): %v", i, err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	files, err := filepath.Glob(filepath.Join(dir, "evidence-byte-rotation-*.jsonl"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("evidence file count = %d, want 2", len(files))
+	}
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("Stat(%q): %v", path, err)
+		}
+		if info.Size() > recorder.MaxEvidenceReadFileBytes {
+			t.Fatalf("%s size = %d, want <= %d", filepath.Base(path), info.Size(), recorder.MaxEvidenceReadFileBytes)
+		}
+		if _, err := recorder.ComputeFileHash(path); err != nil {
+			t.Fatalf("ComputeFileHash(%q): %v", path, err)
+		}
 	}
 }
 

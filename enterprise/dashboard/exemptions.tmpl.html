@@ -25,25 +25,6 @@
       color: var(--text);
       font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    .topbar {
-      height: 56px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 24px;
-      border-bottom: 1px solid var(--border-strong);
-      background: #08080a;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-    .brand { font-weight: 650; }
-    .brand span { color: var(--text-muted); font-weight: 500; }
-    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
-    .nav a { color: var(--text-muted); text-decoration: none; }
-    .nav a:hover, .nav a.active { color: var(--text); }
-    .nav a.active { font-weight: 700; }
-    .nav-badge { color: var(--text-dim); }
     main {
       min-width: 0;
       padding: 24px;
@@ -172,7 +153,6 @@
       main { padding: 16px; }
       .heading, .summary { grid-template-columns: 1fr; }
       .summary { display: grid; }
-      .topbar { align-items: flex-start; height: auto; min-height: 56px; padding: 14px 16px; gap: 10px; flex-direction: column; }
     }
   </style>
 </head>

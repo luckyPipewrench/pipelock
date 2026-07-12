@@ -565,6 +565,45 @@ func TestHandler_SharedNavReachabilityFromRenderedViews(t *testing.T) {
 	}
 }
 
+func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
+	t.Parallel()
+
+	dir, trusted := writeTrustedHandlerSession(t)
+	handler := New(Options{
+		TrustedOuterAuth:    true,
+		ReceiptDir:          dir,
+		TrustedKeys:         trusted,
+		HasFeature:          allowAllDashboardFeatures,
+		AuthorizeFleetScope: allowFleetScope,
+	})
+
+	overview := renderDashboardPath(t, handler, "/overview")
+	wantStyle := extractDashboardHeaderStyle(t, overview)
+	for _, path := range []string{
+		"/",
+		"/session/" + testSessionID,
+		"/session/" + testSessionID + "/receipt/0",
+		"/exemptions",
+		"/agents",
+		"/agent/" + testActor,
+		"/budgets",
+		"/trust-keys",
+		CompliancePath,
+		"/fleet",
+		"/workbench",
+		"/incident",
+	} {
+		if got := extractDashboardHeaderStyle(t, renderDashboardPath(t, handler, path)); got != wantStyle {
+			t.Fatalf("shared dashboard header CSS differs between %s and /overview\n--- %s ---\n%s\n--- overview ---\n%s", path, path, got, wantStyle)
+		}
+	}
+	if !strings.Contains(overview, `<div class="brand"><a href="/overview">Pipelock</a>`) {
+		t.Fatalf("overview brand wordmark does not link to /overview: %s", overview)
+	}
+	assertActiveNavLink(t, overview, "overview")
+	assertActiveNavLink(t, renderDashboardPath(t, handler, "/"), "evidence")
+}
+
 func TestHandler_SharedNavMatchesRouteGateAuthorization(t *testing.T) {
 	t.Parallel()
 
@@ -837,7 +876,8 @@ func deniedNavRouteSpecs(t *testing.T, allowed []navRouteSpec) []navRouteSpec {
 
 func assertSharedNavLinksExactly(t *testing.T, body string, specs []navRouteSpec) {
 	t.Helper()
-	if !strings.Contains(body, `aria-label="Dashboard navigation"`) {
+	nav := extractDashboardNav(t, body)
+	if !strings.Contains(nav, `aria-label="Dashboard navigation"`) {
 		t.Fatalf("response missing shared dashboard nav: %s", body)
 	}
 	wantByPattern := make(map[string]struct{}, len(specs))
@@ -845,7 +885,7 @@ func assertSharedNavLinksExactly(t *testing.T, body string, specs []navRouteSpec
 		wantByPattern[spec.pattern] = struct{}{}
 	}
 	for _, spec := range dashboardNavRouteSpecs {
-		has := strings.Contains(body, fmt.Sprintf(`href="%s"`, spec.pattern))
+		has := strings.Contains(nav, fmt.Sprintf(`href="%s"`, spec.pattern))
 		_, want := wantByPattern[spec.pattern]
 		switch {
 		case want && !has:
@@ -854,6 +894,48 @@ func assertSharedNavLinksExactly(t *testing.T, body string, specs []navRouteSpec
 			t.Fatalf("shared nav rendered unauthorized %s link %q: %s", spec.label, spec.pattern, body)
 		}
 	}
+}
+
+func renderDashboardPath(t *testing.T, handler http.Handler, path string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s status = %d, want 200; body=%s", path, rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+func extractDashboardHeaderStyle(t *testing.T, body string) string {
+	t.Helper()
+	topbar := strings.Index(body, ".topbar{")
+	if topbar < 0 {
+		t.Fatalf("response missing shared dashboard header style block: %s", body)
+	}
+	start := strings.LastIndex(body[:topbar], "<style>")
+	if start < 0 {
+		t.Fatalf("shared dashboard header style block missing open tag: %s", body)
+	}
+	rest := body[start:]
+	end := strings.Index(rest, "</style>")
+	if end < 0 {
+		t.Fatalf("shared dashboard header style block missing close tag: %s", body)
+	}
+	return rest[:end+len("</style>")]
+}
+
+func extractDashboardNav(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, `<nav class="nav" aria-label="Dashboard navigation">`)
+	if start < 0 {
+		t.Fatalf("response missing shared dashboard nav: %s", body)
+	}
+	rest := body[start:]
+	end := strings.Index(rest, "</nav>")
+	if end < 0 {
+		t.Fatalf("shared dashboard nav missing close tag: %s", body)
+	}
+	return rest[:end+len("</nav>")]
 }
 
 func assertActiveNavLink(t *testing.T, body, activeKey string) {

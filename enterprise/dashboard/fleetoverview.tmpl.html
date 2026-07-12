@@ -152,10 +152,10 @@
       {{if not .SourceConfigured}}
         <section class="absence">
           <h2>No conductor fleet source configured</h2>
-          <p class="muted">Fleet data requires the dashboard to be wired to a conductor read source. Other dashboard views do not depend on that source.</p>
+          <p class="muted">Fleet Overview proves mediated fleet state only from accepted follower reports returned by Conductor. No conductor fleet source is connected for this dashboard. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span>, <span class="mono">--conductor-org</span>, and <span class="mono">--conductor-fleet</span>; other dashboard views do not depend on that source.</p>
         </section>
       {{else if not .Followers}}
-        <section class="empty">No enrolled followers matched this fleet scope.</section>
+        <section class="empty">Fleet Overview proves mediated fleet state only from accepted follower reports returned by Conductor. The conductor source is connected, but no enrolled followers matched this <span class="mono">org_id</span>/<span class="mono">fleet_id</span> scope. Use the configured <span class="mono">--conductor-org</span> and <span class="mono">--conductor-fleet</span>, or query a scope that contains enrolled followers.</section>
       {{else}}
         {{if .Truncated}}
           <div class="callout muted">Showing the first {{len .Followers}} followers returned by this scoped query. Narrow the fleet scope in the conductor source to inspect additional rows.</div>

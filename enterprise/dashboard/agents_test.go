@@ -160,6 +160,32 @@ func TestHandler_AgentsRendersGroups(t *testing.T) {
 	}
 }
 
+func TestHandler_AgentsEmptyStateExplainsReceiptSource(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAgentsFeature,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(
+		context.Background(), http.MethodGet, "/agents", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"The roster proves which agents have loaded receipt sessions",
+		"No agents or receipts are loaded",
+		"--receipt-dir",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("agents empty body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestHandler_AgentsHostileEvidenceEscapedAndNoAggregateGreen(t *testing.T) {
 	t.Parallel()
 

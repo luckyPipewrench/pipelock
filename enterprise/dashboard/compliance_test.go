@@ -255,6 +255,73 @@ func TestComplianceRequiresFleetFeatureAndNavIsHiddenForAgentsOnly(t *testing.T)
 	}
 }
 
+func TestComplianceEmptyStatesExplainSources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no fleet or legal hold source", func(t *testing.T) {
+		t.Parallel()
+		handler := New(Options{
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			HasFeature:       allowFleetFeature,
+		})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, CompliancePath, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, want := range []string{
+			"Fleet coverage proves mediated-egress coverage",
+			"No fleet coverage source is connected",
+			"--conductor-url",
+			"--conductor-org",
+			"--conductor-fleet",
+			"Legal holds prove only operator-authored retention metadata",
+			"No legal-hold metadata store is connected",
+			"--legal-hold-store",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("compliance empty body missing %q: %s", want, body)
+			}
+		}
+	})
+
+	t.Run("connected empty sources", func(t *testing.T) {
+		t.Parallel()
+		store, err := OpenLegalHoldStore(filepath.Join(t.TempDir(), "holds.json"))
+		if err != nil {
+			t.Fatalf("OpenLegalHoldStore: %v", err)
+		}
+		handler := New(Options{
+			TrustedOuterAuth:    true,
+			ReceiptDir:          t.TempDir(),
+			HasFeature:          allowFleetFeature,
+			FleetSource:         &complianceFleetFake{},
+			LegalHoldStore:      store,
+			AuthorizeFleetScope: allowFleetScope,
+		})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(
+			context.Background(), http.MethodGet, CompliancePath+"?org_id=org-a&fleet_id=fleet-a", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, want := range []string{
+			"The source is connected, but it returned no per-agent coverage records",
+			"--conductor-org",
+			"--conductor-fleet",
+			"The legal-hold store is connected, but it contains no holds",
+			"pipelock dashboard legal-hold",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("compliance connected-empty body missing %q: %s", want, body)
+			}
+		}
+	})
+}
+
 func TestComplianceHTTPHasNoLegalHoldMutationAuthority(t *testing.T) {
 	t.Parallel()
 

@@ -140,11 +140,11 @@
       {{end}}
 
       {{if not .ScopeProvided}}
-        <section class="empty">Supply <span class="mono">?org_id=&lt;org&gt;&amp;fleet_id=&lt;fleet&gt;&amp;artifact_hash=&lt;hash&gt;</span> to correlate a conductor decision with its fleet applied state.</section>
+        <section class="empty">This tool correlates one conductor decision with fleet applied-state counts. It is awaiting input, not missing data. Supply <span class="mono">org_id</span>, <span class="mono">fleet_id</span>, and <span class="mono">artifact_hash</span> in the form above, or open <span class="mono">/incident?org_id=&lt;org&gt;&amp;fleet_id=&lt;fleet&gt;&amp;artifact_hash=&lt;hash&gt;</span>.</section>
       {{else}}
         <h2>Conductor decision</h2>
         {{if not .DecisionSourceConfigured}}
-          <section class="absence"><h2>No conductor decision source configured</h2><p class="muted">Decision replay requires the dashboard to be wired to a conductor read source.</p></section>
+          <section class="absence"><h2>No conductor decision source configured</h2><p class="muted">Decision replay proves how the conductor would resolve this artifact through the read-only replay seam. No conductor decision source is connected. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span> and its required read credentials.</p></section>
         {{else if .DecisionMissing}}
           <section class="empty">No recorded decision matched this artifact hash.</section>
         {{else if .HasDecision}}
@@ -170,7 +170,7 @@
 
         <h2>Fleet applied state</h2>
         {{if not .FleetSourceConfigured}}
-          <section class="absence"><h2>No conductor fleet source configured</h2><p class="muted">Applied-state correlation requires the dashboard to be wired to a conductor read source.</p></section>
+          <section class="absence"><h2>No conductor fleet source configured</h2><p class="muted">Applied-state correlation proves follower report counts for the requested fleet scope. No conductor fleet source is connected. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span>, <span class="mono">--conductor-org</span>, and <span class="mono">--conductor-fleet</span>.</p></section>
         {{else if .HasFleet}}
           {{with .Applied}}
           {{if .Truncated}}<div class="callout muted">Showing counts for the first 500 followers returned by this scoped query.</div>{{end}}

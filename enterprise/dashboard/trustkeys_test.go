@@ -940,6 +940,36 @@ func TestTrustKeysTemplateEscapesHostileMetadata(t *testing.T) {
 	}
 }
 
+func TestTrustKeysEmptyStatesExplainSources(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAgentsFeature,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/trust-keys", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"The trusted-key registry proves which receipt signing keys",
+		"No trusted signer keys are configured",
+		"--trusted-signer",
+		"The anchor-consistency audit proves receipt-chain consistency",
+		"No receipt sessions were found",
+		"--receipt-dir",
+		"--anchor-local-log",
+		"--rekor-log-key",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("trust-keys empty body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestTrustKeysAnchorUnconfiguredRendersAmberNotFailure(t *testing.T) {
 	t.Parallel()
 

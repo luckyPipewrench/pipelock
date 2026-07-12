@@ -83,9 +83,9 @@
       {{ end }}
 
       {{ if not .SourceConfigured }}
-        <div class="empty">No budget source is configured for this dashboard.</div>
+        <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. No budget source is connected for this dashboard. Start <code>pipelock dashboard serve</code> with <code>--runtime-snapshot-file</code>, or write the budget snapshot to <code>--receipt-dir/dashboard/runtime-snapshot.json</code>.</div>
       {{ else if .SourceUnavailable }}
-        <div class="empty">Budget snapshot source unavailable. Counters are not shown because the snapshot is missing, invalid, oversized, future-dated, or stale.</div>
+        <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. A budget source is configured, but its snapshot is missing, invalid, oversized, future-dated, or stale. Fix the configured <code>--runtime-snapshot-file</code> or refresh the default <code>--receipt-dir/dashboard/runtime-snapshot.json</code> snapshot.</div>
       {{ else if not .Agents }}
         <div class="empty">No agents have a configured forward-proxy budget or live MCP sessions.</div>
       {{ else }}

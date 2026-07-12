@@ -223,7 +223,7 @@
           <div class="session-meta">{{.ID}} · {{.ReceiptCount}}{{if .ReadLimited}}+{{end}} receipts</div>
         </a>
       {{else}}
-        <div class="empty">No recorder sessions found.</div>
+        <div class="empty">Evidence proves receipt ordering, signer trust, and per-session decisions only for recorder sessions loaded from the configured evidence source. No recorder sessions are loaded. Point <code>pipelock dashboard serve</code> at a flight-recorder evidence directory with <code>--receipt-dir</code>.</div>
       {{end}}
     </aside>
     <main>

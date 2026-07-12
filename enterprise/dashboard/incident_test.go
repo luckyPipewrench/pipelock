@@ -37,7 +37,11 @@ func TestIncident_ScopePromptWhenEmpty(t *testing.T) {
 		`name="fleet_id" value=""`,
 		`name="artifact_hash" value=""`,
 		`<button type="submit">Submit</button>`,
-		"Supply",
+		"This tool correlates one conductor decision",
+		"It is awaiting input, not missing data",
+		"org_id",
+		"fleet_id",
+		"artifact_hash",
 		"never kills an agent",
 	} {
 		if !strings.Contains(body, want) {
@@ -58,7 +62,15 @@ func TestIncident_UnconfiguredSourcesRenderAbsence(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"No conductor decision source configured", "No conductor fleet source configured"} {
+	for _, want := range []string{
+		"No conductor decision source configured",
+		"Decision replay proves how the conductor would resolve this artifact",
+		"--conductor-url",
+		"No conductor fleet source configured",
+		"Applied-state correlation proves follower report counts",
+		"--conductor-org",
+		"--conductor-fleet",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("incident body missing %q: %s", want, body)
 		}

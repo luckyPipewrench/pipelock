@@ -68,7 +68,7 @@
 
     <h2>Fleet mediated-egress coverage rollup</h2>
     {{if not .Fleet.SourceConfigured}}
-      <p class="notice">No live fleet coverage source is configured. <code>dashboard serve</code> does not fabricate fleet data from local receipts.</p>
+      <p class="notice">Fleet coverage proves mediated-egress coverage only from verified per-agent coverage records returned by a live fleet source. No fleet coverage source is connected for this dashboard. Start <code>pipelock dashboard serve</code> with <code>--conductor-url</code>, <code>--conductor-org</code>, and <code>--conductor-fleet</code>; this page does not fabricate fleet data from local receipts.</p>
     {{else}}
       <p class="notice warning">{{.Fleet.Limitation}}</p>
       <p>Covered: {{.Fleet.Covered}} · Partial: {{.Fleet.Partial}} · Not covered: {{.Fleet.NotCovered}}</p>
@@ -78,7 +78,7 @@
           <thead><tr><th>Agent</th><th>Mediated-egress status</th><th>Coverage certificate</th><th>Sessions</th><th>Chain gaps</th></tr></thead>
           <tbody>{{range .Fleet.Agents}}<tr><td>{{.AgentID}}</td><td><span class="status {{.Status}}">{{.Status}}</span></td><td>{{.Certificate}}</td><td>{{.SessionsCovered}}</td><td>{{.ChainGaps}}</td></tr>{{end}}</tbody>
         </table>
-      {{else}}<p class="notice">The live fleet source returned no per-agent coverage records for this scope.</p>{{end}}
+      {{else}}<p class="notice">Fleet coverage proves mediated-egress coverage only from verified per-agent coverage records returned by a live fleet source. The source is connected, but it returned no per-agent coverage records for this scope. Use the configured <code>--conductor-org</code> and <code>--conductor-fleet</code>, or query a scope with coverage records.</p>{{end}}
     {{end}}
 
     <h2>Legal holds</h2>
@@ -88,7 +88,8 @@
         <thead><tr><th>ID</th><th>Scope</th><th>Reason</th><th>Created</th><th>Released</th><th>Status</th></tr></thead>
         <tbody>{{range .LegalHolds}}<tr><td>{{.ID}}</td><td>{{.Scope}}</td><td>{{.Reason}}</td><td>{{.CreatedDisplay}}</td><td>{{.ReleasedDisplay}}</td><td>{{.Status}}</td></tr>{{end}}</tbody>
       </table>
-    {{else}}<p class="notice">No legal-hold metadata store is configured, or the configured store contains no holds.</p>{{end}}
+    {{else if not .LegalHoldConfigured}}<p class="notice">Legal holds prove only operator-authored retention metadata loaded from the legal-hold store. No legal-hold metadata store is connected for this dashboard. Start <code>pipelock dashboard serve</code> with <code>--legal-hold-store</code> to display hold metadata.</p>
+    {{else}}<p class="notice">Legal holds prove only operator-authored retention metadata loaded from the legal-hold store. The legal-hold store is connected, but it contains no holds. Create holds with <code>pipelock dashboard legal-hold</code> if retention metadata should appear here.</p>{{end}}
   </main>
 </body>
 </html>

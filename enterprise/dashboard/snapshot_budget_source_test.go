@@ -120,8 +120,16 @@ func TestBudgetsHandlerSnapshotUnavailableRendersMessage(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Budget snapshot source unavailable") || !strings.Contains(body, "stale") {
-		t.Fatalf("body did not render unavailable freshness state: %s", body)
+	for _, want := range []string{
+		"Budget pressure proves only mediated per-agent budget consumption",
+		"A budget source is configured",
+		"--runtime-snapshot-file",
+		"--receipt-dir/dashboard/runtime-snapshot.json",
+		"stale",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("unavailable body missing %q: %s", want, body)
+		}
 	}
 }
 

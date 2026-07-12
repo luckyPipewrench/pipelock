@@ -275,6 +275,31 @@ func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
 	}
 }
 
+func TestHandler_EvidenceNoSessionsExplainsReceiptSource(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAgentsFeature,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Evidence proves receipt ordering, signer trust, and per-session decisions",
+		"No recorder sessions are loaded",
+		"--receipt-dir",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("evidence no-sessions body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestHandler_HostileEvidenceRenderEscapesReceiptFields(t *testing.T) {
 	t.Parallel()
 

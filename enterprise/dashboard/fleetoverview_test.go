@@ -178,7 +178,44 @@ func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"No conductor fleet source configured", "Other dashboard views do not depend on that source"} {
+	for _, want := range []string{
+		"No conductor fleet source configured",
+		"Fleet Overview proves mediated fleet state",
+		"--conductor-url",
+		"--conductor-org",
+		"--conductor-fleet",
+		"other dashboard views do not depend on that source",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestFleetOverview_ConnectedSourceNoFollowersExplainsScope(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth:    true,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{},
+		AuthorizeFleetScope: allowFleetScope,
+		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Fleet Overview proves mediated fleet state",
+		"The conductor source is connected",
+		"no enrolled followers matched",
+		"--conductor-org",
+		"--conductor-fleet",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}

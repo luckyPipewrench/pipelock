@@ -179,7 +179,7 @@
       {{if not .Inventory.ConfigLoaded}}
         <section class="absence">
           <h2>No config loaded</h2>
-          <p class="muted">Start the dashboard with <span class="mono">--config</span> to show configured exemptions. The evidence view still works without a config.</p>
+          <p class="muted">The exemptions inventory proves which exemption-like knobs are present in the loaded Pipelock config and whether they are active, inert, or misdirected. No config source is connected for this dashboard. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--config</span>; add <span class="mono">--exemption-store</span> only when lifecycle owner/expiry/match metadata should be overlaid.</p>
         </section>
       {{else}}
         <section class="summary" aria-label="Exemption counts">
@@ -274,7 +274,7 @@
               </table>
             </div>
           {{else}}
-            <div class="empty">No exemption entries are configured in the loaded config.</div>
+            <div class="empty">The exemptions inventory proves which exemption-like knobs are present in the loaded Pipelock config and whether they are active, inert, or misdirected. A config source is loaded, but it contains no exemption entries. Add exemption entries to the file supplied with <span class="mono">--config</span> if this dashboard should show them.</div>
           {{end}}
         </section>
       {{end}}

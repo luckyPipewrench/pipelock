@@ -134,8 +134,16 @@ func TestBudgets_NilSourceDegrades(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "No budget source is configured") {
-		t.Fatalf("nil source did not render the empty state; body=%s", rec.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Budget pressure proves only mediated per-agent budget consumption",
+		"No budget source is connected",
+		"--runtime-snapshot-file",
+		"--receipt-dir/dashboard/runtime-snapshot.json",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("nil source body missing %q: %s", want, body)
+		}
 	}
 }
 

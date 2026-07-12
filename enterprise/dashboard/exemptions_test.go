@@ -52,6 +52,61 @@ func TestExemptions_ConfigLoadedNoEntries(t *testing.T) {
 	}
 }
 
+func TestExemptionsEmptyStatesExplainSources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no config loaded", func(t *testing.T) {
+		t.Parallel()
+		handler := New(Options{
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			HasFeature:       allowAgentsFeature,
+		})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, want := range []string{
+			"The exemptions inventory proves which exemption-like knobs",
+			"No config source is connected",
+			"--config",
+			"--exemption-store",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("exemptions no-config body missing %q: %s", want, body)
+			}
+		}
+	})
+
+	t.Run("config loaded with no entries", func(t *testing.T) {
+		t.Parallel()
+		handler := New(Options{
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			Config:           &config.Config{},
+			HasFeature:       allowAgentsFeature,
+		})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, want := range []string{
+			"The exemptions inventory proves which exemption-like knobs",
+			"A config source is loaded",
+			"contains no exemption entries",
+			"--config",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("exemptions loaded-empty body missing %q: %s", want, body)
+			}
+		}
+	})
+}
+
 func TestExemptions_PristineDefaultsHaveNoAttentionFindings(t *testing.T) {
 	t.Parallel()
 

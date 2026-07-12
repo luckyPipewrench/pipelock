@@ -118,11 +118,12 @@ type FleetCoverageRollup struct {
 }
 
 type CompliancePage struct {
-	Nav        NavContext
-	Frameworks []FrameworkMapping
-	LegalHolds []LegalHold
-	Fleet      FleetCoverageRollup
-	Limitation string
+	Nav                 NavContext
+	Frameworks          []FrameworkMapping
+	LegalHolds          []LegalHold
+	LegalHoldConfigured bool
+	Fleet               FleetCoverageRollup
+	Limitation          string
 }
 
 // frameworkDefinitions is Pipelock's mapping, not a certification or an
@@ -281,10 +282,11 @@ func (m *ReadModel) Compliance(ctx context.Context, orgID, fleetID string) (Comp
 	}
 	signals := complianceSignals(m.cfg, sessions, fleet, holds)
 	return CompliancePage{
-		Frameworks: evaluateFrameworks(signals),
-		LegalHolds: holds,
-		Fleet:      fleet,
-		Limitation: complianceLimitation,
+		Frameworks:          evaluateFrameworks(signals),
+		LegalHolds:          holds,
+		LegalHoldConfigured: m.legalHoldStore != nil,
+		Fleet:               fleet,
+		Limitation:          complianceLimitation,
 	}, nil
 }
 

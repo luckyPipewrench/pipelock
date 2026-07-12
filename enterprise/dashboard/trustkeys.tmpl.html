@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pipelock Trust &amp; Keys</title>
   <style>
-    :root { --bg:#09090b; --panel:#0e0e11; --border:rgba(255,255,255,.10); --text:#e2e8f0; --muted:#94a3b8; --dim:#64748b; --good:#00e5a0; --warn:#f59e0b; --bad:#fb7185; }
+    :root { --bg:#09090b; --panel:#0e0e11; --border:rgba(255,255,255,.10); --text:#e2e8f0; --text-muted:#94a3b8; --text-dim:#64748b; --muted:var(--text-muted); --dim:var(--text-dim); --good:#00e5a0; --warn:#f59e0b; --bad:#fb7185; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 Inter,system-ui,sans-serif; }
     main { max-width:1400px; margin:0 auto; padding:24px; }
@@ -29,7 +29,7 @@
     <h2>Trusted-key registry</h2>
     <p class="{{ if eq .CRLStatus "FAILURE: CRL could not be verified" }}fail{{ else }}limit{{ end }}">Revocation source: {{ .CRLStatus }}{{ if .CRLDetail }} — {{ .CRLDetail }}{{ end }}</p>
     {{ if not .Keys }}
-      <div class="empty">No trusted signer keys are configured. Receipt signers are not trusted on first use.</div>
+      <div class="empty">The trusted-key registry proves which receipt signing keys this dashboard is allowed to trust and their evidence-derived blast radius. No trusted signer keys are configured, and receipt signers are not trusted on first use. Start <code>pipelock dashboard serve</code> with one or more <code>--trusted-signer</code> values.</div>
     {{ else }}
       <div class="table"><table>
         <thead><tr><th>Purpose / provenance</th><th>Fingerprint</th><th>Validity</th><th>Revocation</th><th>Evidence-derived blast radius</th></tr></thead>
@@ -45,7 +45,7 @@
 
     <h2>Anchor-consistency audit</h2>
     {{ if not .Audits }}
-      <div class="empty">No receipt sessions were found. No chain-consistency claim is available.</div>
+      <div class="empty">The anchor-consistency audit proves receipt-chain consistency only for sessions loaded from the configured evidence source. No receipt sessions were found, so no chain-consistency claim is available. Point <code>pipelock dashboard serve</code> at a flight-recorder evidence directory with <code>--receipt-dir</code>; use <code>--anchor-local-log</code> or <code>--rekor-log-key</code> when anchor bundles need backend verification.</div>
     {{ else }}
       <div class="table"><table>
         <thead><tr><th>Session</th><th>Result</th><th>Gaps / forks</th><th>Anchor</th><th>Heads</th></tr></thead>

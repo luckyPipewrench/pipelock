@@ -191,8 +191,10 @@ per-session data and flags any mismatch with the signed aggregates.
 Fully offline: no license, no server, no network. The Free viewer
 VERIFIES a Pro-issued certificate; only Pro issues one.
 
-An untrusted signer is reported (never silently accepted). Non-zero exit
-if the signature is invalid.`,
+Fails closed with a non-zero exit if the signature is invalid, the
+aggregate counts do not match, or a trusted-signer set is supplied and the
+certificate signer is not in it. With no trusted-signer set, verification is
+structural-only and exits zero. The signer status is always reported.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVerifyCert(cmd, opts)
@@ -211,6 +213,5 @@ func runVerifyCert(cmd *cobra.Command, opts verifyCertOptions) error {
 		CertFile:       opts.certFile,
 		TrustedSigners: opts.trustedSigners,
 		Out:            cmd.OutOrStdout(),
-		Err:            cmd.ErrOrStderr(),
 	})
 }

@@ -75,23 +75,25 @@ func TestRunTrustedSignerVerifies(t *testing.T) {
 	}
 }
 
-func TestRunUntrustedSignerWarns(t *testing.T) {
+func TestRunUntrustedSignerFailsClosed(t *testing.T) {
 	certFile, _ := writeCoverageCertVerifyFixture(t)
 	otherPub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	var stderr bytes.Buffer
+	var out bytes.Buffer
 
-	if err := Run(Options{
+	err = Run(Options{
 		CertFile:       certFile,
 		TrustedSigners: []string{"inline=" + hex.EncodeToString(otherPub)},
-		Err:            &stderr,
-	}); err != nil {
-		t.Fatalf("Run: %v", err)
+		Out:            &out,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in the trusted-signer set") {
+		t.Fatalf("Run err = %v, want fail-closed untrusted-signer error", err)
 	}
-	if !strings.Contains(stderr.String(), "not in the trusted-signer set") {
-		t.Fatalf("stderr = %q, want untrusted warning", stderr.String())
+	// The diagnostic line is still emitted before the fail-closed return.
+	if !strings.Contains(out.String(), "NOT TRUSTED") {
+		t.Fatalf("Run output = %q, want NOT TRUSTED diagnostic line", out.String())
 	}
 }
 

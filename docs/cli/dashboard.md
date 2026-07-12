@@ -52,8 +52,8 @@ itself to reach a route; the principal also needs that route's read permission.
 pipelock dashboard serve \
   --receipt-dir /var/lib/pipelock/evidence \
   --config /etc/pipelock/pipelock.yaml \
-  --legal-hold-store /var/lib/pipelock/legal-holds.json \
-  --exemption-store /var/lib/pipelock/exemptions.json \
+  --legal-hold-store /var/lib/pipelock/dashboard/legal-holds.json \
+  --exemption-store /var/lib/pipelock/dashboard/exemptions.json \
   --auth-token-file /etc/pipelock/dashboard.token \
   --trusted-signer 'file=/etc/pipelock/receipt-signing.pub,source=ops runbook' \
   --conductor-url https://127.0.0.1:8895 \
@@ -414,10 +414,14 @@ state. Keep those stores under one state directory and back up that directory:
 ```bash
 pipelock dashboard backup \
   --state-dir /var/lib/pipelock/dashboard \
+  --legal-hold-store /var/lib/pipelock/dashboard/legal-holds.json \
+  --exemption-store /var/lib/pipelock/dashboard/exemptions.json \
   --output /var/backups/pipelock-dashboard-state.tar
 
 pipelock dashboard restore \
   --state-dir /var/lib/pipelock/dashboard \
+  --legal-hold-store /var/lib/pipelock/dashboard/legal-holds.json \
+  --exemption-store /var/lib/pipelock/dashboard/exemptions.json \
   --input /var/backups/pipelock-dashboard-state.tar
 ```
 

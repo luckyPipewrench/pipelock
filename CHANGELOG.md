@@ -331,7 +331,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a version-aware, multi-framework redesign is ready; the earlier compliance
   console slice is not part of the final v3.1.0 operator surface. (#969, #991)
 
-### Breaking Changes / Upgrade Notes
+### ⚠️ Breaking Changes / Upgrade Notes
+
+Every change in this section fails closed: it blocks or tightens, and none of them
+open a hole. Review before upgrading.
 
 - **mTLS dashboard role maps must remove `dashboard:compliance:read`.** The
   compliance page and permission were removed in #991. `dashboard serve` fails

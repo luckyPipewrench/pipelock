@@ -144,19 +144,41 @@ func TestHandler_FaviconServedWithoutDashboardRoute404(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{})
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/favicon.ico", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("favicon status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if got := rec.Header().Get("Content-Type"); got != contentTypeSVG {
-		t.Fatalf("favicon content type = %q, want %q", got, contentTypeSVG)
-	}
-	for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 400 480"`, `PIPELOCK`} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("favicon body missing %q: %s", want, rec.Body.String())
+	t.Run("get", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/favicon.ico", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("favicon status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 		}
-	}
+		if got := rec.Header().Get("Content-Type"); got != contentTypeSVG {
+			t.Fatalf("favicon content type = %q, want %q", got, contentTypeSVG)
+		}
+		for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 400 480"`, `PIPELOCK`} {
+			if !strings.Contains(rec.Body.String(), want) {
+				t.Fatalf("favicon body missing %q: %s", want, rec.Body.String())
+			}
+		}
+	})
+	t.Run("head", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodHead, "/favicon.ico", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("favicon HEAD status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if rec.Body.Len() != 0 {
+			t.Fatalf("favicon HEAD body length = %d, want 0", rec.Body.Len())
+		}
+	})
+	t.Run("post", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/favicon.ico", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("favicon POST status = %d, want 405; body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Allow"); got != http.MethodGet {
+			t.Fatalf("favicon POST Allow = %q, want %q", got, http.MethodGet)
+		}
+	})
 }
 
 func TestHandler_FaviconUsesEmbeddedBrandAsset(t *testing.T) {
@@ -189,13 +211,15 @@ func TestDashboardTemplatesIncludeEmbeddedBrandFavicon(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".tmpl.html") || name == "nav.tmpl.html" {
 			continue
 		}
-		data, err := templateFS.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(data), `{{template "dashboardFavicon" .}}`) {
-			t.Fatalf("%s does not include dashboardFavicon", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			data, err := templateFS.ReadFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), `{{template "dashboardFavicon" .}}`) {
+				t.Fatalf("%s does not include dashboardFavicon", name)
+			}
+		})
 	}
 }
 

@@ -7,7 +7,7 @@ the full command tree and `pipelock <command> --help` for any command's flags.
 |---|---|
 | [`pipelock baseline`](baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the admin API. |
 | [`pipelock demo`](demo.md) | Run self-contained attack scenarios that show what Pipelock catches. |
-| [`pipelock quickstart/status/presets`](operator.md) | Read-only operator setup and local inspection commands. |
+| [`pipelock status`](operator.md) | Read-only operator setup and local inspection commands. |
 | [`pipelock scan`](scan.md) | Scan files for invisible-Unicode and bidi-control injection. |
 | [`pipelock skill-scan`](skill-scan.md) | Inventory skill files, compare lock drift, and flag conservative source-to-sink combinations. |
 | [`pipelock doctor`](doctor.md) | Audit whether configured protections are actually enforceable in the current topology. |

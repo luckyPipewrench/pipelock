@@ -39,6 +39,6 @@ annotations:
     - kind: added
       description: Dashboard mTLS/OIDC/token authentication, RBAC permissions, exemption lifecycle records, coverage certificates, backup/restore, and durable SIEM forwarding.
     - kind: fixed
-      description: Rekor anchoring now requires an explicit URL, supports sha256 or sha512 hashedrekord submissions, and verifies anchored receipts with pinned Rekor log keys.
+      description: Rekor anchoring now requires an explicit URL, submits Ed25519 Rekor v1 hashedrekord entries with sha512 by default, and verifies anchored receipts with pinned Rekor log keys.
     - kind: fixed
       description: Reloads fail closed when bundle-resolution errors would drop live detections; coverage-certificate verification fails closed on untrusted pinned signers.

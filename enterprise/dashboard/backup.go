@@ -271,11 +271,7 @@ func readBackupStateStoreFile(store durableStateStore) ([]byte, error) {
 	}
 	defer func() { _ = file.Close() }()
 	switch store.archiveName {
-	case ExemptionStateFile:
-		if err := requireOwnerOnlyDashboardFile(file, info, store.label); err != nil {
-			return nil, err
-		}
-	case LegalHoldStateFile:
+	case ExemptionStateFile, LegalHoldStateFile:
 		if err := requireOwnerOnlyDashboardFile(file, info, store.label); err != nil {
 			return nil, err
 		}

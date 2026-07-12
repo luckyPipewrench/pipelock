@@ -338,7 +338,8 @@ curl http://localhost:8888/stats | jq .
   "agents": {
     "claude-code": {"allowed": 35, "blocked": 1, "tunnels": 1200},
     "cursor": {"allowed": 5, "blocked": 1, "tunnels": 323}
-  }
+  },
+  "evidence_health": null
 }
 ```
 

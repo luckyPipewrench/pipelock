@@ -43,6 +43,27 @@ func TestDashboardBackupRestoreCommands(t *testing.T) {
 	}
 }
 
+func TestDashboardBackupCommandReportsNoCapturedStores(t *testing.T) {
+	stateDir := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "backup.tar")
+	cmd := DashboardCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"backup", "--state-dir", stateDir, "--output", archive})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("backup command: %v", err)
+	}
+	for _, want := range []string{
+		"captured stores: none",
+		"dashboard durable state stores not present: exemptions, delivery-inbox",
+		"legal holds not captured: --legal-hold-store was not set",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("backup output missing %q: %q", want, output.String())
+		}
+	}
+}
+
 func TestDashboardRebuildCommand_MissingSourceIsLoud(t *testing.T) {
 	cmd := DashboardCmd()
 	cmd.SetArgs([]string{"rebuild-read-model", "--receipt-dir", t.TempDir(), "--output", filepath.Join(t.TempDir(), "index.json")})

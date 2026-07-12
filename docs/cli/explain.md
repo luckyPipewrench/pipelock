@@ -62,7 +62,10 @@ When `--log` is omitted, the command uses `logging.file` from the config when
 that config writes JSONL audit events to a file. The command is read-only: it
 does not contact the proxy and does not mutate the log.
 
-## Exit codes
+## URL explanation exit codes
+
+These exit codes apply to `pipelock explain <url>`. `pipelock explain event`
+uses normal command success/failure semantics for log lookup and rendering.
 
 | Exit code | Meaning |
 |---|---|

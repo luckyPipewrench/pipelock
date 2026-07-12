@@ -1354,9 +1354,9 @@ func TestReplayRollback_HistoricalRecordedDecisionRejectsRevokedKey(t *testing.T
 func TestReplayRollback_UnknownArtifact_EvaluationOnly(t *testing.T) {
 	store := mustStore(t)
 	current, target := seedRollbackReplayBundles(t, store, "rb-replay-unknown")
-	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-unknown", current, target, testNow)
+	auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-unknown", current, target, testNow)
 	auth.Intent = conductor.ControlIntentReplay
-	resolver = resignRollbackAuthorization(t, &auth)
+	resolver := resignRollbackAuthorization(t, &auth)
 	handler := newDryRunTestHandler(t, store, mustEmergencyStore(t), resolver)
 
 	w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
@@ -1404,9 +1404,10 @@ func TestReplayRemoteKill_RecordedMatchesRederived_NoDivergence(t *testing.T) {
 
 func TestReplayRemoteKill_StaleCounterEvaluation(t *testing.T) {
 	high := signedRemoteKillMessage(t, "kill-replay-high", 5, conductor.KillSwitchActive, testNow)
-	stale, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-stale", 3, conductor.KillSwitchActive, testNow)
+	stale, _ := signedRemoteKillMessageWithResolver(t, "kill-replay-stale", 3, conductor.KillSwitchActive, testNow)
 	stale.Intent = conductor.ControlIntentReplay
-	stale.Signatures, resolver = signConductorPreimage(t, stale.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-replay-a", "kill-replay-b")
+	staleSigs, resolver := signConductorPreimage(t, stale.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-replay-a", "kill-replay-b")
+	stale.Signatures = staleSigs
 	emergency := mustEmergencyStore(t)
 	if _, created, err := emergency.PublishRemoteKill(context.Background(), high, testNow); err != nil || !created {
 		t.Fatalf("seed high remote kill created=%v err=%v, want created", created, err)
@@ -1602,9 +1603,10 @@ func TestReplayRemoteKill_ErrorBranches(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-error-"+strings.ReplaceAll(tc.name, "_", "-"), 1, conductor.KillSwitchActive, testNow)
+			msg, _ := signedRemoteKillMessageWithResolver(t, "kill-replay-error-"+strings.ReplaceAll(tc.name, "_", "-"), 1, conductor.KillSwitchActive, testNow)
 			msg.Intent = conductor.ControlIntentReplay
-			msg.Signatures, resolver = signConductorPreimage(t, msg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-replay-error-a", "kill-replay-error-b")
+			msgSigs, resolver := signConductorPreimage(t, msg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-replay-error-a", "kill-replay-error-b")
+			msg.Signatures = msgSigs
 			handler := newDryRunTestHandler(t, nil, tc.emergency, resolver)
 			w := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &msg}, true, false)
 			if w.Code != http.StatusInternalServerError {
@@ -1624,9 +1626,9 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 			setup: func(t *testing.T) (*Handler, conductor.RollbackAuthorization) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-auth-unsupported")
-				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-auth-unsupported", current, target, testNow)
+				auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-auth-unsupported", current, target, testNow)
 				auth.Intent = conductor.ControlIntentReplay
-				resolver = resignRollbackAuthorization(t, &auth)
+				resolver := resignRollbackAuthorization(t, &auth)
 				handler := newDryRunTestHandler(t, store, emergencyStoreNoPreview{inner: mustEmergencyStore(t)}, resolver)
 				return handler, auth
 			},
@@ -1636,9 +1638,9 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 			setup: func(t *testing.T) (*Handler, conductor.RollbackAuthorization) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-head-unsupported")
-				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-unsupported", current, target, testNow)
+				auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-unsupported", current, target, testNow)
 				auth.Intent = conductor.ControlIntentReplay
-				resolver = resignRollbackAuthorization(t, &auth)
+				resolver := resignRollbackAuthorization(t, &auth)
 				handler := newDryRunTestHandler(t, bundleStoreNoPreview{inner: store}, mustEmergencyStore(t), resolver)
 				return handler, auth
 			},
@@ -1648,9 +1650,9 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 			setup: func(t *testing.T) (*Handler, conductor.RollbackAuthorization) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-auth-error")
-				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-auth-error", current, target, testNow)
+				auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-auth-error", current, target, testNow)
 				auth.Intent = conductor.ControlIntentReplay
-				resolver = resignRollbackAuthorization(t, &auth)
+				resolver := resignRollbackAuthorization(t, &auth)
 				emergency := rollbackAuthPreviewErrorStore{inner: mustEmergencyStore(t), err: errDryRunTestStore}
 				handler := newDryRunTestHandler(t, store, emergency, resolver)
 				return handler, auth
@@ -1661,9 +1663,9 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 			setup: func(t *testing.T) (*Handler, conductor.RollbackAuthorization) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-head-error")
-				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-error", current, target, testNow)
+				auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-head-error", current, target, testNow)
 				auth.Intent = conductor.ControlIntentReplay
-				resolver = resignRollbackAuthorization(t, &auth)
+				resolver := resignRollbackAuthorization(t, &auth)
 				wrappedStore := rollbackHeadPreviewErrorStore{BundleStore: store, err: errDryRunTestStore}
 				handler := newDryRunTestHandler(t, wrappedStore, mustEmergencyStore(t), resolver)
 				return handler, auth
@@ -1674,9 +1676,9 @@ func TestReplayRollback_ErrorBranches(t *testing.T) {
 			setup: func(t *testing.T) (*Handler, conductor.RollbackAuthorization) {
 				store := mustStore(t)
 				current, target := seedRollbackReplayBundles(t, store, "rb-replay-recorded-error")
-				auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-recorded-error", current, target, testNow)
+				auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-recorded-error", current, target, testNow)
 				auth.Intent = conductor.ControlIntentReplay
-				resolver = resignRollbackAuthorization(t, &auth)
+				resolver := resignRollbackAuthorization(t, &auth)
 				emergency := mustEmergencyStore(t)
 				handler := newDryRunTestHandler(t, store, emergency, resolver)
 				handler.emergencyControls = newVerifiedEmergencyStore(

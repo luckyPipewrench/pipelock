@@ -145,28 +145,10 @@ publishing or applying the authorization.`,
 }
 
 func bindReplayRemoteKillFlags(cmd *cobra.Command, opts *replayOptions) {
-	kill := &opts.kill
-	cmd.Flags().StringVar(&kill.baseURL, "conductor-url", "", "base URL of the Conductor control plane, e.g. https://conductor.example:8895 (required)")
-	cmd.Flags().StringVar(&kill.adminTokenFile, "admin-token-file", "", "file containing the Conductor admin bearer token (required)")
-	cmd.Flags().StringArrayVar(&kill.signingKeys, "signing-key", nil,
-		"path to a remote-kill-signing keypair file from `pipelock signing key generate`; repeat to supply the M-of-N signers")
-	cmd.Flags().StringVar(&kill.orgID, "org", "", "fleet org id the message targets (required)")
-	cmd.Flags().StringVar(&kill.fleetID, "fleet", "", "fleet id the message targets (required)")
-	cmd.Flags().StringArrayVar(&kill.instanceIDs, "instance", nil, "target follower instance id; repeat for several, or pass '*' for the whole fleet (mutually exclusive with --label)")
-	cmd.Flags().StringToStringVar(&kill.labels, "label", nil, "target followers by label selector key=value; repeat for several (mutually exclusive with --instance)")
-	cmd.Flags().StringVar(&kill.messageID, "message-id", "", "message id (defaults to a generated remote-kill-<state>-<counter> id)")
+	bindRemoteKillFlagsWithOptions(cmd, &opts.kill, remoteKillFlagOptions{
+		counterHelp: "monotonic counter; defaults to the current Unix time so each replay supersedes the prior message shape",
+	})
 	cmd.Flags().StringVar(&opts.remoteKillState, "state", string(conductorcore.KillSwitchActive), "remote-kill state to replay: active or inactive")
-	cmd.Flags().Uint64Var(&kill.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each replay supersedes the prior message shape")
-	cmd.Flags().StringVar(&kill.reason, "reason", "", "operator reason recorded in the signed message")
-	cmd.Flags().DurationVar(&kill.ttl, "ttl", remoteKillDefaultTTL, "validity window for the message; must not exceed the Conductor's configured remote-kill max validity")
-	cmd.Flags().StringVar(&kill.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
-	cmd.Flags().StringVar(&kill.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
-	cmd.Flags().StringVar(&kill.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")
-	cmd.Flags().StringVar(&kill.serverName, "server-name", "", "server name to verify in the Conductor TLS certificate (defaults to the host in --conductor-url)")
-	cmd.Flags().StringVar(&kill.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
-	_ = cmd.MarkFlagRequired("conductor-url")
-	_ = cmd.MarkFlagRequired("org")
-	_ = cmd.MarkFlagRequired("fleet")
 }
 
 func bindReplayRollbackFlags(cmd *cobra.Command, opts *rollbackOptions) {
@@ -413,14 +395,16 @@ func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, base
 		return controlplane.DecisionReplayResult{}, err
 	}
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
+	case http.StatusOK:
 		var result controlplane.DecisionReplayResult
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return controlplane.DecisionReplayResult{}, fmt.Errorf("decode replay response: %w", err)
 		}
 		return result, nil
+	case http.StatusCreated:
+		return controlplane.DecisionReplayResult{}, errors.New("conductor returned 201 Created for decision replay; refusing ambiguous mutating response")
 	case http.StatusForbidden, http.StatusUnauthorized:
-		return controlplane.DecisionReplayResult{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
+		return controlplane.DecisionReplayResult{}, fmt.Errorf("replay not authorized (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
 	default:
 		return controlplane.DecisionReplayResult{}, fmt.Errorf("conductor rejected replay (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
 	}

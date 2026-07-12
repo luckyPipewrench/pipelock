@@ -94,7 +94,23 @@ func remoteKillStateCmd(use, short, long string, state conductorcore.KillSwitchS
 	return cmd
 }
 
+type remoteKillFlagOptions struct {
+	includeDryRun bool
+	counterHelp   string
+}
+
 func bindRemoteKillFlags(cmd *cobra.Command, opts *killOptions) {
+	bindRemoteKillFlagsWithOptions(cmd, opts, remoteKillFlagOptions{
+		includeDryRun: true,
+		counterHelp:   "monotonic counter; defaults to the current Unix time so each publish supersedes the prior one",
+	})
+}
+
+func bindRemoteKillFlagsWithOptions(cmd *cobra.Command, opts *killOptions, flagOpts remoteKillFlagOptions) {
+	counterHelp := strings.TrimSpace(flagOpts.counterHelp)
+	if counterHelp == "" {
+		counterHelp = "monotonic counter; defaults to the current Unix time"
+	}
 	cmd.Flags().StringVar(&opts.baseURL, "conductor-url", "", "base URL of the Conductor control plane, e.g. https://conductor.example:8895 (required)")
 	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing the Conductor admin bearer token (required)")
 	cmd.Flags().StringArrayVar(&opts.signingKeys, "signing-key", nil,
@@ -104,10 +120,12 @@ func bindRemoteKillFlags(cmd *cobra.Command, opts *killOptions) {
 	cmd.Flags().StringArrayVar(&opts.instanceIDs, "instance", nil, "target follower instance id; repeat for several, or pass '*' for the whole fleet (mutually exclusive with --label)")
 	cmd.Flags().StringToStringVar(&opts.labels, "label", nil, "target followers by label selector key=value; repeat for several (mutually exclusive with --instance)")
 	cmd.Flags().StringVar(&opts.messageID, "message-id", "", "message id (defaults to a generated remote-kill-<state>-<counter> id)")
-	cmd.Flags().Uint64Var(&opts.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each publish supersedes the prior one")
+	cmd.Flags().Uint64Var(&opts.counter, "counter", 0, counterHelp)
 	cmd.Flags().StringVar(&opts.reason, "reason", "", "operator reason recorded in the signed message")
 	cmd.Flags().DurationVar(&opts.ttl, "ttl", remoteKillDefaultTTL, "validity window for the message; must not exceed the Conductor's configured remote-kill max validity")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "evaluate the signed remote-kill without mutating Conductor state")
+	if flagOpts.includeDryRun {
+		cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "evaluate the signed remote-kill without mutating Conductor state")
+	}
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
 	cmd.Flags().StringVar(&opts.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")

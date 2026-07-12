@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
@@ -44,6 +45,28 @@ func TestConductorDryRunFlagsAndReplayCommandRegistered(t *testing.T) {
 			t.Fatalf("%s replay mode is not registered", strings.Join(path, " "))
 		}
 	}
+	t.Run("remote-kill replay flags stay in parity with publish flags", func(t *testing.T) {
+		kill := findCommandPath(t, root, "kill")
+		replayKill := findCommandPath(t, root, "replay", "remote-kill")
+		kill.Flags().VisitAll(func(flag *pflag.Flag) {
+			if flag.Name == "dry-run" {
+				if replayKill.Flags().Lookup(flag.Name) != nil {
+					t.Fatalf("replay remote-kill unexpectedly exposes %q", flag.Name)
+				}
+				return
+			}
+			replayFlag := replayKill.Flags().Lookup(flag.Name)
+			if replayFlag == nil {
+				t.Fatalf("replay remote-kill missing %q flag from kill command", flag.Name)
+			}
+			if replayFlag.Value.Type() != flag.Value.Type() {
+				t.Fatalf("replay remote-kill %q type = %q, want %q", flag.Name, replayFlag.Value.Type(), flag.Value.Type())
+			}
+		})
+		if replayKill.Flags().Lookup("state") == nil {
+			t.Fatal("replay remote-kill missing replay-only --state flag")
+		}
+	})
 	t.Run("replay emergency output is not mislabeled as dry-run", func(t *testing.T) {
 		var out bytes.Buffer
 		writeDecisionReplayResult(&out, controlplane.DecisionReplayResult{
@@ -887,6 +910,25 @@ func TestRunReplayErrorPaths(t *testing.T) {
 	cmd, _ = replayCobra(t)
 	if err := runReplay(cmd, opts); err == nil || !strings.Contains(err.Error(), "HTTP 502") {
 		t.Fatalf("server error = %v, want HTTP 502", err)
+	}
+
+	opts = replayOptions{publish: publishDryRunTestOptions(t, dir)}
+	createdReplay, err := json.Marshal(controlplane.DecisionReplayResult{
+		ActionKind:   "publish",
+		ArtifactHash: strings.Repeat("b", 64),
+		ReplayedAt:   testFixedNow(t),
+		PublishEvaluation: &controlplane.PublishEvaluation{
+			Valid:       true,
+			WouldCreate: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal created replay response: %v", err)
+	}
+	opts.publish.conductorURL = newStubStatusServer(t, http.StatusCreated, string(createdReplay))
+	cmd, _ = replayCobra(t)
+	if err := runReplay(cmd, opts); err == nil || !strings.Contains(err.Error(), "201 Created") {
+		t.Fatalf("created replay response error = %v, want 201 Created rejection", err)
 	}
 
 	opts = replayOptions{publish: publishDryRunTestOptions(t, dir)}

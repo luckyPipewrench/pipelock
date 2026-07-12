@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -120,8 +119,8 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 		if err != nil {
 			return err
 		}
-		if status == http.StatusCreated {
-			return errors.New("conductor returned 201 Created for rollback dry-run; refusing ambiguous mutating response")
+		if err := requireEmergencyDryRunStatus("rollback", status); err != nil {
+			return err
 		}
 		if err := requireDryRunEvaluation("rollback", eval.DryRun); err != nil {
 			return err
@@ -131,8 +130,12 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 	}
 
 	var resp publishRollbackAuthorizationResponse
-	if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RollbackAuthorizationsPath, adminToken,
-		publishRollbackAuthorizationRequest{Authorization: auth}, &resp); err != nil {
+	status, err := postEmergencyJSONStatus(cmd.Context(), client, opts.baseURL, controlplane.RollbackAuthorizationsPath, adminToken,
+		publishRollbackAuthorizationRequest{Authorization: auth}, &resp)
+	if err != nil {
+		return err
+	}
+	if err := requireEmergencyMutationStatus("rollback", status, resp.Created); err != nil {
 		return err
 	}
 

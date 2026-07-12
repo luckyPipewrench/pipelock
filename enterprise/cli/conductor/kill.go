@@ -5,7 +5,6 @@
 package conductor
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -157,8 +156,8 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 		if err != nil {
 			return err
 		}
-		if status == http.StatusCreated {
-			return errors.New("conductor returned 201 Created for remote-kill dry-run; refusing ambiguous mutating response")
+		if err := requireEmergencyDryRunStatus("remote-kill", status); err != nil {
+			return err
 		}
 		if err := requireDryRunEvaluation("remote-kill", eval.DryRun); err != nil {
 			return err
@@ -168,8 +167,12 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 	}
 
 	var resp publishRemoteKillResponse
-	if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RemoteKillPath, adminToken,
-		publishRemoteKillRequest{Message: msg}, &resp); err != nil {
+	status, err := postEmergencyJSONStatus(cmd.Context(), client, opts.baseURL, controlplane.RemoteKillPath, adminToken,
+		publishRemoteKillRequest{Message: msg}, &resp)
+	if err != nil {
+		return err
+	}
+	if err := requireEmergencyMutationStatus("remote-kill", status, resp.Created); err != nil {
 		return err
 	}
 
@@ -177,6 +180,34 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 		"pipelock: conductor remote-kill published state=%s message_id=%s counter=%d hash=%s created=%t\n",
 		state, resp.MessageID, resp.Counter, resp.MessageHash, resp.Created)
 	return nil
+}
+
+func requireEmergencyDryRunStatus(action string, status int) error {
+	if status != http.StatusOK {
+		return fmt.Errorf("conductor returned HTTP %s for %s dry-run; expected 200 OK and refusing ambiguous response", httpStatusLabel(status), action)
+	}
+	return nil
+}
+
+func requireEmergencyMutationStatus(action string, status int, created bool) error {
+	switch {
+	case created && status == http.StatusCreated:
+		return nil
+	case !created && status == http.StatusOK:
+		return nil
+	case created:
+		return fmt.Errorf("conductor returned HTTP %s for newly-created %s; expected 201 Created and refusing ambiguous response", httpStatusLabel(status), action)
+	default:
+		return fmt.Errorf("conductor returned HTTP %s for idempotent %s; expected 200 OK and refusing ambiguous response", httpStatusLabel(status), action)
+	}
+}
+
+func httpStatusLabel(status int) string {
+	text := http.StatusText(status)
+	if text == "" {
+		return fmt.Sprintf("%d", status)
+	}
+	return fmt.Sprintf("%d %s", status, text)
 }
 
 func buildSignedRemoteKillMessage(opts killOptions, state conductorcore.KillSwitchState) (conductorcore.RemoteKillMessage, error) {

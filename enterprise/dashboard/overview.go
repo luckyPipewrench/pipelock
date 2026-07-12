@@ -212,10 +212,7 @@ func (m *ReadModel) Overview(ctx context.Context, rawAllowed bool) (OverviewPage
 		exemptions = redactExemptions(exemptions)
 	}
 	health := m.OperabilityHealth()
-	fleet, err := m.overviewFleet(ctx, rawAllowed)
-	if err != nil {
-		return OverviewPage{}, err
-	}
+	fleet := m.overviewFleet(ctx, rawAllowed)
 	enforcement, err := m.overviewEnforcement()
 	if err != nil {
 		return OverviewPage{}, err
@@ -255,7 +252,7 @@ func (m *ReadModel) Overview(ctx context.Context, rawAllowed bool) (OverviewPage
 	return page, nil
 }
 
-func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) (OverviewFleetPosture, error) {
+func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) OverviewFleetPosture {
 	out := OverviewFleetPosture{
 		SourceConfigured: m.fleetSource != nil,
 		Claim:            overviewFleetClaim,
@@ -264,19 +261,19 @@ func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) (Overvie
 		EmptyDetail:      "Fleet posture is not fabricated. Attach a FleetSource to show accepted follower reports.",
 	}
 	if m.fleetSource == nil {
-		return out, nil
+		return out
 	}
 	if m.hasFeature == nil || !m.hasFeature(license.FeatureFleet) {
 		out.ScopeConfigured = false
 		out.EmptyTitle = "Enterprise fleet feature required"
 		out.EmptyDetail = "Fleet posture requires the Enterprise fleet feature. This section stays empty instead of querying fleet sources for this license tier."
-		return out, nil
+		return out
 	}
 	scope := m.defaultFleetScope
 	if scope.OrgID == "" || scope.FleetID == "" {
 		out.EmptyTitle = "No default fleet scope configured"
 		out.EmptyDetail = "A FleetSource exists, but /overview has no org/fleet scope to read. This section stays empty instead of querying an ambiguous fleet."
-		return out, nil
+		return out
 	}
 	view, err := m.FleetOverview(ctx, scope.OrgID, scope.FleetID, rawAllowed)
 	if err != nil {
@@ -287,7 +284,7 @@ func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) (Overvie
 		out.SourceUnavailable = true
 		out.EmptyTitle = "Fleet source unreachable"
 		out.EmptyDetail = "The configured fleet source could not be read, so follower reporting posture is unknown. Treat this as unverified, not as a clean fleet."
-		return out, nil
+		return out
 	}
 	out.ScopeConfigured = true
 	out.Truncated = view.Truncated
@@ -323,7 +320,7 @@ func (m *ReadModel) overviewFleet(ctx context.Context, rawAllowed bool) (Overvie
 			out.ApplyFailed++
 		}
 	}
-	return out, nil
+	return out
 }
 
 func fleetFreshnessBucket(f FleetFollowerView, now time.Time) string {

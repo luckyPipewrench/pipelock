@@ -10,8 +10,9 @@ instances. It distributes signed policy bundles to follower instances, ingests
 and stores their signed evidence for audit, and coordinates fleet-wide
 operations — enrollment, remote kill, and policy rollback. It is **General
 Availability as of v2.7**, with a shipped operator command surface (publish,
-kill/resume, rollback, enroll, enrollment-token, fleet status, audit query)
-documented in the [production runbook](conductor-production-runbook.md).
+publish dry-run, decision replay, kill/resume, rollback, enroll,
+enrollment-token, fleet status, audit query) documented in the
+[production runbook](conductor-production-runbook.md).
 
 Conductor preserves Pipelock's capability separation. Followers enforce policy
 locally and stay fail-closed on their own; Conductor coordinates distribution,
@@ -316,6 +317,14 @@ fleet:
 
 Both are signed with a purpose-scoped control key, so an operator cannot reuse a
 rollback key to issue a kill (or vice versa).
+
+The publish, remote-kill, and rollback CLIs also expose `--dry-run`. Dry-runs
+send the signed action to read-only evaluation endpoints, not the mutating
+publish endpoints, so an older Conductor that lacks evaluation support fails
+closed instead of applying the action. Decision replay can use an exact signed
+bundle artifact with `--bundle-artifact`; rebuilding from publish inputs is a
+hypothetical replay because new timestamps and signatures create a different
+artifact.
 
 ## Evidence and verification
 

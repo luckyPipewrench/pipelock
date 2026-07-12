@@ -87,6 +87,7 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(serveCmd())
 	cmd.AddCommand(bootstrapCmd())
 	cmd.AddCommand(publishCmd())
+	cmd.AddCommand(replayCmd())
 	cmd.AddCommand(auditCmd())
 	cmd.AddCommand(fleetCmd())
 	cmd.AddCommand(streamCmd())

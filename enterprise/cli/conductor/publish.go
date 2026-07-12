@@ -121,6 +121,7 @@ type publishOptions struct {
 	switchSigningKeys  []string
 	allowFleetSkew     bool
 	fleetSkewReason    string
+	dryRun             bool
 	publisherTok       string
 	tlsCert            string
 	tlsKey             string
@@ -187,6 +188,17 @@ Example:
 			return runPublish(cmd.Context(), cmd.OutOrStdout(), opts)
 		},
 	}
+	bindPublishFlags(cmd, &opts, publishFlagOptions{fleetSkew: true, dryRun: true, license: true})
+	return cmd
+}
+
+type publishFlagOptions struct {
+	fleetSkew bool
+	dryRun    bool
+	license   bool
+}
+
+func bindPublishFlags(cmd *cobra.Command, opts *publishOptions, flagOpts publishFlagOptions) {
 	cmd.Flags().StringVar(&opts.conductorURL, "conductor-url", "", "base URL of the Conductor control plane (e.g. https://conductor.example:8895)")
 	cmd.Flags().StringVar(&opts.configFile, "config", "", "path to the pipelock config YAML to publish as the bundle policy")
 	cmd.Flags().StringArrayVar(&opts.ruleBundles, "rule-bundle", nil, "rule bundle reference as comma-separated kv pairs: 'name=NAME,version=VER,sha256=HEX'; repeatable")
@@ -208,15 +220,21 @@ Example:
 	cmd.Flags().StringVar(&opts.switchReason, "stream-switch-reason", "", "operator reason recorded in the stream switch authorization")
 	cmd.Flags().DurationVar(&opts.switchTTL, "stream-switch-ttl", time.Hour, "validity window for the stream switch authorization")
 	cmd.Flags().StringArrayVar(&opts.switchSigningKeys, "stream-switch-signing-key", nil, "path to a policy-bundle-rollback keypair file; repeat to supply the M-of-N stream-switch signers")
-	cmd.Flags().BoolVar(&opts.allowFleetSkew, "allow-fleet-skew", false, "accept publish preflight skew for stale/unseen or unsupported followers; prefer a narrow --audience canary instead of overriding globally")
-	cmd.Flags().StringVar(&opts.fleetSkewReason, "allow-fleet-skew-reason", "", "operator reason required with --allow-fleet-skew; recorded by the Conductor")
+	if flagOpts.fleetSkew {
+		cmd.Flags().BoolVar(&opts.allowFleetSkew, "allow-fleet-skew", false, "accept publish preflight skew for stale/unseen or unsupported followers; prefer a narrow --audience canary instead of overriding globally")
+		cmd.Flags().StringVar(&opts.fleetSkewReason, "allow-fleet-skew-reason", "", "operator reason required with --allow-fleet-skew; recorded by the Conductor")
+	}
+	if flagOpts.dryRun {
+		cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "evaluate the signed publish without mutating Conductor state")
+	}
 	cmd.Flags().StringVar(&opts.publisherTok, "publisher-token-file", "", "file containing the publisher bearer token")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "mTLS client certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "mTLS client private key file")
 	cmd.Flags().StringVar(&opts.serverCA, "server-ca", "", "PEM bundle of CAs that may validate the Conductor server certificate")
-	cmd.Flags().StringVar(&opts.licenseCRL, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
+	if flagOpts.license {
+		cmd.Flags().StringVar(&opts.licenseCRL, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
+	}
 	cmd.Flags().BoolVar(&opts.insecure, "allow-plaintext-loopback", false, "permit publishing without mTLS material against an http:// loopback URL (dev only)")
-	return cmd
 }
 
 // previousHashAuto is the sentinel value for --previous-bundle-hash that
@@ -258,6 +276,18 @@ func runPublish(ctx context.Context, out io.Writer, opts publishOptions) error {
 	token, err := readPublisherToken(opts.publisherTok)
 	if err != nil {
 		return err
+	}
+	if opts.dryRun {
+		eval, err := postBundleDryRun(ctx, client, opts.conductorURL, token, bundle, postBundleOptions{
+			allowFleetSkew:  opts.allowFleetSkew,
+			fleetSkewReason: opts.fleetSkewReason,
+		})
+		if err != nil {
+			return err
+		}
+		writePublishEvaluation(out, eval)
+		_, _ = fmt.Fprintf(out, "signed by %s\n", keyID)
+		return nil
 	}
 	resp, err := postBundle(ctx, client, opts.conductorURL, token, bundle, postBundleOptions{
 		allowFleetSkew:  opts.allowFleetSkew,
@@ -783,33 +813,16 @@ func isLoopbackHost(host string) bool {
 type postBundleOptions struct {
 	allowFleetSkew  bool
 	fleetSkewReason string
+	dryRun          bool
 }
 
 func postBundle(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, opts postBundleOptions) (publishResult, error) {
-	envelope := struct {
-		Bundle          conductorcore.PolicyBundle `json:"bundle"`
-		AllowFleetSkew  bool                       `json:"allow_fleet_skew,omitempty"`
-		FleetSkewReason string                     `json:"fleet_skew_reason,omitempty"`
-	}{Bundle: bundle, AllowFleetSkew: opts.allowFleetSkew, FleetSkewReason: strings.TrimSpace(opts.fleetSkewReason)}
-	body, err := json.Marshal(envelope)
+	opts.dryRun = false
+	statusCode, respBody, err := postBundleRaw(ctx, client, baseURL, token, bundle, opts)
 	if err != nil {
-		return publishResult{}, fmt.Errorf("marshal publish request: %w", err)
+		return publishResult{}, err
 	}
-	endpoint := strings.TrimRight(baseURL, "/") + controlplane.PublishPolicyBundlePath
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return publishResult{}, fmt.Errorf("build publish request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return publishResult{}, fmt.Errorf("publish request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, publishMaxResponseBytes))
-
-	switch resp.StatusCode {
+	switch statusCode {
 	case http.StatusOK, http.StatusCreated:
 		var result publishResult
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -819,10 +832,73 @@ func postBundle(ctx context.Context, client *http.Client, baseURL, token string,
 	case http.StatusConflict:
 		return publishResult{}, fmt.Errorf("%w: %s", conflictSentinel(respBody), serverErrorDetail(respBody, token))
 	case http.StatusForbidden, http.StatusUnauthorized:
-		return publishResult{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
+		return publishResult{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", statusCode, serverErrorDetail(respBody, token))
 	default:
-		return publishResult{}, fmt.Errorf("conductor rejected publish (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
+		return publishResult{}, fmt.Errorf("conductor rejected publish (HTTP %d): %s", statusCode, serverErrorDetail(respBody, token))
 	}
+}
+
+func postBundleDryRun(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, opts postBundleOptions) (controlplane.PublishEvaluation, error) {
+	opts.dryRun = true
+	statusCode, respBody, err := postBundleRaw(ctx, client, baseURL, token, bundle, opts)
+	if err != nil {
+		return controlplane.PublishEvaluation{}, err
+	}
+	switch statusCode {
+	case http.StatusOK:
+		var eval controlplane.PublishEvaluation
+		if err := json.Unmarshal(respBody, &eval); err != nil {
+			return controlplane.PublishEvaluation{}, fmt.Errorf("decode publish dry-run response: %w", err)
+		}
+		if err := requireDryRunEvaluation("publish", eval.DryRun); err != nil {
+			return controlplane.PublishEvaluation{}, err
+		}
+		return eval, nil
+	case http.StatusCreated:
+		return controlplane.PublishEvaluation{}, errors.New("conductor returned 201 Created for publish dry-run; refusing ambiguous mutating response")
+	case http.StatusForbidden, http.StatusUnauthorized:
+		return controlplane.PublishEvaluation{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", statusCode, serverErrorDetail(respBody, token))
+	default:
+		return controlplane.PublishEvaluation{}, fmt.Errorf("conductor rejected publish dry-run (HTTP %d): %s", statusCode, serverErrorDetail(respBody, token))
+	}
+}
+
+func postBundleRaw(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, opts postBundleOptions) (int, []byte, error) {
+	envelope := struct {
+		Bundle          conductorcore.PolicyBundle `json:"bundle"`
+		AllowFleetSkew  bool                       `json:"allow_fleet_skew,omitempty"`
+		FleetSkewReason string                     `json:"fleet_skew_reason,omitempty"`
+		DryRun          bool                       `json:"dry_run,omitempty"`
+	}{Bundle: bundle, AllowFleetSkew: opts.allowFleetSkew, FleetSkewReason: strings.TrimSpace(opts.fleetSkewReason), DryRun: opts.dryRun}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return 0, nil, fmt.Errorf("marshal publish request: %w", err)
+	}
+	endpointPath := controlplane.PublishPolicyBundlePath
+	if opts.dryRun {
+		endpointPath = controlplane.PublishPolicyEvaluatePath
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + endpointPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build publish request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("publish request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := readPublishResponseBody(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+func readPublishResponseBody(r io.Reader) ([]byte, error) {
+	return readCappedResponseBody(r, publishMaxResponseBytes)
 }
 
 type publishResult struct {
@@ -844,6 +920,27 @@ func writePublishPreflight(out io.Writer, p controlplane.PublishPreflightSummary
 		_, _ = fmt.Fprintf(out, "accepted fleet skew with --allow-fleet-skew: unsupported=%d stale/unseen=%d last-apply-failed=%d; prefer a narrow --audience canary when possible\n",
 			p.Unsupported, p.StaleUnseen, p.LastApplyFailed)
 	}
+}
+
+func writePublishEvaluation(out io.Writer, eval controlplane.PublishEvaluation) {
+	writePublishEvaluationLabeled(out, "dry-run policy bundle", eval)
+}
+
+func writePublishEvaluationLabeled(out io.Writer, label string, eval controlplane.PublishEvaluation) {
+	_, _ = fmt.Fprintf(out, "%s valid=%t would_create=%t result_version=%d result_hash=%s conflict=%s\n",
+		label,
+		eval.Valid, eval.WouldCreate, eval.ResultVersion, eval.ResultHash, eval.Conflict)
+	if eval.HasCurrentHead {
+		_, _ = fmt.Fprintf(out, "current head version=%d hash=%s\n", eval.CurrentHeadVersion, eval.CurrentHeadHash)
+	}
+	writePublishPreflight(out, eval.Preflight)
+}
+
+func requireDryRunEvaluation(kind string, dryRun bool) error {
+	if dryRun {
+		return nil
+	}
+	return fmt.Errorf("conductor %s dry-run response missing dry_run=true; refusing ambiguous response", kind)
 }
 
 // conflictSentinel selects the distinct CLI sentinel for an HTTP 409 publish
@@ -992,7 +1089,10 @@ func resolveAutoHash(ctx context.Context, opts publishOptions) (string, error) {
 		return "", fmt.Errorf("stream-status request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, publishMaxResponseBytes))
+	body, err := readPublishResponseBody(resp.Body)
+	if err != nil {
+		return "", err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("stream-status returned HTTP %d: %s", resp.StatusCode, serverErrorDetail(body, token))
 	}

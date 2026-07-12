@@ -309,17 +309,22 @@ func loadBearerToken(path string) (string, error) {
 // the request (under-threshold, expired window, wrong purpose) instead of a bare
 // status code. The body read is capped to maxEmergencyResponseBytes.
 func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, path, bearer string, reqBody, out any) error {
+	_, err := postEmergencyJSONStatus(ctx, client, baseURL, path, bearer, reqBody, out)
+	return err
+}
+
+func postEmergencyJSONStatus(ctx context.Context, client emergencyTransport, baseURL, path, bearer string, reqBody, out any) (int, error) {
 	baseURL, _, err := conductorWriteBaseURL(baseURL)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		return 0, fmt.Errorf("marshal request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return 0, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -328,22 +333,33 @@ func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("conductor request: %w", err)
+		return 0, fmt.Errorf("conductor request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEmergencyResponseBytes))
+	body, err := readCappedResponseBody(resp.Body, maxEmergencyResponseBytes)
 	if err != nil {
-		return fmt.Errorf("read conductor response: %w", err)
+		return resp.StatusCode, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("conductor rejected request: status=%d body=%s", resp.StatusCode, emergencySnippet(body, bearer))
+		return resp.StatusCode, fmt.Errorf("conductor rejected request: status=%d body=%s", resp.StatusCode, emergencySnippet(body, bearer))
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
-			return fmt.Errorf("decode conductor response: %w", err)
+			return resp.StatusCode, fmt.Errorf("decode conductor response: %w", err)
 		}
 	}
-	return nil
+	return resp.StatusCode, nil
+}
+
+func readCappedResponseBody(r io.Reader, maxBytes int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read conductor response: %w", err)
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("conductor response exceeds %d bytes", maxBytes)
+	}
+	return body, nil
 }
 
 func conductorWriteBaseURL(rawBaseURL string) (string, string, error) {

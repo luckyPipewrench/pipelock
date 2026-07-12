@@ -5,22 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pipelock compliance console</title>
   <style>
-    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e7edf7; }
-    body { margin: 0; background: #0b1020; color: #e7edf7; }
+    :root {
+      color-scheme: dark;
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     .page { max-width: 1180px; margin: 0 auto; padding: 2rem; }
-    h1, h2, h3 { color: #fff; } h2 { margin-top: 2.5rem; }
-    .notice { border: 1px solid #64748b; background: #111827; padding: 1rem; border-radius: .5rem; }
-    .warning { border-color: #d97706; color: #fde68a; }
+    h1, h2, h3 { color: var(--text); } h2 { margin-top: 2.5rem; }
+    .notice { border: 1px solid var(--border-strong); background: var(--bg-elevated); padding: 1rem; border-radius: .5rem; }
+    .warning { border-color: rgba(245,158,11,0.7); color: var(--warn); }
     table { width: 100%; border-collapse: collapse; margin: 1rem 0 2rem; }
-    th, td { text-align: left; vertical-align: top; padding: .7rem; border-bottom: 1px solid #334155; }
-    th { color: #cbd5e1; }
-    .status { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-weight: 700; }
-    .covered { background: #14532d; color: #bbf7d0; }
-    .partial { background: #78350f; color: #fde68a; }
-    .not-covered { background: #7f1d1d; color: #fecaca; }
-    .backed { color: #bbf7d0; } .missing { color: #fecaca; }
-    .sub { color: #94a3b8; font-size: .9rem; margin-top: .25rem; }
-    code { color: #bfdbfe; }
+    th, td { text-align: left; vertical-align: top; padding: .7rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); }
+    .status { display: inline-block; padding: .15rem .5rem; border: 1px solid transparent; border-radius: 999px; font-weight: 700; }
+    .covered { background: rgba(0,229,160,0.12); border-color: rgba(0,229,160,0.30); color: var(--accent); }
+    .partial { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.35); color: var(--warn); }
+    .not-covered { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35); color: var(--danger); }
+    .backed { color: var(--accent); } .missing { color: var(--danger); }
+    .sub { color: var(--text-muted); font-size: .9rem; margin-top: .25rem; }
+    code { color: var(--accent); }
   </style>
 </head>
 <body>

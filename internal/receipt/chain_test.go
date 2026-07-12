@@ -760,6 +760,31 @@ func TestExtractReceipts_RawJSONLRejectsMissingFieldsTail(t *testing.T) {
 	}
 }
 
+func TestExtractReceipts_RawJSONLRejectsOverCapFile(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	paddingLen := int(recorder.MaxEvidenceReadFileBytes) + 1
+	r.Ext = json.RawMessage(`{"pad":"` + strings.Repeat("x", paddingLen) + `"}`)
+	data, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if len(data) <= int(recorder.MaxEvidenceReadFileBytes) {
+		t.Fatalf("test receipt is %d bytes, want over cap %d", len(data), recorder.MaxEvidenceReadFileBytes)
+	}
+	path := filepath.Join(t.TempDir(), "raw-over-cap.jsonl")
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err = ExtractReceipts(path)
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ExtractReceipts error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
 func TestExtractReceipts_RawJSONLIgnoresNonReceiptFile(t *testing.T) {
 	t.Parallel()
 

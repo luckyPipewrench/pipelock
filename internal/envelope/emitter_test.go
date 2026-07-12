@@ -643,6 +643,18 @@ func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 	}
 }
 
+func TestBufferRequestBodyZeroMaxFailsClosedOverDefaultCap(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Repeat("Z", defaultBufferRequestBodyMaxBytes+1)
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(body))
+
+	_, err := bufferRequestBody(req, 0)
+	if !errors.Is(err, ErrRequestBodyReadLimitExceeded) {
+		t.Fatalf("bufferRequestBody error = %v, want ErrRequestBodyReadLimitExceeded", err)
+	}
+}
+
 // assertOverCapSignatureVerifies reconstructs the RFC 9421 signature
 // base from the signed request (without content-digest, which is what
 // the over-cap path drops) and runs ed25519.Verify against the

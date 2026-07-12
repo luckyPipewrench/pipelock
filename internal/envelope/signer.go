@@ -119,15 +119,15 @@ type SignerConfig struct {
 	SignedComponents []string
 
 	// MaxBodyBytes caps the size of body the Signer is willing to
-	// buffer when it has to compute Content-Digest itself. Zero is
-	// treated by SignRequest as "do not cap" - SignRequest will
-	// accept any body the caller hands it. The proxy fills this from
+	// buffer when it has to compute Content-Digest itself. Zero falls
+	// back to the package's defensive default when InjectAndSign has
+	// to buffer req.Body itself. SignRequest still accepts any body
+	// bytes the caller explicitly hands it. The proxy fills this from
 	// MediationEnvelope.MaxBodyBytes. Note: the config validator at
 	// internal/config/config.go:validateMediationEnvelope replaces a
 	// zero field with the DefaultEnvelopeSignMaxBodyBytes constant
 	// (1 MiB) at load time, so in the CLI-facing path a zero value
-	// never reaches this field. Test callers that construct a Signer
-	// directly can still pass MaxBodyBytes=0 to opt out of the cap.
+	// never reaches this field.
 	MaxBodyBytes int
 
 	// Expires is the per-signature lifetime emitted as

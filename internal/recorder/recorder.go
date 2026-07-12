@@ -5,10 +5,10 @@ package recorder
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -852,7 +852,7 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		return err
 	}
 	for i := len(files) - 1; i >= 0; i-- {
-		entries, readErr := ReadEntries(files[i])
+		entries, readErr := readEntriesForResume(files[i])
 		if readErr != nil {
 			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
 		}
@@ -891,7 +891,7 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 
 func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 	dir := filepath.Clean(r.cfg.Dir)
-	dirEntries, err := os.ReadDir(dir)
+	dirEntries, err := readDirectoryEntries(dir, MaxEvidenceReadDirectoryEntries)
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
@@ -912,6 +912,21 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 		return extractSeqStart(files[i]) < extractSeqStart(files[j])
 	})
 	return files, nil
+}
+
+func readEntriesForResume(path string) ([]Entry, error) {
+	data, err := ReadEvidenceFileBounded(path, MaxEvidenceReadFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	entries, truncated, err := readEntriesFromReader(bytes.NewReader(data), MaxEvidenceReadEntries)
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, filepath.Base(path), MaxEvidenceReadEntries)
+	}
+	return entries, nil
 }
 
 // ensureFile opens a JSONL file if none is open.
@@ -1118,17 +1133,11 @@ func isEvidenceFile(name string) bool {
 
 // ComputeFileHash computes SHA-256 of an evidence file for external verification.
 func ComputeFileHash(path string) (string, error) {
-	f, err := os.Open(filepath.Clean(path))
+	hash, err := computeEvidenceFileHashBounded(path, MaxEvidenceReadFileBytes)
 	if err != nil {
-		return "", fmt.Errorf("opening file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
 		return "", fmt.Errorf("hashing file: %w", err)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hash, nil
 }
 
 // maxCheckpointBound caps the checkpoint interval to a value that fits safely

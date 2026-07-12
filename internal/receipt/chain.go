@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -867,7 +866,7 @@ func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {
 }
 
 func extractRawReceiptsJSONLFile(path string) ([]Receipt, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := recorder.ReadEvidenceFileBounded(filepath.Clean(path), recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading raw receipts: %w", err)
 	}

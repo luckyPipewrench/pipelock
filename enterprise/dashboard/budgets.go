@@ -77,6 +77,7 @@ type AgentBudgetSessionView struct {
 
 // BudgetsOverview is the rendered budgets page.
 type BudgetsOverview struct {
+	Nav                  NavContext
 	SourceConfigured     bool
 	SourceUnavailable    bool
 	Claim                string

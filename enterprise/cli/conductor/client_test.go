@@ -72,6 +72,7 @@ func newTestClientServer(t *testing.T, token string, handler http.Handler) clien
 	srv.TLS = &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAnyClientCert,
 	}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
@@ -123,6 +124,10 @@ func TestNewConductorClientValidatesFlags(t *testing.T) {
 		{"empty server", func(o *clientOptions) { o.server = "" }, "--server is required"},
 		{"non-https", func(o *clientOptions) { o.server = "http://x" }, "scheme must be https"},
 		{"missing host", func(o *clientOptions) { o.server = "https://" }, "missing host"},
+		{"server userinfo", func(o *clientOptions) { o.server = "https://operator:token@127.0.0.1:8895" }, "must not include userinfo"},
+		{"server path", func(o *clientOptions) { o.server = "https://127.0.0.1:8895/conductor" }, "must not include userinfo"},
+		{"server query", func(o *clientOptions) { o.server = "https://127.0.0.1:8895?path=/other" }, "must not include userinfo"},
+		{"server fragment", func(o *clientOptions) { o.server = "https://127.0.0.1:8895#followers" }, "must not include userinfo"},
 		{"missing ca", func(o *clientOptions) { o.caFile = "" }, "--ca-file is required"},
 		{"missing cert", func(o *clientOptions) { o.clientCertFile = "" }, "--client-cert is required"},
 		{"missing key", func(o *clientOptions) { o.clientKeyFile = "" }, "--client-key is required"},
@@ -137,6 +142,51 @@ func TestNewConductorClientValidatesFlags(t *testing.T) {
 				t.Fatalf("newConductorClient() error = %v, want contains %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestNewConductorClientRejectsEmptyTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "f")
+	emptyToken := filepath.Join(dir, "empty-token")
+	writeClientFile(t, good, []byte("x"))
+	writeClientFile(t, emptyToken, []byte(" \n"))
+	_, err := newConductorClient(clientOptions{
+		server:         "https://127.0.0.1:8895",
+		caFile:         good,
+		clientCertFile: good,
+		clientKeyFile:  good,
+		tokenFile:      emptyToken,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--token-file is empty") {
+		t.Fatalf("newConductorClient() error = %v, want empty token error", err)
+	}
+}
+
+func TestNewConductorClientTLSConfigRequiresTLS13AndVerification(t *testing.T) {
+	opts := newTestClientServer(t, "operator-token", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	client, err := newConductorClient(opts)
+	if err != nil {
+		t.Fatalf("newConductorClient() error = %v", err)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil {
+		t.Fatalf("transport TLS config missing: %#v", client.httpClient.Transport)
+	}
+	tlsConfig := transport.TLSClientConfig
+	if tlsConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %x, want TLS 1.3", tlsConfig.MinVersion)
+	}
+	if tlsConfig.InsecureSkipVerify {
+		t.Fatal("InsecureSkipVerify enabled")
+	}
+	if tlsConfig.RootCAs == nil {
+		t.Fatal("RootCAs not configured")
+	}
+	if len(tlsConfig.Certificates) != 1 {
+		t.Fatalf("client certificates = %d, want 1", len(tlsConfig.Certificates))
 	}
 }
 
@@ -187,6 +237,83 @@ func TestConductorClientGetJSONPropagatesStatusErrors(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "operator-token") {
 		t.Fatalf("getJSON() error leaked bearer token: %q", err.Error())
+	}
+}
+
+func TestConductorReadClientListFollowersUsesGETAndBoundsBody(t *testing.T) {
+	var gotMethod, gotPath string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"followers":[],"count":0}`))
+	})
+	opts := newTestClientServer(t, "operator-token", handler)
+	client, err := NewReadClient(ReadClientOptions{
+		Server:         opts.server,
+		CAFile:         opts.caFile,
+		ClientCertFile: opts.clientCertFile,
+		ClientKeyFile:  opts.clientKeyFile,
+		TokenFile:      opts.tokenFile,
+		ServerName:     opts.serverName,
+	})
+	if err != nil {
+		t.Fatalf("NewReadClient() error = %v", err)
+	}
+	body, err := client.ListFollowers(context.Background(), "org-main", "prod", 25)
+	if err != nil {
+		t.Fatalf("ListFollowers() error = %v", err)
+	}
+	if !bytes.Contains(body, []byte(`"followers"`)) {
+		t.Fatalf("ListFollowers() body = %q", body)
+	}
+	if gotMethod != http.MethodGet {
+		t.Fatalf("method = %q, want GET", gotMethod)
+	}
+	if gotPath != "/api/v1/conductor/followers?fleet_id=prod&limit=25&org_id=org-main" {
+		t.Fatalf("path = %q", gotPath)
+	}
+}
+
+func TestConductorClientGetJSONRefusesRedirects(t *testing.T) {
+	redirectTargetHit := false
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirectTargetHit = true
+	}))
+	t.Cleanup(target.Close)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		http.Redirect(w, r, target.URL+"/internal-metadata", http.StatusTemporaryRedirect)
+	})
+	opts := newTestClientServer(t, "operator-token", handler)
+	client, err := newConductorClient(opts)
+	if err != nil {
+		t.Fatalf("newConductorClient() error = %v", err)
+	}
+	_, err = client.getJSON(context.Background(), "/api/v1/conductor/followers?org_id=org-main")
+	if err == nil || !strings.Contains(err.Error(), "redirects are not allowed") {
+		t.Fatalf("getJSON() error = %v, want redirect refusal", err)
+	}
+	if redirectTargetHit {
+		t.Fatal("redirect target was reached")
+	}
+}
+
+func TestConductorClientGetJSONRejectsOversizedBody(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bytes.Repeat([]byte("x"), clientMaxBodyBytes+1))
+	})
+	opts := newTestClientServer(t, "operator-token", handler)
+	client, err := newConductorClient(opts)
+	if err != nil {
+		t.Fatalf("newConductorClient() error = %v", err)
+	}
+	_, err = client.getJSON(context.Background(), "/api/v1/conductor/followers?org_id=org-main")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("getJSON() error = %v, want response limit", err)
 	}
 }
 

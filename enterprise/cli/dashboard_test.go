@@ -128,7 +128,7 @@ func TestDashboardCmd_Tree(t *testing.T) {
 	if err != nil || serve.Use != "serve" {
 		t.Fatalf("dashboard serve subcommand not found: %v", err)
 	}
-	for _, flag := range []string{"listen", "receipt-dir", "config", "exemption-store", "delivery-inbox", "read-model-index", "legal-hold-store", "auth-token-file", "raw-token-file", "compliance-token-file", "runtime-snapshot-file", "trusted-signer", "license-crl-file", "anchor-expected", "anchor-local-log", "rekor-log-key", "tls-cert", "tls-key", "client-ca-file", "require-client-cert", "client-cert-role-map"} {
+	for _, flag := range []string{"listen", "receipt-dir", "config", "exemption-store", "delivery-inbox", "read-model-index", "legal-hold-store", "auth-token-file", "raw-token-file", "compliance-token-file", "runtime-snapshot-file", "trusted-signer", "license-crl-file", "anchor-expected", "anchor-local-log", "rekor-log-key", "tls-cert", "tls-key", "client-ca-file", "require-client-cert", "client-cert-role-map", "conductor-url", "conductor-token-file", "conductor-tls-cert", "conductor-tls-key", "conductor-server-ca", "conductor-org", "conductor-fleet"} {
 		if serve.Flags().Lookup(flag) == nil {
 			t.Errorf("serve is missing --%s", flag)
 		}

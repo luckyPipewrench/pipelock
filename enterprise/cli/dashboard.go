@@ -81,6 +81,13 @@ type dashboardServeOptions struct {
 	oidcClientID        string
 	oidcRoleClaim       string
 	oidcRoleMap         string
+	conductorURL        string
+	conductorTokenFile  string
+	conductorTLSCert    string
+	conductorTLSKey     string
+	conductorServerCA   string
+	conductorOrg        string
+	conductorFleet      string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -163,6 +170,20 @@ because credentials would transit in cleartext.`,
 		"verified token claim containing role or group values")
 	cmd.Flags().StringVar(&opts.oidcRoleMap, "oidc-role-map", "",
 		`JSON object: {"claim_values":{"GROUP":"ROLE"},"roles":{"ROLE":["dashboard:evidence:read"]}}`)
+	cmd.Flags().StringVar(&opts.conductorURL, "conductor-url", "",
+		"optional Conductor HTTPS base URL for read-only fleet status")
+	cmd.Flags().StringVar(&opts.conductorTokenFile, "conductor-token-file", "",
+		"file containing the Conductor read bearer token; required with --conductor-url")
+	cmd.Flags().StringVar(&opts.conductorTLSCert, "conductor-tls-cert", "",
+		"client certificate for Conductor mTLS; required with --conductor-url")
+	cmd.Flags().StringVar(&opts.conductorTLSKey, "conductor-tls-key", "",
+		"client private key for Conductor mTLS; required with --conductor-url")
+	cmd.Flags().StringVar(&opts.conductorServerCA, "conductor-server-ca", "",
+		"PEM CA bundle that signed the Conductor server certificate; required with --conductor-url")
+	cmd.Flags().StringVar(&opts.conductorOrg, "conductor-org", "",
+		"org id the dashboard is allowed to read from the Conductor; required with --conductor-url")
+	cmd.Flags().StringVar(&opts.conductorFleet, "conductor-fleet", "",
+		"fleet id the dashboard is allowed to read from the Conductor; required with --conductor-url")
 	_ = cmd.MarkFlagRequired("receipt-dir")
 	return cmd
 }
@@ -305,6 +326,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return err
 		}
 	}
+	conductorSource, err := newDashboardConductorSource(opts)
+	if err != nil {
+		return err
+	}
 	authorization := newDashboardRequestAuthorization(token, rawToken, complianceToken, oidcAuthenticator)
 	// Token/OIDC auth retains its metadata/raw split. When mTLS is enabled, the
 	// verified certificate's mapped role supplies both route and raw-view
@@ -319,6 +344,12 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
 
 	auditWriter := cmd.ErrOrStderr()
+	var authorizeFleetScope func(*http.Request, dashboard.DecisionScope, bool) error
+	var fleetSource dashboard.FleetDataSource
+	if conductorSource != nil {
+		fleetSource = conductorSource
+		authorizeFleetScope = dashboardConductorFleetScopeAuthorizer(opts.conductorOrg, opts.conductorFleet)
+	}
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          opts.receiptDir,
 		TrustedKeys:         trusted,
@@ -334,18 +365,15 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		AuthorizePermission: authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
-		AuditWriter: auditWriter,
-		// TODO(DASH-3A): wire live conductor source when dashboard serve owns a
-		// conductor audit/status store handle. Until then /fleet renders the
-		// read-only empty state instead of inventing a fake conductor client.
-		FleetSource: nil,
+		AuditWriter:         auditWriter,
+		AuthorizeFleetScope: authorizeFleetScope,
+		FleetSource:         fleetSource,
 		// TODO(DASH-3B): wire the read-only conductor decision replay/dry-run
-		// source when dashboard serve owns a conductor read handle. Until then
-		// /workbench renders its prepare guidance plus the unconfigured-replay
-		// state, and /incident renders the unconfigured-decision-source state.
-		// The seam is read-only by construction (no publish/kill/rollback
-		// method), so the dashboard holds no fleet-control authority even once
-		// wired.
+		// source when the dashboard's artifact_hash-only interface can be
+		// resolved to the signed artifact required by the Conductor replay
+		// endpoint. Until then /workbench renders its prepare guidance plus the
+		// unconfigured-replay state, and /incident renders the
+		// unconfigured-decision-source state.
 		ConductorSource: nil,
 		BudgetSource:    dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})

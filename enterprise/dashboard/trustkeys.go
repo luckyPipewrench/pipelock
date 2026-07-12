@@ -381,6 +381,7 @@ type TrustKeyRow struct {
 
 // TrustKeysPage is the complete read-only trust registry and chain-audit view.
 type TrustKeysPage struct {
+	Nav       NavContext
 	Keys      []TrustKeyRow
 	Audits    []ChainAudit
 	CRLStatus string

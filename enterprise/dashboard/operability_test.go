@@ -302,7 +302,8 @@ func TestDashboardRender_OversizedEvidenceIsUnverified(t *testing.T) {
 
 	handler := &dashboardHandler{model: NewReadModel(Options{ReceiptDir: sourceDir, ReadModelIndexPath: indexPath})}
 	response := httptest.NewRecorder()
-	handler.render(response, nil, "", false)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	handler.render(response, req, nil, "", false)
 	if body := response.Body.String(); !strings.Contains(body, "READ MODEL UNVERIFIED — source too large") {
 		t.Fatalf("dashboard did not report bounded verification failure: %s", body)
 	}

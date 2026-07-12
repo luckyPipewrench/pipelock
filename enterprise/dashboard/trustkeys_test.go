@@ -869,21 +869,21 @@ func TestBuildTrustKeyRows_CorruptCRLFailsClosed(t *testing.T) {
 func TestTrustKeysRouteUsesDedicatedPermission(t *testing.T) {
 	t.Parallel()
 
-	var got Permission
+	var got []Permission
 	handler := New(Options{
 		TrustedOuterAuth: true,
 		ReceiptDir:       t.TempDir(), HasFeature: allowAgentsFeature,
 		Authorize: func(*http.Request) error { return nil },
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
-			got = permission
+			got = append(got, permission)
 			return nil
 		},
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/trust-keys", nil)
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || got != PermissionTrustKeysRead {
-		t.Fatalf("status=%d permission=%q body=%s", rec.Code, got, rec.Body.String())
+	if rec.Code != http.StatusOK || len(got) == 0 || got[0] != PermissionTrustKeysRead {
+		t.Fatalf("status=%d permissions=%v body=%s", rec.Code, got, rec.Body.String())
 	}
 }
 

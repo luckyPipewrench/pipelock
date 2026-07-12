@@ -152,6 +152,7 @@ type DecisionReplayView struct {
 
 // WorkbenchPage is the rendered workbench view.
 type WorkbenchPage struct {
+	Nav              NavContext
 	NeverAuthority   string
 	PrepareSteps     []PrepareStep
 	ReplayClaim      string

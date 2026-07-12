@@ -287,6 +287,11 @@ func TestWorkbench_PrepareGuidanceAndNeverAuthority(t *testing.T) {
 		"pipelock conductor kill",
 		"pipelock conductor rollback",
 		"No conductor decision source configured",
+		`type="button" class="copy-command" hidden>Copy</button>`,
+		"navigator.clipboard.writeText(code.textContent)",
+		"white-space: pre-wrap",
+		"overflow-wrap: anywhere",
+		`<script nonce="`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("workbench body missing %q: %s", want, body)

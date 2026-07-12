@@ -77,12 +77,27 @@
     }
     .step h3 { margin: 0 0 4px; font-size: 14px; }
     pre {
-      overflow-x: auto;
+      overflow-x: visible;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
       background: #08080a;
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 10px 12px;
       margin: 8px 0 0;
+    }
+    .command-block { position: relative; }
+    .copy-command {
+      float: right;
+      margin: 8px 0 8px 10px;
+      background: var(--accent);
+      color: #050507;
+      border: 0;
+      border-radius: 4px;
+      padding: 5px 10px;
+      font-weight: 800;
+      font-size: 12px;
+      cursor: pointer;
     }
     code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
     .kv { display: grid; grid-template-columns: 220px 1fr; gap: 6px 16px; margin-top: 8px; }
@@ -132,7 +147,10 @@
         <div class="step">
           <h3>{{.Title}}</h3>
           <div class="muted">{{.Description}}</div>
-          <pre><code>{{.Command}}</code></pre>
+          <div class="command-block">
+            <button type="button" class="copy-command" hidden>Copy</button>
+            <pre><code>{{.Command}}</code></pre>
+          </div>
         </div>
       {{end}}
 
@@ -176,5 +194,29 @@
       {{end}}
     </div>
   </main>
+  <script nonce="{{.Nav.ScriptNonce}}">
+  (function() {
+    if (!navigator.clipboard) {
+      return;
+    }
+    document.querySelectorAll(".copy-command").forEach(function(button) {
+      button.hidden = false;
+      button.addEventListener("click", function() {
+        var block = button.closest(".command-block");
+        var code = block && block.querySelector("code");
+        if (!code) {
+          return;
+        }
+        navigator.clipboard.writeText(code.textContent).then(function() {
+          var previous = button.textContent;
+          button.textContent = "Copied";
+          window.setTimeout(function() {
+            button.textContent = previous;
+          }, 1200);
+        });
+      });
+    });
+  }());
+  </script>
 </body>
 </html>

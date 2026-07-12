@@ -155,8 +155,8 @@ func TestHandler_AgentsRendersGroups(t *testing.T) {
 		t.Fatal("body should show 'chains broken' rollup label")
 	}
 	// CSP headers set by gate.
-	if got := rec.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
-		t.Fatalf("CSP = %q, want %q", got, contentSecurityPolicy)
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, contentSecurityPolicy) || !strings.Contains(got, "script-src 'self' 'nonce-") {
+		t.Fatalf("CSP = %q, want dashboard base policy plus script nonce", got)
 	}
 }
 

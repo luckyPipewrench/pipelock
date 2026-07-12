@@ -114,8 +114,17 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 	if !strings.Contains(body, "Scorecard") {
 		t.Fatal("allowed response should render scorecard")
 	}
-	if got := rec.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
-		t.Fatalf("CSP = %q, want %q", got, contentSecurityPolicy)
+	for _, want := range []string{
+		"scrollbar-color:rgba(0,229,160,0.45) transparent",
+		"*::-webkit-scrollbar{width:10px;height:10px;}",
+		"*::-webkit-scrollbar-thumb{background:rgba(0,229,160,0.35);border-radius:8px;}",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("shared dashboard header missing %q", want)
+		}
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, contentSecurityPolicy) || !strings.Contains(got, "script-src 'self' 'nonce-") {
+		t.Fatalf("CSP = %q, want dashboard base policy plus script nonce", got)
 	}
 	for header, want := range map[string]string{
 		"Cache-Control":          "no-store",
@@ -124,6 +133,25 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 	} {
 		if got := rec.Header().Get(header); got != want {
 			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestHandler_FaviconServedWithoutDashboardRoute404(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/favicon.ico", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("favicon status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != contentTypeSVG {
+		t.Fatalf("favicon content type = %q, want %q", got, contentTypeSVG)
+	}
+	for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `#00e5a0`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("favicon body missing %q: %s", want, rec.Body.String())
 		}
 	}
 }
@@ -238,8 +266,8 @@ func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}
 	}
-	if got := rec.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
-		t.Fatalf("CSP = %q, want %q", got, contentSecurityPolicy)
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, contentSecurityPolicy) || !strings.Contains(got, "script-src 'self' 'nonce-") {
+		t.Fatalf("CSP = %q, want dashboard base policy plus script nonce", got)
 	}
 	if !strings.Contains(audit.String(), "path=\"/exemptions\"") {
 		t.Fatalf("audit should record exemptions path; got %q", audit.String())
@@ -593,7 +621,7 @@ func TestHandler_SharedNavMatchesRouteGateAuthorization(t *testing.T) {
 			}
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents?ignored=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E", nil)
 			want := expectedNavRouteSpecsForGate(t, d, req)
-			got := d.navContext(req, &routeAuthorizationCache{})
+			got := d.navContext(req, &routeAuthorizationCache{}, "test-nonce")
 			assertNavContextMatchesSpecs(t, got, want, "agents")
 		})
 	}

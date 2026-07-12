@@ -19,6 +19,11 @@
 .topbar .nav a:hover{background:rgba(255,255,255,0.05);border-color:var(--border,rgba(255,255,255,0.07));color:var(--text,#e2e8f0);opacity:1;}
 .topbar .nav a.active{color:var(--accent,#00e5a0);background:rgba(0,229,160,0.12);border-color:rgba(0,229,160,0.30);font-weight:600;}
 .topbar .nav .nav-badge{font-family:var(--font-mono,ui-monospace,monospace);font-size:0.66rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--text-dim,#64748b);background:transparent;border:1px solid var(--border,rgba(255,255,255,0.09));border-radius:999px;padding:0.22rem 0.6rem;margin-left:0.35rem;}
+html,.table-wrap,.table,.opaque-cell,pre,main{scrollbar-color:rgba(0,229,160,0.45) transparent;scrollbar-width:thin;}
+*::-webkit-scrollbar{width:10px;height:10px;}
+*::-webkit-scrollbar-track{background:transparent;}
+*::-webkit-scrollbar-thumb{background:rgba(0,229,160,0.35);border-radius:8px;}
+*::-webkit-scrollbar-thumb:hover{background:rgba(0,229,160,0.55);}
 @media (max-width:760px){.topbar{padding:0.65rem 1rem;gap:0.75rem;}.topbar .nav a{padding:0.38rem 0.55rem;font-size:0.78rem;}}
 </style>
 <header class="topbar">

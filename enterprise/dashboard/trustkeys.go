@@ -24,19 +24,24 @@ import (
 )
 
 const (
-	AnchorNotExpected = "not expected"
-	AnchorMissing     = "missing"
-	AnchorCurrent     = "current"
-	AnchorStale       = "stale"
-	AnchorFailure     = "failure"
+	AnchorNotExpected  = "not expected"
+	AnchorMissing      = "missing"
+	AnchorCurrent      = "current"
+	AnchorStale        = "stale"
+	AnchorFailure      = "failure"
+	AnchorUnconfigured = "not configured - cannot verify"
 
 	RevocationNotConfigured = "CRL not configured"
 	RevocationFailure       = "FAILURE: CRL could not be verified"
 	RevocationUnbound       = "FAILURE: receipt key has no verified CRL serial binding"
 
+	localAnchorLogPathRequired = "local anchor log path is required to verify local anchor"
+
 	maxAnchorMarkerBytes = 64 * 1024
 	maxAnchorBundleBytes = 1024 * 1024
 )
+
+var errLocalAnchorLogPathRequired = errors.New(localAnchorLogPathRequired)
 
 // ChainAuditInput contains the evidence and explicit trust material needed for
 // one read-only consistency audit. AnchorExpected is an operator policy input;
@@ -234,7 +239,7 @@ func anchorBackend(bundle anchor.Bundle, localLogPath string, rekorKeys []crypto
 	switch bundle.Backend {
 	case anchor.LocalBackend:
 		if strings.TrimSpace(localLogPath) == "" {
-			return nil, errors.New("local anchor log path is required to verify local anchor")
+			return nil, errLocalAnchorLogPathRequired
 		}
 		return anchor.LocalLog{Path: localLogPath, LogID: bundle.Proof.LogID}, nil
 	case anchor.RekorBackend:
@@ -413,10 +418,15 @@ func (m *ReadModel) TrustKeys() (TrustKeysPage, error) {
 			input.AnchorBundle, input.AnchorBackend, input.AnchorExpected, readErr = m.anchorResolver(id)
 			if readErr != nil {
 				audit := AuditReceiptChain(ChainAuditInput{SessionID: id, Receipts: receipts, TrustedKeys: trustedKeys})
-				audit.Consistent = false
-				audit.Failures++
-				audit.AnchorStatus = AnchorFailure
-				audit.Detail += "; anchor audit FAILURE: " + readErr.Error()
+				if isAnchorBackendUnconfigured(readErr) {
+					audit.AnchorStatus = AnchorUnconfigured
+					audit.Detail += "; anchor audit not configured: cannot verify local anchor"
+				} else {
+					audit.Consistent = false
+					audit.Failures++
+					audit.AnchorStatus = AnchorFailure
+					audit.Detail += "; anchor audit FAILURE: " + readErr.Error()
+				}
 				audits = append(audits, audit)
 				continue
 			}
@@ -446,6 +456,10 @@ func (m *ReadModel) TrustKeys() (TrustKeysPage, error) {
 		page.CRLDetail = fmt.Sprintf("generation %d; payload SHA-256 %s", crl.Payload.Generation, crl.SHA256)
 	}
 	return page, nil
+}
+
+func isAnchorBackendUnconfigured(err error) bool {
+	return errors.Is(err, errLocalAnchorLogPathRequired) || (err != nil && err.Error() == localAnchorLogPathRequired)
 }
 
 // TrustKeyFingerprint returns the SHA-256 fingerprint of the actual Ed25519

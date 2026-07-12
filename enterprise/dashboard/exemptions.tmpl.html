@@ -157,6 +157,8 @@
     .opaque-cell { display: block; max-width: 260px; overflow-x: auto; }
     .attrs .opaque-cell { display: inline-block; max-width: 100%; vertical-align: top; }
     .opaque-value { display: inline-block; min-width: 0; max-width: 100%; word-break: break-all; overflow-wrap: anywhere; }
+    .knob-cell .opaque-cell { overflow: hidden; }
+    .knob-cell .opaque-value { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; overflow-wrap: normal; }
     .attrs { display: grid; gap: 4px; }
     .attr-name { color: var(--text-dim); }
     .empty {
@@ -266,7 +268,7 @@
                   {{range .Inventory.Entries}}
                     <tr>
                       <td>{{.Scanner}}</td>
-                      <td class="mono"><div class="opaque-cell"><span class="opaque-value">{{.Knob}}</span></div></td>
+                      <td class="mono knob-cell" title="{{.Knob}}"><div class="opaque-cell"><span class="opaque-value">{{.Knob}}</span></div></td>
                       <td class="scope mono"><div class="opaque-cell"><span class="opaque-value">{{.Scope}}</span></div></td>
                       <td>
                         {{if .Attributes}}

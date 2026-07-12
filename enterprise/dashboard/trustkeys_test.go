@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -935,6 +936,67 @@ func TestTrustKeysTemplateEscapesHostileMetadata(t *testing.T) {
 	for _, escaped := range []string{"&lt;script&gt;", "&lt;img", "&lt;svg"} {
 		if !strings.Contains(body, escaped) {
 			t.Fatalf("escaped hostile metadata missing %q from %s", escaped, body)
+		}
+	}
+}
+
+func TestTrustKeysAnchorUnconfiguredRendersAmberNotFailure(t *testing.T) {
+	t.Parallel()
+
+	dir, trusted := writeTrustedHandlerSession(t)
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		HasFeature:       allowAgentsFeature,
+		TrustedKeys:      trusted,
+		AnchorResolver: func(string) (*anchor.Bundle, anchor.Backend, bool, error) {
+			return nil, nil, true, errors.New(localAnchorLogPathRequired)
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/trust-keys", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="warn">` + AnchorUnconfigured,
+		"anchor audit not configured: cannot verify local anchor",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("unconfigured anchor body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `class="fail">`+AnchorUnconfigured) || strings.Contains(body, "anchor audit FAILURE: "+localAnchorLogPathRequired) {
+		t.Fatalf("unconfigured anchor rendered as failure: %s", body)
+	}
+}
+
+func TestTrustKeysAnchorResolverMismatchRendersRedFailure(t *testing.T) {
+	t.Parallel()
+
+	dir, trusted := writeTrustedHandlerSession(t)
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		HasFeature:       allowAgentsFeature,
+		TrustedKeys:      trusted,
+		AnchorResolver: func(string) (*anchor.Bundle, anchor.Backend, bool, error) {
+			return nil, nil, true, errors.New("anchor bundle hash does not match anchor-state marker")
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/trust-keys", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"anchor audit FAILURE: anchor bundle hash does not match anchor-state marker",
+		`class="fail">` + AnchorFailure,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("anchor mismatch body missing %q: %s", want, body)
 		}
 	}
 }

@@ -564,6 +564,8 @@ func TestHandler_ExemptionsLongOpaqueValuesUseOverflowGuards(t *testing.T) {
 		`<div class="opaque-cell"><span class="opaque-value">` + escapedGlob + `</span></div>`,
 		`<div class="dim mono opaque-cell"><span class="opaque-value">` + escapedInertDomain + `</span></div>`,
 		`<span class="mono opaque-cell"><span class="opaque-value">` + longRule + `</span></span>`,
+		`<td class="mono knob-cell" title="` + diag.ConfigScopeResponseExemptDomains + `"><div class="opaque-cell"><span class="opaque-value">` + diag.ConfigScopeResponseExemptDomains + `</span></div></td>`,
+		`.knob-cell .opaque-value { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; overflow-wrap: normal; }`,
 		`word-break: break-all`,
 		`overflow-x: auto`,
 	} {

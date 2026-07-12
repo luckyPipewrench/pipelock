@@ -269,7 +269,16 @@ func TestFleetOverview_FailClosedScopeAuthorization(t *testing.T) {
 func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 	t.Parallel()
 
-	source := &fakeFleetSource{followers: testFleetFollowers()}
+	followers := append(testFleetFollowers(), FleetFollowerView{
+		OrgID:       fleetTestOrgID,
+		FleetID:     fleetTestFleetID,
+		InstanceID:  "instance-delta",
+		Environment: "prod",
+		Active:      true,
+		FleetHealth: "stale",
+		Drift:       "unknown",
+	})
+	source := &fakeFleetSource{followers: followers}
 	handler := New(Options{
 		TrustedOuterAuth:    true,
 		ReceiptDir:          t.TempDir(),
@@ -302,7 +311,9 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 		`<span class="chip verified">Verified</span>`,
 		`<span class="chip signed-unverified">Signed, not verified</span>`,
 		`<span class="chip unsigned">Unsigned/self-reported</span>`,
+		`<span class="chip no-report">No signed applied-state yet</span>`,
 		"Unsigned rows are self-reported runtime status",
+		"health stale",
 		"active v<span class=\"mono\">7</span>",
 		fleetTestVersion,
 	} {
@@ -312,6 +323,9 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 	}
 	if strings.Count(body, `<span class="chip verified">Verified</span>`) != 1 {
 		t.Fatalf("Verified badge count = %d, want 1; body=%s", strings.Count(body, `<span class="chip verified">Verified</span>`), body)
+	}
+	if strings.Contains(body, "No applied-state report") || strings.Contains(body, `<span class="chip missing">No signed applied-state yet</span>`) {
+		t.Fatalf("no-report state rendered as red/missing failure: %s", body)
 	}
 }
 
@@ -583,11 +597,11 @@ func TestFleetOverview_DisplayHelperBranches(t *testing.T) {
 	if got := inactive.EnrollmentLabel(); got != "inactive" {
 		t.Fatalf("EnrollmentLabel() = %q, want inactive", got)
 	}
-	if got := inactive.SourceLabel(); got != "No applied-state report" {
+	if got := inactive.SourceLabel(); got != fleetStatusNoSignedState {
 		t.Fatalf("SourceLabel() = %q, want no-report label", got)
 	}
-	if got := inactive.SourceClass(); got != "missing" {
-		t.Fatalf("SourceClass() = %q, want missing", got)
+	if got := inactive.SourceClass(); got != "no-report" {
+		t.Fatalf("SourceClass() = %q, want no-report", got)
 	}
 	if got := redactedFleetString(" "); got != fleetEmptyDash {
 		t.Fatalf("redactedFleetString(empty) = %q, want %q", got, fleetEmptyDash)

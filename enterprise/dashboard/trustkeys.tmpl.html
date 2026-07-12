@@ -56,7 +56,7 @@
           <td><code>{{ .SessionID }}</code></td>
           <td class="{{ if .Consistent }}pass{{ else }}fail{{ end }}">{{ .Detail }}</td>
           <td>{{ .Gaps }} gaps / {{ .Forks }} forks</td>
-          <td class="{{ if or (eq .AnchorStatus "failure") (eq .AnchorStatus "missing") (eq .AnchorStatus "stale") }}fail{{ end }}">{{ .AnchorStatus }}</td>
+          <td class="{{ if eq .AnchorStatus "not configured - cannot verify" }}warn{{ else if or (eq .AnchorStatus "failure") (eq .AnchorStatus "missing") (eq .AnchorStatus "stale") }}fail{{ end }}">{{ .AnchorStatus }}</td>
           <td>local: <code>{{ if .LocalHead }}{{ .LocalHead }}{{ else }}unverified{{ end }}</code><br>anchored: <code>{{ if .AnchoredHead }}{{ .AnchoredHead }}{{ else }}absent{{ end }}</code></td>
         </tr>{{ end }}</tbody>
       </table></div>

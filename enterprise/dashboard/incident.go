@@ -28,6 +28,7 @@ type IncidentPage struct {
 	ScopeProvided bool
 	OrgID         string
 	FleetID       string
+	ArtifactHash  string
 
 	HasDecision     bool
 	DecisionMissing bool
@@ -66,6 +67,7 @@ func (m *ReadModel) Incident(ctx context.Context, scope DecisionScope, rawAllowe
 		RawAllowed:               rawAllowed,
 		OrgID:                    metadataScopeDisplay(scope.OrgID, rawAllowed),
 		FleetID:                  metadataScopeDisplay(scope.FleetID, rawAllowed),
+		ArtifactHash:             metadataScopeDisplay(scope.ArtifactHash, rawAllowed),
 		ScopeProvided:            scope.ArtifactHash != "",
 	}
 	if scope.ArtifactHash == "" {

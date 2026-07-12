@@ -53,6 +53,37 @@
     .muted { color: var(--text-muted); }
     .dim { color: var(--text-dim); }
     .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .scope-form {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      margin: 18px 0;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    .scope-form label { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .scope-form input[type="text"] {
+      width: min(100%, 230px);
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .scope-form button {
+      background: var(--accent);
+      color: #050507;
+      border: 0;
+      border-radius: 4px;
+      padding: 7px 16px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+    }
     .scope { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
     .scope-item { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 8px 10px; }
     .callout {
@@ -106,6 +137,22 @@
         <span class="scope-item">org <span class="mono">{{if .OrgID}}{{.OrgID}}{{else}}-{{end}}</span></span>
         <span class="scope-item">fleet <span class="mono">{{if .FleetID}}{{.FleetID}}{{else}}-{{end}}</span></span>
       </div>
+
+      <form class="scope-form" method="get" action="/incident">
+        <div>
+          <label for="incident-org">Org ID</label><br>
+          <input type="text" id="incident-org" name="org_id" value="{{if .ScopeProvided}}{{.OrgID}}{{end}}">
+        </div>
+        <div>
+          <label for="incident-fleet">Fleet ID</label><br>
+          <input type="text" id="incident-fleet" name="fleet_id" value="{{if .ScopeProvided}}{{.FleetID}}{{end}}">
+        </div>
+        <div>
+          <label for="incident-artifact">Artifact hash</label><br>
+          <input type="text" id="incident-artifact" name="artifact_hash" value="{{if .ScopeProvided}}{{.ArtifactHash}}{{end}}">
+        </div>
+        <button type="submit">Submit</button>
+      </form>
 
       <div class="callout muted">This cockpit reads and correlates; it never kills an agent, publishes, or mutates fleet state. It {{.NonClaim}}.</div>
       {{if not .RawAllowed}}

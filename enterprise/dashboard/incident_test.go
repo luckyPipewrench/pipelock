@@ -29,7 +29,17 @@ func TestIncident_ScopePromptWhenEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{incidentClaim, incidentNonClaim, "Supply", "never kills an agent"} {
+	for _, want := range []string{
+		incidentClaim,
+		incidentNonClaim,
+		`<form class="scope-form" method="get" action="/incident">`,
+		`name="org_id" value=""`,
+		`name="fleet_id" value=""`,
+		`name="artifact_hash" value=""`,
+		`<button type="submit">Submit</button>`,
+		"Supply",
+		"never kills an agent",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("incident body missing %q: %s", want, body)
 		}
@@ -86,6 +96,9 @@ func TestIncident_CorrelatesDecisionAndAppliedSummary(t *testing.T) {
 		"Rollback", "Divergence",
 		"verified applied", "signed, unverified", "unsigned/self-reported",
 		"followers",
+		`name="org_id" value="` + wbTestOrgID + `"`,
+		`name="fleet_id" value="` + wbTestFleetID + `"`,
+		`name="artifact_hash" value="` + wbTestArtifactHash + `"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("incident body missing %q: %s", want, body)

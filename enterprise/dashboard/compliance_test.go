@@ -250,6 +250,35 @@ func TestComplianceHTTPHasNoLegalHoldMutationAuthority(t *testing.T) {
 	}
 }
 
+func TestComplianceRejectsMalformedScopeBeforeFleetAuthorization(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAgentsFeature,
+		FleetSource:      &complianceFleetFake{},
+		AuthorizeFleetScope: func(*http.Request, DecisionScope, bool) error {
+			called = true
+			return nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(
+		context.Background(),
+		http.MethodGet,
+		"/compliance?org_id=../prod&fleet_id=fleet-a",
+		nil,
+	))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("fleet-scope authorizer was called before malformed compliance scope was rejected")
+	}
+}
+
 func TestRouteGateRejectsUnknownPermissionBeforeHandler(t *testing.T) {
 	t.Parallel()
 

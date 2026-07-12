@@ -7,8 +7,10 @@ package dashboard
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -27,9 +29,12 @@ import (
 const (
 	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 	contentTypeHTML       = "text/html; charset=utf-8"
+	contentTypeSVG        = "image/svg+xml; charset=utf-8"
 	contentTypeText       = "text/plain; charset=utf-8"
 	auditSessionMaxBytes  = 128
 )
+
+const dashboardFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#09090b"/><path d="M20 30v-8c0-7 5-12 12-12s12 5 12 12v8" fill="none" stroke="#00e5a0" stroke-width="6" stroke-linecap="round"/><rect x="16" y="28" width="32" height="24" rx="5" fill="#00e5a0"/><circle cx="32" cy="40" r="4" fill="#09090b"/></svg>`
 
 //go:embed nav.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html compliance.tmpl.html
 var templateFS embed.FS
@@ -71,6 +76,7 @@ type NavContext struct {
 	Active      string
 	ActiveLabel string
 	Entries     []NavEntry
+	ScriptNonce string
 }
 
 // NavEntry is one top-level dashboard link the current request is allowed to
@@ -309,10 +315,26 @@ func New(opts Options) http.Handler {
 		auditWriter:         opts.AuditWriter,
 		defaultFleetScope:   normalizeDecisionScope(opts.DefaultFleetScope),
 	}
+	mux.HandleFunc("/favicon.ico", handleFavicon)
 	for _, spec := range dashboardRouteSpecs() {
 		mux.Handle(spec.pattern, d.routeGate(spec, spec.handler(d)))
 	}
 	return mux
+}
+
+func handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeSVG)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write([]byte(dashboardFaviconSVG))
 }
 
 type dashboardHandler struct {
@@ -574,7 +596,12 @@ func (d *dashboardHandler) authorizeFleetScopeRequest(w http.ResponseWriter, r *
 
 func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		scriptNonce, err := newDashboardScriptNonce()
+		if err != nil {
+			http.Error(w, "could not initialize dashboard response", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", dashboardContentSecurityPolicy(scriptNonce))
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -590,12 +617,27 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 			return
 		}
 		raw := d.rawAllowed(r)
-		nav := d.navContext(r, authCache)
+		nav := d.navContext(r, authCache, scriptNonce)
 		d.recordAudit(r, raw, spec.permission)
 		ctx := context.WithValue(r.Context(), rawAllowedContextKey{}, raw)
 		ctx = context.WithValue(ctx, navContextKey{}, nav)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func newDashboardScriptNonce() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(nonce[:]), nil
+}
+
+func dashboardContentSecurityPolicy(scriptNonce string) string {
+	if scriptNonce == "" {
+		return contentSecurityPolicy
+	}
+	return contentSecurityPolicy + "; script-src 'self' 'nonce-" + scriptNonce + "'"
 }
 
 func (d *dashboardHandler) authorizeRoute(r *http.Request, spec routeSpec, cache *routeAuthorizationCache) routeAccessResult {
@@ -645,11 +687,12 @@ func (d *dashboardHandler) authorizeRoute(r *http.Request, spec routeSpec, cache
 	return routeAccessResult{}
 }
 
-func (d *dashboardHandler) navContext(r *http.Request, cache *routeAuthorizationCache) NavContext {
+func (d *dashboardHandler) navContext(r *http.Request, cache *routeAuthorizationCache, scriptNonce string) NavContext {
 	active := activeNavKey(r.URL.Path)
 	nav := NavContext{
 		Active:      active,
 		ActiveLabel: navLabel(active),
+		ScriptNonce: scriptNonce,
 	}
 	routesByPattern := make(map[string]routeSpec)
 	for _, spec := range dashboardRouteSpecs() {
@@ -724,6 +767,10 @@ func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Reque
 	orgID := r.URL.Query().Get("org_id")
 	fleetID := r.URL.Query().Get("fleet_id")
 	_, sourceConfigured := d.model.complianceFleetSource()
+	if err := validateFleetScope(orgID, fleetID, sourceConfigured); err != nil {
+		http.Error(w, "invalid fleet scope", http.StatusBadRequest)
+		return
+	}
 	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: orgID, FleetID: fleetID}, sourceConfigured, false) {
 		return
 	}

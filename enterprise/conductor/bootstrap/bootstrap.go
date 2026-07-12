@@ -30,7 +30,7 @@ const (
 	// manifestSchema versions the on-disk completion sentinel. A manifest with
 	// a recognised schema marks a COMPLETE prior bootstrap; its absence beside
 	// other material is treated as a partial/foreign directory and fails closed.
-	manifestSchema = 1
+	manifestSchema = 2
 	manifestFile   = "bootstrap-manifest.json"
 
 	// defaults for a local dev fleet. All are conductor-valid identifiers.
@@ -446,6 +446,7 @@ func layoutMaterialPaths(layout Layout) []string {
 		layout.TrustRosterPath,
 		layout.RosterRootKeyPath,
 		layout.RosterRootPubPath,
+		layout.PolicySigningKeyPath,
 		layout.RemoteKillKeyPath,
 		layout.RemoteKillPubPath,
 		layout.RollbackKeyPath,

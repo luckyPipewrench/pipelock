@@ -16,6 +16,7 @@ import (
 	"io"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -260,14 +261,75 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 	} else if !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("parse policy bundle config_yaml trailing document: %w", err)
 	}
+	canonicalConfig, err := normalizePolicyHashYAMLNumbers(cfg)
+	if err != nil {
+		return "", fmt.Errorf("normalize policy bundle config_yaml for policy hash: %w", err)
+	}
 	view := struct {
 		ConfigYAML  any             `json:"config_yaml"`
 		RuleBundles []RuleBundleRef `json:"rule_bundles,omitempty"`
 	}{
-		ConfigYAML:  cfg,
+		ConfigYAML:  canonicalConfig,
 		RuleBundles: p.RuleBundles,
 	}
 	return canonicalValueHash(view, "policy_bundle_policy")
+}
+
+func normalizePolicyHashYAMLNumbers(v any) (any, error) {
+	switch x := v.(type) {
+	case nil, bool, string, int, int64, uint64:
+		return x, nil
+	case float32:
+		return canonicalPolicyHashFloat(float64(x), 32)
+	case float64:
+		return canonicalPolicyHashFloat(x, 64)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			normalized, err := normalizePolicyHashYAMLNumbers(item)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = normalized
+		}
+		return out, nil
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, value := range x {
+			normalized, err := normalizePolicyHashYAMLNumbers(value)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = normalized
+		}
+		return out, nil
+	case map[any]any:
+		out := make(map[string]any, len(x))
+		for key, value := range x {
+			keyString, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("unsupported non-string YAML map key %T", key)
+			}
+			normalized, err := normalizePolicyHashYAMLNumbers(value)
+			if err != nil {
+				return nil, err
+			}
+			out[keyString] = normalized
+		}
+		return out, nil
+	default:
+		return x, nil
+	}
+}
+
+func canonicalPolicyHashFloat(f float64, bitSize int) (any, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return "", fmt.Errorf("%w: non-finite float", ErrInvalidHash)
+	}
+	if math.Trunc(f) == f && f >= -9223372036854775808.0 && f < 9223372036854775808.0 {
+		return int64(f), nil
+	}
+	return strconv.FormatFloat(f, 'f', -1, bitSize), nil
 }
 
 type PolicyBundle struct {

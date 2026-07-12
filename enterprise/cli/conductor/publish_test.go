@@ -23,6 +23,7 @@ import (
 	"time"
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/bootstrap"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -64,6 +65,40 @@ func writePolicyKeyFile(t *testing.T, dir, purpose, keyID string) (string, ed255
 		t.Fatalf("write key file: %v", err)
 	}
 	return path, pub
+}
+
+func TestLoadPolicySigningKeyAcceptsBootstrapKeyFile(t *testing.T) {
+	base, err := os.MkdirTemp(".", ".publish-bootstrap-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir, err := filepath.Abs(filepath.Join(base, "fleet"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	res, err := bootstrap.Run(context.Background(), bootstrap.Options{
+		Dir:         dir,
+		OrgID:       testOrg,
+		FleetID:     testFleet,
+		InstanceID:  "instance-1",
+		Environment: testEnv,
+		SkipProof:   true,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap Run(SkipProof): %v", err)
+	}
+	keyID, priv, err := loadPolicySigningKey(res.Layout.PolicySigningKeyPath)
+	if err != nil {
+		t.Fatalf("loadPolicySigningKey(bootstrap key): %v", err)
+	}
+	defer zeroizeKey(priv)
+	if keyID == "" {
+		t.Fatal("bootstrap policy key loaded with empty key_id")
+	}
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		t.Fatalf("bootstrap policy private key consistency: %v", err)
+	}
 }
 
 // selfSignedCertKey generates a throwaway self-signed cert + key in PEM form so

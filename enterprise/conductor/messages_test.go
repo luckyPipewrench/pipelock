@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -288,6 +290,107 @@ func TestPolicyBundle_VerifySignatures(t *testing.T) {
 	if !errors.Is(err, ErrWrongKeyPurpose) {
 		t.Fatalf("VerifySignatures(wrong roster purpose) = %v, want ErrWrongKeyPurpose", err)
 	}
+
+	wrongPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(wrong pub): %v", err)
+	}
+	err = bundle.VerifySignatures(mapResolver(map[string]SignatureKey{
+		"policy-signer-1": {PublicKey: wrongPub, KeyPurpose: signing.PurposePolicyBundleSigning},
+	}))
+	if !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignatures(key_id collision with wrong public key) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashAcceptsBalancedPresetFractionalFloats(t *testing.T) {
+	presetYAML, err := presets.YAML(config.ModeBalanced)
+	if err != nil {
+		t.Fatalf("balanced preset YAML: %v", err)
+	}
+	if !strings.Contains(string(presetYAML), "4.5") {
+		t.Fatalf("balanced preset fixture no longer contains the fractional threshold this regression covers")
+	}
+	payload := PolicyBundlePayload{ConfigYAML: string(presetYAML)}
+	first, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(balanced preset with fractional floats): %v", err)
+	}
+	second, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash second pass: %v", err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("PolicyHash not deterministic: first=%q second=%q", first, second)
+	}
+}
+
+func TestPolicyBundlePayloadPolicyHashNumericCanonicalizationEdges(t *testing.T) {
+	t.Run("integral_float_preserves_integer_hash", func(t *testing.T) {
+		intPayload := PolicyBundlePayload{ConfigYAML: "threshold: 4\n"}
+		floatPayload := PolicyBundlePayload{ConfigYAML: "threshold: 4.0\n"}
+		intHash, err := intPayload.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(int): %v", err)
+		}
+		floatHash, err := floatPayload.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(integral float): %v", err)
+		}
+		if floatHash != intHash {
+			t.Fatalf("integral float hash drifted from integer spelling:\nint=%s\nfloat=%s", intHash, floatHash)
+		}
+	})
+
+	t.Run("negative_zero_collapses_to_zero", func(t *testing.T) {
+		zeroPayload := PolicyBundlePayload{ConfigYAML: "threshold: 0\n"}
+		negZeroPayload := PolicyBundlePayload{ConfigYAML: "threshold: -0.0\n"}
+		zeroHash, err := zeroPayload.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(zero): %v", err)
+		}
+		negZeroHash, err := negZeroPayload.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(negative zero): %v", err)
+		}
+		if negZeroHash != zeroHash {
+			t.Fatalf("negative zero hash drifted from zero:\nzero=%s\nnegative_zero=%s", zeroHash, negZeroHash)
+		}
+	})
+
+	t.Run("fractional_forms_collapse", func(t *testing.T) {
+		plain := PolicyBundlePayload{ConfigYAML: "threshold: 4.5\n"}
+		trailingZero := PolicyBundlePayload{ConfigYAML: "threshold: 4.50\n"}
+		scientific := PolicyBundlePayload{ConfigYAML: "threshold: 45e-1\n"}
+		plainHash, err := plain.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(plain): %v", err)
+		}
+		trailingHash, err := trailingZero.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(trailing zero): %v", err)
+		}
+		scientificHash, err := scientific.PolicyHash()
+		if err != nil {
+			t.Fatalf("PolicyHash(scientific): %v", err)
+		}
+		if trailingHash != plainHash || scientificHash != plainHash {
+			t.Fatalf("equivalent fractional hashes diverged:\nplain=%s\ntrailing=%s\nscientific=%s", plainHash, trailingHash, scientificHash)
+		}
+	})
+
+	t.Run("non_finite_rejected", func(t *testing.T) {
+		for _, yamlSrc := range []string{
+			"threshold: .nan\n",
+			"threshold: .inf\n",
+			"threshold: -.inf\n",
+		} {
+			payload := PolicyBundlePayload{ConfigYAML: yamlSrc}
+			if _, err := payload.PolicyHash(); !errors.Is(err, ErrInvalidHash) {
+				t.Fatalf("PolicyHash(%q) = %v, want ErrInvalidHash", strings.TrimSpace(yamlSrc), err)
+			}
+		}
+	})
 }
 
 func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {

@@ -47,6 +47,58 @@ type clientOptions struct {
 	licenseCRLFile string
 }
 
+// ReadClientOptions configures a read-only Conductor client for dashboard and
+// operator read surfaces. It mirrors clientOptions without exposing mutating CLI
+// helpers to callers outside this package.
+type ReadClientOptions struct {
+	Server         string
+	CAFile         string
+	ClientCertFile string
+	ClientKeyFile  string
+	TokenFile      string
+	ServerName     string
+}
+
+// ReadClient exposes only the Conductor read endpoints the dashboard can use.
+// It deliberately has no publish, kill, resume, rollback, enroll, revoke, or
+// delete methods.
+type ReadClient struct {
+	client *conductorClient
+}
+
+// NewReadClient builds an authenticated TLS 1.3 + bearer-token Conductor read
+// client using the same validation and transport setup as the operator CLI.
+func NewReadClient(opts ReadClientOptions) (*ReadClient, error) {
+	client, err := newConductorClient(clientOptions{
+		server:         opts.Server,
+		caFile:         opts.CAFile,
+		clientCertFile: opts.ClientCertFile,
+		clientKeyFile:  opts.ClientKeyFile,
+		tokenFile:      opts.TokenFile,
+		serverName:     opts.ServerName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ReadClient{client: client}, nil
+}
+
+// ListFollowers reads the enrolled-follower roster. It only issues GET against
+// the allowlisted followers endpoint.
+func (c *ReadClient) ListFollowers(ctx context.Context, orgID, fleetID string, limit int) ([]byte, error) {
+	if c == nil || c.client == nil {
+		return nil, errors.New("conductor read client is nil")
+	}
+	params := map[string]string{
+		"org_id":   orgID,
+		"fleet_id": fleetID,
+	}
+	if limit > 0 {
+		params["limit"] = fmt.Sprintf("%d", limit)
+	}
+	return c.client.getJSON(ctx, controlplane.FollowersPath+encodeQuery(params))
+}
+
 func (o *clientOptions) bindFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.server, "server", defaultClientServer, "Conductor HTTPS base URL")
 	cmd.Flags().StringVar(&o.caFile, "ca-file", "", "PEM CA bundle that signed the Conductor server certificate (required)")
@@ -80,6 +132,9 @@ func newConductorClient(opts clientOptions) (*conductorClient, error) {
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("invalid --server %q: missing host", server)
 	}
+	if parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("invalid --server %q: conductor server URL must not include userinfo, path, query, or fragment", server)
+	}
 	if strings.TrimSpace(opts.caFile) == "" {
 		return nil, errors.New("--ca-file is required")
 	}
@@ -111,6 +166,9 @@ func newConductorClient(opts clientOptions) (*conductorClient, error) {
 	}
 	client := &http.Client{
 		Timeout: clientHTTPTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("conductor redirects are not allowed")
+		},
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				MinVersion:   tls.VersionTLS13,
@@ -142,12 +200,12 @@ func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, err
 		return nil, fmt.Errorf("request conductor: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, clientMaxBodyBytes))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body, c.token))
-	}
+	body, readErr := readClientBody(resp.Body)
 	if readErr != nil {
 		return nil, fmt.Errorf("read conductor response: %w", readErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body, c.token))
 	}
 	return body, nil
 }
@@ -183,14 +241,25 @@ func (c *conductorClient) deleteJSON(ctx context.Context, path string, body any)
 		return nil, fmt.Errorf("delete request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, clientMaxBodyBytes))
+	respBody, readErr := readClientBody(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read conductor response: %w", readErr)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(respBody, c.token))
 	}
-	if readErr != nil {
-		return nil, fmt.Errorf("read delete response: %w", readErr)
-	}
 	return respBody, nil
+}
+
+func readClientBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, clientMaxBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > clientMaxBodyBytes {
+		return nil, fmt.Errorf("conductor response exceeds %d byte limit", clientMaxBodyBytes)
+	}
+	return body, nil
 }
 
 func readClientTokenFile(path string) (string, error) {

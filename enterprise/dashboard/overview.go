@@ -756,7 +756,7 @@ func (m *ReadModel) hasFleetFeature() bool {
 
 func fleetGatedOverviewLink(link string) bool {
 	switch link {
-	case "/fleet", "/workbench", "/incident", CompliancePath:
+	case "/fleet", "/workbench", "/incident":
 		return true
 	default:
 		return false

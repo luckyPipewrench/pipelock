@@ -131,8 +131,8 @@ type Options struct {
 	DeliveryInboxPath  string
 	ReadModelIndexPath string
 	// LegalHoldStore, when non-nil, supplies operator-authored retention hold
-	// metadata for read-only display on the compliance console. Dashboard HTTP
-	// handlers never mutate it; operators use the dashboard legal-hold CLI.
+	// metadata for read-only dashboard display. Dashboard HTTP handlers never
+	// mutate it; operators use the dashboard legal-hold CLI.
 	LegalHoldStore *LegalHoldStore
 	// Now supplies the current time for lifecycle rendering. Nil uses time.Now.
 	Now func() time.Time

@@ -295,7 +295,7 @@ func TestOverviewAgentsOnlyWithFleetSourceDoesNotQueryFleetPosture(t *testing.T)
 	if !strings.Contains(body, "no conductor source is configured") {
 		t.Fatalf("agents-only overview should keep the conductor-source attention fact: %s", body)
 	}
-	for _, blocked := range []string{`href="/fleet"`, `href="/workbench"`, `href="/incident"`, `href="` + CompliancePath + `"`} {
+	for _, blocked := range []string{`href="/fleet"`, `href="/workbench"`, `href="/incident"`} {
 		if strings.Contains(body, blocked) {
 			t.Fatalf("agents-only overview rendered fleet-gated link %q: %s", blocked, body)
 		}

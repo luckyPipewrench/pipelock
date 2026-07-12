@@ -36,7 +36,7 @@ const (
 
 const dashboardFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#09090b"/><path d="M20 30v-8c0-7 5-12 12-12s12 5 12 12v8" fill="none" stroke="#00e5a0" stroke-width="6" stroke-linecap="round"/><rect x="16" y="28" width="32" height="24" rx="5" fill="#00e5a0"/><circle cx="32" cy="40" r="4" fill="#09090b"/></svg>`
 
-//go:embed nav.tmpl.html overview.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html compliance.tmpl.html
+//go:embed nav.tmpl.html overview.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html
 var templateFS embed.FS
 
 var (
@@ -50,7 +50,6 @@ var (
 	incidentTemplate      = parseDashboardTemplate("incident.tmpl.html")
 	budgetsTemplate       = parseDashboardTemplate("budgets.tmpl.html")
 	trustKeysTemplate     = parseDashboardTemplate("trustkeys.tmpl.html")
-	complianceTemplate    = parseDashboardTemplate("compliance.tmpl.html")
 )
 
 func parseDashboardTemplate(name string) *template.Template {
@@ -104,7 +103,6 @@ const (
 	PermissionSignedActionRead Permission = "dashboard:signed_action:read"
 	PermissionIncidentRead     Permission = "dashboard:incident:read"
 	PermissionTrustKeysRead    Permission = "dashboard:trust_keys:read"
-	PermissionComplianceRead   Permission = "dashboard:compliance:read"
 )
 
 const (
@@ -133,16 +131,10 @@ var dashboardNavRouteSpecs = []navRouteSpec{
 	{key: "agents", label: "Agents", pattern: "/agents"},
 	{key: "budgets", label: "Budgets", pattern: "/budgets"},
 	{key: "trust-keys", label: "Trust & Keys", pattern: "/trust-keys"},
-	{key: "compliance", label: "Compliance", pattern: CompliancePath},
 	{key: "fleet", label: "Fleet", pattern: "/fleet"},
 	{key: "workbench", label: "Workbench", pattern: "/workbench"},
 	{key: "incident", label: "Incident", pattern: "/incident"},
 }
-
-// CompliancePath is the single source of truth for the compliance route, shared
-// by the route table and the auditor-token authorization gate so the auth
-// boundary cannot drift from the route if the path changes.
-const CompliancePath = "/compliance"
 
 func dashboardRouteSpecs() []routeSpec {
 	return []routeSpec{
@@ -216,15 +208,6 @@ func dashboardRouteSpecs() []routeSpec {
 			permission:       PermissionTrustKeysRead,
 			handler: func(d *dashboardHandler) http.Handler {
 				return http.HandlerFunc(d.handleTrustKeys)
-			},
-		},
-		{
-			pattern:          CompliancePath,
-			feature:          license.FeatureFleet,
-			forbiddenMessage: fleetFeatureForbidden,
-			permission:       PermissionComplianceRead,
-			handler: func(d *dashboardHandler) http.Handler {
-				return http.HandlerFunc(d.handleCompliance)
 			},
 		},
 		{
@@ -738,8 +721,6 @@ func activeNavKey(path string) string {
 		return "budgets"
 	case path == "/trust-keys":
 		return "trust-keys"
-	case path == CompliancePath:
-		return "compliance"
 	case path == "/fleet", strings.HasPrefix(path, "/fleet/"):
 		return "fleet"
 	case path == "/workbench", strings.HasPrefix(path, "/workbench/"):
@@ -793,43 +774,6 @@ func (d *dashboardHandler) handleOverview(w http.ResponseWriter, r *http.Request
 	var buf bytes.Buffer
 	if err := overviewTemplate.Execute(&buf, page); err != nil {
 		http.Error(w, "could not render overview", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", contentTypeHTML)
-	_, _ = w.Write(buf.Bytes())
-}
-
-func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != CompliancePath {
-		http.NotFound(w, r)
-		return
-	}
-	if !requireGet(w, r) {
-		return
-	}
-	orgID := r.URL.Query().Get("org_id")
-	fleetID := r.URL.Query().Get("fleet_id")
-	_, sourceConfigured := d.model.complianceFleetSource()
-	if err := validateFleetScope(orgID, fleetID, sourceConfigured); err != nil {
-		http.Error(w, "invalid fleet scope", http.StatusBadRequest)
-		return
-	}
-	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: orgID, FleetID: fleetID}, sourceConfigured, false) {
-		return
-	}
-	page, err := d.model.Compliance(r.Context(), orgID, fleetID)
-	if err != nil {
-		if errors.Is(err, errInvalidFleetScope) {
-			http.Error(w, "invalid fleet scope", http.StatusBadRequest)
-			return
-		}
-		http.Error(w, "could not build compliance read model", http.StatusInternalServerError)
-		return
-	}
-	page.Nav = navFromContext(r)
-	var buf bytes.Buffer
-	if err := complianceTemplate.Execute(&buf, page); err != nil {
-		http.Error(w, "could not render compliance console", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeHTML)

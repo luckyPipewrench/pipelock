@@ -771,27 +771,22 @@ func dashboardOIDCFailureCategory(err error) string {
 }
 
 type dashboardRequestAuthorization struct {
-	metadataToken   string
-	rawToken        string
-	complianceToken string
-	oidc            *dashboardOIDCAuthenticator
-	legacy          func(*http.Request, dashboard.Permission) error
+	metadataToken string
+	rawToken      string
+	oidc          *dashboardOIDCAuthenticator
+	legacy        func(*http.Request, dashboard.Permission) error
 }
 
-func newDashboardRequestAuthorization(metadataToken, rawToken, complianceToken string, oidc *dashboardOIDCAuthenticator) *dashboardRequestAuthorization {
+func newDashboardRequestAuthorization(metadataToken, rawToken string, oidc *dashboardOIDCAuthenticator) *dashboardRequestAuthorization {
 	return &dashboardRequestAuthorization{
-		metadataToken:   metadataToken,
-		rawToken:        rawToken,
-		complianceToken: complianceToken,
-		oidc:            oidc,
+		metadataToken: metadataToken,
+		rawToken:      rawToken,
+		oidc:          oidc,
 		legacy: dashboardAuthorizePermissionFunc(
 			func(req *http.Request) bool {
 				return dashboardConfiguredTokenMatches(req, metadataToken) || dashboardConfiguredTokenMatches(req, rawToken)
 			},
 			func(req *http.Request) bool { return dashboardConfiguredTokenMatches(req, rawToken) },
-			func(req *http.Request) bool {
-				return dashboardConfiguredTokenMatches(req, complianceToken)
-			},
 		),
 	}
 }
@@ -806,19 +801,9 @@ func (a *dashboardRequestAuthorization) metaAuthorized(r *http.Request) bool {
 		dashboardOIDCPrincipalFromRequest(r) != nil
 }
 
-// complianceAuthorized recognizes the optional auditor token, which is scoped to
-// the compliance path by authenticated/dashboardGlobalAuthorized.
-func (a *dashboardRequestAuthorization) complianceAuthorized(r *http.Request) bool {
-	return dashboardConfiguredTokenMatches(r, a.complianceToken)
-}
-
-// authenticated is the global gate: any operator/OIDC identity, or the
-// compliance token restricted to the compliance path.
+// authenticated is the global gate: any operator/OIDC identity.
 func (a *dashboardRequestAuthorization) authenticated(r *http.Request) bool {
-	if a.metaAuthorized(r) {
-		return true
-	}
-	return r.URL.Path == dashboard.CompliancePath && a.complianceAuthorized(r)
+	return a.metaAuthorized(r)
 }
 
 func (a *dashboardRequestAuthorization) rawAuthorized(r *http.Request) bool {
@@ -845,8 +830,6 @@ func (a *dashboardRequestAuthorization) authAuditInfo(r *http.Request) dashboard
 		return dashboard.AuthAuditInfo{Method: "static-raw-token"}
 	case dashboardConfiguredTokenMatches(r, a.metadataToken):
 		return dashboard.AuthAuditInfo{Method: "static-metadata-token"}
-	case dashboardConfiguredTokenMatches(r, a.complianceToken):
-		return dashboard.AuthAuditInfo{Method: "static-compliance-token"}
 	case dashboardOIDCFailureReasonFromRequest(r) != "":
 		return dashboard.AuthAuditInfo{Method: "oidc", FailureReason: dashboardOIDCFailureReasonFromRequest(r)}
 	default:

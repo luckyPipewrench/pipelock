@@ -464,8 +464,8 @@ func TestHandler_NavSpecsUseTopLevelRouteSpecs(t *testing.T) {
 		}
 		seen[navSpec.pattern] = struct{}{}
 	}
-	if len(seen) != 10 {
-		t.Fatalf("nav route count = %d, want 10", len(seen))
+	if len(seen) != 9 {
+		t.Fatalf("nav route count = %d, want 9", len(seen))
 	}
 }
 
@@ -492,7 +492,6 @@ func TestHandler_RoutePermissionFailsClosed(t *testing.T) {
 		"/agent/agent-one",
 		"/budgets",
 		"/trust-keys",
-		CompliancePath,
 		"/fleet",
 		"/workbench",
 		"/incident",
@@ -533,7 +532,6 @@ func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
 		{path: "/agents", want: PermissionAgentsRead},
 		{path: "/budgets", want: PermissionBudgetsRead},
 		{path: "/trust-keys", want: PermissionTrustKeysRead},
-		{path: CompliancePath, want: PermissionComplianceRead},
 		{path: "/fleet", want: PermissionFleetRead},
 		{path: "/workbench", want: PermissionSignedActionRead},
 		{path: "/incident", want: PermissionIncidentRead},
@@ -574,7 +572,6 @@ func TestHandler_SharedNavReachabilityFromRenderedViews(t *testing.T) {
 		{path: "/agent/" + testActor, activeKey: "agents"},
 		{path: "/budgets", activeKey: "budgets"},
 		{path: "/trust-keys", activeKey: "trust-keys"},
-		{path: CompliancePath, activeKey: "compliance"},
 		{path: "/fleet", activeKey: "fleet"},
 		{path: "/workbench", activeKey: "workbench"},
 		{path: "/incident", activeKey: "incident"},
@@ -616,7 +613,6 @@ func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
 		"/agent/" + testActor,
 		"/budgets",
 		"/trust-keys",
-		CompliancePath,
 		"/fleet",
 		"/workbench",
 		"/incident",
@@ -849,6 +845,13 @@ func TestLicenseTierAccessMatrix(t *testing.T) {
 					}
 				})
 			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/compliance", nil)
+			tier.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s /compliance status = %d, want 404; body=%s", tier.name, rec.Code, rec.Body.String())
+			}
 		})
 
 		t.Run(tier.name+"/nav", func(t *testing.T) {
@@ -966,20 +969,19 @@ func assertLicenseTierRouteSpecIntent(t *testing.T) {
 			t.Fatalf("dashboard route %q has unsupported license feature %q", spec.pattern, spec.feature)
 		}
 		if licenseTierFleetSurfacePattern(spec.pattern) && spec.feature != license.FeatureFleet {
-			t.Fatalf("fleet/compliance surface %q is tagged %q, want %q", spec.pattern, spec.feature, license.FeatureFleet)
+			t.Fatalf("fleet surface %q is tagged %q, want %q", spec.pattern, spec.feature, license.FeatureFleet)
 		}
 	}
 	for _, navSpec := range dashboardNavRouteSpecs {
 		route := routeSpecForPattern(t, navSpec.pattern)
 		if licenseTierFleetSurfacePattern(navSpec.pattern) && route.feature != license.FeatureFleet {
-			t.Fatalf("fleet/compliance nav route %q is tagged %q, want %q", navSpec.pattern, route.feature, license.FeatureFleet)
+			t.Fatalf("fleet nav route %q is tagged %q, want %q", navSpec.pattern, route.feature, license.FeatureFleet)
 		}
 	}
 }
 
 func licenseTierFleetSurfacePattern(pattern string) bool {
-	return pattern == CompliancePath ||
-		pattern == "/fleet" || strings.HasPrefix(pattern, "/fleet/") ||
+	return pattern == "/fleet" || strings.HasPrefix(pattern, "/fleet/") ||
 		pattern == "/workbench" || strings.HasPrefix(pattern, "/workbench/") ||
 		pattern == "/incident" || strings.HasPrefix(pattern, "/incident/")
 }
@@ -1067,7 +1069,7 @@ func allowAgentsNavPermissions(_ *http.Request, permission Permission) error {
 
 func allowFleetNavPermissions(_ *http.Request, permission Permission) error {
 	switch permission {
-	case PermissionComplianceRead, PermissionFleetRead, PermissionSignedActionRead, PermissionIncidentRead:
+	case PermissionFleetRead, PermissionSignedActionRead, PermissionIncidentRead:
 		return nil
 	default:
 		return errors.New("permission denied")

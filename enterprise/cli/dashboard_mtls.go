@@ -193,7 +193,6 @@ func dashboardClientCertAuthorizers(
 	clientCertAuth *dashboardClientCertAuthorizer,
 	tokenMetaAuthorized func(*http.Request) bool,
 	tokenRawAuthorized func(*http.Request) bool,
-	tokenComplianceAuthorized func(*http.Request) bool,
 ) (
 	func(*http.Request) bool,
 	func(*http.Request, dashboard.Permission) error,
@@ -217,7 +216,7 @@ func dashboardClientCertAuthorizers(
 		}
 		return tokenRawAuthorized(r)
 	}
-	tokenAuthorizePermission := dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized, tokenComplianceAuthorized)
+	tokenAuthorizePermission := dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized)
 	authorizePermission := func(r *http.Request, permission dashboard.Permission) error {
 		if clientCertAuth != nil {
 			return clientCertAuth.authorizePermission(r, permission)

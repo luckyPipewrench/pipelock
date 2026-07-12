@@ -75,7 +75,6 @@ type dashboardServeOptions struct {
 	deliveryInbox       string
 	readModelIndex      string
 	legalHoldStore      string
-	complianceTokenFile string
 	oidcIssuer          string
 	oidcAudience        string
 	oidcClientID        string
@@ -135,13 +134,11 @@ because credentials would transit in cleartext.`,
 	cmd.Flags().StringVar(&opts.readModelIndex, "read-model-index", "",
 		"optional rebuilt index metadata file for read-only freshness status")
 	cmd.Flags().StringVar(&opts.legalHoldStore, "legal-hold-store", "",
-		"optional legal-hold metadata store file for read-only compliance display")
+		"optional legal-hold metadata store file for read-only governance display")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
 		"optional file containing a dashboard operator token (redacted metadata view); required unless OIDC or --require-client-cert is configured")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
 		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
-	cmd.Flags().StringVar(&opts.complianceTokenFile, "compliance-token-file", "",
-		"optional auditor token file granting only dashboard:compliance:read")
 	cmd.Flags().StringVar(&opts.runtimeSnapshotFile, "runtime-snapshot-file", "",
 		"read-only proxy runtime snapshot file for live dashboard budget data; defaults under --receipt-dir/dashboard/runtime-snapshot.json")
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
@@ -228,17 +225,6 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		}
 		if subtle.ConstantTimeCompare([]byte(rawToken), []byte(token)) == 1 {
 			return errors.New("--raw-token-file must differ from --auth-token-file")
-		}
-	}
-	var complianceToken string
-	if strings.TrimSpace(opts.complianceTokenFile) != "" {
-		complianceToken, err = loadDashboardTokenFile("--compliance-token-file", opts.complianceTokenFile)
-		if err != nil {
-			return err
-		}
-		if subtle.ConstantTimeCompare([]byte(complianceToken), []byte(token)) == 1 ||
-			(rawToken != "" && subtle.ConstantTimeCompare([]byte(complianceToken), []byte(rawToken)) == 1) {
-			return errors.New("--compliance-token-file must differ from operator and raw token files")
 		}
 	}
 	ctx := cmd.Context()
@@ -330,18 +316,15 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	if err != nil {
 		return err
 	}
-	authorization := newDashboardRequestAuthorization(token, rawToken, complianceToken, oidcAuthenticator)
+	authorization := newDashboardRequestAuthorization(token, rawToken, oidcAuthenticator)
 	// Token/OIDC auth retains its metadata/raw split. When mTLS is enabled, the
 	// verified certificate's mapped role supplies both route and raw-view
 	// permissions and takes precedence over any token or OIDC principal on the
 	// same request.
-	complianceAuthorized := func(r *http.Request) bool {
-		return clientCertAuth == nil && authorization.complianceAuthorized(r)
-	}
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		clientCertAuth, authorization.metaAuthorized, authorization.rawAuthorized, complianceAuthorized,
+		clientCertAuth, authorization.metaAuthorized, authorization.rawAuthorized,
 	)
-	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
+	authenticated := metaAuthorized
 
 	auditWriter := cmd.ErrOrStderr()
 	var authorizeFleetScope func(*http.Request, dashboard.DecisionScope, bool) error
@@ -509,22 +492,9 @@ func dashboardAuthorizeFunc(authorized func(*http.Request) bool) func(*http.Requ
 	}
 }
 
-func dashboardGlobalAuthorized(
-	operatorAuthorized func(*http.Request) bool,
-	complianceAuthorized func(*http.Request) bool,
-) func(*http.Request) bool {
-	return func(r *http.Request) bool {
-		if operatorAuthorized(r) {
-			return true
-		}
-		return r.URL.Path == dashboard.CompliancePath && complianceAuthorized != nil && complianceAuthorized(r)
-	}
-}
-
 func dashboardAuthorizePermissionFunc(
 	metaAuthorized func(*http.Request) bool,
 	rawAuthorized func(*http.Request) bool,
-	complianceAuthorized func(*http.Request) bool,
 ) func(*http.Request, dashboard.Permission) error {
 	return func(r *http.Request, permission dashboard.Permission) error {
 		switch permission {
@@ -536,10 +506,6 @@ func dashboardAuthorizePermissionFunc(
 			dashboard.PermissionSignedActionRead,
 			dashboard.PermissionIncidentRead:
 			if metaAuthorized(r) {
-				return nil
-			}
-		case dashboard.PermissionComplianceRead:
-			if metaAuthorized(r) || (complianceAuthorized != nil && complianceAuthorized(r)) {
 				return nil
 			}
 		case dashboard.PermissionRawRead,

@@ -459,7 +459,6 @@ func TestDashboardClientCertAuthorizers_VerifiedChainCannotFallThroughToRawToken
 		authorizer,
 		func(*http.Request) bool { return true },
 		func(*http.Request) bool { return true },
-		func(*http.Request) bool { return false },
 	)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
 	// Construct the divergent state explicitly: the verified leaf is present,
@@ -493,7 +492,6 @@ func TestDashboardClientCertAuthorizers_NoTokenFallbackWhenMTLSEnabled(t *testin
 		authorizer,
 		func(*http.Request) bool { return true },
 		func(*http.Request) bool { return true },
-		func(*http.Request) bool { return false },
 	)
 	// A request carrying a matching operator token but NO client certificate:
 	// the TLS layer would normally reject this, but the application layer must
@@ -538,7 +536,6 @@ func TestDashboardMTLS_RoutePermissionsAndRaw(t *testing.T) {
 	tokenRawAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, "raw-token") }
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
 		authorizer, tokenMetaAuthorized, tokenRawAuthorized,
-		func(*http.Request) bool { return false },
 	)
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),

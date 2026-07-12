@@ -421,7 +421,7 @@ func TestDashboardOIDC_RoutePermissionsOnly(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	authorization := newDashboardRequestAuthorization("", "", "", auth)
+	authorization := newDashboardRequestAuthorization("", "", auth)
 
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),
@@ -463,7 +463,7 @@ func TestDashboardOIDC_OIDCOnlyModeRejectsEmptyCredentials(t *testing.T) {
 	// optional-token match must fail at the call site before comparing request
 	// credentials. Missing, empty, or malformed credentials must never
 	// authorize; only a verified OIDC bearer may.
-	authorization := newDashboardRequestAuthorization("", "", "", auth)
+	authorization := newDashboardRequestAuthorization("", "", auth)
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          func(string) bool { return true },
@@ -509,7 +509,7 @@ func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	authorization := newDashboardRequestAuthorization("", "", "", auth)
+	authorization := newDashboardRequestAuthorization("", "", auth)
 	var audit strings.Builder
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),
@@ -563,7 +563,7 @@ func TestDashboardOIDC_RawPermission(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	authorization := newDashboardRequestAuthorization("", "", "", auth)
+	authorization := newDashboardRequestAuthorization("", "", auth)
 
 	claims := p.validClaims(now)
 	claims["groups"] = []string{"raw-team"}
@@ -666,7 +666,7 @@ func TestDashboardOIDC_StaticTokenRemainsAdditive(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	authorization := newDashboardRequestAuthorization(dashTestToken, "", "", auth)
+	authorization := newDashboardRequestAuthorization(dashTestToken, "", auth)
 
 	rr := httptest.NewRecorder()
 	authorization.wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

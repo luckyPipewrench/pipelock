@@ -182,6 +182,29 @@ func TestReadBundleRecordOnlyStartupLoadAllowsLegacyPolicyHash(t *testing.T) {
 	}
 }
 
+func TestFileBundleStoreRejectsLegacyPolicyHashRecordBeforeNotBeforeOnLoad(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	bundle := signedLegacyPolicyHashControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "legacy-policy-hash-future",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML: "mode: strict\napi_allowlist:\n" +
+			"  - b.vendor.example\n" +
+			"  - a.vendor.example\n",
+	})
+	bundle.NotBefore = testNow.Add(2 * time.Hour)
+	bundle.ExpiresAt = testNow.Add(4 * time.Hour)
+	record := storedRecordForBundle(t, bundle, testNow)
+	writeRawBundleRecordForTest(t, store.bundlesDir, record)
+
+	if _, err := OpenFileBundleStore(store.dir); !errors.Is(err, conductor.ErrNotYetValid) {
+		t.Fatalf("OpenFileBundleStore(legacy policy_hash before not_before) error = %v, want ErrNotYetValid", err)
+	}
+}
+
 func TestFileBundleStoreBundleByIDVersion(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {

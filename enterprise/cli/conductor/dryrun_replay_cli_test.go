@@ -66,6 +66,9 @@ func TestConductorDryRunFlagsAndReplayCommandRegistered(t *testing.T) {
 		if replayKill.Flags().Lookup("state") == nil {
 			t.Fatal("replay remote-kill missing replay-only --state flag")
 		}
+		if got := replayKill.Flags().Lookup("state").DefValue; got != "" {
+			t.Fatalf("replay remote-kill --state default = %q, want empty required value", got)
+		}
 	})
 	t.Run("replay emergency output is not mislabeled as dry-run", func(t *testing.T) {
 		var out bytes.Buffer
@@ -700,6 +703,18 @@ func TestRunReplayRemoteKillPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	}
 }
 
+func TestRunReplayRemoteKillRequiresExplicitState(t *testing.T) {
+	rig := newKillRig(t, 0)
+	opts := replayOptions{
+		mode: replayModeRemoteKill,
+		kill: rig.opts,
+	}
+	cmd, _ := replayCobra(t)
+	if err := runReplay(cmd, opts); err == nil || !strings.Contains(err.Error(), "--state is required") {
+		t.Fatalf("runReplay remote-kill without --state error = %v, want required state error", err)
+	}
+}
+
 func TestRunReplayRollbackPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	rb := newRollbackRig(t, 0)
 	srv, ok := rb.transport.(*testServer)
@@ -764,6 +779,93 @@ func TestRunReplayRollbackPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	}
 	if head.Bundle.Version != rb.currentVersion || head.Bundle.BundleID != rb.currentBundleID {
 		t.Fatalf("rollback replay moved stream head to %s v%d, want %s v%d", head.Bundle.BundleID, head.Bundle.Version, rb.currentBundleID, rb.currentVersion)
+	}
+}
+
+func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
+	resultTime := testFixedNow(t)
+	tests := []struct {
+		name     string
+		artifact decisionReplayArtifact
+		result   controlplane.DecisionReplayResult
+		wantErr  string
+	}{
+		{
+			name:     "publish action mismatch",
+			artifact: decisionReplayArtifact{Bundle: &conductorcore.PolicyBundle{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:   replayModeRemoteKill,
+				ArtifactHash: strings.Repeat("a", 64),
+				ReplayedAt:   resultTime,
+				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+			},
+			wantErr: "replay response action_kind",
+		},
+		{
+			name:     "publish missing evaluation",
+			artifact: decisionReplayArtifact{Bundle: &conductorcore.PolicyBundle{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:   "publish",
+				ArtifactHash: strings.Repeat("b", 64),
+				ReplayedAt:   resultTime,
+			},
+			wantErr: "missing publish_evaluation",
+		},
+		{
+			name:     "remote kill action mismatch",
+			artifact: decisionReplayArtifact{RemoteKill: &conductorcore.RemoteKillMessage{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:        "publish",
+				ArtifactHash:      strings.Repeat("c", 64),
+				ReplayedAt:        resultTime,
+				PublishEvaluation: &controlplane.PublishEvaluation{Valid: true},
+			},
+			wantErr: "replay response action_kind",
+		},
+		{
+			name:     "remote kill missing evaluation",
+			artifact: decisionReplayArtifact{RemoteKill: &conductorcore.RemoteKillMessage{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:   replayModeRemoteKill,
+				ArtifactHash: strings.Repeat("d", 64),
+				ReplayedAt:   resultTime,
+			},
+			wantErr: "missing remote_kill_evaluation",
+		},
+		{
+			name:     "rollback action mismatch",
+			artifact: decisionReplayArtifact{Rollback: &conductorcore.RollbackAuthorization{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:   replayModeRemoteKill,
+				ArtifactHash: strings.Repeat("e", 64),
+				ReplayedAt:   resultTime,
+				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+			},
+			wantErr: "replay response action_kind",
+		},
+		{
+			name:     "rollback missing evaluation",
+			artifact: decisionReplayArtifact{Rollback: &conductorcore.RollbackAuthorization{}},
+			result: controlplane.DecisionReplayResult{
+				ActionKind:   replayModeRollback,
+				ArtifactHash: strings.Repeat("f", 64),
+				ReplayedAt:   resultTime,
+			},
+			wantErr: "missing rollback_evaluation",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.result)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			client := &staticEmergencyTransport{status: http.StatusOK, body: string(body)}
+			_, err = postDecisionReplay(t.Context(), client, "https://conductor.example", testAdminToken, tt.artifact)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("postDecisionReplay() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

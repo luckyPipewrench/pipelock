@@ -32,6 +32,8 @@ const (
 	replayModePolicyBundle = "policy_bundle"
 	replayModeRemoteKill   = "remote_kill"
 	replayModeRollback     = "rollback"
+
+	replayActionPublish = "publish"
 )
 
 type replayOptions struct {
@@ -148,7 +150,8 @@ func bindReplayRemoteKillFlags(cmd *cobra.Command, opts *replayOptions) {
 	bindRemoteKillFlagsWithOptions(cmd, &opts.kill, remoteKillFlagOptions{
 		counterHelp: "monotonic counter; defaults to the current Unix time so each replay supersedes the prior message shape",
 	})
-	cmd.Flags().StringVar(&opts.remoteKillState, "state", string(conductorcore.KillSwitchActive), "remote-kill state to replay: active or inactive")
+	cmd.Flags().StringVar(&opts.remoteKillState, "state", "", "remote-kill state to replay: active or inactive")
+	_ = cmd.MarkFlagRequired("state")
 }
 
 func bindReplayRollbackFlags(cmd *cobra.Command, opts *rollbackOptions) {
@@ -282,7 +285,9 @@ func runRollbackReplay(cmd *cobra.Command, opts replayOptions) error {
 
 func parseReplayRemoteKillState(raw string) (conductorcore.KillSwitchState, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", string(conductorcore.KillSwitchActive), "kill":
+	case "":
+		return "", fmt.Errorf("--state is required; pass %q or %q", conductorcore.KillSwitchActive, conductorcore.KillSwitchInactive)
+	case string(conductorcore.KillSwitchActive), "kill":
 		return conductorcore.KillSwitchActive, nil
 	case string(conductorcore.KillSwitchInactive), "resume":
 		return conductorcore.KillSwitchInactive, nil
@@ -400,6 +405,9 @@ func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, base
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return controlplane.DecisionReplayResult{}, fmt.Errorf("decode replay response: %w", err)
 		}
+		if err := validateDecisionReplayResultForArtifact(result, artifact); err != nil {
+			return controlplane.DecisionReplayResult{}, err
+		}
 		return result, nil
 	case http.StatusCreated:
 		return controlplane.DecisionReplayResult{}, errors.New("conductor returned 201 Created for decision replay; refusing ambiguous mutating response")
@@ -408,6 +416,63 @@ func postDecisionReplay(ctx context.Context, client decisionReplayHTTPDoer, base
 	default:
 		return controlplane.DecisionReplayResult{}, fmt.Errorf("conductor rejected replay (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
 	}
+}
+
+func validateDecisionReplayResultForArtifact(result controlplane.DecisionReplayResult, artifact decisionReplayArtifact) error {
+	expectedAction, err := replayResponseActionForArtifact(artifact)
+	if err != nil {
+		return err
+	}
+	if result.ActionKind != expectedAction {
+		return fmt.Errorf("replay response action_kind=%q does not match requested action %q", result.ActionKind, expectedAction)
+	}
+	switch expectedAction {
+	case replayActionPublish:
+		if result.PublishEvaluation == nil {
+			return errors.New("replay response missing publish_evaluation")
+		}
+		if result.RemoteKill != nil || result.Rollback != nil {
+			return errors.New("replay response for publish included an emergency evaluation")
+		}
+	case replayModeRemoteKill:
+		if result.RemoteKill == nil {
+			return errors.New("replay response missing remote_kill_evaluation")
+		}
+		if result.PublishEvaluation != nil || result.Rollback != nil {
+			return errors.New("replay response for remote_kill included a different evaluation")
+		}
+	case replayModeRollback:
+		if result.Rollback == nil {
+			return errors.New("replay response missing rollback_evaluation")
+		}
+		if result.PublishEvaluation != nil || result.RemoteKill != nil {
+			return errors.New("replay response for rollback included a different evaluation")
+		}
+	default:
+		return fmt.Errorf("unsupported replay response action %q", expectedAction)
+	}
+	return nil
+}
+
+func replayResponseActionForArtifact(artifact decisionReplayArtifact) (string, error) {
+	var expected string
+	seen := 0
+	if artifact.Bundle != nil {
+		expected = replayActionPublish
+		seen++
+	}
+	if artifact.RemoteKill != nil {
+		expected = replayModeRemoteKill
+		seen++
+	}
+	if artifact.Rollback != nil {
+		expected = replayModeRollback
+		seen++
+	}
+	if seen != 1 {
+		return "", errors.New("replay request must contain exactly one artifact")
+	}
+	return expected, nil
 }
 
 func writeDecisionReplayResult(out io.Writer, result controlplane.DecisionReplayResult) {

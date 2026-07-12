@@ -944,8 +944,21 @@ func (s *FileBundleStore) maybeResolveRollbackHeadLocked(record PublishedBundle)
 }
 
 func validatePublishableBundle(bundle conductor.PolicyBundle, now time.Time) error {
-	if err := bundle.Validate(); err != nil {
+	return validatePublishableBundleWithOptions(bundle, now, false)
+}
+
+func validatePublishableBundleWithOptions(bundle conductor.PolicyBundle, now time.Time, allowLegacyPolicyHash bool) error {
+	var err error
+	if allowLegacyPolicyHash {
+		err = bundle.ValidateAllowLegacyPolicyHash()
+	} else {
+		err = bundle.Validate()
+	}
+	if err != nil {
 		return err
+	}
+	if !conductor.NotBeforeReached(now, bundle.NotBefore) {
+		return fmt.Errorf("%w: now=%s not_before=%s", conductor.ErrNotYetValid, now.UTC().Format(time.RFC3339), bundle.NotBefore.UTC().Format(time.RFC3339))
 	}
 	if bundle.ExpiresAt.Before(now) {
 		return conductor.ErrExpired
@@ -1106,16 +1119,7 @@ func validateStoredRecordWithOptions(record PublishedBundle, allowLegacyPolicyHa
 	if record.PublishedAt.IsZero() {
 		return fmt.Errorf("%w: published_at", ErrInvalidStoreRecord)
 	}
-	if allowLegacyPolicyHash {
-		if err := record.Bundle.ValidateAllowLegacyPolicyHash(); err != nil {
-			return err
-		}
-		if record.Bundle.ExpiresAt.Before(record.PublishedAt) {
-			return conductor.ErrExpired
-		}
-		return nil
-	}
-	return validatePublishableBundle(record.Bundle, record.PublishedAt)
+	return validatePublishableBundleWithOptions(record.Bundle, record.PublishedAt, allowLegacyPolicyHash)
 }
 
 func streamKey(bundle conductor.PolicyBundle) (string, error) {

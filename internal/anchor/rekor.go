@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -37,6 +38,13 @@ const (
 	rekorHashedRekordKind       = "hashedrekord"
 	rekorHashedRekordAPIVersion = "0.0.1"
 	rekorSHA256Algorithm        = "sha256"
+	rekorSHA512Algorithm        = "sha512"
+	// rekorDefaultSubmitHashAlgorithm is used when RekorLog.HashAlgorithm is
+	// unset. It defaults to SHA-256, which the hashedrekord 0.0.1 schema has
+	// always accepted and which public/common Rekor deployments support. A
+	// deployment whose schema requires SHA-512 sets HashAlgorithm explicitly;
+	// hardcoding either algorithm would break the other class of Rekor server.
+	rekorDefaultSubmitHashAlgorithm = rekorSHA256Algorithm
 )
 
 // RekorLog submits receipt-chain checkpoints to Rekor and stores the returned
@@ -47,6 +55,27 @@ type RekorLog struct {
 	HTTPClient     *http.Client
 	Signer         ed25519.PrivateKey
 	TrustedLogKeys []crypto.PublicKey
+	// HashAlgorithm selects the hashedrekord data.hash.algorithm for
+	// submissions ("sha256" or "sha512"). Empty means the default
+	// (rekorDefaultSubmitHashAlgorithm). Set it to match the target Rekor
+	// deployment's supported schema.
+	HashAlgorithm string
+}
+
+// submitHashAlgorithm resolves the configured submission hash algorithm,
+// falling back to the default when unset and rejecting anything the verifier
+// cannot recompute. Fail closed: an unsupported algorithm never submits.
+func (r RekorLog) submitHashAlgorithm() (string, error) {
+	algo := strings.TrimSpace(r.HashAlgorithm)
+	if algo == "" {
+		return rekorDefaultSubmitHashAlgorithm, nil
+	}
+	switch algo {
+	case rekorSHA256Algorithm, rekorSHA512Algorithm:
+		return algo, nil
+	default:
+		return "", fmt.Errorf("unsupported rekor hash algorithm %q (want %q or %q)", algo, rekorSHA256Algorithm, rekorSHA512Algorithm)
+	}
 }
 
 type rekorSubmitRequest struct {
@@ -122,13 +151,17 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	if err != nil {
 		return Proof{}, err
 	}
+	hashAlgorithm, err := r.submitHashAlgorithm()
+	if err != nil {
+		return Proof{}, err
+	}
 	body := rekorSubmitRequest{
 		APIVersion: rekorHashedRekordAPIVersion,
 		Kind:       rekorHashedRekordKind,
 		Spec: rekorSubmitSpec{
 			Data: rekorData{Hash: rekorHash{
-				Algorithm: rekorSHA256Algorithm,
-				Value:     sha256Hex(checkpointBytes),
+				Algorithm: hashAlgorithm,
+				Value:     rekorDigestHex(hashAlgorithm, checkpointBytes),
 			}},
 			Signature: rekorSignature{
 				Content:   signature,
@@ -292,10 +325,11 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	if body.APIVersion != rekorHashedRekordAPIVersion || body.Kind != rekorHashedRekordKind {
 		return fmt.Errorf("unsupported rekor body %s/%s", body.Kind, body.APIVersion)
 	}
-	if body.Spec.Data.Hash.Algorithm != rekorSHA256Algorithm {
-		return fmt.Errorf("unsupported rekor hash algorithm %q", body.Spec.Data.Hash.Algorithm)
+	expectedDigest, err := rekorDigestHexForAlgorithm(body.Spec.Data.Hash.Algorithm, checkpointBytes)
+	if err != nil {
+		return err
 	}
-	if body.Spec.Data.Hash.Value != sha256Hex(checkpointBytes) {
+	if body.Spec.Data.Hash.Value != expectedDigest {
 		return errors.New("rekor body checkpoint digest does not match bundle checkpoint")
 	}
 	if body.Spec.Signature.Content != proof.Rekor.Signature {
@@ -432,6 +466,25 @@ func checkpointBytes(checkpoint Checkpoint) ([]byte, error) {
 		return nil, fmt.Errorf("marshal checkpoint: %w", err)
 	}
 	return data, nil
+}
+
+func rekorDigestHexForAlgorithm(algorithm string, data []byte) (string, error) {
+	switch algorithm {
+	case rekorSHA256Algorithm, rekorSHA512Algorithm:
+		return rekorDigestHex(algorithm, data), nil
+	default:
+		return "", fmt.Errorf("unsupported rekor hash algorithm %q", algorithm)
+	}
+}
+
+func rekorDigestHex(algorithm string, data []byte) string {
+	switch algorithm {
+	case rekorSHA512Algorithm:
+		sum := sha512.Sum512(data)
+		return hex.EncodeToString(sum[:])
+	default:
+		return sha256Hex(data)
+	}
 }
 
 func signRekorCheckpoint(data []byte, priv ed25519.PrivateKey) (publicKey string, signature string, err error) {

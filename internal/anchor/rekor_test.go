@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -81,6 +82,180 @@ func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
 	}
 }
 
+func TestRekorLogSubmitHashAlgorithm(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 2)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	checkpointBytes, err := checkpointBytes(checkpoint)
+	if err != nil {
+		t.Fatalf("checkpointBytes: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	// Default (HashAlgorithm unset) submits SHA-256: the hashedrekord schema
+	// default that public/common Rekor deployments accept.
+	defProof, err := (RekorLog{URL: fakeRekorServer(t).URL, Signer: priv}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit(default): %v", err)
+	}
+	defBody := decodeSubmittedRekorBody(t, defProof)
+	if defBody.Spec.Data.Hash.Algorithm != rekorSHA256Algorithm {
+		t.Fatalf("default hash algorithm = %q, want %q", defBody.Spec.Data.Hash.Algorithm, rekorSHA256Algorithm)
+	}
+	if got, want := defBody.Spec.Data.Hash.Value, sha256Hex(checkpointBytes); got != want {
+		t.Fatalf("default hash value = %q, want SHA-256 %q", got, want)
+	}
+	if err := validateRekorSubmissionRecord(defProof, checkpoint); err != nil {
+		t.Fatalf("validateRekorSubmissionRecord(default): %v", err)
+	}
+
+	// Explicit SHA-512: for a deployment whose schema requires it.
+	proof, err := (RekorLog{URL: fakeRekorServer(t).URL, Signer: priv, HashAlgorithm: rekorSHA512Algorithm}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit(sha512): %v", err)
+	}
+	body := decodeSubmittedRekorBody(t, proof)
+	if body.Spec.Data.Hash.Algorithm != rekorSHA512Algorithm {
+		t.Fatalf("hash algorithm = %q, want %q", body.Spec.Data.Hash.Algorithm, rekorSHA512Algorithm)
+	}
+	sum := sha512.Sum512(checkpointBytes)
+	if got, want := body.Spec.Data.Hash.Value, hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("hash value = %q, want SHA-512 %q", got, want)
+	}
+	if err := validateRekorSubmissionRecord(proof, checkpoint); err != nil {
+		t.Fatalf("validateRekorSubmissionRecord: %v", err)
+	}
+
+	// An unsupported algorithm fails closed at submit (never sends).
+	if _, err := (RekorLog{URL: fakeRekorServer(t).URL, Signer: priv, HashAlgorithm: "sha3-256"}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "unsupported rekor hash algorithm") {
+		t.Fatalf("Submit(unsupported algorithm) err = %v, want unsupported algorithm error", err)
+	}
+
+	legacy := proofWithRekorBody(t, proof, func(body *rekorSubmitRequest) {
+		body.Spec.Data.Hash.Algorithm = rekorSHA256Algorithm
+		body.Spec.Data.Hash.Value = sha256Hex(checkpointBytes)
+	})
+	if err := validateRekorSubmissionRecord(legacy, checkpoint); err != nil {
+		t.Fatalf("validateRekorSubmissionRecord accepted legacy SHA-256 body: %v", err)
+	}
+
+	mismatched := proofWithRekorBody(t, proof, func(body *rekorSubmitRequest) {
+		body.Spec.Data.Hash.Value = sha256Hex(checkpointBytes)
+	})
+	if err := validateRekorSubmissionRecord(mismatched, checkpoint); err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("validateRekorSubmissionRecord err = %v, want digest mismatch", err)
+	}
+
+	tampered := proofWithRekorBody(t, proof, func(body *rekorSubmitRequest) {
+		body.Spec.Data.Hash.Value = strings.Repeat("0", sha512.Size*2)
+	})
+	if err := validateRekorSubmissionRecord(tampered, checkpoint); err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("validateRekorSubmissionRecord err = %v, want digest mismatch", err)
+	}
+	if err := validateRekorSubmissionRecord(proof, checkpoint); err != nil {
+		t.Fatalf("validateRekorSubmissionRecord after restore: %v", err)
+	}
+}
+
+func TestRekorLogVerifyAcceptsLegacySHA256HashedRekordDigest(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	logPub, logPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_, entryPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey entry: %v", err)
+	}
+	proof := selfConsistentRekorProofWithAlgorithm(t, checkpoint, entryPriv, logPriv, rekorSHA256Algorithm)
+	if err := (RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}}).Verify(proof, checkpoint); err != nil {
+		t.Fatalf("Verify legacy SHA-256 body: %v", err)
+	}
+}
+
+func TestRekorLogVerifyRejectsCheckpointSubstitutionUnderBothHashAlgorithms(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	tamperedCheckpoint := checkpoint
+	tamperedCheckpoint.RootHash = strings.Repeat("f", sha256.Size*2)
+	if tamperedCheckpoint.RootHash == checkpoint.RootHash {
+		t.Fatal("tampered checkpoint did not change root hash")
+	}
+	logPub, logPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey log: %v", err)
+	}
+	_, entryPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey entry: %v", err)
+	}
+	_, attackerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey attacker: %v", err)
+	}
+	verifier := RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}}
+
+	for _, algorithm := range []string{rekorSHA512Algorithm, rekorSHA256Algorithm} {
+		t.Run(algorithm, func(t *testing.T) {
+			proof := selfConsistentRekorProofWithAlgorithm(t, checkpoint, entryPriv, logPriv, algorithm)
+			if err := verifier.Verify(proof, checkpoint); err != nil {
+				t.Fatalf("Verify original proof: %v", err)
+			}
+			if err := verifier.Verify(proof, tamperedCheckpoint); err == nil {
+				t.Fatal("Verify accepted original proof for tampered checkpoint")
+			}
+
+			forged := proofWithRekorBodyForCheckpoint(t, proof, tamperedCheckpoint, attackerPriv, algorithm)
+			if err := validateRekorSubmissionRecord(forged, tamperedCheckpoint); err != nil {
+				t.Fatalf("validate forged submission record: %v", err)
+			}
+			if err := verifier.Verify(forged, tamperedCheckpoint); err == nil || !strings.Contains(err.Error(), "signed_entry_timestamp") {
+				t.Fatalf("Verify forged logged body err = %v, want SET failure", err)
+			}
+		})
+	}
+}
+
+func TestRekorSubmissionRecordRejectsUnsupportedHashAlgorithmBeforeDigestFallback(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	checkpointBytes, err := checkpointBytes(checkpoint)
+	if err != nil {
+		t.Fatalf("checkpointBytes: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	proof, err := (RekorLog{URL: fakeRekorServer(t).URL, Signer: priv}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	candidate := proofWithRekorBody(t, proof, func(body *rekorSubmitRequest) {
+		body.Spec.Data.Hash.Algorithm = "sha3-512"
+		body.Spec.Data.Hash.Value = sha256Hex(checkpointBytes)
+	})
+	if err := validateRekorSubmissionRecord(candidate, checkpoint); err == nil || !strings.Contains(err.Error(), "unsupported rekor hash algorithm") {
+		t.Fatalf("validateRekorSubmissionRecord err = %v, want unsupported algorithm", err)
+	}
+}
+
 func TestRekorSubmissionRecordRejectsTampering(t *testing.T) {
 	receipts, keyHex := testReceiptChain(t, 1)
 	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
@@ -99,23 +274,9 @@ func TestRekorSubmissionRecordRejectsTampering(t *testing.T) {
 	if proof.Rekor == nil {
 		t.Fatal("proof.Rekor nil")
 	}
-	bodyBytes, err := base64.StdEncoding.DecodeString(proof.Rekor.Body)
-	if err != nil {
-		t.Fatalf("DecodeString: %v", err)
-	}
-	var body rekorSubmitRequest
-	if err := json.Unmarshal(bodyBytes, &body); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	body.Spec.Data.Hash.Value = strings.Repeat("0", 64)
-	tamperedBody, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	tampered := proof
-	tampered.Rekor = cloneRekorProof(proof.Rekor)
-	tampered.Rekor.Body = base64.StdEncoding.EncodeToString(tamperedBody)
-	tampered.EntryHash = sha256Hex([]byte(tampered.Rekor.Body))
+	tampered := proofWithRekorBody(t, proof, func(body *rekorSubmitRequest) {
+		body.Spec.Data.Hash.Value = strings.Repeat("0", sha512.Size*2)
+	})
 	if err := validateRekorSubmissionRecord(tampered, checkpoint); err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("validateRekorSubmissionRecord err = %v, want digest mismatch", err)
 	}
@@ -669,6 +830,58 @@ func cloneRekorProof(in *RekorProof) *RekorProof {
 	return &out
 }
 
+func decodeSubmittedRekorBody(t *testing.T, proof Proof) rekorSubmitRequest {
+	t.Helper()
+	if proof.Rekor == nil {
+		t.Fatal("proof.Rekor nil")
+	}
+	bodyBytes, err := base64.StdEncoding.DecodeString(proof.Rekor.Body)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	var body rekorSubmitRequest
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	return body
+}
+
+func proofWithRekorBody(t *testing.T, proof Proof, edit func(*rekorSubmitRequest)) Proof {
+	t.Helper()
+	body := decodeSubmittedRekorBody(t, proof)
+	edit(&body)
+	tamperedBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	candidate := proof
+	candidate.Rekor = cloneRekorProof(proof.Rekor)
+	candidate.Rekor.Body = base64.StdEncoding.EncodeToString(tamperedBody)
+	candidate.EntryHash = sha256Hex([]byte(candidate.Rekor.Body))
+	return candidate
+}
+
+func proofWithRekorBodyForCheckpoint(t *testing.T, proof Proof, checkpoint Checkpoint, signer ed25519.PrivateKey, algorithm string) Proof {
+	t.Helper()
+	checkpointBytes, err := checkpointBytes(checkpoint)
+	if err != nil {
+		t.Fatalf("checkpointBytes: %v", err)
+	}
+	publicKey, signature, err := signRekorCheckpoint(checkpointBytes, signer)
+	if err != nil {
+		t.Fatalf("signRekorCheckpoint: %v", err)
+	}
+	candidate := proofWithRekorBody(t, proof, func(body *rekorSubmitRequest) {
+		body.Spec.Data.Hash.Algorithm = algorithm
+		body.Spec.Data.Hash.Value = rekorDigestHex(algorithm, checkpointBytes)
+		body.Spec.Signature.Content = signature
+		body.Spec.Signature.PublicKey.Content = publicKey
+	})
+	candidate.Rekor.PublicKey = publicKey
+	candidate.Rekor.Signature = signature
+	return candidate
+}
+
 func mustEd25519PublicKey(t *testing.T) ed25519.PublicKey {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -779,6 +992,11 @@ func encodedRekorRequestBody(t *testing.T, r *http.Request) string {
 
 func selfConsistentRekorProof(t *testing.T, checkpoint Checkpoint, entrySigner, logSigner ed25519.PrivateKey) Proof {
 	t.Helper()
+	return selfConsistentRekorProofWithAlgorithm(t, checkpoint, entrySigner, logSigner, rekorDefaultSubmitHashAlgorithm)
+}
+
+func selfConsistentRekorProofWithAlgorithm(t *testing.T, checkpoint Checkpoint, entrySigner, logSigner ed25519.PrivateKey, algorithm string) Proof {
+	t.Helper()
 	checkpointBytes, err := checkpointBytes(checkpoint)
 	if err != nil {
 		t.Fatalf("checkpointBytes: %v", err)
@@ -792,8 +1010,8 @@ func selfConsistentRekorProof(t *testing.T, checkpoint Checkpoint, entrySigner, 
 		Kind:       rekorHashedRekordKind,
 		Spec: rekorSubmitSpec{
 			Data: rekorData{Hash: rekorHash{
-				Algorithm: rekorSHA256Algorithm,
-				Value:     sha256Hex(checkpointBytes),
+				Algorithm: algorithm,
+				Value:     rekorDigestHex(algorithm, checkpointBytes),
 			}},
 			Signature: rekorSignature{
 				Content:   signature,

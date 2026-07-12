@@ -200,6 +200,19 @@ func agentLabel(id string, receipts []receipt.Receipt) string {
 	if len(receipts) == 0 {
 		return id
 	}
+	// Prefer the first NON-lifecycle receipt's actor. A session that opens with a
+	// session-control record (open/heartbeat/close) carries the opener's actor
+	// (e.g. the proxy identity, "pipelock"), not the agent that produced the
+	// mediated actions -- labeling by receipts[0] would collapse the whole session
+	// under that opener. Skip lifecycle records when choosing the label.
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil {
+			continue
+		}
+		if actor := strings.TrimSpace(r.ActionRecord.Actor); actor != "" {
+			return actor
+		}
+	}
 	first := receipts[0].ActionRecord
 	if first.Actor != "" {
 		return first.Actor

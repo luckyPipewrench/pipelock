@@ -331,9 +331,16 @@ func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, 
 		return fmt.Errorf("conductor request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEmergencyResponseBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEmergencyResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read conductor response: %w", err)
+	}
+	// Read one byte past the cap and reject an over-limit body outright rather
+	// than silently truncating it: a truncated-but-valid JSON prefix (with
+	// oversized trailing data) must fail closed, not decode into a misleading
+	// success/error. Mirrors readPublishResponseBody on the publish path.
+	if len(body) > maxEmergencyResponseBytes {
+		return fmt.Errorf("conductor response exceeds %d bytes", maxEmergencyResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("conductor rejected request: status=%d body=%s", resp.StatusCode, emergencySnippet(body, bearer))

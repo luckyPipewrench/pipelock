@@ -7,6 +7,7 @@ package conductor
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ type rollbackOptions struct {
 	counter         uint64
 	reason          string
 	ttl             time.Duration
+	dryRun          bool
 	licenseCRLFile  string
 
 	now       func() time.Time
@@ -82,6 +84,7 @@ are not supported. It requires at least ` + fmt.Sprintf("%d", conductorcore.Requ
 	cmd.Flags().Uint64Var(&opts.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each publish supersedes the prior one")
 	cmd.Flags().StringVar(&opts.reason, "reason", "", "operator reason recorded in the signed authorization")
 	cmd.Flags().DurationVar(&opts.ttl, "ttl", rollbackDefaultTTL, "validity window; must not exceed the Conductor's configured rollback max validity")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "evaluate the signed rollback without mutating Conductor state")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
 	cmd.Flags().StringVar(&opts.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")
@@ -161,6 +164,16 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 		return err
 	}
 
+	if opts.dryRun {
+		var eval controlplane.RollbackEvaluation
+		if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RollbackAuthorizationsPath, adminToken,
+			publishRollbackAuthorizationRequest{Authorization: auth, DryRun: true}, &eval); err != nil {
+			return err
+		}
+		writeRollbackEvaluation(cmd.OutOrStdout(), eval)
+		return nil
+	}
+
 	var resp publishRollbackAuthorizationResponse
 	if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RollbackAuthorizationsPath, adminToken,
 		publishRollbackAuthorizationRequest{Authorization: auth}, &resp); err != nil {
@@ -177,6 +190,7 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 // handler's unexported wire shapes; field tags match exactly.
 type publishRollbackAuthorizationRequest struct {
 	Authorization conductorcore.RollbackAuthorization `json:"authorization"`
+	DryRun        bool                                `json:"dry_run,omitempty"`
 }
 
 type publishRollbackAuthorizationResponse struct {
@@ -185,4 +199,10 @@ type publishRollbackAuthorizationResponse struct {
 	Counter           uint64    `json:"counter"`
 	PublishedAt       time.Time `json:"published_at"`
 	Created           bool      `json:"created"`
+}
+
+func writeRollbackEvaluation(out io.Writer, eval controlplane.RollbackEvaluation) {
+	_, _ = fmt.Fprintf(out,
+		"dry-run rollback valid=%t would_create=%t counter=%d would_roll_to_bundle_id=%s would_roll_to_version=%d would_roll_to_hash=%s noop=%t conflict=%s current_head_version=%d current_head_hash=%s\n",
+		eval.Valid, eval.WouldCreate, eval.Counter, eval.WouldRollToBundleID, eval.WouldRollToVersion, eval.WouldRollToHash, eval.Noop, eval.Conflict, eval.CurrentHeadVersion, eval.CurrentHeadHash)
 }

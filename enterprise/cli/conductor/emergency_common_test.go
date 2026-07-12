@@ -131,9 +131,10 @@ func emergencyResolverFromKeys(keys map[string]conductorcore.SignatureKey) condu
 // separately; the producer logic under test is the message construction +
 // signing + the server's acceptance of it.
 type testServer struct {
-	url    string
-	client *http.Client
-	store  *controlplane.FileBundleStore
+	url       string
+	client    *http.Client
+	store     *controlplane.FileBundleStore
+	emergency *controlplane.FileEmergencyStore
 }
 
 type testServerOptions struct {
@@ -210,7 +211,7 @@ func newTestServer(t *testing.T, opts testServerOptions) *testServer {
 	}
 	srv := httptest.NewTLSServer(handler)
 	t.Cleanup(srv.Close)
-	return &testServer{url: srv.URL, client: srv.Client(), store: store}
+	return &testServer{url: srv.URL, client: srv.Client(), store: store, emergency: emergencyControls}
 }
 
 func (s *testServer) Do(req *http.Request) (*http.Response, error) { return s.client.Do(req) }
@@ -511,6 +512,28 @@ func TestPostEmergencyJSONSurfacesServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "status=422") {
 		t.Fatalf("postEmergencyJSON error = %v, want status code", err)
+	}
+}
+
+// An oversized response with a valid JSON prefix (e.g. a well-formed
+// acknowledgement followed by megabytes of trailing bytes) must fail closed
+// rather than truncate-and-decode into a misleading success. The kill/resume/
+// rollback dry-run and real emergency paths all read through postEmergencyJSON,
+// so this guards every emergency control response, matching the publish path.
+func TestPostEmergencyJSONRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"accepted":true}`))
+		_, _ = w.Write([]byte(strings.Repeat(" ", maxEmergencyResponseBytes)))
+	}))
+	defer srv.Close()
+	var out map[string]any
+	err := postEmergencyJSON(context.Background(), srv.Client(), srv.URL, "/x", "tok", map[string]string{"a": "b"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("postEmergencyJSON error = %v, want oversized-response error", err)
+	}
+	if out != nil {
+		t.Fatalf("out = %v, want nil (oversized response must not decode)", out)
 	}
 }
 

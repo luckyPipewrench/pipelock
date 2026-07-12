@@ -564,11 +564,16 @@ func bundleResolutionRejectReason(
 		return ""
 	}
 
+	// The dropped patterns above name exactly what was lost per surface. The
+	// suffix lists the bundle load errors observed during this reload as
+	// context; it is not a causal attribution (an unrelated bundle can error in
+	// the same reload without dropping any live rule), so it is labelled as
+	// such to avoid pointing an operator at the wrong bundle.
 	names := make([]string, 0, len(result.Errors))
 	for _, e := range result.Errors {
 		names = append(names, e.Name)
 	}
-	return strings.Join(reasons, "; ") + " (bundle errors: " + strings.Join(names, ", ") + ")"
+	return strings.Join(reasons, "; ") + " (bundle load errors this reload: " + strings.Join(names, ", ") + ")"
 }
 
 func removedBundleDLPPatterns(old, updated []config.DLPPattern) []string {

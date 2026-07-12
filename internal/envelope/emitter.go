@@ -377,6 +377,9 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 	return data, nil
 }
 
+// defaultBufferRequestBodyMaxBytes is the defensive fallback cap when
+// bufferRequestBody is called without an explicit positive maxBytes.
+// Keep this in parity with config.DefaultEnvelopeSignMaxBodyBytes.
 const defaultBufferRequestBodyMaxBytes = 1 << 20
 
 // ErrRequestBodyReadLimitExceeded marks a fail-closed defensive body-buffer cap

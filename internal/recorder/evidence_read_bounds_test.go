@@ -61,6 +61,34 @@ func TestReadEvidenceFileBounded_NonPositiveMaxUsesDefault(t *testing.T) {
 	}
 }
 
+func TestReadEvidenceFileBounded_ExactCapSucceeds(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence.jsonl")
+	content := []byte(strings.Repeat("A", 16))
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := ReadEvidenceFileBounded(path, int64(len(content)))
+	if err != nil {
+		t.Fatalf("ReadEvidenceFileBounded at cap: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("content = %q, want %q", got, content)
+	}
+
+	hash, err := computeEvidenceFileHashBounded(path, int64(len(content)))
+	if err != nil {
+		t.Fatalf("computeEvidenceFileHashBounded at cap: %v", err)
+	}
+	sum := sha256.Sum256(content)
+	if want := hex.EncodeToString(sum[:]); hash != want {
+		t.Fatalf("hash = %s, want %s", hash, want)
+	}
+}
+
 func TestReadEvidenceFileBounded_OverCapFailsClosed(t *testing.T) {
 	t.Parallel()
 

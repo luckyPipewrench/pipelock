@@ -183,8 +183,12 @@ even though sign-in succeeds. Keycloak, for example, issues access tokens with
 `aud: "account"` unless you add an audience mapper. To use the dashboard with
 Keycloak, add an **Audience** protocol mapper to the client (or to a client
 scope it uses) whose included client audience is the dashboard client ID, then
-set `--oidc-audience` to that same client ID. The issued token then carries
-`aud: <client-id>` and passes the audience check.
+set `--oidc-audience` to that same client ID. The issued token then includes
+the client ID in its `aud` claim (alongside any audiences the provider already
+sets, such as `account`), so the "aud contains `--oidc-audience`" check passes.
+A token that then carries multiple audiences must also set `azp` to the client
+ID, which Keycloak does for the client that obtained the token; the dashboard
+requires that `azp` match when more than one audience is present.
 
 Pick a role source with `--oidc-role-claim` and map it to bounded dashboard
 permissions with `--oidc-role-map`. The role claim can be `azp` (the client ID,

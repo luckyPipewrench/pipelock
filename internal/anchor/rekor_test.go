@@ -284,6 +284,109 @@ func TestRekorLogVerifyRejectsSHA256Ed25519HashedRekordDigest(t *testing.T) {
 	}
 }
 
+func TestRekorArtifactSignatureRoundTripAndTampering(t *testing.T) {
+	artifact := []byte("checkpoint artifact bytes")
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	publicKey, signature, err := signRekorArtifact(artifact, rekorSHA512Algorithm, priv)
+	if err != nil {
+		t.Fatalf("signRekorArtifact: %v", err)
+	}
+	if got := decodeRekorEd25519PublicKeyForTest(t, publicKey); !got.Equal(pub) {
+		t.Fatal("encoded Rekor public key does not match signer")
+	}
+	if err := verifyRekorSignature(artifact, rekorSHA512Algorithm, publicKey, signature); err != nil {
+		t.Fatalf("verifyRekorSignature: %v", err)
+	}
+
+	tamperedArtifact := append([]byte(nil), artifact...)
+	tamperedArtifact[0] ^= 0x01
+	if err := verifyRekorSignature(tamperedArtifact, rekorSHA512Algorithm, publicKey, signature); err == nil || !strings.Contains(err.Error(), "signature invalid") {
+		t.Fatalf("verifyRekorSignature tampered artifact err = %v, want signature invalid", err)
+	}
+
+	wrongPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey wrong: %v", err)
+	}
+	wrongPublicKey := rekorPublicKeyForTest(t, wrongPub)
+	if err := verifyRekorSignature(artifact, rekorSHA512Algorithm, wrongPublicKey, signature); err == nil || !strings.Contains(err.Error(), "signature invalid") {
+		t.Fatalf("verifyRekorSignature wrong key err = %v, want signature invalid", err)
+	}
+}
+
+func TestRekorArtifactSignatureRejectsUnsupportedAlgorithms(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if _, _, err := signRekorArtifact([]byte("artifact"), rekorSHA256Algorithm, priv); err == nil || !strings.Contains(err.Error(), "unsupported rekor hash algorithm") {
+		t.Fatalf("signRekorArtifact SHA-256 err = %v, want unsupported algorithm", err)
+	}
+	if _, _, err := signRekorArtifact([]byte("artifact"), "sha3-512", priv); err == nil || !strings.Contains(err.Error(), "unsupported rekor hash algorithm") {
+		t.Fatalf("signRekorArtifact sha3 err = %v, want unsupported algorithm", err)
+	}
+	publicKey, signature, err := signRekorArtifact([]byte("artifact"), rekorSHA512Algorithm, priv)
+	if err != nil {
+		t.Fatalf("signRekorArtifact SHA-512: %v", err)
+	}
+	if err := verifyRekorSignature([]byte("artifact"), rekorSHA256Algorithm, publicKey, signature); err == nil || !strings.Contains(err.Error(), "unsupported rekor hash algorithm") {
+		t.Fatalf("verifyRekorSignature SHA-256 err = %v, want unsupported algorithm", err)
+	}
+}
+
+func TestRekorArtifactSignatureRejectsMalformedInputs(t *testing.T) {
+	artifact := []byte("checkpoint artifact bytes")
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	publicKey, signature, err := signRekorArtifact(artifact, rekorSHA512Algorithm, priv)
+	if err != nil {
+		t.Fatalf("signRekorArtifact: %v", err)
+	}
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa GenerateKey: %v", err)
+	}
+	rsaDER, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey rsa: %v", err)
+	}
+	rsaPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: rsaDER})
+
+	badDERPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("not der")})
+	cases := []struct {
+		name      string
+		publicKey string
+		signature string
+		want      string
+	}{
+		{name: "missing public key", publicKey: "", signature: signature, want: "required"},
+		{name: "bad public key base64", publicKey: "not base64!", signature: signature, want: "decode rekor public key"},
+		{name: "bad public key pem", publicKey: base64.StdEncoding.EncodeToString([]byte("not pem")), signature: signature, want: "parse rekor public key PEM"},
+		{name: "bad public key der", publicKey: base64.StdEncoding.EncodeToString(badDERPEM), signature: signature, want: "parse rekor public key"},
+		{name: "non ed25519 public key", publicKey: base64.StdEncoding.EncodeToString(rsaPEM), signature: signature, want: "not ed25519"},
+		{name: "bad signature base64", publicKey: publicKey, signature: "not base64!", want: "decode rekor signature"},
+		{name: "malformed signature", publicKey: publicKey, signature: base64.StdEncoding.EncodeToString([]byte("short signature")), want: "signature invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := verifyRekorSignature(artifact, rekorSHA512Algorithm, tc.publicKey, tc.signature); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("verifyRekorSignature err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	corruptPriv := ed25519.PrivateKey(make([]byte, ed25519.PrivateKeySize))
+	if _, _, err := signRekorArtifact(artifact, rekorSHA512Algorithm, corruptPriv); err == nil || !strings.Contains(err.Error(), "validate rekor signing key") {
+		t.Fatalf("signRekorArtifact corrupt key err = %v, want validation error", err)
+	}
+}
+
 func TestRekorLogVerifyRejectsCheckpointSubstitution(t *testing.T) {
 	receipts, keyHex := testReceiptChain(t, 1)
 	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})

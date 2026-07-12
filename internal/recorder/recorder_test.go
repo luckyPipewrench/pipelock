@@ -1044,6 +1044,48 @@ func TestComputeFileHash_RejectsOverCapFile(t *testing.T) {
 	}
 }
 
+func TestReadEvidenceFileBounded_RejectsOverCapFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversized.jsonl")
+	if err := os.WriteFile(path, []byte("over-cap"), filePermissions); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := recorder.ReadEvidenceFileBounded(path, 4)
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ReadEvidenceFileBounded error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
+func TestReadEvidenceFileBounded_DefaultLimitReadsSmallFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence.jsonl")
+	content := []byte("small evidence\n")
+	if err := os.WriteFile(path, content, filePermissions); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := recorder.ReadEvidenceFileBounded(path, 0)
+	if err != nil {
+		t.Fatalf("ReadEvidenceFileBounded: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("ReadEvidenceFileBounded = %q, want %q", got, content)
+	}
+}
+
+func TestReadEvidenceFileBounded_RejectsNonRegularPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "not-regular")
+	if err := os.Mkdir(path, 0o750); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	if _, err := recorder.ReadEvidenceFileBounded(path, 4); err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("ReadEvidenceFileBounded error = %v, want non-regular error", err)
+	}
+}
+
 func TestComputeFileHash_NotFound(t *testing.T) {
 	_, err := recorder.ComputeFileHash("/nonexistent/file")
 	if err == nil {

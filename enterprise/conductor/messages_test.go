@@ -483,6 +483,57 @@ func TestPolicyBundlePayloadPolicyHashDistinctLoadedConfigsDiffer(t *testing.T) 
 	}
 }
 
+func TestPolicyBundlePayloadPolicyHashRejectsLocalCompanionFields(t *testing.T) {
+	cwd := t.TempDir()
+	secretsPath := filepath.Join(cwd, "secrets.env")
+	if err := os.WriteFile(secretsPath, []byte("# publisher-local companion file\n"), 0o600); err != nil {
+		t.Fatalf("write cwd secrets file: %v", err)
+	}
+	t.Chdir(cwd)
+
+	for _, tc := range []struct {
+		name string
+		yaml string
+		path string
+	}{
+		{
+			name: "relative dlp secrets file",
+			yaml: "mode: balanced\ndlp:\n  secrets_file: secrets.env\n",
+			path: "dlp.secrets_file",
+		},
+		{
+			name: "learn file salt source",
+			yaml: "mode: balanced\nlearn:\n  privacy:\n    salt_source: file:/var/lib/pipelock/learn-salt\n",
+			path: "learn.privacy.salt_source",
+		},
+		{
+			name: "mcp integrity manifest path",
+			yaml: "mode: balanced\nmcp_binary_integrity:\n  manifest_path: /var/lib/pipelock/mcp-integrity.json\n",
+			path: "mcp_binary_integrity.manifest_path",
+		},
+		{
+			name: "behavioral baseline profile dir",
+			yaml: "mode: balanced\nsession_profiling:\n  enabled: true\nbehavioral_baseline:\n  profile_dir: /var/lib/pipelock/baselines\n",
+			path: "behavioral_baseline.profile_dir",
+		},
+		{
+			name: "learn lock roster path",
+			yaml: "mode: balanced\nlearn_lock:\n  roster_path: /etc/pipelock/roster.json\n",
+			path: "learn_lock.roster_path",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := (PolicyBundlePayload{ConfigYAML: tc.yaml}).PolicyHash()
+			if !errors.Is(err, ErrForbiddenBundleCompanionField) {
+				t.Fatalf("PolicyHash() = %v, want ErrForbiddenBundleCompanionField", err)
+			}
+			if !strings.Contains(err.Error(), tc.path) {
+				t.Fatalf("error should name %s, got %v", tc.path, err)
+			}
+		})
+	}
+}
+
 func TestPolicyBundlePolicyHashVerifiesAndMatchesFollowerLoad(t *testing.T) {
 	yamlSrc := "mode: strict\napi_allowlist:\n  - api.vendor.example\nrequest_body_scanning:\n  max_body_bytes: 1048576\n"
 	payload := PolicyBundlePayload{ConfigYAML: yamlSrc}

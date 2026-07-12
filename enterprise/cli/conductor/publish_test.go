@@ -102,15 +102,13 @@ func TestLoadPolicySigningKeyAcceptsBootstrapKeyFile(t *testing.T) {
 }
 
 func TestBootstrapEmergencyKeysLoadAndSignControlMessages(t *testing.T) {
-	base, err := os.MkdirTemp(".", ".emergency-bootstrap-test-*")
+	cwd, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
+		t.Fatalf("Getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	dir, err := filepath.Abs(filepath.Join(base, "fleet"))
-	if err != nil {
-		t.Fatalf("Abs: %v", err)
-	}
+	t.Setenv("TMPDIR", cwd)
+	base := t.TempDir()
+	dir := filepath.Join(base, "fleet")
 	res, err := bootstrap.Run(context.Background(), bootstrap.Options{
 		Dir:         dir,
 		OrgID:       testOrg,

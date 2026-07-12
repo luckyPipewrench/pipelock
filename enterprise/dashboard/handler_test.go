@@ -784,6 +784,102 @@ func TestHandler_SharedNavFiltersUnauthorizedRoutes(t *testing.T) {
 	}
 }
 
+func TestLicenseTierAccessMatrix(t *testing.T) {
+	t.Parallel()
+	assertLicenseTierRouteSpecIntent(t)
+
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	dir, trusted := writeTrustedHandlerSession(t)
+	allowEveryPermission := func(*http.Request, Permission) error { return nil }
+	newMatrixHandler := func(hasFeature func(string) bool, fleetSource *fakeFleetSource) http.Handler {
+		return New(Options{
+			TrustedOuterAuth:    true,
+			ReceiptDir:          dir,
+			TrustedKeys:         trusted,
+			HasFeature:          hasFeature,
+			FleetSource:         fleetSource,
+			DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+			AuthorizeFleetScope: allowFleetScope,
+			AuthorizePermission: allowEveryPermission,
+			Now:                 func() time.Time { return now },
+		})
+	}
+
+	agentsFleetSource := &fakeFleetSource{followers: overviewFleetFollowers(now)}
+	enterpriseFleetSource := &fakeFleetSource{followers: overviewFleetFollowers(now)}
+	tiers := []struct {
+		name       string
+		handler    http.Handler
+		hasFeature func(string) bool
+	}{
+		{
+			name:       "agentsOnly",
+			handler:    newMatrixHandler(allowAgentsFeature, agentsFleetSource),
+			hasFeature: allowAgentsFeature,
+		},
+		{
+			name:       "enterprise",
+			handler:    newMatrixHandler(allowAllDashboardFeatures, enterpriseFleetSource),
+			hasFeature: allowAllDashboardFeatures,
+		},
+	}
+
+	for _, tier := range tiers {
+		t.Run(tier.name+"/routes", func(t *testing.T) {
+			for _, spec := range dashboardRouteSpecs() {
+				spec := spec
+				t.Run(spec.pattern, func(t *testing.T) {
+					target := licenseTierMatrixRequestPath(t, spec)
+					rec := httptest.NewRecorder()
+					req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+					tier.handler.ServeHTTP(rec, req)
+
+					wantAllowed := tier.hasFeature(spec.feature)
+					if !wantAllowed {
+						if rec.Code != http.StatusForbidden {
+							t.Fatalf("%s %s feature %q status = %d, want 403; body=%s", tier.name, target, spec.feature, rec.Code, rec.Body.String())
+						}
+						return
+					}
+					if rec.Code == http.StatusForbidden {
+						t.Fatalf("%s %s feature %q was license-denied; body=%s", tier.name, target, spec.feature, rec.Body.String())
+					}
+					if licenseTierMatrixRouteMustRenderOK(spec) && rec.Code != http.StatusOK {
+						t.Fatalf("%s %s feature %q status = %d, want 200; body=%s", tier.name, target, spec.feature, rec.Code, rec.Body.String())
+					}
+				})
+			}
+		})
+
+		t.Run(tier.name+"/nav", func(t *testing.T) {
+			body := renderDashboardPath(t, tier.handler, "/overview")
+			wantNav := licenseTierExpectedNavSpecs(t, tier.hasFeature)
+			assertSharedNavLinksExactly(t, body, wantNav)
+			assertLicenseTierFleetNavVisibility(t, body, tier.hasFeature(license.FeatureFleet))
+		})
+	}
+
+	agentsOverview := renderDashboardPath(t, tiers[0].handler, "/overview")
+	for _, leaked := range []string{"Scope " + fleetTestOrgID, "4 accepted follower rows", "verified applied"} {
+		if strings.Contains(agentsOverview, leaked) {
+			t.Fatalf("agents-only overview rendered fleet follower data %q: %s", leaked, agentsOverview)
+		}
+	}
+	assertLicenseTierFleetSurfaceLinks(t, agentsOverview, false)
+	if agentsFleetSource.gotOrgID != "" || agentsFleetSource.gotFleet != "" || agentsFleetSource.gotLimit != 0 {
+		t.Fatalf("agents-only matrix queried fleet source: org=%q fleet=%q limit=%d",
+			agentsFleetSource.gotOrgID, agentsFleetSource.gotFleet, agentsFleetSource.gotLimit)
+	}
+
+	enterpriseOverview := renderDashboardPath(t, tiers[1].handler, "/overview")
+	for _, want := range []string{"Scope redacted / redacted", "4 accepted follower rows", "verified applied"} {
+		if !strings.Contains(enterpriseOverview, want) {
+			t.Fatalf("enterprise overview missing fleet posture %q: %s", want, enterpriseOverview)
+		}
+	}
+	assertLicenseTierFleetSurfaceLinks(t, enterpriseOverview, true)
+}
+
 func TestHandler_SharedNavDoesNotReflectRequestPayloads(t *testing.T) {
 	t.Parallel()
 
@@ -859,6 +955,105 @@ func expectedNavRouteSpecsForGate(t *testing.T, d *dashboardHandler, req *http.R
 		}
 	}
 	return specs
+}
+
+func assertLicenseTierRouteSpecIntent(t *testing.T) {
+	t.Helper()
+	for _, spec := range dashboardRouteSpecs() {
+		switch spec.feature {
+		case license.FeatureAgents, license.FeatureFleet:
+		default:
+			t.Fatalf("dashboard route %q has unsupported license feature %q", spec.pattern, spec.feature)
+		}
+		if licenseTierFleetSurfacePattern(spec.pattern) && spec.feature != license.FeatureFleet {
+			t.Fatalf("fleet/compliance surface %q is tagged %q, want %q", spec.pattern, spec.feature, license.FeatureFleet)
+		}
+	}
+	for _, navSpec := range dashboardNavRouteSpecs {
+		route := routeSpecForPattern(t, navSpec.pattern)
+		if licenseTierFleetSurfacePattern(navSpec.pattern) && route.feature != license.FeatureFleet {
+			t.Fatalf("fleet/compliance nav route %q is tagged %q, want %q", navSpec.pattern, route.feature, license.FeatureFleet)
+		}
+	}
+}
+
+func licenseTierFleetSurfacePattern(pattern string) bool {
+	return pattern == CompliancePath ||
+		pattern == "/fleet" || strings.HasPrefix(pattern, "/fleet/") ||
+		pattern == "/workbench" || strings.HasPrefix(pattern, "/workbench/") ||
+		pattern == "/incident" || strings.HasPrefix(pattern, "/incident/")
+}
+
+func licenseTierMatrixRequestPath(t *testing.T, spec routeSpec) string {
+	t.Helper()
+	switch spec.pattern {
+	case "/session/":
+		return "/session/" + testSessionID
+	case "/agent/":
+		return "/agent/" + testActor
+	case "/fleet/", "/workbench/", "/incident/":
+		return spec.pattern + "extra"
+	default:
+		return spec.pattern
+	}
+}
+
+func licenseTierMatrixRouteMustRenderOK(spec routeSpec) bool {
+	switch spec.pattern {
+	case "/fleet/", "/workbench/", "/incident/":
+		return false
+	default:
+		return true
+	}
+}
+
+func licenseTierExpectedNavSpecs(t *testing.T, hasFeature func(string) bool) []navRouteSpec {
+	t.Helper()
+	var specs []navRouteSpec
+	for _, navSpec := range dashboardNavRouteSpecs {
+		route := routeSpecForPattern(t, navSpec.pattern)
+		if hasFeature(route.feature) {
+			specs = append(specs, navSpec)
+		}
+	}
+	return specs
+}
+
+func assertLicenseTierFleetNavVisibility(t *testing.T, body string, wantVisible bool) {
+	t.Helper()
+	nav := extractDashboardNav(t, body)
+	for _, navSpec := range dashboardNavRouteSpecs {
+		route := routeSpecForPattern(t, navSpec.pattern)
+		if route.feature != license.FeatureFleet {
+			continue
+		}
+		has := strings.Contains(nav, fmt.Sprintf(`href="%s"`, navSpec.pattern))
+		switch {
+		case wantVisible && !has:
+			t.Fatalf("enterprise nav missing fleet route %q: %s", navSpec.pattern, body)
+		case !wantVisible && has:
+			t.Fatalf("agents-only nav rendered fleet route %q: %s", navSpec.pattern, body)
+		}
+	}
+}
+
+func assertLicenseTierFleetSurfaceLinks(t *testing.T, body string, wantVisible bool) {
+	t.Helper()
+	nav := extractDashboardNav(t, body)
+	bodyWithoutNav := strings.Replace(body, nav, "", 1)
+	for _, navSpec := range dashboardNavRouteSpecs {
+		route := routeSpecForPattern(t, navSpec.pattern)
+		if route.feature != license.FeatureFleet {
+			continue
+		}
+		has := strings.Contains(bodyWithoutNav, fmt.Sprintf(`href="%s"`, navSpec.pattern))
+		switch {
+		case wantVisible && !has && navSpec.pattern == "/workbench":
+			t.Fatalf("enterprise overview missing body attention link to %q: %s", navSpec.pattern, body)
+		case !wantVisible && has:
+			t.Fatalf("agents-only overview rendered body link to fleet route %q: %s", navSpec.pattern, body)
+		}
+	}
 }
 
 func allowAgentsNavPermissions(_ *http.Request, permission Permission) error {

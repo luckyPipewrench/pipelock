@@ -5,16 +5,20 @@ package evidence
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +37,36 @@ const (
 	testTarget            = "https://api.vendor.example/evidence"
 	testTransport         = "fetch"
 )
+
+type serveListenCapture struct {
+	mu sync.Mutex
+	ch chan string
+	bytes.Buffer
+}
+
+func newServeListenCapture() *serveListenCapture {
+	return &serveListenCapture{ch: make(chan string, 1)}
+}
+
+func (c *serveListenCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	n, err := c.Buffer.Write(p)
+	text := c.Buffer.String()
+	c.mu.Unlock()
+	if strings.Contains(text, "http://") {
+		select {
+		case c.ch <- text:
+		default:
+		}
+	}
+	return n, err
+}
+
+func (c *serveListenCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Buffer.String()
+}
 
 func genKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -377,6 +411,70 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	}
 	if strings.Contains(body, testActorAlpha) {
 		t.Fatalf("GET / rendered unbound agent %q: %s", testActorAlpha, body)
+	}
+}
+
+func TestServeCmd_NoLicenseRequired(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	dir := t.TempDir()
+	emitSingleSession(t, dir, priv, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdout := newServeListenCapture()
+	cmd := Cmd()
+	cmd.SetContext(ctx)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stdout)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runServe(cmd, serveOptions{
+			receiptDir: dir,
+			listen:     "127.0.0.1:0",
+		})
+	}()
+
+	var listenLine string
+	select {
+	case listenLine = <-stdout.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("free serve did not bind without a license; output=%s", stdout.String())
+	}
+	endpoint := strings.TrimSpace(strings.TrimPrefix(listenLine, "pipelock evidence serve listening on "))
+	if endpoint == listenLine {
+		t.Fatalf("could not parse serve listen address from %q", listenLine)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("free serve should answer GET / without a license: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, testActorAlpha) || !strings.Contains(body, "Authentic") {
+		t.Fatalf("GET / missing free evidence report content: %s", body)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("serve shutdown error = %v, want context canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not shut down after context cancellation")
 	}
 }
 

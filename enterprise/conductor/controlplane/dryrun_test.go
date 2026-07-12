@@ -467,6 +467,19 @@ func publishJSON(t *testing.T, handler *Handler, req publishPolicyBundleRequest)
 	return w
 }
 
+func publishEvaluateJSON(t *testing.T, handler *Handler, req publishPolicyBundleRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal publish evaluate request: %v", err)
+	}
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyEvaluatePath, bytes.NewReader(body))
+	r.Header.Set("X-Pipelock-Publisher", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	return w
+}
+
 func decodePublishEvaluation(t *testing.T, w *httptest.ResponseRecorder) PublishEvaluation {
 	t.Helper()
 	var eval PublishEvaluation
@@ -519,7 +532,7 @@ func TestPublishDryRun_ValidWouldCreate_NoWrite(t *testing.T) {
 		audience: conductor.Audience{InstanceIDs: []string{"*"}},
 	})
 	before := dirDigest(t, sh.bundleDir)
-	w := publishJSON(t, sh.handler, publishPolicyBundleRequest{Bundle: bundle, DryRun: true})
+	w := publishEvaluateJSON(t, sh.handler, publishPolicyBundleRequest{Bundle: bundle})
 	if w.Code != http.StatusOK {
 		t.Fatalf("dry-run publish code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
@@ -747,7 +760,7 @@ func remoteKillJSON(t *testing.T, handler *Handler, req publishRemoteKillRequest
 	if err != nil {
 		t.Fatalf("marshal remote kill request: %v", err)
 	}
-	r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RemoteKillPath, bytes.NewReader(body))
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RemoteKillEvaluatePath, bytes.NewReader(body))
 	r.Header.Set("X-Pipelock-Admin", "ok")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -877,7 +890,7 @@ func rollbackJSON(t *testing.T, handler *Handler, req publishRollbackAuthorizati
 	if err != nil {
 		t.Fatalf("marshal rollback request: %v", err)
 	}
-	r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RollbackAuthorizationsPath, bytes.NewReader(body))
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RollbackEvaluatePath, bytes.NewReader(body))
 	r.Header.Set("X-Pipelock-Admin", "ok")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)

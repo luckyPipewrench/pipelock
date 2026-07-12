@@ -2212,9 +2212,10 @@ func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
 }
 
 func TestRunCmd_ReloadRejectsMetricsListenChange(t *testing.T) {
-	testport.WithRetry(t, 2, func(addrs []string) error {
+	testport.WithRetry(t, 3, func(addrs []string) error {
 		mainAddr := addrs[0]
 		metricsAddr := addrs[1]
+		newMetricsAddr := addrs[2]
 
 		dir := t.TempDir()
 		cfgPath := filepath.Join(dir, "test.yaml")
@@ -2259,11 +2260,11 @@ fetch_proxy:
 		// Hot-reload: change metrics_listen (should be rejected).
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
-metrics_listen: "127.0.0.1:19999"
+metrics_listen: "%s"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
-`, mainAddr)
+`, newMetricsAddr, mainAddr)
 		if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
 			t.Fatal(writeErr)
 		}

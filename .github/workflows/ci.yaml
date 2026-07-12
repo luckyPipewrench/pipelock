@@ -76,12 +76,13 @@ jobs:
   test-oss:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    name: test-oss (${{ matrix.go-version }})
+    name: test-oss (${{ matrix.go-version }}, ${{ matrix.shard }})
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
+        shard: ['proxy', 'scanner', 'mcp', 'rest']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -103,12 +104,14 @@ jobs:
 
       - name: Run tests (OSS)
         env:
-          TEST_LABEL: OSS Go ${{ matrix.go-version }}
+          TEST_LABEL: OSS Go ${{ matrix.go-version }} ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
           set +e
-          go test -race -count=1 -json ./... \
-            | tee /tmp/go-test-oss.json >/dev/null
+          packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
+          go test -race -timeout=15m -count=1 -json $packages \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
           summary_status=$?
@@ -120,12 +123,13 @@ jobs:
   test-enterprise:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    name: test-enterprise (${{ matrix.go-version }})
+    name: test-enterprise (${{ matrix.go-version }}, ${{ matrix.shard }})
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
+        shard: ['proxy', 'scanner', 'mcp', 'rest']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -145,12 +149,14 @@ jobs:
       - name: Run tests (enterprise with coverage)
         if: matrix.go-version == '1.25'
         env:
-          TEST_LABEL: enterprise Go ${{ matrix.go-version }}
+          TEST_LABEL: enterprise Go ${{ matrix.go-version }} ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
           set +e
-          go test -tags enterprise -race -count=1 -coverprofile=coverage.out -json ./... \
-            | tee /tmp/go-test-enterprise.json >/dev/null
+          packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          go test -tags enterprise -race -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json $packages \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
           summary_status=$?
@@ -162,12 +168,14 @@ jobs:
       - name: Run tests (enterprise)
         if: matrix.go-version != '1.25'
         env:
-          TEST_LABEL: enterprise Go ${{ matrix.go-version }}
+          TEST_LABEL: enterprise Go ${{ matrix.go-version }} ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
           set +e
-          go test -tags enterprise -race -count=1 -json ./... \
-            | tee /tmp/go-test-enterprise.json >/dev/null
+          packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          go test -tags enterprise -race -timeout=15m -count=1 -json $packages \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
           summary_status=$?
@@ -180,7 +188,7 @@ jobs:
         if: matrix.go-version == '1.25'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
-          files: ./coverage.out
+          files: ./coverage-${{ matrix.shard }}.out
           fail_ci_if_error: false
 
   test:

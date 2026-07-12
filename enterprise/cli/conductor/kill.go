@@ -5,7 +5,10 @@
 package conductor
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -35,6 +38,7 @@ type killOptions struct {
 	counter        uint64
 	reason         string
 	ttl            time.Duration
+	dryRun         bool
 	licenseCRLFile string
 
 	// now and transport are test seams. Production leaves them nil so the
@@ -103,6 +107,7 @@ func bindRemoteKillFlags(cmd *cobra.Command, opts *killOptions) {
 	cmd.Flags().Uint64Var(&opts.counter, "counter", 0, "monotonic counter; defaults to the current Unix time so each publish supersedes the prior one")
 	cmd.Flags().StringVar(&opts.reason, "reason", "", "operator reason recorded in the signed message")
 	cmd.Flags().DurationVar(&opts.ttl, "ttl", remoteKillDefaultTTL, "validity window for the message; must not exceed the Conductor's configured remote-kill max validity")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "evaluate the signed remote-kill without mutating Conductor state")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "operator client TLS certificate for Conductor mTLS (required)")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "operator client TLS private key for Conductor mTLS (required)")
 	cmd.Flags().StringVar(&opts.serverCA, "server-ca", "", "CA bundle that signed the Conductor server certificate (required)")
@@ -182,6 +187,23 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 		return err
 	}
 
+	if opts.dryRun {
+		var eval controlplane.RemoteKillEvaluation
+		status, err := postEmergencyJSONStatus(cmd.Context(), client, opts.baseURL, controlplane.RemoteKillEvaluatePath, adminToken,
+			publishRemoteKillRequest{Message: msg, DryRun: true}, &eval)
+		if err != nil {
+			return err
+		}
+		if status == http.StatusCreated {
+			return errors.New("conductor returned 201 Created for remote-kill dry-run; refusing ambiguous mutating response")
+		}
+		if err := requireDryRunEvaluation("remote-kill", eval.DryRun); err != nil {
+			return err
+		}
+		writeRemoteKillEvaluation(cmd.OutOrStdout(), "dry-run", eval)
+		return nil
+	}
+
 	var resp publishRemoteKillResponse
 	if err := postEmergencyJSON(cmd.Context(), client, opts.baseURL, controlplane.RemoteKillPath, adminToken,
 		publishRemoteKillRequest{Message: msg}, &resp); err != nil {
@@ -200,6 +222,7 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 // round-trips against the server.
 type publishRemoteKillRequest struct {
 	Message conductorcore.RemoteKillMessage `json:"message"`
+	DryRun  bool                            `json:"dry_run,omitempty"`
 }
 
 type publishRemoteKillResponse struct {
@@ -208,4 +231,10 @@ type publishRemoteKillResponse struct {
 	Counter     uint64    `json:"counter"`
 	PublishedAt time.Time `json:"published_at"`
 	Created     bool      `json:"created"`
+}
+
+func writeRemoteKillEvaluation(out io.Writer, label string, eval controlplane.RemoteKillEvaluation) {
+	_, _ = fmt.Fprintf(out,
+		"%s remote-kill valid=%t would_create=%t counter=%d message_hash=%s conflict=%s has_current_max_counter=%t current_max_counter=%d\n",
+		label, eval.Valid, eval.WouldCreate, eval.Counter, eval.MessageHash, eval.Conflict, eval.HasCurrentMaxCounter, eval.CurrentMaxCounter)
 }

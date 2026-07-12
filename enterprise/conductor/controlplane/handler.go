@@ -24,9 +24,12 @@ const (
 	defaultConductorID = "conductor"
 
 	PublishPolicyBundlePath    = "/api/v1/conductor/policy-bundles"
+	PublishPolicyEvaluatePath  = "/api/v1/conductor/policy-bundles/evaluate"
 	LatestPolicyBundlePath     = "/api/v1/conductor/policy/latest"
 	RemoteKillPath             = "/api/v1/conductor/remote-kill"
+	RemoteKillEvaluatePath     = "/api/v1/conductor/remote-kill/evaluate"
 	RollbackAuthorizationsPath = "/api/v1/conductor/rollback-authorizations"
+	RollbackEvaluatePath       = "/api/v1/conductor/rollback-authorizations/evaluate"
 	AuditBatchesPath           = conductor.AuditBatchesPath
 	FollowersPath              = "/api/v1/conductor/followers"
 	StreamStatusPath           = "/api/v1/conductor/stream"
@@ -499,12 +502,18 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleEnroll(w, r)
 	case RemoteKillPath:
 		h.handleRemoteKill(w, r)
+	case RemoteKillEvaluatePath:
+		h.handleEvaluateRemoteKill(w, r)
 	case RollbackAuthorizationsPath:
 		h.handleRollbackAuthorizations(w, r)
+	case RollbackEvaluatePath:
+		h.handleEvaluateRollbackAuthorization(w, r)
 	case DecisionReplayPath:
 		h.handleDecisionReplay(w, r)
 	case PublishPolicyBundlePath:
 		h.handlePublishPolicyBundle(w, r)
+	case PublishPolicyEvaluatePath:
+		h.handleEvaluatePolicyBundle(w, r)
 	case LatestPolicyBundlePath:
 		h.handleLatestPolicyBundle(w, r)
 	case AuditBatchesPath:
@@ -573,7 +582,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, DecisionReplayPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RemoteKillEvaluatePath, RollbackAuthorizationsPath, RollbackEvaluatePath, DecisionReplayPath, PublishPolicyBundlePath, PublishPolicyEvaluatePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"
@@ -693,43 +702,51 @@ func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.capabilities)
 }
 
-func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) validatePublishBundleRequest(w http.ResponseWriter, r *http.Request) (publishPolicyBundleRequest, string, bool) {
 	if r.Method != http.MethodPut && r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPut, http.MethodPost)
-		return
+		return publishPolicyBundleRequest{}, "", false
 	}
 	if err := h.authorizePublisher(r); err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
-		return
+		return publishPolicyBundleRequest{}, "", false
 	}
 	var req publishPolicyBundleRequest
 	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
-			return
+			return publishPolicyBundleRequest{}, "", false
 		}
 		writeError(w, http.StatusBadRequest, err)
-		return
+		return publishPolicyBundleRequest{}, "", false
 	}
 	if err := h.authorizeBundle(r, req.Bundle); err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
-		return
+		return publishPolicyBundleRequest{}, "", false
 	}
 	fleetSkewReason, err := normalizeFleetSkewReason(req.AllowFleetSkew, req.FleetSkewReason)
 	if err != nil {
 		if errors.Is(err, conductor.ErrPayloadTooLarge) {
 			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
-			return
+			return publishPolicyBundleRequest{}, "", false
 		}
 		writeError(w, http.StatusBadRequest, err)
-		return
+		return publishPolicyBundleRequest{}, "", false
 	}
 	if req.AllowFleetSkew {
 		if err := h.authorizeFleetSkewOverride(r, req.Bundle, fleetSkewReason); err != nil {
 			writeError(w, http.StatusForbidden, ErrPublisherForbidden)
-			return
+			return publishPolicyBundleRequest{}, "", false
 		}
+	}
+	return req, fleetSkewReason, true
+}
+
+func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Request) {
+	req, fleetSkewReason, ok := h.validatePublishBundleRequest(w, r)
+	if !ok {
+		return
 	}
 	if req.DryRun {
 		h.respondPublishDryRun(w, r, req.Bundle, req.AllowFleetSkew, fleetSkewReason)
@@ -922,36 +939,56 @@ func (h *Handler) handleRemoteKill(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleEvaluatePolicyBundle(w http.ResponseWriter, r *http.Request) {
+	req, fleetSkewReason, ok := h.validatePublishBundleRequest(w, r)
+	if !ok {
+		return
+	}
+	h.respondPublishDryRun(w, r, req.Bundle, req.AllowFleetSkew, fleetSkewReason)
+}
+
+func (h *Handler) validateRemoteKillRequest(w http.ResponseWriter, r *http.Request) (publishRemoteKillRequest, time.Time, bool) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPut, http.MethodPost)
+		return publishRemoteKillRequest{}, time.Time{}, false
+	}
 	if h.emergencyControls == nil {
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
-		return
+		return publishRemoteKillRequest{}, time.Time{}, false
 	}
 	if err := h.authorizeAdmin(r); err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
-		return
+		return publishRemoteKillRequest{}, time.Time{}, false
 	}
 	if h.emergencyKeys == nil {
 		writeError(w, http.StatusNotImplemented, ErrEmergencyKeyRequired)
-		return
+		return publishRemoteKillRequest{}, time.Time{}, false
 	}
 	var req publishRemoteKillRequest
 	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
-			return
+			return publishRemoteKillRequest{}, time.Time{}, false
 		}
 		writeError(w, http.StatusBadRequest, err)
-		return
+		return publishRemoteKillRequest{}, time.Time{}, false
 	}
 	now := h.now()
 	if err := validateRemoteKillPublishInput(req.Message, h.remoteKillMaxTTL); err != nil {
 		writeStoreError(w, err)
-		return
+		return publishRemoteKillRequest{}, time.Time{}, false
 	}
 	if err := req.Message.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
 		writeStoreError(w, err)
+		return publishRemoteKillRequest{}, time.Time{}, false
+	}
+	return req, now, true
+}
+
+func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request) {
+	req, now, ok := h.validateRemoteKillRequest(w, r)
+	if !ok {
 		return
 	}
 	if req.DryRun {
@@ -974,6 +1011,14 @@ func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request
 		PublishedAt: record.PublishedAt,
 		Created:     created,
 	})
+}
+
+func (h *Handler) handleEvaluateRemoteKill(w http.ResponseWriter, r *http.Request) {
+	req, now, ok := h.validateRemoteKillRequest(w, r)
+	if !ok {
+		return
+	}
+	h.respondRemoteKillDryRun(w, r, req.Message, now)
 }
 
 func (h *Handler) handleLatestRemoteKill(w http.ResponseWriter, r *http.Request) {
@@ -1011,40 +1056,52 @@ func (h *Handler) handleRollbackAuthorizations(w http.ResponseWriter, r *http.Re
 	}
 }
 
-func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) validateRollbackAuthorizationRequest(w http.ResponseWriter, r *http.Request) (publishRollbackAuthorizationRequest, time.Time, bool) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPut, http.MethodPost)
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
+	}
 	if h.emergencyControls == nil {
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
-		return
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	if err := h.authorizeAdmin(r); err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
-		return
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	if h.emergencyKeys == nil {
 		writeError(w, http.StatusNotImplemented, ErrEmergencyKeyRequired)
-		return
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	var req publishRollbackAuthorizationRequest
 	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
-			return
+			return publishRollbackAuthorizationRequest{}, time.Time{}, false
 		}
 		writeError(w, http.StatusBadRequest, err)
-		return
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	now := h.now()
 	if err := validateRollbackPublishInput(req.Authorization, h.rollbackMaxTTL); err != nil {
 		writeStoreError(w, err)
-		return
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	if err := req.Authorization.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
 		writeStoreError(w, err)
-		return
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	if _, err := h.store.BundleByIDVersion(r.Context(), req.Authorization.TargetBundleID, req.Authorization.TargetVersion); err != nil {
 		writeStoreError(w, err)
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
+	}
+	return req, now, true
+}
+
+func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *http.Request) {
+	req, now, ok := h.validateRollbackAuthorizationRequest(w, r)
+	if !ok {
 		return
 	}
 	if req.DryRun {
@@ -1123,6 +1180,14 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		PublishedAt:       record.PublishedAt,
 		Created:           created,
 	})
+}
+
+func (h *Handler) handleEvaluateRollbackAuthorization(w http.ResponseWriter, r *http.Request) {
+	req, now, ok := h.validateRollbackAuthorizationRequest(w, r)
+	if !ok {
+		return
+	}
+	h.respondRollbackDryRun(w, r, req.Authorization, now)
 }
 
 // rollbackClearer is the optional interface an [EmergencyStore] may implement

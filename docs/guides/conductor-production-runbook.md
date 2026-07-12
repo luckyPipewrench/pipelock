@@ -387,13 +387,21 @@ pipelock conductor publish \
 ```
 
 The command computes the canonical `policy_hash` / `payload_sha256`, stamps the
-validity window from `--validity`, and assigns a monotonic version server-side.
+validity window from `--validity`, and carries the operator-supplied monotonic
+`--version`.
 Add `--rule-bundle <path>` (repeatable) to ship signed rule bundles alongside the
 config, `--audience` to narrow the addressed followers, and
 `--previous-bundle-hash <hex>` to pin continuity against the prior bundle (the
 publish is rejected if the server's current bundle does not match). For a
 loopback dev conductor without TLS, `--allow-plaintext-loopback` permits an
 `http://127.0.0.1` URL.
+
+Add `--dry-run` to send the same signed bundle to Conductor's read-only publish
+evaluation endpoint. Conductor returns the publish evaluation, including whether
+the bundle would be created, the resulting hash/version, fleet preflight
+summary, and any conflict code, without mutating the bundle store. Older
+Conductors that do not expose the evaluation endpoint fail closed instead of
+silently treating a dry-run as a publish.
 
 **Prove on apply:** after publishing, confirm followers picked up the new version
 (watch the follower logs for the bundle-apply line, or `pipelock conductor fleet
@@ -474,6 +482,11 @@ Conductor rejects a kill whose validity window exceeds
 fail closed within one `poll_interval`; clearing it lets them recover on the
 next poll.
 
+Add `--dry-run` to `kill` or `resume` to sign the same remote-kill message and
+ask Conductor's read-only evaluation endpoint for the verdict. The response
+reports the would-be counter/hash decision and conflict code without publishing
+the kill/resume state.
+
 ## 9. Roll back a bad bundle
 
 `pipelock conductor rollback` authorizes a signed revert to a prior bundle
@@ -498,6 +511,38 @@ Signed with the policy-bundle-rollback (threshold) key. Conductor rejects a
 rollback whose window exceeds `--rollback-max-validity` (default `24h`). Because
 kill and rollback keys are purpose-scoped, a rollback key cannot issue a kill or
 vice versa.
+
+Add `--dry-run` to sign the same rollback authorization and ask Conductor's
+read-only evaluation endpoint for the verdict. The response reports whether the
+authorization would be created and which bundle/version/hash the stream head
+would roll to, without writing either the authorization or stream-head mutation.
+
+## 9a. Replay a publish decision
+
+`pipelock conductor replay --bundle-artifact <bundle.json>` POSTs an exact
+previously saved signed policy-bundle artifact to Conductor's decision-replay
+endpoint. Replay re-derives the publish verdict under current store/fleet state
+and reports whether that diverges from any recorded accepted decision.
+
+```bash
+pipelock conductor replay \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --bundle-artifact /var/lib/pipelock/conductor/exported/prod-2026-06-11.json \
+  --publisher-token-file /etc/pipelock/conductor/tokens/publisher/token \
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
+```
+
+Without `--bundle-artifact`, replay rebuilds and signs a new hypothetical bundle
+from the same inputs as `conductor publish`. Use that mode for "what would this
+input do now?" checks, not for exact audit replay, because the rebuilt artifact
+has fresh timestamps and signatures.
+
+Pass `--state-snapshot snapshot.json` to replay the publish preflight against a
+captured follower/runtime-status snapshot. The snapshot applies only to bundle
+replay preflight; the policy-bundle store chain is still evaluated against
+current Conductor state.
 
 ## 10. Recover follower bundle state
 

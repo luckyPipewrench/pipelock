@@ -412,15 +412,26 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	if strings.Contains(body, testActorAlpha) {
 		t.Fatalf("GET / rendered unbound agent %q: %s", testActorAlpha, body)
 	}
-	if got := rec.Header().Get("Content-Security-Policy"); got != evidenceServeCSP {
-		t.Fatalf("Content-Security-Policy = %q, want %q", got, evidenceServeCSP)
-	}
+	assertEvidenceServeSecurityHeaders(t, rec.Header())
 	for header, want := range map[string]string{
-		"Cache-Control":          "no-store",
-		"Referrer-Policy":        "no-referrer",
 		"X-Content-Type-Options": "nosniff",
 	} {
 		if got := rec.Header().Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func assertEvidenceServeSecurityHeaders(t *testing.T, headers http.Header) {
+	t.Helper()
+	if got := headers.Get("Content-Security-Policy"); got != evidenceServeCSP {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, evidenceServeCSP)
+	}
+	for header, want := range map[string]string{
+		"Cache-Control":   "no-store",
+		"Referrer-Policy": "no-referrer",
+	} {
+		if got := headers.Get(header); got != want {
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
@@ -507,6 +518,7 @@ func TestServeCmd_MixedActorSessionFailsClosed(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET / status = %d, want 500; body=%s", rec.Code, rec.Body.String())
 	}
+	assertEvidenceServeSecurityHeaders(t, rec.Header())
 	body := rec.Body.String()
 	if strings.Contains(body, testActorBravo) || strings.Contains(body, testBravoTargetSecret) {
 		t.Fatalf("GET / leaked mixed-actor evidence: %s", body)
@@ -588,6 +600,7 @@ func TestServeCmd_NoEndpointCanSwitchBoundSession(t *testing.T) {
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("GET %s status = %d, want 404; body=%s", target, rec.Code, rec.Body.String())
 			}
+			assertEvidenceServeSecurityHeaders(t, rec.Header())
 		})
 	}
 }
@@ -604,6 +617,7 @@ func TestServeCmd_NonGETRootReturnsMethodNotAllowed(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST / status = %d, want 405; body=%s", rec.Code, rec.Body.String())
 	}
+	assertEvidenceServeSecurityHeaders(t, rec.Header())
 	if rec.Header().Get("Allow") != http.MethodGet {
 		t.Fatalf("Allow = %q, want GET", rec.Header().Get("Allow"))
 	}

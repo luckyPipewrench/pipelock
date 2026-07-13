@@ -201,6 +201,9 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 
 func evidenceServeHandler(dir, sessionID string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", evidenceServeCSP)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -217,9 +220,6 @@ func evidenceServeHandler(dir, sessionID string) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", evidenceServeCSP)
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(html)
 	})

@@ -160,6 +160,66 @@ func TestRunInvalidBodyFailsClosedEvenWithTrustedSignature(t *testing.T) {
 	}
 }
 
+func TestRunRejectsSignedAgentLineInjection(t *testing.T) {
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	pubHex := hex.EncodeToString(pub)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	body := coveragecert.Body{
+		Schema:        coveragecert.Schema,
+		KeyPurpose:    coveragecert.KeyPurpose,
+		Agent:         "agent-a\nFORGED: sessions covered",
+		WindowStart:   start,
+		WindowEnd:     start.Add(time.Hour),
+		TotalReceipts: 2,
+		Sessions: []coveragecert.SessionCoverage{{
+			ID:                 "session-a",
+			ReceiptCount:       1,
+			ChainIntact:        true,
+			Anchored:           "local",
+			CompletenessStatus: "LIMITED",
+			CompletenessReason: "bounded_closed",
+		}},
+		SessionsCovered:    1,
+		ChainsIntact:       1,
+		TrustedSignerKey:   pubHex,
+		Boundary:           coveragecert.DefaultBoundary(),
+		StandingExclusions: coveragecert.DefaultStandingExclusions(),
+	}
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	cert := coveragecert.Certificate{
+		Body:      body,
+		Signature: hex.EncodeToString(ed25519.Sign(priv, preimage)),
+		SignerKey: pubHex,
+	}
+	data, err := coveragecert.Marshal(cert)
+	if err != nil {
+		t.Fatalf("coveragecert.Marshal: %v", err)
+	}
+	certFile := filepath.Join(t.TempDir(), "line-injection-cert.json")
+	if err := os.WriteFile(certFile, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = Run(Options{
+		CertFile:       certFile,
+		TrustedSigners: []string{"inline=" + pubHex},
+		Out:            &out,
+	})
+	if err == nil || !strings.Contains(err.Error(), "control") {
+		t.Fatalf("Run line-injection err = %v, want fail-closed control-character error", err)
+	}
+	if strings.Contains(out.String(), "FORGED") {
+		t.Fatalf("Run output = %q, must not emit injected over-claim lines", out.String())
+	}
+}
+
 func TestRunFailsClosed(t *testing.T) {
 	certFile, pubHex := writeCoverageCertVerifyFixture(t)
 	data, err := os.ReadFile(filepath.Clean(certFile))
@@ -176,7 +236,7 @@ func TestRunFailsClosed(t *testing.T) {
 	}
 
 	err = Run(Options{CertFile: tamperedFile, TrustedSigners: []string{"inline=" + pubHex}})
-	if err == nil || !strings.Contains(err.Error(), "signature is INVALID") {
+	if err == nil || !strings.Contains(err.Error(), "signature is invalid") {
 		t.Fatalf("Run tampered error = %v, want invalid signature", err)
 	}
 

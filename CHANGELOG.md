@@ -15,10 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-## [3.1.0] - 2026-07-12
+## [3.1.0] - 2026-07-13
 
 ### Added
 
+- **Tool-poisoning honeypot example.** A runnable example that stands up a decoy MCP server advertising a tool whose description hides an exfiltration instruction, and proves Pipelock blocks it at two layers (tool-manifest scanning on `tools/list` and pre-execution tool-call policy) with an offline verification script.
 - **Operator dashboard showcase for Pro and Enterprise.** `pipelock dashboard
   serve` now provides an authorization-filtered operator console with Overview,
   Evidence, Exemptions, Agents, Budgets, Trust & Keys, Fleet, Workbench, and
@@ -146,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Operator dashboard lands on the Overview.** The dashboard now opens on the Overview at the root path, and the free evidence console was restyled for clarity.
 - **Reload protects live bundle coverage in every mode.** Hot reloads now keep
   the previous config when a bundle-resolution error would drop currently live
   DLP, response, or MCP tool-poison rules, even outside strict mode. (#988)
@@ -236,6 +238,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Conductor policy bundles now distribute published detection content.** A signed policy bundle's detection content (DLP patterns, response-scanning patterns, canary tokens, MCP tool-policy rules) is now additively merged onto each follower's local baseline instead of being silently dropped on apply. A bundle can only add coverage, never reduce it; a bundle entry that would redefine an existing local detection is rejected rather than allowed to override it.
+- **Evidence console sends strict security headers.** The free evidence-serve console now returns a strict Content-Security-Policy and `no-store` cache headers.
+- **Coverage-certificate offline verifier hardening (security).** Closed multiple paths where a holder of a trusted signing key could produce an over-claiming or falsely-attributed coverage certificate that still verified as valid. The verifier now re-validates the certificate body (not just the envelope signature), binds the declared signer key to the key that signed the envelope, rejects duplicate or non-canonical session identifiers that could inflate aggregate coverage counts, constrains the per-session anchor and completeness fields to a fixed vocabulary with coherent status and reason pairing, requires the mandatory standing-exclusion honesty caveats exactly, scopes coverage claims to the listed sessions, and rejects duplicate JSON keys. `Verify` now also returns an error on an invalid signature, untrusted signer, or aggregate mismatch rather than signalling only through result flags.
 - **MCP input envelopes and JSON parser differentials fail closed.** MCP
   mediation now rejects non-object or null params that cannot be safely stamped,
   normalizes malformed `_meta`, preserves recovered request IDs on duplicate-key

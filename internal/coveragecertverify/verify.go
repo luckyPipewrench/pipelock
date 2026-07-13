@@ -41,22 +41,25 @@ func Run(opts Options) error {
 		return err
 	}
 
-	trustedKeySet := make(map[string]struct{}, len(trusted))
-	for keyHex := range trusted {
-		trustedKeySet[keyHex] = struct{}{}
-	}
-
-	result, err := coveragecert.Verify(cert, trustedKeySet)
-	if err != nil {
-		return err
+	var trustedKeySet map[string]struct{}
+	if len(trusted) > 0 {
+		trustedKeySet = make(map[string]struct{}, len(trusted))
+		for keyHex := range trusted {
+			trustedKeySet[keyHex] = struct{}{}
+		}
 	}
 
 	out := opts.Out
 	if out == nil {
 		out = io.Discard
 	}
+
+	result, err := coveragecert.Verify(cert, trustedKeySet)
 	for _, line := range result.Lines {
 		_, _ = fmt.Fprintln(out, line)
+	}
+	if err != nil {
+		return err
 	}
 
 	if !result.SignatureValid {

@@ -163,7 +163,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Configuration:** `logging`, `emit`, `session_profiling`, `metrics_listen`
 
-**Gap:** Guaranteed delivery (persistent queue with retry) for critical audit events is on the enterprise roadmap. Current emission is best-effort (queue overflow drops with counter).
+**Partial:** Core emission is best-effort (webhook/syslog/OTLP; queue overflow drops with a counter). The Enterprise durable SIEM forwarder provides at-least-once delivery for the forwarding path via an on-disk spool with a content-bound cursor and replay across process restarts.
 
 ---
 

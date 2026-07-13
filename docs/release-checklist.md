@@ -65,6 +65,9 @@ make debt-check
 
 - Confirm the release branch is based on the intended commit and that no
   release-critical PR is waiting to merge.
+- After the tag exists, refresh Pipelock dogfood workflow pins that point at the
+  prior Pipelock release SHA; use the full tag commit SHA and update the version
+  comment together.
 - Confirm `Hardening / workflow-audit` and `Hardening / runtime-critical` are
   green on the candidate commit.
 - Review the `Hardening / hardening-report` summary for policy-drift or debt

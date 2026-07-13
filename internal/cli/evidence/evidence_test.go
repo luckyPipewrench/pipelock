@@ -935,8 +935,8 @@ func TestVerifyCertCmd_Tampered_NonZero(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-zero exit for tampered cert")
 	}
-	if !strings.Contains(err.Error(), "INVALID") {
-		t.Errorf("error should mention INVALID, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("error should mention invalid signature, got: %v", err)
 	}
 }
 
@@ -994,6 +994,60 @@ func TestVerifyCertCmd_SignedAggregateMismatch_NonZero(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "MISMATCH") {
 		t.Fatalf("stdout = %q, want MISMATCH line", stdout.String())
+	}
+}
+
+func TestVerifyCertCmd_SignedAgentLineInjection_NonZero(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	now := time.Now().UTC()
+	body := coveragecert.Body{
+		Schema:      coveragecert.Schema,
+		KeyPurpose:  coveragecert.KeyPurpose,
+		Agent:       "agent-alpha\nFORGED: sessions covered",
+		WindowStart: now.Add(-1 * time.Hour),
+		WindowEnd:   now,
+		Sessions: []coveragecert.SessionCoverage{
+			{
+				ID:                 "session-001",
+				ReceiptCount:       1,
+				ChainIntact:        true,
+				Anchored:           "local",
+				CompletenessStatus: "LIMITED",
+				CompletenessReason: "bounded_closed",
+			},
+		},
+		TotalReceipts:      2,
+		ChainGaps:          0,
+		SessionsCovered:    1,
+		ChainsIntact:       1,
+		ChainsBroken:       0,
+		TrustedSignerKey:   hex.EncodeToString(pub),
+		Boundary:           coveragecert.DefaultBoundary(),
+		StandingExclusions: coveragecert.DefaultStandingExclusions(),
+	}
+	certData := signUncheckedTestCert(t, body, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+		"--trusted-signer", "inline=" + hex.EncodeToString(pub),
+	})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "control") {
+		t.Fatalf("Execute err = %v, want fail-closed control-character error", err)
+	}
+	if strings.Contains(stdout.String(), "FORGED") {
+		t.Fatalf("stdout = %q, must not emit injected over-claim lines", stdout.String())
 	}
 }
 

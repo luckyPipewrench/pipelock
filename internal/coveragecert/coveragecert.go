@@ -18,8 +18,10 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Schema is the certificate schema identifier.
@@ -37,6 +39,25 @@ const standingExclusionMediated = "mediated evidence cannot prove unmediated egr
 
 // standingExclusionWallClock is the standing exclusion about wall-clock completeness.
 const standingExclusionWallClock = "local recorder evidence cannot prove wall-clock completeness without external witnessing"
+
+const (
+	anchorLocal = "local"
+	anchorNone  = "none"
+
+	completenessLimited    = "LIMITED"
+	completenessBroken     = "BROKEN"
+	completenessUnverified = "UNVERIFIED"
+
+	reasonBoundedClosed    = "bounded_closed"
+	reasonAbnormalEnd      = "abnormal_end"
+	reasonOpenAction       = "open_action"
+	reasonHeartbeatGap     = "heartbeat_gap"
+	reasonNoOpen           = "no_open"
+	reasonNoLifecycle      = "no_lifecycle"
+	reasonRecorderDisabled = "recorder_disabled"
+	reasonNoReceipts       = "no_receipts"
+	reasonChainBroken      = "chain_broken"
+)
 
 // Sentinel errors.
 var (
@@ -108,38 +129,188 @@ func (b Body) SignablePreimage() ([]byte, error) {
 // Validate checks structural invariants on the body. It refuses ill-formed or
 // over-claiming bodies (fail closed). Called by Sign before signing.
 func (b Body) Validate() error {
-	if err := b.validateStructure(); err != nil {
+	if _, err := requireCanonicalBody(b, b.TrustedSignerKey); err != nil {
 		return err
-	}
-	if mismatches := rederiveAggregates(b); len(mismatches) > 0 {
-		return fmt.Errorf("%w: %w: %s", ErrBodyInvalid, ErrAggregateMismatch, strings.Join(mismatches, "; "))
 	}
 	return nil
 }
 
-func (b Body) validateStructure() error {
-	if b.Schema != Schema {
-		return fmt.Errorf("%w: schema=%q, want %q", ErrBodyInvalid, b.Schema, Schema)
+func deriveCanonicalBody(b Body, signerKey string) (Body, error) {
+	if err := validateCoverageCertSignerKey(signerKey); err != nil {
+		return Body{}, fmt.Errorf("%w: trusted_signer_key: %w", ErrBodyInvalid, err)
 	}
-	if b.KeyPurpose != KeyPurpose {
-		return fmt.Errorf("%w: key_purpose=%q, want %q", ErrBodyInvalid, b.KeyPurpose, KeyPurpose)
+	if err := validateCoverageCertIdentifier("agent", b.Agent); err != nil {
+		return Body{}, err
 	}
-	if b.Agent == "" {
-		return fmt.Errorf("%w: agent is required", ErrBodyInvalid)
+	if b.WindowStart.IsZero() {
+		return Body{}, fmt.Errorf("%w: window_start is required", ErrBodyInvalid)
+	}
+	if b.WindowEnd.IsZero() {
+		return Body{}, fmt.Errorf("%w: window_end is required", ErrBodyInvalid)
 	}
 	if b.WindowEnd.Before(b.WindowStart) {
-		return fmt.Errorf("%w: window_end (%s) is before window_start (%s)",
-			ErrBodyInvalid, b.WindowEnd.Format(time.RFC3339), b.WindowStart.Format(time.RFC3339))
+		return Body{}, fmt.Errorf("%w: window_end (%s) is before window_start (%s)",
+			ErrBodyInvalid, b.WindowEnd.Format(time.RFC3339Nano), b.WindowStart.Format(time.RFC3339Nano))
 	}
-	if !strings.Contains(b.Boundary, requiredBoundaryPhrase) {
-		return fmt.Errorf("%w: boundary must contain %q", ErrBodyInvalid, requiredBoundaryPhrase)
+
+	canonicalSessions, totalReceipts, chainsIntact, chainsBroken, chainGaps, err := deriveCanonicalSessions(b)
+	if err != nil {
+		return Body{}, err
 	}
-	// Refuse over-claiming: boundary must NOT claim "all agent activity".
-	if strings.Contains(strings.ToLower(b.Boundary), "all agent activity") {
-		return fmt.Errorf("%w: boundary must not claim coverage of all agent activity", ErrBodyInvalid)
+	if totalReceipts > 0 && !b.WindowEnd.After(b.WindowStart) {
+		return Body{}, fmt.Errorf("%w: window_end must be after window_start when receipts are present", ErrBodyInvalid)
 	}
-	if err := validateCoverageCertSignerKey(b.TrustedSignerKey); err != nil {
-		return fmt.Errorf("%w: trusted_signer_key: %w", ErrBodyInvalid, err)
+
+	canonical := b
+	canonical.Schema = Schema
+	canonical.KeyPurpose = KeyPurpose
+	canonical.Sessions = canonicalSessions
+	canonical.TotalReceipts = totalReceipts
+	canonical.ChainGaps = chainGaps
+	canonical.SessionsCovered = len(canonicalSessions)
+	canonical.ChainsIntact = chainsIntact
+	canonical.ChainsBroken = chainsBroken
+	canonical.TrustedSignerKey = signerKey
+	canonical.Boundary = DefaultBoundary()
+	canonical.StandingExclusions = DefaultStandingExclusions()
+	return canonical, nil
+}
+
+func requireCanonicalBody(b Body, signerKey string) (Body, error) {
+	canonical, err := deriveCanonicalBody(b, signerKey)
+	if err != nil {
+		return Body{}, err
+	}
+	if b.TrustedSignerKey != signerKey {
+		return Body{}, fmt.Errorf("%w: body trusted_signer_key does not match certificate signer_key", ErrBodyInvalid)
+	}
+	equal, err := bodiesCanonicalEqual(b, canonical)
+	if err != nil {
+		return Body{}, fmt.Errorf("%w: compare canonical body: %w", ErrBodyInvalid, err)
+	}
+	if !equal {
+		mismatches := rederiveAggregates(b)
+		if len(mismatches) > 0 {
+			return Body{}, fmt.Errorf("%w: %w: %s", ErrBodyInvalid, ErrAggregateMismatch, strings.Join(mismatches, "; "))
+		}
+		return Body{}, fmt.Errorf("%w: signed body is not the canonical coverage certificate body", ErrBodyInvalid)
+	}
+	return canonical, nil
+}
+
+func bodiesCanonicalEqual(a, b Body) (bool, error) {
+	aPreimage, err := a.SignablePreimage()
+	if err != nil {
+		return false, err
+	}
+	bPreimage, err := b.SignablePreimage()
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(aPreimage, bPreimage), nil
+}
+
+func deriveCanonicalSessions(b Body) ([]SessionCoverage, uint64, int, int, uint64, error) {
+	if b.Sessions == nil {
+		return nil, 0, 0, 0, 0, fmt.Errorf("%w: sessions must be an array, not null", ErrBodyInvalid)
+	}
+	canonicalSessions := make([]SessionCoverage, len(b.Sessions))
+	copy(canonicalSessions, b.Sessions)
+	seen := make(map[string]struct{}, len(canonicalSessions))
+	var totalReceipts uint64
+	var chainsIntact, chainsBroken int
+	var chainGaps uint64
+	var previousID string
+	for i, s := range canonicalSessions {
+		if err := validateSessionCoverage(i, s); err != nil {
+			return nil, 0, 0, 0, 0, err
+		}
+		normalizedID := norm.NFC.String(s.ID)
+		if _, ok := seen[normalizedID]; ok {
+			return nil, 0, 0, 0, 0, fmt.Errorf("%w: duplicate session id %s after NFC normalization", ErrBodyInvalid, safeQuotedVerifyValue(normalizedID))
+		}
+		seen[normalizedID] = struct{}{}
+		if i > 0 && previousID > normalizedID {
+			return nil, 0, 0, 0, 0, fmt.Errorf("%w: sessions must be sorted by normalized id", ErrBodyInvalid)
+		}
+		previousID = normalizedID
+		if math.MaxUint64-totalReceipts < s.ReceiptCount {
+			return nil, 0, 0, 0, 0, fmt.Errorf("%w: total_receipts overflow", ErrBodyInvalid)
+		}
+		totalReceipts += s.ReceiptCount
+		if s.ChainIntact {
+			chainsIntact++
+		} else {
+			chainsBroken++
+			chainGaps++
+		}
+	}
+	return canonicalSessions, totalReceipts, chainsIntact, chainsBroken, chainGaps, nil
+}
+
+func validateSessionCoverage(index int, s SessionCoverage) error {
+	label := fmt.Sprintf("sessions[%d]", index)
+	if err := validateCoverageCertIdentifier(label+".id", s.ID); err != nil {
+		return err
+	}
+	switch s.Anchored {
+	case anchorLocal, anchorNone:
+	default:
+		return fmt.Errorf("%w: %s.anchored=%s is not in the coverage certificate vocabulary", ErrBodyInvalid, label, safeQuotedVerifyValue(s.Anchored))
+	}
+	if err := validateCompletenessCoupling(s); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrBodyInvalid, label, err)
+	}
+	if !s.ChainIntact && (s.CompletenessStatus != completenessBroken || s.CompletenessReason != reasonChainBroken) {
+		return fmt.Errorf("%w: %s: broken chains must report BROKEN/chain_broken completeness", ErrBodyInvalid, label)
+	}
+	return nil
+}
+
+func validateCoverageCertIdentifier(label, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s is required", ErrBodyInvalid, label)
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("%w: %s must not have leading or trailing whitespace", ErrBodyInvalid, label)
+	}
+	if value != norm.NFC.String(value) {
+		return fmt.Errorf("%w: %s must be NFC-normalized", ErrBodyInvalid, label)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return fmt.Errorf("%w: %s must not contain control, format, or line-separator characters", ErrBodyInvalid, label)
+		}
+	}
+	return nil
+}
+
+func validateCompletenessCoupling(s SessionCoverage) error {
+	switch s.CompletenessStatus {
+	case completenessLimited:
+		switch s.CompletenessReason {
+		case reasonBoundedClosed, reasonAbnormalEnd, reasonOpenAction, reasonHeartbeatGap:
+		default:
+			return fmt.Errorf("LIMITED completeness cannot use reason %s", safeQuotedVerifyValue(s.CompletenessReason))
+		}
+	case completenessBroken:
+		if s.CompletenessReason != reasonChainBroken {
+			return fmt.Errorf("BROKEN completeness cannot use reason %s", safeQuotedVerifyValue(s.CompletenessReason))
+		}
+	case completenessUnverified:
+		switch s.CompletenessReason {
+		case reasonNoOpen, reasonNoLifecycle, reasonRecorderDisabled, reasonNoReceipts:
+		default:
+			return fmt.Errorf("UNVERIFIED completeness cannot use reason %s", safeQuotedVerifyValue(s.CompletenessReason))
+		}
+	default:
+		return fmt.Errorf("completeness_status=%s is not in the coverage certificate vocabulary", safeQuotedVerifyValue(s.CompletenessStatus))
+	}
+	if s.ReceiptCount == 0 && s.CompletenessReason != reasonNoReceipts {
+		return fmt.Errorf("zero receipt_count requires UNVERIFIED/no_receipts completeness")
+	}
+	if s.ReceiptCount > 0 && s.CompletenessReason == reasonNoReceipts {
+		return fmt.Errorf("UNVERIFIED/no_receipts cannot have positive receipt_count")
 	}
 	return nil
 }
@@ -148,25 +319,27 @@ func (b Body) validateStructure() error {
 // Returns a Certificate with hex-encoded signature and signer public key.
 // Refuses to sign an ill-formed or over-claiming body.
 func Sign(b Body, priv ed25519.PrivateKey) (Certificate, error) {
-	if err := b.Validate(); err != nil {
-		return Certificate{}, fmt.Errorf("%w: %w", ErrSignFailed, err)
-	}
 	if len(priv) != ed25519.PrivateKeySize {
 		return Certificate{}, fmt.Errorf("%w: private key length %d, want %d", ErrSignFailed, len(priv), ed25519.PrivateKeySize)
 	}
-	preimage, err := b.SignablePreimage()
-	if err != nil {
-		return Certificate{}, fmt.Errorf("%w: %w", ErrSignFailed, err)
-	}
-	sig := ed25519.Sign(priv, preimage)
 	pub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok {
 		return Certificate{}, fmt.Errorf("%w: private key did not yield an Ed25519 public key", ErrSignFailed)
 	}
+	pubHex := hex.EncodeToString(pub)
+	canonical, err := requireCanonicalBody(b, pubHex)
+	if err != nil {
+		return Certificate{}, fmt.Errorf("%w: %w", ErrSignFailed, err)
+	}
+	preimage, err := canonical.SignablePreimage()
+	if err != nil {
+		return Certificate{}, fmt.Errorf("%w: %w", ErrSignFailed, err)
+	}
+	sig := ed25519.Sign(priv, preimage)
 	return Certificate{
-		Body:      b,
+		Body:      canonical,
 		Signature: hex.EncodeToString(sig),
-		SignerKey: hex.EncodeToString(pub),
+		SignerKey: pubHex,
 	}, nil
 }
 
@@ -187,11 +360,13 @@ func Verify(cert Certificate, trustedKeys map[string]struct{}) (VerifyResult, er
 		return result, fmt.Errorf("%w: signer key length %d, want %d",
 			ErrVerifyFailed, len(signerKeyBytes), ed25519.PublicKeySize)
 	}
-	if err := cert.Body.validateStructure(); err != nil {
+	canonical, err := requireCanonicalBody(cert.Body, cert.SignerKey)
+	if err != nil {
+		if mismatches := rederiveAggregates(cert.Body); len(mismatches) > 0 {
+			result.AggregateValid = false
+			result.Lines = buildInvalidBodyVerifyLines(cert, result, mismatches)
+		}
 		return result, fmt.Errorf("%w: body: %w", ErrVerifyFailed, err)
-	}
-	if cert.Body.TrustedSignerKey != cert.SignerKey {
-		return result, fmt.Errorf("%w: body trusted_signer_key does not match certificate signer_key", ErrVerifyFailed)
 	}
 
 	// Decode signature.
@@ -201,24 +376,31 @@ func Verify(cert Certificate, trustedKeys map[string]struct{}) (VerifyResult, er
 	}
 
 	// Recompute preimage from the body.
-	preimage, err := cert.Body.SignablePreimage()
+	preimage, err := canonical.SignablePreimage()
 	if err != nil {
 		return result, fmt.Errorf("%w: recompute preimage: %w", ErrVerifyFailed, err)
 	}
 
 	// Verify signature.
 	result.SignatureValid = ed25519.Verify(signerKeyBytes, preimage, sigBytes)
+	if !result.SignatureValid {
+		result.Lines = buildVerifyLines(cert, result, nil)
+		return result, fmt.Errorf("%w: signature is invalid", ErrVerifyFailed)
+	}
 
 	// Check signer trust (NEVER TOFU).
 	if trustedKeys != nil {
 		_, result.SignerTrusted = trustedKeys[cert.SignerKey]
+		if !result.SignerTrusted {
+			result.Lines = buildVerifyLines(cert, result, nil)
+			return result, fmt.Errorf("%w: signer is not in the trusted-signer set", ErrVerifyFailed)
+		}
 	}
 
-	mismatches := rederiveAggregates(cert.Body)
-	result.AggregateValid = len(mismatches) == 0
+	result.AggregateValid = true
 
 	// Build bounded per-fact lines.
-	result.Lines = buildVerifyLines(cert, result, mismatches)
+	result.Lines = buildVerifyLines(cert, result, nil)
 
 	return result, nil
 }
@@ -287,34 +469,18 @@ func rederiveAggregates(b Body) []string {
 
 func buildVerifyLines(cert Certificate, result VerifyResult, mismatches []string) []string {
 	b := cert.Body
-	var lines []string
-
-	// Signature line.
-	if result.SignatureValid {
-		lines = append(lines, "Signature: valid (Ed25519 over canonical preimage)")
-	} else {
-		lines = append(lines, "Signature: INVALID")
-	}
-
-	// Signer trust line.
-	if result.SignerTrusted {
-		lines = append(lines, fmt.Sprintf("Signer: TRUSTED (key %s...%s)",
-			cert.SignerKey[:8], cert.SignerKey[len(cert.SignerKey)-8:]))
-	} else {
-		lines = append(lines, fmt.Sprintf("Signer: NOT TRUSTED (key %s...%s)",
-			cert.SignerKey[:8], cert.SignerKey[len(cert.SignerKey)-8:]))
-	}
+	lines := buildVerifyStatusLines(cert, result)
 
 	// Agent.
 	if b.Agent != "" {
-		lines = append(lines, fmt.Sprintf("Agent: %s", b.Agent))
+		lines = append(lines, fmt.Sprintf("Agent: %s", safeVerifyLineValue(b.Agent)))
 	} else {
 		lines = append(lines, "Agent: not reported")
 	}
 
 	// Window.
 	lines = append(lines, fmt.Sprintf("Window: %s to %s",
-		b.WindowStart.Format(time.RFC3339), b.WindowEnd.Format(time.RFC3339)))
+		b.WindowStart.Format(time.RFC3339Nano), b.WindowEnd.Format(time.RFC3339Nano)))
 
 	// Sessions.
 	lines = append(lines, fmt.Sprintf("Sessions covered: %d", b.SessionsCovered))
@@ -327,17 +493,62 @@ func buildVerifyLines(cert Certificate, result VerifyResult, mismatches []string
 
 	// Boundary.
 	if b.Boundary != "" {
-		lines = append(lines, fmt.Sprintf("Boundary: %s", b.Boundary))
+		lines = append(lines, fmt.Sprintf("Boundary: %s", safeVerifyLineValue(b.Boundary)))
 	} else {
 		lines = append(lines, "Boundary: not reported")
 	}
 
 	// Standing exclusions.
 	for _, ex := range b.StandingExclusions {
-		lines = append(lines, fmt.Sprintf("Exclusion: %s", ex))
+		lines = append(lines, fmt.Sprintf("Exclusion: %s", safeVerifyLineValue(ex)))
 	}
 
 	return lines
+}
+
+func buildInvalidBodyVerifyLines(cert Certificate, result VerifyResult, mismatches []string) []string {
+	lines := buildVerifyStatusLines(cert, result)
+	lines = append(lines, "Body: INVALID (not canonical)")
+	lines = append(lines, mismatches...)
+	return lines
+}
+
+func buildVerifyStatusLines(cert Certificate, result VerifyResult) []string {
+	var lines []string
+	if result.SignatureValid {
+		lines = append(lines, "Signature: valid (Ed25519 over canonical preimage)")
+	} else {
+		lines = append(lines, "Signature: INVALID")
+	}
+	if result.SignerTrusted {
+		lines = append(lines, fmt.Sprintf("Signer: TRUSTED (key %s...%s)",
+			cert.SignerKey[:8], cert.SignerKey[len(cert.SignerKey)-8:]))
+	} else {
+		lines = append(lines, fmt.Sprintf("Signer: NOT TRUSTED (key %s...%s)",
+			cert.SignerKey[:8], cert.SignerKey[len(cert.SignerKey)-8:]))
+	}
+	return lines
+}
+
+func safeVerifyLineValue(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 0x20 && r <= 0x7e && r != '\\':
+			b.WriteRune(r)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r <= 0xffff:
+			_, _ = fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			_, _ = fmt.Fprintf(&b, `\U%08x`, r)
+		}
+	}
+	return b.String()
+}
+
+func safeQuotedVerifyValue(value string) string {
+	return `"` + safeVerifyLineValue(value) + `"`
 }
 
 // Marshal serializes a Certificate to JSON.
@@ -347,6 +558,9 @@ func Marshal(cert Certificate) ([]byte, error) {
 
 // Unmarshal deserializes a Certificate from JSON.
 func Unmarshal(data []byte) (Certificate, error) {
+	if _, err := contract.ParseJSONStrict(data); err != nil {
+		return Certificate{}, fmt.Errorf("unmarshal coverage certificate: %w", err)
+	}
 	var cert Certificate
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()

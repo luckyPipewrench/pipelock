@@ -284,6 +284,9 @@ func TestBackupStateWithOptions_RejectsConfiguredStoreErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable legal hold store", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("permission-bit failure case is not reliable as root")
+		}
 		stateDir := t.TempDir()
 		legalHoldPath := filepath.Join(stateDir, LegalHoldStateFile)
 		if err := os.WriteFile(legalHoldPath, legalHoldStateJSON("hold-unreadable"), 0o600); err != nil {
@@ -320,6 +323,9 @@ func TestBackupStateWithOptions_RejectsConfiguredStoreErrors(t *testing.T) {
 	})
 
 	t.Run("archive directory cannot be created", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("permission-bit failure case is not reliable as root")
+		}
 		stateDir := t.TempDir()
 		parentDir := t.TempDir()
 		if err := os.Chmod(parentDir, ownerReadSearchOnlyMode()); err != nil {
@@ -393,6 +399,9 @@ func TestRestoreStateWithOptions_RejectsCorruptArchiveAndBadTargets(t *testing.T
 	})
 
 	t.Run("configured legal hold parent is not writable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("permission-bit failure case is not reliable as root")
+		}
 		archive := filepath.Join(t.TempDir(), "legal-holds.tar")
 		writeBackupArchive(t, archive, map[string][]byte{
 			LegalHoldStateFile: legalHoldStateJSON("hold-parent-file"),

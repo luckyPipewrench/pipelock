@@ -209,3 +209,100 @@ func TestRenderSingleAgentHTML_HTMLEscapesAttackerContent(t *testing.T) {
 		t.Error("expected HTML-escaped script tag in output")
 	}
 }
+
+func TestRenderSingleAgentHTML_EscapesEveryTemplateDataSurface(t *testing.T) {
+	fixedTime := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	scriptPayload := `<script>alert("xss")</script>`
+	imagePayload := `"><img src=x onerror=alert(1)>`
+	assetPayload := `"><link rel="stylesheet" href="https://evil.example/x.css"><script src="https://evil.example/x.js"></script>`
+
+	ev := SessionEvidence{
+		ID:              "sess-" + imagePayload,
+		Agent:           "agent-" + scriptPayload,
+		ReceiptsEnabled: true,
+		ReceiptCount:    1,
+		Scorecard: Scorecard{
+			Authentic: Line{
+				State:  StateWarn,
+				Chip:   "Signer " + imagePayload,
+				Detail: "Signer key " + scriptPayload + " is not in the trusted-key set.",
+				Sub:    "Source " + assetPayload,
+			},
+			Untampered: Line{
+				State:  StateFail,
+				Chip:   "Reason " + scriptPayload,
+				Detail: "Receipt reason " + imagePayload,
+				Sub:    "Block reason " + scriptPayload,
+			},
+			Anchored: Line{
+				State:  StateWarn,
+				Chip:   "Anchor " + imagePayload,
+				Detail: "Destination " + scriptPayload,
+				Sub:    "Proof " + imagePayload,
+			},
+			Completeness: Line{
+				State:  StateLimited,
+				Chip:   "Boundary " + scriptPayload,
+				Detail: "Session " + imagePayload,
+				Sub:    "Agent " + scriptPayload,
+			},
+		},
+		Timeline: []TimelineItem{
+			{
+				Seq:          7,
+				Time:         fixedTime,
+				Verdict:      "block " + scriptPayload,
+				Reason:       "dlp / " + imagePayload,
+				PrevShort:    "prev-" + scriptPayload,
+				HashShort:    "hash-" + imagePayload,
+				Unverifiable: true,
+			},
+		},
+	}
+	explanations := []DecisionExplanation{
+		{
+			Verdict:     ExplanationField{Present: true, Label: "Verdict", Detail: "block " + scriptPayload},
+			ChainSeq:    ExplanationField{Present: true, Label: "Chain Seq", Detail: "7 " + imagePayload},
+			Pattern:     ExplanationField{Present: true, Label: "Pattern", Detail: "pattern " + scriptPayload},
+			TaintReason: ExplanationField{Present: true, Label: "Taint Decision Reason", Detail: "taint " + imagePayload},
+			Target:      ExplanationField{Present: true, Label: "Target", Detail: "https://api.vendor.example/" + assetPayload},
+			Actor:       ExplanationField{Present: true, Label: "Actor", Detail: "actor " + scriptPayload},
+			Principal:   ExplanationField{Present: true, Label: "Principal", Detail: "principal " + imagePayload},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := RenderSingleAgentHTML(&buf, ev, explanations, RenderOptions{
+		Title:       "Title " + scriptPayload,
+		GeneratedAt: fixedTime,
+	}); err != nil {
+		t.Fatalf("RenderSingleAgentHTML error: %v", err)
+	}
+	html := buf.String()
+
+	for _, raw := range []string{scriptPayload, imagePayload, assetPayload} {
+		if strings.Contains(html, raw) {
+			t.Fatalf("rendered HTML contains unescaped attacker payload %q: %s", raw, html)
+		}
+	}
+	for _, escaped := range []string{
+		"&lt;script&gt;alert(&#34;xss&#34;)&lt;/script&gt;",
+		"&#34;&gt;&lt;img src=x onerror=alert(1)&gt;",
+		"&lt;link rel=&#34;stylesheet&#34; href=&#34;https://evil.example/x.css&#34;&gt;",
+	} {
+		if !strings.Contains(html, escaped) {
+			t.Fatalf("rendered HTML missing escaped payload %q: %s", escaped, html)
+		}
+	}
+	for _, banned := range []string{
+		`<script`,
+		`<img`,
+		`<link rel="stylesheet"`,
+		`src="https://evil.example`,
+		`href="https://evil.example`,
+	} {
+		if strings.Contains(html, banned) {
+			t.Fatalf("rendered HTML contains executable/external asset surface %q: %s", banned, html)
+		}
+	}
+}

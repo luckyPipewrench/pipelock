@@ -412,6 +412,18 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	if strings.Contains(body, testActorAlpha) {
 		t.Fatalf("GET / rendered unbound agent %q: %s", testActorAlpha, body)
 	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != evidenceServeCSP {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, evidenceServeCSP)
+	}
+	for header, want := range map[string]string{
+		"Cache-Control":          "no-store",
+		"Referrer-Policy":        "no-referrer",
+		"X-Content-Type-Options": "nosniff",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
 }
 
 func TestServeCmd_NoLicenseRequired(t *testing.T) {

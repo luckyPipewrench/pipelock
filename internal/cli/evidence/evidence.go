@@ -42,6 +42,7 @@ func Cmd() *cobra.Command {
 
 const (
 	defaultEvidenceServeListen     = "127.0.0.1:0"
+	evidenceServeCSP               = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'"
 	evidenceServeReadHeaderTimeout = 5 * time.Second
 	evidenceServeReadTimeout       = 30 * time.Second
 	evidenceServeWriteTimeout      = 30 * time.Second
@@ -216,6 +217,9 @@ func evidenceServeHandler(dir, sessionID string) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", evidenceServeCSP)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(html)
 	})

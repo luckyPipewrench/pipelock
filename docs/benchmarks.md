@@ -16,7 +16,7 @@ Run `make bench` to reproduce on your hardware. Numbers below are the median of 
 
 ## Scanner Pipeline (`Scanner.Scan()`)
 
-Full 11-layer URL scanning: scheme, CRLF injection, path traversal, blocklist, DLP (pre-DNS), path entropy, subdomain entropy, SSRF (post-DNS), rate limit, URL length, data budget.
+URL scanning with DNS-based SSRF, rate limiting, and data budget checks disabled: scheme, CRLF injection, path traversal, blocklist, DLP (pre-DNS), path entropy, subdomain entropy, and URL length. DNS resolution, the post-DNS SSRF layer, rate limiting, and data budget enforcement are excluded from these measurements.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -111,7 +111,7 @@ True concurrent throughput across all available goroutines.
 
 ## Key Takeaways
 
-- **Full 11-layer scan on a typical URL: ~39 microseconds** (measured on v3.1.0). Well under 1ms; network latency dominates real requests.
+- **Typical URL scan with DNS-based SSRF, rate limiting, and data budget checks disabled: ~39 microseconds** (measured on v3.1.0). Well under 1ms; network latency dominates real requests.
 - Blocked URLs short-circuit early: the blocklist check is ~2μs, and an over-length URL is rejected in ~142ns before any expensive layer runs.
 - DLP regex matching (65 patterns) with pre-filter: ~7μs. Pre-filter alone: ~671ns with zero allocations on clean text.
 - Response scanning runs the full multi-pass normalization cascade: ~387μs on small clean content, ~72μs when injection is detected via early exit. State/control patterns add cost on clean text (~667μs). Large content (~10KB) is the heavy case at ~46ms; a scanner + benchmark performance audit is planned for a future release.

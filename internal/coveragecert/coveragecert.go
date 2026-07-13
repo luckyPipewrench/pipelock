@@ -108,6 +108,16 @@ func (b Body) SignablePreimage() ([]byte, error) {
 // Validate checks structural invariants on the body. It refuses ill-formed or
 // over-claiming bodies (fail closed). Called by Sign before signing.
 func (b Body) Validate() error {
+	if err := b.validateStructure(); err != nil {
+		return err
+	}
+	if mismatches := rederiveAggregates(b); len(mismatches) > 0 {
+		return fmt.Errorf("%w: %w: %s", ErrBodyInvalid, ErrAggregateMismatch, strings.Join(mismatches, "; "))
+	}
+	return nil
+}
+
+func (b Body) validateStructure() error {
 	if b.Schema != Schema {
 		return fmt.Errorf("%w: schema=%q, want %q", ErrBodyInvalid, b.Schema, Schema)
 	}
@@ -128,8 +138,8 @@ func (b Body) Validate() error {
 	if strings.Contains(strings.ToLower(b.Boundary), "all agent activity") {
 		return fmt.Errorf("%w: boundary must not claim coverage of all agent activity", ErrBodyInvalid)
 	}
-	if mismatches := rederiveAggregates(b); len(mismatches) > 0 {
-		return fmt.Errorf("%w: %w: %s", ErrBodyInvalid, ErrAggregateMismatch, strings.Join(mismatches, "; "))
+	if err := validateCoverageCertSignerKey(b.TrustedSignerKey); err != nil {
+		return fmt.Errorf("%w: trusted_signer_key: %w", ErrBodyInvalid, err)
 	}
 	return nil
 }
@@ -177,6 +187,12 @@ func Verify(cert Certificate, trustedKeys map[string]struct{}) (VerifyResult, er
 		return result, fmt.Errorf("%w: signer key length %d, want %d",
 			ErrVerifyFailed, len(signerKeyBytes), ed25519.PublicKeySize)
 	}
+	if err := cert.Body.validateStructure(); err != nil {
+		return result, fmt.Errorf("%w: body: %w", ErrVerifyFailed, err)
+	}
+	if cert.Body.TrustedSignerKey != cert.SignerKey {
+		return result, fmt.Errorf("%w: body trusted_signer_key does not match certificate signer_key", ErrVerifyFailed)
+	}
 
 	// Decode signature.
 	sigBytes, err := hex.DecodeString(cert.Signature)
@@ -205,6 +221,20 @@ func Verify(cert Certificate, trustedKeys map[string]struct{}) (VerifyResult, er
 	result.Lines = buildVerifyLines(cert, result, mismatches)
 
 	return result, nil
+}
+
+func validateCoverageCertSignerKey(value string) error {
+	keyBytes, err := hex.DecodeString(value)
+	if err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	if len(keyBytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("length %d, want %d", len(keyBytes), ed25519.PublicKeySize)
+	}
+	if value != strings.ToLower(value) {
+		return errors.New("must be lowercase hex")
+	}
+	return nil
 }
 
 // rederiveAggregates recomputes aggregate counts from Sessions and returns

@@ -59,6 +59,55 @@ func writeCoverageCertVerifyFixture(t *testing.T) (certFile, pubHex string) {
 	return certFile, hex.EncodeToString(pub)
 }
 
+func writeCoverageCertInvalidBodyFixture(t *testing.T) (certFile, pubHex string) {
+	t.Helper()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	pubHex = hex.EncodeToString(pub)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	body := coveragecert.Body{
+		Schema:        coveragecert.Schema,
+		KeyPurpose:    coveragecert.KeyPurpose,
+		Agent:         "agent-a",
+		WindowStart:   start,
+		WindowEnd:     start.Add(time.Hour),
+		TotalReceipts: 2,
+		Sessions: []coveragecert.SessionCoverage{{
+			ID:                 "session-a",
+			ReceiptCount:       2,
+			ChainIntact:        true,
+			Anchored:           "local",
+			CompletenessStatus: "LIMITED",
+			CompletenessReason: "bounded_closed",
+		}},
+		SessionsCovered:    1,
+		ChainsIntact:       1,
+		TrustedSignerKey:   pubHex,
+		Boundary:           "Coverage of all agent activity and mediated egress inside the declared Pipelock boundary",
+		StandingExclusions: coveragecert.DefaultStandingExclusions(),
+	}
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	cert := coveragecert.Certificate{
+		Body:      body,
+		Signature: hex.EncodeToString(ed25519.Sign(priv, preimage)),
+		SignerKey: pubHex,
+	}
+	data, err := coveragecert.Marshal(cert)
+	if err != nil {
+		t.Fatalf("coveragecert.Marshal: %v", err)
+	}
+	certFile = filepath.Join(t.TempDir(), "invalid-body-cert.json")
+	if err := os.WriteFile(certFile, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return certFile, pubHex
+}
+
 func TestRunTrustedSignerVerifies(t *testing.T) {
 	certFile, pubHex := writeCoverageCertVerifyFixture(t)
 	var out bytes.Buffer
@@ -94,6 +143,20 @@ func TestRunUntrustedSignerFailsClosed(t *testing.T) {
 	// The diagnostic line is still emitted before the fail-closed return.
 	if !strings.Contains(out.String(), "NOT TRUSTED") {
 		t.Fatalf("Run output = %q, want NOT TRUSTED diagnostic line", out.String())
+	}
+}
+
+func TestRunInvalidBodyFailsClosedEvenWithTrustedSignature(t *testing.T) {
+	certFile, pubHex := writeCoverageCertInvalidBodyFixture(t)
+	var out bytes.Buffer
+
+	err := Run(Options{
+		CertFile:       certFile,
+		TrustedSigners: []string{"inline=" + pubHex},
+		Out:            &out,
+	})
+	if err == nil || !strings.Contains(err.Error(), "body validation failed") {
+		t.Fatalf("Run invalid body err = %v, want body validation failure", err)
 	}
 }
 

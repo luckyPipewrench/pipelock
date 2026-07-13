@@ -215,6 +215,52 @@ func TestVerify_AggregateMismatch_Flagged(t *testing.T) {
 	}
 }
 
+func TestVerify_TrustedSignatureWithInvalidBodyFailsClosed(t *testing.T) {
+	t.Parallel()
+	pub, priv := genTestKey(t)
+	body := validBody(pub)
+	body.Boundary = "Coverage of all agent activity and mediated egress inside the declared Pipelock boundary"
+
+	cert := signCoverageCertBodyUnchecked(t, body, pub, priv)
+	_, err := Verify(cert, map[string]struct{}{hex.EncodeToString(pub): {}})
+	if err == nil {
+		t.Fatal("trusted valid signature over invalid body should fail closed")
+	}
+	if !strings.Contains(err.Error(), ErrBodyInvalid.Error()) {
+		t.Fatalf("error = %q, want body validation failure", err.Error())
+	}
+}
+
+func TestVerify_TrustedSignerKeyMustMatchEnvelopeSigner(t *testing.T) {
+	t.Parallel()
+	pub, priv := genTestKey(t)
+	otherPub, _ := genTestKey(t)
+	body := validBody(pub)
+	body.TrustedSignerKey = hex.EncodeToString(otherPub)
+
+	cert := signCoverageCertBodyUnchecked(t, body, pub, priv)
+	_, err := Verify(cert, map[string]struct{}{hex.EncodeToString(pub): {}})
+	if err == nil {
+		t.Fatal("trusted signature with mismatched trusted_signer_key should fail closed")
+	}
+	if !strings.Contains(err.Error(), "trusted_signer_key") {
+		t.Fatalf("error = %q, want trusted_signer_key mismatch", err.Error())
+	}
+}
+
+func signCoverageCertBodyUnchecked(t *testing.T, body Body, pub ed25519.PublicKey, priv ed25519.PrivateKey) Certificate {
+	t.Helper()
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	return Certificate{
+		Body:      body,
+		Signature: hex.EncodeToString(ed25519.Sign(priv, preimage)),
+		SignerKey: hex.EncodeToString(pub),
+	}
+}
+
 func TestSign_AggregateOverclaimRejected(t *testing.T) {
 	t.Parallel()
 	pub, priv := genTestKey(t)

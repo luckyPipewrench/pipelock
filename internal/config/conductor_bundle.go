@@ -449,6 +449,9 @@ func preserveConductorBundleMCPToolPolicy(newCfg, oldCfg *Config, bundleOwnsSect
 	if err != nil {
 		return err
 	}
+	// Bundles contribute only rules here. Redirect and defer resolver profiles
+	// stay follower-local, so bundle redirect/defer rules must reference
+	// profiles that already exist in the preserved local policy.
 	validationPolicy := newCfg.MCPToolPolicy
 	validationPolicy.Rules = merged
 	if err := validateConductorBundleToolPolicyRuleActions(validationPolicy, oldCfg.Defer, bundleRules); err != nil {

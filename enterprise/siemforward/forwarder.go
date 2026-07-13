@@ -345,6 +345,9 @@ func hostIsLoopback(host string) bool {
 
 func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host string, internal func(net.IP) bool, allowPrivateLiteral bool) error {
 	if ip := net.ParseIP(host); ip != nil {
+		if isImmutableDenyIP(ip) {
+			return fmt.Errorf("SSRF blocked: destination is cloud-metadata/link-local IP %s (never permitted even in the forwarder allowlist)", host)
+		}
 		if internal(ip) && !allowPrivateLiteral {
 			return fmt.Errorf("SSRF blocked: destination is internal IP %s", host)
 		}
@@ -361,20 +364,28 @@ func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host s
 }
 
 // assertResolvedIPsSafe rejects a resolved address set that contains an
-// unparseable entry or an internal IP (unless allowPrivate). Startup validation
-// and connection-time pinning both call it so the resolved-IP SSRF rule stays
-// in lock-step and cannot drift between the two paths.
+// unparseable entry, an immutable-deny IP, or an internal IP (unless
+// allowPrivate). Startup validation and connection-time pinning both call it so
+// the resolved-IP SSRF rule stays in lock-step and cannot drift between the two
+// paths.
 func assertResolvedIPsSafe(host string, ips []string, internal func(net.IP) bool, allowPrivate bool) error {
 	for _, rawIP := range ips {
 		ip := net.ParseIP(stripZone(rawIP))
 		if ip == nil {
 			return fmt.Errorf("SSRF blocked: unparseable DNS address %q for %s", rawIP, host)
 		}
+		if isImmutableDenyIP(ip) {
+			return fmt.Errorf("SSRF blocked: %s resolves to cloud-metadata/link-local IP %s (never permitted even in the forwarder allowlist)", host, rawIP)
+		}
 		if internal(ip) && !allowPrivate {
 			return fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, rawIP)
 		}
 	}
 	return nil
+}
+
+func isImmutableDenyIP(ip net.IP) bool {
+	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || scanner.IsCloudMetadataIP(ip)
 }
 
 func stripZone(ip string) string {
@@ -893,6 +904,9 @@ func (f *Forwarder) safeDialContext(ctx context.Context, network, addr string) (
 		return nil, fmt.Errorf("siem forwarder refused unexpected destination host %q", host)
 	}
 	if literalIP := net.ParseIP(host); literalIP != nil {
+		if isImmutableDenyIP(literalIP) {
+			return nil, fmt.Errorf("SSRF blocked: destination is cloud-metadata/link-local IP %s (never permitted even in the forwarder allowlist)", host)
+		}
 		if f.isInternalIP(literalIP) && !f.allowPrivateLiteral {
 			return nil, fmt.Errorf("SSRF blocked: destination is internal IP %s", host)
 		}

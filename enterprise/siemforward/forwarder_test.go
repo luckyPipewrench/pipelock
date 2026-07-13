@@ -94,6 +94,9 @@ func TestNewFailsClosedForUnsafeDestinations(t *testing.T) {
 		{name: "private DNS", rawURL: "http://api.vendor.example/events", allowed: []string{"api.vendor.example"}, resolve: []string{"10.2.3.4"}},
 		{name: "link local DNS", rawURL: "http://api.vendor.example/events", allowed: []string{"api.vendor.example"}, resolve: []string{"169.254.10.2"}},
 		{name: "metadata DNS", rawURL: "http://api.vendor.example/events", allowed: []string{"api.vendor.example"}, resolve: []string{"169.254.169.254"}},
+		{name: "metadata literal 169.254.169.254 allowlisted", rawURL: "http://169.254.169.254/events", allowed: []string{"169.254.169.254"}},
+		{name: "azure wireserver literal 168.63.129.16 allowlisted", rawURL: "http://168.63.129.16/events", allowed: []string{"168.63.129.16"}},
+		{name: "ipv6 metadata literal fd00:ec2::254 allowlisted", rawURL: "http://[fd00:ec2::254]/events", allowed: []string{"fd00:ec2::254"}},
 		{name: "private DNS", rawURL: "https://api.vendor.example/events", allowed: []string{"api.vendor.example"}, resolve: []string{"192.168.1.20"}},
 		{name: "missing allowlist", rawURL: "https://api.vendor.example/events", resolve: []string{testPublicIP}},
 		{name: "wrong allowlist", rawURL: "https://api.vendor.example/events", allowed: []string{"other.vendor.example"}, resolve: []string{testPublicIP}},
@@ -128,14 +131,94 @@ func TestNewBoundsStartupDNSResolution(t *testing.T) {
 
 func TestNewAllowsExplicitPrivateIPLiteral(t *testing.T) {
 	t.Parallel()
-	cfg := testConfig(t, "http://127.0.0.1/events")
-	cfg.AllowedHosts = []string{"127.0.0.1"}
-	f, err := New(cfg, Options{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	tests := []struct {
+		name   string
+		rawURL string
+		host   string
+	}{
+		{name: "loopback sidecar", rawURL: "http://127.0.0.1/events", host: "127.0.0.1"},
+		{name: "rfc1918 siem", rawURL: "http://10.0.0.5/events", host: "10.0.0.5"},
 	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, tc.rawURL)
+			cfg.AllowedHosts = []string{tc.host}
+			f, err := New(cfg, Options{})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		})
+	}
+}
+
+func TestAssertResolvedIPsSafeDeniesImmutableRangesWithPrivateAllowed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		ip   string
+	}{
+		{name: "metadata", ip: "169.254.169.254"},
+		{name: "azure wireserver", ip: "168.63.129.16"},
+		{name: "ipv6 metadata", ip: "fd00:ec2::254"},
+		{name: "link local", ip: "169.254.10.2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := assertResolvedIPsSafe("api.vendor.example", []string{tc.ip}, func(net.IP) bool {
+				return false
+			}, true)
+			if err == nil {
+				t.Fatal("assertResolvedIPsSafe allowed immutable-deny IP with allowPrivate=true")
+			}
+			if !strings.Contains(err.Error(), "cloud-metadata/link-local IP") {
+				t.Fatalf("error = %q, want immutable-deny reason", err)
+			}
+		})
+	}
+}
+
+func TestSafeDialContextDeniesImmutableLiteralWithPrivateAllowed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		rawURL string
+		host   string
+	}{
+		{name: "metadata", rawURL: "http://169.254.169.254/events", host: "169.254.169.254"},
+		{name: "azure wireserver", rawURL: "http://168.63.129.16/events", host: "168.63.129.16"},
+		{name: "ipv6 metadata", rawURL: "http://[fd00:ec2::254]/events", host: "fd00:ec2::254"},
+		{name: "link local", rawURL: "http://169.254.10.2/events", host: "169.254.10.2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := validateTarget(tc.rawURL, []string{tc.host}, "", true)
+			if err != nil {
+				t.Fatalf("validateTarget: %v", err)
+			}
+			dialed := false
+			f := &Forwarder{
+				target:              target,
+				isInternalIP:        func(net.IP) bool { return false },
+				allowPrivateLiteral: true,
+				dial: func(context.Context, string, string) (net.Conn, error) {
+					dialed = true
+					return nil, errors.New("dial should not be reached")
+				},
+			}
+			_, err = f.safeDialContext(t.Context(), "tcp", net.JoinHostPort(tc.host, "80"))
+			if err == nil {
+				t.Fatal("safeDialContext allowed immutable-deny literal with allowPrivateLiteral=true")
+			}
+			if !strings.Contains(err.Error(), "cloud-metadata/link-local IP") {
+				t.Fatalf("error = %q, want immutable-deny reason", err)
+			}
+			if dialed {
+				t.Fatal("dialer called for immutable-deny literal")
+			}
+		})
 	}
 }
 

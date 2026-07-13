@@ -616,3 +616,160 @@ func TestCoverageCertVerify_Execute(t *testing.T) {
 		t.Error("verify should print bounded lines")
 	}
 }
+
+// TestSessionBelongsToAgent_AnonymousTolerance is the regression guard for the
+// coverage-cert generate mixed-actor bug: a normal single-agent session mixes
+// the "pipelock" session-control actor with unattributed "anonymous" request
+// receipts. The generate guard must tolerate that default proxy shape while
+// still rejecting genuine second named agents and named-agent sessions that
+// would over-count unattributed traffic in the signed certificate body.
+func TestSessionBelongsToAgent_AnonymousTolerance(t *testing.T) {
+	rec := func(actor, sessionID string) receipt.Receipt {
+		return receipt.Receipt{ActionRecord: receipt.ActionRecord{Actor: actor, SessionID: sessionID}}
+	}
+	tests := []struct {
+		name       string
+		agent      string
+		receipts   []receipt.Receipt
+		wantBelong bool
+		wantErr    bool
+	}{
+		{
+			name:  "pipelock control mixed with anonymous requests belongs to pipelock",
+			agent: "pipelock",
+			receipts: []receipt.Receipt{
+				rec("pipelock", "proxy"),
+				rec("anonymous", "proxy"),
+				rec("anonymous", "proxy"),
+				rec("pipelock", "proxy"),
+			},
+			wantBelong: true,
+		},
+		{
+			name:       "all anonymous does not belong to a named agent (no false claim)",
+			agent:      "pipelock",
+			receipts:   []receipt.Receipt{rec("anonymous", "proxy"), rec("anonymous", "proxy")},
+			wantBelong: false,
+		},
+		{
+			name:  "two distinct named agents still rejected (cross-agent leak guard preserved)",
+			agent: "agent-a",
+			receipts: []receipt.Receipt{
+				rec("agent-a", "s"),
+				rec("anonymous", "s"),
+				rec("agent-b", "s"),
+			},
+			wantErr: true,
+		},
+		{
+			name:  "named agent mixed with anonymous is rejected so cert does not over-count unattributed traffic",
+			agent: "agent-a",
+			receipts: []receipt.Receipt{
+				rec("agent-a", "s"),
+				rec("anonymous", "s"),
+			},
+			wantErr: true,
+		},
+		{
+			name:       "empty actor is unattributed, not derived from session id (no over-attribution to a named agent)",
+			agent:      "agent-a",
+			receipts:   []receipt.Receipt{{ActionRecord: receipt.ActionRecord{Actor: "", SessionID: "agent-a"}}},
+			wantBelong: false,
+		},
+		{
+			name:  "empty actors fold into anonymous under the default control actor",
+			agent: "pipelock",
+			receipts: []receipt.Receipt{
+				rec("pipelock", "proxy"),
+				{ActionRecord: receipt.ActionRecord{Actor: "", SessionID: "proxy"}},
+			},
+			wantBelong: true,
+		},
+		{
+			name:       "whitespace-padded actor is normalized before matching",
+			agent:      "agent-a",
+			receipts:   []receipt.Receipt{rec(" agent-a ", "s")},
+			wantBelong: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := sessionBelongsToAgent("proxy", tt.receipts, tt.agent)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected mixed-actor error, got belong=%v err=nil", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantBelong {
+				t.Errorf("belong = %v, want %v", got, tt.wantBelong)
+			}
+		})
+	}
+}
+
+// TestRunCoverageCertGenerate_TrimsAgentWhitespace guards the CodeRabbit finding:
+// incidental whitespace on the CLI --agent flag must be normalized so it neither
+// breaks actor matching nor lands untrimmed in the signed certificate body.
+func TestRunCoverageCertGenerate_TrimsAgentWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "roundtrip", "agent-a", 3)
+
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	opts := coverageCertGenerateOptions{
+		agent:          "  agent-a  ",
+		receiptDir:     dir,
+		signingKeyFile: keyFile,
+		windowStart:    start.Format(time.RFC3339),
+		windowEnd:      start.Add(24 * time.Hour).Format(time.RFC3339),
+		outFile:        certFile,
+	}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := runCoverageCertGenerate(cmd, opts); err != nil {
+		t.Fatalf("runCoverageCertGenerate with padded agent: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(certFile))
+	if err != nil {
+		t.Fatalf("read cert: %v", err)
+	}
+	cert, err := coveragecert.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Unmarshal cert: %v", err)
+	}
+	if got := cert.Body.Agent; got != "agent-a" {
+		t.Fatalf("certificate body Agent = %q, want normalized %q", got, "agent-a")
+	}
+}
+
+// TestRunCoverageCertGenerate_RejectsBlankAgent confirms an all-whitespace agent
+// is rejected rather than silently matching unattributed receipts.
+func TestRunCoverageCertGenerate_RejectsBlankAgent(t *testing.T) {
+	opts := coverageCertGenerateOptions{
+		agent:       "   ",
+		receiptDir:  t.TempDir(),
+		windowStart: "2026-01-01T00:00:00Z",
+		windowEnd:   "2026-01-02T00:00:00Z",
+	}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := runCoverageCertGenerate(cmd, opts); err == nil {
+		t.Fatal("expected error for blank --agent, got nil")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -100,6 +101,15 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		return fmt.Errorf("--window-end: %w", err)
 	}
 
+	// Normalize the CLI-provided agent once so incidental whitespace cannot
+	// bypass the control-actor exception or actor matching in
+	// sessionBelongsToAgent, and so the signed certificate body records the same
+	// normalized identity that was matched against.
+	agent := strings.TrimSpace(opts.agent)
+	if agent == "" {
+		return fmt.Errorf("--agent must not be empty")
+	}
+
 	cleanDir := filepath.Clean(opts.receiptDir)
 	info, dirErr := os.Stat(cleanDir)
 	if dirErr != nil {
@@ -142,7 +152,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		if len(receipts) == 0 {
 			continue
 		}
-		include, filterErr := sessionBelongsToAgent(sid, receipts, opts.agent)
+		include, filterErr := sessionBelongsToAgent(sid, receipts, agent)
 		if filterErr != nil {
 			return filterErr
 		}
@@ -175,7 +185,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	body := coveragecert.Body{
 		Schema:             coveragecert.Schema,
 		KeyPurpose:         coveragecert.KeyPurpose,
-		Agent:              opts.agent,
+		Agent:              agent,
 		WindowStart:        windowStart,
 		WindowEnd:          windowEnd,
 		Sessions:           sessionCoverages,
@@ -189,7 +199,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		StandingExclusions: coveragecert.DefaultStandingExclusions(),
 	}
 	if len(body.Sessions) == 0 {
-		return fmt.Errorf("no receipts found for agent %q in %s", opts.agent, cleanDir)
+		return fmt.Errorf("no receipts found for agent %q in %s", agent, cleanDir)
 	}
 
 	cert, err := coveragecert.Sign(body, priv)
@@ -238,6 +248,23 @@ func filterReceiptsToWindow(receipts []receipt.Receipt, start, end time.Time) []
 	return filtered
 }
 
+// coverageCertAnonymousActor is pipelock's default actor for unattributed
+// requests (no agent identity bound). It is tolerated only when generating the
+// default proxy certificate whose declared actor is the session-control actor.
+// For any other named agent, counting anonymous receipts would silently
+// overstate that agent's covered traffic in the signed certificate body.
+const coverageCertAnonymousActor = "anonymous"
+
+// coverageCertControlActor is the proxy's built-in session-control actor. It is
+// the only agent for which unattributed (anonymous) receipts are folded into a
+// certificate, because a default single-agent deployment's traffic is
+// legitimately unattributed under the proxy itself. This relies on "pipelock"
+// and "anonymous" being reserved proxy actor names that an operator cannot bind
+// to a named agent; enforcing that reservation at agent-config load (so a named
+// agent can never masquerade as the control actor) is tracked as follow-up
+// hardening and pairs with per-agent identity on receipts.
+const coverageCertControlActor = "pipelock"
+
 func sessionBelongsToAgent(sessionID string, receipts []receipt.Receipt, agent string) (bool, error) {
 	if len(receipts) == 0 {
 		return false, nil
@@ -246,7 +273,27 @@ func sessionBelongsToAgent(sessionID string, receipts []receipt.Receipt, agent s
 	otherActor := ""
 	hasOtherActor := false
 	for _, r := range receipts {
-		actor := r.ActionRecord.Actor
+		actor := strings.TrimSpace(r.ActionRecord.Actor)
+		// A missing actor is UNATTRIBUTED traffic, not an identity. Never derive
+		// an actor from the session id: a session id is not an authenticated
+		// agent identity, and treating it as one would falsely attribute
+		// unattributed receipts to a named agent whose name happened to match a
+		// session id (over-counting that agent's certified coverage). Fold empty
+		// into anonymous so it is skipped only for the default control-actor
+		// certificate and fails closed for every named agent.
+		if actor == "" {
+			actor = coverageCertAnonymousActor
+		}
+		if actor == coverageCertAnonymousActor {
+			if agent == coverageCertControlActor {
+				continue
+			}
+			if !hasOtherActor {
+				otherActor = actor
+				hasOtherActor = true
+			}
+			continue
+		}
 		if actor == agent {
 			hasDeclaredAgent = true
 			continue

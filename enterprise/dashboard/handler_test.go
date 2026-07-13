@@ -153,7 +153,7 @@ func TestHandler_FaviconServedWithoutDashboardRoute404(t *testing.T) {
 		if got := rec.Header().Get("Content-Type"); got != contentTypeSVG {
 			t.Fatalf("favicon content type = %q, want %q", got, contentTypeSVG)
 		}
-		for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 400 480"`, `PIPELOCK`} {
+		for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 64 64"`, `#00ffc8`} {
 			if !strings.Contains(rec.Body.String(), want) {
 				t.Fatalf("favicon body missing %q: %s", want, rec.Body.String())
 			}
@@ -184,12 +184,12 @@ func TestHandler_FaviconServedWithoutDashboardRoute404(t *testing.T) {
 func TestHandler_FaviconUsesEmbeddedBrandAsset(t *testing.T) {
 	t.Parallel()
 
-	asset, err := os.ReadFile(filepath.Join("..", "..", "assets", "pipelock-logo.svg"))
+	asset, err := os.ReadFile(filepath.Join("..", "..", "assets", "pipelock-favicon.svg"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(dashboardFaviconSVG) != string(asset) {
-		t.Fatal("embedded dashboard favicon does not match assets/pipelock-logo.svg")
+		t.Fatal("embedded dashboard favicon does not match assets/pipelock-favicon.svg")
 	}
 	if !strings.HasPrefix(dashboardFaviconDataURL, "data:image/svg+xml;base64,") {
 		t.Fatalf("favicon data URL = %q", dashboardFaviconDataURL)

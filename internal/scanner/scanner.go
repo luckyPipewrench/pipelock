@@ -1058,11 +1058,11 @@ var metadataIPv6 = map[string]struct{}{
 	"fd00:ec2::254": {}, // AWS IMDSv6
 }
 
-// isCloudMetadataIP returns true when the resolved IP belongs to a recognised
+// IsCloudMetadataIP returns true when the resolved IP belongs to a recognised
 // cloud-provider metadata service. The caller uses this to upgrade a generic
 // SSRF block into the more specific metadata classification, matching the
 // dedicated blockreason.SSRFMetadata code.
-func isCloudMetadataIP(ip net.IP) bool {
+func IsCloudMetadataIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -1072,6 +1072,10 @@ func isCloudMetadataIP(ip net.IP) bool {
 	}
 	_, ok := metadataIPv6[ip.String()]
 	return ok
+}
+
+func isCloudMetadataIP(ip net.IP) bool {
+	return IsCloudMetadataIP(ip)
 }
 
 // checkSSRF blocks requests to internal/private IP ranges.

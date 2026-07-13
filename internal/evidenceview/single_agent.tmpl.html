@@ -5,108 +5,347 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; color: #1a1a2e; background: #fafafa; }
-h1 { font-size: 1.5rem; }
-h2 { font-size: 1.2rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
-.meta { color: #555; font-size: 0.85rem; margin-bottom: 1.5rem; }
-.scorecard { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-.line { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; background: #fff; }
-.line .chip { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.8rem; font-weight: 600; }
-.chip-verify { background: #d4edda; color: #155724; }
-.chip-warn { background: #fff3cd; color: #856404; }
-.chip-fail { background: #f8d7da; color: #721c24; }
-.chip-limited { background: #e2e3e5; color: #383d41; }
-.line .detail { margin-top: 0.5rem; font-size: 0.9rem; }
-.line .sub { margin-top: 0.3rem; font-size: 0.8rem; color: #666; }
-table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.85rem; }
-th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eee; }
-th { background: #f0f0f0; font-weight: 600; }
-tr.unverifiable { background: #fff5f5; }
-.explanation { border: 1px solid #e0e0e0; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; background: #fff; }
-.explanation h3 { margin-top: 0; font-size: 1rem; }
-.field { margin: 0.3rem 0; font-size: 0.85rem; }
-.field .label { font-weight: 600; color: #444; }
-.field .absent { color: #999; font-style: italic; }
+:root {
+  --accent:#00e5a0;
+  --bg:#09090b;
+  --bg-elevated:#0e0e11;
+  --panel:#0b0b0e;
+  --border:rgba(255,255,255,0.07);
+  --border-strong:rgba(255,255,255,0.13);
+  --text:#e2e8f0;
+  --text-muted:#94a3b8;
+  --text-dim:#64748b;
+  --warn:#f59e0b;
+  --danger:#ef4444;
+}
+* { box-sizing: border-box; }
+html { min-height: 100%; background: var(--bg); }
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.mono, code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.8rem 1.5rem;
+  background: rgba(9,9,11,0.9);
+  border-bottom: 1px solid var(--border-strong);
+}
+.brand {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.brand span {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.read-only {
+  padding: 0.22rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.66rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 26px 24px 80px;
+}
+h1, h2, h3, p { margin-top: 0; }
+h1 {
+  margin-bottom: 8px;
+  font-size: 26px;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+.eyebrow {
+  margin-bottom: 8px;
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.meta b {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.section {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.section-head p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.section-body { padding: 16px 18px 18px; }
+.scorecard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.line {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg-elevated);
+}
+.line-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.line-name { font-weight: 700; }
+.chip {
+  display: inline-flex;
+  justify-content: center;
+  min-width: 128px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #050507;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.chip-verify { background: var(--accent); }
+.chip-warn, .chip-limited { background: var(--warn); }
+.chip-fail { background: var(--danger); color: white; }
+.detail {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sub {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+tbody tr:hover { background: rgba(255,255,255,0.025); }
+tr.unverifiable { background: rgba(245,158,11,0.10); }
+code {
+  color: var(--accent);
+  font-size: 12px;
+}
+.explanation {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 10px;
+  background: var(--bg-elevated);
+}
+.field {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.field .label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.field span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.field .absent {
+  color: var(--text-dim);
+  font-style: italic;
+}
+@media (max-width: 760px) {
+  .topbar { padding: 0.65rem 1rem; }
+  main { padding: 18px 14px 56px; }
+  .line-head, .field { display: block; }
+  .chip { margin-top: 8px; }
+}
 </style>
 </head>
 <body>
-<h1>{{.Title}}</h1>
-<div class="meta">
-  Agent: {{.Evidence.Agent}} |
-  Session: {{.Evidence.ID}} |
-  Receipts: {{.Evidence.ReceiptCount}} |
-  Generated: {{.GeneratedAt}}
+<header class="topbar">
+  <div class="brand mono">Pipelock <span>&middot; Operator Console / Evidence Report</span></div>
+  <div class="read-only mono">READ-ONLY</div>
+</header>
+<main>
+<div class="page-head">
+  <div>
+    <div class="eyebrow mono">Single-agent evidence</div>
+    <h1>{{.Title}}</h1>
+    <div class="meta">
+      <span><b>Agent</b> {{.Evidence.Agent}}</span>
+      <span><b>Session</b> {{.Evidence.ID}}</span>
+      <span><b>Receipts</b> {{.Evidence.ReceiptCount}}</span>
+    </div>
+  </div>
+  <div class="meta mono"><span><b>Generated</b> {{.GeneratedAt}}</span></div>
 </div>
 
-<h2>Evidence Scorecard</h2>
-<p style="font-size:0.85rem;color:#666;">Each line is independently evaluated. There is no aggregate status.</p>
-<div class="scorecard">
-  {{with .Evidence.Scorecard.Authentic}}
-  <div class="line">
-    <span class="chip chip-{{.State}}">{{.Chip}}</span>
-    <strong>Authentic</strong>
-    <div class="detail">{{.Detail}}</div>
-    <div class="sub">{{.Sub}}</div>
+<section class="section">
+  <div class="section-head">
+    <div>
+      <h2>Evidence Scorecard</h2>
+      <p>Each line is independently evaluated. There is no aggregate status.</p>
+    </div>
   </div>
-  {{end}}
-  {{with .Evidence.Scorecard.Untampered}}
-  <div class="line">
-    <span class="chip chip-{{.State}}">{{.Chip}}</span>
-    <strong>Untampered</strong>
-    <div class="detail">{{.Detail}}</div>
-    <div class="sub">{{.Sub}}</div>
+  <div class="section-body">
+    <div class="scorecard">
+      {{with .Evidence.Scorecard.Authentic}}
+      <div class="line">
+        <div class="line-head"><span class="line-name">Authentic</span><span class="chip chip-{{.State}}">{{.Chip}}</span></div>
+        <div class="detail">{{.Detail}}</div>
+        <div class="sub">{{.Sub}}</div>
+      </div>
+      {{end}}
+      {{with .Evidence.Scorecard.Untampered}}
+      <div class="line">
+        <div class="line-head"><span class="line-name">Untampered</span><span class="chip chip-{{.State}}">{{.Chip}}</span></div>
+        <div class="detail">{{.Detail}}</div>
+        <div class="sub">{{.Sub}}</div>
+      </div>
+      {{end}}
+      {{with .Evidence.Scorecard.Anchored}}
+      <div class="line">
+        <div class="line-head"><span class="line-name">Anchored</span><span class="chip chip-{{.State}}">{{.Chip}}</span></div>
+        <div class="detail">{{.Detail}}</div>
+        <div class="sub">{{.Sub}}</div>
+      </div>
+      {{end}}
+      {{with .Evidence.Scorecard.Completeness}}
+      <div class="line">
+        <div class="line-head"><span class="line-name">Completeness</span><span class="chip chip-{{.State}}">{{.Chip}}</span></div>
+        <div class="detail">{{.Detail}}</div>
+        <div class="sub">{{.Sub}}</div>
+      </div>
+      {{end}}
+    </div>
   </div>
-  {{end}}
-  {{with .Evidence.Scorecard.Anchored}}
-  <div class="line">
-    <span class="chip chip-{{.State}}">{{.Chip}}</span>
-    <strong>Anchored</strong>
-    <div class="detail">{{.Detail}}</div>
-    <div class="sub">{{.Sub}}</div>
-  </div>
-  {{end}}
-  {{with .Evidence.Scorecard.Completeness}}
-  <div class="line">
-    <span class="chip chip-{{.State}}">{{.Chip}}</span>
-    <strong>Completeness</strong>
-    <div class="detail">{{.Detail}}</div>
-    <div class="sub">{{.Sub}}</div>
-  </div>
-  {{end}}
-</div>
+</section>
 
 {{if .Evidence.ReceiptsEnabled}}
-<h2>Timeline ({{len .Evidence.Timeline}} entries{{if .Evidence.TimelineLimited}}, {{.Evidence.TimelineWindow}} window{{end}})</h2>
-<table>
-<thead><tr><th>Seq</th><th>Time</th><th>Verdict</th><th>Reason</th><th>Prev</th><th>Hash</th></tr></thead>
-<tbody>
-{{range .Evidence.Timeline}}
-<tr{{if .Unverifiable}} class="unverifiable"{{end}}>
-  <td>{{.Seq}}</td>
-  <td>{{.Time.Format "15:04:05"}}</td>
-  <td>{{.Verdict}}</td>
-  <td>{{.Reason}}</td>
-  <td><code>{{.PrevShort}}</code></td>
-  <td><code>{{.HashShort}}</code></td>
-</tr>
-{{end}}
-</tbody>
-</table>
+<section class="section">
+  <div class="section-head">
+    <h2>Timeline ({{len .Evidence.Timeline}} entries{{if .Evidence.TimelineLimited}}, {{.Evidence.TimelineWindow}} window{{end}})</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+    <thead><tr><th>Seq</th><th>Time</th><th>Verdict</th><th>Reason</th><th>Prev</th><th>Hash</th></tr></thead>
+    <tbody>
+    {{range .Evidence.Timeline}}
+    <tr{{if .Unverifiable}} class="unverifiable"{{end}}>
+      <td class="mono">{{.Seq}}</td>
+      <td class="mono">{{.Time.Format "15:04:05"}}</td>
+      <td>{{.Verdict}}</td>
+      <td>{{.Reason}}</td>
+      <td><code>{{.PrevShort}}</code></td>
+      <td><code>{{.HashShort}}</code></td>
+    </tr>
+    {{end}}
+    </tbody>
+    </table>
+  </div>
+</section>
 
 {{if .Explanations}}
-<h2>Decision Detail</h2>
-{{range .Explanations}}
-<div class="explanation">
-  <h3>Seq {{.ChainSeq.Detail}} — {{.Verdict.Detail}}</h3>
-  {{range $f := .Fields}}
-  <div class="field">
-    <span class="label">{{$f.Label}}:</span>
-    {{if $f.Present}}<span>{{$f.Detail}}</span>{{else}}<span class="absent">{{$f.Detail}}</span>{{end}}
+<section class="section">
+  <div class="section-head">
+    <h2>Decision Detail</h2>
   </div>
-  {{end}}
-</div>
+  <div class="section-body">
+    {{range .Explanations}}
+    <div class="explanation">
+      <h3>Seq {{.ChainSeq.Detail}} - {{.Verdict.Detail}}</h3>
+      {{range $f := .Fields}}
+      <div class="field">
+        <span class="label">{{$f.Label}}:</span>
+        {{if $f.Present}}<span>{{$f.Detail}}</span>{{else}}<span class="absent">{{$f.Detail}}</span>{{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+</section>
 {{end}}
 {{end}}
-{{end}}
+</main>
 </body>
 </html>

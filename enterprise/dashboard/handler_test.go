@@ -109,7 +109,7 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evidence", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -350,7 +350,7 @@ func TestHandler_EvidenceNoSessionsExplainsReceiptSource(t *testing.T) {
 		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evidence", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -362,6 +362,41 @@ func TestHandler_EvidenceNoSessionsExplainsReceiptSource(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("evidence no-sessions body missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestHandler_RootRendersOverviewNotEvidence(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAgentsFeature,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Operator Overview",
+		"Where do I need to look, and what can I prove?",
+		"No aggregate score.",
+		`class="active" aria-current="page">Overview</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("root overview body missing %q: %s", want, body)
+		}
+	}
+	for _, notWant := range []string{
+		"Evidence proves receipt ordering, signer trust, and per-session decisions",
+		"Receipt Timeline",
+		"Evidence Scorecard",
+	} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("root rendered evidence content %q: %s", notWant, body)
 		}
 	}
 }
@@ -551,6 +586,7 @@ func TestHandler_RoutePermissionFailsClosed(t *testing.T) {
 
 	for _, path := range []string{
 		"/",
+		"/evidence",
 		"/exemptions",
 		"/session/" + testSessionID,
 		"/session/" + testSessionID + "/receipt/0",
@@ -593,6 +629,7 @@ func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
 		want Permission
 	}{
 		{path: "/", want: PermissionEvidenceRead},
+		{path: "/evidence", want: PermissionEvidenceRead},
 		{path: "/exemptions", want: PermissionExemptionsRead},
 		{path: "/session/" + testSessionID, want: PermissionEvidenceRead},
 		{path: "/agents", want: PermissionAgentsRead},
@@ -630,7 +667,8 @@ func TestHandler_SharedNavReachabilityFromRenderedViews(t *testing.T) {
 		path      string
 		activeKey string
 	}{
-		{path: "/", activeKey: "evidence"},
+		{path: "/", activeKey: "overview"},
+		{path: "/evidence", activeKey: "evidence"},
 		{path: "/session/" + testSessionID, activeKey: "evidence"},
 		{path: "/session/" + testSessionID + "/receipt/0", activeKey: "evidence"},
 		{path: "/exemptions", activeKey: "exemptions"},
@@ -672,6 +710,7 @@ func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
 	wantStyle := extractDashboardHeaderStyle(t, overview)
 	for _, path := range []string{
 		"/",
+		"/evidence",
 		"/session/" + testSessionID,
 		"/session/" + testSessionID + "/receipt/0",
 		"/exemptions",
@@ -691,7 +730,8 @@ func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
 		t.Fatalf("overview brand wordmark does not link to /overview: %s", overview)
 	}
 	assertActiveNavLink(t, overview, "overview")
-	assertActiveNavLink(t, renderDashboardPath(t, handler, "/"), "evidence")
+	assertActiveNavLink(t, renderDashboardPath(t, handler, "/"), "overview")
+	assertActiveNavLink(t, renderDashboardPath(t, handler, "/evidence"), "evidence")
 }
 
 func TestHandler_SharedNavMatchesRouteGateAuthorization(t *testing.T) {

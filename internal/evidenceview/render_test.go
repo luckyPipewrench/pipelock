@@ -73,6 +73,67 @@ func TestRenderSingleAgentHTML(t *testing.T) {
 	}
 }
 
+func TestRenderSingleAgentHTML_OperatorConsoleThemeAndHonestScorecard(t *testing.T) {
+	fixedTime := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	_, priv := generateTestKey(t)
+	chain := buildTestChain(t, priv, 1)
+	ev := SessionEvidenceOf("sess-theme", chain, nil, false, 5000, 500)
+
+	var buf bytes.Buffer
+	err := RenderSingleAgentHTML(&buf, ev, nil, RenderOptions{
+		GeneratedAt: fixedTime,
+	})
+	if err != nil {
+		t.Fatalf("RenderSingleAgentHTML error: %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{
+		`--accent:#00e5a0`,
+		`--bg:#09090b`,
+		`Pipelock <span>&middot; Operator Console / Evidence Report</span>`,
+		`READ-ONLY`,
+		`class="scorecard"`,
+		`class="section"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML missing operator-console theme marker: %q", want)
+		}
+	}
+
+	for _, want := range []string{
+		"Unverified",
+		"Authentic",
+		"Chain intact",
+		"Untampered",
+		"Not anchored",
+		"Anchored",
+		"Boundary-limited",
+		"Completeness",
+		"Each line is independently evaluated. There is no aggregate status.",
+		"Import the signer key from an operator-controlled source to upgrade this line.",
+		"Every receipt links to the previous receipt hash.",
+		"Add an external inclusion proof before treating ordering as independently anchored.",
+		"Cannot prove that no unmediated action occurred outside the boundary.",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML missing honest scorecard content: %q", want)
+		}
+	}
+
+	for _, banned := range []string{
+		"aggregate healthy",
+		"aggregate verified",
+		"aggregate complete",
+		"verified complete",
+		"healthy",
+	} {
+		if strings.Contains(strings.ToLower(html), banned) {
+			t.Errorf("HTML contains banned aggregate wording: %q", banned)
+		}
+	}
+}
+
 func TestRenderSingleAgentHTML_EmptyEvidence(t *testing.T) {
 	fixedTime := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 	ev := SessionEvidenceOf("sess-empty", nil, nil, false, 5000, 500)

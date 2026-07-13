@@ -1041,7 +1041,7 @@ func TestDashboardRendersDeliveryFailureAndStaleReadModelLoudly(t *testing.T) {
 		TrustedOuterAuth: true, ReceiptDir: dir, DeliveryInboxPath: inboxPath, ReadModelIndexPath: indexPath, HasFeature: allowAgentsFeature,
 	})
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evidence", nil))
 	body := recorder.Body.String()
 	for _, want := range []string{"DELIVERY HEALTH UNAVAILABLE", "READ MODEL STALE", "source of truth"} {
 		if !strings.Contains(body, want) {

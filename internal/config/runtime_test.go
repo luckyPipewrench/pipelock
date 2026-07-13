@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -627,6 +628,67 @@ func TestCloneHelpers_NilAndEmpty(t *testing.T) {
 	}
 	if got := cloneToolPolicyRules(nil); got != nil {
 		t.Errorf("cloneToolPolicyRules(nil) = %v, want nil", got)
+	}
+}
+
+func TestCloneToolPolicyRulesDeepCopiesNestedFields(t *testing.T) {
+	argGT := json.Number("10")
+	argLT := json.Number("20")
+	lenGT := 3
+	lenLT := 9
+	src := []ToolPolicyRule{{
+		Name:        "nested",
+		ToolPattern: "^shell$",
+		ArgKey:      "^path$",
+		ArgNumberGT: &argGT,
+		ArgNumberLT: &argLT,
+		ArgLenGT:    &lenGT,
+		ArgLenLT:    &lenLT,
+		ArgValueIn:  []string{"rm", "curl"},
+		ResolutionPolicy: &DeferResolutionPolicy{
+			ResolverProfile: "operator",
+			AllowOn:         DeferAllowOn{Approval: true},
+			StepUpOn:        DeferStepUpOn{ApprovalRequestsHuman: true},
+		},
+	}}
+
+	clone := cloneToolPolicyRules(src)
+	if !reflect.DeepEqual(clone, src) {
+		t.Fatalf("cloneToolPolicyRules() = %+v, want %+v", clone, src)
+	}
+
+	*clone[0].ArgNumberGT = json.Number("11")
+	*clone[0].ArgNumberLT = json.Number("21")
+	*clone[0].ArgLenGT = 4
+	*clone[0].ArgLenLT = 10
+	clone[0].ArgValueIn[0] = "python"
+	clone[0].ResolutionPolicy.ResolverProfile = "mutated"
+	clone[0].ResolutionPolicy.AllowOn.Approval = false
+	clone[0].ResolutionPolicy.StepUpOn.ApprovalRequestsHuman = false
+
+	if got := src[0].ArgNumberGT.String(); got != "10" {
+		t.Fatalf("source ArgNumberGT mutated to %q", got)
+	}
+	if got := src[0].ArgNumberLT.String(); got != "20" {
+		t.Fatalf("source ArgNumberLT mutated to %q", got)
+	}
+	if got := *src[0].ArgLenGT; got != 3 {
+		t.Fatalf("source ArgLenGT mutated to %d", got)
+	}
+	if got := *src[0].ArgLenLT; got != 9 {
+		t.Fatalf("source ArgLenLT mutated to %d", got)
+	}
+	if got := src[0].ArgValueIn[0]; got != "rm" {
+		t.Fatalf("source ArgValueIn[0] mutated to %q", got)
+	}
+	if got := src[0].ResolutionPolicy.ResolverProfile; got != "operator" {
+		t.Fatalf("source resolver profile mutated to %q", got)
+	}
+	if !src[0].ResolutionPolicy.AllowOn.Approval {
+		t.Fatal("source approval flag mutated")
+	}
+	if !src[0].ResolutionPolicy.StepUpOn.ApprovalRequestsHuman {
+		t.Fatal("source step-up approval flag mutated")
 	}
 }
 

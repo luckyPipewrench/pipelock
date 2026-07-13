@@ -764,9 +764,13 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.Sandbox.Enabled = true
 	oldCfg.Sandbox.Workspace = "/tmp/pipelock-sandbox"
 	oldCfg.LicenseFile = "/etc/pipelock/license.token"
+	bundleDLP := config.DLPPattern{Name: "bundle-secret", Regex: `BUNDLE_SECRET_[A-Z]+`, Severity: config.SeverityCritical}
 	oldCfg.ApplyDefaults()
 	expectedLocal := oldCfg.Clone()
 	rules.MergeIntoConfig(expectedLocal, cliutil.Version)
+	expectedWithBundleDLP := oldCfg.Clone()
+	expectedWithBundleDLP.DLP.Patterns = append(expectedWithBundleDLP.DLP.Patterns, bundleDLP)
+	rules.MergeIntoConfig(expectedWithBundleDLP, cliutil.Version)
 
 	// Enforcement-only bundle: policy bundles may carry only enforcement-policy
 	// sections (default-deny allowlist), so flight_recorder/conductor/etc. are
@@ -777,6 +781,12 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 		"mode: strict",
 		"api_allowlist:",
 		"  - api.example.com",
+		"dlp:",
+		"  include_defaults: false",
+		"  patterns:",
+		"    - name: " + bundleDLP.Name,
+		"      regex: " + strconv.Quote(bundleDLP.Regex),
+		"      severity: " + bundleDLP.Severity,
 		"",
 	}, "\n"))
 
@@ -834,8 +844,8 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	if !reflect.DeepEqual(live.Sandbox, oldCfg.Sandbox) {
 		t.Fatalf("sandbox config = %+v, want preserved %+v", live.Sandbox, oldCfg.Sandbox)
 	}
-	if !reflect.DeepEqual(live.DLP, expectedLocal.DLP) {
-		t.Fatalf("dlp config = %+v, want preserved %+v", live.DLP, expectedLocal.DLP)
+	if !reflect.DeepEqual(live.DLP, expectedWithBundleDLP.DLP) {
+		t.Fatalf("dlp config = %+v, want local plus bundle-added %+v", live.DLP, expectedWithBundleDLP.DLP)
 	}
 	if !reflect.DeepEqual(live.ResponseScanning, expectedLocal.ResponseScanning) {
 		t.Fatalf("response_scanning = %+v, want preserved %+v", live.ResponseScanning, expectedLocal.ResponseScanning)
@@ -873,6 +883,81 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 		t.Fatalf("agent identity config = agents=%+v default=%q bind=%v, want agents=%+v default=%q bind=%v",
 			live.Agents, live.DefaultAgentIdentity, live.BindDefaultAgentIdentity,
 			oldCfg.Agents, oldCfg.DefaultAgentIdentity, oldCfg.BindDefaultAgentIdentity)
+	}
+	sc := s.proxy.ScannerPtr().Load()
+	if sc == nil {
+		t.Fatal("reloaded scanner is nil")
+	}
+	if result := sc.ScanTextForDLP(t.Context(), "exfil LOCAL_SECRET_ALPHA"); result.Clean {
+		t.Fatalf("local DLP pattern did not enforce after conductor apply: %+v", result)
+	}
+	if result := sc.ScanTextForDLP(t.Context(), "exfil BUNDLE_SECRET_BRAVO"); result.Clean {
+		t.Fatalf("bundle-added DLP pattern did not enforce after conductor apply: %+v", result)
+	}
+}
+
+func TestApplyConductorPolicyBundleRejectsConflictingDLPRedefinition(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.DLP.Patterns = []config.DLPPattern{{Name: "local-secret", Regex: `LOCAL_SECRET_[A-Z]+`, Severity: config.SeverityHigh}}
+	oldCfg.ApplyDefaults()
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-conflict", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"dlp:",
+		"  patterns:",
+		"    - name: local-secret",
+		"      regex: " + strconv.Quote(`BUNDLE_SECRET_[A-Z]+`),
+		"      severity: " + config.SeverityHigh,
+		"",
+	}, "\n"))
+
+	_, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+	if err == nil || !strings.Contains(err.Error(), `cannot redefine local dlp.patterns item "local-secret"`) {
+		t.Fatalf("ApplyConductorPolicyBundle() error = %v, want DLP conflict rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("conflicting bundle changed live config")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("conflicting bundle changed live scanner")
+	}
+}
+
+func TestApplyConductorPolicyBundlePreservesReloadDowngradeGuardAfterAdditiveMerge(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.Mode = config.ModeStrict
+	oldCfg.DLP.Patterns = []config.DLPPattern{{Name: "local-secret", Regex: `LOCAL_SECRET_[A-Z]+`, Severity: config.SeverityHigh}}
+	oldCfg.ApplyDefaults()
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-downgrade", 1, "", strings.Join([]string{
+		"mode: balanced",
+		"api_allowlist:",
+		"  - api.example.com",
+		"dlp:",
+		"  patterns:",
+		"    - name: bundle-secret",
+		"      regex: " + strconv.Quote(`BUNDLE_SECRET_[A-Z]+`),
+		"      severity: " + config.SeverityHigh,
+		"",
+	}, "\n"))
+
+	_, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+	if err == nil || !strings.Contains(err.Error(), "security downgrade from strict mode") {
+		t.Fatalf("ApplyConductorPolicyBundle() error = %v, want reload downgrade rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("downgrade bundle changed live config")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("downgrade bundle changed live scanner")
 	}
 }
 

@@ -144,7 +144,9 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 		LocalVersion: cliutil.Version,
 		LoadConfig:   config.Load,
 		Reload: func(newCfg *config.Config) error {
-			preserveConductorBundleLocalRuntimeState(cfg, newCfg)
+			if err := preserveConductorBundleLocalRuntimeState(cfg, newCfg, bundle.Payload.ConfigYAML); err != nil {
+				return err
+			}
 			return s.Reload(newCfg)
 		},
 		// Close the in-flight apply window: teardownConductor sets conductorDown
@@ -161,8 +163,8 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	})
 }
 
-func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config) {
-	config.PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg)
+func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config, bundleYAML string) error {
+	return config.PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, bundleYAML)
 }
 
 func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*auditbatcher.Queue, *auditbatcher.Transport, error) {

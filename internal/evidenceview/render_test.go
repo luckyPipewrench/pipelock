@@ -132,6 +132,11 @@ func TestRenderSingleAgentHTML_OperatorConsoleThemeAndHonestScorecard(t *testing
 			t.Errorf("HTML contains banned aggregate wording: %q", banned)
 		}
 	}
+	for _, notWant := range []string{"Decision Detail", `class="explanation"`} {
+		if strings.Contains(html, notWant) {
+			t.Errorf("HTML should not contain %q when Explanations is nil", notWant)
+		}
+	}
 }
 
 func TestRenderSingleAgentHTML_EmptyEvidence(t *testing.T) {

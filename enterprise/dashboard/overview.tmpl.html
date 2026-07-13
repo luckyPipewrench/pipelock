@@ -494,6 +494,7 @@
           <div><h3>CRL status</h3><p class="muted">{{.Governance.CRLStatus}}</p>{{if .Governance.CRLDetail}}<p class="dim">{{.Governance.CRLDetail}}</p>{{end}}</div>
           <div><h3>Legal holds</h3>{{if .Governance.LegalHoldConfigured}}{{if .Governance.LegalHoldError}}<p class="amber">{{.Governance.LegalHoldError}}</p>{{else}}<p class="muted">{{.Governance.ActiveLegalHolds}} active holds</p>{{end}}{{else}}<p class="dim">No legal-hold store configured; no hold claim is made.</p>{{end}}</div>
           <div><h3>Delivery source</h3>{{if .Governance.DeliveryConfigured}}{{if .Governance.DeliveryError}}<p class="red">{{.Governance.DeliveryError}}</p>{{else}}<p class="muted">delivery inbox loaded</p>{{end}}{{else}}<p class="dim">No alert-delivery inbox configured.</p>{{end}}</div>
+          <div><h3>Read model</h3>{{if .Governance.IndexConfigured}}<p class="muted">{{.Governance.IndexStatus}}</p><p class="dim">Recorder evidence remains the source of truth.</p>{{else}}<p class="dim">No disposable read-model index configured.</p>{{end}}</div>
         </div>
       </div>
     </section>

@@ -1040,12 +1040,14 @@ func TestDashboardRendersDeliveryFailureAndStaleReadModelLoudly(t *testing.T) {
 	handler := New(Options{
 		TrustedOuterAuth: true, ReceiptDir: dir, DeliveryInboxPath: inboxPath, ReadModelIndexPath: indexPath, HasFeature: allowAgentsFeature,
 	})
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evidence", nil))
-	body := recorder.Body.String()
-	for _, want := range []string{"DELIVERY HEALTH UNAVAILABLE", "READ MODEL STALE", "source of truth"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("dashboard body missing %q: %s", want, body)
+	for _, path := range []string{"/", "/overview", "/evidence"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
+		body := recorder.Body.String()
+		for _, want := range []string{"DELIVERY HEALTH UNAVAILABLE", "READ MODEL STALE", "source of truth"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s dashboard body missing %q: %s", path, want, body)
+			}
 		}
 	}
 }

@@ -151,33 +151,15 @@ var dashboardNavRouteSpecs = []navRouteSpec{
 
 var (
 	dashboardRouteSpecList = []routeSpec{
-		{
-			pattern:          "/overview",
-			feature:          license.FeatureAgents,
-			forbiddenMessage: agentsFeatureForbidden,
-			permission:       PermissionEvidenceRead,
-			handler: func(d *dashboardHandler) http.Handler {
-				return http.HandlerFunc(d.handleOverview)
-			},
-		},
-		{
-			pattern:          "/",
-			feature:          license.FeatureAgents,
-			forbiddenMessage: agentsFeatureForbidden,
-			permission:       PermissionEvidenceRead,
-			handler: func(d *dashboardHandler) http.Handler {
-				return http.HandlerFunc(d.handleOverview)
-			},
-		},
-		{
-			pattern:          "/evidence",
-			feature:          license.FeatureAgents,
-			forbiddenMessage: agentsFeatureForbidden,
-			permission:       PermissionEvidenceRead,
-			handler: func(d *dashboardHandler) http.Handler {
-				return http.HandlerFunc(d.handleIndex)
-			},
-		},
+		evidenceRouteSpec("/overview", func(d *dashboardHandler) http.Handler {
+			return http.HandlerFunc(d.handleOverview)
+		}),
+		evidenceRouteSpec("/", func(d *dashboardHandler) http.Handler {
+			return http.HandlerFunc(d.handleOverview)
+		}),
+		evidenceRouteSpec("/evidence", func(d *dashboardHandler) http.Handler {
+			return http.HandlerFunc(d.handleIndex)
+		}),
 		{
 			pattern:          "/exemptions",
 			feature:          license.FeatureAgents,
@@ -289,6 +271,16 @@ var (
 	}
 	dashboardRouteSpecsByPattern = routeSpecsByPattern(dashboardRouteSpecList)
 )
+
+func evidenceRouteSpec(pattern string, handler func(*dashboardHandler) http.Handler) routeSpec {
+	return routeSpec{
+		pattern:          pattern,
+		feature:          license.FeatureAgents,
+		forbiddenMessage: agentsFeatureForbidden,
+		permission:       PermissionEvidenceRead,
+		handler:          handler,
+	}
+}
 
 func routeSpecsByPattern(specs []routeSpec) map[string]routeSpec {
 	out := make(map[string]routeSpec, len(specs))

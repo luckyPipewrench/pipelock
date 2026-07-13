@@ -172,6 +172,8 @@ type OverviewGovernance struct {
 	AlertFailures         int
 	DeliveryConfigured    bool
 	DeliveryError         string
+	IndexConfigured       bool
+	IndexStatus           string
 	LegalHoldConfigured   bool
 	LegalHoldError        string
 	ActiveLegalHolds      int
@@ -582,6 +584,8 @@ func (m *ReadModel) overviewGovernance(exemptions ExemptionInventory, trust Trus
 		CRLDetail:          trust.CRLDetail,
 		DeliveryConfigured: health.DeliveryConfigured,
 		DeliveryError:      health.DeliveryError,
+		IndexConfigured:    health.IndexConfigured,
+		IndexStatus:        health.IndexStatus,
 	}
 	for _, entry := range exemptions.Entries {
 		switch {

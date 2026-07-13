@@ -339,14 +339,37 @@ func cloneResponseScanPatterns(src []ResponseScanPattern) []ResponseScanPattern 
 	return dst
 }
 
-// cloneToolPolicyRules returns a deep copy of src. ToolPolicyRule has only
-// scalar fields today; the helper keeps the pattern consistent with the
-// other clone helpers and gives future nested-slice additions a clear home.
+// cloneToolPolicyRules returns a deep copy of src.
 func cloneToolPolicyRules(src []ToolPolicyRule) []ToolPolicyRule {
 	if src == nil {
 		return nil
 	}
 	dst := make([]ToolPolicyRule, len(src))
-	copy(dst, src)
+	for i := range src {
+		dst[i] = src[i]
+		if src[i].ArgNumberGT != nil {
+			v := *src[i].ArgNumberGT
+			dst[i].ArgNumberGT = &v
+		}
+		if src[i].ArgNumberLT != nil {
+			v := *src[i].ArgNumberLT
+			dst[i].ArgNumberLT = &v
+		}
+		if src[i].ArgLenGT != nil {
+			v := *src[i].ArgLenGT
+			dst[i].ArgLenGT = &v
+		}
+		if src[i].ArgLenLT != nil {
+			v := *src[i].ArgLenLT
+			dst[i].ArgLenLT = &v
+		}
+		if src[i].ArgValueIn != nil {
+			dst[i].ArgValueIn = append([]string(nil), src[i].ArgValueIn...)
+		}
+		if src[i].ResolutionPolicy != nil {
+			v := *src[i].ResolutionPolicy
+			dst[i].ResolutionPolicy = &v
+		}
+	}
 	return dst
 }

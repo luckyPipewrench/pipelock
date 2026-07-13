@@ -468,6 +468,81 @@ func TestPreserveConductorBundleLocalRuntimeStateResponseAndToolRulesAdditive(t 
 	}
 }
 
+func TestPreserveConductorBundleLocalRuntimeStateDetectionConflictsRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		oldCfg  *Config
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "canary token",
+			oldCfg: &Config{CanaryTokens: CanaryTokens{Tokens: []CanaryToken{{
+				Name:  "shared-canary",
+				Value: "local-token",
+			}}}},
+			yaml: strings.Join([]string{
+				"canary_tokens:",
+				"  tokens:",
+				"    - name: shared-canary",
+				"      value: bundle-token",
+				"",
+			}, "\n"),
+			wantErr: `conductor policy bundle cannot redefine local canary_tokens.tokens item "shared-canary"`,
+		},
+		{
+			name: "response pattern",
+			oldCfg: &Config{ResponseScanning: ResponseScanning{Patterns: []ResponseScanPattern{{
+				Name:  "shared-response",
+				Regex: "LOCAL_RESPONSE",
+			}}}},
+			yaml: strings.Join([]string{
+				"response_scanning:",
+				"  patterns:",
+				"    - name: shared-response",
+				"      regex: BUNDLE_RESPONSE",
+				"",
+			}, "\n"),
+			wantErr: `conductor policy bundle cannot redefine local response_scanning.patterns item "shared-response"`,
+		},
+		{
+			name: "tool policy rule",
+			oldCfg: &Config{MCPToolPolicy: MCPToolPolicy{Rules: []ToolPolicyRule{{
+				Name:        "shared-tool",
+				ToolPattern: "^local_",
+				Action:      ActionBlock,
+			}}}},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  rules:",
+				"    - name: shared-tool",
+				"      tool_pattern: ^bundle_",
+				"      action: warn",
+				"",
+			}, "\n"),
+			wantErr: `conductor policy bundle cannot redefine local mcp_tool_policy.rules item "shared-tool"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			newCfg, err := LoadBytes([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("LoadBytes() error = %v", err)
+			}
+
+			err = PreserveConductorBundleLocalRuntimeState(newCfg, tt.oldCfg, tt.yaml)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("PreserveConductorBundleLocalRuntimeState() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestPreserveConductorBundleLocalRuntimeStateRejectsDormantInvalidResponsePattern(t *testing.T) {
 	t.Parallel()
 
@@ -502,7 +577,7 @@ func TestPreserveConductorBundleLocalRuntimeStateRejectsDormantInvalidToolPolicy
 	t.Parallel()
 
 	oldCfg := &Config{MCPToolPolicy: MCPToolPolicy{
-		Enabled: true,
+		Enabled: false,
 		Action:  ActionBlock,
 		Rules: []ToolPolicyRule{{
 			Name:        "local-tool",
@@ -559,6 +634,411 @@ func TestPreserveConductorBundleLocalRuntimeStateRejectsDormantInvalidToolPolicy
 	err = PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, rawBundleYAML)
 	if err == nil || !strings.Contains(err.Error(), `mcp_tool_policy rule "dormant-redirect" has action=redirect but no redirect_profile`) {
 		t.Fatalf("PreserveConductorBundleLocalRuntimeState() error = %v, want dormant redirect rejection", err)
+	}
+}
+
+func TestPreserveConductorBundleLocalRuntimeStateRejectsDormantToolPolicyActionRequirements(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		oldCfg  *Config
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "unknown redirect profile",
+			oldCfg: &Config{MCPToolPolicy: MCPToolPolicy{
+				Enabled: false,
+				Action:  ActionBlock,
+				Rules: []ToolPolicyRule{{
+					Name:        "local-tool",
+					ToolPattern: `^local_`,
+					Action:      ActionBlock,
+				}},
+			}},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-redirect",
+				"      tool_pattern: ^bundle_",
+				"      action: redirect",
+				"      redirect_profile: missing",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-redirect" references unknown redirect_profile "missing"`,
+		},
+		{
+			name: "inherited redirect action requires profile",
+			oldCfg: &Config{MCPToolPolicy: MCPToolPolicy{
+				Enabled: false,
+				Action:  ActionRedirect,
+				RedirectProfiles: map[string]RedirectProfile{
+					"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}},
+				},
+				Rules: []ToolPolicyRule{{
+					Name:            "local-tool",
+					ToolPattern:     `^local_`,
+					RedirectProfile: "safe-fetch",
+				}},
+			}},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-inherited-redirect",
+				"      tool_pattern: ^bundle_",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-inherited-redirect" has action=redirect but no redirect_profile`,
+		},
+		{
+			name: "redirect profile empty exec",
+			oldCfg: &Config{MCPToolPolicy: MCPToolPolicy{
+				Enabled: false,
+				Action:  ActionBlock,
+				RedirectProfiles: map[string]RedirectProfile{
+					"bad-fetch": {Exec: nil},
+				},
+				Rules: []ToolPolicyRule{{
+					Name:        "local-tool",
+					ToolPattern: `^local_`,
+					Action:      ActionBlock,
+				}},
+			}},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-redirect",
+				"      tool_pattern: ^bundle_",
+				"      action: redirect",
+				"      redirect_profile: bad-fetch",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy redirect_profile "bad-fetch" has empty exec`,
+		},
+		{
+			name: "redirect profile relative exec with absolute matching",
+			oldCfg: &Config{MCPToolPolicy: MCPToolPolicy{
+				Enabled: false,
+				Action:  ActionBlock,
+				RedirectProfiles: map[string]RedirectProfile{
+					"bad-fetch": {Exec: []string{"relative-fetch"}, MatchAbsPath: true},
+				},
+				Rules: []ToolPolicyRule{{
+					Name:        "local-tool",
+					ToolPattern: `^local_`,
+					Action:      ActionBlock,
+				}},
+			}},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-redirect",
+				"      tool_pattern: ^bundle_",
+				"      action: redirect",
+				"      redirect_profile: bad-fetch",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy redirect_profile "bad-fetch": match_abs_path is true but exec[0] "relative-fetch" is not absolute`,
+		},
+		{
+			name: "inherited invalid action",
+			oldCfg: &Config{MCPToolPolicy: MCPToolPolicy{
+				Enabled: false,
+				Action:  ActionStrip,
+				Rules: []ToolPolicyRule{{
+					Name:        "local-tool",
+					ToolPattern: `^local_`,
+					Action:      ActionBlock,
+				}},
+			}},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-inherited-invalid",
+				"      tool_pattern: ^bundle_",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-inherited-invalid" inherits invalid action "strip": must be warn, block, redirect, or defer`,
+		},
+		{
+			name: "defer while defer disabled",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: false},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"      resolution_policy:",
+				"        allow_on:",
+				"          tool_inventory_baseline: true",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-defer" has action=defer but defer.enabled is false`,
+		},
+		{
+			name: "defer missing affirmative resolution",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: true},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"      resolution_policy:",
+				"        resolver_profile: approve",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-defer" has action=defer but no affirmative resolution_policy`,
+		},
+		{
+			name: "defer missing resolution policy",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: true},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-defer" has action=defer but no affirmative resolution_policy`,
+		},
+		{
+			name: "defer policy permits unsupported",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: true},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"      resolution_policy:",
+				"        allow_on:",
+				"          policy_permits: true",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-defer" has resolution_policy.allow_on.policy_permits but policy_reload cannot fire on supported defer transports yet`,
+		},
+		{
+			name: "defer approval missing resolver profile",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: true},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer-approval",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"      resolution_policy:",
+				"        allow_on:",
+				"          approval: true",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-defer-approval" uses approval resolution but has no resolution_policy.resolver_profile`,
+		},
+		{
+			name: "defer approval unknown resolver profile",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: true},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer-approval",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"      resolution_policy:",
+				"        resolver_profile: missing",
+				"        allow_on:",
+				"          approval: true",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy rule "dormant-defer-approval" references unknown defer resolver profile "missing"`,
+		},
+		{
+			name: "defer resolver profile empty exec",
+			oldCfg: &Config{
+				Defer: DeferConfig{Enabled: true},
+				MCPToolPolicy: MCPToolPolicy{
+					Enabled: false,
+					Action:  ActionBlock,
+					DeferResolverProfiles: map[string]DeferResolverProfile{
+						"approve": {Exec: []string{""}},
+					},
+					Rules: []ToolPolicyRule{{
+						Name:        "local-tool",
+						ToolPattern: `^local_`,
+						Action:      ActionBlock,
+					}},
+				},
+			},
+			yaml: strings.Join([]string{
+				"mcp_tool_policy:",
+				"  enabled: false",
+				"  rules:",
+				"    - name: dormant-defer-approval",
+				"      tool_pattern: ^bundle_",
+				"      action: defer",
+				"      resolution_policy:",
+				"        resolver_profile: approve",
+				"        allow_on:",
+				"          approval: true",
+				"",
+			}, "\n"),
+			wantErr: `mcp_tool_policy defer_resolver_profile "approve" has empty exec`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			newCfg, err := LoadBytes([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("LoadBytes() error = %v", err)
+			}
+
+			err = PreserveConductorBundleLocalRuntimeState(newCfg, tt.oldCfg, tt.yaml)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("PreserveConductorBundleLocalRuntimeState() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPreserveConductorBundleLocalRuntimeStateAcceptsDormantValidToolPolicyActions(t *testing.T) {
+	t.Parallel()
+
+	oldCfg := &Config{
+		Defer: DeferConfig{Enabled: true},
+		MCPToolPolicy: MCPToolPolicy{
+			Enabled: false,
+			Action:  ActionBlock,
+			RedirectProfiles: map[string]RedirectProfile{
+				"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, MatchAbsPath: true},
+			},
+			DeferResolverProfiles: map[string]DeferResolverProfile{
+				"approve": {Exec: []string{"/usr/bin/approve-tool"}, MatchAbsPath: true},
+			},
+			Rules: []ToolPolicyRule{{
+				Name:        "local-tool",
+				ToolPattern: `^local_`,
+				Action:      ActionBlock,
+			}},
+		},
+	}
+	rawBundleYAML := strings.Join([]string{
+		"mcp_tool_policy:",
+		"  enabled: false",
+		"  rules:",
+		"    - name: dormant-redirect",
+		"      tool_pattern: ^fetch_",
+		"      action: redirect",
+		"      redirect_profile: safe-fetch",
+		"    - name: dormant-defer",
+		"      tool_pattern: ^write_",
+		"      action: defer",
+		"      resolution_policy:",
+		"        resolver_profile: approve",
+		"        allow_on:",
+		"          approval: true",
+		"    - name: dormant-baseline-defer",
+		"      tool_pattern: ^baseline_",
+		"      action: defer",
+		"      resolution_policy:",
+		"        allow_on:",
+		"          tool_inventory_baseline: true",
+		"",
+	}, "\n")
+	newCfg, err := LoadBytes([]byte(rawBundleYAML))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	if err := PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, rawBundleYAML); err != nil {
+		t.Fatalf("PreserveConductorBundleLocalRuntimeState() error = %v", err)
+	}
+	if newCfg.MCPToolPolicy.Enabled {
+		t.Fatal("bundle action validation should not enable local dormant tool policy")
+	}
+	if got := toolPolicyRuleNames(newCfg.MCPToolPolicy.Rules); !reflect.DeepEqual(got, []string{"local-tool", "dormant-redirect", "dormant-defer", "dormant-baseline-defer"}) {
+		t.Fatalf("tool policy rule names = %v", got)
 	}
 }
 

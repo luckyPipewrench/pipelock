@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -448,15 +449,83 @@ func preserveConductorBundleMCPToolPolicy(newCfg, oldCfg *Config, bundleOwnsSect
 	if err != nil {
 		return err
 	}
+	validationPolicy := newCfg.MCPToolPolicy
+	validationPolicy.Rules = merged
+	if err := validateConductorBundleToolPolicyRuleActions(validationPolicy, oldCfg.Defer, bundleRules); err != nil {
+		return err
+	}
 	newCfg.MCPToolPolicy.Rules = merged
-	if newCfg.MCPToolPolicy.Enabled {
-		validateCfg := &Config{
-			MCPToolPolicy: newCfg.MCPToolPolicy,
-			Defer:         oldCfg.Defer,
+	return nil
+}
+
+func validateConductorBundleToolPolicyRuleActions(policy MCPToolPolicy, deferCfg DeferConfig, bundleRules []ToolPolicyRule) error {
+	for _, rule := range bundleRules {
+		effectiveAction := rule.Action
+		if effectiveAction == "" {
+			effectiveAction = policy.Action
 		}
-		if err := validateCfg.validateMCPToolPolicy(); err != nil {
-			return err
+		switch effectiveAction {
+		case "", ActionWarn, ActionBlock:
+			continue
+		case ActionRedirect:
+			if err := validateConductorBundleToolPolicyRedirectRule(policy, rule); err != nil {
+				return err
+			}
+		case ActionDefer:
+			if err := validateConductorBundleToolPolicyDeferRule(policy, deferCfg, rule); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("mcp_tool_policy rule %q inherits invalid action %q: must be warn, block, redirect, or defer", rule.Name, effectiveAction)
 		}
+	}
+	return nil
+}
+
+func validateConductorBundleToolPolicyRedirectRule(policy MCPToolPolicy, rule ToolPolicyRule) error {
+	if rule.RedirectProfile == "" {
+		return fmt.Errorf("mcp_tool_policy rule %q has action=redirect but no redirect_profile", rule.Name)
+	}
+	profile, ok := policy.RedirectProfiles[rule.RedirectProfile]
+	if !ok {
+		return fmt.Errorf("mcp_tool_policy rule %q references unknown redirect_profile %q", rule.Name, rule.RedirectProfile)
+	}
+	return validateConductorBundleToolPolicyProfile("redirect_profile", rule.RedirectProfile, profile.Exec, profile.MatchAbsPath)
+}
+
+func validateConductorBundleToolPolicyDeferRule(policy MCPToolPolicy, deferCfg DeferConfig, rule ToolPolicyRule) error {
+	if !deferCfg.Enabled {
+		return fmt.Errorf("mcp_tool_policy rule %q has action=defer but defer.enabled is false", rule.Name)
+	}
+	if rule.ResolutionPolicy == nil {
+		return fmt.Errorf("mcp_tool_policy rule %q has action=defer but no affirmative resolution_policy", rule.Name)
+	}
+	if rule.ResolutionPolicy.AllowOn.PolicyPermits {
+		return fmt.Errorf("mcp_tool_policy rule %q has resolution_policy.allow_on.policy_permits but policy_reload cannot fire on supported defer transports yet", rule.Name)
+	}
+	if !rule.ResolutionPolicy.HasAffirmativeSignal() {
+		return fmt.Errorf("mcp_tool_policy rule %q has action=defer but no affirmative resolution_policy", rule.Name)
+	}
+	approvalRequested := rule.ResolutionPolicy.AllowOn.Approval || rule.ResolutionPolicy.StepUpOn.ApprovalRequestsHuman
+	if !approvalRequested {
+		return nil
+	}
+	if rule.ResolutionPolicy.ResolverProfile == "" {
+		return fmt.Errorf("mcp_tool_policy rule %q uses approval resolution but has no resolution_policy.resolver_profile", rule.Name)
+	}
+	profile, ok := policy.DeferResolverProfiles[rule.ResolutionPolicy.ResolverProfile]
+	if !ok {
+		return fmt.Errorf("mcp_tool_policy rule %q references unknown defer resolver profile %q", rule.Name, rule.ResolutionPolicy.ResolverProfile)
+	}
+	return validateConductorBundleToolPolicyProfile("defer_resolver_profile", rule.ResolutionPolicy.ResolverProfile, profile.Exec, profile.MatchAbsPath)
+}
+
+func validateConductorBundleToolPolicyProfile(kind, name string, exec []string, matchAbsPath bool) error {
+	if len(exec) == 0 || exec[0] == "" {
+		return fmt.Errorf("mcp_tool_policy %s %q has empty exec", kind, name)
+	}
+	if matchAbsPath && !filepath.IsAbs(exec[0]) {
+		return fmt.Errorf("mcp_tool_policy %s %q: match_abs_path is true but exec[0] %q is not absolute", kind, name, exec[0])
 	}
 	return nil
 }

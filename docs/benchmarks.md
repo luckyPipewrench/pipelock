@@ -117,7 +117,7 @@ True concurrent throughput across all available goroutines.
 - Response scanning runs the full multi-pass normalization cascade: ~387μs on small clean content, ~72μs when injection is detected via early exit. State/control patterns add cost on clean text (~667μs). Large content (~10KB) is the heavy case at ~46ms; a scanner + benchmark performance audit is planned for a future release.
 - MCP scanning (JSON parse + text extraction + pattern match): ~351μs clean, ~61μs injection.
 - Cross-request entropy tracking: ~114μs per record. Fragment buffer append: ~76ns (single alloc).
-- **Parallel throughput scales across cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead; per-op time rises under SMT contention on this 8-core/16-thread part).
+- **Parallel benchmark throughput was measured at GOMAXPROCS=16** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead; per-op time rises under SMT contention on this 8-core/16-thread part).
 
 ## Hardware
 

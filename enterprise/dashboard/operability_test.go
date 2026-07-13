@@ -1045,7 +1045,18 @@ func TestDashboardRendersDeliveryFailureAndStaleReadModelLoudly(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("GET %s: got status %d, want %d", path, recorder.Code, http.StatusOK)
+			}
 			body := recorder.Body.String()
+			routeMarker := map[string]string{
+				"/":         "CRL status",
+				"/overview": "CRL status",
+				"/evidence": "Disposable read model",
+			}[path]
+			if !strings.Contains(body, routeMarker) {
+				t.Fatalf("dashboard body missing route marker %q: %s", routeMarker, body)
+			}
 			for _, want := range []string{"DELIVERY HEALTH UNAVAILABLE", "READ MODEL STALE", "source of truth"} {
 				if !strings.Contains(body, want) {
 					t.Fatalf("dashboard body missing %q: %s", want, body)

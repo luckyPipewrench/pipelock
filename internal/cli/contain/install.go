@@ -430,23 +430,43 @@ ExecStart=` + scriptPath + `
 }
 
 func renderCredentialGuardPathUnit(operatorHome, serviceUnit string) string {
-	return `[Unit]
+	var b strings.Builder
+	b.WriteString(`[Unit]
 Description=Watch Pipelock containment credential roots
 
 [Path]
-PathChanged=` + operatorHome + `
-PathModified=` + filepath.Join(operatorHome, "auth.json") + `
-PathModified=` + filepath.Join(operatorHome, ".claude.json") + `
-PathModified=` + filepath.Join(operatorHome, ".credentials.json") + `
-PathExistsGlob=` + filepath.Join(operatorHome, "*.token") + `
-PathChanged=` + filepath.Join(operatorHome, ".claude") + `
-PathChanged=` + filepath.Join(operatorHome, ".claude-cc2") + `
-PathChanged=` + filepath.Join(operatorHome, ".codex") + `
-Unit=` + serviceUnit + `
+`)
+	for _, root := range credentialGuardWatchRoots(operatorHome) {
+		for _, name := range credentialGuardFileNames() {
+			path := filepath.Join(root, name)
+			b.WriteString("PathExists=" + path + "\n")
+			b.WriteString("PathModified=" + path + "\n")
+		}
+		b.WriteString("PathExistsGlob=" + filepath.Join(root, "*.token") + "\n")
+	}
+	b.WriteString(`Unit=` + serviceUnit + `
 
 [Install]
 WantedBy=multi-user.target
-`
+`)
+	return b.String()
+}
+
+func credentialGuardWatchRoots(operatorHome string) []string {
+	return []string{
+		operatorHome,
+		filepath.Join(operatorHome, ".claude"),
+		filepath.Join(operatorHome, ".claude-cc2"),
+		filepath.Join(operatorHome, ".codex"),
+	}
+}
+
+func credentialGuardFileNames() []string {
+	return []string{
+		"auth.json",
+		".claude.json",
+		".credentials.json",
+	}
 }
 
 // stepWriteToolsList seeds /etc/pipelock/contain/tools.list with only the

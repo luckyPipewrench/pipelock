@@ -871,15 +871,35 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		t.Fatalf("read path unit: %v", err)
 	}
 	for _, want := range []string{
-		"PathChanged=/home/operator",
+		"PathExists=/home/operator/auth.json",
+		"PathModified=/home/operator/auth.json",
+		"PathExists=/home/operator/.claude.json",
 		"PathModified=/home/operator/.claude.json",
+		"PathModified=/home/operator/.credentials.json",
 		"PathExistsGlob=/home/operator/*.token",
-		"PathChanged=/home/operator/.codex",
+		"PathExists=/home/operator/.claude/auth.json",
+		"PathModified=/home/operator/.claude/auth.json",
+		"PathModified=/home/operator/.claude-cc2/.credentials.json",
+		"PathModified=/home/operator/.codex/.claude.json",
+		"PathExistsGlob=/home/operator/.codex/*.token",
 	} {
 		want := want
 		t.Run(want, func(t *testing.T) {
 			if !strings.Contains(string(pathUnit), want) {
 				t.Fatalf("path unit missing %q:\n%s", want, string(pathUnit))
+			}
+		})
+	}
+	for _, broadWatch := range []string{
+		"PathChanged=/home/operator\n",
+		"PathChanged=/home/operator/.claude\n",
+		"PathChanged=/home/operator/.claude-cc2\n",
+		"PathChanged=/home/operator/.codex\n",
+	} {
+		broadWatch := broadWatch
+		t.Run("no broad watch "+strings.TrimSpace(broadWatch), func(t *testing.T) {
+			if strings.Contains(string(pathUnit), broadWatch) {
+				t.Fatalf("path unit should not broadly watch %q:\n%s", strings.TrimSpace(broadWatch), string(pathUnit))
 			}
 		})
 	}

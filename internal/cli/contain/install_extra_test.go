@@ -871,20 +871,21 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		t.Fatalf("read path unit: %v", err)
 	}
 	for _, want := range []string{
-		"PathChanged=/home/operator",
 		"PathExists=/home/operator/auth.json",
 		"PathModified=/home/operator/auth.json",
+		"PathChanged=/home/operator/auth.json",
 		"PathExists=/home/operator/.claude.json",
 		"PathModified=/home/operator/.claude.json",
+		"PathChanged=/home/operator/.claude.json",
 		"PathModified=/home/operator/.credentials.json",
 		"PathExistsGlob=/home/operator/*.token",
-		"PathChanged=/home/operator/.claude",
 		"PathExists=/home/operator/.claude/auth.json",
 		"PathModified=/home/operator/.claude/auth.json",
-		"PathChanged=/home/operator/.claude-cc2",
+		"PathChanged=/home/operator/.claude/auth.json",
 		"PathModified=/home/operator/.claude-cc2/.credentials.json",
-		"PathChanged=/home/operator/.codex",
+		"PathChanged=/home/operator/.claude-cc2/.credentials.json",
 		"PathModified=/home/operator/.codex/.claude.json",
+		"PathChanged=/home/operator/.codex/.claude.json",
 		"PathExistsGlob=/home/operator/.codex/*.token",
 	} {
 		want := want
@@ -912,22 +913,19 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 	}
 }
 
-func TestRenderCredentialGuardPathUnitWakesOnAtomicRenameParents(t *testing.T) {
+func TestRenderCredentialGuardPathUnitWakesOnAtomicRenameLeaves(t *testing.T) {
 	pathUnit := renderCredentialGuardPathUnit("/home/operator", "pipelock-cred-guard.service")
 	for _, root := range credentialGuardWatchRoots("/home/operator") {
 		want := "PathChanged=" + root + "\n"
-		if got := strings.Count(pathUnit, want); got != 1 {
-			t.Fatalf("PathChanged count for %q = %d, want 1:\n%s", root, got, pathUnit)
+		if strings.Contains(pathUnit, want) {
+			t.Fatalf("path unit should not use broad parent-directory PathChanged for %q:\n%s", root, pathUnit)
 		}
-	}
-	for _, leaf := range []string{
-		"/home/operator/auth.json",
-		"/home/operator/.claude/auth.json",
-		"/home/operator/.claude-cc2/.credentials.json",
-		"/home/operator/.codex/.claude.json",
-	} {
-		if strings.Contains(pathUnit, "PathChanged="+leaf) {
-			t.Fatalf("credential leaf should use exact file watches, not PathChanged: %s\n%s", leaf, pathUnit)
+		for _, name := range credentialGuardFileNames() {
+			path := filepath.Join(root, name)
+			want := "PathChanged=" + path + "\n"
+			if got := strings.Count(pathUnit, want); got != 1 {
+				t.Fatalf("PathChanged count for %q = %d, want 1:\n%s", path, got, pathUnit)
+			}
 		}
 	}
 }

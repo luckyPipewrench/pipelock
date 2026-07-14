@@ -388,11 +388,8 @@ func renderCredentialGuardScript(agentUser, operatorHome, bashPath string) strin
 	if bashPath == "" {
 		bashPath = "/usr/bin/env bash"
 	}
-	roots := []string{
-		filepath.Join(operatorHome, ".claude"),
-		filepath.Join(operatorHome, ".claude-cc2"),
-		filepath.Join(operatorHome, ".codex"),
-	}
+	roots := credentialGuardWatchRoots(operatorHome)
+	nameExpr := credentialGuardFindNameExpression()
 	var b strings.Builder
 	b.WriteString("#!" + bashPath + "\nset -euo pipefail\n\n")
 	b.WriteString("AGENT_USER=" + shellQuote(agentUser) + "\n")
@@ -400,8 +397,8 @@ func renderCredentialGuardScript(agentUser, operatorHome, bashPath string) strin
 	b.WriteString("  local root=\"$1\"\n")
 	b.WriteString("  shift\n")
 	b.WriteString("  [[ -d \"$root\" ]] || return 0\n")
-	b.WriteString("  find \"$root\" \"$@\" -type f \\( -name auth.json -o -name .claude.json -o -name .credentials.json -o -name '*.token' \\) -exec setfacl -x \"u:${AGENT_USER}\" {} +\n")
-	b.WriteString("  find \"$root\" \"$@\" -type f \\( -name auth.json -o -name .claude.json -o -name .credentials.json -o -name '*.token' \\) -exec chmod 0600 {} +\n")
+	b.WriteString("  find \"$root\" \"$@\" -type f \\( " + nameExpr + " \\) -exec setfacl -x \"u:${AGENT_USER}\" {} +\n")
+	b.WriteString("  find \"$root\" \"$@\" -type f \\( " + nameExpr + " \\) -exec chmod 0600 {} +\n")
 	b.WriteString("}\n\n")
 	b.WriteString("lock_config_root() {\n")
 	b.WriteString("  local root=\"$1\"\n")
@@ -413,7 +410,7 @@ func renderCredentialGuardScript(agentUser, operatorHome, bashPath string) strin
 	b.WriteString("  lock_matches \"$1\" -maxdepth 1\n")
 	b.WriteString("}\n\n")
 	b.WriteString("lock_home_root " + shellQuote(operatorHome) + "\n")
-	for _, root := range roots {
+	for _, root := range roots[1:] {
 		b.WriteString("lock_config_root " + shellQuote(root) + "\n")
 	}
 	return b.String()
@@ -437,11 +434,11 @@ Description=Watch Pipelock containment credential roots
 [Path]
 `)
 	for _, root := range credentialGuardWatchRoots(operatorHome) {
-		b.WriteString("PathChanged=" + root + "\n")
 		for _, name := range credentialGuardFileNames() {
 			path := filepath.Join(root, name)
 			b.WriteString("PathExists=" + path + "\n")
 			b.WriteString("PathModified=" + path + "\n")
+			b.WriteString("PathChanged=" + path + "\n")
 		}
 		b.WriteString("PathExistsGlob=" + filepath.Join(root, "*.token") + "\n")
 	}
@@ -468,6 +465,16 @@ func credentialGuardFileNames() []string {
 		".claude.json",
 		".credentials.json",
 	}
+}
+
+func credentialGuardFindNameExpression() string {
+	names := credentialGuardFileNames()
+	parts := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		parts = append(parts, "-name "+name)
+	}
+	parts = append(parts, "-name '*.token'")
+	return strings.Join(parts, " -o ")
 }
 
 // stepWriteToolsList seeds /etc/pipelock/contain/tools.list with only the

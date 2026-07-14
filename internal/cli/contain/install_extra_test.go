@@ -834,9 +834,9 @@ func TestRenderCredentialGuardScriptLocksCredentialNames(t *testing.T) {
 		"lock_home_root '/home/operator'",
 		"lock_matches \"$1\" -maxdepth 1",
 		"setfacl -m \"u:${AGENT_USER}:--x\" \"$root\"",
-		"-name auth.json",
-		"-name .claude.json",
-		"-name .credentials.json",
+		"-name 'auth.json'",
+		"-name '.claude.json'",
+		"-name '.credentials.json'",
 		"-name '*.token'",
 		"setfacl -x \"u:${AGENT_USER}\"",
 		"chmod 0600",
@@ -871,22 +871,17 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		t.Fatalf("read path unit: %v", err)
 	}
 	for _, want := range []string{
-		"PathExists=/home/operator/auth.json",
-		"PathModified=/home/operator/auth.json",
-		"PathChanged=/home/operator/auth.json",
-		"PathExists=/home/operator/.claude.json",
-		"PathModified=/home/operator/.claude.json",
-		"PathChanged=/home/operator/.claude.json",
-		"PathModified=/home/operator/.credentials.json",
-		"PathExistsGlob=/home/operator/*.token",
-		"PathExists=/home/operator/.claude/auth.json",
-		"PathModified=/home/operator/.claude/auth.json",
-		"PathChanged=/home/operator/.claude/auth.json",
-		"PathModified=/home/operator/.claude-cc2/.credentials.json",
-		"PathChanged=/home/operator/.claude-cc2/.credentials.json",
-		"PathModified=/home/operator/.codex/.claude.json",
-		"PathChanged=/home/operator/.codex/.claude.json",
-		"PathExistsGlob=/home/operator/.codex/*.token",
+		"PathChanged=/home/operator\n",
+		"PathChanged=/home/operator/auth.json\n",
+		"PathChanged=/home/operator/.claude.json\n",
+		"PathChanged=/home/operator/.credentials.json\n",
+		"PathChanged=/home/operator/.claude\n",
+		"PathChanged=/home/operator/.claude/auth.json\n",
+		"PathChanged=/home/operator/.claude/.credentials.json\n",
+		"PathChanged=/home/operator/.claude-cc2\n",
+		"PathChanged=/home/operator/.claude-cc2/.credentials.json\n",
+		"PathChanged=/home/operator/.codex\n",
+		"PathChanged=/home/operator/.codex/.claude.json\n",
 	} {
 		want := want
 		t.Run(want, func(t *testing.T) {
@@ -894,6 +889,11 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 				t.Fatalf("path unit missing %q:\n%s", want, string(pathUnit))
 			}
 		})
+	}
+	for _, bad := range []string{"PathExists=", "PathExistsGlob=", "PathModified="} {
+		if strings.Contains(string(pathUnit), bad) {
+			t.Fatalf("path unit should avoid level-triggered directive %q:\n%s", bad, string(pathUnit))
+		}
 	}
 	if len(runner.calls) < 3 {
 		t.Fatalf("credential guard calls = %v, want guard run, daemon-reload, and enable", runner.calls)
@@ -913,12 +913,12 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 	}
 }
 
-func TestRenderCredentialGuardPathUnitWakesOnAtomicRenameLeaves(t *testing.T) {
+func TestRenderCredentialGuardPathUnitUsesOnlyChangedWatches(t *testing.T) {
 	pathUnit := renderCredentialGuardPathUnit("/home/operator", "pipelock-cred-guard.service")
 	for _, root := range credentialGuardWatchRoots("/home/operator") {
 		want := "PathChanged=" + root + "\n"
-		if strings.Contains(pathUnit, want) {
-			t.Fatalf("path unit should not use broad parent-directory PathChanged for %q:\n%s", root, pathUnit)
+		if got := strings.Count(pathUnit, want); got != 1 {
+			t.Fatalf("PathChanged count for %q = %d, want 1:\n%s", root, got, pathUnit)
 		}
 		for _, name := range credentialGuardFileNames() {
 			path := filepath.Join(root, name)
@@ -926,6 +926,11 @@ func TestRenderCredentialGuardPathUnitWakesOnAtomicRenameLeaves(t *testing.T) {
 			if got := strings.Count(pathUnit, want); got != 1 {
 				t.Fatalf("PathChanged count for %q = %d, want 1:\n%s", path, got, pathUnit)
 			}
+		}
+	}
+	for _, bad := range []string{"PathExists=", "PathExistsGlob=", "PathModified="} {
+		if strings.Contains(pathUnit, bad) {
+			t.Fatalf("path unit should not use level-triggered directive %q:\n%s", bad, pathUnit)
 		}
 	}
 }

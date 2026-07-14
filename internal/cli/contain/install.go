@@ -434,13 +434,11 @@ Description=Watch Pipelock containment credential roots
 [Path]
 `)
 	for _, root := range credentialGuardWatchRoots(operatorHome) {
+		b.WriteString("PathChanged=" + root + "\n")
 		for _, name := range credentialGuardFileNames() {
 			path := filepath.Join(root, name)
-			b.WriteString("PathExists=" + path + "\n")
-			b.WriteString("PathModified=" + path + "\n")
 			b.WriteString("PathChanged=" + path + "\n")
 		}
-		b.WriteString("PathExistsGlob=" + filepath.Join(root, "*.token") + "\n")
 	}
 	b.WriteString(`Unit=` + serviceUnit + `
 
@@ -471,7 +469,7 @@ func credentialGuardFindNameExpression() string {
 	names := credentialGuardFileNames()
 	parts := make([]string, 0, len(names)+1)
 	for _, name := range names {
-		parts = append(parts, "-name "+name)
+		parts = append(parts, "-name "+shellQuote(name))
 	}
 	parts = append(parts, "-name '*.token'")
 	return strings.Join(parts, " -o ")

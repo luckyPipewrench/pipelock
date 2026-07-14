@@ -871,15 +871,19 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		t.Fatalf("read path unit: %v", err)
 	}
 	for _, want := range []string{
+		"PathChanged=/home/operator",
 		"PathExists=/home/operator/auth.json",
 		"PathModified=/home/operator/auth.json",
 		"PathExists=/home/operator/.claude.json",
 		"PathModified=/home/operator/.claude.json",
 		"PathModified=/home/operator/.credentials.json",
 		"PathExistsGlob=/home/operator/*.token",
+		"PathChanged=/home/operator/.claude",
 		"PathExists=/home/operator/.claude/auth.json",
 		"PathModified=/home/operator/.claude/auth.json",
+		"PathChanged=/home/operator/.claude-cc2",
 		"PathModified=/home/operator/.claude-cc2/.credentials.json",
+		"PathChanged=/home/operator/.codex",
 		"PathModified=/home/operator/.codex/.claude.json",
 		"PathExistsGlob=/home/operator/.codex/*.token",
 	} {
@@ -887,19 +891,6 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		t.Run(want, func(t *testing.T) {
 			if !strings.Contains(string(pathUnit), want) {
 				t.Fatalf("path unit missing %q:\n%s", want, string(pathUnit))
-			}
-		})
-	}
-	for _, broadWatch := range []string{
-		"PathChanged=/home/operator\n",
-		"PathChanged=/home/operator/.claude\n",
-		"PathChanged=/home/operator/.claude-cc2\n",
-		"PathChanged=/home/operator/.codex\n",
-	} {
-		broadWatch := broadWatch
-		t.Run("no broad watch "+strings.TrimSpace(broadWatch), func(t *testing.T) {
-			if strings.Contains(string(pathUnit), broadWatch) {
-				t.Fatalf("path unit should not broadly watch %q:\n%s", strings.TrimSpace(broadWatch), string(pathUnit))
 			}
 		})
 	}
@@ -918,5 +909,25 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		!containsArg(runner.calls[len(runner.calls)-1].args, "--now") ||
 		!containsArg(runner.calls[len(runner.calls)-1].args, "pipelock-cred-guard.path") {
 		t.Fatalf("missing enable --now path unit call: %+v", runner.calls)
+	}
+}
+
+func TestRenderCredentialGuardPathUnitWakesOnAtomicRenameParents(t *testing.T) {
+	pathUnit := renderCredentialGuardPathUnit("/home/operator", "pipelock-cred-guard.service")
+	for _, root := range credentialGuardWatchRoots("/home/operator") {
+		want := "PathChanged=" + root + "\n"
+		if got := strings.Count(pathUnit, want); got != 1 {
+			t.Fatalf("PathChanged count for %q = %d, want 1:\n%s", root, got, pathUnit)
+		}
+	}
+	for _, leaf := range []string{
+		"/home/operator/auth.json",
+		"/home/operator/.claude/auth.json",
+		"/home/operator/.claude-cc2/.credentials.json",
+		"/home/operator/.codex/.claude.json",
+	} {
+		if strings.Contains(pathUnit, "PathChanged="+leaf) {
+			t.Fatalf("credential leaf should use exact file watches, not PathChanged: %s\n%s", leaf, pathUnit)
+		}
 	}
 }

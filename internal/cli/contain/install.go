@@ -437,6 +437,7 @@ Description=Watch Pipelock containment credential roots
 [Path]
 `)
 	for _, root := range credentialGuardWatchRoots(operatorHome) {
+		b.WriteString("PathChanged=" + root + "\n")
 		for _, name := range credentialGuardFileNames() {
 			path := filepath.Join(root, name)
 			b.WriteString("PathExists=" + path + "\n")

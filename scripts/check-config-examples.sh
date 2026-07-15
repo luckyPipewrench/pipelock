@@ -169,7 +169,10 @@ probe() {
     # is BOOTED rather than skipped. This is what makes the policy actually verify the
     # recorder examples instead of only detecting a missing key line.
     if [ -n "$FIXTURE_KEY" ]; then
-        sed -i -E "s@^([[:space:]]*signing_key_path:[[:space:]])(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#]([^#]*[^[:space:]#])?)([[:space:]]*#.*)?\$@\1\"$FIXTURE_KEY\"\4@" "$run_cfg"
+        local key_cfg="${run_cfg}.key.tmp"
+        sed -E "s@^([[:space:]]*signing_key_path:[[:space:]])(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#]([^#]*[^[:space:]#])?)([[:space:]]*#.*)?\$@\1\"$FIXTURE_KEY\"\4@" \
+            "$run_cfg" >"$key_cfg"
+        mv "$key_cfg" "$run_cfg"
     fi
 
     local check_ok=0 check_out="$WORK/check-$total.txt"

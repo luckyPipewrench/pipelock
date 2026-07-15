@@ -11,8 +11,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestNewExplainEventSanitizerRejectsInvalidScannerConfig(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:  "invalid",
+		Regex: "[",
+	})
+
+	if _, err := newExplainEventSanitizer(cfg); err == nil || !strings.Contains(err.Error(), "create scanner") {
+		t.Fatalf("newExplainEventSanitizer() error = %v, want create scanner error", err)
+	}
+}
 
 func TestExplainEventCmd_LooksUpBlockedRequestID(t *testing.T) {
 	dir := t.TempDir()

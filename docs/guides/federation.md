@@ -24,7 +24,8 @@ mediation_envelope:
     enabled: true
     trust_list:
       - key_id: "partner-pipelock-2026-q2"
-        public_key: "64-char-hex-encoded-ed25519-public-key"
+        # RFC 8032 test-vector key; replace it with the partner's pinned key.
+        public_key: "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
         # Optional: a discovery / metadata URL pointing at the partner's
         # RFC 9421 directory. Validated as HTTPS at config-load. NOT used
         # by inbound verification to fetch the key — `public_key` above is

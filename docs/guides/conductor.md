@@ -228,7 +228,8 @@ conductor:
     ring: canary
     region: us-east
   trust_roster_path: /etc/pipelock/trust-roster.json
-  trust_roster_root_fingerprint: <sha256-of-trust-root>
+  # Replace this syntactically valid example with the deployed trust-root hash.
+  trust_roster_root_fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000
   server_ca_file: /etc/pipelock/conductor-ca.pem
   client_cert_path: /etc/pipelock/follower.crt
   client_key_path: /etc/pipelock/follower.key
@@ -238,6 +239,9 @@ conductor:
   recorder_key_id: edge-01-recorder
   poll_interval: 30s
   honor_remote_kill_switch: true
+
+flight_recorder:
+  signing_key_path: /etc/pipelock/recorder.key
 ```
 
 When `conductor.enabled: true`, validation requires:

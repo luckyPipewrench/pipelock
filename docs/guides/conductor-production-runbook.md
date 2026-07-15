@@ -334,7 +334,8 @@ conductor:
   fleet_id: prod
   instance_id: edge-01
   trust_roster_path: /etc/pipelock/trust-roster.json
-  trust_roster_root_fingerprint: sha256:<root-fingerprint-from-step-1>
+  # Replace this syntactically valid example with the fingerprint from step 1.
+  trust_roster_root_fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000
   server_ca_file: /etc/pipelock/conductor-ca.pem
   client_cert_path: /etc/pipelock/follower.crt
   client_key_path: /etc/pipelock/follower.key
@@ -346,6 +347,9 @@ conductor:
   enrollment_token_path: /etc/pipelock/conductor/enrollment-token  # single-use; auto-enroll on startup
   poll_interval: 30s
   honor_remote_kill_switch: true
+
+flight_recorder:
+  signing_key_path: /etc/pipelock/recorder.key
 ```
 
 A follower **must produce signed evidence** to participate: config validation

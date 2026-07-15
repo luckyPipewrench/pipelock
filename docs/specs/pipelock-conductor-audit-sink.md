@@ -799,7 +799,8 @@ conductor:
   fleet_id: "prod"
   instance_id: "pl-prod-1"
   trust_roster_path: "/etc/pipelock/conductor/trust-roster.json"
-  trust_roster_root_fingerprint: "sha256:<64 lowercase hex chars>"
+  # Replace this syntactically valid example with the deployed trust-root hash.
+  trust_roster_root_fingerprint: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   server_ca_file: "/etc/pipelock/conductor/boss-ca.pem"
   client_cert_path: "/etc/pipelock/conductor/client.crt"
   client_key_path: "/etc/pipelock/conductor/client.key"

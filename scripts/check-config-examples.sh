@@ -5,8 +5,10 @@
 # preconditions. A snippet can therefore pass `check` and still kill `pipelock run`
 # at boot — a config we ship that bricks the user who trusted the guide.
 #
-# This catches the CLASS: any doc/example config that `check` blesses but the
-# runtime refuses. Config examples are executable claims — render and RUN them.
+# This catches the CLASS: any executable doc/example config that `check` rejects,
+# or that `check` blesses but the runtime refuses. Config examples are executable
+# claims — validate and RUN them. Deliberately incomplete field references must
+# opt out visibly with a `yaml pipelock-fragment` fence.
 #
 # Scope discipline (deliberately conservative — no false positives):
 #   Every recognized block that passes `check` is booted. A startup refusal is
@@ -24,7 +26,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-WORK="$(mktemp -d)"
+# Stateful security paths correctly reject world-writable ancestors. The default
+# /tmp parent would make the gate itself manufacture a refusal after relocating a
+# documented /var/lib path, so keep the ephemeral sandbox beneath the checkout.
+WORK="$(mktemp -d "$REPO_ROOT/.config-examples.XXXXXX")"
 RUN_PID=""
 cleanup() {
     if [ -n "$RUN_PID" ]; then
@@ -115,8 +120,8 @@ environment_failure_reason() {
         return
     fi
 
-    if grep -qiE 'requires an enterprise build' "$out"; then
-        echo "requires an enterprise build"
+    if grep -qiE 'requires an enterprise build|requires an Enterprise license that grants' "$out"; then
+        echo "requires an enterprise build or license"
         return
     fi
 
@@ -147,7 +152,7 @@ http_ready() {
 }
 
 probe() {
-    local snippet="$1" label="$2"
+    local snippet="$1" label="$2" intent="${3:-config}"
     is_config_block "$snippet" || return 0
     total=$((total+1))
 
@@ -178,11 +183,29 @@ probe() {
     local check_ok=0 check_out="$WORK/check-$total.txt"
     "$BIN" check --config "$run_cfg" >"$check_out" 2>&1 && check_ok=1
     if [ "$check_ok" -eq 0 ]; then
-        rejected=$((rejected+1))
+        if [ "$intent" = "fragment" ]; then
+            rejected=$((rejected+1))
+            {
+                echo "  check rejected (declared fragment): $label"
+                echo "      $(grep -m1 -vE '^[[:space:]]*$' "$check_out" | head -c 180)"
+            } >>"$REJECTED"
+            return 0
+        fi
+
+        local check_why
+        check_why="$(environment_failure_reason "$run_cfg" "$check_out")"
+        if [ -n "$check_why" ]; then
+            skipped=$((skipped+1))
+            echo "  skip ($check_why): $label" >>"$SKIPS"
+            return 0
+        fi
+
+        failed=$((failed+1))
         {
-            echo "  check rejected: $label"
+            echo "  ✗ $label"
+            echo "      check: REFUSED   <- invalid executable config example"
             echo "      $(grep -m1 -vE '^[[:space:]]*$' "$check_out" | head -c 180)"
-        } >>"$REJECTED"
+        } >>"$FAILURES"
         return 0
     fi
 
@@ -230,22 +253,9 @@ probe() {
         grep -qE "(fetch_proxy.listen|holds) .*127\\.0\\.0\\.1:$port" "$out_file" || break
     done
 
-    # Gate on the DIVERGENCE (check PASS + run REFUSED), not on "run refused".
-    #
-    # That is deliberate and self-limiting in the right direction. A snippet `check`
-    # also rejects is not silent — the user runs check and gets a clear error — and
-    # gating on refusal alone floods on reference docs: docs/configuration.md and
-    # docs/policy-spec-v0.1.md document ONE section per block, which by design does
-    # not stand up as a whole config ("mcp_session_binding requires
-    # mcp_tool_scanning"). Those are field references, not copy-paste configs, and
-    # `check` filters them out for free.
-    #
-    # The dangerous case is exactly the one left: we told the operator the file was
-    # VALID and then refused to boot on it. If a future release teaches `check` to
-    # reject more shapes, this reports fewer rows — that is `check` doing its job,
-    # not this going blind.
-    #
-    # Known limit: a snippet BOTH reject is reported above but is not gated.
+    # Reaching here means `check` accepted an executable example. A subsequent
+    # startup refusal is a validator/runtime divergence unless the actual runtime
+    # error proves that an operator-supplied resource is unavailable.
     local why
     why="$(environment_failure_reason "$run_cfg" "$out_file")"
     if [ -n "$why" ]; then
@@ -275,7 +285,14 @@ for f in "${FILES[@]}"; do
         tag="$(tr '/' '_' <<<"$f")"
         awk -v outdir="$WORK" -v tag="$tag" '
             { sub(/\r$/, "") }
-            /^[ ]?[ ]?[ ]?```ya?ml[[:space:]]*$/ { n++; inblk=1; out=outdir "/" tag "-" n ".yaml"; next }
+            /^[ ]?[ ]?[ ]?```ya?ml([[:space:]]+pipelock-fragment)?[[:space:]]*$/ {
+                n++
+                inblk=1
+                out=outdir "/" tag "-" n ".yaml"
+                kind=(index($0, "pipelock-fragment") ? "fragment" : "config")
+                print kind > (out ".kind")
+                next
+            }
             /^[ ]?[ ]?[ ]?```/                    { inblk=0; next }
             inblk        { print > out }
         ' "$f"
@@ -284,7 +301,8 @@ for f in "${FILES[@]}"; do
             n=$((n+1))
             blk="$WORK/$tag-$n.yaml"
             [ -f "$blk" ] || break
-            probe "$blk" "$f (yaml block $n)"
+            kind="$(cat "${blk}.kind")"
+            probe "$blk" "$f (yaml block $n)" "$kind"
         done
         ;;
     *)
@@ -296,16 +314,16 @@ done
 echo ""
 echo "config-examples: $total config blocks | $booted booted OK | $skipped skipped | $rejected check-rejected | $failed FAILED"
 [ "$skipped" -gt 0 ] && { echo "skipped (not silently dropped):"; cat "$SKIPS"; }
-[ "$rejected" -gt 0 ] && { echo "rejected by pipelock check (reference fragments, not gated):"; cat "$REJECTED"; }
+[ "$rejected" -gt 0 ] && { echo "declared reference fragments rejected by pipelock check (not gated):"; cat "$REJECTED"; }
 
 if [ "$failed" -gt 0 ]; then
     echo ""
-    echo "FAIL: shipped config snippet(s) pass 'pipelock check' but will not start:"
+    echo "FAIL: shipped executable config snippet(s) are invalid or will not start:"
     cat "$FAILURES"
     echo ""
-    echo "Each is a config a user can copy-paste that bricks their install."
-    echo "Fix the snippet, or make 'pipelock check' reject the shape so the"
-    echo "validator and the runtime agree."
+    echo "Each is presented as a config a user can copy-paste but cannot use."
+    echo "Fix it, or label a deliberately incomplete field reference with"
+    echo 'a ```yaml pipelock-fragment fence so the exception is explicit.'
     exit 1
 fi
 

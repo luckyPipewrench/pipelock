@@ -2423,7 +2423,7 @@ learn_lock:
     id: production
     tenant: ""
     deployment_id: ""
-  pinned_root_fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pinned_root_fingerprint: sha256:10ce731a9825628c9d28645e43501fb4a988a6c76cc4d28318788871635ce85e
   minimum_signatures: 1
 ```
 

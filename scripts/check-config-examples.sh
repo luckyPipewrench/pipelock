@@ -120,9 +120,17 @@ environment_failure_reason() {
         return
     fi
 
-    if grep -qiE 'requires an enterprise build|requires an Enterprise license that grants' "$out"; then
-        echo "requires an enterprise build or license"
-        return
+    # Entitlement/build gates are skippable only when they are the sole emitted
+    # refusal. A broad substring match would let an enterprise message conceal a
+    # second schema, path, or security-validation error in the same output.
+    local enterprise_refusals other_refusals
+    enterprise_refusals="$(grep -ciE 'requires an enterprise build|requires an Enterprise license that grants' "$out" || true)"
+    if [ "$enterprise_refusals" -eq 1 ]; then
+        other_refusals="$(grep -ciE '(FAILED:|(^|[[:space:]])error:|invalid config:)' "$out" || true)"
+        if [ "$other_refusals" -eq 1 ]; then
+            echo "requires an enterprise build or license"
+            return
+        fi
     fi
 
     echo ""

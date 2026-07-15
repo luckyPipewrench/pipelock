@@ -142,7 +142,7 @@ metadata_value() {
 }
 
 environment_failure_reason() {
-    local cfg="$1" out="$2" phase="$3" label="$4"
+    local cfg="$1" out="$2" phase="$3"
 
     if grep -qE "^[[:space:]]*(license_file|license_crl_file|license_intermediate_file|trust_roster_path|server_ca_file|client_cert_path|client_key_path|enrollment_token_path|ca_cert|ca_key|secrets_file|signing_key_path|manifest_path|signature_path|keystore|roster_path):[[:space:]]*(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#][^#]*)" "$cfg" \
         && grep -qiE '(no such file|permission denied|not found|cannot (open|read)|failed to (open|read|load)|load(ing)? .*(file|key|cert|roster|manifest))' "$out"; then
@@ -168,8 +168,8 @@ environment_failure_reason() {
     local enterprise_refusals other_refusals
     enterprise_refusals="$(grep -ciE 'requires an enterprise build|requires an Enterprise license that grants' "$out" || true)"
     if [ "$phase" = "run" ] && [ "$enterprise_refusals" -gt 0 ] && enterprise_skip_allowed "$cfg"; then
-        # Count independent refusal lines after removing the one entitlement
-        # refusal. The entitlement line is not guaranteed to contain an
+        # Count independent refusal lines after removing all entitlement
+        # refusals. Entitlement lines are not guaranteed to contain an
         # "error:" prefix, so counting it as part of the generic total makes
         # equivalent OSS-build and missing-license failures classify
         # differently.
@@ -269,7 +269,7 @@ probe() {
         fi
 
         local check_why
-        check_why="$(environment_failure_reason "$run_cfg" "$check_out" check "$label")"
+        check_why="$(environment_failure_reason "$run_cfg" "$check_out" check)"
         if [ -n "$check_why" ]; then
             skipped=$((skipped+1))
             echo "  skip ($check_why): $label" >>"$SKIPS"
@@ -342,7 +342,7 @@ probe() {
     # startup refusal is a validator/runtime divergence unless the actual runtime
     # error proves that an operator-supplied resource is unavailable.
     local why
-    why="$(environment_failure_reason "$run_cfg" "$out_file" run "$label")"
+    why="$(environment_failure_reason "$run_cfg" "$out_file" run)"
     if [ -n "$why" ]; then
         skipped=$((skipped+1))
         echo "  skip ($why): $label" >>"$SKIPS"
@@ -367,7 +367,7 @@ mapfile -t FILES < <(git ls-files \
 # unique so moving a block cannot change its policy identity and copying one
 # cannot silently inherit another block's exemption.
 duplicate_metadata_ids="$(git grep -hE '^#[[:space:]]*pipelock-(fragment|enterprise-skip)-id:[[:space:]]*[a-z0-9-]+' -- 'docs/*.md' 'docs/**/*.md' \
-    | sed -E 's/^#[[:space:]]*pipelock-(fragment|enterprise-skip)-id:[[:space:]]*//' \
+    | sed -E 's/^#[[:space:]]*pipelock-(fragment|enterprise-skip)-id:[[:space:]]*([a-z0-9-]+).*/\2/' \
     | sort | uniq -d)"
 if [ -n "$duplicate_metadata_ids" ]; then
     echo "config-examples: duplicate exemption metadata ID(s): $duplicate_metadata_ids" >&2

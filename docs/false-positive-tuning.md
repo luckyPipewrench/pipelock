@@ -51,6 +51,7 @@ For example, enable the recorder:
 flight_recorder:
   enabled: true
   dir: /var/lib/pipelock/evidence
+  signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key   # `pipelock init` writes this next to your config
 ```
 
 The recorder keeps receipt and decision context, but sensitive content is redacted before it is written unless you explicitly configure raw escrow. Expect pattern names and redacted evidence, not plaintext secrets.

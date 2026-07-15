@@ -218,6 +218,7 @@ flight_recorder:
   enabled: true
   dir: /tmp/pipelock-zed-evidence
   sign_checkpoints: true
+  signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key   # `pipelock init` writes this next to your config
   redact: true
 ```
 

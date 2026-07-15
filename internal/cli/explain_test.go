@@ -263,7 +263,6 @@ func TestExplainCmd_Blocklist(t *testing.T) {
 	cfg := writeConfig(t, `
 mode: balanced
 fetch_proxy:
-  listen: "127.0.0.1:0"
   monitoring:
     blocklist:
       - "blocked.example"
@@ -294,8 +293,6 @@ func TestExplainCmd_StrictAllowlist(t *testing.T) {
 mode: strict
 api_allowlist:
   - "api.allowed.example"
-fetch_proxy:
-  listen: "127.0.0.1:0"
 `)
 	report, err := decodeExplainJSON(t, "--config", cfg, "https://not-allowed.example/x")
 	if err == nil {

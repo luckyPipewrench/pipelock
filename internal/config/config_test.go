@@ -8162,7 +8162,7 @@ func TestValidate_KillSwitchAPIListen_PortZero(t *testing.T) {
 	cfg.KillSwitch.APIToken = testToken
 
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("port-zero api_listen should pass validation: %v", err)
+		t.Fatalf("programmatic test listener should permit port zero: %v", err)
 	}
 }
 
@@ -8212,7 +8212,7 @@ func TestValidate_KillSwitchAPIListen_PortRange(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for out-of-range api_listen port")
 	}
-	if !strings.Contains(err.Error(), "kill_switch.api_listen port must be between 0 and 65535") {
+	if !strings.Contains(err.Error(), "kill_switch.api_listen port must be between 1 and 65535") {
 		t.Errorf("expected port range error, got: %v", err)
 	}
 }
@@ -8557,7 +8557,7 @@ func TestValidate_FetchProxyListen_PortZero(t *testing.T) {
 	cfg.FetchProxy.Listen = "127.0.0.1:0"
 
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("port-zero fetch_proxy.listen should pass validation: %v", err)
+		t.Fatalf("programmatic test listener should permit port zero: %v", err)
 	}
 }
 
@@ -8570,7 +8570,7 @@ func TestValidate_FetchProxyListen_PortRange(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for out-of-range fetch_proxy.listen port")
 	}
-	if !strings.Contains(err.Error(), "fetch_proxy.listen port must be between 0 and 65535") {
+	if !strings.Contains(err.Error(), "fetch_proxy.listen port must be between 1 and 65535") {
 		t.Errorf("expected port range error, got: %v", err)
 	}
 }
@@ -8581,7 +8581,32 @@ func TestValidate_MetricsListen_PortZero(t *testing.T) {
 	cfg.MetricsListen = "127.0.0.1:0"
 
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("port-zero metrics_listen should pass validation: %v", err)
+		t.Fatalf("programmatic test listener should permit port zero: %v", err)
+	}
+}
+
+func TestLoadRejectsOperatorListenerPortZero(t *testing.T) {
+	t.Setenv(EnvKillSwitchAPIToken, testToken)
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{name: "fetch_proxy", yaml: "fetch_proxy:\n  listen: 127.0.0.1:0\n", wantErr: "fetch_proxy.listen port must be between 1 and 65535"},
+		{name: "kill_switch", yaml: "kill_switch:\n  api_listen: 127.0.0.1:0\n", wantErr: "kill_switch.api_listen port must be between 1 and 65535"},
+		{name: "metrics", yaml: "metrics_listen: 127.0.0.1:0\n", wantErr: "metrics_listen port must be between 1 and 65535"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -8606,7 +8631,7 @@ func TestValidate_MetricsListen_PortRange(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for out-of-range metrics_listen port")
 	}
-	if !strings.Contains(err.Error(), "metrics_listen port must be between 0 and 65535") {
+	if !strings.Contains(err.Error(), "metrics_listen port must be between 1 and 65535") {
 		t.Errorf("expected port range error, got: %v", err)
 	}
 }

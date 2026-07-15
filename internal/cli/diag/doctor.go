@@ -629,15 +629,14 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Next:       "set flight_recorder.dir to a writable directory so receipts are persisted",
 		}
 	}
-	if _, err := os.Stat(filepath.Clean(cfg.FlightRecorder.Dir)); errors.Is(err, os.ErrNotExist) && pathWritableDir(cfg.FlightRecorder.Dir) {
+	if _, err := os.Stat(filepath.Clean(cfg.FlightRecorder.Dir)); errors.Is(err, os.ErrNotExist) && pathProbablyCreatableDir(cfg.FlightRecorder.Dir) {
 		return doctorReportCheck{
 			Name:       "flight_recorder",
 			Surface:    doctorSurfaceConfig,
-			Status:     doctorStatusOK,
+			Status:     doctorStatusWarn,
 			Configured: true,
-			Reachable:  true,
-			Enforcing:  true,
-			Detail:     "flight_recorder.dir does not exist yet; parent directory is writable so runtime can create it",
+			Detail:     "flight_recorder.dir does not exist; parent permission bits suggest it may be creatable, but persistence is not verified",
+			Next:       "create the directory as the service user, then rerun doctor to verify receipt persistence",
 		}
 	}
 	readable := pathReadable(cfg.FlightRecorder.Dir)
@@ -837,6 +836,21 @@ func pathReadable(path string) bool {
 }
 
 func pathWritableDir(path string) bool {
+	info, err := os.Stat(filepath.Clean(path))
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	probe, err := os.CreateTemp(filepath.Clean(path), ".pipelock-doctor-writability-*") //nolint:gosec // doctor checks operator-visible config paths from local configuration.
+	if err != nil {
+		return false
+	}
+	probePath := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probePath)
+	return true
+}
+
+func pathProbablyCreatableDir(path string) bool {
 	for candidate := filepath.Clean(path); ; candidate = filepath.Dir(candidate) {
 		info, err := os.Stat(candidate)
 		if err == nil {

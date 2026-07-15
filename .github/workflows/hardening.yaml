@@ -30,6 +30,10 @@ jobs:
       - name: Workflow and release audit
         run: make release-audit
 
+  # Runtime race coverage remains PR-blocking in ci.yaml: its required OSS
+  # and enterprise matrices shard every buildable package across
+  # proxy/scanner/MCP/rest. Do not add a second serial runtime lane here.
+
   runtime-policy:
     # Blocking on PRs, not just at release-tag time: a runtime package
     # that re-introduces direct mutation of policy-relevant config would

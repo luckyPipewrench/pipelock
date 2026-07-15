@@ -845,7 +845,7 @@ func (c *Config) validateFetchProxy() error {
 	if err != nil {
 		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
 	}
-	if err := validateTCPPort("fetch_proxy.listen", proxyPort); err != nil {
+	if err := c.validateTCPPort("fetch_proxy.listen", proxyPort); err != nil {
 		return err
 	}
 
@@ -2374,7 +2374,7 @@ func (c *Config) validateKillSwitch() error {
 		if err != nil {
 			return fmt.Errorf("invalid kill_switch.api_listen %q: %w", c.KillSwitch.APIListen, err)
 		}
-		if err := validateTCPPort("kill_switch.api_listen", apiPort); err != nil {
+		if err := c.validateTCPPort("kill_switch.api_listen", apiPort); err != nil {
 			return err
 		}
 		_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
@@ -2400,7 +2400,7 @@ func (c *Config) validateMetricsListen() error {
 	if err != nil {
 		return fmt.Errorf("invalid metrics_listen %q: %w", c.MetricsListen, err)
 	}
-	if err := validateTCPPort("metrics_listen", metricsPort); err != nil {
+	if err := c.validateTCPPort("metrics_listen", metricsPort); err != nil {
 		return err
 	}
 	_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
@@ -2419,12 +2419,26 @@ func (c *Config) validateMetricsListen() error {
 	return nil
 }
 
-func validateTCPPort(field, port string) error {
+func (c *Config) validateTCPPort(field, port string) error {
 	n, err := strconv.Atoi(port)
-	if err != nil || n < 0 || n > 65535 {
-		return fmt.Errorf("%s port must be between 0 and 65535", field)
+	// In-process tests construct Defaults() and use :0 so the kernel can choose
+	// collision-free listeners. Operator configuration always comes through
+	// Load(), which records rawBytes; reject :0 there so enforcement, emergency
+	// control, and metrics endpoints remain discoverable.
+	if err == nil && n == 0 && (c.rawBytes == nil || c.allowEphemeralListeners) {
+		return nil
+	}
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%s port must be between 1 and 65535", field)
 	}
 	return nil
+}
+
+// AllowEphemeralListenersForTesting permits programmatic :0 listener
+// overrides after a config file has been loaded. It is intentionally absent
+// from YAML and exists only for internal test harnesses.
+func (c *Config) AllowEphemeralListenersForTesting() {
+	c.allowEphemeralListeners = true
 }
 
 func (c *Config) validateEmit() error {

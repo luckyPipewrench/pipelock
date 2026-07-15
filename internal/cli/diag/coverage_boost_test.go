@@ -546,8 +546,8 @@ func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 		{name: "disabled", enabled: false, dir: "", want: doctorStatusInfo},
 		{name: "enabled_no_dir", enabled: true, dir: "", want: doctorStatusWarn},
 		{name: "enabled_with_dir", enabled: true, dir: dir, want: doctorStatusOK, reach: true, enforce: true},
-		{name: "enabled_missing_dir_parent_writable", enabled: true, dir: creatableDir, want: doctorStatusOK, reach: true, enforce: true},
-		{name: "enabled_nested_missing_dir", enabled: true, dir: nestedCreatableDir, want: doctorStatusOK, reach: true, enforce: true},
+		{name: "enabled_missing_dir_parent_writable", enabled: true, dir: creatableDir, want: doctorStatusWarn},
+		{name: "enabled_nested_missing_dir", enabled: true, dir: nestedCreatableDir, want: doctorStatusWarn},
 		{name: "enabled_missing_dir_blocked_by_file", enabled: true, dir: unusableDir, want: doctorStatusFail},
 	}
 	for _, tc := range tests {

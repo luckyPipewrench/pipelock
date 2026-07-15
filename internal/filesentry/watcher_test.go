@@ -40,6 +40,7 @@ func armAndStart(t *testing.T, w Watcher, ctx context.Context) {
 		startErr <- w.Start(ctx)
 	}()
 	t.Cleanup(func() {
+		_ = w.Close()
 		if err := <-startErr; err != nil {
 			t.Errorf("Start: %v", err)
 		}
@@ -1062,10 +1063,13 @@ func TestWatcher_CloseFlushEmptyFile(t *testing.T) {
 	armAndStart(t, w, ctx)
 
 	emptyPath := filepath.Join(dir, "empty.txt")
-	if writeErr := os.WriteFile(emptyPath, []byte{}, 0o600); writeErr != nil {
+	if writeErr := os.WriteFile(emptyPath, []byte("trigger"), 0o600); writeErr != nil {
 		t.Fatalf("WriteFile: %v", writeErr)
 	}
 	waitForPendingTimer(t, w, emptyPath)
+	if truncateErr := os.Truncate(emptyPath, 0); truncateErr != nil {
+		t.Fatalf("Truncate: %v", truncateErr)
+	}
 
 	cancel()
 	_ = w.Close()

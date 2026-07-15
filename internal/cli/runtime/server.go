@@ -69,6 +69,10 @@ type ServerOpts struct {
 	// ListenChanged mirrors ModeChanged for --listen.
 	ListenChanged bool
 
+	// allowEphemeralListenersForTesting permits :0 only in package-owned test
+	// harnesses. It is unexported so CLI/operator input cannot enable it.
+	allowEphemeralListenersForTesting bool
+
 	// AgentArgs is the command+args that followed "--" on the CLI, or nil
 	// when "--" was absent. Used only for the Phase 2 "Agent: ..." note
 	// emitted during startup.
@@ -280,6 +284,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 	} else {
 		cfg = config.Defaults()
+	}
+	if opts.allowEphemeralListenersForTesting {
+		cfg.AllowEphemeralListenersForTesting()
 	}
 
 	if opts.ModeChanged {

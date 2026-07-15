@@ -263,7 +263,7 @@ func TestCheckDoctorStartupTLSCA(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorFlightRecorderAllowsMissingDirWhenParentWritable(t *testing.T) {
+func TestCheckDoctorFlightRecorderWarnsForUnverifiedMissingDir(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Defaults()
@@ -271,11 +271,14 @@ func TestCheckDoctorFlightRecorderAllowsMissingDirWhenParentWritable(t *testing.
 	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "runtime-created")
 
 	check := checkDoctorFlightRecorder(cfg)
-	if check.Status != doctorStatusOK {
-		t.Fatalf("status = %q, want ok; check=%+v", check.Status, check)
+	if check.Status != doctorStatusWarn {
+		t.Fatalf("status = %q, want warn; check=%+v", check.Status, check)
 	}
-	if !strings.Contains(check.Detail, "runtime can create it") {
-		t.Fatalf("detail = %q, want runtime-create detail", check.Detail)
+	if check.Reachable || check.Enforcing {
+		t.Fatalf("missing directory must not claim reachable/enforcing: %+v", check)
+	}
+	if !strings.Contains(check.Detail, "not verified") {
+		t.Fatalf("detail = %q, want unverified warning", check.Detail)
 	}
 }
 

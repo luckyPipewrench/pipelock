@@ -1913,28 +1913,31 @@ func TestRunCmd_MCPListenStartupFailure(t *testing.T) {
 	defer blocker.Close() //nolint:errcheck // test
 	occupiedPort := blocker.Addr().String()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"run",
-		"--listen", "127.0.0.1:0",
-		"--mcp-listen", occupiedPort,
-		"--mcp-upstream", "http://localhost:19999",
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"run",
+			"--listen", addrs[0],
+			"--mcp-listen", occupiedPort,
+			"--mcp-upstream", "http://localhost:19999",
+		})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+
+		cmdErr := cmd.Execute()
+		if cmdErr == nil {
+			cancel()
+			t.Fatal("expected bind error, but run succeeded")
+		}
+		if !strings.Contains(cmdErr.Error(), "mcp_listen bind") {
+			t.Errorf("expected 'mcp_listen bind' error, got: %v", cmdErr)
+		}
+		return nil
 	})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	cmdErr := cmd.Execute()
-	if cmdErr == nil {
-		cancel()
-		t.Fatal("expected bind error, but run succeeded")
-	}
-	if !strings.Contains(cmdErr.Error(), "mcp_listen bind") {
-		t.Errorf("expected 'mcp_listen bind' error, got: %v", cmdErr)
-	}
 }
 
 func TestRunCmd_MCPListenReloadUsesResolvedConfigForWarnings(t *testing.T) {

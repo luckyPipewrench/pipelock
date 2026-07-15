@@ -265,8 +265,9 @@ func newTestServer(t *testing.T, mutate func(*ServerOpts)) (*Server, *syncBuffer
 	t.Helper()
 	buf := &syncBuffer{}
 	opts := ServerOpts{
-		Stdout: buf,
-		Stderr: buf,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
 	}
 	if mutate != nil {
 		mutate(&opts)

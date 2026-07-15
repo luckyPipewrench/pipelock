@@ -504,6 +504,11 @@ type Config struct {
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
 	rawBytes []byte `yaml:"-"`
 
+	// allowEphemeralListeners is test-only provenance for in-process runtime
+	// harnesses that need the kernel to choose collision-free ports. Operator
+	// YAML can never set it.
+	allowEphemeralListeners bool `yaml:"-"`
+
 	// canonicalHashCache memoises CanonicalPolicyHash() so repeated calls
 	// on the same *Config value do not re-walk and re-marshal the struct.
 	// Unexported - json.Marshal skips it, yaml does not see it, and test

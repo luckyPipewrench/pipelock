@@ -8,7 +8,88 @@ on:
 permissions: {}
 
 jobs:
+  release-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    name: release-tests (${{ matrix.suite.name }}, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: default
+            tags: ''
+          - name: enterprise
+            tags: enterprise
+        shard: ['proxy', 'scanner', 'mcp', 'rest']
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25.12'
+          check-latest: true
+
+      - name: Verify Go version
+        run: |
+          got="$(go env GOVERSION)"
+          echo "GOVERSION=$got"
+          test "$got" = "go1.25.12"
+
+      - name: Verify dependencies
+        run: bash scripts/ci-retry.sh go mod verify
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Verify shard coverage
+        env:
+          GO_TEST_TAGS: ${{ matrix.suite.tags }}
+        run: |
+          set -euo pipefail
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          if [ -n "$GO_TEST_TAGS" ]; then
+            go list -tags "$GO_TEST_TAGS" ./... | sort > "$tmpdir/all.txt"
+          else
+            go list ./... | sort > "$tmpdir/all.txt"
+          fi
+
+          : > "$tmpdir/shards.txt"
+          for shard in proxy scanner mcp rest; do
+            if [ -n "$GO_TEST_TAGS" ]; then
+              python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$shard"
+            else
+              python3 scripts/ci_test_packages.py --shard "$shard"
+            fi | tr ' ' '\n' >> "$tmpdir/shards.txt"
+          done
+          sort "$tmpdir/shards.txt" > "$tmpdir/shards.sorted.txt"
+
+          diff -u "$tmpdir/all.txt" "$tmpdir/shards.sorted.txt"
+
+      - name: Run tests
+        env:
+          GO_TEST_TAGS: ${{ matrix.suite.tags }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+
+          tag_args=()
+          package_args=("--shard" "$TEST_SHARD")
+          if [ -n "$GO_TEST_TAGS" ]; then
+            tag_args=("-tags" "$GO_TEST_TAGS")
+            package_args=("--tags" "$GO_TEST_TAGS" "${package_args[@]}")
+          fi
+
+          packages="$(python3 scripts/ci_test_packages.py "${package_args[@]}")"
+          go test "${tag_args[@]}" -race -count=1 -timeout 30m $packages
+
   release:
+    needs: [release-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -40,17 +121,8 @@ jobs:
       - name: Run release audit
         run: make release-audit
 
-      - name: Run runtime-critical packages
-        run: make test-runtime-critical
-
       - name: Run runtime policy audit
         run: make runtime-policy-audit
-
-      - name: Run tests
-        run: go test -race -count=1 -timeout 30m ./...
-
-      - name: Run enterprise-tagged tests
-        run: go test -race -count=1 -timeout 30m -tags enterprise ./...
 
       - name: Login to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0

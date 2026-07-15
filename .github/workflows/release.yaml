@@ -10,6 +10,7 @@ permissions: {}
 jobs:
   release-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: read
     name: release-tests (${{ matrix.suite.name }}, ${{ matrix.shard }})
@@ -49,6 +50,8 @@ jobs:
           GO_TEST_TAGS: ${{ matrix.suite.tags }}
         run: |
           set -euo pipefail
+
+          python3 -m unittest scripts.test_ci_test_packages
 
           tmpdir="$(mktemp -d)"
           trap 'rm -rf "$tmpdir"' EXIT

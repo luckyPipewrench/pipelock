@@ -28,7 +28,9 @@ def package_suffix(package: str) -> str:
     marker = "/internal/"
     if marker not in package:
         return ""
-    return "internal/" + package.rsplit(marker, 1)[1]
+    # Classify from the first internal/ directory. Using the last occurrence
+    # would incorrectly move internal/foo/internal/proxy into the proxy shard.
+    return "internal/" + package.split(marker, 1)[1]
 
 
 def package_in_tree(package: str, root: str) -> bool:

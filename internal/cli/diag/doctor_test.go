@@ -46,6 +46,29 @@ func TestDoctorJSONReportsWarningsForDefaultTopology(t *testing.T) {
 	}
 }
 
+func TestDoctorStartupFlagAddsHostChecksAndRetallies(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := DoctorCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--startup", "--check-ports", "--json"})
+	_ = cmd.Execute()
+
+	var report doctorReport
+	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+	}
+	if !doctorReportHasCheck(report, "startup_dlp_secrets_file", doctorStatusInfo) {
+		t.Fatalf("missing startup DLP check: %+v", report.Checks)
+	}
+	if !doctorReportHasCheck(report, "startup_tls_ca", doctorStatusInfo) {
+		t.Fatalf("missing startup TLS check: %+v", report.Checks)
+	}
+	want := retallyDoctorSummary(report.Checks)
+	if report.Summary != want {
+		t.Fatalf("summary = %+v, want %+v", report.Summary, want)
+	}
+}
+
 func TestBuildDoctorReportFlagsMissingMCPManifest(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.MCPBinaryIntegrity.Enabled = true

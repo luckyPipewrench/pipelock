@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
 )
 
@@ -87,6 +88,20 @@ func TestAssessRun_CompletesSuccessfully(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Errorf("evidence file %s permissions = %o, want 0600", name, perm)
 		}
+	}
+}
+
+func TestAssessScannerConstructionFailures(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.SecretsFile = filepath.Join(t.TempDir(), "missing-secrets.txt")
+
+	if err := runPrimitiveSimulate(cfg, t.TempDir(), "test-config"); err == nil || !strings.Contains(err.Error(), "create simulate scanner") {
+		t.Fatalf("simulate error = %v, want scanner construction failure", err)
+	}
+	if err := runPrimitiveVerifyInstall(cfg, t.TempDir(), "test-config"); err == nil || !strings.Contains(err.Error(), "create verify-install scanner") {
+		t.Fatalf("verify-install error = %v, want scanner construction failure", err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -81,6 +82,27 @@ func TestAgentRegistryLookup(t *testing.T) {
 	if fallback.Config.Mode != config.ModeBalanced {
 		t.Errorf("fallback mode = %q, want balanced", fallback.Config.Mode)
 	}
+}
+
+func TestAgentRegistryScannerConstructionFailures(t *testing.T) {
+	t.Run("fallback", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.DLP.SecretsFile = filepath.Join(t.TempDir(), "missing-secrets.txt")
+		_, err := NewAgentRegistry(cfg)
+		if err == nil || !strings.Contains(err.Error(), "fallback scanner") {
+			t.Fatalf("error = %v, want fallback scanner failure", err)
+		}
+	})
+
+	t.Run("agent", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.DLP.SecretsFile = filepath.Join(t.TempDir(), "missing-secrets.txt")
+		cfg.Agents = map[string]config.AgentProfile{testProfileClaudeCode: {Mode: config.ModeStrict}}
+		_, err := NewAgentRegistry(cfg)
+		if err == nil || !strings.Contains(err.Error(), `agent "claude-code" scanner`) {
+			t.Fatalf("error = %v, want agent scanner failure", err)
+		}
+	})
 }
 
 func TestAgentRegistryPortLookup(t *testing.T) {

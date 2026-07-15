@@ -31,4 +31,9 @@ func TestPathWritableDirUsesReadOnlyPermissionInspection(t *testing.T) {
 	if os.Geteuid() != 0 && pathWritableDir(missingChild) {
 		t.Fatal("missing child of unwritable parent reported writable")
 	}
+
+	nestedMissing := filepath.Join(t.TempDir(), "one", "two", "receipts")
+	if !pathWritableDir(nestedMissing) {
+		t.Fatal("nested missing directory under writable ancestor reported unwritable")
+	}
 }

@@ -529,7 +529,12 @@ func TestDoctorCmd_FlightRecorderInert(t *testing.T) {
 func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 	dir := t.TempDir()
 	creatableDir := filepath.Join(t.TempDir(), "missing")
-	unusableDir := filepath.Join(t.TempDir(), "missing-parent", "missing")
+	blockingFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingFile, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nestedCreatableDir := filepath.Join(t.TempDir(), "missing-parent", "missing")
+	unusableDir := filepath.Join(blockingFile, "missing")
 	tests := []struct {
 		name    string
 		enabled bool
@@ -542,7 +547,8 @@ func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 		{name: "enabled_no_dir", enabled: true, dir: "", want: doctorStatusWarn},
 		{name: "enabled_with_dir", enabled: true, dir: dir, want: doctorStatusOK, reach: true, enforce: true},
 		{name: "enabled_missing_dir_parent_writable", enabled: true, dir: creatableDir, want: doctorStatusOK, reach: true, enforce: true},
-		{name: "enabled_missing_dir_parent_missing", enabled: true, dir: unusableDir, want: doctorStatusFail},
+		{name: "enabled_nested_missing_dir", enabled: true, dir: nestedCreatableDir, want: doctorStatusOK, reach: true, enforce: true},
+		{name: "enabled_missing_dir_blocked_by_file", enabled: true, dir: unusableDir, want: doctorStatusFail},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

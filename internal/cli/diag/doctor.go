@@ -837,20 +837,18 @@ func pathReadable(path string) bool {
 }
 
 func pathWritableDir(path string) bool {
-	cleanPath := filepath.Clean(path)
-	info, err := os.Stat(cleanPath)
-	if err == nil {
-		return info.IsDir() && dirWritableExecutableByCurrentUser(info)
+	for candidate := filepath.Clean(path); ; candidate = filepath.Dir(candidate) {
+		info, err := os.Stat(candidate)
+		if err == nil {
+			return info.IsDir() && dirWritableExecutableByCurrentUser(info)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+		if parent := filepath.Dir(candidate); parent == candidate {
+			return false
+		}
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return false
-	}
-	parent := filepath.Dir(cleanPath)
-	parentInfo, parentErr := os.Stat(parent)
-	if parentErr != nil || !parentInfo.IsDir() {
-		return false
-	}
-	return dirWritableExecutableByCurrentUser(parentInfo)
 }
 
 func openReadable(path string) bool {

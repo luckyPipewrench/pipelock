@@ -112,7 +112,7 @@ func TestExtractLiteralPrefix(t *testing.T) {
 
 func TestDLPPreFilter_Candidates(t *testing.T) {
 	// Build a pre-filter from the real config defaults.
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	pf := newDLPPreFilter(s.dlpPatterns)
@@ -176,7 +176,7 @@ func TestDLPPreFilter_Candidates(t *testing.T) {
 func TestDLPPreFilter_EndToEndAlwaysRun(t *testing.T) {
 	// Verify always-run patterns are evaluated through the full scanner path
 	// even when the input contains no literal prefix from prefix-gated patterns.
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// AWS key has no extractable prefix (alternation). It must still be caught
@@ -189,7 +189,7 @@ func TestDLPPreFilter_EndToEndAlwaysRun(t *testing.T) {
 }
 
 func TestDLPPreFilter_AlwaysRunPatterns(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	pf := newDLPPreFilter(s.dlpPatterns)

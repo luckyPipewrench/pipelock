@@ -22,7 +22,7 @@ import (
 // cover, not a raw secret the caller was about to forward.
 func TestScanRequestBody_Redaction_BeforeDLPEarlyReturn(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	m := redact.NewDefaultMatcher()
@@ -59,7 +59,7 @@ func TestScanRequestBody_Redaction_BeforeDLPEarlyReturn(t *testing.T) {
 
 func TestScanRequestBody_Redaction_AnnotatesProviderParser(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	registry, err := redact.NewProviderRegistry(nil)
@@ -94,7 +94,7 @@ func TestScanRequestBody_Redaction_AnnotatesProviderParser(t *testing.T) {
 // allowlist. Review §4.7 + round-1 #1.
 func TestScanRequestBody_Redaction_NonJSONBlocked(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
@@ -119,7 +119,7 @@ func TestScanRequestBody_Redaction_NonJSONBlocked(t *testing.T) {
 // before matching.
 func TestScanRequestBody_Redaction_HostPortMatchesAllowlist(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
@@ -138,7 +138,7 @@ func TestScanRequestBody_Redaction_HostPortMatchesAllowlist(t *testing.T) {
 
 func TestScanRequestBody_Redaction_JSONSniffWrongContentType(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	secret := redactionE2ESecret()
@@ -170,7 +170,7 @@ func TestScanRequestBody_Redaction_JSONSniffWrongContentType(t *testing.T) {
 // a broad class (hash-sha256 vs. a 64-hex client_secret, etc).
 func TestScanRequestBody_Redaction_AllowlistedNonJSONPassthrough(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	// Opaque token value that does not match any DLP class, so we can
@@ -218,7 +218,7 @@ func TestScanRequestBody_Redaction_AllowlistedNonJSONPassthrough(t *testing.T) {
 // contract change in applyRedaction.
 func TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShapedSecret(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	// 64 hex chars: shape matches the hash-sha256 redaction class. Not a
@@ -268,7 +268,7 @@ func TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShaped
 
 func TestScanRequestBody_Redaction_RequiredNilMatcherBlocksAllowlistedRawText(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
@@ -291,7 +291,7 @@ func TestScanRequestBody_Redaction_RequiredNilMatcherBlocksAllowlistedRawText(t 
 
 func TestScanRequestBody_Redaction_RouteAllowlistRequiresFullMatch(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	route := redact.UnparseableRouteSpec{
@@ -345,7 +345,7 @@ func TestScanRequestBody_Redaction_RouteAllowlistRequiresFullMatch(t *testing.T)
 // reach the upstream verbatim.
 func TestScanRequestBody_Redaction_RouteAllowlistPassthrough(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	const opaque = "opaque_refresh_token_value_not_dlp_shaped"
@@ -385,7 +385,7 @@ func TestScanRequestBody_Redaction_RouteAllowlistPassthrough(t *testing.T) {
 
 func TestScanRequestBody_Redaction_RouteAllowlistNormalizesRuntimeCandidates(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
@@ -414,7 +414,7 @@ func TestScanRequestBody_Redaction_RouteAllowlistNormalizesRuntimeCandidates(t *
 // is nil).
 func TestScanRequestBody_Redaction_NilMatcherIsNoop(t *testing.T) {
 	cfg := testScannerConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	body := `{"msg":"hello"}`

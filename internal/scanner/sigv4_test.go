@@ -534,7 +534,7 @@ func TestSigV4CarveoutEndToEnd(t *testing.T) {
 			"example.com",
 			"attacker.example",
 		}
-		s := New(cfg)
+		s := MustNew(cfg)
 		t.Cleanup(s.Close)
 		return s
 	}
@@ -675,7 +675,7 @@ func TestSigV4CarveoutDoesNotShortcircuitOtherScanners(t *testing.T) {
 	cfg.APIAllowlist = []string{"examplebucket.s3.amazonaws.com"}
 	cfg.FetchProxy.Monitoring.MaxURLLength = 200 // intentionally short to trip length check
 
-	scanner := New(cfg)
+	scanner := MustNew(cfg)
 	defer scanner.Close()
 
 	raw := buildSigV4URL(t, fakeAKIAExample, "3600", "")
@@ -712,7 +712,7 @@ func TestSigV4ScrubPreservesQueryOrder(t *testing.T) {
 	cfg.Internal = nil
 	cfg.APIAllowlist = []string{"examplebucket.s3.amazonaws.com", "*.amazonaws.com"}
 
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	// 4 + 17 = 21 chars total; matches AWS Access ID pattern `AKIA[A-Z0-9]{16,}`.

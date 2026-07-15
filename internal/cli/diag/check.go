@@ -75,7 +75,11 @@ Examples:
 				for _, e := range bundleResult.Errors {
 					cmd.PrintErrf("pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 				}
-				sc := scanner.New(cfg)
+				sc, err := scanner.New(cfg)
+				if err != nil {
+					return cliutil.ExitCodeError(2, fmt.Errorf("create scanner: %w", err))
+				}
+				defer sc.Close()
 				result := sc.Scan(cmd.Context(), scanURL)
 				if result.Allowed {
 					cmd.Println("  Result:  ALLOWED")

@@ -44,7 +44,7 @@ func testCanaryScanner() *Scanner {
 			Value: testCanaryValueSpecial(),
 		},
 	}
-	return New(cfg)
+	return MustNew(cfg)
 }
 
 func TestScanTextForDLP_CanaryBypassCoverage(t *testing.T) {
@@ -166,7 +166,7 @@ func TestScanTextForDLP_CanaryDisabled(t *testing.T) {
 	cfg.CanaryTokens.Tokens = []config.CanaryToken{
 		{Name: testCanaryName, Value: testCanaryValue()},
 	}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), testCanaryValue())

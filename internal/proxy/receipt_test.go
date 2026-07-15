@@ -88,7 +88,7 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	p, pErr := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rec),
@@ -204,7 +204,7 @@ func TestProxy_ReceiptEmission_FetchAllow(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	p, pErr := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rec),
@@ -277,7 +277,7 @@ func TestProxy_NilEmitter_NoReceipt(t *testing.T) {
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// No WithReceiptEmitter - emitter is nil
 	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
@@ -308,7 +308,7 @@ func TestEmitRequiredReceipt_UnavailableEmitterRecordsMetric(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	m := metrics.New()
 	p, err := New(cfg, audit.NewNop(), sc, m)
@@ -335,7 +335,7 @@ func TestEmitRequiredReceipt_UnavailableEmitterRecordsMetric(t *testing.T) {
 func TestEmitRequiredReceipt_V1FailureLogsReceiptChannelBrokenAuditGap(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -485,7 +485,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m, WithRecorder(rec))
@@ -504,7 +504,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -592,7 +592,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 	cfg.FlightRecorder.SigningKeyPath = keyPath
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m,
@@ -614,7 +614,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -667,7 +667,7 @@ func TestProxy_ReloadReceiptEmitter_BadKeyPath(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m, WithRecorder(rec))
@@ -680,7 +680,7 @@ func TestProxy_ReloadReceiptEmitter_BadKeyPath(t *testing.T) {
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = "/nonexistent/receipt.key"
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -751,7 +751,7 @@ fetch_proxy:
 	})
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m,
@@ -790,7 +790,7 @@ fetch_proxy:
 	if cfg.CanonicalPolicyHash() == reloadCfg.CanonicalPolicyHash() {
 		t.Fatal("expected distinct canonical policy hashes for aborted-reload receipt test")
 	}
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -908,7 +908,7 @@ fetch_proxy:
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m,
@@ -955,7 +955,7 @@ fetch_proxy:
 		_ = os.Chmod(recDir, 0o750) // #nosec G302 -- restore traversable dir perms for TempDir cleanup
 	})
 
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 	if p.Reload(reloadCfg, reloadSc) {
 		t.Fatal("reload unexpectedly succeeded after session_open emit failure")
 	}
@@ -1046,7 +1046,7 @@ func TestProxy_ReloadReceiptEmitter_NoRecorder(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	// No WithRecorder - recorder is nil.
@@ -1060,7 +1060,7 @@ func TestProxy_ReloadReceiptEmitter_NoRecorder(t *testing.T) {
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -1111,7 +1111,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	cfg.FlightRecorder.SigningKeyPath = keyPath
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m,
@@ -1134,7 +1134,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -1215,7 +1215,7 @@ func TestProxy_ReloadSameSigningKeyReusesEmitterSoStaleHeartbeatCannotFork(t *te
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FlightRecorder.SigningKeyPath = keyPath
 
-	p, pErr := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(),
+	p, pErr := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New(),
 		WithRecorder(rec),
 		WithReceiptEmitter(emitter),
 		WithReceiptKeyPath(keyPath),
@@ -1230,7 +1230,7 @@ func TestProxy_ReloadSameSigningKeyReusesEmitterSoStaleHeartbeatCannotFork(t *te
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
-	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+	if !p.Reload(reloadCfg, scanner.MustNew(reloadCfg)) {
 		t.Fatal("Reload returned false")
 	}
 	if got := p.receiptEmitterPtr.Load(); got != origEmitter {
@@ -1327,7 +1327,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, pErr := New(cfg, logger, sc, m,
@@ -1351,7 +1351,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPathB
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -1472,7 +1472,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseScan(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	p, pErr := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rec),
@@ -1576,7 +1576,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 	cfg.FetchProxy.MaxResponseMB = 0
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	p, pErr := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rec),
@@ -1676,7 +1676,7 @@ func TestProxy_ReceiptEmission_ForwardResponseSize(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	p, pErr := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rec),
@@ -1797,7 +1797,7 @@ func TestProxy_ReceiptEmission_ForwardSizeExemptResponseScanBlock(t *testing.T) 
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	p, pErr := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rec),

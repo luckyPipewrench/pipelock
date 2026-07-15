@@ -27,7 +27,7 @@ func TestNew_FailsClosedWhenBaselineInitFails(t *testing.T) {
 	cfg.BehavioralBaseline.SeasonalityMode = config.SeasonalityModeLabeled
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 

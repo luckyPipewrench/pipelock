@@ -64,7 +64,7 @@ func TestKillSwitchPortIsolation_APIOnSeparatePort(t *testing.T) {
 
 	logger, _ := audit.New("json", "stdout", "", false, false)
 	defer logger.Close()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 
@@ -223,7 +223,7 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 
 	logger, _ := audit.New("json", "stdout", "", false, false)
 	defer logger.Close()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 
@@ -288,7 +288,7 @@ func TestKillSwitchHealthReportsActive(t *testing.T) {
 
 	logger, _ := audit.New("json", "stdout", "", false, false)
 	defer logger.Close()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 

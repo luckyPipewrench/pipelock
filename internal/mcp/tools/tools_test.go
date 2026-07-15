@@ -29,7 +29,7 @@ func testScanner(t *testing.T) *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc
 }
@@ -2518,7 +2518,7 @@ func TestToolScanResult_ToolNames(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	tb := NewToolBaseline()

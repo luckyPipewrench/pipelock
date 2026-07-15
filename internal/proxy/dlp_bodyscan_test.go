@@ -20,7 +20,7 @@ func newBodyDLPScanner(t *testing.T) *scanner.Scanner {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc
 }

@@ -305,6 +305,18 @@ func resolvePurpose(cfg *config.Config, purpose domsigning.KeyPurpose) keyStatus
 		item.Note = "Enterprise Conductor report signer; operator-chosen path, not discoverable from config. Public half is published for offline report verification."
 		return item
 
+	case domsigning.PurposeCoverageCertSigning:
+		// Coverage Certificate signing key, produced by
+		// `pipelock signing key generate --purpose coverage-cert-signing --out <path>`
+		// and used by the dashboard coverage-cert generator. The path is
+		// operator-chosen and supplied at generation time; the public half is
+		// pinned by offline verifiers.
+		item.SourceKind = sourceDeploymentFile
+		item.Source = "key file from 'pipelock signing key generate --purpose coverage-cert-signing --out <path>'"
+		item.Status = statusInfo
+		item.Note = "Dashboard coverage certificate signer; operator-chosen path, not discoverable from config. Public half is published for offline certificate verification."
+		return item
+
 	default:
 		// Defensive: a new purpose added to the enum without a mapping here
 		// is reported honestly rather than silently dropped.

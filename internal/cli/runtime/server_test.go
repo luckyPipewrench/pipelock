@@ -1181,6 +1181,62 @@ func TestServer_Reload_StrictRejectsActionDowngrade(t *testing.T) {
 	}
 }
 
+func TestServer_ReloadScannerConstructionErrorPreservesLiveScanner(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open mode 000 files")
+	}
+	s, buf := newTestServer(t, nil)
+
+	oldCfg := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	if oldScanner == nil {
+		t.Fatal("live scanner is nil before reload")
+	}
+	before := oldScanner.Scan(context.Background(), "http://169.254.169.254/latest/meta-data")
+	if before.Allowed {
+		t.Fatalf("live scanner did not block metadata URL before reload: %+v", before)
+	}
+
+	secretsPath := filepath.Join(t.TempDir(), "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("AKIA"+"IOSFODNN7EXAMPLE"+"\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	if err := os.Chmod(secretsPath, 0o000); err != nil {
+		t.Fatalf("chmod secrets file: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(secretsPath, 0o600)
+	})
+
+	buf.reset()
+	newCfg := oldCfg.Clone()
+	newCfg.DLP.SecretsFile = secretsPath
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("expected reload to reject unreadable dlp.secrets_file")
+	}
+	if !strings.Contains(err.Error(), "scanner construction failed") {
+		t.Fatalf("error = %q, want scanner construction failure", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("live config pointer changed after rejected scanner reload")
+	}
+	if s.cfg != oldCfg {
+		t.Fatal("server cfg pointer changed after rejected scanner reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("live scanner changed after rejected scanner reload")
+	}
+	after := s.proxy.ScannerPtr().Load().Scan(context.Background(), "http://169.254.169.254/latest/meta-data")
+	if after.Allowed {
+		t.Fatalf("live scanner stopped blocking after rejected reload: %+v", after)
+	}
+	if !buf.contains("scanner construction failed") {
+		t.Fatalf("stderr missing scanner construction rejection:\n%s", buf.String())
+	}
+}
+
 func TestServer_Reload_BundleResolutionErrorRejectsBalancedCoverageDrop(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)

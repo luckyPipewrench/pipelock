@@ -532,7 +532,11 @@ func runInitCanary(cfg *config.Config) *initCanaryResult {
 }
 
 func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return false
+	}
+	defer sc.Close()
 	result := sc.Scan(context.Background(), canaryURL)
 	// Assert the block came from DLP specifically, not an allowlist or other layer.
 	// Core DLP (immutable safety floor) also counts as DLP detection.

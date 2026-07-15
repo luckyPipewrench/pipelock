@@ -65,7 +65,7 @@ func newWatchdogProxy(t *testing.T, probe health.Probe) (*Proxy, func()) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(), WithHealthWatchdog(wd))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -98,7 +98,7 @@ func TestHealth_DefaultProbeReportsHealthy(t *testing.T) {
 	cfg.HealthWatchdog.ExposeSubsystems = true // assert against subsystems map
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -215,7 +215,7 @@ func TestScannerProbe_NilPointers_ReturnsError(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -265,7 +265,7 @@ func TestScannerProbe_SingleflightPreventsGoroutineLeak(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -314,7 +314,7 @@ func TestHealth_ExposeSubsystemsDefault_HidesMap(t *testing.T) {
 	// ExposeSubsystems default is false; do not set it.
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -400,7 +400,7 @@ func TestHealth_ReloadedScannerKeepsHeartbeat(t *testing.T) {
 	defer cleanup()
 
 	cfg := p.CurrentConfig().Clone()
-	newSc := scanner.New(cfg)
+	newSc := scanner.MustNew(cfg)
 	if ok := p.Reload(cfg, newSc); !ok {
 		t.Fatal("Reload returned false")
 	}
@@ -429,7 +429,7 @@ func TestHealth_WatchdogDisabled_LegacyShape(t *testing.T) {
 	cfg.HealthWatchdog.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

@@ -41,7 +41,7 @@ func newTestScanner(t *testing.T, mutate func(*config.Config)) *scanner.Scanner 
 	if mutate != nil {
 		mutate(cfg)
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	return sc
 }

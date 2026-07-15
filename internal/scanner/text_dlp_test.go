@@ -1011,7 +1011,7 @@ func TestScanTextForDLP(t *testing.T) {
 			} else {
 				cfg = testConfig()
 			}
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			if tt.setupScanner != nil {
@@ -1044,7 +1044,7 @@ func TestScanTextForDLP(t *testing.T) {
 }
 
 func TestScanTextForDLP_DecodesStructuredPayloadSegment(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	secret := testAnthropicPrefix + strings.Repeat("z", 25)
 	body := `{"payload":"` + base64.StdEncoding.EncodeToString([]byte(secret)) + `"}`
 
@@ -1058,7 +1058,7 @@ func TestScanTextForDLP_DecodesStructuredPayloadSegment(t *testing.T) {
 }
 
 func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	secret := testAnthropicPrefix + strings.Repeat("z", 25)
@@ -1108,7 +1108,7 @@ func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing
 }
 
 func TestScanTextForDLP_DecodesDeepHTMLEntitySecret(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	secret := "AKIA" + strings.Repeat("Q", 16)
@@ -1134,7 +1134,7 @@ func TestDecodeHTMLEntitiesSingleEncodedResolvesInOnePass(t *testing.T) {
 }
 
 func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
 	secret := "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CY" + "EXAMPLEKEY"
 
@@ -1152,7 +1152,7 @@ func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
 }
 
 func TestScanTextForDLP_OfficialAWSExampleCredentialDocsWholeTokenOnly(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
 	realKey := "AKIA" + strings.Repeat("Q", 16)
 
@@ -1206,7 +1206,7 @@ func TestScanTextForDLP_OfficialAWSExampleCredentialDocsWholeTokenOnly(t *testin
 func TestScanTextForDLP_UnicodePrefixedBareKeyStillBlocks(t *testing.T) {
 	// A rune that changes byte length when lowercased (U+212A KELVIN SIGN -> "k")
 	// must not shift doc-marker offsets away from credential byte spans.
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
@@ -1252,7 +1252,7 @@ func TestScanTextForDLP_UnicodePrefixedBareKeyStillBlocks(t *testing.T) {
 // space-split assignments still do. Asserting against the collapsed view
 // directly (not raw text) covers the real mechanism.
 func TestEnvVarSecret_WhitespaceViewMechanism(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	const envVarPattern = "Environment Variable Secret"
@@ -1291,7 +1291,7 @@ func TestEnvVarSecret_WhitespaceViewMechanism(t *testing.T) {
 // set. The shell-example false positive must be clean and a real leaked value
 // must still block in each direction.
 func TestEnvVarSecret_BothDirections(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	shellExample := `PROVIDER_TOKEN=$(grep "^PROVIDER_TOKEN=" ~/.config/app/.env | cut -d= -f2)` +
@@ -1328,7 +1328,7 @@ func hasTextDLPMatch(matches []TextDLPMatch, name, encoded string) bool {
 
 func TestScanTextForDLP_Deduplication(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// The raw secret appears in the text AND the base64-decoded form also matches.
@@ -1366,7 +1366,7 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 
 func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	anthropic := testAnthropicPrefix + strings.Repeat("j", 25)
@@ -1447,7 +1447,7 @@ func TestDeduplicateMatches(t *testing.T) {
 
 func TestMatchDLPPatterns(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Test that matchDLPPatterns tags encoding correctly
@@ -1467,7 +1467,7 @@ func TestMatchDLPPatterns(t *testing.T) {
 
 func TestCheckSecretsInText_NoEnvSecrets(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	matches := s.checkSecretsInText(nil, "some text with anything", "Environment Variable Leak", "env")
@@ -1479,7 +1479,7 @@ func TestCheckSecretsInText_NoEnvSecrets(t *testing.T) {
 func TestCheckSecretsInText_HexEncodedEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "SuperSecretTestValue99"
@@ -1493,7 +1493,7 @@ func TestCheckSecretsInText_HexEncodedEnvSecret(t *testing.T) {
 func TestCheckSecretsInText_Base32EncodedEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "Base32TestSecretValue!"
@@ -1507,7 +1507,7 @@ func TestCheckSecretsInText_Base32EncodedEnvSecret(t *testing.T) {
 func TestCheckSecretsInText_URLSafeBase64EnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Use a secret that produces different URL-safe vs standard base64
@@ -1529,7 +1529,7 @@ func TestCheckSecretsInText_URLSafeBase64EnvSecret(t *testing.T) {
 func TestCheckSecretsInText_DelimiterHexEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "SuperSecretTestValue99"
@@ -1559,7 +1559,7 @@ func TestCheckSecretsInText_DelimiterHexEnvSecret(t *testing.T) {
 func TestCheckSecretsInText_DelimiterEncodedEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	stdSecret := "DelimiterSecretValue1234"
@@ -1599,7 +1599,7 @@ func TestCheckSecretsInText_DelimiterEncodedEnvSecret(t *testing.T) {
 
 func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Double URL-encode an AWS key: AKIA... → %41%4B%49%41... → %2541%254B...
@@ -1625,7 +1625,7 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 
 func TestScanTextForDLP_HTMLEntityEncodedSecret(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1664,7 +1664,7 @@ func TestScanTextForDLP_HTMLEntityEncodedSecret(t *testing.T) {
 
 func TestScanTextForDLP_HTMLEntityWrappedBase64Secret(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := testAnthropicPrefix + strings.Repeat("q", 25)
@@ -1686,7 +1686,7 @@ func TestScanTextForDLP_HTMLEntityWrappedBase64Secret(t *testing.T) {
 
 func TestScanTextForDLP_InvalidHTMLEntitiesClean(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), `literal invalid entities: &#xZZ; &#999999999999; &notasecret;`)
@@ -1697,7 +1697,7 @@ func TestScanTextForDLP_InvalidHTMLEntitiesClean(t *testing.T) {
 
 func TestScanTextForDLP_StackedDecodeFixpoint(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -1719,7 +1719,7 @@ func TestScanTextForDLP_StackedDecodeFixpoint(t *testing.T) {
 // still decoding large candidates.
 func TestScanTextForDLP_StackedDecodePastFormerByteCeiling(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -1739,7 +1739,7 @@ func TestScanTextForDLP_StackedDecodePastFormerByteCeiling(t *testing.T) {
 
 func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// URL-encoded null byte %00 in the middle of a secret. After IterativeDecode,
@@ -1762,7 +1762,7 @@ func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
 
 func TestScanTextForDLP_DNSSubdomainExfil(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1818,7 +1818,7 @@ func TestScanTextForDLP_DNSSubdomainExfil(t *testing.T) {
 
 func TestScanTextForDLP_ControlCharBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Build key at runtime to avoid gitleaks
@@ -1852,7 +1852,7 @@ func TestScanTextForDLP_ControlCharBypass(t *testing.T) {
 
 func TestScanTextForDLP_MultipleControlChars(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Multiple control chars scattered through an AWS key
@@ -1867,7 +1867,7 @@ func TestScanTextForDLP_MultipleControlChars(t *testing.T) {
 
 func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1917,7 +1917,7 @@ func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
 // added to the ForDLP normalization pipeline.
 func TestScanTextForDLP_ExoticWhitespaceBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	suffix := strings.Repeat("a", 25)
@@ -1956,7 +1956,7 @@ func TestScanTextForDLP_ExoticWhitespaceBypass(t *testing.T) {
 // they know against the scanner.
 func TestScanTextForDLP_StackedStegoVectors(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	suffix := strings.Repeat("a", 25)
@@ -1971,7 +1971,7 @@ func TestScanTextForDLP_StackedStegoVectors(t *testing.T) {
 
 func TestScanTextForDLP_CombiningMarkBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Combining long stroke overlay (U+0337) inserted into key prefix
@@ -1984,7 +1984,7 @@ func TestScanTextForDLP_CombiningMarkBypass(t *testing.T) {
 
 func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Latin small cap letters in GitHub token prefix
@@ -2008,7 +2008,7 @@ func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
 
 func TestScanTextForDLP_ShortAnthropicKeyNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := testAnthropicPrefix + strings.Repeat("A", 10)
@@ -2020,7 +2020,7 @@ func TestScanTextForDLP_ShortAnthropicKeyNoFP(t *testing.T) {
 
 func TestScanTextForDLP_ShortSvcAcctKeyNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := "sk-svcacct-" + strings.Repeat("A", 10)
@@ -2032,7 +2032,7 @@ func TestScanTextForDLP_ShortSvcAcctKeyNoFP(t *testing.T) {
 
 func TestScanTextForDLP_LLMProviderKeyTransformLimits(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := "sk-proj-" + strings.Repeat("A", 20)
@@ -2057,7 +2057,7 @@ func reverseASCII(s string) string {
 
 func TestScanTextForDLP_CredentialInURL(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), "connect to postgres://user:pass@host/db?password=supersecret123")
@@ -2068,7 +2068,7 @@ func TestScanTextForDLP_CredentialInURL(t *testing.T) {
 
 func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), "set token=yes in the config")
@@ -2086,7 +2086,7 @@ func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
 // a per-file exclude-paths entry in the GitHub Action workflow.
 func TestScanTextForDLP_CredentialInURL_NoFPOnGoAssignment(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	goLines := []string{
@@ -2116,7 +2116,7 @@ func TestScanTextForDLP_CredentialInURL_NoFPOnGoAssignment(t *testing.T) {
 // themselves as a leak (see also CLAUDE.md G101 guidance for gosec).
 func TestScanTextForDLP_CredentialInURL_StillCatchesQueryDelimiter(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	longVal := "super" + "secret" + "123"
@@ -2157,7 +2157,7 @@ func TestScanTextForDLP_CredentialInURL_StillCatchesQueryDelimiter(t *testing.T)
 // fixed). Split literals keep GitGuardian quiet on the fixtures.
 func TestScanTextForDLP_CredentialInURL_CatchesBodyStart(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	longVal := "hunter" + "x" + "abcd"
@@ -2187,7 +2187,7 @@ func TestScanTextForDLP_CredentialInURL_CatchesBodyStart(t *testing.T) {
 // narrowing closed.
 func TestScanTextForDLP_CredentialInURL_SkipsStructAssignment(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	longVal := "hunter" + "x" + "abcd"
@@ -2220,7 +2220,7 @@ func TestScanTextForDLP_EthereumAddressOptIn(t *testing.T) {
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
 		Name: "Ethereum Address", Regex: `0x[0-9a-fA-F]{40}\b`, Severity: "high",
 	})
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	addr := "0x" + "d8dA6BF26964aF9D" + "7eEd9e03E53415D37aA96045"
@@ -2243,7 +2243,7 @@ func TestScanTextForDLP_EthereumAddressOptIn(t *testing.T) {
 
 func TestScanTextForDLP_EnvVarSecret(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -2284,7 +2284,7 @@ func TestScanTextForDLP_EnvVarSecret(t *testing.T) {
 
 func TestScanTextForDLP_EnvVarSecret_ShortValueClean(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Short values (under 8 chars) should not trigger.
@@ -2296,7 +2296,7 @@ func TestScanTextForDLP_EnvVarSecret_ShortValueClean(t *testing.T) {
 
 func TestScanTextForDLP_EnvVarSecret_BenignUppercaseClean(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Uppercase names containing keywords as substrings must not FP.
@@ -2329,7 +2329,7 @@ func TestScanTextForDLP_FileSecretRawMatch(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), "Here is the secret: "+secret)
@@ -2357,7 +2357,7 @@ func TestScanTextForDLP_FileSecretBase64Match(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
@@ -2377,7 +2377,7 @@ func TestScanTextForDLP_FileSecretHexMatch(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := hex.EncodeToString([]byte(secret))
@@ -2397,7 +2397,7 @@ func TestScanTextForDLP_FileSecretBase32Match(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := base32.StdEncoding.EncodeToString([]byte(secret))
@@ -2417,7 +2417,7 @@ func TestScanTextForDLP_FileSecretDistinctFromEnv(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Also inject an env secret
@@ -2438,7 +2438,7 @@ func TestScanTextForDLP_FileSecretDistinctFromEnv(t *testing.T) {
 func TestScanTextForDLP_NoFileSecrets_Clean(t *testing.T) {
 	cfg := testConfig()
 	// No secrets_file configured
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), "This text contains no secrets at all.")
@@ -2457,7 +2457,7 @@ func TestScanTextForDLP_FileSecretPresent_NoMatch(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Text that doesn't contain the secret in any form
@@ -2491,7 +2491,7 @@ func TestScanTextForDLP_FileSecretEncodedFieldValues(t *testing.T) {
 
 			cfg := testConfig()
 			cfg.DLP.SecretsFile = path
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			result := s.ScanTextForDLP(context.Background(), tt.text)
@@ -2538,7 +2538,7 @@ func TestScanTextForDLP_FileSecretDelimiterEncodedMatch(t *testing.T) {
 
 			cfg := testConfig()
 			cfg.DLP.SecretsFile = path
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			result := s.ScanTextForDLP(context.Background(), "payload: "+tt.text)
@@ -2556,7 +2556,7 @@ func TestScanTextForDLP_FileSecretDelimiterEncodedMatch(t *testing.T) {
 
 func TestScanTextForDLP_DelimiterEncodedBenignClean(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	benign := "This is a normal support note about base64 encoding."
@@ -2591,7 +2591,7 @@ func TestScanTextForDLP_FileSecretURLSafeBase64Match(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
@@ -2616,7 +2616,7 @@ func TestScanTextForDLP_FileSecretUnpaddedBase64URLMatch(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
@@ -2643,7 +2643,7 @@ func TestScanTextForDLP_FileSecretUnpaddedBase32Match(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	padded := base32.StdEncoding.EncodeToString([]byte(secret))
@@ -2662,7 +2662,7 @@ func TestScanTextForDLP_FileSecretUnpaddedBase32Match(t *testing.T) {
 
 func TestScanTextForDLP_SegmentHex_EncodingLabel(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Hex-encoded API key embedded in a URL path.
@@ -2688,7 +2688,7 @@ func TestScanTextForDLP_SegmentHex_EncodingLabel(t *testing.T) {
 
 func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Base64-encoded API key embedded in a URL path.
@@ -2714,7 +2714,7 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 
 func TestScanTextForDLP_CreditCard(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Valid Visa test card - should match.
@@ -2729,7 +2729,7 @@ func TestScanTextForDLP_CreditCard(t *testing.T) {
 
 func TestScanTextForDLP_CreditCard_FalsePositiveRejected(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Invalid Visa (fails Luhn) - should NOT match.
@@ -2747,7 +2747,7 @@ func TestScanTextForDLP_CreditCard_FalsePositiveRejected(t *testing.T) {
 
 func TestScanTextForDLP_IBAN(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Valid German IBAN - should match.
@@ -2762,7 +2762,7 @@ func TestScanTextForDLP_IBAN(t *testing.T) {
 
 func TestScanTextForDLP_IBAN_FalsePositiveRejected(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Invalid IBAN (zeroed check digits, fails mod-97) - should NOT match.
@@ -2780,7 +2780,7 @@ func TestScanTextForDLP_IBAN_FalsePositiveRejected(t *testing.T) {
 
 func TestScanTextForDLP_CreditCard_DecoyBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Regression: a Luhn-failing decoy before a valid card must not suppress
@@ -2794,7 +2794,7 @@ func TestScanTextForDLP_CreditCard_DecoyBypass(t *testing.T) {
 
 func TestScanTextForDLP_IBAN_DecoyBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Regression: a mod-97-failing decoy before a valid IBAN must not suppress.
@@ -2813,7 +2813,7 @@ func TestScanTextForDLP_IBAN_DecoyBypass(t *testing.T) {
 
 func TestScanTextForDLP_IBAN_FakeCountryCode(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// ZZ is not a valid IBAN country code - should NOT match even if mod-97 passes.
@@ -2831,7 +2831,7 @@ func TestScanTextForDLP_IBAN_FakeCountryCode(t *testing.T) {
 
 func TestScanTextForDLP_CreditCard_WithSeparators(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Visa with dashes - should match.
@@ -2843,7 +2843,7 @@ func TestScanTextForDLP_CreditCard_WithSeparators(t *testing.T) {
 
 func TestScanTextForDLP_CreditCard_Amex465Format(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Amex 4-6-5 display format with spaces - should match.
@@ -2861,7 +2861,7 @@ func TestScanTextForDLP_CreditCard_Amex465Format(t *testing.T) {
 
 func TestScanTextForDLP_CreditCard_WithSpaces(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Visa with spaces - should match (regex allows space separators).
@@ -2873,7 +2873,7 @@ func TestScanTextForDLP_CreditCard_WithSpaces(t *testing.T) {
 
 func TestScanTextForDLP_IBAN_FormattedWithSpaces_KnownLimitation(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Space-separated IBANs (display format) are NOT detected by the text DLP
@@ -2903,7 +2903,7 @@ func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
 		Severity:  "low",
 		Validator: config.ValidatorABA,
 	})
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Valid ABA (JPMorgan Chase) - should match.
@@ -2938,7 +2938,7 @@ func TestScanTextForDLP_ValidatorSurvivesReload(t *testing.T) {
 	cfg := testConfig()
 
 	// First scanner - verify credit card detection works.
-	s1 := New(cfg)
+	s1 := MustNew(cfg)
 	result1 := s1.ScanTextForDLP(context.Background(), "Pay with 4111111111111111")
 	s1.Close()
 	if result1.Clean {
@@ -2946,7 +2946,7 @@ func TestScanTextForDLP_ValidatorSurvivesReload(t *testing.T) {
 	}
 
 	// Second scanner from same config - simulates reload.
-	s2 := New(cfg)
+	s2 := MustNew(cfg)
 	defer s2.Close()
 	result2 := s2.ScanTextForDLP(context.Background(), "Pay with 4111111111111111")
 	if result2.Clean {
@@ -2981,7 +2981,7 @@ func TestScanTextForDLP_BundleProvenance(t *testing.T) {
 		Bundle:        bundleName,
 		BundleVersion: bundleVersion,
 	})
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.ScanTextForDLP(context.Background(), "leak: custsecret_"+strings.Repeat("x", 25))
@@ -3008,7 +3008,7 @@ func TestScanTextForDLP_BundleProvenance(t *testing.T) {
 
 func TestScanTextForDLP_BuiltinPatternNoBundleProvenance(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Built-in Anthropic key pattern should have empty bundle fields.
@@ -3044,7 +3044,7 @@ func TestScanTextForDLP_BundleProvenance_Encoded(t *testing.T) {
 		Bundle:        bundleName,
 		BundleVersion: bundleVersion,
 	})
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Base64-encode the secret so it goes through matchDLPPatterns path.
@@ -3081,7 +3081,7 @@ func TestScanTextForDLP_BlocksEncodedExfilHostname(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	block := []struct {
@@ -3133,7 +3133,7 @@ func TestScanTextForDLPInbound_SkipsEnvLeak(t *testing.T) {
 	// so the ONLY thing that could flag it is the env-secret exfil check.
 	secret := "zQ8xR4kP2" + "mN7wL9vT3jH" // split to satisfy gosec G101
 	t.Setenv("PIPELOCK_TEST_INBOUND_SECRET", secret)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	carrier := "operator note: the value is " + secret + " please proceed"
 	ctx := context.Background()
@@ -3154,7 +3154,7 @@ func TestScanTextForDLPInbound_SkipsEnvLeak(t *testing.T) {
 // regex pattern DLP still runs inbound (a real secret pattern in a tool result
 // is still caught).
 func TestScanTextForDLPInbound_StillCatchesGenericDLP(t *testing.T) {
-	s := New(testConfig()) // default DLP patterns enabled
+	s := MustNew(testConfig()) // default DLP patterns enabled
 
 	// An Anthropic-key-shaped value (same construction as the existing pattern
 	// tests, so it reliably matches a default regex pattern and is not a
@@ -3175,7 +3175,7 @@ func TestScanTextForDLPInbound_StillCatchesGenericDLP(t *testing.T) {
 func TestIsLowConfidenceInboundAWSAccessID(t *testing.T) {
 	t.Parallel()
 
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	ctx := context.Background()
 
 	tests := []struct {
@@ -3324,7 +3324,7 @@ func TestIsLowConfidenceInboundAWSAccessID(t *testing.T) {
 func TestEnforceableInboundTextDLPMatches(t *testing.T) {
 	t.Parallel()
 
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	ctx := context.Background()
 	lowConfidenceAWS := strings.Join([]string{
 		"AIDA", "in", "product", "name", "generated", "by", "random",
@@ -3374,7 +3374,7 @@ func TestEnforceableInboundTextDLPMatches(t *testing.T) {
 // while real tokens still block, with no detection loss.
 func TestTextDLP_DottedTokenPatterns(t *testing.T) {
 	t.Parallel()
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Build real-shaped tokens at runtime so the test source carries no literal
 	// secret (gosec G101 / the DLP self-scan would otherwise flag this file).

@@ -36,7 +36,7 @@ func newFetchLiveLockProxy(t *testing.T, loader *contractruntime.Loader, upstrea
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -433,7 +433,7 @@ func TestWebSocketLiveLock_AllowRulePassesHandshakeGate(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.WebSocketProxy.Enabled = true
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestWebSocketLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.WebSocketProxy.Enabled = true
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestWebSocketLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.WebSocketProxy.Enabled = true
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestWebSocketLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.WebSocketProxy.Enabled = true
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}

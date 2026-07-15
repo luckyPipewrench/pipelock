@@ -173,7 +173,13 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 	if cfg.Internal == nil {
 		cfg.Internal = []string{} // explicit empty preserves SSRF-disabled semantics
 	}
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		report.Error = fmt.Sprintf("create scanner: %v", err)
+		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+	defer sc.Close()
 	scanResult := sc.Scan(context.Background(), r.ActionRecord.Target)
 
 	if scanResult.Allowed {

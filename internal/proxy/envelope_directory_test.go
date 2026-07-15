@@ -25,7 +25,7 @@ func TestEnvelopeWellKnownDirectory(t *testing.T) {
 	cfg.Internal = nil
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestEnvelopeWellKnownDirectoryUnsignedNotFound(t *testing.T) {
 		t.Fatalf("cfg.Validate: %v", err)
 	}
 
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -239,7 +239,7 @@ func TestInterceptTunnel_SizeExemptDomainBlocksOverCeilingWithNoPayloadLeak(t *t
 	cfg.ResponseScanning.SizeExemptScanMaxBytes = 1200
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2400
 	cfg.ResponseScanning.SizeExemptDomains = []string{upstream.Listener.Addr().(*net.TCPAddr).IP.String()}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL+"/large", nil)
@@ -286,7 +286,7 @@ func TestInterceptTunnel_SizeExemptDomainBlocksInflightBudgetExceeded(t *testing
 	cfg.ResponseScanning.SizeExemptScanMaxBytes = scanCeiling
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = scanCeiling
 	cfg.ResponseScanning.SizeExemptDomains = []string{upstream.Listener.Addr().(*net.TCPAddr).IP.String()}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL+"/large", nil)
@@ -328,7 +328,7 @@ func TestInterceptTunnel_UnscannablePassthroughStreamsUnscanned(t *testing.T) {
 		Reason:       "opaque signed archive",
 		Expires:      "2099-01-01",
 	}}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL+"/opaque/pkg.bin", nil)
@@ -370,7 +370,7 @@ func TestInterceptTunnel_UnscannablePassthroughNonMatchFallsBackToBoundedScan(t 
 		Reason:       "opaque signed archive",
 		Expires:      "2099-01-01",
 	}}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL+"/opaque/pkg.txt", nil)

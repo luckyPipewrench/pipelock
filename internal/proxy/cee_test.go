@@ -395,7 +395,7 @@ func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
@@ -440,7 +440,7 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
@@ -490,7 +490,7 @@ func TestCeeAdmit_SingleBodyNoFragmentHit(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
@@ -523,7 +523,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	et := scanner.NewEntropyTracker(1.0, 300) // tiny budget
@@ -586,7 +586,7 @@ func TestUpdateCEEStats_WithTrackerAndBuffer(t *testing.T) {
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -623,7 +623,7 @@ func TestUpdateCEEStats_Disabled(t *testing.T) {
 	cfg.CrossRequestDetection.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -741,7 +741,7 @@ func TestCeeAdmit_KeyFragmentDLPBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
@@ -911,7 +911,7 @@ func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
@@ -1023,7 +1023,7 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -1055,7 +1055,7 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	cfg2.Internal = nil
 	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.CrossRequestDetection.Enabled = false
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 
 	p.Reload(cfg2, sc2)
 
@@ -1075,7 +1075,7 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	cfg3.CrossRequestDetection.Enabled = true
 	cfg3.CrossRequestDetection.EntropyBudget.Enabled = true
 	cfg3.CrossRequestDetection.FragmentReassembly.Enabled = true
-	sc3 := scanner.New(cfg3)
+	sc3 := scanner.MustNew(cfg3)
 
 	p.Reload(cfg3, sc3)
 
@@ -1106,7 +1106,7 @@ func TestFetchEndpoint_CEEEntropyBlock(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)

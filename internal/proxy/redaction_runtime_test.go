@@ -118,13 +118,13 @@ func TestCurrentRedactionRuntimeForConfig_ScannerSecretMismatchFailsClosed(t *te
 	oldScannerCfg := config.Defaults()
 	oldScannerCfg.Internal = nil
 	oldScannerCfg.DLP.SecretsFile = writeRedactionRuntimeSecretFile(t, "old-secret-value-1234")
-	oldScanner := scanner.New(oldScannerCfg)
+	oldScanner := scanner.MustNew(oldScannerCfg)
 	t.Cleanup(oldScanner.Close)
 
 	newScannerCfg := config.Defaults()
 	newScannerCfg.Internal = nil
 	newScannerCfg.DLP.SecretsFile = writeRedactionRuntimeSecretFile(t, "new-secret-value-1234")
-	newScanner := scanner.New(newScannerCfg)
+	newScanner := scanner.MustNew(newScannerCfg)
 	t.Cleanup(newScanner.Close)
 
 	stored := &redactionRuntime{
@@ -222,7 +222,7 @@ func TestProxyRedactionRuntime_ReloadStateMatrixMaintainsScannerInvariant(t *tes
 	startupValue := redactionRuntimeFixtureValue("startup")
 
 	cfg := redactionRuntimeConfigWithSecret(t, oldValue, true)
-	initialScanner := scanner.New(cfg)
+	initialScanner := scanner.MustNew(cfg)
 	t.Cleanup(initialScanner.Close)
 
 	p, err := New(cfg, audit.NewNop(), initialScanner, metrics.New())
@@ -272,7 +272,7 @@ func TestProxyRedactionRuntime_ReloadStateMatrixMaintainsScannerInvariant(t *tes
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nextCfg := redactionRuntimeConfigWithSecret(t, tt.secret, tt.redactionEnabled)
-			nextScanner := scanner.New(nextCfg)
+			nextScanner := scanner.MustNew(nextCfg)
 			t.Cleanup(nextScanner.Close)
 
 			if ok := p.Reload(nextCfg, nextScanner); !ok {
@@ -352,7 +352,7 @@ func redactionRuntimeConfigWithSecret(t *testing.T, secret string, redactionEnab
 func redactionRuntimeScannerWithSecret(t *testing.T, secret string) *scanner.Scanner {
 	t.Helper()
 	cfg := redactionRuntimeConfigWithSecret(t, secret, true)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc
 }

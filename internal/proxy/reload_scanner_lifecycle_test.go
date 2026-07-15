@@ -41,7 +41,7 @@ func TestProxy_Reload_ScannerLifecycleStateMatrix(t *testing.T) {
 
 	cfg := defaultsClone()
 	logger := audit.NewNop()
-	initialSc := scanner.New(cfg)
+	initialSc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, initialSc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -56,7 +56,7 @@ func TestProxy_Reload_ScannerLifecycleStateMatrix(t *testing.T) {
 	cfg2 := defaultsClone()
 	cfg2.FetchProxy.Monitoring.Blocklist = append(
 		cfg2.FetchProxy.Monitoring.Blocklist, "*.example-blocklist.test")
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	p.Reload(cfg2, sc2)
 	waitForClosed(t, initialSc, "initial scanner after first reload")
 	if sc2.Closed() {
@@ -68,7 +68,7 @@ func TestProxy_Reload_ScannerLifecycleStateMatrix(t *testing.T) {
 	cfg3.FetchProxy.Monitoring.Blocklist = append(
 		cfg3.FetchProxy.Monitoring.Blocklist, "*.example-blocklist.test")
 	cfg3.FetchProxy.TimeoutSeconds = 7
-	sc3 := scanner.New(cfg3)
+	sc3 := scanner.MustNew(cfg3)
 	p.Reload(cfg3, sc3)
 	waitForClosed(t, sc2, "sc2 after second reload")
 	if sc3.Closed() {
@@ -77,7 +77,7 @@ func TestProxy_Reload_ScannerLifecycleStateMatrix(t *testing.T) {
 
 	// State 4: downgrade/revocation - strip the custom blocklist back to defaults.
 	cfg4 := defaultsClone()
-	sc4 := scanner.New(cfg4)
+	sc4 := scanner.MustNew(cfg4)
 	p.Reload(cfg4, sc4)
 	waitForClosed(t, sc3, "sc3 after downgrade reload")
 	if sc4.Closed() {
@@ -89,7 +89,7 @@ func TestProxy_Reload_ScannerLifecycleStateMatrix(t *testing.T) {
 	// must be drained-and-closed so resources do not accumulate across
 	// idempotent reloads.
 	cfg5 := defaultsClone()
-	sc5 := scanner.New(cfg5)
+	sc5 := scanner.MustNew(cfg5)
 	p.Reload(cfg5, sc5)
 	waitForClosed(t, sc4, "sc4 after no-op reload")
 	if sc5.Closed() {
@@ -109,7 +109,7 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 	cfg.Internal = nil
 
 	logger := audit.NewNop()
-	initialSc := scanner.New(cfg)
+	initialSc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, initialSc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -124,7 +124,7 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 
 	// Reload installs a fresh scanner and starts the drain-then-close
 	// goroutine on the prior one.
-	newSc := scanner.New(cfg)
+	newSc := scanner.MustNew(cfg)
 	p.Reload(cfg, newSc)
 
 	// The closed flag is published synchronously by Close, but BeginUse on
@@ -179,7 +179,7 @@ func TestReverseProxy_EmitReceipt_NilGuards(t *testing.T) {
 	t.Cleanup(logger.Close)
 
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1") // unused; emitReceipt path only
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -215,7 +215,7 @@ func TestReverseProxy_SnapshotAndAcquire_RetryAndFallback(t *testing.T) {
 	t.Cleanup(logger.Close)
 
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	sc.Close() // Force BeginUse to return ok=false.
 
 	var cfgPtr atomic.Pointer[config.Config]

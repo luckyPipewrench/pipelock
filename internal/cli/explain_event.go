@@ -96,7 +96,11 @@ remediation table used by pipelock explain.`,
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
 
-			lookup, err := lookupExplainEvent(logPath, args[0], newExplainEventSanitizer(cfg))
+			sanitizer, err := newExplainEventSanitizer(cfg)
+			if err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+			}
+			lookup, err := lookupExplainEvent(logPath, args[0], sanitizer)
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
@@ -152,7 +156,11 @@ func lookupExplainEvent(path, id string, sanitizer explainEventSanitizer) (expla
 }
 
 func scanExplainEvent(r io.Reader, id string) (explainEventLookup, error) {
-	return scanExplainEventWithSanitizer(r, id, newExplainEventSanitizer(nil))
+	sanitizer, err := newExplainEventSanitizer(nil)
+	if err != nil {
+		return explainEventLookup{}, err
+	}
+	return scanExplainEventWithSanitizer(r, id, sanitizer)
 }
 
 func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEventSanitizer) (explainEventLookup, error) {
@@ -356,11 +364,15 @@ type explainEventSanitizer struct {
 	scanner *scanner.Scanner
 }
 
-func newExplainEventSanitizer(cfg *config.Config) explainEventSanitizer {
+func newExplainEventSanitizer(cfg *config.Config) (explainEventSanitizer, error) {
 	if cfg == nil {
 		cfg = config.Defaults()
 	}
-	return explainEventSanitizer{scanner: scanner.New(cfg)}
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return explainEventSanitizer{}, fmt.Errorf("create scanner: %w", err)
+	}
+	return explainEventSanitizer{scanner: sc}, nil
 }
 
 func (s explainEventSanitizer) clean(value string) bool {

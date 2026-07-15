@@ -23,7 +23,10 @@ func appendEnterpriseEmitSinks(cfg *config.Config, sinks []emit.Sink, observer e
 	// deliberate escape hatch for the main request scanner. Forwarding always
 	// denies the immutable default ranges plus any operator-added ranges.
 	ssrfCfg := cfg.WithSIEMForwarderSSRFFloor()
-	ssrfScanner := scanner.New(ssrfCfg)
+	ssrfScanner, err := scanner.New(ssrfCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create forwarder SSRF scanner: %w", err)
+	}
 	forwarder, err := siemforward.New(siemforward.Config{
 		URL:               forwardCfg.URL,
 		AllowedHosts:      forwardCfg.DestinationAllowlist,

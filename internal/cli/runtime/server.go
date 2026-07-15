@@ -379,7 +379,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 	}
 
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create scanner: %w", err)
+	}
 	s.scanner = sc
 	// License gate for the follower-side Conductor runtime. When
 	// conductor.enabled is true the operator has explicitly opted into

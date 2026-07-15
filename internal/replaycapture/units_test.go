@@ -354,7 +354,7 @@ func TestLabConfig_FixtureTrustDoesNotAllowRawLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("labConfig: %v", err)
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	result := sc.Scan(context.Background(), "http://127.0.0.1:1/admin")

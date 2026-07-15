@@ -222,7 +222,10 @@ func runTests(
 	catFilter map[string]bool,
 	jsonOut, color, failOnGap bool,
 ) error {
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return fmt.Errorf("create scanner: %w", err)
+	}
 	defer sc.Close()
 
 	report := testReport{

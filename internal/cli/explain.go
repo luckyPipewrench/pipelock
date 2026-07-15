@@ -152,7 +152,7 @@ Examples:
 				if actionErr != nil {
 					return cliutil.ExitCodeError(cliutil.ExitConfig, actionErr)
 				}
-				report = buildExplainSurfaceReport(cmd, cfg, cfgLabel, mode, blockedAction, action)
+				report, err = buildExplainSurfaceReport(cmd, cfg, cfgLabel, mode, blockedAction, action)
 			}
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
@@ -416,7 +416,11 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 	ssrfActive := cfg.Internal != nil
 	cfg.Internal = nil
 
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return report, fmt.Errorf("create scanner: %w", err)
+	}
+	defer sc.Close()
 	result := sc.Scan(cmd.Context(), rawURL)
 
 	report.Allowed = result.Allowed
@@ -471,7 +475,7 @@ func explainResponseScanExemptNotes(cfg *config.Config, host string) []string {
 	return notes
 }
 
-func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, surface, blockedAction string, action decide.Action) explainReport {
+func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, surface, blockedAction string, action decide.Action) (explainReport, error) {
 	report := explainReport{
 		Surface:       surface,
 		BlockedAction: blockedAction,
@@ -486,13 +490,17 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 		report.Notes = append(report.Notes, fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason))
 	}
 
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return report, fmt.Errorf("create scanner: %w", err)
+	}
+	defer sc.Close()
 	pc := policy.New(cfg.MCPToolPolicy)
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)
 
 	report.Allowed = decision.Outcome == decide.Allow
 	if report.Allowed {
-		return report
+		return report, nil
 	}
 
 	primary := explainPrimaryEvidence(decision)
@@ -506,7 +514,7 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 			report.AgentReason = g.AgentReason
 		}
 	}
-	return report
+	return report, nil
 }
 
 func explainPrimaryEvidence(decision decide.Decision) decide.Evidence {

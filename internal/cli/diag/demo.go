@@ -92,7 +92,10 @@ func runDemo(cmd *cobra.Command, interactive, color bool, receiptsDir string) er
 	}
 	extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return fmt.Errorf("create scanner: %w", err)
+	}
 	defer sc.Close()
 	policyHash := cfg.CanonicalPolicyHash()
 

@@ -32,7 +32,7 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	cfg.Airlock.Timers.DrainTimeoutSeconds = 30
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)

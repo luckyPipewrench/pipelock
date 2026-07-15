@@ -119,7 +119,10 @@ Examples:
 				return fmt.Errorf("loading config: %w", err)
 			}
 
-			sc := scanner.New(cfg)
+			sc, err := scanner.New(cfg)
+			if err != nil {
+				return fmt.Errorf("create scanner: %w", err)
+			}
 			defer sc.Close()
 
 			scenarios := BuildSimScenarios(cfg, sc)

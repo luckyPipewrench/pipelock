@@ -39,7 +39,7 @@ func TestScanRequestBody_NamedAgentAddressAllowlistIgnoredWithoutFeatureAgents(t
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`

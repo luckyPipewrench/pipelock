@@ -343,7 +343,7 @@ func TestBuildCaptureWriter_RedactionGating(t *testing.T) {
 	secret := "AKIA" + "IOSFODNN7" + "EXAMPLE"
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	observe := func(dir string, redactFn recorder.RedactFunc) {
 		cw, err := buildCaptureWriter(dir, "", 0o600, redactFn, nil)

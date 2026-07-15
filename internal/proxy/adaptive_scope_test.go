@@ -33,7 +33,7 @@ func adaptiveScopedAirlockConfig() *config.Config {
 func newAdaptiveScopeProxy(t *testing.T, cfg *config.Config) (*Proxy, *audit.Logger) {
 	t.Helper()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {

@@ -490,7 +490,7 @@ func TestTestCmd_AllVectorsRunDefaultConfig(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	vectors := buildTestVectors(nil)
@@ -653,7 +653,7 @@ func TestTestCmd_FailOnGap_NoGaps(t *testing.T) {
 	cfg.MCPInputScanning.Enabled = true
 	cfg.MCPToolScanning.Enabled = true
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	vectors := buildTestVectors(nil)

@@ -73,7 +73,7 @@ func TestWSProxy_HandshakeSigned(t *testing.T) {
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {

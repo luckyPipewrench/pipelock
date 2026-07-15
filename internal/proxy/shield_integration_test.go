@@ -27,7 +27,7 @@ func newTestProxy(t *testing.T) *Proxy {
 
 func newTestProxyWithConfig(t *testing.T, cfg *config.Config) *Proxy {
 	t.Helper()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	logger, _ := audit.New("json", "stdout", "", false, false)
 	p, err := New(cfg, logger, sc, m)

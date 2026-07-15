@@ -80,7 +80,7 @@ func TestScanURL_DNSFailure_ClassifiedAsInfrastructureError(t *testing.T) {
 	// DNS path at all. nil would disable the SSRF check entirely.
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://nonexistent.invalid/")
@@ -131,7 +131,7 @@ func TestScanURL_CancelledContext_RoutesThroughScannerContext(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Cancel the context before the Scan runs so the DNS layer sees
@@ -166,7 +166,7 @@ func TestScanURL_RealSSRF_StillThreat(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8"}
 
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Hostname decodes directly to 127.0.0.1 via the alternative-IP path,

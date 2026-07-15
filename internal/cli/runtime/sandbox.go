@@ -119,7 +119,10 @@ Examples:
 			// Force forward proxy enabled -- sandbox bridge requires it.
 			cfg.ForwardProxy.Enabled = true
 
-			sc := scanner.New(cfg)
+			sc, err := scanner.New(cfg)
+			if err != nil {
+				return fmt.Errorf("create scanner: %w", err)
+			}
 			defer sc.Close()
 
 			m := metrics.New()

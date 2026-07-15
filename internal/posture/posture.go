@@ -530,7 +530,10 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 		return EvidenceBundle{}, err
 	}
 
-	simulateEvidence := collectSimulateEvidence(cfg)
+	simulateEvidence, err := collectSimulateEvidence(cfg)
+	if err != nil {
+		return EvidenceBundle{}, err
+	}
 
 	flightRecorderEvidence, err := collectFlightRecorderEvidence(cfg)
 	if err != nil {
@@ -574,12 +577,15 @@ func collectDiscoverEvidence() (DiscoverEvidence, error) {
 	}, nil
 }
 
-func collectSimulateEvidence(cfg *config.Config) audit.SimulateResult {
-	sc := scanner.New(cfg)
+func collectSimulateEvidence(cfg *config.Config) (audit.SimulateResult, error) {
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return audit.SimulateResult{}, fmt.Errorf("create simulate scanner: %w", err)
+	}
 	defer sc.Close()
 
 	scenarios := audit.BuildSimScenarios(cfg, sc)
-	return audit.RunSimulation(scenarios, "", cfg.Mode)
+	return audit.RunSimulation(scenarios, "", cfg.Mode), nil
 }
 
 func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, error) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,7 +241,7 @@ func TestAgentRegistryFallbackUsesProvidedScanner(t *testing.T) {
 	cfg := testConfig()
 	cfg.Agents = nil
 
-	baseScanner := scanner.New(cfg)
+	baseScanner := scanner.MustNew(cfg)
 	defer baseScanner.Close()
 
 	reg, err := NewAgentRegistry(cfg, baseScanner)
@@ -252,6 +253,30 @@ func TestAgentRegistryFallbackUsesProvidedScanner(t *testing.T) {
 	agent := reg.Lookup("anything")
 	if agent.Scanner != baseScanner {
 		t.Fatal("expected fallback agent to reuse provided base scanner")
+	}
+}
+
+func TestAgentRegistryRejectsBadAgentScannerConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {
+			DLP: &config.AgentDLP{
+				Patterns: []config.DLPPattern{
+					{Name: "agent-bad-regex", Regex: "[invalid", Severity: "high"},
+				},
+			},
+		},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err == nil {
+		if reg != nil {
+			reg.Close()
+		}
+		t.Fatal("expected bad agent scanner config to reject registry creation")
+	}
+	if !strings.Contains(err.Error(), `agent "claude-code" scanner`) {
+		t.Fatalf("error = %v, want named agent scanner context", err)
 	}
 }
 

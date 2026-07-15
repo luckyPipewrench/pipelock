@@ -87,7 +87,11 @@ func SinkCmd() *cobra.Command {
 			}
 			defer func() { _ = store.Close() }()
 
-			sc := scanner.New(config.Defaults())
+			sc, err := scanner.New(config.Defaults())
+			if err != nil {
+				return fmt.Errorf("create scanner: %w", err)
+			}
+			defer sc.Close()
 			handler, err := sink.NewHandler(sink.Options{
 				Store:       store,
 				Resolver:    resolver,

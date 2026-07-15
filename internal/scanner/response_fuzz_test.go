@@ -15,7 +15,7 @@ func FuzzScanResponseContent(f *testing.F) {
 	cfg := testConfig()
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionWarn
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	// Clean content

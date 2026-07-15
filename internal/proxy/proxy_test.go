@@ -97,7 +97,7 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -210,7 +210,7 @@ func TestFetchEndpoint_CompressedResponseBlocked(t *testing.T) {
 			cfg.APIAllowlist = nil
 
 			logger := audit.NewNop()
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			p, err := New(cfg, logger, sc, metrics.New())
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
@@ -475,7 +475,7 @@ func TestFetchEndpoint_BackendError(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -605,7 +605,7 @@ func setupResponseScanProxy(t *testing.T, action string) (*Proxy, *httptest.Serv
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -800,7 +800,7 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 	cfg.ResponseScanning.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -855,7 +855,7 @@ func TestFetchEndpoint_ResponseScan_ExemptDomain(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -904,7 +904,7 @@ func TestFetchEndpoint_ResponseScan_NonExemptDomainStillBlocked(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -947,7 +947,7 @@ func TestFetchEndpoint_ResponseScan_WildcardExemptDomain(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -996,7 +996,7 @@ func TestFetchEndpoint_ResponseScan_ExemptDomainStillBlocksDLP(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1066,7 +1066,7 @@ func TestFetchEndpoint_ResponseScan_ExemptRedirectToNonExempt(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1120,7 +1120,7 @@ func TestFetchEndpoint_ResponseScan_ExemptRedirectToExempt(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1183,7 +1183,7 @@ func TestFetchEndpoint_ResponseScan_AskAllowLongContent(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -1342,7 +1342,7 @@ func TestWithApprover(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(), WithApprover(approver))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1454,7 +1454,7 @@ func TestFetchEndpoint_BindDefaultAgentIdentityIgnoresHeaderAndQuery(t *testing.
 	cfg.BindDefaultAgentIdentity = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1504,7 +1504,7 @@ func newFetchRedirectLiveLockProxy(t *testing.T, loader *contractruntime.Loader,
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1713,7 +1713,7 @@ func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1757,7 +1757,7 @@ func TestFetchEndpoint_RedirectToDLPMatch(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1802,7 +1802,7 @@ func TestFetchEndpoint_RedirectChainExceedsMax(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1852,7 +1852,7 @@ func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 	cfg.Enforce = &enforce
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1903,7 +1903,7 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 	// enforce=nil defaults to true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1952,7 +1952,7 @@ func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -1996,7 +1996,7 @@ func TestFetchEndpoint_RateLimitReturns429(t *testing.T) {
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -2043,7 +2043,7 @@ func TestConnectEndpoint_RateLimitReturns429(t *testing.T) {
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -2090,7 +2090,7 @@ func TestForwardHTTP_RateLimitReturns429(t *testing.T) {
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -2142,7 +2142,7 @@ func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {
 	cfg.Enforce = &enforce
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2190,7 +2190,7 @@ func TestFetchEndpoint_AuditMode_EnforceTrue_Blocks(t *testing.T) {
 	// enforce=nil defaults to true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2235,7 +2235,7 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2266,7 +2266,7 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	newCfg.Internal = nil
 	newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	newCfg.APIAllowlist = nil
-	newSc := scanner.New(newCfg)
+	newSc := scanner.MustNew(newCfg)
 	p.Reload(newCfg, newSc)
 
 	// Verify mode changed
@@ -2299,7 +2299,7 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2325,7 +2325,7 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	newCfg.APIAllowlist = nil
 	newCfg.FetchProxy.Monitoring.Blocklist = append(newCfg.FetchProxy.Monitoring.Blocklist, "*.example.com")
-	newSc := scanner.New(newCfg)
+	newSc := scanner.MustNew(newCfg)
 	p.Reload(newCfg, newSc)
 
 	// Second request: example.com should now be blocked
@@ -2362,7 +2362,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2382,7 +2382,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 			newCfg.Internal = nil
 			newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			newCfg.APIAllowlist = nil
-			newSc := scanner.New(newCfg)
+			newSc := scanner.MustNew(newCfg)
 			p.Reload(newCfg, newSc)
 		}
 	}()
@@ -2445,7 +2445,7 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 	}
 
 	initialCfg := buildCfg(true)
-	initialSc := scanner.New(initialCfg)
+	initialSc := scanner.MustNew(initialCfg)
 	p, err := New(initialCfg, audit.NewNop(), initialSc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2494,7 +2494,7 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 		for i := 0; i < 60; i++ {
 			enableRedaction := i%2 == 0
 			cfg := buildCfg(enableRedaction)
-			p.Reload(cfg, scanner.New(cfg))
+			p.Reload(cfg, scanner.MustNew(cfg))
 		}
 	}()
 
@@ -2553,7 +2553,7 @@ func TestFetchEndpoint_SSRFBlocksInternalIP(t *testing.T) {
 	// Keep Internal CIDRs (don't set to nil) so SSRF checks are active
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2615,7 +2615,7 @@ func TestFetchEndpoint_BodyReadError(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2646,7 +2646,7 @@ func TestProxy_StartReturnsErrorOnBadAddress(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2680,7 +2680,7 @@ func TestFetchEndpoint_ReadabilityExtractError(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2715,7 +2715,7 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2823,7 +2823,7 @@ func TestProxy_Start_AlreadyBound(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -2864,7 +2864,7 @@ func TestProxy_FetchViaHostname(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -2897,7 +2897,7 @@ func TestProxy_SSRF_DirectIP(t *testing.T) {
 	// cfg.Internal is set by Defaults() - includes private CIDRs
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -2923,7 +2923,7 @@ func TestProxy_SSRF_DNSRebind(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3210,7 +3210,7 @@ func TestProxy_Reload_UpdatesCurrentConfig(t *testing.T) {
 	newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	newCfg.APIAllowlist = nil
 	newCfg.FetchProxy.UserAgent = "Updated/2.0"
-	newSc := scanner.New(newCfg)
+	newSc := scanner.MustNew(newCfg)
 	defer newSc.Close()
 
 	p.Reload(newCfg, newSc)
@@ -3238,7 +3238,7 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3307,7 +3307,7 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3371,7 +3371,7 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -3449,7 +3449,7 @@ func TestProxy_RecordSession_ConfigMismatchBoundedSignal(t *testing.T) {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -3522,7 +3522,7 @@ func TestProxy_RecordSession_ConfigMismatchEscalatesEventually(t *testing.T) {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.0 // no decay
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -3570,7 +3570,7 @@ func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -3615,7 +3615,7 @@ func TestProxy_Close_SessionManager(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3639,7 +3639,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	cfg.SessionProfiling.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -3663,7 +3663,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	cfg2.SessionProfiling.MaxSessions = 100
 	cfg2.SessionProfiling.SessionTTLMinutes = 30
 	cfg2.SessionProfiling.CleanupIntervalSeconds = 60
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	p.Reload(cfg2, sc2)
 
 	if p.sessionMgrPtr.Load() == nil {
@@ -3675,7 +3675,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	cfg3.Internal = nil
 	cfg3.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg3.SessionProfiling.Enabled = false
-	sc3 := scanner.New(cfg3)
+	sc3 := scanner.MustNew(cfg3)
 	p.Reload(cfg3, sc3)
 
 	if p.sessionMgrPtr.Load() != nil {
@@ -3698,7 +3698,7 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3750,7 +3750,7 @@ func TestProxy_SessionProfiling_IPDomainBurst_HeaderRotation(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3805,7 +3805,7 @@ func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3852,7 +3852,7 @@ func TestProxy_Reload_UpdatesSessionConfig(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3879,7 +3879,7 @@ func TestProxy_Reload_UpdatesSessionConfig(t *testing.T) {
 	cfg2.SessionProfiling.MaxSessions = 50       // changed
 	cfg2.SessionProfiling.SessionTTLMinutes = 15 // changed
 	cfg2.SessionProfiling.CleanupIntervalSeconds = 60
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	p.Reload(cfg2, sc2)
 
 	// Same SessionManager instance should be retained (not replaced).
@@ -3909,7 +3909,7 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -3946,7 +3946,7 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 			newCfg.SessionProfiling.MaxSessions = 100
 			newCfg.SessionProfiling.SessionTTLMinutes = 30
 			newCfg.SessionProfiling.CleanupIntervalSeconds = 60
-			newSc := scanner.New(newCfg)
+			newSc := scanner.MustNew(newCfg)
 			p.Reload(newCfg, newSc)
 		}()
 	}
@@ -3962,7 +3962,7 @@ func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
 	cfg.KillSwitch.Message = "kill switch test"
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
@@ -4006,7 +4006,7 @@ func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
 	cfg.KillSwitch.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
@@ -4037,7 +4037,7 @@ func TestKillSwitch_ExemptsMetricsEndpoint(t *testing.T) {
 	cfg.KillSwitch.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
@@ -4069,7 +4069,7 @@ func TestKillSwitch_AllowlistIP(t *testing.T) {
 	cfg.KillSwitch.AllowlistIPs = []string{"127.0.0.0/8"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
@@ -4099,7 +4099,7 @@ func TestWithKillSwitch_NilSafe(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	// No kill switch - nil controller.
 	p, err := New(cfg, logger, sc, m)
@@ -4123,7 +4123,7 @@ func TestMetricsNotOnMainPort_WhenMetricsListenSet(t *testing.T) {
 	cfg.MetricsListen = "0.0.0.0:19091" // non-empty = separate port
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -4206,7 +4206,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 			}
 
 			logger := audit.NewNop()
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			p, err := New(cfg, logger, sc, metrics.New())
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
@@ -4277,7 +4277,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_DeterminerBeforeModifier(t *testing.
 			cfg.ResponseScanning.Action = config.ActionBlock
 
 			logger := audit.NewNop()
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			p, err := New(cfg, logger, sc, metrics.New())
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
@@ -4341,7 +4341,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_NoFalsePositive(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4387,7 +4387,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_ReadabilityFail_FailClosed(t *testin
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4443,7 +4443,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_SuppressedHiddenInjection(t *testing
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4497,7 +4497,7 @@ func TestFetchEndpoint_ResponseScan_SuppressedFindingDoesNotMarkPromptHit(t *tes
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4554,7 +4554,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_WarnAction(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4683,7 +4683,7 @@ func TestFetchResponseHint_Enabled(t *testing.T) {
 	cfg.ExplainBlocks = &v
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -4721,7 +4721,7 @@ func TestFetchResponseHint_Disabled(t *testing.T) {
 	// ExplainBlocks is nil (defaults to false).
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -4757,7 +4757,7 @@ func TestLoadCertCache_Disabled(t *testing.T) {
 	cfg.TLSInterception.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4795,7 +4795,7 @@ func TestLoadCertCache_ValidCA(t *testing.T) {
 	cfg.TLSInterception.CAKeyPath = keyPath
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4821,7 +4821,7 @@ func TestLoadCertCache_MissingFile(t *testing.T) {
 	cfg.TLSInterception.CAKeyPath = filepath.Join(tmpDir, "nonexistent-key.pem")
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4858,7 +4858,7 @@ func TestLoadCertCache_BadPEM(t *testing.T) {
 	cfg.TLSInterception.CAKeyPath = keyPath
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4882,7 +4882,7 @@ func TestHealthEndpoint_TLSInterceptionEnabled(t *testing.T) {
 	cfg.TLSInterception.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4925,7 +4925,7 @@ func TestProxy_KnownProfiles_NoAgents(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4948,7 +4948,7 @@ func TestProxy_ResolveAgent_NoopEdition(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -4974,7 +4974,7 @@ func TestProxy_KnownProfiles_NoopEdition(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -4998,7 +4998,7 @@ func TestProxy_Edition(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -5023,7 +5023,7 @@ func TestProxy_Ports(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -5043,7 +5043,7 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -5174,7 +5174,7 @@ func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	cfg := newAdaptiveConfig(testSecret)
 	m := metrics.New()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -5256,7 +5256,7 @@ func TestFetchEndpoint_AdaptiveUpgrade_NoEscalation_Allowed(t *testing.T) {
 	cfg := newAdaptiveConfig(testSecret)
 	m := metrics.New()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -5326,7 +5326,7 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 
 	m := metrics.New()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -5406,7 +5406,7 @@ func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
 	cfg.SessionProfiling.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -5432,7 +5432,7 @@ func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
 	cfg2.BehavioralBaseline.SensitivitySigma = 2.0
 	cfg2.BehavioralBaseline.SeasonalityMode = config.SeasonalityModeNone
 
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	p.Reload(cfg2, sc2)
 
 	sm := p.sessionMgrPtr.Load()
@@ -5468,7 +5468,7 @@ func TestProxy_recordDecision_WithPattern(t *testing.T) {
 	defer func() { _ = rec.Close() }()
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
@@ -5525,7 +5525,7 @@ func TestProxy_recordDecision_NilRecorderNoOp(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

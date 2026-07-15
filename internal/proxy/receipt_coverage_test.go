@@ -1102,7 +1102,7 @@ func setupFetchProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod f
 
 	logger := audit.NewNop()
 	rph.cfg = cfg
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rph.rec),
 		WithReceiptEmitter(rph.emitter),
@@ -1139,7 +1139,7 @@ func setupWSProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod func
 
 	logger := audit.NewNop()
 	rph.cfg = cfg
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rph.rec),
 		WithReceiptEmitter(rph.emitter),
@@ -1210,7 +1210,7 @@ func setupForwardProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod
 
 	logger := audit.NewNop()
 	rph.cfg = cfg
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rph.rec),
 		WithReceiptEmitter(rph.emitter),

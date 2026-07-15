@@ -248,6 +248,7 @@ func TestKeyGenerate_HelpListsConductorPurposes(t *testing.T) {
 		domsigning.PurposeAuditBatchSigning,
 		domsigning.PurposeEnrollmentTokenSigning,
 		domsigning.PurposeFleetReportSigning,
+		domsigning.PurposeCoverageCertSigning,
 	} {
 		if !strings.Contains(help, purpose.String()) {
 			t.Errorf("help missing %q:\n%s", purpose, help)
@@ -258,6 +259,30 @@ func TestKeyGenerate_HelpListsConductorPurposes(t *testing.T) {
 	}
 	if !strings.Contains(help, "reserved") {
 		t.Errorf("help missing reserved-purpose guidance:\n%s", help)
+	}
+}
+
+func TestKeyGenerate_AcceptsCoverageCertPurpose(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "coverage-cert.json")
+	var stdout bytes.Buffer
+	cmd := keyGenerateCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--purpose", domsigning.PurposeCoverageCertSigning.String(), "--out", out})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Clean(out))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var kf keyFile
+	if err := json.Unmarshal(raw, &kf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if kf.Purpose != domsigning.PurposeCoverageCertSigning.String() {
+		t.Errorf("purpose = %q, want %q", kf.Purpose, domsigning.PurposeCoverageCertSigning)
 	}
 }
 

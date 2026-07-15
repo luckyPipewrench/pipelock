@@ -131,7 +131,10 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 
 	privKey := e.privKey
 
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("scenario %s: create scanner: %w", s.ID, err)
+	}
 	defer sc.Close()
 
 	rec, err := recorder.New(recorder.Config{

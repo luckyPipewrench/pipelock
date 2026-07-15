@@ -161,7 +161,7 @@ func TestWebSocketInboundEnvelopeVerificationMissingHeaderBlocks(t *testing.T) {
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
 	enableInboundEnvelopeVerificationForTest(t, cfg)
 
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestReverseProxyInboundEnvelopeVerificationMissingHeaderBlocks(t *testing.T
 
 	cfg := reverseTestConfig()
 	enableInboundEnvelopeVerificationForTest(t, cfg)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -259,7 +259,7 @@ func TestReverseProxyInboundEnvelopeVerificationMissingHeaderBlocks(t *testing.T
 		nil,
 		nil,
 	)
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}

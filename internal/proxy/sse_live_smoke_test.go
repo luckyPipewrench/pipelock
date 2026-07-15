@@ -119,7 +119,7 @@ func runLiveSmoke(t *testing.T, p liveProviderConfig) {
 	cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
 	cfg.ApplyDefaults()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]

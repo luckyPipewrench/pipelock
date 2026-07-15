@@ -114,7 +114,7 @@ func TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey(t *testing.T) {
 		WindowMinutes:  5,
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 	if err != nil {
@@ -254,7 +254,7 @@ func TestCEEBoundary_ExemptDomainIsEntropyOnly(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	logger, _ := audit.New("json", "stdout", "", false, false)

@@ -228,7 +228,10 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 	}
 
 	// Build scanner and temp proxy.
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return cliutil.ExitCodeError(2, fmt.Errorf("create scanner: %w", err))
+	}
 	defer sc.Close()
 	logger := audit.NewNop()
 	defer logger.Close()

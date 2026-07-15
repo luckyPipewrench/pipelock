@@ -42,7 +42,7 @@ func scannerUnavailableProxy(t *testing.T) (p *Proxy, dir string, closeRec func(
 	cfg.ApplyDefaults()
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	sc.Close() // pinResolvedScanner triple-fails: resolved.Scanner == p.scannerPtr.Load() == this closed scanner.
 
 	dir = t.TempDir()
@@ -218,7 +218,7 @@ func TestReverseProxy_ScannerUnavailable_FailsClosedAndAttests(t *testing.T) {
 	t.Cleanup(logger.Close)
 
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1") // never dialed; fail-closed before forward.
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	sc.Close() // snapshotAndAcquire triple-fails.
 
 	var cfgPtr atomic.Pointer[config.Config]

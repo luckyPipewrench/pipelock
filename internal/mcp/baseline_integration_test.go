@@ -25,7 +25,7 @@ import (
 func TestMCPBehavioralBaselineRealStdioProxyLearnsAndBlocksUnderIdentityKey(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
@@ -95,7 +95,7 @@ func TestMCPA2ABehavioralBaselineLearnsLocksAndReloads(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 
 			profileDir := t.TempDir()
@@ -229,7 +229,7 @@ func newLockedA2ABaselineHarness(t *testing.T) (*scanner.Scanner, *proxy.Session
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
@@ -279,7 +279,7 @@ func TestMCPBehavioralBaselineToolCallNameBehaviorUnchanged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 
 			sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
@@ -320,7 +320,7 @@ func TestMCPBehavioralBaselineToolCallNameBehaviorUnchanged(t *testing.T) {
 func TestMCPA2ABehavioralBaselineToolNameCannotTeachA2AMethod(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())

@@ -24,7 +24,7 @@ func testConfig() *config.Config {
 
 func TestNoopEdition_ResolveAgent(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := newNoopEdition(cfg, sc)
@@ -55,7 +55,7 @@ func TestNoopEdition_ResolveAgent(t *testing.T) {
 func TestNoopEdition_ResolveAgent_DefaultIdentity(t *testing.T) {
 	cfg := testConfig()
 	cfg.DefaultAgentIdentity = "deployment/my-sidecar"
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := newNoopEdition(cfg, sc)
@@ -93,7 +93,7 @@ func TestNoopEdition_ResolveAgent_DefaultIdentity(t *testing.T) {
 
 func TestNoopEdition_LookupProfile(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := newNoopEdition(cfg, sc)
@@ -129,7 +129,7 @@ func TestNoopEdition_LookupProfile(t *testing.T) {
 
 func TestNoopEdition_Reload(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := newNoopEdition(cfg, sc)
@@ -138,7 +138,7 @@ func TestNoopEdition_Reload(t *testing.T) {
 	}
 
 	cfg2 := testConfig()
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	defer sc2.Close()
 
 	ed2, err := ed.Reload(cfg2, sc2)
@@ -154,7 +154,7 @@ func TestNoopEdition_Reload(t *testing.T) {
 
 func TestNoopEdition_KnownProfiles(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, _ := newNoopEdition(cfg, sc)
@@ -165,7 +165,7 @@ func TestNoopEdition_KnownProfiles(t *testing.T) {
 
 func TestNoopEdition_Ports(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, _ := newNoopEdition(cfg, sc)
@@ -176,7 +176,7 @@ func TestNoopEdition_Ports(t *testing.T) {
 
 func TestNoopEdition_Close(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, _ := newNoopEdition(cfg, sc)
@@ -186,7 +186,7 @@ func TestNoopEdition_Close(t *testing.T) {
 
 func TestNewEditionFunc_Default(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEditionFunc(cfg, sc)
@@ -499,7 +499,7 @@ func TestNoopEdition_ResolveAgent_BindDefaultIdentity(t *testing.T) {
 	cfg := testConfig()
 	cfg.DefaultAgentIdentity = "deployment/my-sidecar"
 	cfg.BindDefaultAgentIdentity = true
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := newNoopEdition(cfg, sc)
@@ -586,7 +586,7 @@ func TestResetHooks(t *testing.T) {
 
 	// Verify NewEditionFunc returns noop
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEditionFunc(cfg, sc)

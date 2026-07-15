@@ -49,7 +49,7 @@ func assertAllowed(t *testing.T, s *Scanner, name, value string) {
 }
 
 func TestDLP_DatabaseConnectionStrings(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	pw := strings.Repeat("p", 12) // low-entropy password
@@ -89,7 +89,7 @@ func TestDLP_DatabaseConnectionStrings(t *testing.T) {
 }
 
 func TestDLP_GitLabTokenFamilies(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	suffix := strings.Repeat("A", 24) // >= 20 base64url chars
@@ -129,7 +129,7 @@ func TestDLP_GitLabTokenFamilies(t *testing.T) {
 }
 
 func TestDLP_CloudServiceAccountKeys(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	hex40 := strings.Repeat("a", 40)       // private_key_id shape

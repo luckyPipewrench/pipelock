@@ -46,7 +46,7 @@ func interceptCardCfg(pub ed25519.PublicKey) *config.Config {
 // returns the status code the agent would see.
 func runInterceptCard(t *testing.T, cfg *config.Config, card []byte) int {
 	t.Helper()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	logger := audit.NewNop()
 	m := metrics.New()

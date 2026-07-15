@@ -41,7 +41,7 @@ func TestFlightRecorder_BlockedRequestCreatesEvidence(t *testing.T) {
 	defer func() { _ = rec.Close() }()
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
@@ -128,7 +128,7 @@ func TestFlightRecorder_NilRecorder_NoOp(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	// No WithRecorder option - recorder is nil.
 	p, pErr := New(cfg, logger, sc, metrics.New())
 	if pErr != nil {
@@ -166,7 +166,7 @@ func TestFlightRecorder_DisabledRecorder_NoOp(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
@@ -214,7 +214,7 @@ func TestFlightRecorder_CleanRequest_NoEvidence(t *testing.T) {
 	defer func() { _ = rec.Close() }()
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)

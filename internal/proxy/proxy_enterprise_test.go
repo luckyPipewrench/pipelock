@@ -159,7 +159,7 @@ func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -241,7 +241,7 @@ func TestFetchEndpoint_PerAgentScanner_AgentInResponse(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -285,7 +285,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -319,7 +319,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 	// Also allowlist the backend in base so anonymous still works.
 	cfg2.APIAllowlist = []string{backendHost}
 
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	p.Reload(cfg2, sc2)
 
 	// After reload: "strict-bot" should be blocked (strict + no backend in allowlist).
@@ -345,7 +345,7 @@ func TestProxy_KnownProfiles(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -406,7 +406,7 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -534,7 +534,7 @@ func TestBudgetEnforcementFetch(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -596,7 +596,7 @@ func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -678,7 +678,7 @@ func TestByteBudgetBlocksFetchResponse(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -758,7 +758,7 @@ func TestAgentListenerBinding(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {

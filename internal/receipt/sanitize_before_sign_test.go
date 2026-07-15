@@ -189,7 +189,7 @@ func TestEmitter_AdversarialSecretShapes_RealDLP(t *testing.T) {
 	t.Parallel()
 
 	secret := fakeSecret() // AWS-style key, matched by default DLP patterns.
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	dlp := sc.ScanTextForDLP
 
 	// Sanity: confirm the real DLP actually flags the bare secret, else the
@@ -273,7 +273,7 @@ func TestEmitter_AdversarialSecretShapes_RealDLP(t *testing.T) {
 func TestEmitter_SplitQuerySecret_VerifiesAsRecorderNoOp(t *testing.T) {
 	t.Parallel()
 
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	dlp := sc.ScanTextForDLP
 	target := "https://api.vendor.example/v1/keys?a=AKIAIOSFOD&b=NN7EXAMPLE"
 

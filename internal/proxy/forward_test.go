@@ -154,7 +154,7 @@ func setupForwardProxyWithInstance(t *testing.T, cfgMod func(*config.Config)) (s
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2591,7 +2591,7 @@ func TestHealthIncludesForwardProxy(t *testing.T) {
 	cfg.ForwardProxy.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2627,7 +2627,7 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2973,7 +2973,7 @@ func TestSSRFSafeDialContext_DirectIP(t *testing.T) {
 	cfg.Internal = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2997,7 +2997,7 @@ func TestSSRFSafeDialContext_InvalidAddr(t *testing.T) {
 	cfg.Internal = []string{"10.0.0.0/8"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -3018,7 +3018,7 @@ func TestSSRFSafeDialContext_LoopbackBlocked(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -3042,7 +3042,7 @@ func TestSSRFSafeDialContext_DNSResolvesToInternal(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -3085,7 +3085,7 @@ func TestSSRFSafeDialContext_AllowedIP(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -3727,7 +3727,7 @@ func setupForwardProxyWithTLS(t *testing.T, cfgMod func(*config.Config), upstrea
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, pErr := New(cfg, logger, sc, m)
 	if pErr != nil {
@@ -4139,7 +4139,7 @@ func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 	})
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	// p.Close() closes the scanner; no separate defer sc.Close() needed.
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -4620,7 +4620,7 @@ func TestSSRFSafeDialContext_TrustedDomainBypassesSSRF(t *testing.T) {
 	cfg.TrustedDomains = []string{"localhost"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4646,7 +4646,7 @@ func TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted(t *testing.
 	cfg.TrustedDomains = []string{"example.com"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4675,7 +4675,7 @@ func TestSSRFSafeDialContext_DirectIPWithTrustedDomain(t *testing.T) {
 	cfg.TrustedDomains = []string{"localhost"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4711,7 +4711,7 @@ func TestSSRFSafeDialContext_IPAllowlistBypassesSSRF(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4745,7 +4745,7 @@ func TestSSRFSafeDialContext_IPAllowlistDirectIPBypass(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4771,7 +4771,7 @@ func TestSSRFSafeDialContext_IPAllowlistPartialRange(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"} // only loopback, not 10.x
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4811,7 +4811,7 @@ func TestSSRFSafeDialContext_MalysScenario_AllowlistAndTrusted(t *testing.T) {
 	cfg.TrustedDomains = []string{"localhost"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

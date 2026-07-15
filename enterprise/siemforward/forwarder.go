@@ -180,7 +180,10 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 	internalIP := opts.IsInternalIP
 	closeResources := opts.Close
 	if resolver == nil || internalIP == nil {
-		ssrfScanner := scanner.New(config.Defaults())
+		ssrfScanner, err := scanner.New(config.Defaults())
+		if err != nil {
+			return nil, fmt.Errorf("create SSRF scanner: %w", err)
+		}
 		if resolver == nil {
 			resolver = ssrfScanner.HostResolver()
 		}

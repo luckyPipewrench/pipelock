@@ -26,7 +26,7 @@ func BenchmarkFragmentBuffer_AppendAndScan(b *testing.B) {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in benchmarks)
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	b.Cleanup(sc.Close)
 
 	fb := NewFragmentBuffer(65536, 10000, 300) // 64KB cap, 10k sessions, 5min window

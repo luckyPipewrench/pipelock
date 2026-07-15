@@ -332,7 +332,15 @@ func readAuditLogTail(cfg *config.Config, n int) []string {
 // each remaining line. Any line still carrying secret-shaped content is replaced
 // wholesale; support diagnostics can lose one line, but must not leak a secret.
 func redactLogLines(cfg *config.Config, lines []string) []string {
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		out := make([]string, len(lines))
+		for i := range lines {
+			out[i] = "[redacted: scanner unavailable]"
+		}
+		return out
+	}
+	defer sc.Close()
 	secrets := sc.RedactionSecretValues()
 	all := make([]string, 0, len(secrets.Env)+len(secrets.File))
 	all = append(all, secrets.Env...)

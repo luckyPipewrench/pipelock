@@ -24,7 +24,7 @@ func ssetestScanner(t *testing.T) *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	return scanner.New(cfg)
+	return scanner.MustNew(cfg)
 }
 
 func TestIsSSEContentType(t *testing.T) {

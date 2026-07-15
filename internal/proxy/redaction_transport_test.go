@@ -225,7 +225,7 @@ func TestInterceptTunnel_Redaction_RewritesJSONBody(t *testing.T) {
 	enforceFalse := false
 	cfg.Enforce = &enforceFalse
 	applyRedactionTestProfile(cfg)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
 
@@ -275,7 +275,7 @@ func TestInterceptTunnel_Redaction_ProviderCriticalDLPForwardsSanitizedWithEnfor
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
 
@@ -318,7 +318,7 @@ func TestInterceptTunnel_Redaction_NonProviderCriticalDLPStillBlocksWithEnforce(
 	enforceTrue := true
 	cfg.Enforce = &enforceTrue
 	applyRedactionTestProfile(cfg)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
 
@@ -362,7 +362,7 @@ func TestInterceptTunnel_Redaction_ProviderEnvTokenForwardsSanitizedWithEnforce(
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
 
@@ -412,7 +412,7 @@ func TestInterceptTunnel_Redaction_ProviderSeedPhraseForwardsSanitizedWithEnforc
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
 
@@ -489,7 +489,7 @@ func TestInterceptTunnel_Redaction_ProviderKnownFileSecretForwardsSanitizedWithE
 			cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
 			secret := "KnownProviderSecretValue12345!"
 			cfg.DLP.SecretsFile = writeKnownSecretFile(t, secret)
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			t.Cleanup(func() { sc.Close() })
 			proxy := testInterceptRedactProxyWithScanner(t, cfg, sc)
 

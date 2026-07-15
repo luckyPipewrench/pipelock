@@ -390,7 +390,7 @@ func testHandler(t *testing.T) (*Handler, *Store, ed25519.PrivateKey) {
 	handler, err := NewHandler(Options{
 		Store:      store,
 		Resolver:   staticResolver(pub),
-		DLPScanner: scanner.New(config.Defaults()),
+		DLPScanner: scanner.MustNew(config.Defaults()),
 		Now:        func() time.Time { return sinkTestNow },
 	})
 	if err != nil {

@@ -524,10 +524,12 @@ func TestDoctorCmd_FlightRecorderInert(t *testing.T) {
 
 // TestCheckDoctorFlightRecorder_AllBranches exercises every status branch of
 // checkDoctorFlightRecorder: disabled (info), enabled-but-no-dir (warn),
-// enabled-with-dir (ok), and configured-but-unusable (fail).
+// enabled-with-dir (ok), runtime-creatable missing dir (ok), and
+// configured-but-unusable (fail).
 func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 	dir := t.TempDir()
-	missingDir := filepath.Join(t.TempDir(), "missing")
+	creatableDir := filepath.Join(t.TempDir(), "missing")
+	unusableDir := filepath.Join(t.TempDir(), "missing-parent", "missing")
 	tests := []struct {
 		name    string
 		enabled bool
@@ -539,7 +541,8 @@ func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 		{name: "disabled", enabled: false, dir: "", want: doctorStatusInfo},
 		{name: "enabled_no_dir", enabled: true, dir: "", want: doctorStatusWarn},
 		{name: "enabled_with_dir", enabled: true, dir: dir, want: doctorStatusOK, reach: true, enforce: true},
-		{name: "enabled_missing_dir", enabled: true, dir: missingDir, want: doctorStatusFail},
+		{name: "enabled_missing_dir_parent_writable", enabled: true, dir: creatableDir, want: doctorStatusOK, reach: true, enforce: true},
+		{name: "enabled_missing_dir_parent_missing", enabled: true, dir: unusableDir, want: doctorStatusFail},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -117,7 +117,11 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 
 	egressCfg := opts.Config.Clone()
 	egressCfg.ForwardProxy.Enabled = true
-	bridge.scanner = scanner.New(egressCfg)
+	bridge.scanner, err = scanner.New(egressCfg)
+	if err != nil {
+		bridge.Close()
+		return nil, fmt.Errorf("create MCP sandbox bridge scanner: %w", err)
+	}
 	if opts.Metrics == nil {
 		opts.Metrics = metrics.New()
 	}

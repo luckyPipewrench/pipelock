@@ -173,7 +173,7 @@ func setupWSProxyDefaultWithProxy(t *testing.T, cfgMod func(*config.Config)) (st
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -1540,7 +1540,7 @@ func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 		Action:   config.ActionWarn,
 	})
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	hookCh := make(chan scanner.DLPWarnContext, 10)
 	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
@@ -2620,7 +2620,7 @@ func TestWSProxyRedaction_CrossMessageDLPFailClosedWhenEnforceDisabled(t *testin
 	relay := &wsRelay{
 		clientConn:   discardConn{},
 		upstreamConn: discardConn{},
-		scanner:      scanner.New(cfg),
+		scanner:      scanner.MustNew(cfg),
 		proxy:        p,
 		cfg:          cfg,
 		redaction:    rt,
@@ -3577,7 +3577,7 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 		Action:   config.ActionWarn,
 	})
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	hookCh := make(chan scanner.DLPWarnContext, 10)
 	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
@@ -3758,7 +3758,7 @@ func TestWSRelay_KillSwitch_ClientToUpstream(t *testing.T) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
@@ -3899,7 +3899,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 	p, proxyErr := New(cfg, logger, sc, m, WithKillSwitch(ks))
@@ -3995,7 +3995,7 @@ func TestWsRelayRecordSignal_NilRecorder(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = true
 	m := metrics.New()
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), m)
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -4017,7 +4017,7 @@ func TestWsRelayRecordSignal_AdaptiveDisabled(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = false
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4056,7 +4056,7 @@ func TestWsRelayRecordSignal_RecordsSignal(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4124,7 +4124,7 @@ func TestWsRelayRecordSignal_AnonymousAgent(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

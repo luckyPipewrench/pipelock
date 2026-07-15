@@ -181,7 +181,7 @@ func waitCaptureRecord(t *testing.T, obs *captureMetadataObserver, surface, subs
 func newCaptureMetadataProxy(t *testing.T, cfg *config.Config, obs *captureMetadataObserver) *Proxy {
 	t.Helper()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, logger, sc, metrics.New(), WithCaptureObserver(obs))
 	if err != nil {
@@ -248,7 +248,7 @@ func TestCaptureMetadata_ReverseTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream: %v", err)
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	var cfgPtr atomic.Pointer[config.Config]
 	var scPtr atomic.Pointer[scanner.Scanner]

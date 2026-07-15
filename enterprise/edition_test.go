@@ -21,7 +21,7 @@ var _ edition.Edition = (*enterpriseEdition)(nil)
 
 func TestNewEdition(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -46,7 +46,7 @@ func TestNewEdition_WithAgents(t *testing.T) {
 	cfg.Agents = map[string]config.AgentProfile{
 		"claude-code": {Mode: config.ModeStrict},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -72,7 +72,7 @@ func TestEnterpriseEdition_LookupProfile(t *testing.T) {
 	cfg.Agents = map[string]config.AgentProfile{
 		"claude-code": {Mode: config.ModeStrict},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -119,7 +119,7 @@ func TestEnterpriseEdition_LookupProfile_DefaultOverride(t *testing.T) {
 		"claude-code": {Mode: config.ModeStrict},
 		"_default":    {Mode: config.ModeStrict},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -164,7 +164,7 @@ func TestEnterpriseEdition_LookupProfile_ExpiredKnownProfile(t *testing.T) {
 	// so it has the profile registered but expiry-gated.
 	cfg.LicenseExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -194,7 +194,7 @@ func TestEnterpriseEdition_LookupProfile_ExpiredKnownProfile(t *testing.T) {
 
 func TestEnterpriseEdition_Reload(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -208,7 +208,7 @@ func TestEnterpriseEdition_Reload(t *testing.T) {
 	cfg2.Agents = map[string]config.AgentProfile{
 		"new-agent": {Mode: config.ModeStrict},
 	}
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	defer sc2.Close()
 
 	ed2, err := ed.Reload(cfg2, sc2)
@@ -232,7 +232,7 @@ func TestEnterpriseEdition_KnownProfiles(t *testing.T) {
 		"claude-code": {Mode: config.ModeStrict},
 		"cursor":      {Mode: config.ModeBalanced},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -258,7 +258,7 @@ func TestEnterpriseEdition_Ports(t *testing.T) {
 	cfg.Agents = map[string]config.AgentProfile{
 		"claude-code": {Listeners: []string{":9001"}},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -279,7 +279,7 @@ func TestNewEdition_InvalidConfig(t *testing.T) {
 		"agent-a": {Listeners: []string{":9001"}},
 		"agent-b": {Listeners: []string{":9001"}}, // duplicate listener
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	_, err := NewEdition(cfg, sc)
@@ -290,7 +290,7 @@ func TestNewEdition_InvalidConfig(t *testing.T) {
 
 func TestEnterpriseEdition_Reload_Error(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -305,7 +305,7 @@ func TestEnterpriseEdition_Reload_Error(t *testing.T) {
 		"agent-a": {Listeners: []string{":9001"}},
 		"agent-b": {Listeners: []string{":9001"}}, // duplicate
 	}
-	sc2 := scanner.New(cfg2)
+	sc2 := scanner.MustNew(cfg2)
 	defer sc2.Close()
 
 	_, err = ed.Reload(cfg2, sc2)
@@ -316,7 +316,7 @@ func TestEnterpriseEdition_Reload_Error(t *testing.T) {
 
 func TestEnterpriseEdition_Close(t *testing.T) {
 	cfg := testConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)
@@ -338,7 +338,7 @@ func TestEnterpriseEditionAgentBudgetSnapshots(t *testing.T) {
 		},
 		"unlimited": {},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	ed, err := NewEdition(cfg, sc)

@@ -13,7 +13,7 @@ import (
 
 func FuzzScanURL(f *testing.F) {
 	cfg := testConfig()
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	// Normal URLs

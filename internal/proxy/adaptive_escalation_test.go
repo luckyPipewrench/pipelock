@@ -110,7 +110,7 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 
 	cfg := adaptiveConfigBlockAll()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -160,7 +160,7 @@ func TestForwardHTTP_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -209,7 +209,7 @@ func TestForwardHTTP_Adaptive_HeaderDLPSignal(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -260,7 +260,7 @@ func TestForwardHTTP_Adaptive_BlockAllAfterCEE(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -306,7 +306,7 @@ func TestConnect_Adaptive_BlockAll(t *testing.T) {
 	cfg := adaptiveConfigBlockAll()
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -380,7 +380,7 @@ func TestConnect_Adaptive_HeaderDLPNearMiss(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -448,7 +448,7 @@ func TestWebSocket_Adaptive_BlockAllOnClean(t *testing.T) {
 	cfg.WebSocketProxy.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -493,7 +493,7 @@ func TestWebSocket_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	cfg.WebSocketProxy.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -538,7 +538,7 @@ func TestInterceptTunnel_Adaptive_BlockAllOnClean(t *testing.T) {
 	cfg := adaptiveConfigBlockAll()
 	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -612,7 +612,7 @@ func TestInterceptTunnel_Adaptive_ResponseUpgrade(t *testing.T) {
 		{Name: "test_injection", Regex: "(?i)ignore all previous instructions"},
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -677,7 +677,7 @@ func TestFetch_Adaptive_BlockAll(t *testing.T) {
 
 	cfg := adaptiveConfigBlockAll()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -731,7 +731,7 @@ func TestFetch_Adaptive_HeaderDLPSignal(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -777,7 +777,7 @@ func TestFetch_Adaptive_BlockAllAfterCEE(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -814,7 +814,7 @@ func TestFetch_Adaptive_BlockAllAfterCEE(t *testing.T) {
 func TestRecordSessionActivity_DeferClean(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -871,7 +871,7 @@ func TestFilterAndActOnResponseScan_AdaptiveUpgradeWarnToBlock(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -916,7 +916,7 @@ func TestFilterAndActOnResponseScan_SignalStripRecorded(t *testing.T) {
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -957,7 +957,7 @@ func TestFilterAndActOnResponseScan_SignalStripRecorded(t *testing.T) {
 func TestRecordSessionActivity_EscalationGaugeUpdate(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1007,7 +1007,7 @@ func TestFetch_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1057,7 +1057,7 @@ func TestFetch_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1101,7 +1101,7 @@ func TestConnect_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1170,7 +1170,7 @@ func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1250,7 +1250,7 @@ func TestForwardHTTP_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1301,7 +1301,7 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1349,7 +1349,7 @@ func TestInterceptTunnel_Adaptive_URLWarnUpgradeToBlock(t *testing.T) {
 	cfg := adaptiveConfig()
 	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -1416,7 +1416,7 @@ func TestInterceptTunnel_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.Internal = savedInternal
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -1488,7 +1488,7 @@ func setupWSProxyWithProxy(t *testing.T, cfgMod func(*config.Config)) (string, *
 	}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -1772,7 +1772,7 @@ func TestAdaptive_RateLimitBlock_NoEscalation(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1817,7 +1817,7 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 1.0
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1871,7 +1871,7 @@ func TestDeathSpiral_RateLimitBurst(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 20.0 // production default
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1923,7 +1923,7 @@ func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 1.0
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -1967,7 +1967,7 @@ func TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -2029,7 +2029,7 @@ func TestAdaptive_ProtectiveRateLimit_Transport(t *testing.T) {
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2180,7 +2180,7 @@ func TestForwardHTTP_CEE_BlockAllRecheck(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -2235,7 +2235,7 @@ func TestInterceptTunnel_CEE_BlockAllRecheck(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
 	cfg.DLP.ScanEnv = false
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -2330,7 +2330,7 @@ func TestWSRelay_CEE_BlockAll(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)

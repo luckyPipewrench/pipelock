@@ -62,7 +62,7 @@ func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Con
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -414,7 +414,7 @@ func TestReverseProxy_RequireReceiptsBlocksMissingEmitterBeforeEgress(t *testing
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -529,7 +529,7 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 		t.Fatalf("close listener: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -838,7 +838,7 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 					t.Fatalf("close listener: %v", err)
 				}
 
-				sc := scanner.New(cfg)
+				sc := scanner.MustNew(cfg)
 				t.Cleanup(sc.Close)
 
 				var cfgPtr atomic.Pointer[config.Config]
@@ -939,7 +939,7 @@ func TestReverseProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T)
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -1004,7 +1004,7 @@ func TestReverseProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -1077,7 +1077,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t 
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -1160,7 +1160,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]

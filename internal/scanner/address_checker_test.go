@@ -13,7 +13,7 @@ func TestAddressCheckerNilWhenDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	if sc.AddressChecker() != nil {
@@ -33,7 +33,7 @@ func TestAddressCheckerConstructed(t *testing.T) {
 	eth := true
 	cfg.AddressProtection.Chains.ETH = &eth
 
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	if sc.AddressChecker() == nil {
@@ -63,7 +63,7 @@ func TestAddressCheckerWithAgentAddresses(t *testing.T) {
 		},
 	}
 
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	checker := sc.AddressChecker()

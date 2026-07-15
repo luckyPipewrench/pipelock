@@ -150,7 +150,7 @@ func TestMCPBehavioralBaselineUsesIdentityKeyNotInvocationKey(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	rec := &baselineTestRecorder{}
@@ -188,7 +188,7 @@ func TestScanHTTPInputDecision_A2ABehavioralBaselineDeviationBlocks(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 
 			rec := &baselineTestRecorder{}
@@ -261,7 +261,7 @@ func TestScanHTTPInputDecision_BlockedPolicyToolCallDoesNotCommitBehavioralBasel
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	rec := &baselineTestRecorder{}
 	policyCfg := buildPolicyConfig(config.ActionBlock, []config.ToolPolicyRule{
@@ -376,7 +376,7 @@ func TestRunHTTPListenerProxy_BehavioralBaselineRecordsDiscretePerRequestSamples
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	checker := &identityBaselineChecker{

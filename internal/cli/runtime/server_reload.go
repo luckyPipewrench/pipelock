@@ -371,7 +371,13 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			return rejectErr
 		}
 	}
-	newSc := scanner.New(newCfg)
+	newSc, err := scanner.New(newCfg)
+	if err != nil {
+		rejectErr := fmt.Errorf("rejected: scanner construction failed: %w", err)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})

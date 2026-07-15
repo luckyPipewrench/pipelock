@@ -50,7 +50,7 @@ func TestFetchResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 	suppressSystemOverride(cfg)
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -84,7 +84,7 @@ func TestFetchSuppressedMetricCountsHiddenAndVisibleFindings(t *testing.T) {
 	suppressSystemOverride(cfg)
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -111,7 +111,7 @@ func TestSuppressedMatchesDedupesNormalizationPasses(t *testing.T) {
 		{Rule: "System Override", Path: "*", Reason: "test suppression"},
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	result := sc.ScanResponseWithSuppress(t.Context(), "system: benign local role label", "https://example.test/response", cfg.Suppress)
@@ -148,7 +148,7 @@ func TestFetchResponseSuppressionUsesFinalURLAfterRedirect(t *testing.T) {
 	}
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -222,7 +222,7 @@ func TestInterceptResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	suppressSystemOverride(cfg)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()

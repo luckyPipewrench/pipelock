@@ -191,7 +191,7 @@ func testScannerForHTTP(t *testing.T) *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc
 }
@@ -387,7 +387,7 @@ func TestRunHTTPProxy_BlocksInjectedResponse(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	stdin := strings.NewReader(jsonToolsCallEcho + "\n")
@@ -433,7 +433,7 @@ func TestRunHTTPProxy_BlockedResponseDoesNotCommitBehavioralBaseline(t *testing.
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	rec := &baselineTestRecorder{}
@@ -672,7 +672,7 @@ func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Build a fake API key at runtime to avoid gitleaks false positives.
@@ -775,7 +775,7 @@ func TestRunHTTPProxy_ToolPoisoningDetection(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = "warn"
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	toolCfg := &tools.ToolScanConfig{
@@ -814,7 +814,7 @@ func TestRunHTTPProxy_InputScanWarnMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Same fake key as DLP test but action = warn.
@@ -912,7 +912,7 @@ func TestScanHTTPInput_ParseError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{
@@ -935,7 +935,7 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := &policy.Config{
@@ -958,7 +958,7 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 func TestScanHTTPInputDecision_PolicyDeferEmitsReceipt(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	resolutionPolicy := config.DeferResolutionPolicy{
@@ -1143,7 +1143,7 @@ func TestScanHTTPInput_PolicyRedirectMissingProfileBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Profile key referenced but not in map - fail closed.
@@ -1180,7 +1180,7 @@ func TestScanHTTPInput_PolicyRedirectSuccess(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := &policy.Config{
@@ -1292,7 +1292,7 @@ func TestScanHTTPInput_PolicyRedirectHandlerFailure(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := &policy.Config{
@@ -1331,7 +1331,7 @@ func TestScanHTTPInput_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// No inputCfg, no policyCfg - everything clean.
@@ -1433,7 +1433,7 @@ func TestRunHTTPProxy_BlockedNotificationSilent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := strings.Repeat("a", 40)
@@ -1501,7 +1501,7 @@ func TestScanHTTPInput_AskFallbackToBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Build a fake API key at runtime to avoid gitleaks false positives.
@@ -1534,7 +1534,7 @@ func TestScanHTTPInput_PolicyAskFallbackToBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := &policy.Config{
@@ -1561,7 +1561,7 @@ func TestScanHTTPInputDecision_ReceiptVerdictForAskFallbackIsBlock(t *testing.T)
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := strings.Repeat("a", 40)
@@ -1603,7 +1603,7 @@ func TestRunHTTPProxy_InputScanAskMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := strings.Repeat("a", 40)
@@ -1822,7 +1822,7 @@ func TestRunHTTPProxy_GETStreamKillSwitchPause(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	ks := killswitch.New(cfg)
 
@@ -1908,7 +1908,7 @@ func TestRunHTTPProxy_ScanErrorPropagated(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	stdin := strings.NewReader(jsonToolsCallBare + "\n")
@@ -1989,7 +1989,7 @@ func TestRunHTTPProxy_SSEResponseWithInjectionBlock(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	stdin := strings.NewReader(jsonToolsCallBare + "\n")
@@ -2024,7 +2024,7 @@ func TestScanHTTPInput_InjectionInArgs(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{
@@ -2151,7 +2151,7 @@ func TestRunHTTPProxy_NotificationBlocked(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := strings.Repeat("a", 40)
@@ -2655,7 +2655,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
@@ -2744,7 +2744,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_DualEmitsV2PolicyHash(t *testing.T
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	h := newMCPDecisionReceiptHarness(t)
@@ -3438,7 +3438,7 @@ func TestHTTPListener_BlocksInjectedResponse(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
@@ -3723,7 +3723,7 @@ func TestHTTPListener_SSEUpstream_BlocksInjection(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
@@ -3891,7 +3891,7 @@ func TestHTTPListener_InputDLPBlocking(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{
@@ -4122,7 +4122,7 @@ func TestHTTPListener_BlockedNotification(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{
@@ -4275,7 +4275,7 @@ func TestHTTPListener_PolicyBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Enable input scanning in warn mode so the ID gets extracted from the
@@ -4329,7 +4329,7 @@ func TestHTTPListener_PolicyOnlyBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := &policy.Config{
@@ -4376,7 +4376,7 @@ func TestScanHTTPInput_PolicyOnlyPreservesID(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := &policy.Config{
@@ -4413,7 +4413,7 @@ func TestHTTPListener_ToolPoisoningBlock(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionWarn
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	toolCfg := &tools.ToolScanConfig{
@@ -4828,7 +4828,7 @@ func TestScanHTTPInput_CEEBlocksClean(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Tiny entropy budget so any message exceeds it.
@@ -4859,7 +4859,7 @@ func TestScanHTTPInput_CEEBlocksWarnMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Tiny entropy budget so any message exceeds it.
@@ -5714,7 +5714,7 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{
@@ -6078,7 +6078,7 @@ func TestScanHTTPInput_A2ABlockAction(t *testing.T) {
 }
 
 func TestScanHTTPInput_A2AMessageSendFilePartSSRFBlock(t *testing.T) {
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	t.Cleanup(sc.Close)
 
 	a2aCfg := &config.A2AScanning{
@@ -6123,7 +6123,7 @@ func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 func TestScanHTTPInput_A2AWarnAction_InfrastructureErrorNoSignal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	a2aCfg := &config.A2AScanning{

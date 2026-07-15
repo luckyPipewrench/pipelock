@@ -69,7 +69,7 @@ var providerKeyBenignCorpus = map[string]string{
 
 func TestProviderKeyPatterns_NoFalsePositivesOnBenignCorpus(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 	ctx := context.Background()
 
@@ -93,7 +93,7 @@ func TestProviderKeyPatterns_NoFalsePositivesOnBenignCorpus(t *testing.T) {
 // matching nothing.
 func TestProviderKeyPatterns_PositiveControls(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 	ctx := context.Background()
 

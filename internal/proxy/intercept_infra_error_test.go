@@ -49,7 +49,7 @@ func TestInterceptTunnel_DNSInfrastructureError_NoSignal(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	rec := &interceptMockRecorder{}
@@ -145,7 +145,7 @@ func TestInterceptTunnel_RealSSRF_RecordsSignalBlock(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100 // high so we don't actually escalate
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	rec := &interceptMockRecorder{}

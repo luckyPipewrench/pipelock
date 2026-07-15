@@ -31,7 +31,7 @@ func fetchRequireReceiptsProxy(t *testing.T, require bool) *Proxy {
 	cfg.ResponseScanning.Enabled = false
 	cfg.FlightRecorder.RequireReceipts = require
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 	if err != nil {
@@ -54,7 +54,7 @@ func fetchRequireReceiptsLiveProxy(t *testing.T, cfgMod func(*config.Config)) (*
 		cfgMod(cfg)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 	if err != nil {
@@ -213,7 +213,7 @@ func TestHandleFetch_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t 
 	cfg.Internal = nil
 	cfg.ResponseScanning.Enabled = false
 	cfg.FlightRecorder.RequireReceipts = true
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 	if err != nil {

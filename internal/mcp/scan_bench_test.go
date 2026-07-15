@@ -18,7 +18,7 @@ func benchScanner(b *testing.B) *scanner.Scanner {
 	cfg.Internal = nil // disable SSRF (no DNS)
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	b.Cleanup(sc.Close)
 	return sc
 }

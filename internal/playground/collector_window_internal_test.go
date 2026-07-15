@@ -92,7 +92,7 @@ func delimiterSeparatedReverse(s string) string {
 func assertDLPAllowsTransformedCanary(t *testing.T, transformed string) {
 	t.Helper()
 
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	defer sc.Close()
 
 	result := sc.ScanTextForDLP(context.Background(), transformed)

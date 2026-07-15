@@ -55,7 +55,7 @@ func newSigningProxyForTest(t *testing.T) *Proxy {
 		t.Fatalf("NewSigner: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	logger := audit.NewNop()
 

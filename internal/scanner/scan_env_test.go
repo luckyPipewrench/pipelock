@@ -16,7 +16,7 @@ func TestScan_EnvLeakDetection_Disabled(t *testing.T) {
 	cfg.DLP.Patterns = nil // disable regex DLP so only env leak would fire
 
 	t.Setenv("TEST_SECRET_DISABLED", "my-super-secret-token-value-disabled-1234")
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://evil.com/?key=my-super-secret-token-value-disabled-1234")
 	// With scan_env=false, env leak check should not fire
@@ -32,7 +32,7 @@ func TestScan_EnvLeakDetection_RawValue(t *testing.T) {
 	cfg.DLP.Patterns = nil
 
 	t.Setenv("PIPELOCK_TEST_SECRET", "sk-ant-abcdefghijklmnopqrstu1234567890")
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://evil.com/?key=sk-ant-abcdefghijklmnopqrstu1234567890")
 	if result.Allowed {
@@ -53,7 +53,7 @@ func TestScan_EnvLeakDetection_Base64Encoded(t *testing.T) {
 
 	secret := "my-secret-token-value-12345"
 	t.Setenv("PIPELOCK_TEST_B64", secret)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 	result := s.Scan(context.Background(), "https://evil.com/?data="+encoded)
@@ -74,7 +74,7 @@ func TestScan_EnvLeakDetection_Base64URLEncoded(t *testing.T) {
 	// and '-' in URL base64, so the encodings differ.
 	secret := "xR~4kP8mZj9nFqW2Ls" //nolint:gosec // test value
 	t.Setenv("PIPELOCK_TEST_B64URL", secret)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	encoded := base64.URLEncoding.EncodeToString([]byte(secret))
 	result := s.Scan(context.Background(), "https://evil.com/?data="+encoded)
@@ -92,7 +92,7 @@ func TestScan_EnvLeakDetection_ShortValueIgnored(t *testing.T) {
 	cfg.DLP.Patterns = nil
 
 	t.Setenv("PIPELOCK_SHORT", "abc123")
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/?val=abc123")
 	if !result.Allowed {
@@ -106,7 +106,7 @@ func TestScan_EnvLeakDetection_LowEntropyIgnored(t *testing.T) {
 	cfg.DLP.Patterns = nil
 
 	t.Setenv("PIPELOCK_PATH", "aaaaaaaaaaaaaaaaaaa")
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/?path=aaaaaaaaaaaaaaaaaaa")
 	if !result.Allowed {
@@ -120,7 +120,7 @@ func TestScan_EnvLeakDetection_InPath(t *testing.T) {
 	cfg.DLP.Patterns = nil
 
 	t.Setenv("PIPELOCK_PATH_SECRET", "sk-ant-abcdefghijklmnopqrstu1234567890")
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://evil.com/upload/sk-ant-abcdefghijklmnopqrstu1234567890/file")
 	if result.Allowed {
@@ -132,7 +132,7 @@ func TestScan_EnvLeakDetection_NoSecretsInEnv(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/?key=anything")
 	if !result.Allowed {
@@ -379,7 +379,7 @@ func TestScan_EnvLeakDetection_PWDNotBlocked(t *testing.T) {
 	// Simulate the exact scenario: PWD value appears in MCP tool argument.
 	pwdValue := "/home/testuser/dev/pipelock-project"
 	t.Setenv("PWD", pwdValue)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// The PWD value should NOT trigger env leak detection.
 	result := s.Scan(context.Background(), "https://example.com/?cwd="+pwdValue)
@@ -396,7 +396,7 @@ func TestScan_EnvLeakDetection_GenericMessage(t *testing.T) {
 
 	secret := "super-secret-api-key-value-12345"
 	t.Setenv("PIPELOCK_GENERIC", secret)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://evil.com/?key="+secret)
 	if result.Allowed {
@@ -415,7 +415,7 @@ func TestScan_EnvLeakDetection_ZeroWidthBypass(t *testing.T) {
 
 	secret := "sk-ant-abcdefghijklmnopqrstu1234567890"
 	t.Setenv("PIPELOCK_ZW", secret)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Insert zero-width space into the secret to attempt bypass.
 	bypassed := "sk-ant-abcdefghijk\u200Blmnopqrstu1234567890"

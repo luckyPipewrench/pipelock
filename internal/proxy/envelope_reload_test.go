@@ -57,7 +57,7 @@ func envelopeReloadProxy(t *testing.T) *Proxy {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	logger := audit.NewNop()
 
@@ -101,7 +101,7 @@ func TestProxy_ReloadEnvelopeEmitter_EnablesSigning(t *testing.T) {
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	enableEnvelopeSigning(t, reloadCfg, keyPath)
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -145,7 +145,7 @@ func TestProxy_NewInitializesSigningEmitterAtStartup(t *testing.T) {
 		ConfigHash: cfg.Hash(),
 	})
 
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(), WithEnvelopeEmitter(startupEmitter))
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New(), WithEnvelopeEmitter(startupEmitter))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestProxy_ReloadEnvelopeEmitter_DisablesSigning(t *testing.T) {
 	onCfg.Internal = nil
 	onCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	enableEnvelopeSigning(t, onCfg, keyPath)
-	p.Reload(onCfg, scanner.New(onCfg))
+	p.Reload(onCfg, scanner.MustNew(onCfg))
 	if em := p.envelopeEmitterPtr.Load(); em == nil || !em.HasSigner() {
 		t.Fatal("envelope emitter should be signing after first reload")
 	}
@@ -227,7 +227,7 @@ func TestProxy_ReloadEnvelopeEmitter_DisablesSigning(t *testing.T) {
 	if err := offCfg.Validate(); err != nil {
 		t.Fatalf("offCfg.Validate: %v", err)
 	}
-	p.Reload(offCfg, scanner.New(offCfg))
+	p.Reload(offCfg, scanner.MustNew(offCfg))
 
 	em := p.envelopeEmitterPtr.Load()
 	if em == nil {
@@ -254,7 +254,7 @@ func TestProxy_ReloadEnvelopeEmitter_AbortsOnMissingKey(t *testing.T) {
 	onCfg.Internal = nil
 	onCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	enableEnvelopeSigning(t, onCfg, keyPath)
-	p.Reload(onCfg, scanner.New(onCfg))
+	p.Reload(onCfg, scanner.MustNew(onCfg))
 
 	beforeEmitter := p.envelopeEmitterPtr.Load()
 	beforeCfg := p.cfgPtr.Load()
@@ -282,7 +282,7 @@ func TestProxy_ReloadEnvelopeEmitter_AbortsOnMissingKey(t *testing.T) {
 	brokenCfg.MediationEnvelope.CreatedSkewSeconds = config.DefaultEnvelopeSignCreatedSkewSecs
 	brokenCfg.MediationEnvelope.MaxBodyBytes = config.DefaultEnvelopeSignMaxBodyBytes
 
-	brokenSc := scanner.New(brokenCfg)
+	brokenSc := scanner.MustNew(brokenCfg)
 	p.Reload(brokenCfg, brokenSc)
 
 	// The envelope emitter pointer must be unchanged - same *Emitter
@@ -319,7 +319,7 @@ func TestProxy_ReloadEnvelopeEmitter_DisabledNilsEmitter(t *testing.T) {
 	onCfg.Internal = nil
 	onCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	enableEnvelopeSigning(t, onCfg, keyPath)
-	p.Reload(onCfg, scanner.New(onCfg))
+	p.Reload(onCfg, scanner.MustNew(onCfg))
 
 	offCfg := config.Defaults()
 	offCfg.Internal = nil
@@ -328,7 +328,7 @@ func TestProxy_ReloadEnvelopeEmitter_DisabledNilsEmitter(t *testing.T) {
 	if err := offCfg.Validate(); err != nil {
 		t.Fatalf("offCfg.Validate: %v", err)
 	}
-	p.Reload(offCfg, scanner.New(offCfg))
+	p.Reload(offCfg, scanner.MustNew(offCfg))
 
 	// Atomic pointers to structs return a nil *Emitter as a typed nil.
 	// Compare via the typed Load so a stale generic any interface does
@@ -343,7 +343,7 @@ func TestProxy_ReloadInboundVerifierActorFormatStrictFlip(t *testing.T) {
 
 	pub, priv := testInboundEnvelopeKey(t)
 	strictCfg := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
-	p, err := New(strictCfg, audit.NewNop(), scanner.New(strictCfg), metrics.New())
+	p, err := New(strictCfg, audit.NewNop(), scanner.MustNew(strictCfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -353,26 +353,26 @@ func TestProxy_ReloadInboundVerifierActorFormatStrictFlip(t *testing.T) {
 	assertInboundActorVerified(t, p, strictCfg, signedInboundRequest(t, priv, "spiffe://partner.example/agent/proxy"))
 
 	firstReload := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
-	if ok := p.Reload(firstReload, scanner.New(firstReload)); !ok {
+	if ok := p.Reload(firstReload, scanner.MustNew(firstReload)); !ok {
 		t.Fatal("first strict reload should publish")
 	}
 	assertInboundActorRejected(t, p, firstReload, signedInboundRequest(t, priv, "legacy-agent"))
 
 	unrelatedReload := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
 	unrelatedReload.FetchProxy.UserAgent = "pipelock-test-reload"
-	if ok := p.Reload(unrelatedReload, scanner.New(unrelatedReload)); !ok {
+	if ok := p.Reload(unrelatedReload, scanner.MustNew(unrelatedReload)); !ok {
 		t.Fatal("second unrelated reload should publish")
 	}
 	assertInboundActorRejected(t, p, unrelatedReload, signedInboundRequest(t, priv, "legacy-agent"))
 
 	permissiveCfg := inboundVerifierReloadConfig(pub, envelope.ActorFormatLegacy, nil)
-	if ok := p.Reload(permissiveCfg, scanner.New(permissiveCfg)); !ok {
+	if ok := p.Reload(permissiveCfg, scanner.MustNew(permissiveCfg)); !ok {
 		t.Fatal("downgrade to legacy actor format should publish")
 	}
 	assertInboundActorVerified(t, p, permissiveCfg, signedInboundRequest(t, priv, "legacy-agent"))
 
 	strictAgain := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
-	if ok := p.Reload(strictAgain, scanner.New(strictAgain)); !ok {
+	if ok := p.Reload(strictAgain, scanner.MustNew(strictAgain)); !ok {
 		t.Fatal("upgrade back to strict actor format should publish")
 	}
 	assertInboundActorRejected(t, p, strictAgain, signedInboundRequest(t, priv, "legacy-agent"))
@@ -460,7 +460,7 @@ func TestProxy_ReloadEnvelopeFailurePreservesReceiptEmitter(t *testing.T) {
 	startCfg.FlightRecorder.SigningKeyPath = receiptKeyA
 	enableEnvelopeSigning(t, startCfg, writeEnvelopeKey(t))
 
-	p, err := New(startCfg, audit.NewNop(), scanner.New(startCfg), metrics.New(),
+	p, err := New(startCfg, audit.NewNop(), scanner.MustNew(startCfg), metrics.New(),
 		WithRecorder(rec),
 		WithReceiptEmitter(initialReceiptEmitter),
 		WithReceiptKeyPath(receiptKeyA),
@@ -491,7 +491,7 @@ func TestProxy_ReloadEnvelopeFailurePreservesReceiptEmitter(t *testing.T) {
 	brokenCfg.MediationEnvelope.CreatedSkewSeconds = config.DefaultEnvelopeSignCreatedSkewSecs
 	brokenCfg.MediationEnvelope.MaxBodyBytes = config.DefaultEnvelopeSignMaxBodyBytes
 
-	p.Reload(brokenCfg, scanner.New(brokenCfg))
+	p.Reload(brokenCfg, scanner.MustNew(brokenCfg))
 
 	if afterReceiptEmitter := p.receiptEmitterPtr.Load(); afterReceiptEmitter != beforeReceiptEmitter {
 		t.Fatal("receipt emitter changed even though envelope reload aborted")
@@ -529,7 +529,7 @@ func TestProxy_ReloadEnvelopeEmitter_InPlaceKeyRotation(t *testing.T) {
 	onCfg.Internal = nil
 	onCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	enableEnvelopeSigning(t, onCfg, keyPath)
-	p.Reload(onCfg, scanner.New(onCfg))
+	p.Reload(onCfg, scanner.MustNew(onCfg))
 	firstEmitter := p.envelopeEmitterPtr.Load()
 	if firstEmitter == nil || !firstEmitter.HasSigner() {
 		t.Fatal("first reload should have installed a signing emitter")
@@ -559,7 +559,7 @@ func TestProxy_ReloadEnvelopeEmitter_InPlaceKeyRotation(t *testing.T) {
 	rotatedCfg.Internal = nil
 	rotatedCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	enableEnvelopeSigning(t, rotatedCfg, keyPath)
-	p.Reload(rotatedCfg, scanner.New(rotatedCfg))
+	p.Reload(rotatedCfg, scanner.MustNew(rotatedCfg))
 
 	secondEmitter := p.envelopeEmitterPtr.Load()
 	if secondEmitter == nil || !secondEmitter.HasSigner() {
@@ -763,7 +763,7 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 	enableEnvelopeSigning(t, cfg, sharedPath)
 
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -842,7 +842,7 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 			rotatedCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			rotatedCfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 			enableEnvelopeSigning(t, rotatedCfg, sharedPath)
-			p.Reload(rotatedCfg, scanner.New(rotatedCfg))
+			p.Reload(rotatedCfg, scanner.MustNew(rotatedCfg))
 			// Yield so traffic workers can make progress between
 			// reload churn cycles.
 			runtime.Gosched()

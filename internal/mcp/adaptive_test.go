@@ -103,7 +103,7 @@ func newAdaptiveTestScanner() *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	return scanner.New(cfg)
+	return scanner.MustNew(cfg)
 }
 
 // runAdaptiveInput calls ForwardScannedInput with the given recorder and adaptive
@@ -811,7 +811,7 @@ func TestForwardScanned_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	// Pre-escalated to elevated (level 1): upgrade_warn -> block.

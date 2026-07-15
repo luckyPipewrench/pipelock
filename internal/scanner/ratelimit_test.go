@@ -180,7 +180,7 @@ func TestRateLimiter_CloseIsIdempotent(_ *testing.T) {
 func TestScanner_CheckRateLimit_Disabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.checkRateLimit("example.com")
 	if !result.Allowed {
@@ -191,7 +191,7 @@ func TestScanner_CheckRateLimit_Disabled(t *testing.T) {
 func TestScanner_CheckRateLimit_Blocked(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	s.rateLimiter.Record("example.com")
@@ -212,7 +212,7 @@ func TestScanner_CheckRateLimit_Blocked(t *testing.T) {
 func TestScanner_Scan_RateLimitIntegration(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 3
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// CheckAndRecord records each allowed request atomically.
@@ -236,7 +236,7 @@ func TestScanner_Scan_RateLimitIntegration(t *testing.T) {
 func TestScanner_RecordRequest_NilRateLimiter(_ *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Should not panic
 	s.RecordRequest("example.com", 0)
@@ -245,7 +245,7 @@ func TestScanner_RecordRequest_NilRateLimiter(_ *testing.T) {
 func TestScanner_Close_NilRateLimiter(_ *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Should not panic
 	s.Close()
@@ -254,7 +254,7 @@ func TestScanner_Close_NilRateLimiter(_ *testing.T) {
 func TestScanner_RateLimit_DifferentDomainsIndependent(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// First scan for a.com is allowed (CheckAndRecord records it)

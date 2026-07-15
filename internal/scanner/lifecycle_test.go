@@ -20,7 +20,7 @@ import (
 func TestScanner_BeginUse_OkBeforeClose(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	release, ok := sc.BeginUse()
 	if !ok {
@@ -54,7 +54,7 @@ func TestScanner_BeginUse_OkBeforeClose(t *testing.T) {
 func TestScanner_BeginUse_FailsAfterClose(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	sc.Close()
 
 	if release, ok := sc.BeginUse(); ok {
@@ -73,7 +73,7 @@ func TestScanner_BeginUse_FailsAfterClose(t *testing.T) {
 func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	release, ok := sc.BeginUse()
 	if !ok {
@@ -123,7 +123,7 @@ func TestScanner_Close_DrainTimeoutDefersTeardown(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	release, ok := sc.BeginUse()
 	if !ok {
@@ -161,7 +161,7 @@ func TestScanner_Close_DrainTimeoutDefersTeardown(t *testing.T) {
 func TestScanner_Close_Idempotent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	for i := 0; i < 5; i++ {
 		sc.Close()
@@ -176,7 +176,7 @@ func TestScanner_Close_Idempotent(t *testing.T) {
 func TestScanner_BeginUse_RaceFree(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	var wg sync.WaitGroup
 	wg.Add(50)

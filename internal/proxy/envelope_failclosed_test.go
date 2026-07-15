@@ -39,7 +39,7 @@ func TestForwardHTTP_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = false
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	logger := audit.NewNop()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -94,7 +94,7 @@ func TestInterceptHandler_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = false
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	logger := audit.NewNop()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -153,7 +153,7 @@ func TestReverseProxy_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = false
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -171,7 +171,7 @@ func TestReverseProxy_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 		nil,
 		nil,
 	)
-	signingProxy, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	signingProxy, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}

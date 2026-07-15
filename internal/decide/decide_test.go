@@ -35,7 +35,7 @@ func testSetup(t *testing.T) (*config.Config, *scanner.Scanner, *policy.Config) 
 	cfg.Internal = nil // after ApplyDefaults to avoid repopulation
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
 	return cfg, sc, pc
 }
@@ -533,7 +533,7 @@ func TestDecide_WarnActionAllows(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
 
 	// rm -rf triggers policy match with warn action: should allow with advisory.
@@ -570,7 +570,7 @@ func TestDecide_EnforceOffAllows(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
 
 	// rm -rf triggers block-level policy, but enforce=false overrides to allow.
@@ -610,7 +610,7 @@ func TestDecide_MixedWarnAndBlockDenies(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
 
 	// Command contains a DLP secret (block-level) AND a policy match (warn-level).
@@ -646,7 +646,7 @@ func TestDecide_MCPInputScanningDisabled(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
 
 	// Secret in tool_input should NOT trigger DLP when input scanning disabled.
@@ -907,7 +907,7 @@ func TestDecide_WriteFile_NilPayload(t *testing.T) {
 func TestDecide_ShellExecution_ResponseScanningDisabled(t *testing.T) {
 	cfg, _, pc := testSetup(t)
 	cfg.ResponseScanning.Enabled = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// Injection text in command should be allowed when response scanning is disabled.
 	action := Action{
@@ -927,7 +927,7 @@ func TestDecide_ShellExecution_ResponseScanningDisabled(t *testing.T) {
 func TestDecide_ReadFile_ResponseScanningDisabled(t *testing.T) {
 	cfg, _, pc := testSetup(t)
 	cfg.ResponseScanning.Enabled = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// Injection in file content should be allowed when response scanning is off.
 	action := Action{

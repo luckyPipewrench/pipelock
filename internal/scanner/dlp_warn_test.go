@@ -31,7 +31,7 @@ func testDLPConfig(patternName, regex string, warn bool) *config.Config {
 
 func TestTextDLP_WarnPatternRoutesToInformational(t *testing.T) {
 	cfg := testDLPConfig("staged-key", `staged-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.ScanTextForDLP(context.Background(), "here is staged-ABCDEFGHIJ1234")
 
@@ -56,7 +56,7 @@ func TestTextDLP_WarnPatternRoutesToInformational(t *testing.T) {
 
 func TestTextDLP_EnforcePatternRoutesToMatches(t *testing.T) {
 	cfg := testDLPConfig("enforced-key", `enforced-[A-Za-z0-9]{10,}`, false)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.ScanTextForDLP(context.Background(), "here is enforced-ABCDEFGHIJ1234")
 
@@ -91,7 +91,7 @@ func TestTextDLP_MixedWarnAndEnforce(t *testing.T) {
 			Severity: "high",
 		},
 	)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	text := "warn-AAAAAAAAAA plus enforce-BBBBBBBBBB"
 	result := s.ScanTextForDLP(context.Background(), text)
@@ -138,7 +138,7 @@ func TestTextDLP_MixedWarnAndEnforce(t *testing.T) {
 
 func TestURLDLP_WarnPatternAllowsRequest(t *testing.T) {
 	cfg := testDLPConfig("staged-url-key", `staged-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/?key=staged-ABCDEFGHIJ1234")
 
@@ -155,7 +155,7 @@ func TestURLDLP_WarnPatternAllowsRequest(t *testing.T) {
 
 func TestURLDLP_EnforcePatternBlocksRequest(t *testing.T) {
 	cfg := testDLPConfig("enforced-url-key", `enforced-[A-Za-z0-9]{10,}`, false)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/?key=enforced-ABCDEFGHIJ1234")
 
@@ -183,7 +183,7 @@ func TestURLDLP_WarnDoesNotPreventEnforceBlock(t *testing.T) {
 			Severity: "critical",
 		},
 	)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Install hook to verify warn emission even on blocked requests.
 	var hookCalled []string
@@ -223,7 +223,7 @@ func TestURLDLP_WarnMatchFromSubsequenceCombination(t *testing.T) {
 		Severity: "high",
 		Action:   config.ActionWarn,
 	})
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Secret split across 3 query params - subsequence recombination should
 	// produce a warn match instead of blocking.
@@ -239,7 +239,7 @@ func TestURLDLP_WarnMatchFromSubsequenceCombination(t *testing.T) {
 
 func TestTextDLP_WarnPatternEncodedVariants(t *testing.T) {
 	cfg := testDLPConfig("staged-encoded", `staged-encoded-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name string
@@ -287,7 +287,7 @@ func TestDeduplicateWarnMatches_NilAndSingle(t *testing.T) {
 
 func TestFragmentBuffer_WarnPatternNotEnforced(t *testing.T) {
 	cfg := testDLPConfig("staged-frag", `staged-frag-[A-Za-z0-9]{20,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	fb := NewFragmentBuffer(4096, 10, 60)
 	defer fb.Close()
@@ -307,7 +307,7 @@ func TestFragmentBuffer_WarnPatternNotEnforced(t *testing.T) {
 
 func TestDLPWarnHook_TextDLP(t *testing.T) {
 	cfg := testDLPConfig("hook-text", `hook-text-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	var called []string
 	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
@@ -326,7 +326,7 @@ func TestDLPWarnHook_TextDLP(t *testing.T) {
 
 func TestDLPWarnHook_QuietTextDLPDoesNotEmit(t *testing.T) {
 	cfg := testDLPConfig("hook-quiet", `hook-quiet-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	var called []string
 	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
@@ -361,7 +361,7 @@ func TestDLPWarnHook_TextDLPDeduplicatesDuplicateWarns(t *testing.T) {
 		Severity: config.SeverityHigh,
 		Action:   config.ActionWarn,
 	}}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	var called []string
 	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
@@ -380,7 +380,7 @@ func TestDLPWarnHook_TextDLPDeduplicatesDuplicateWarns(t *testing.T) {
 
 func TestDLPWarnHook_URLDLP(t *testing.T) {
 	cfg := testDLPConfig("hook-url", `hook-url-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	var called []string
 	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
@@ -399,7 +399,7 @@ func TestDLPWarnHook_URLDLP(t *testing.T) {
 
 func TestDLPWarnHook_NilDoesNotPanic(t *testing.T) {
 	cfg := testDLPConfig("hook-nil", `hook-nil-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// No hook set - dlpWarnHook is nil by default.
 	// Should not panic with nil hook.
@@ -409,7 +409,7 @@ func TestDLPWarnHook_NilDoesNotPanic(t *testing.T) {
 
 func TestDLPWarnHook_ContextCarriesTransport(t *testing.T) {
 	cfg := testDLPConfig("ctx-transport", `ctx-transport-[A-Za-z0-9]{10,}`, true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	type hookCapture struct {
 		patternName string

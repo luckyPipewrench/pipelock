@@ -33,7 +33,7 @@ func newAddressProtectionScanner(t *testing.T) *scanner.Scanner {
 	cfg.AddressProtection.Chains.BNB = &f
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc
 }
@@ -101,7 +101,7 @@ func TestScanRequestBody_NoAddressProtection(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	// No address protection enabled - should not crash.
@@ -143,7 +143,7 @@ func TestScanRequestBody_AddressWithAgentID(t *testing.T) {
 	cfg.LicenseAgentsFeature = true
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	// Poisoned address with agent ID "trader" - agent's allowlist should be consulted.

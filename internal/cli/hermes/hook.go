@@ -165,7 +165,10 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 		},
 	}, stderr, "hermes hook")
 
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return emitDecision(stdout, blockDecision(fmt.Sprintf("pipelock hermes hook: scanner startup failed: %v", err)))
+	}
 	defer sc.Close()
 
 	decision := evaluate(ctx, sc, &event)

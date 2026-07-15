@@ -38,7 +38,7 @@ func testWarnScanner(t *testing.T) (*scanner.Scanner, *[]scanner.DLPWarnContext)
 		Action:   config.ActionWarn,
 	})
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	captured := []scanner.DLPWarnContext{}
 	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
 		captured = append(captured, scanner.DLPWarnContextFromCtx(ctx))

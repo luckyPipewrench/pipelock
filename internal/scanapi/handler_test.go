@@ -70,7 +70,7 @@ func newTestHandler(t *testing.T) *Handler {
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	return NewHandler(cfg, sc, nil, m, "test-version")
 }
@@ -573,7 +573,7 @@ func TestScanURL_Blocked(t *testing.T) {
 func TestScanDLP_EmbeddedA2AFilePartURLSSRF(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
 
@@ -607,7 +607,7 @@ func TestScanDLP_EmbeddedA2AFilePartURLSSRF(t *testing.T) {
 
 func TestScanDLP_EmbeddedURLViewsCatchEscapedAndEncodedSSRF(t *testing.T) {
 	cfg := config.Defaults()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	tests := []struct {
@@ -655,7 +655,7 @@ func TestScanDLP_EmbeddedURLViewsCatchEscapedAndEncodedSSRF(t *testing.T) {
 func TestScanDLP_DoublePercentEncodedEmbeddedURLBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
 
@@ -705,7 +705,7 @@ func TestScanDLP_EmbeddedURLCollectsAllFindings(t *testing.T) {
 	cfg.Internal = nil
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
 
@@ -743,7 +743,7 @@ func TestScanDLP_EmbeddedURLProtectiveDenySurfaces(t *testing.T) {
 	cfg.Internal = nil
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	results := scanEmbeddedTextURLs(context.Background(), sc, `https://api.vendor.example/one https://api.vendor.example/two`)
@@ -759,7 +759,7 @@ func TestScanDLP_EmbeddedURLScanCapTruncatesAndDenies(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
 
@@ -820,7 +820,7 @@ func TestScanToolCall_PolicyDeny(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
 	cfg.MCPInputScanning.Enabled = false // isolate policy-only path
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	// Build a policy config that blocks calls to "exec_shell".
@@ -863,7 +863,7 @@ func TestScanToolCall_PolicyArgKeyScoped(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
 	cfg.MCPInputScanning.Enabled = false // isolate policy-only path
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	// Scoped rule: block read_file when file_path contains /etc/shadow.
@@ -1648,7 +1648,7 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{"old-token"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	m := metrics.New()
 	h := NewHandler(cfg, sc, nil, m, "test-version")
@@ -1765,7 +1765,7 @@ func TestHandler_RuntimeGetterUnavailablePaths(t *testing.T) {
 	cfg.Internal = nil
 	cfg.ScanAPI.Auth.BearerTokens = []string{"token"}
 	cfg.ScanAPI.Kinds.URL = true
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	h := NewHandler(cfg, sc, nil, metrics.New(), "test")

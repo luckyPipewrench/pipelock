@@ -47,7 +47,7 @@ func TestCaptureMetadata_FetchPath_RoundTrip(t *testing.T) {
 
 	cfg := testScannerConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 

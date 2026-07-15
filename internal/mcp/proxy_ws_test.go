@@ -36,7 +36,7 @@ func testScannerForWS(t *testing.T) *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc
 }
@@ -179,7 +179,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	pr, pw := io.Pipe()
@@ -309,7 +309,7 @@ func TestRunWSProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
@@ -369,7 +369,7 @@ func TestRunWSProxy_InputDLPBlocking(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	// Build a fake AWS key at runtime to avoid gosec G101.
@@ -412,7 +412,7 @@ func TestRunWSProxy_KillSwitchDeniesAll(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill"
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	ks := killswitch.New(cfg)
@@ -449,7 +449,7 @@ func TestRunWSProxy_KillSwitchDropsNotification(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill"
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	ks := killswitch.New(cfg)
@@ -485,7 +485,7 @@ func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	policyCfg := policy.New(config.MCPToolPolicy{
@@ -561,7 +561,7 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 			Action:   config.ActionBlock,
 		},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	chainMatcher := chains.New(&cfg.ToolChainDetection)
@@ -611,7 +611,7 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -653,7 +653,7 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	toolCfg := &tools.ToolScanConfig{
@@ -808,7 +808,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -863,7 +863,7 @@ func TestRunWSProxy_BlockedNotificationSilent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -901,7 +901,7 @@ func TestRunWSProxy_BindingConfigWired(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	toolCfg := &tools.ToolScanConfig{

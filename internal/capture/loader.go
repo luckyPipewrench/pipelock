@@ -129,7 +129,10 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 		}
 
 		// Fresh scanner per session to avoid rate-limiter / data-budget bleed.
-		sc := scanner.New(cfg)
+		sc, err := scanner.New(cfg)
+		if err != nil {
+			return nil, 0, 0, "", fmt.Errorf("session %s scanner: %w", sessionName, err)
+		}
 		re := NewReplayEngine(cfg, sc)
 		if opts.Contract != nil {
 			re = NewContractReplayEngine(cfg, sc, *opts.Contract)

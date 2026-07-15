@@ -268,7 +268,10 @@ func runPrimitiveSimulate(cfg *config.Config, evidenceDir, configFile string) er
 	simCfg := *cfg
 	simCfg.Internal = nil
 
-	sc := scanner.New(&simCfg)
+	sc, err := scanner.New(&simCfg)
+	if err != nil {
+		return fmt.Errorf("create simulate scanner: %w", err)
+	}
 	defer sc.Close()
 
 	scenarios := cliaudit.BuildSimScenarios(&simCfg, sc)
@@ -358,7 +361,10 @@ func runPrimitiveVerifyInstall(cfg *config.Config, evidenceDir, configFile strin
 	}
 
 	// Build scanner and temporary proxy.
-	sc := scanner.New(&verifyCfg)
+	sc, err := scanner.New(&verifyCfg)
+	if err != nil {
+		return fmt.Errorf("create verify-install scanner: %w", err)
+	}
 	defer sc.Close()
 
 	logger := domaudit.NewNop()

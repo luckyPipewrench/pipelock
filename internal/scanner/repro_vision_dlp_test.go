@@ -21,7 +21,7 @@ import (
 
 func TestScanTextForDLP_VerifiedImageDataURLDoesNotTripAWSAccessID(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	imageURL := dataURLForPNGBytes(t, pngWithBase64AWSLikeRun(t))
 	if !strings.Contains(strings.ToLower(imageURL), "akia"+strings.Repeat("a", 16)) {
@@ -35,7 +35,7 @@ func TestScanTextForDLP_VerifiedImageDataURLDoesNotTripAWSAccessID(t *testing.T)
 }
 
 func TestScanTextForDLP_RandomVerifiedImageDataURLsStayClean(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	for seed := uint64(0); seed < 40; seed++ {
 		imageURL := dataURLForPNGBytes(t, randomPNG(t, seed))
@@ -47,7 +47,7 @@ func TestScanTextForDLP_RandomVerifiedImageDataURLsStayClean(t *testing.T) {
 }
 
 func TestScanTextForDLP_ImageDataURLDoesNotMaskSecrets(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	imageURL := dataURLForPNGBytes(t, pngWithBase64AWSLikeRun(t))
 	secret := "AKIA" + strings.Repeat("A", 16)
 
@@ -98,7 +98,7 @@ func TestScanTextForDLP_ImageDataURLDoesNotMaskSecrets(t *testing.T) {
 // image bytes must still be scanned or "wrap the secret in a valid image"
 // becomes a DLP bypass.
 func TestScanTextForDLP_LiteralSecretInsideVerifiedImageStillBlocks(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	secret := "AKIA" + "ABCDEFGHIJKLMNOP" // non-example AWS Access ID shape
 
 	tests := []struct {
@@ -125,7 +125,7 @@ func TestScanTextForDLP_LiteralSecretInsideVerifiedImageStillBlocks(t *testing.T
 }
 
 func TestScanResponse_VerifiedImageDataURLDoesNotMaskPromptInjection(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	imageURL := dataURLForPNGBytes(t, randomPNG(t, 7))
 
 	if result := s.ScanResponse(context.Background(), imageURL); !result.Clean {

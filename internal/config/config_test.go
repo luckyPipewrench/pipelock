@@ -8155,6 +8155,17 @@ func TestValidate_KillSwitchAPIListen_Valid(t *testing.T) {
 	}
 }
 
+func TestValidate_KillSwitchAPIListen_PortZero(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = "127.0.0.1:0"
+	cfg.KillSwitch.APIToken = testToken
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("port-zero api_listen should pass validation: %v", err)
+	}
+}
+
 func TestValidate_KillSwitchAPIListen_EnvTokenValid(t *testing.T) {
 	t.Setenv(EnvKillSwitchAPIToken, testToken)
 
@@ -8188,6 +8199,21 @@ func TestValidate_KillSwitchAPIListen_Invalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), fieldKSAPIListen) {
 		t.Errorf("expected error about kill_switch.api_listen, got: %v", err)
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_PortRange(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = "127.0.0.1:99999"
+	cfg.KillSwitch.APIToken = testToken
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for out-of-range api_listen port")
+	}
+	if !strings.Contains(err.Error(), "kill_switch.api_listen port must be between 0 and 65535") {
+		t.Errorf("expected port range error, got: %v", err)
 	}
 }
 
@@ -8525,6 +8551,40 @@ func TestValidate_MetricsListen_Valid(t *testing.T) {
 	}
 }
 
+func TestValidate_FetchProxyListen_PortZero(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.FetchProxy.Listen = "127.0.0.1:0"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("port-zero fetch_proxy.listen should pass validation: %v", err)
+	}
+}
+
+func TestValidate_FetchProxyListen_PortRange(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.FetchProxy.Listen = "127.0.0.1:99999"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for out-of-range fetch_proxy.listen port")
+	}
+	if !strings.Contains(err.Error(), "fetch_proxy.listen port must be between 0 and 65535") {
+		t.Errorf("expected port range error, got: %v", err)
+	}
+}
+
+func TestValidate_MetricsListen_PortZero(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MetricsListen = "127.0.0.1:0"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("port-zero metrics_listen should pass validation: %v", err)
+	}
+}
+
 func TestValidate_MetricsListen_Invalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
@@ -8535,6 +8595,19 @@ func TestValidate_MetricsListen_Invalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "metrics_listen") {
 		t.Errorf("expected error about metrics_listen, got: %v", err)
+	}
+}
+
+func TestValidate_MetricsListen_PortRange(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MetricsListen = "127.0.0.1:99999"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for out-of-range metrics_listen port")
+	}
+	if !strings.Contains(err.Error(), "metrics_listen port must be between 0 and 65535") {
+		t.Errorf("expected port range error, got: %v", err)
 	}
 }
 
@@ -10960,7 +11033,7 @@ func TestLoad_FlightRecorderRequireReceiptsStates(t *testing.T) {
 		{name: "key_null", section: "flight_recorder:\n  require_receipts:\n", want: false},
 		{name: "key_blank", section: "flight_recorder:\n  require_receipts: \n", want: false},
 		{name: "explicit_false", section: "flight_recorder:\n  require_receipts: false\n", want: false},
-		{name: "explicit_true", section: "flight_recorder:\n  require_receipts: true\n", want: true},
+		{name: "explicit_true", section: "flight_recorder:\n  enabled: true\n  dir: /tmp/recorder\n  signing_key_path: /tmp/recorder.key\n  require_receipts: true\n", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -10998,7 +11071,7 @@ func TestLoad_FlightRecorderRequireReceiptsReloadStates(t *testing.T) {
 		t.Fatal("first load RequireReceipts = true, want false")
 	}
 
-	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nflight_recorder:\n  require_receipts: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nflight_recorder:\n  enabled: true\n  dir: /tmp/recorder\n  signing_key_path: /tmp/recorder.key\n  require_receipts: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	second, err := Load(cfgPath)
@@ -14199,6 +14272,40 @@ func TestValidate_FlightRecorder(t *testing.T) {
 			},
 		},
 		{
+			name: "require_receipts_requires_enabled",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = false
+				c.FlightRecorder.RequireReceipts = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+				return c
+			},
+			wantErr: "require_receipts requires flight_recorder.enabled",
+		},
+		{
+			name: "require_receipts_requires_dir",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.RequireReceipts = true
+				c.FlightRecorder.Dir = ""
+				c.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+				return c
+			},
+			wantErr: "require_receipts requires flight_recorder.dir",
+		},
+		{
+			name: "require_receipts_requires_signing_key_path",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.RequireReceipts = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.SigningKeyPath = ""
+				return c
+			},
+			wantErr: "require_receipts requires flight_recorder.signing_key_path",
+		},
+		{
 			// Enabled is on by default; without a dir the recorder is inert
 			// (no recorder built) rather than a validation error, so the
 			// default-on flip cannot break configs that omit a recorder dir.
@@ -14298,6 +14405,30 @@ func TestValidate_FlightRecorder(t *testing.T) {
 				return c
 			},
 			wantErr: "escrow_public_key is required",
+		},
+		{
+			name: "raw_escrow_key_wrong_length",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.RawEscrow = true
+				c.FlightRecorder.EscrowPublicKey = "abcd"
+				return c
+			},
+			wantErr: "escrow_public_key must be exactly 64 hex characters",
+		},
+		{
+			name: "raw_escrow_key_not_hex",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.RawEscrow = true
+				c.FlightRecorder.EscrowPublicKey = strings.Repeat("z", 64)
+				return c
+			},
+			wantErr: "escrow_public_key must be hex",
 		},
 		{
 			name: "unsafe_file_mode",

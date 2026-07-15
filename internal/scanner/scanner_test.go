@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,8 +51,65 @@ func testConfig() *config.Config {
 	return cfg
 }
 
+func TestMustNewHasNoNonTestCallers(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	// Read through an os.Root so every read is confined to the repo and a
+	// symlink cannot redirect it outside during the walk.
+	root, rootErr := os.OpenRoot(repoRoot)
+	if rootErr != nil {
+		t.Fatalf("open repo root: %v", rootErr)
+	}
+	defer func() { _ = root.Close() }()
+	var offenders []string
+	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if relErr != nil {
+			return relErr
+		}
+		data, readErr := root.ReadFile(rel)
+		if readErr != nil {
+			return readErr
+		}
+		text := string(data)
+		if strings.Contains(text, "scanner.MustNew(") {
+			offenders = append(offenders, rel)
+			return nil
+		}
+		if strings.HasPrefix(rel, filepath.Join("internal", "scanner")+string(filepath.Separator)) &&
+			rel != filepath.Join("internal", "scanner", "scanner.go") &&
+			strings.Contains(text, "MustNew(") {
+			offenders = append(offenders, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk repo: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("scanner.MustNew is test-only; non-test callers: %s", strings.Join(offenders, ", "))
+	}
+}
+
 func TestScan_AllowsNormalURLs(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []string{
 		"https://example.com",
@@ -70,7 +128,7 @@ func TestScan_AllowsNormalURLs(t *testing.T) {
 }
 
 func TestScan_BlocksBlocklistedDomains(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []struct {
 		url    string
@@ -96,7 +154,7 @@ func TestScan_BlocksBlocklistedDomains(t *testing.T) {
 }
 
 func TestScan_BlocksDLPPatterns(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []struct {
 		url     string
@@ -140,7 +198,7 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy so only DLP is tested
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name string
@@ -200,7 +258,7 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 }
 
 func TestScan_BlocksHighEntropySegments(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Random base64-like string (high entropy, >20 chars)
 	highEntropy := "https://example.com/data/aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ"
@@ -214,7 +272,7 @@ func TestScan_BlocksHighEntropySegments(t *testing.T) {
 }
 
 func TestScan_AllowsLowEntropySegments(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Normal text path (low entropy)
 	normalURL := "https://example.com/articles/how-to-write-golang-tests"
@@ -228,7 +286,7 @@ func TestScan_BlocksLongURLs(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 100
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy so length check is hit
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Build a long URL with valid, low-entropy characters
 	padding := ""
@@ -246,7 +304,7 @@ func TestScan_BlocksLongURLs(t *testing.T) {
 }
 
 func TestScan_BlocksNonHTTPSchemes(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []string{
 		"ftp://example.com/file",
@@ -267,7 +325,7 @@ func TestScan_BlocksNonHTTPSchemes(t *testing.T) {
 }
 
 func TestScan_InvalidURL(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	result := s.Scan(context.Background(), "://not-a-url")
 	if result.Allowed {
@@ -279,7 +337,7 @@ func TestScan_BlocksSSRF_Loopback(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "::1/128"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []string{
 		"http://127.0.0.1/admin",
@@ -301,7 +359,7 @@ func TestScan_BlocksSSRF_IPv6ZoneID(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"::1/128", "fe80::/10", "fc00::/7"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name string
@@ -329,7 +387,7 @@ func TestScan_BlocksSSRF_Multicast(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"224.0.0.0/4", "ff00::/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name string
@@ -415,7 +473,7 @@ func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name        string
@@ -454,7 +512,7 @@ func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 	// 8.8.8.8 is external, so add it to ip_allowlist so that when core CIDRs
 	// are merged into checkSSRF, the allowlist bypass lets it through.
 	cfg.SSRF.IPAllowlist = []string{"8.8.8.0/24"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// 8.8.8.8 in hex = 0x08080808 - should be allowed (not internal, IP-allowlisted).
 	result := s.Scan(context.Background(), "http://0x08080808/")
@@ -468,7 +526,7 @@ func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
 	cfg.Internal = nil // disable SSRF - we're testing blocklist, not SSRF
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name string
@@ -502,7 +560,7 @@ func TestScan_AllowlistWithAltIPNotation(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"10.0.0.1/32"}
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"10.0.0.1"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		name    string
@@ -525,7 +583,7 @@ func TestScan_AllowlistWithAltIPNotation(t *testing.T) {
 }
 
 func TestScan_EntropySkipsShortSegments(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Short high-entropy segment (<20 chars) should be allowed
 	shortEntropy := "https://example.com/aB3xK9mQ7"
@@ -536,7 +594,7 @@ func TestScan_EntropySkipsShortSegments(t *testing.T) {
 }
 
 func TestScan_DLPChecksQueryValues(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// AWS key in query parameter value
 	url := "https://api.example.com/data?access_key=AKIAIOSFODNN7EXAMPLE" //nolint:gosec // G101: test fake key
@@ -549,7 +607,7 @@ func TestScan_DLPChecksQueryValues(t *testing.T) {
 func TestScan_DisabledEntropy(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disabled
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	highEntropy := "https://example.com/data/aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ"
 	result := s.Scan(context.Background(), highEntropy)
@@ -562,7 +620,7 @@ func TestScan_DisabledURLLength(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 0     // disabled
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // also disable entropy
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	padding := ""
 	for i := 0; i < 5000; i++ {
@@ -706,7 +764,7 @@ func TestScan_EntropyScoreClamped(t *testing.T) {
 	cfg := testConfig()
 	// Set a very low threshold so the entropy check fires easily
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 1.0
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// This string has high entropy - score should never exceed 1.0
 	result := s.Scan(context.Background(), "https://example.com/data/aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ")
@@ -721,7 +779,7 @@ func TestScan_EntropyScoreClamped(t *testing.T) {
 func TestScan_EntropyScoreClampedQueryParam(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 1.0
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/page?data=aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ")
 	if result.Allowed {
@@ -736,7 +794,7 @@ func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = nil // no exemptions - test core SSRF blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// With nil CIDRs, DNS-based SSRF is disabled. However, core SSRF
 	// literal check still blocks private IP literals as an immutable
@@ -756,7 +814,7 @@ func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 		cfg2 := testConfig()
 		cfg2.Internal = nil
 		cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
-		s2 := New(cfg2)
+		s2 := MustNew(cfg2)
 		defer s2.Close()
 		result := s2.Scan(context.Background(), "http://127.0.0.1/test")
 		if !result.Allowed {
@@ -778,7 +836,7 @@ func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "::1/128"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"localhost", "*.internal.corp"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// localhost resolves to 127.0.0.1 (internal) but is trusted - should pass SSRF.
 	result := s.Scan(context.Background(), "http://localhost/api/v1/inference")
@@ -792,7 +850,7 @@ func TestScan_TrustedDomains_NonTrustedStillBlocked(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"trusted.example.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// localhost is NOT in trusted_domains - should still be blocked.
 	result := s.Scan(context.Background(), "http://localhost/admin")
@@ -820,7 +878,7 @@ func TestScan_TrustedDomains_DLPStillApplies(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"localhost"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Trusted domain bypasses SSRF but DLP still scans the URL.
 	// Build fake key at runtime to avoid gosec G101.
@@ -841,7 +899,7 @@ func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
 	// localhost may resolve to both 127.0.0.1 and ::1. Core CIDRs include
 	// ::1/128, so the allowlist must cover both IPv4 and IPv6 loopback.
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// localhost resolves to 127.0.0.1 (and ::1) - both IP-allowlisted.
@@ -858,7 +916,7 @@ func TestScan_SSRFIPAllowlist_PartialCIDR(t *testing.T) {
 	// localhost resolves to both 127.0.0.1 and ::1. Core CIDRs include
 	// ::1/128, so the allowlist must cover both to let localhost through.
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"} // loopback only, not 10.x
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// localhost (127.0.0.1 + ::1) is allowlisted - passes
@@ -878,7 +936,7 @@ func TestScan_SSRFIPAllowlist_DLPStillApplies(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// IP-allowlisted bypasses SSRF but DLP still scans.
@@ -898,7 +956,7 @@ func TestScan_SSRFHint_AllowlistedDomain(t *testing.T) {
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"localhost"}
 	// No trusted_domains, no IP allowlist - SSRF should block with hint.
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "http://localhost/api")
@@ -931,7 +989,7 @@ func TestScan_SSRFHint_NonAllowlisted_UsesStaticHint(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// No APIAllowlist - domain is not allowlisted, so use static SSRF hint.
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "http://localhost/admin")
@@ -952,7 +1010,7 @@ func TestScan_SSRFHint_RawIPLiteral_PointsToIPAllowlist(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"127.0.0.1"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "http://127.0.0.1/api")
@@ -982,7 +1040,7 @@ func TestScan_SSRFConfigMismatch_ClassSet(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"localhost"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "http://localhost/api")
@@ -1002,7 +1060,7 @@ func TestScan_SSRFNonAllowlisted_ClassThreat(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// No APIAllowlist - should be ClassThreat (zero value).
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "http://localhost/admin")
@@ -1020,7 +1078,7 @@ func TestScan_SSRFNonAllowlisted_ClassThreat(t *testing.T) {
 func TestIsIPAllowlisted(t *testing.T) {
 	cfg := testConfig()
 	cfg.SSRF.IPAllowlist = []string{"192.168.1.0/24", "10.0.0.5/32"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1047,7 +1105,7 @@ func TestIsIPAllowlisted(t *testing.T) {
 func TestIsInAPIAllowlist(t *testing.T) {
 	cfg := testConfig()
 	cfg.APIAllowlist = []string{"api.example.com", "*.internal.corp"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1092,18 +1150,46 @@ func TestIsConfigMismatch(t *testing.T) {
 	}
 }
 
-func TestNew_PanicsOnInvalidDLPRegex(t *testing.T) {
+func TestNew_ReturnsErrorOnInvalidDLPRegex(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = []config.DLPPattern{
 		{Name: "bad", Regex: "[invalid", Severity: "high"},
 	}
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for invalid DLP regex")
+	sc, err := New(cfg)
+	if err == nil {
+		if sc != nil {
+			sc.Close()
 		}
-	}()
-	New(cfg)
+		t.Fatal("expected error for invalid DLP regex")
+	}
+	if sc != nil {
+		t.Fatalf("New returned scanner with error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "compile DLP pattern") {
+		t.Fatalf("error = %v, want DLP pattern context", err)
+	}
+}
+
+func TestNew_ReturnsErrorOnUnknownDLPValidator(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = []config.DLPPattern{
+		{Name: "bad-validator", Regex: `\d+`, Severity: "high", Validator: "unknown"},
+	}
+
+	sc, err := New(cfg)
+	if err == nil {
+		if sc != nil {
+			sc.Close()
+		}
+		t.Fatal("expected error for unknown DLP validator")
+	}
+	if sc != nil {
+		t.Fatalf("New returned scanner with error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown DLP validator") {
+		t.Fatalf("error = %v, want validator context", err)
+	}
 }
 
 func TestScanner_IsTrustedDomain(t *testing.T) {
@@ -1111,7 +1197,7 @@ func TestScanner_IsTrustedDomain(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"localhost", "*.internal.corp", "api.example.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1142,23 +1228,71 @@ func TestScanner_IsTrustedDomain(t *testing.T) {
 	}
 }
 
-func TestNew_PanicsOnInvalidCIDR(t *testing.T) {
+func TestNew_ReturnsErrorOnInvalidInternalCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"not-a-cidr"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for invalid CIDR")
+	sc, err := New(cfg)
+	if err == nil {
+		if sc != nil {
+			sc.Close()
 		}
-	}()
-	New(cfg)
+		t.Fatal("expected error for invalid internal CIDR")
+	}
+	if sc != nil {
+		t.Fatalf("New returned scanner with error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "parse internal CIDR") {
+		t.Fatalf("error = %v, want internal CIDR context", err)
+	}
+}
+
+func TestNew_ReturnsErrorOnInvalidSSRFAllowlistCIDR(t *testing.T) {
+	cfg := testConfig()
+	cfg.SSRF.IPAllowlist = []string{"not-a-cidr"}
+
+	sc, err := New(cfg)
+	if err == nil {
+		if sc != nil {
+			sc.Close()
+		}
+		t.Fatal("expected error for invalid SSRF IP allowlist CIDR")
+	}
+	if sc != nil {
+		t.Fatalf("New returned scanner with error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "parse SSRF IP allowlist CIDR") {
+		t.Fatalf("error = %v, want SSRF CIDR context", err)
+	}
+}
+
+func TestNew_ReturnsErrorOnInvalidResponseRegex(t *testing.T) {
+	cfg := testConfig()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{Name: "bad-response", Regex: "[invalid"},
+	}
+
+	sc, err := New(cfg)
+	if err == nil {
+		if sc != nil {
+			sc.Close()
+		}
+		t.Fatal("expected error for invalid response regex")
+	}
+	if sc != nil {
+		t.Fatalf("New returned scanner with error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "compile response pattern") {
+		t.Fatalf("error = %v, want response pattern context", err)
+	}
 }
 
 // --- Fix 1: URL-encoded DLP bypass ---
 
 func TestScan_DLPCatchesURLEncodedSecrets(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Private key header with URL-encoded spaces (%20 instead of ' ')
 	result := s.Scan(context.Background(), "https://example.com/api?data=-----BEGIN%20PRIVATE%20KEY-----")
@@ -1171,7 +1305,7 @@ func TestScan_DLPCatchesURLEncodedSecrets(t *testing.T) {
 }
 
 func TestScan_DLPCatchesURLEncodedDashes(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Anthropic key with URL-encoded dashes (%2D instead of '-')
 	result := s.Scan(context.Background(), "https://example.com/api?key=sk%2Dant%2DabcdefghijklmnopqrstuVW")
@@ -1184,7 +1318,7 @@ func TestScan_DLPCatchesURLEncodedDashes(t *testing.T) {
 }
 
 func TestScan_DLPChecksDecodedQueryKeys(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// AWS key stuffed into a query parameter NAME
 	result := s.Scan(context.Background(), "https://example.com/api?AKIAIOSFODNN7EXAMPLE=true")
@@ -1194,7 +1328,7 @@ func TestScan_DLPChecksDecodedQueryKeys(t *testing.T) {
 }
 
 func TestScan_DLPCatchesDoubleEncodedSecret(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Double-encoded dashes: %252D → first decode → %2D → second decode → -
 	result := s.Scan(context.Background(), "https://example.com/api?key=sk%252Dant%252DabcdefghijklmnopqrstuVW")
@@ -1207,7 +1341,7 @@ func TestScan_DLPCatchesDoubleEncodedSecret(t *testing.T) {
 }
 
 func TestScan_DLPCatchesTripleEncodedSecret(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Triple-encoded: %25252D → %252D → %2D → -
 	result := s.Scan(context.Background(), "https://example.com/api?key=sk%25252Dant%25252DabcdefghijklmnopqrstuVW")
@@ -1355,7 +1489,7 @@ func TestScan_HighEntropyQueryKey(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Secret data stuffed into query parameter name
 	result := s.Scan(context.Background(), "https://example.com/api?aB3xK9mQ7pR2wE5tY8uI0=true")
@@ -1370,7 +1504,7 @@ func TestScan_HighEntropyQueryKey(t *testing.T) {
 // --- Additional Scanner Edge Cases ---
 
 func TestScan_EmptyURL(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	result := s.Scan(context.Background(), "")
 	if result.Allowed {
 		t.Error("expected empty URL to be blocked")
@@ -1378,7 +1512,7 @@ func TestScan_EmptyURL(t *testing.T) {
 }
 
 func TestScan_URLWithPort(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	result := s.Scan(context.Background(), "https://example.com:8443/api/data")
 	if !result.Allowed {
 		t.Errorf("expected URL with port to be allowed, got: %s", result.Reason)
@@ -1386,7 +1520,7 @@ func TestScan_URLWithPort(t *testing.T) {
 }
 
 func TestScan_URLWithUserInfo(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// URL with userinfo (user:pass@host) - should still scan the hostname correctly
 	result := s.Scan(context.Background(), "https://user:pass@example.com/page")
 	if !result.Allowed {
@@ -1395,7 +1529,7 @@ func TestScan_URLWithUserInfo(t *testing.T) {
 }
 
 func TestScan_URLWithFragment(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	result := s.Scan(context.Background(), "https://example.com/page#section-1")
 	if !result.Allowed {
 		t.Errorf("expected URL with fragment to be allowed, got: %s", result.Reason)
@@ -1403,7 +1537,7 @@ func TestScan_URLWithFragment(t *testing.T) {
 }
 
 func TestScan_DLPInPath(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// AWS key directly in the path
 	result := s.Scan(context.Background(), "https://example.com/upload/AKIAIOSFODNN7EXAMPLE/file.txt")
 	if result.Allowed {
@@ -1415,7 +1549,7 @@ func TestScan_DLPInPath(t *testing.T) {
 }
 
 func TestScan_DLPInSubdomain(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// Secret encoded as a subdomain label - bypassed DLP before full-URL scanning.
 	result := s.Scan(context.Background(), "https://sk-proj-abc123def456ghi789jkl012.evil.com/")
 	if result.Allowed {
@@ -1427,7 +1561,7 @@ func TestScan_DLPInSubdomain(t *testing.T) {
 }
 
 func TestScan_DLPKeySplitAcrossParams(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// Key prefix in one param - full URL scan catches the prefix in the raw string.
 	result := s.Scan(context.Background(), "https://example.com/callback?a=sk-proj-abc123def456ghi789jkl012mno345&b=extra")
 	if result.Allowed {
@@ -1436,7 +1570,7 @@ func TestScan_DLPKeySplitAcrossParams(t *testing.T) {
 }
 
 func TestScan_DLPAWSKeyInSubdomain(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	result := s.Scan(context.Background(), "https://AKIAIOSFODNN7EXAMPLE.s3.evil.com/data")
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key in subdomain")
@@ -1444,7 +1578,7 @@ func TestScan_DLPAWSKeyInSubdomain(t *testing.T) {
 }
 
 func TestScan_DLPSubdomainDotCollapse(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []struct {
 		name    string
@@ -1495,7 +1629,7 @@ func TestScan_DLPSubdomainDotCollapse(t *testing.T) {
 }
 
 func TestScan_DLPSlackToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	token := "xoxb-" + "1234567890-abcdefghij"
 	result := s.Scan(context.Background(), "https://example.com/api?token="+token)
 	if result.Allowed {
@@ -1504,7 +1638,7 @@ func TestScan_DLPSlackToken(t *testing.T) {
 }
 
 func TestScan_DLPPrivateKey(_ *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// Private key header in query (URL-encoded scenario)
 	result := s.Scan(context.Background(), "https://example.com/api?data=-----BEGIN%20PRIVATE%20KEY-----")
 	// Note: the DLP checks decoded query values, so this might or might not match
@@ -1514,7 +1648,7 @@ func TestScan_DLPPrivateKey(_ *testing.T) {
 }
 
 func TestScan_DLPOpenAIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	result := s.Scan(context.Background(), "https://example.com/api?key=sk-proj-abcdefghijklmnopqrstuvwxyz")
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI key")
@@ -1522,7 +1656,7 @@ func TestScan_DLPOpenAIKey(t *testing.T) {
 }
 
 func TestScan_DLPOpenAIKey_OldFormatNotMatched(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// Old sk- prefix without proj- should NOT be caught (too broad)
 	result := s.Scan(context.Background(), "https://example.com/api?key=sk-abcdefghijklmnopqrstuvwxyz")
 	if !result.Allowed {
@@ -1534,7 +1668,7 @@ func TestScan_DLPOpenAIKey_OldFormatNotMatched(t *testing.T) {
 }
 
 func TestScan_DLPDiscordBotToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// Build token from parts to avoid GitHub push protection false positive.
 	// Discord bot token format: M + 23+ chars . 6 chars . 27+ chars
 	token := "MTIzNDU2Nzg5MDEyMzQ1Njc4" + "." + "AbCdEf" + "." + "ABCDEFGHIJKLMNOPQRSTUVWXYZabc"
@@ -1547,7 +1681,7 @@ func TestScan_DLPDiscordBotToken(t *testing.T) {
 func TestScan_NoDLPPatterns(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// With no user DLP patterns, core DLP patterns still fire for core
 	// patterns (like AWS keys). Verify core catches the AWS key.
@@ -1574,7 +1708,7 @@ func TestScan_NoDLPPatterns(t *testing.T) {
 func TestScan_EmptyBlocklist(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.Blocklist = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://pastebin.com/raw/abc123")
 	if !result.Allowed {
@@ -1586,7 +1720,7 @@ func TestScan_BlocklistExactMatch(t *testing.T) {
 	cfg := testConfig()
 	// Use exact match (no wildcard)
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://evil.com/exfil")
 	if result.Allowed {
@@ -1608,7 +1742,7 @@ func TestScan_URLExactlyAtMaxLength(t *testing.T) {
 	base := "https://example.com/"
 	maxLen := len(base) + 30 // 50 chars total
 	cfg.FetchProxy.Monitoring.MaxURLLength = maxLen
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	padding := ""
 	for i := 0; i < 30; i++ {
@@ -1635,7 +1769,7 @@ func TestScan_EntropyExactlyAtThreshold(t *testing.T) {
 	cfg := testConfig()
 	// We need a string where entropy ≈ threshold. Use threshold=4.0
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// "abcdefghijklmnopqrst" has 20 unique chars → entropy = log2(20) ≈ 4.32
 	result := s.Scan(context.Background(), "https://example.com/abcdefghijklmnopqrst")
@@ -1645,7 +1779,7 @@ func TestScan_EntropyExactlyAtThreshold(t *testing.T) {
 }
 
 func TestScan_NumericOnlyPath(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// Numeric IDs (low entropy since only digits 0-9)
 	result := s.Scan(context.Background(), "https://example.com/api/12345678901234567890")
 	if !result.Allowed {
@@ -1654,7 +1788,7 @@ func TestScan_NumericOnlyPath(t *testing.T) {
 }
 
 func TestScan_RepeatedCharsPath(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// All same character - entropy=0
 	result := s.Scan(context.Background(), "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if !result.Allowed {
@@ -1665,7 +1799,7 @@ func TestScan_RepeatedCharsPath(t *testing.T) {
 func TestScan_HexString(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Hex string (entropy ~4.0 for random hex) - should be below 4.5 threshold
 	result := s.Scan(context.Background(), "https://example.com/commit/deadbeefcafebabe1234")
@@ -1678,7 +1812,7 @@ func TestScan_Base64String(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
 	cfg.DLP.Patterns = nil // don't trigger DLP
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// High-entropy base64-like string with mixed case, digits, special chars
 	// Must be >20 chars and have entropy >4.5
@@ -1695,7 +1829,7 @@ func TestScan_PackageHostPathEntropyExclusion(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	entropyPath := strings.Join([]string{"aB3xK9mQ", "7pR2wE5t", "Y8uI0oL4", "hG6fD1sZ"}, "")
 	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/"+entropyPath+"/pkg.whl.metadata")
@@ -1708,7 +1842,7 @@ func TestScan_PackageHostEntropyExclusionStillChecksQuery(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	entropyQuery := strings.Join([]string{"aB3xK9mQ", "7pR2wE5t", "Y8uI0oL4", "hG6fD1sZ"}, "")
 	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/pkg.whl?token="+entropyQuery)
@@ -1721,7 +1855,7 @@ func TestScan_PackageHostEntropyExclusionStillChecksQuery(t *testing.T) {
 }
 
 func TestScan_MultipleQueryParams_OneTriggering(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// One query param is a secret, others are normal
 	result := s.Scan(context.Background(), "https://example.com/api?user=josh&page=1&key=AKIAIOSFODNN7EXAMPLE")
@@ -1734,7 +1868,7 @@ func TestScan_MultipleQueryParams_OneTriggering(t *testing.T) {
 }
 
 func TestScan_BlocklistCaseInsensitive(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Hostname should be lowered before matching
 	result := s.Scan(context.Background(), "https://PASTEBIN.COM/raw/abc")
@@ -1744,7 +1878,7 @@ func TestScan_BlocklistCaseInsensitive(t *testing.T) {
 }
 
 func TestScan_AllScannersPass(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	result := s.Scan(context.Background(), "https://example.com/page?q=hello")
 	if !result.Allowed {
@@ -1759,7 +1893,7 @@ func TestScan_AllScannersPass(t *testing.T) {
 }
 
 func TestScan_DataURIScheme(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	result := s.Scan(context.Background(), "data:text/html,<script>alert(1)</script>")
 	if result.Allowed {
 		t.Error("expected data: URI to be blocked")
@@ -1771,7 +1905,7 @@ func TestScan_ScanOrderBlocklistBeforeSSRF(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"localhost"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Blocklist fires before SSRF (no DNS resolution needed for blocklist).
 	// localhost matches both blocklist and SSRF, but blocklist is checked first.
@@ -1789,7 +1923,7 @@ func TestScan_DLPCatchesSecretInHostnameBeforeDNS(t *testing.T) {
 	// Enable SSRF so DNS resolution would happen - but DLP should fire first.
 	cfg.Internal = []string{"10.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Attacker encodes an Anthropic key as a subdomain: DNS query for this
 	// hostname would exfiltrate the key via DNS even if the request is later
@@ -1807,7 +1941,7 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
 	cfg.DLP.Patterns = nil // disable DLP so entropy is checked
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://example.com/page?data=aB3xK9mQ7pR2wE5tY8uI")
 	if result.Allowed {
@@ -1821,7 +1955,7 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 func TestScan_QueryEntropyAllowsCredentiallessDSNExample(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://docs.example.com/guide?example=postgres://localhost:5432/mydb")
@@ -1834,7 +1968,7 @@ func TestScan_QueryEntropyBlocksCredentiallessDSNUnsafeCarveoutShapes(t *testing
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -1932,7 +2066,7 @@ func TestDatabaseURIEntropyCarveoutHelpers(t *testing.T) {
 func TestScan_QueryEntropyAllowsReadableHyphenatedSearch(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/search?q=glance-2026-summary-report-final")
@@ -1945,7 +2079,7 @@ func TestScan_QueryEntropyBlocksOverlongReadableHyphenatedTunnel(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/search?q=anchor-binary-canyon-delta-energy-fabric")
@@ -1970,7 +2104,7 @@ func TestScan_QueryEntropyStillBlocksOpaqueToken(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/search?q=aB3xK9mQ7pR2wE5tY8uI0oL4")
@@ -1983,7 +2117,7 @@ func TestScan_QueryEntropyStillBlocksOpaqueToken(t *testing.T) {
 }
 
 func TestScan_URLWithEncodedCharacters(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	// URL-encoded characters in path - should be treated normally
 	result := s.Scan(context.Background(), "https://example.com/search?q=hello%20world&lang=en")
 	if !result.Allowed {
@@ -2071,7 +2205,7 @@ func TestShannonEntropy_Base64Chars(t *testing.T) {
 // --- DLP bypass via malformed percent-encoding ---
 
 func TestScan_DLPCatchesMalformedPercentEncoding(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Malformed %ZZ should not bypass DLP - raw query is scanned as fallback
 	result := s.Scan(context.Background(), "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE&junk=%ZZ")
@@ -2089,7 +2223,7 @@ func TestIsInternalIP_MatchesConfiguredCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"10.0.0.0/8", "127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	tests := []struct {
 		ip       string
@@ -2115,7 +2249,7 @@ func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1 must match IPv4 CIDRs.
 	// Without To4() normalization, the 16-byte IPv6 form wouldn't match the
@@ -2146,7 +2280,7 @@ func TestIsInternalIP_DisabledReturnsAlwaysFalse(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	if s.IsInternalIP(net.ParseIP("127.0.0.1")) {
 		t.Error("expected false when SSRF is disabled")
@@ -2158,7 +2292,7 @@ func TestIsInternalIP_DisabledReturnsAlwaysFalse(t *testing.T) {
 func TestScan_DataBudgetExceeded(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100 // 100 bytes/min/domain
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Record enough data to exceed the budget
@@ -2176,7 +2310,7 @@ func TestScan_DataBudgetExceeded(t *testing.T) {
 func TestScan_DataBudgetUnderLimit(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 1000
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	s.RecordRequest("example.com", 100)
@@ -2190,7 +2324,7 @@ func TestScan_DataBudgetUnderLimit(t *testing.T) {
 func TestScan_DataBudgetDisabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0 // disabled
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Should always be allowed when disabled
@@ -2203,7 +2337,7 @@ func TestScan_DataBudgetDisabled(t *testing.T) {
 func TestRecordRequest_WithDataBudget(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 500
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// RecordRequest should track data bytes
@@ -2228,7 +2362,7 @@ func TestRecordRequest_WithDataBudget(t *testing.T) {
 func TestRecordRequest_NilDataBudget(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0 // no budget
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Should not panic
@@ -2238,7 +2372,7 @@ func TestRecordRequest_NilDataBudget(t *testing.T) {
 func TestRecordRequest_ZeroBytes(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Zero bytes should not be recorded
@@ -2254,7 +2388,7 @@ func TestRecordRequest_ZeroBytes(t *testing.T) {
 
 func TestScan_DLP_ZeroWidthBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Try to bypass DLP with zero-width characters inside a known pattern
@@ -2274,7 +2408,7 @@ func TestScan_DLP_ZeroWidthBypass(t *testing.T) {
 
 func TestScan_DLP_ConfusableBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Armenian ա (U+0561) in key prefix - maps to 'a', so sk-աnt- → sk-ant-
@@ -2288,7 +2422,7 @@ func TestScan_DLP_ConfusableBypass(t *testing.T) {
 
 func TestScan_DLP_CombiningMarkBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Combining long stroke overlay (U+0337) in key prefix
@@ -2302,7 +2436,7 @@ func TestScan_DLP_CombiningMarkBypass(t *testing.T) {
 
 func TestScan_DLP_CyrillicConfusableBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Cyrillic а (U+0430) replacing Latin 'a' in key prefix
@@ -2316,7 +2450,7 @@ func TestScan_DLP_CyrillicConfusableBypass(t *testing.T) {
 
 func TestScan_DLP_PathDotSplitBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Secret split by dots in URL path: sk-ant-api03-AAAA.AAAA.AAAA...
@@ -2329,7 +2463,7 @@ func TestScan_DLP_PathDotSplitBypass(t *testing.T) {
 
 func TestScan_DLP_QueryFieldSplitBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Secret split across query parameters: part1=sk-ant-api03-&part2=AAAA...
@@ -2341,7 +2475,7 @@ func TestScan_DLP_QueryFieldSplitBypass(t *testing.T) {
 
 func TestScan_DLP_QueryFieldSplit_CleanNoFalsePositive(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Normal multi-param URL should not trigger DLP
@@ -2353,7 +2487,7 @@ func TestScan_DLP_QueryFieldSplit_CleanNoFalsePositive(t *testing.T) {
 
 func TestScan_DLP_PathMixedSeparatorBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Secret fragmented with encoded dots (%2E) and slashes (%2f) in path.
@@ -2367,7 +2501,7 @@ func TestScan_DLP_PathMixedSeparatorBypass(t *testing.T) {
 
 func TestScan_DLP_QueryNoiseInjectionBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Secret split across query params with noise values (%20 space) inserted between.
@@ -2380,7 +2514,7 @@ func TestScan_DLP_QueryNoiseInjectionBypass(t *testing.T) {
 
 func TestScan_DLP_PathSlashOnly_CleanNoFalsePositive(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Normal URL with multiple path segments should not trigger DLP
@@ -2392,7 +2526,7 @@ func TestScan_DLP_PathSlashOnly_CleanNoFalsePositive(t *testing.T) {
 
 func TestScan_DLP_QueryInterleavedJunkBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Secret fragments interleaved with junk alphanumeric values.
@@ -2409,7 +2543,7 @@ func TestScan_DLP_QueryInterleavedJunkBypass(t *testing.T) {
 
 func TestScan_DLP_QueryInterleavedJunk_CleanNoFalsePositive(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Normal URL with many query params should not trigger subsequence DLP
@@ -2421,7 +2555,7 @@ func TestScan_DLP_QueryInterleavedJunk_CleanNoFalsePositive(t *testing.T) {
 
 func TestScan_DLP_QuerySubsequence_TwoParamsOnly(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Only 2 query params - should use ordered concat, not subsequence (needs 3+)
@@ -2436,7 +2570,7 @@ func TestScan_DLP_QuerySubsequence_TwoParamsOnly(t *testing.T) {
 
 func TestScan_DLP_QuerySubsequence_Over20ParamsCapped(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Secret split across params 3 and 5, with >20 total params (junk padding).
@@ -2457,7 +2591,7 @@ func TestScan_DLP_QuerySubsequence_Over20ParamsCapped(t *testing.T) {
 
 func TestScan_DLP_GitHubFinegrainedPAT(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Build token at runtime to avoid gitleaks
@@ -2470,7 +2604,7 @@ func TestScan_DLP_GitHubFinegrainedPAT(t *testing.T) {
 
 func TestScan_DLP_OpenAIServiceKey(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Build key at runtime
@@ -2483,7 +2617,7 @@ func TestScan_DLP_OpenAIServiceKey(t *testing.T) {
 
 func TestScan_DLP_StripeKey(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Build key at runtime
@@ -2496,7 +2630,7 @@ func TestScan_DLP_StripeKey(t *testing.T) {
 
 func TestScan_DLP_StripeTestKey(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := "rk_test_" + "abcdefghijklmnopqrstuvwx"
@@ -2510,7 +2644,7 @@ func TestScan_DLP_StripeTestKey(t *testing.T) {
 
 func TestScan_DLP_QueryValueDotSeparatedBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Dot-separated key in a query parameter value. Before the fix,
@@ -2525,7 +2659,7 @@ func TestScan_DLP_QueryValueDotSeparatedBypass(t *testing.T) {
 
 func TestScan_DLP_QueryKeyDotSeparatedBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Dot-separated key stuffed into a query parameter NAME, not value.
@@ -2539,7 +2673,7 @@ func TestScan_DLP_QueryKeyDotSeparatedBypass(t *testing.T) {
 
 func TestScan_DLP_ShortAnthropicKeyNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Short prefix-plus-random values are common in benign session/trace IDs.
@@ -2552,7 +2686,7 @@ func TestScan_DLP_ShortAnthropicKeyNoFP(t *testing.T) {
 
 func TestScan_DLP_ShortOpenAIKeyNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := "sk-proj-" + strings.Repeat("A", 10)
@@ -2564,7 +2698,7 @@ func TestScan_DLP_ShortOpenAIKeyNoFP(t *testing.T) {
 
 func TestScan_DLP_ShortSvcAcctKeyNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := "sk-svcacct-" + strings.Repeat("A", 10)
@@ -2576,7 +2710,7 @@ func TestScan_DLP_ShortSvcAcctKeyNoFP(t *testing.T) {
 
 func TestScan_DLP_VeryShortKeyNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Sample/test values under the provider-key suffix floor should not trigger.
@@ -2589,7 +2723,7 @@ func TestScan_DLP_VeryShortKeyNoFP(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_Password(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/api?password=mysecret123")
@@ -2600,7 +2734,7 @@ func TestScan_DLP_CredentialInURL_Password(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_Token(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	val := "abc123" + "def456"
@@ -2612,7 +2746,7 @@ func TestScan_DLP_CredentialInURL_Token(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_ApiKey(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/v1?apikey=secretvalue123")
@@ -2623,7 +2757,7 @@ func TestScan_DLP_CredentialInURL_ApiKey(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_Secret(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/db?secret=hunter2abc")
@@ -2634,7 +2768,7 @@ func TestScan_DLP_CredentialInURL_Secret(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_ShortValueNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Values under 4 chars should NOT trigger (avoids "token=yes", "password=no").
@@ -2646,7 +2780,7 @@ func TestScan_DLP_CredentialInURL_ShortValueNoFP(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_WordBoundaryNoFP(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Compound param names containing "token", "secret", etc. as a SUBSTRING
@@ -2675,7 +2809,7 @@ func TestScan_DLP_CredentialInURL_WordBoundaryNoFP(t *testing.T) {
 
 func TestScan_DLP_CredentialInURL_InQueryString(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Credential pattern in query string (connection string style URL).
@@ -2689,7 +2823,7 @@ func TestScan_DLP_CredentialInURL_InQueryString(t *testing.T) {
 
 func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// hex(prefix + suffix) - build at runtime
@@ -2707,7 +2841,7 @@ func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 
 func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// base64(prefix + suffix) - build at runtime
@@ -2726,7 +2860,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 func TestScan_DLP_StackedEncodedAWSKeyInURLComponents(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -2770,7 +2904,7 @@ func TestScan_DLP_StackedEncodedAWSKeyInURLComponents(t *testing.T) {
 func TestScan_DLP_StackedEncodedBenignURLAllows(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	opaque := strings.Repeat("hello-world-", 6)
@@ -2784,7 +2918,7 @@ func TestScan_DLP_StackedEncodedBenignURLAllows(t *testing.T) {
 func TestScan_MaxURLLengthPrecedesDLPDecode(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 120
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -2803,7 +2937,7 @@ func TestScan_MaxURLLengthPrecedesDLPDecode(t *testing.T) {
 
 func TestScan_DLP_EncodedQueryNoFalsePositives(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// These should NOT trigger DLP when decoded
@@ -2830,7 +2964,7 @@ func TestScan_DLP_EncodedQueryNoFalsePositives(t *testing.T) {
 
 func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// hex(prefix + suffix) embedded in path segment
@@ -2848,7 +2982,7 @@ func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 
 func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// base64(prefix + suffix) embedded in path segment
@@ -2866,7 +3000,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
 
 func TestScan_DLP_HexEncodedAWSKeyInPath(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// hex-encode an AWS key in the path
@@ -2883,7 +3017,7 @@ func TestScan_DLP_HexEncodedAWSKeyInPath(t *testing.T) {
 
 func TestScan_DLP_EncodedPathNoFalsePositives(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -2909,7 +3043,7 @@ func TestScan_DLP_EncodedPathNoFalsePositives(t *testing.T) {
 
 func TestScan_DLP_DelimiterHexInQuery(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	prefix := testAnthropicPrefix
@@ -2952,7 +3086,7 @@ func TestScan_DLP_DelimiterHexInQuery(t *testing.T) {
 
 func TestScan_DLP_DelimiterHexInPath(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	key := "AKIA" + "IOSFODNN7EXAMPLE1"
@@ -2983,7 +3117,7 @@ func TestScan_DLP_DelimiterHexInPath(t *testing.T) {
 
 func TestScan_DLP_DelimiterHexNoFalsePositives(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -3030,7 +3164,7 @@ func TestScan_DLP_DelimiterEncodedTokensInURLComponents(t *testing.T) {
 		Regex:    `ab~test-value-for-28-byte-wk`,
 		Severity: "critical",
 	})
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := testAnthropicPrefix + testAlphabet
@@ -3092,7 +3226,7 @@ func TestScan_DLP_DelimiterEncodedTokensNoFalsePositives(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 8.0
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	benign := "This is a normal support note about base64 encoding."
@@ -3148,7 +3282,7 @@ func TestScan_DLP_DelimiterEncodedTokensNoFalsePositives(t *testing.T) {
 func TestScan_EnvLeak_HexEncoded(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Inject a known env secret into the scanner's env secrets list
@@ -3173,7 +3307,7 @@ func TestScan_EnvLeak_HexEncoded(t *testing.T) {
 func TestScan_EnvLeak_DelimiterHex(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := testSecretVal
@@ -3206,7 +3340,7 @@ func TestScan_EnvLeak_DelimiterHex(t *testing.T) {
 func TestScan_EnvLeak_Base32Encoded(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := testSecretVal
@@ -3224,7 +3358,7 @@ func TestScan_EnvLeak_Base32Encoded(t *testing.T) {
 func TestScan_EnvLeak_Base32NoPadding(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := testSecretVal
@@ -3243,14 +3377,14 @@ func TestScan_EnvLeak_Base32NoPadding(t *testing.T) {
 func TestScanner_Close_WithDataBudget(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 1000
-	s := New(cfg)
+	s := MustNew(cfg)
 	s.Close() // data-budget lifecycle remains safe with opportunistic cleanup
 }
 
 func TestScanner_Close_NilDataBudget(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
-	s := New(cfg)
+	s := MustNew(cfg)
 	s.Close() // should not panic with nil data budget
 }
 
@@ -3312,7 +3446,7 @@ func TestDataBudget_SubdomainRotation(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 500
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Record data across multiple subdomains - should aggregate under base domain.
@@ -3334,7 +3468,7 @@ func TestCheckSubdomainEntropy_BlocksHighEntropyLabels(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
 	cfg.DLP.Patterns = nil // avoid DLP matches on test data
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -3379,7 +3513,7 @@ func TestCheckSubdomainEntropy_AllowsNormalSubdomains(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -3411,7 +3545,7 @@ func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 0
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://r7km2np9qw4xb5vy8za3.evil.com/")
@@ -3431,7 +3565,7 @@ func TestCheckSubdomainEntropy_BlocksEncodedExfilLabels(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil     // disable SSRF/DNS — subdomain check (layer 5) runs first anyway
 	cfg.DLP.Patterns = nil // isolate the subdomain signal from DLP matches
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -3476,7 +3610,7 @@ func TestCheckSubdomainEntropy_AllowsEncodedLookalikes(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.Patterns = nil
 	cfg.DLP.ScanEnv = false
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -3514,7 +3648,7 @@ func TestCheckSubdomainEntropy_SeparateFromQueryThreshold(t *testing.T) {
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 8.0
 	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Hex-like subdomain (entropy ~3.78): should be blocked by the lower subdomain threshold.
@@ -3538,7 +3672,7 @@ func TestCheckSubdomainEntropy_HighThresholdStillCatchesEncodedHex(t *testing.T)
 	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 5.0
 	cfg.Internal = nil
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// A long hex label is still flagged structurally even at threshold 5.0.
@@ -3564,7 +3698,7 @@ func TestCheckSubdomainEntropy_ExclusionAllowsEncodedHost(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.Patterns = nil
 	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.trusted-cdn.example"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://deadbeef1234567890ab.trusted-cdn.example/")
@@ -3577,7 +3711,7 @@ func TestCheckSubdomainEntropy_DefaultCatchesHex(t *testing.T) {
 	// Default subdomain threshold (4.0) should catch high-entropy hex labels.
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Diverse hex string (~3.92 entropy): above default 4.0? Let's use one that is.
@@ -3589,7 +3723,7 @@ func TestCheckSubdomainEntropy_DefaultCatchesHex(t *testing.T) {
 }
 
 func TestDLP_GoogleOAuthToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "ya29." + "ABCDEFghijklmnopqrstuvwx"
@@ -3603,7 +3737,7 @@ func TestDLP_GoogleOAuthToken(t *testing.T) {
 }
 
 func TestDLP_TwilioAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Build a Twilio key pattern at runtime to avoid gitleaks
@@ -3618,7 +3752,7 @@ func TestDLP_TwilioAPIKey(t *testing.T) {
 }
 
 func TestDLP_SendGridAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Build SendGrid key pattern at runtime to avoid gitleaks
@@ -3633,7 +3767,7 @@ func TestDLP_SendGridAPIKey(t *testing.T) {
 }
 
 func TestDLP_MailgunAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Build Mailgun key pattern at runtime to avoid gitleaks
@@ -3653,7 +3787,7 @@ func TestDLP_MailgunAPIKey(t *testing.T) {
 // stay under the 4.5 entropy threshold, and SSRF is disabled in testConfig, so
 // an unblocked URL isolates the DLP regex.
 func TestDLP_TwilioMailgunBoundaryFalsePositives(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Built at runtime to avoid gitleaks-style source scanning.
@@ -3689,7 +3823,7 @@ func TestDLP_TwilioMailgunBoundaryFalsePositives(t *testing.T) {
 // TestDLP_TwilioMailgunStillBlockRealShape guards against a false-negative:
 // the tightened patterns must still block a genuinely-shaped key.
 func TestDLP_TwilioMailgunStillBlockRealShape(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	hex32 := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
@@ -3717,7 +3851,7 @@ func TestDLP_TwilioMailgunStillBlockRealShape(t *testing.T) {
 // --- DLP expansion: URL-level tests for new patterns ---
 
 func TestDLP_HuggingFaceToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "hf_" + strings.Repeat("a", 37)
@@ -3731,7 +3865,7 @@ func TestDLP_HuggingFaceToken(t *testing.T) {
 }
 
 func TestDLP_DatabricksToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "dapi" + "aabbccddeeff00112233445566778899"
@@ -3745,7 +3879,7 @@ func TestDLP_DatabricksToken(t *testing.T) {
 }
 
 func TestDLP_ReplicateAPIToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "r8_" + strings.Repeat("a", 40)
@@ -3759,7 +3893,7 @@ func TestDLP_ReplicateAPIToken(t *testing.T) {
 }
 
 func TestDLP_TogetherAIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "tok_" + "aabbccddeeff00112233445566778899aabbccdd"
@@ -3773,7 +3907,7 @@ func TestDLP_TogetherAIKey(t *testing.T) {
 }
 
 func TestDLP_PineconeAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "pcsk_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrR"
@@ -3787,7 +3921,7 @@ func TestDLP_PineconeAPIKey(t *testing.T) {
 }
 
 func TestDLP_DigitalOceanToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "dop_v1_" + "aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb"
@@ -3801,7 +3935,7 @@ func TestDLP_DigitalOceanToken(t *testing.T) {
 }
 
 func TestDLP_VaultToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "hvs." + "aAbBcCdDeEfFgGhHiIjJkLmN"
@@ -3815,7 +3949,7 @@ func TestDLP_VaultToken(t *testing.T) {
 }
 
 func TestDLP_VercelToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "vcp_" + "aAbBcCdDeEfFgGhHiIjJkLmN"
@@ -3829,7 +3963,7 @@ func TestDLP_VercelToken(t *testing.T) {
 }
 
 func TestDLP_SupabaseServiceKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	for _, token := range []string{
@@ -3847,7 +3981,7 @@ func TestDLP_SupabaseServiceKey(t *testing.T) {
 }
 
 func TestDLP_NpmToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "npm_" + strings.Repeat("a", 36)
@@ -3861,7 +3995,7 @@ func TestDLP_NpmToken(t *testing.T) {
 }
 
 func TestDLP_PyPIToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "pypi-AgE" + strings.Repeat("A", 90)
@@ -3875,7 +4009,7 @@ func TestDLP_PyPIToken(t *testing.T) {
 }
 
 func TestDLP_LinearAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "lin_api_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStT"
@@ -3889,7 +4023,7 @@ func TestDLP_LinearAPIKey(t *testing.T) {
 }
 
 func TestDLP_NotionAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "ntn_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStT"
@@ -3903,7 +4037,7 @@ func TestDLP_NotionAPIKey(t *testing.T) {
 }
 
 func TestDLP_SentryAuthToken(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "sntrys_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStT"
@@ -3920,7 +4054,7 @@ func TestDLP_SentryAuthToken(t *testing.T) {
 
 func TestScan_DLP_ControlCharBypass(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Build key at runtime to avoid gitleaks
@@ -3957,7 +4091,7 @@ func TestScan_DLP_ControlCharBypass(t *testing.T) {
 
 func TestScan_DLP_NullByteInPath(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Null byte in URL path should not bypass DLP
@@ -3972,7 +4106,7 @@ func TestScan_DLP_NullByteInPath(t *testing.T) {
 
 func TestScan_DLP_MultipleControlChars(t *testing.T) {
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Multiple different control chars scattered through the secret
@@ -3989,7 +4123,7 @@ func TestScan_AllowlistBlocksUnlistedDomain(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"api.openai.com", "*.anthropic.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://evil.com/exfil")
 	if result.Allowed {
@@ -4004,7 +4138,7 @@ func TestScan_AllowlistPermitsListedDomain(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"api.openai.com", "*.anthropic.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://api.openai.com/v1/chat")
 	if !result.Allowed {
@@ -4016,7 +4150,7 @@ func TestScan_AllowlistPermitsWildcard(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"*.anthropic.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://api.anthropic.com/v1/messages")
 	if !result.Allowed {
@@ -4028,7 +4162,7 @@ func TestStrictMode_AllowlistDoesNotWeakenDLP(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"example.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := testAnthropicPrefix + strings.Repeat("a", 25)
@@ -4045,7 +4179,7 @@ func TestScan_AllowlistEmptyPermitsAll(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = nil
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://anything.example.com/path")
 	if !result.Allowed {
@@ -4057,7 +4191,7 @@ func TestScan_AllowlistNotEnforcedInBalancedMode(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeBalanced
 	cfg.APIAllowlist = []string{"api.openai.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// In balanced mode, the allowlist is not enforced
 	result := s.Scan(context.Background(), "https://example.com/page")
@@ -4070,7 +4204,7 @@ func TestScan_AllowlistNotEnforcedInAuditMode(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeAudit
 	cfg.APIAllowlist = []string{"api.openai.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// In audit mode, the allowlist is not enforced
 	result := s.Scan(context.Background(), "https://example.com/page")
@@ -4083,7 +4217,7 @@ func TestScan_AllowlistCaseInsensitive(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"api.openai.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	// Hostname is lowercased by Scan(), so "API.OpenAI.com" should match "api.openai.com"
 	result := s.Scan(context.Background(), "https://API.OpenAI.com/v1/chat")
@@ -4098,7 +4232,7 @@ func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
 	// Set allowlist that doesn't include pastebin.com
 	cfg.APIAllowlist = []string{"api.openai.com"}
 	// pastebin.com is in the default blocklist
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	result := s.Scan(context.Background(), "https://pastebin.com/raw/abc")
 	if result.Allowed {
@@ -4107,6 +4241,40 @@ func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
 	// Allowlist should fire BEFORE blocklist
 	if result.Scanner != "allowlist" {
 		t.Errorf("expected scanner=allowlist (checked first), got %s", result.Scanner)
+	}
+}
+
+func TestNewReturnsErrorForUnreadableSecretsFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open mode 000 files")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("chmod secrets file: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(path, 0o600)
+	})
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	sc, err := New(cfg)
+	if err == nil {
+		if sc != nil {
+			sc.Close()
+		}
+		t.Fatal("New returned nil error for unreadable secrets file")
+	}
+	if sc != nil {
+		t.Fatalf("New returned scanner with error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "load DLP secrets file") {
+		t.Fatalf("error = %v, want DLP secrets file context", err)
 	}
 }
 
@@ -4360,7 +4528,7 @@ func TestNew_LoadsFileSecrets(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	if len(s.fileSecrets) != 1 {
@@ -4384,7 +4552,7 @@ func TestNew_FileSecretsDedupedAgainstEnv(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Manually inject env secret to test dedup
@@ -4431,7 +4599,7 @@ func TestScan_BlocksFileSecretInURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://evil.com/exfil?data="+secret)
@@ -4453,7 +4621,7 @@ func TestScan_BlocksFileSecretBase64InURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
@@ -4476,7 +4644,7 @@ func TestScan_BlocksFileSecretHexInURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := hex.EncodeToString([]byte(secret))
@@ -4499,7 +4667,7 @@ func TestScan_BlocksFileSecretBase32InURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := base32.StdEncoding.EncodeToString([]byte(secret))
@@ -4522,7 +4690,7 @@ func TestScan_AllowsURLWithoutFileSecrets(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://example.com/normal-page?q=hello")
@@ -4543,7 +4711,7 @@ func TestScan_BlocksFileSecretUnpaddedBase64InURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(fileVal))
@@ -4573,7 +4741,7 @@ func TestScan_BlocksFileSecretUnpaddedBase64URLInURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encodedURL := base64.URLEncoding.EncodeToString([]byte(fileVal))
@@ -4616,7 +4784,7 @@ func TestScan_BlocksFileSecretPaddedBase64URLInURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	encodedURL := base64.URLEncoding.EncodeToString([]byte(fileVal))
@@ -4646,7 +4814,7 @@ func TestScan_BlocksFileSecretUnpaddedBase32InURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	padded := base32.StdEncoding.EncodeToString([]byte(fileVal))
@@ -4674,7 +4842,7 @@ func TestScan_BlocksPercentEncodedFileSecretInURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Percent-encode each byte of the secret to evade raw matching
@@ -4698,7 +4866,7 @@ func TestScan_BlocksPercentEncodedControlCharBypassInURL(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DLP.SecretsFile = path
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Inject %00 (null byte) in the middle of the secret to split the match.
@@ -4727,7 +4895,7 @@ func TestNew_FileSecrets_ZeroUsableWarning(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	s := New(cfg)
+	s := MustNew(cfg)
 	s.Close()
 
 	_ = w.Close()
@@ -4861,7 +5029,7 @@ func TestHintForBlockNil(t *testing.T) {
 
 func TestScanPopulatesHintOnBlock(t *testing.T) {
 	cfg := testConfig()
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	// This URL should be blocked by DLP (AWS key pattern).
@@ -4883,7 +5051,7 @@ func TestScan_RespectsContextCancellation(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -4906,7 +5074,7 @@ func TestScan_RespectsContextCancellation(t *testing.T) {
 }
 
 func TestScan_NilContext(t *testing.T) {
-	sc := New(testConfig())
+	sc := MustNew(testConfig())
 	defer sc.Close()
 
 	// nil context must not panic; fail-closed guard blocks it.
@@ -4927,7 +5095,7 @@ func TestScan_NilContext(t *testing.T) {
 // might be added later) could let the watchdog falsely conclude the
 // scanner was wedged while it was actually rejecting cleanly.
 func TestScan_HeartbeatFiresOnEarlyReturn(t *testing.T) {
-	sc := New(testConfig())
+	sc := MustNew(testConfig())
 	defer sc.Close()
 
 	var beats int
@@ -4956,7 +5124,7 @@ func TestScan_HeartbeatFiresOnEarlyReturn(t *testing.T) {
 
 func TestScan_CanceledContextWithSSRFDisabled(t *testing.T) {
 	cfg := testConfig() // cfg.Internal = nil disables SSRF
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -4975,7 +5143,7 @@ func TestScan_ContextTimeoutDuringDNS(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	// 10ms timeout: passes the entry guard (ctx not yet expired) but
@@ -5006,7 +5174,7 @@ func TestScan_ContextTimeoutDuringDNS(t *testing.T) {
 
 func TestScanHintEmptyOnAllowed(t *testing.T) {
 	cfg := testConfig()
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	result := sc.Scan(context.Background(), "https://example.com/")
@@ -5021,7 +5189,7 @@ func TestScanHintEmptyOnAllowed(t *testing.T) {
 // --- CRLF injection detection ---
 
 func TestScan_BlocksCRLFInjection(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []struct {
 		name string
@@ -5140,7 +5308,7 @@ func TestCheckSubdomainEntropy_Exclusions(t *testing.T) {
 			cfg.APIAllowlist = nil
 			cfg.FetchProxy.Monitoring.Blocklist = nil
 			cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = tt.exclusions
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			result := s.Scan(context.Background(), tt.url)
@@ -5172,7 +5340,7 @@ func TestScan_SubdomainEntropyExclusion_QueryEntropyStillChecked(t *testing.T) {
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
 	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"api.telegram.org"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// High-entropy query value on an excluded domain should still be blocked.
@@ -5200,7 +5368,7 @@ func TestScan_QueryEntropyExclusion_SkipsQueryEntropy(t *testing.T) {
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
 	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Shape mirrors what S3 pre-signed URLs carry: high-entropy signature
@@ -5220,7 +5388,7 @@ func TestScan_QueryEntropyExclusion_DoesNotSkipDatabaseURISSRF(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
 	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	url := "https://examplebucket.s3.amazonaws.com/files/abc.pdf" +
@@ -5238,7 +5406,7 @@ func TestScan_QueryEntropyExclusion_DoesNotSkipSemicolonDatabaseURISSRF(t *testi
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
 	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	url := "https://examplebucket.s3.amazonaws.com/files/abc.pdf" +
@@ -5263,7 +5431,7 @@ func TestScan_QueryEntropyExclusion_NonListedHostStillBlocks(t *testing.T) {
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
 	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t"
@@ -5290,7 +5458,7 @@ func TestScan_QueryEntropyExclusion_DoesNotSkipPathEntropy(t *testing.T) {
 	cfg.FetchProxy.Monitoring.Blocklist = nil
 	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
 	// Deliberately NOT setting SubdomainEntropyExclusions for examplebucket.s3.
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t" // 32 chars, high entropy
@@ -5320,7 +5488,7 @@ func queryEntropyParamExclusionTestConfig() *config.Config {
 
 func TestScan_QueryEntropyParamExclusion_AllowsExactEndpointParam(t *testing.T) {
 	cfg := queryEntropyParamExclusionTestConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
@@ -5355,7 +5523,7 @@ func TestScan_QueryEntropyParamExclusion_MatchesIDNAHostAndEscapedPath(t *testin
 	cfg := queryEntropyParamExclusionTestConfig()
 	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Host = "xn--bcher-kva.example"
 	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Path = "/v1/caf%C3%A9"
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
@@ -5516,7 +5684,7 @@ func TestScan_QueryEntropyParamExclusion_MismatchesBlock(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := queryEntropyParamExclusionTestConfig()
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			result := s.Scan(context.Background(), tt.url)
@@ -5555,7 +5723,7 @@ func TestScan_QueryEntropyParamExclusion_DoesNotSkipDLP(t *testing.T) {
 				Path:   "/v1/search/recent",
 				Param:  "query",
 			}}
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			result := s.Scan(context.Background(), tt.url)
@@ -5571,7 +5739,7 @@ func TestScan_QueryEntropyParamExclusion_DoesNotSkipDLP(t *testing.T) {
 
 func TestScan_QueryEntropyParamExclusion_DoesNotSkipDatabaseURISSRF(t *testing.T) {
 	cfg := queryEntropyParamExclusionTestConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	url := "https://api.vendor.example/v1/search/recent?query=postgres://169.254.169.254/latest/meta-data"
@@ -5590,14 +5758,14 @@ func TestScan_QueryEntropyParamExclusion_RebuildsFromConfig(t *testing.T) {
 
 	without := queryEntropyParamExclusionTestConfig()
 	without.FetchProxy.Monitoring.QueryEntropyParamExclusions = nil
-	sWithout := New(without)
+	sWithout := MustNew(without)
 	defer sWithout.Close()
 	if result := sWithout.Scan(context.Background(), targetURL); result.Allowed || result.Scanner != ScannerEntropy {
 		t.Fatalf("scanner without exemption = allowed %v scanner %s reason %s, want entropy block", result.Allowed, result.Scanner, result.Reason)
 	}
 
 	with := queryEntropyParamExclusionTestConfig()
-	sWith := New(with)
+	sWith := MustNew(with)
 	defer sWith.Close()
 	if result := sWith.Scan(context.Background(), targetURL); !result.Allowed {
 		t.Fatalf("scanner with exemption blocked: scanner=%s reason=%s", result.Scanner, result.Reason)
@@ -5605,7 +5773,7 @@ func TestScan_QueryEntropyParamExclusion_RebuildsFromConfig(t *testing.T) {
 }
 
 func TestScan_AllowsCleanURLsNoCRLF(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	clean := []string{
 		"https://example.com/normal/path",
@@ -5625,7 +5793,7 @@ func TestScan_AllowsCleanURLsNoCRLF(t *testing.T) {
 // --- Path traversal detection ---
 
 func TestScan_BlocksPathTraversal(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	tests := []struct {
 		name string
@@ -5660,7 +5828,7 @@ func TestScan_BlocksPathTraversal(t *testing.T) {
 }
 
 func TestScan_AllowsCleanPathsNoTraversal(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	clean := []string{
 		"https://example.com/normal/path",
@@ -5682,7 +5850,7 @@ func TestScan_AllowsCleanPathsNoTraversal(t *testing.T) {
 // --- URL fragment DLP coverage ---
 
 func TestScan_DLPDetectsSecretInFragment(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	// Secrets in URL fragments are visible to pipelock (agent passes full URL
 	// to /fetch?url=...) even though browsers strip fragments before sending.
@@ -5698,7 +5866,7 @@ func TestScan_DLPDetectsSecretInFragment(t *testing.T) {
 }
 
 func TestScan_AllowsBenignFragment(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 
 	result := s.Scan(context.Background(), "https://example.com/page#section-1")
 	if !result.Allowed {
@@ -5761,7 +5929,7 @@ func TestScan_DLPExemptDomains(t *testing.T) {
 					ExemptDomains: tt.exempt,
 				},
 			}
-			s := New(cfg)
+			s := MustNew(cfg)
 			defer s.Close()
 
 			result := s.Scan(context.Background(), tt.url)
@@ -5795,7 +5963,7 @@ func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
 			Severity: "critical",
 		},
 	}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Telegram token to Telegram: allowed (exempt)
@@ -5817,7 +5985,7 @@ func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []struct {
@@ -5882,7 +6050,7 @@ func TestScan_LLMProviderKeyShortPrefixFalsePositiveCorpus(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	tests := []string{
@@ -5905,7 +6073,7 @@ func TestScan_LLMProviderKeyShortPrefixFalsePositiveCorpus(t *testing.T) {
 }
 
 func TestDLP_GroqAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// 48+ alphanumeric chars after "gsk_" prefix.
@@ -5920,7 +6088,7 @@ func TestDLP_GroqAPIKey(t *testing.T) {
 }
 
 func TestDLP_XAIAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// 80+ chars after "xai-" prefix.
@@ -5935,7 +6103,7 @@ func TestDLP_XAIAPIKey(t *testing.T) {
 }
 
 func TestDLP_GitLabPAT(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "glpat-" + strings.Repeat("aB1cD2eF3gH4iJ5k", 2)
@@ -5951,7 +6119,7 @@ func TestDLP_GitLabPAT(t *testing.T) {
 func TestScan_DLPStackedDecodeFixpointQueryAndPath(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -5979,7 +6147,7 @@ func TestScan_DLPStackedDecodeFixpointQueryAndPath(t *testing.T) {
 }
 
 func TestScanTextForDLP_DecodeFixpointBoundedOnLongBenignText(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	text := strings.Repeat("abcdefghijklmnopqrstuvwxyz0123456789!", 2048)
@@ -5995,7 +6163,7 @@ func TestScanTextForDLP_DecodeFixpointBoundedOnLongBenignText(t *testing.T) {
 }
 
 func TestDLP_NewRelicAPIKey(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "NRAK-" + strings.Repeat("ABCDEF1234567", 3)
@@ -6009,7 +6177,7 @@ func TestDLP_NewRelicAPIKey(t *testing.T) {
 }
 
 func TestDLP_StripeWebhookSecret(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	token := "whsec_" + strings.Repeat("aB1cD2eF3gH4iJ5k", 2)
@@ -6023,7 +6191,7 @@ func TestDLP_StripeWebhookSecret(t *testing.T) {
 }
 
 func TestDLP_CreditCardNumber(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Valid Visa test card (passes Luhn).
@@ -6037,7 +6205,7 @@ func TestDLP_CreditCardNumber(t *testing.T) {
 }
 
 func TestDLP_CreditCardNumber_InvalidLuhn(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Invalid Visa (fails Luhn check digit) - should NOT trigger DLP.
@@ -6048,7 +6216,7 @@ func TestDLP_CreditCardNumber_InvalidLuhn(t *testing.T) {
 }
 
 func TestDLP_CreditCard_AmexSeparated(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Amex 4-6-5 display format with spaces (passes Luhn).
@@ -6065,7 +6233,7 @@ func TestDLP_CreditCard_AmexSeparated(t *testing.T) {
 }
 
 func TestDLP_CreditCard_MastercardTwoSeries(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Mastercard 2-series test card (passes Luhn).
@@ -6076,7 +6244,7 @@ func TestDLP_CreditCard_MastercardTwoSeries(t *testing.T) {
 }
 
 func TestDLP_CreditCard_JCB(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// JCB test card (passes Luhn).
@@ -6087,7 +6255,7 @@ func TestDLP_CreditCard_JCB(t *testing.T) {
 }
 
 func TestDLP_IBAN(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Valid UK IBAN (passes mod-97).
@@ -6101,7 +6269,7 @@ func TestDLP_IBAN(t *testing.T) {
 }
 
 func TestDLP_IBAN_InvalidMod97(t *testing.T) {
-	s := New(testConfig())
+	s := MustNew(testConfig())
 	defer s.Close()
 
 	// Invalid UK IBAN (check digits zeroed, fails mod-97) - should NOT trigger.
@@ -6116,7 +6284,7 @@ func TestScan_BlocksSeedPhrase(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// "abandon" x11 + "about" is a known-valid BIP-39 12-word mnemonic.
@@ -6135,7 +6303,7 @@ func TestScan_AllowsBelowMinWords(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// 11 words - below threshold.
@@ -6149,7 +6317,7 @@ func TestScan_AllowsBelowMinWords(t *testing.T) {
 func TestScan_SeedPhraseDisabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.SeedPhraseDetection.Enabled = ptrBool(false)
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	phrase := "abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+about"
@@ -6164,7 +6332,7 @@ func TestScan_SeedPhraseInHostname(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false) // hostnames unlikely to have valid checksum
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Seed words as subdomain labels - pre-DNS exfiltration vector.
@@ -6179,7 +6347,7 @@ func TestScan_SeedPhraseInPathSegments(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Seed words as path segments.
@@ -6195,7 +6363,7 @@ func TestScan_SeedPhraseSplitAcrossQueryParams(t *testing.T) {
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// One word per query param - ordered concat should reassemble.
@@ -6229,7 +6397,7 @@ func TestResultClass(t *testing.T) {
 func TestCheckRateLimit_ClassProtective(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// First request succeeds.
@@ -6254,7 +6422,7 @@ func TestCheckRateLimit_ClassProtective(t *testing.T) {
 func TestCheckDataBudget_ClassThreat(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100 // 100 bytes/min/domain
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Record enough data to exceed the budget.
@@ -6278,7 +6446,7 @@ func TestScan_SeedPhraseBase64InPathSegment(t *testing.T) {
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	// Base64-encoded seed phrase in a path segment.
@@ -6326,7 +6494,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 	t.Run("governed host and path is exempt", func(t *testing.T) {
 		cfg := baseCfg()
 		cfg.RequestPolicy = policyCfg(true)
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		r := s.Scan(context.Background(), "https://"+host+govPath)
 		if !r.Allowed {
@@ -6337,7 +6505,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 	t.Run("governed host but ungoverned path still blocks", func(t *testing.T) {
 		cfg := baseCfg()
 		cfg.RequestPolicy = policyCfg(true)
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		r := s.Scan(context.Background(), "https://"+host+ungovPath)
 		if r.Allowed || r.Scanner != ScannerEntropy {
@@ -6348,7 +6516,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 	t.Run("ungoverned host still blocks", func(t *testing.T) {
 		cfg := baseCfg()
 		cfg.RequestPolicy = policyCfg(true)
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		r := s.Scan(context.Background(), "https://other.example"+govPath)
 		if r.Allowed || r.Scanner != ScannerEntropy {
@@ -6359,7 +6527,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 	t.Run("path exemption does not disable query entropy", func(t *testing.T) {
 		cfg := baseCfg()
 		cfg.RequestPolicy = policyCfg(true)
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		// Governed path (path entropy skipped) plus a high-entropy query value
 		// that must still be caught: the exemption is path-only.
@@ -6383,7 +6551,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 				},
 			}},
 		}
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		// High-entropy subdomain label under the wildcard-governed host on a
 		// governed path: path entropy is exempt, subdomain entropy must not be.
@@ -6396,7 +6564,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 	t.Run("disabled request_policy does not exempt", func(t *testing.T) {
 		cfg := baseCfg()
 		cfg.RequestPolicy = policyCfg(false)
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		r := s.Scan(context.Background(), "https://"+host+govPath)
 		if r.Allowed || r.Scanner != ScannerEntropy {
@@ -6408,7 +6576,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 		cfg := baseCfg()
 		cfg.RequestPolicy = policyCfg(true)
 		cfg.RequestPolicy.Rules[0].Shadow = true
-		s := New(cfg)
+		s := MustNew(cfg)
 		defer s.Close()
 		r := s.Scan(context.Background(), "https://"+host+govPath)
 		if r.Allowed || r.Scanner != ScannerEntropy {
@@ -6433,7 +6601,7 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 				},
 			}},
 		}
-		s := New(cfg) // must not panic
+		s := MustNew(cfg) // must not panic
 		defer s.Close()
 		r := s.Scan(context.Background(), "https://"+host+govPath)
 		if r.Allowed || r.Scanner != ScannerEntropy {
@@ -6448,14 +6616,14 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 	t.Run("exemption tracks the config the scanner was built from", func(t *testing.T) {
 		on := baseCfg()
 		on.RequestPolicy = policyCfg(true)
-		sOn := New(on)
+		sOn := MustNew(on)
 		defer sOn.Close()
 		if r := sOn.Scan(context.Background(), "https://"+host+govPath); !r.Allowed {
 			t.Errorf("policy-on scanner should exempt, got blocked: %s", r.Reason)
 		}
 		off := baseCfg()
 		off.RequestPolicy = policyCfg(false)
-		sOff := New(off)
+		sOff := MustNew(off)
 		defer sOff.Close()
 		if r := sOff.Scan(context.Background(), "https://"+host+govPath); r.Allowed {
 			t.Error("policy-off scanner should not exempt")

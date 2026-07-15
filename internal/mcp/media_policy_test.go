@@ -330,7 +330,7 @@ func newMCPScannerWithMediaPolicy(t *testing.T) (*scanner.Scanner, *config.Confi
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	return sc, cfg
 }

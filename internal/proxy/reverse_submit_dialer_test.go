@@ -112,7 +112,7 @@ func TestSubmitProfile_ProxySafeDialerUsesScannerResolver(t *testing.T) {
 		"submit.test": {"127.0.0.1"},
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	logger := audit.NewNop()
@@ -153,7 +153,7 @@ func TestProxy_SafeDialerBlocksInternalIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8"}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New())

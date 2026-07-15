@@ -191,7 +191,11 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	}
 
 	// Build scanner and policy.
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return fmt.Errorf("create scanner: %w", err)
+	}
+	defer sc.Close()
 	pc := policy.New(cfg.MCPToolPolicy)
 
 	// Route tool_name to decide.Action.

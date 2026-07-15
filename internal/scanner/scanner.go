@@ -351,10 +351,11 @@ func (p *compiledPattern) matches(text string) bool {
 	return false
 }
 
-// New creates a Scanner from config. Config must be validated first via
-// config.Validate() - this function panics on invalid DLP patterns or CIDRs
-// because those represent programming errors (validation should have caught them).
-func New(cfg *config.Config) *Scanner {
+// New creates a Scanner from config. Config should be validated first via
+// config.Validate(), but scanner construction is also a runtime activation
+// boundary: invalid config-derived compile inputs and unavailable runtime
+// files are returned as errors so callers can fail closed without panicking.
+func New(cfg *config.Config) (*Scanner, error) {
 	// Only enforce the allowlist in strict mode. In balanced/audit modes,
 	// the allowlist is a config field but not enforced at the scanner level.
 	var allowlist []string
@@ -391,7 +392,7 @@ func New(cfg *config.Config) *Scanner {
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			panic(fmt.Sprintf("BUG: DLP pattern %q failed to compile after validation: %v", p.Name, err))
+			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := &compiledPattern{
 			name:          p.Name,
@@ -405,7 +406,7 @@ func New(cfg *config.Config) *Scanner {
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
 			if !ok {
-				panic(fmt.Sprintf("BUG: unknown DLP validator %q for pattern %q", p.Validator, p.Name))
+				return nil, fmt.Errorf("unknown DLP validator %q for pattern %q", p.Validator, p.Name)
 			}
 			cp.validate = fn
 		}
@@ -428,7 +429,7 @@ func New(cfg *config.Config) *Scanner {
 	for _, cidr := range cfg.Internal {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			panic(fmt.Sprintf("BUG: internal CIDR %q failed to parse after validation: %v", cidr, err))
+			return nil, fmt.Errorf("parse internal CIDR %q: %w", cidr, err)
 		}
 		s.internalCIDRs = append(s.internalCIDRs, ipNet)
 	}
@@ -437,7 +438,7 @@ func New(cfg *config.Config) *Scanner {
 	for _, cidr := range cfg.SSRF.IPAllowlist {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			panic(fmt.Sprintf("BUG: SSRF IP allowlist CIDR %q failed to parse after validation: %v", cidr, err))
+			return nil, fmt.Errorf("parse SSRF IP allowlist CIDR %q: %w", cidr, err)
 		}
 		s.ipAllowlistCIDRs = append(s.ipAllowlistCIDRs, ipNet)
 	}
@@ -471,8 +472,7 @@ func New(cfg *config.Config) *Scanner {
 	if cfg.DLP.SecretsFile != "" {
 		fileSecrets, err := LoadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
 		if err != nil {
-			panic(fmt.Sprintf("BUG: secrets file %q failed after validation: %v",
-				cfg.DLP.SecretsFile, err))
+			return nil, fmt.Errorf("load DLP secrets file %q: %w", cfg.DLP.SecretsFile, err)
 		}
 		s.fileSecrets = dedupSecrets(fileSecrets, s.envSecrets)
 		if len(s.fileSecrets) == 0 {
@@ -488,7 +488,7 @@ func New(cfg *config.Config) *Scanner {
 		for _, p := range cfg.ResponseScanning.Patterns {
 			re, err := regexp.Compile(p.Regex)
 			if err != nil {
-				panic(fmt.Sprintf("BUG: response pattern %q failed after validation: %v", p.Name, err))
+				return nil, fmt.Errorf("compile response pattern %q: %w", p.Name, err)
 			}
 			requiredLiteralsAny := responsePatternRequiredLiterals(p.Regex)
 			s.responsePatterns = append(s.responsePatterns, &compiledPattern{
@@ -586,6 +586,16 @@ func New(cfg *config.Config) *Scanner {
 		s.addressChecker = addressprotect.NewChecker(&cfg.AddressProtection, agentAddrs)
 	}
 
+	return s, nil
+}
+
+// MustNew creates a Scanner and panics if construction fails.
+// It is intended for tests and benchmarks with in-process fixture configs.
+func MustNew(cfg *config.Config) *Scanner {
+	s, err := New(cfg)
+	if err != nil {
+		panic(err)
+	}
 	return s
 }
 

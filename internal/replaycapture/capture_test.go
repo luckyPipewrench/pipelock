@@ -365,7 +365,7 @@ func testProxyHandler(t *testing.T, s Scenario) (http.Handler, func()) {
 	if err != nil {
 		t.Fatalf("labConfig(%s): %v", s.ID, err)
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	p, err := proxy.New(cfg, audit.NewNop(), sc, metrics.New())
 	if err != nil {
 		sc.Close()

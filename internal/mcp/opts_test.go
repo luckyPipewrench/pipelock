@@ -76,11 +76,11 @@ func withRedaction(m *redact.Matcher) testOptsFunc {
 func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	staleCfg := config.Defaults()
 	staleCfg.Internal = nil
-	staleSc := scanner.New(staleCfg)
+	staleSc := scanner.MustNew(staleCfg)
 	t.Cleanup(staleSc.Close)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: config.ActionBlock}
@@ -194,7 +194,7 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{Enabled: true}

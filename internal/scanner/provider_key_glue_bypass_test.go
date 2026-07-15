@@ -64,7 +64,7 @@ func TestProviderKeyGlueBypass(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 	ctx := context.Background()
 

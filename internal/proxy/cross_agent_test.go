@@ -151,7 +151,7 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	m := metrics.New()
@@ -226,7 +226,7 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordedWhenDLPBlocks(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	m := metrics.New()

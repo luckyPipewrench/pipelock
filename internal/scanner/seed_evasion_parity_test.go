@@ -31,7 +31,7 @@ func TestScanTextForDLP_SeedEvasionParity(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	cases := []struct {
 		name string
@@ -75,7 +75,7 @@ func TestScan_SeedEvasionURLTargetParity(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	underscored := strings.ReplaceAll(testSeedPhrase12, " ", "_")

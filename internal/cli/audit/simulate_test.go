@@ -66,7 +66,7 @@ func TestSimulateCmd_JSON(t *testing.T) {
 
 func TestBuildScenarios_DefaultConfig(t *testing.T) {
 	cfg := config.Defaults()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)
@@ -91,7 +91,7 @@ func TestBuildScenarios_NoSSRFWithNilInternal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)
@@ -104,7 +104,7 @@ func TestBuildScenarios_NoSSRFWithNilInternal(t *testing.T) {
 
 func TestRunSimulation_AllDefaultsDetected(t *testing.T) {
 	cfg := config.Defaults()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)
@@ -159,7 +159,7 @@ func TestRunSimulation_StrictModeNoFalsePositives(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"api.openai.com"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)
@@ -188,7 +188,7 @@ func TestRunSimulation_StrictModeNoFalsePositives(t *testing.T) {
 
 func TestRunSimulation_URLScenariosAttributeCorrectScanner(t *testing.T) {
 	cfg := config.Defaults()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)
@@ -241,7 +241,7 @@ func TestBuildScenarios_WithCanaryTokens(t *testing.T) {
 			EnvVar: "AWS_CANARY_KEY",
 		},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)
@@ -271,7 +271,7 @@ func TestRunSimulation_CanaryScenariosDetected(t *testing.T) {
 	cfg.CanaryTokens.Tokens = []config.CanaryToken{
 		{Name: "aws_canary", Value: "AKIA" + "IOSFODNN7" + "CANARY1"},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := BuildSimScenarios(cfg, sc)

@@ -58,7 +58,10 @@ func NewAgentRegistry(base *config.Config, fallbackScanners ...*scanner.Scanner)
 		if err := ValidateMergedAgent(name, merged); err != nil {
 			return nil, err
 		}
-		sc := scanner.New(merged)
+		sc, err := scanner.New(merged)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q scanner: %w", name, err)
+		}
 		bt := NewBudgetTracker(&profile.Budget)
 
 		// BudgetTracker → BudgetChecker interface.
@@ -102,7 +105,10 @@ func NewAgentRegistry(base *config.Config, fallbackScanners ...*scanner.Scanner)
 		if len(fallbackScanners) > 0 && fallbackScanners[0] != nil {
 			sc = fallbackScanners[0]
 		} else {
-			sc = scanner.New(base)
+			sc, err = scanner.New(base)
+			if err != nil {
+				return nil, fmt.Errorf("fallback scanner: %w", err)
+			}
 			reg.ownsFallback = true
 		}
 		reg.fallback = &edition.ResolvedAgent{

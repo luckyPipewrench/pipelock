@@ -15,7 +15,10 @@ const mcpSolicitation = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"t
 
 func TestBuildMCPExplainReport_BlockNamesSuppressEntry(t *testing.T) {
 	cfg := config.Defaults()
-	report := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
 
 	if report.Allowed {
 		t.Fatalf("expected blocked report, got allowed")
@@ -49,7 +52,10 @@ func TestBuildMCPExplainReport_ReasoningTrustWarnsWithoutSuppressRemediation(t *
 	cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{
 		{Server: "code-assistant", Trust: config.ResponseTrustReasoning},
 	}
-	report := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
 
 	if !report.Allowed {
 		t.Fatalf("reasoning trust should report allowed warn, got %+v", report)
@@ -67,7 +73,10 @@ func TestBuildMCPExplainReport_ReasoningTrustWarnsWithoutSuppressRemediation(t *
 
 func TestBuildMCPExplainReport_NoServerNamePlaceholderAndNote(t *testing.T) {
 	cfg := config.Defaults()
-	report := buildMCPExplainReport(cfg, "(test)", "", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "(test)", "", []byte(mcpSolicitation))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
 
 	if report.Allowed {
 		t.Fatalf("expected blocked report")
@@ -92,7 +101,10 @@ func TestBuildMCPExplainReport_NoServerNamePlaceholderAndNote(t *testing.T) {
 func TestBuildMCPExplainReport_CleanIsAllowed(t *testing.T) {
 	cfg := config.Defaults()
 	clean := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"benign gardening text"}]}}`
-	report := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(clean))
+	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(clean))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
 	if !report.Allowed {
 		t.Fatalf("expected allowed, got %+v", report)
 	}
@@ -100,7 +112,10 @@ func TestBuildMCPExplainReport_CleanIsAllowed(t *testing.T) {
 
 func TestBuildMCPExplainReport_InvalidJSONIsParseError(t *testing.T) {
 	cfg := config.Defaults()
-	report := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte("not json at all"))
+	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte("not json at all"))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
 	if report.Error == "" {
 		t.Fatalf("expected parse error for invalid JSON")
 	}

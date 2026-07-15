@@ -143,7 +143,7 @@ func TestReverseProxy_SigningRoundTripper_TargetURIIsPostDirector(t *testing.T) 
 		t.Fatalf("NewSigner: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]

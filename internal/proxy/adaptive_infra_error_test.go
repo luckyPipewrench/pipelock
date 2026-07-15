@@ -45,7 +45,7 @@ func threatResult() scanner.Result {
 func TestRecordSessionActivity_InfrastructureError_NoSignal(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -79,7 +79,7 @@ func TestRecordSessionActivity_InfrastructureError_NoSignal(t *testing.T) {
 func TestRecordSessionActivity_InfrastructureError_BurstStaysBelowThreshold(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -118,7 +118,7 @@ func TestRecordSessionActivity_InfrastructureError_BurstStaysBelowThreshold(t *t
 func TestRecordSessionActivity_RealSSRF_StillSignalBlock(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -159,7 +159,7 @@ func TestRecordSessionActivity_RealSSRF_StillSignalBlock(t *testing.T) {
 func TestRecordSessionActivity_MixedInfraAndThreat(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
@@ -269,7 +269,7 @@ func TestAdaptiveConfigEscalationThreshold(t *testing.T) {
 func TestRecordSessionActivity_InfrastructureError_NoDecay(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {

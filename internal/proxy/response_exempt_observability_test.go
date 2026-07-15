@@ -168,7 +168,7 @@ func TestResponseScanExemptOverCapUnscannedObservability_Intercept(t *testing.T)
 			if tt.configure != nil {
 				tt.configure(cfg, host)
 			}
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL+"/payload", nil)

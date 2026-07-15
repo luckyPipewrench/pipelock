@@ -19,7 +19,7 @@ import (
 // proving true concurrent throughput scaling.
 
 func BenchmarkParallel_URLScan(b *testing.B) {
-	s := New(benchConfig())
+	s := MustNew(benchConfig())
 	b.Cleanup(s.Close)
 
 	const target = "https://api.example.com:8443/v2/search?q=golang+testing&page=3&limit=50"
@@ -32,7 +32,7 @@ func BenchmarkParallel_URLScan(b *testing.B) {
 }
 
 func BenchmarkParallel_DLPBlock(b *testing.B) {
-	s := New(benchConfig())
+	s := MustNew(benchConfig())
 	b.Cleanup(s.Close)
 
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
@@ -46,7 +46,7 @@ func BenchmarkParallel_DLPBlock(b *testing.B) {
 }
 
 func BenchmarkParallel_ResponseScan(b *testing.B) {
-	s := New(benchResponseConfig())
+	s := MustNew(benchResponseConfig())
 	b.Cleanup(s.Close)
 
 	const content = "This is a normal web page with regular content about cooking recipes and golang tutorials."
@@ -59,7 +59,7 @@ func BenchmarkParallel_ResponseScan(b *testing.B) {
 }
 
 func BenchmarkParallel_ResponseLarge(b *testing.B) {
-	s := New(benchResponseConfig())
+	s := MustNew(benchResponseConfig())
 	b.Cleanup(s.Close)
 
 	content := strings.Repeat("The quick brown fox jumps over the lazy dog. This is normal web content. ", 140)
@@ -72,7 +72,7 @@ func BenchmarkParallel_ResponseLarge(b *testing.B) {
 }
 
 func BenchmarkParallel_Blocklist(b *testing.B) {
-	s := New(benchConfig())
+	s := MustNew(benchConfig())
 	b.Cleanup(s.Close)
 
 	const target = "https://pastebin.com/raw/abc123"
@@ -85,7 +85,7 @@ func BenchmarkParallel_Blocklist(b *testing.B) {
 }
 
 func BenchmarkParallel_Entropy(b *testing.B) {
-	s := New(benchConfig())
+	s := MustNew(benchConfig())
 	b.Cleanup(s.Close)
 
 	entropy := "aB3xK9mQ7" + "pR2wE5tY8u" + "I0oL4hG6fD1sZ"
@@ -106,7 +106,7 @@ func TestConcurrentThroughputScaling(t *testing.T) {
 		t.Skip("skipping throughput test (set PIPELOCK_BENCH_SCALING=1 to run)")
 	}
 
-	s := New(benchConfig())
+	s := MustNew(benchConfig())
 	t.Cleanup(s.Close)
 
 	const (
@@ -172,7 +172,7 @@ func TestConcurrentThroughputScaling(t *testing.T) {
 	}
 
 	// Also test response scanning
-	sResp := New(benchResponseConfig())
+	sResp := MustNew(benchResponseConfig())
 	t.Cleanup(sResp.Close)
 
 	const content = "This is a normal web page with regular content about cooking recipes and golang tutorials."

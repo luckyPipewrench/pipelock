@@ -46,7 +46,7 @@ func testCEEProxy(t *testing.T, ceeCfg config.CrossRequestDetection) (*httptest.
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	logger := audit.NewNop()
@@ -302,7 +302,7 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	target := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

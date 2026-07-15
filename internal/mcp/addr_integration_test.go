@@ -45,7 +45,7 @@ func newMCPAgentAddressProtectionScanner(t *testing.T) *scanner.Scanner {
 		},
 	}
 
-	return scanner.New(cfg)
+	return scanner.MustNew(cfg)
 }
 
 func TestScanRequestAddressPoisoning(t *testing.T) {
@@ -68,7 +68,7 @@ func TestScanRequestAddressPoisoning(t *testing.T) {
 	cfg.AddressProtection.Similarity.PrefixLength = 4
 	cfg.AddressProtection.Similarity.SuffixLength = 4
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// Verify checker exists.
 	if sc.AddressChecker() == nil {
@@ -109,7 +109,7 @@ func TestScanRequestAddressExactMatch(t *testing.T) {
 	cfg.AddressProtection.Similarity.PrefixLength = 4
 	cfg.AddressProtection.Similarity.SuffixLength = 4
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// Exact allowlisted address.
 	line := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transfer","arguments":{"to":"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}}}`
@@ -143,7 +143,7 @@ func TestScanRequestBatchAddressPoisoning(t *testing.T) {
 	cfg.AddressProtection.Similarity.PrefixLength = 4
 	cfg.AddressProtection.Similarity.SuffixLength = 4
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// Batch with one clean request and one poisoned address (no DLP/injection content).
 	clean := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","arguments":{"path":"/tmp/test"}}}`
@@ -184,7 +184,7 @@ func TestScanRequestNoParamsAddressPolicyAction(t *testing.T) {
 	cfg.AddressProtection.Similarity.PrefixLength = 4
 	cfg.AddressProtection.Similarity.SuffixLength = 4
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// Response-shaped message with no params - poisoned address in result field.
 	// MCP input action is "warn" but address_protection.action is "block".

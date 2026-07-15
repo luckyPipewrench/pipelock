@@ -16,7 +16,7 @@ func FuzzScanResponse(f *testing.F) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = "warn"
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	// Valid clean response

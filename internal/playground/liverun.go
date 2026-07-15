@@ -385,7 +385,10 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	}
 
 	// --- Scanner + Recorder + Emitter ---
-	lr.sc = scanner.New(cfg)
+	lr.sc, err = scanner.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create scanner: %w", err)
+	}
 
 	lr.rec, err = recorder.New(recorder.Config{
 		Enabled:            true,

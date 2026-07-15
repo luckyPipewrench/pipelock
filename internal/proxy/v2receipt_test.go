@@ -243,7 +243,7 @@ func newDualEmitFixture(t *testing.T, redact bool) *dualEmitFixture {
 	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	var redactFn recorder.RedactFunc
 	if redact {
@@ -370,7 +370,7 @@ func TestDualEmit_DisabledWhenNoV2Emitter(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
@@ -480,7 +480,7 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.FlightRecorder.SigningKeyPath = keyPath
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	v1 := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, Principal: "local", Actor: "pipelock"})
 	signer := proxydecision.NewKeyedSigner(priv)
@@ -506,7 +506,7 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
-	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+	if !p.Reload(reloadCfg, scanner.MustNew(reloadCfg)) {
 		t.Fatal("Reload returned false")
 	}
 
@@ -577,7 +577,7 @@ func TestDualEmit_SameKeyReloadReusesV2EmitterSoStalePointerCannotFork(t *testin
 	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
 		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
 	})
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(),
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New(),
 		WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2),
 		WithReceiptKeyPath(keyPath))
 	if err != nil {
@@ -598,7 +598,7 @@ func TestDualEmit_SameKeyReloadReusesV2EmitterSoStalePointerCannotFork(t *testin
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
-	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+	if !p.Reload(reloadCfg, scanner.MustNew(reloadCfg)) {
 		t.Fatal("Reload returned false")
 	}
 	if got := p.v2EmitterPtr.Load(); got != origV2 {
@@ -666,7 +666,7 @@ func TestDualEmit_SameKeyReloadUsesUpdatedPolicyHash(t *testing.T) {
 	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
 		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
 	})
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(),
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New(),
 		WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2),
 		WithReceiptKeyPath(keyPath))
 	if err != nil {
@@ -681,7 +681,7 @@ func TestDualEmit_SameKeyReloadUsesUpdatedPolicyHash(t *testing.T) {
 	if reloadCfg.CanonicalPolicyHash() == cfg.CanonicalPolicyHash() {
 		t.Fatal("reload fixture did not change canonical policy hash")
 	}
-	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+	if !p.Reload(reloadCfg, scanner.MustNew(reloadCfg)) {
 		t.Fatal("Reload returned false")
 	}
 	if got := p.v2EmitterPtr.Load(); got != v2 {

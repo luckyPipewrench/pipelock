@@ -91,7 +91,7 @@ func submitProfileReverseProxy(t *testing.T, cfg *config.Config, upstreamURL *ur
 func submitProfileReverseProxyWithDialer(t *testing.T, cfg *config.Config, upstreamURL *url.URL, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *httptest.Server {
 	t.Helper()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]

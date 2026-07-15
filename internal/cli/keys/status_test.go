@@ -302,7 +302,7 @@ func TestRosterReferenceFromConductor(t *testing.T) {
 func TestDeploymentFilePurposesAreInformational(t *testing.T) {
 	cfg := config.Defaults()
 	report := buildKeyStatusReport(cfg, "(test)")
-	for _, p := range []string{"contract-compile-signing", "contract-activation-signing"} {
+	for _, p := range []string{"contract-compile-signing", "contract-activation-signing", "coverage-cert-signing"} {
 		p := p
 		t.Run(p, func(t *testing.T) {
 			item := findKey(t, report, p)

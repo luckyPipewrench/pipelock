@@ -38,7 +38,7 @@ func TestHandler_ReaderTokenRequired(t *testing.T) {
 	handler, err := NewHandler(Options{
 		Store:       store,
 		Resolver:    staticResolver(pub),
-		DLPScanner:  scanner.New(config.Defaults()),
+		DLPScanner:  scanner.MustNew(config.Defaults()),
 		Now:         func() time.Time { return sinkTestNow },
 		ReaderToken: token,
 	})
@@ -149,7 +149,7 @@ func TestHandler_EnforcesKeyBinding(t *testing.T) {
 	handler, err := NewHandler(Options{
 		Store:       store,
 		Resolver:    staticResolver(pub),
-		DLPScanner:  scanner.New(config.Defaults()),
+		DLPScanner:  scanner.MustNew(config.Defaults()),
 		Now:         func() time.Time { return sinkTestNow },
 		KeyBindings: bindings,
 	})
@@ -188,7 +188,7 @@ func TestHandler_AllowsMatchingKeyBinding(t *testing.T) {
 	handler, err := NewHandler(Options{
 		Store:       store,
 		Resolver:    staticResolver(pub),
-		DLPScanner:  scanner.New(config.Defaults()),
+		DLPScanner:  scanner.MustNew(config.Defaults()),
 		Now:         func() time.Time { return sinkTestNow },
 		KeyBindings: bindings,
 	})
@@ -380,7 +380,7 @@ func TestNewHandler_CopiesKeyBindings(t *testing.T) {
 	handler, err := NewHandler(Options{
 		Store:       store,
 		Resolver:    staticResolver(pub),
-		DLPScanner:  scanner.New(config.Defaults()),
+		DLPScanner:  scanner.MustNew(config.Defaults()),
 		KeyBindings: bindings,
 	})
 	if err != nil {
@@ -451,7 +451,7 @@ func TestEnforceBindings_SkipsUnboundKeys(t *testing.T) {
 	handler, err := NewHandler(Options{
 		Store:      store,
 		Resolver:   staticResolver(pub),
-		DLPScanner: scanner.New(config.Defaults()),
+		DLPScanner: scanner.MustNew(config.Defaults()),
 		Now:        func() time.Time { return sinkTestNow },
 		KeyBindings: map[string]KeyBinding{
 			"other-signer": {OrgID: "anything"},

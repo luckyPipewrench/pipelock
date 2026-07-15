@@ -841,6 +841,14 @@ func (c *Config) validateDLPPatternConfig() error {
 }
 
 func (c *Config) validateFetchProxy() error {
+	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+	}
+	if err := validateTCPPort("fetch_proxy.listen", proxyPort); err != nil {
+		return err
+	}
+
 	// Validate blocklist patterns are well-formed
 	for _, b := range c.FetchProxy.Monitoring.Blocklist {
 		if b == "" {
@@ -2366,6 +2374,9 @@ func (c *Config) validateKillSwitch() error {
 		if err != nil {
 			return fmt.Errorf("invalid kill_switch.api_listen %q: %w", c.KillSwitch.APIListen, err)
 		}
+		if err := validateTCPPort("kill_switch.api_listen", apiPort); err != nil {
+			return err
+		}
 		_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
 		if proxyErr != nil {
 			return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
@@ -2389,6 +2400,9 @@ func (c *Config) validateMetricsListen() error {
 	if err != nil {
 		return fmt.Errorf("invalid metrics_listen %q: %w", c.MetricsListen, err)
 	}
+	if err := validateTCPPort("metrics_listen", metricsPort); err != nil {
+		return err
+	}
 	_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
 	if proxyErr != nil {
 		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
@@ -2401,6 +2415,14 @@ func (c *Config) validateMetricsListen() error {
 		if metricsPort == apiPort {
 			return fmt.Errorf("metrics_listen port %s collides with kill_switch.api_listen port %s", metricsPort, apiPort)
 		}
+	}
+	return nil
+}
+
+func validateTCPPort(field, port string) error {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("%s port must be between 0 and 65535", field)
 	}
 	return nil
 }
@@ -3027,6 +3049,16 @@ func (c *Config) validateSandbox() error {
 }
 
 func (c *Config) validateFlightRecorder() error {
+	if c.FlightRecorder.RequireReceipts {
+		switch {
+		case !c.FlightRecorder.Enabled:
+			return fmt.Errorf("flight_recorder.require_receipts requires flight_recorder.enabled")
+		case c.FlightRecorder.Dir == "":
+			return fmt.Errorf("flight_recorder.require_receipts requires flight_recorder.dir")
+		case c.FlightRecorder.SigningKeyPath == "":
+			return fmt.Errorf("flight_recorder.require_receipts requires flight_recorder.signing_key_path")
+		}
+	}
 	if !c.FlightRecorder.Enabled {
 		return nil
 	}
@@ -3084,8 +3116,16 @@ func (c *Config) validateFlightRecorder() error {
 	default:
 		return fmt.Errorf("flight_recorder.file_mode must be 0600, 0640, or 0660 when set")
 	}
-	if c.FlightRecorder.RawEscrow && c.FlightRecorder.EscrowPublicKey == "" {
-		return fmt.Errorf("flight_recorder.escrow_public_key is required when raw_escrow is enabled")
+	if c.FlightRecorder.RawEscrow {
+		if c.FlightRecorder.EscrowPublicKey == "" {
+			return fmt.Errorf("flight_recorder.escrow_public_key is required when raw_escrow is enabled")
+		}
+		if len(c.FlightRecorder.EscrowPublicKey) != 64 {
+			return fmt.Errorf("flight_recorder.escrow_public_key must be exactly 64 hex characters")
+		}
+		if _, err := hex.DecodeString(c.FlightRecorder.EscrowPublicKey); err != nil {
+			return fmt.Errorf("flight_recorder.escrow_public_key must be hex: %w", err)
+		}
 	}
 	return nil
 }

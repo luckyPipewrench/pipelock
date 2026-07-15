@@ -62,7 +62,7 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -76,7 +76,7 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	cfg.Internal = nil
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, err := audit.New("json", "file", auditPath, false, false)
@@ -141,7 +141,7 @@ func TestInterceptEmitReceiptOrBlockRequiresReceiptBlocksV2Failure(t *testing.T)
 	cfg.Internal = nil
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
@@ -200,7 +200,7 @@ func TestInterceptEmitReceiptOrBlockRequireReceiptsEmitsIntent(t *testing.T) {
 	cfg.Internal = nil
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestInterceptEmitReceiptOrBlockRequireReceiptsSyncFailureBlocks(t *testing.
 	cfg.Internal = nil
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
@@ -298,7 +298,7 @@ func TestInterceptEmitReceiptOrBlockUnavailableEmitterRecordsMetric(t *testing.T
 	cfg.Internal = nil
 
 	m := metrics.New()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
@@ -916,7 +916,7 @@ func TestInterceptContext_Validate(t *testing.T) {
 		TargetHost: "example.com",
 		TargetPort: "443",
 		Config:     config.Defaults(),
-		Scanner:    scanner.New(config.Defaults()),
+		Scanner:    scanner.MustNew(config.Defaults()),
 		CertCache:  &certgen.CertCache{},
 		Logger:     audit.NewNop(),
 		Metrics:    metrics.New(),
@@ -972,7 +972,7 @@ func TestInterceptTunnel_ConfigMismatch_NearMissSignal(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100 // high so we don't escalate
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	rec := &interceptMockRecorder{}
@@ -1036,7 +1036,7 @@ func TestInterceptTunnel_BlocksSecretInBody(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 	// Recreate scanner with body scanning config.
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1200,7 +1200,7 @@ func TestInterceptTunnel_BlocksInjection(t *testing.T) {
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	// Recreate scanner with response scanning enabled.
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1225,7 +1225,7 @@ func TestInterceptTunnel_AskActionBlocksWithoutHITL(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionAsk
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1252,7 +1252,7 @@ func TestInterceptTunnel_SuppressedInjectionPassesThrough(t *testing.T) {
 		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
 		{Rule: "Cross-Lingual Instruction Override", Path: "*", Reason: "test suppression"},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1281,7 +1281,7 @@ func TestInterceptTunnel_NonMatchingSuppressStillBlocks(t *testing.T) {
 	cfg.Suppress = []config.SuppressEntry{
 		{Rule: "System Override", Path: "*", Reason: "non-matching suppress"},
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1310,7 +1310,7 @@ func TestInterceptTunnel_ExemptDomain(t *testing.T) {
 	// Exempt the upstream host (an IP address in test).
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
 	cfg.ResponseScanning.ExemptDomains = []string{host}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1338,7 +1338,7 @@ func TestInterceptTunnel_NonExemptDomainStillBlocked(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	// Exempt a different host - the upstream should NOT be exempt.
 	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1409,7 +1409,7 @@ func TestInterceptTunnel_SizeExemptDomainBlocksOversizeInjectionWithinCeiling(t 
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 16384
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
 	cfg.ResponseScanning.SizeExemptDomains = []string{host}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1446,7 +1446,7 @@ func TestInterceptTunnel_SizeExemptDomainDeliversCleanOversizeWithinCeiling(t *t
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 16384
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
 	cfg.ResponseScanning.SizeExemptDomains = []string{host}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1505,7 +1505,7 @@ func TestInterceptTunnel_ResponseInjectionSizeExemptDomainStillScanned(t *testin
 	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
 	cfg.ResponseScanning.SizeExemptDomains = []string{host}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1532,7 +1532,7 @@ func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization", "Cookie", "X-Api-Key"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1566,7 +1566,7 @@ func TestInterceptTunnel_HeaderDLPSuppressedCriticalAllowed(t *testing.T) {
 		Path:   "https://" + addr + "/*",
 		Reason: "trusted destination auth header",
 	}}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	secret := "sk-ant-" + "api03-test123456789abcdef"
@@ -1897,7 +1897,7 @@ func TestInterceptTunnel_StripAction(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionStrip
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -1926,7 +1926,7 @@ func TestInterceptTunnel_WarnAction(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionWarn
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2013,7 +2013,7 @@ func TestInterceptTunnel_CompressedBodyBlocked(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn // even warn blocks when body is nil
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2045,7 +2045,7 @@ func TestInterceptTunnel_HeaderDLPAuditMode(t *testing.T) {
 	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
 	enforceOff := false
 	cfg.Enforce = &enforceOff
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2075,7 +2075,7 @@ func TestInterceptTunnel_BodyDLPAuditMode(t *testing.T) {
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024 // 1MB
 	enforceOff := false
 	cfg.Enforce = &enforceOff
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2107,7 +2107,7 @@ func TestInterceptTunnel_BodyPromptInjectionHardBlocksNonProviderWarnMode(t *tes
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 	enforceOff := false
 	cfg.Enforce = &enforceOff
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2148,7 +2148,7 @@ func TestInterceptTunnel_BodyPromptInjectionProviderExemptWarnMode(t *testing.T)
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	body := trilingualPromptInjectionBody
@@ -2188,7 +2188,7 @@ func TestInterceptTunnel_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 		},
 		Limits: redact.DefaultLimits(),
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
 
@@ -2229,7 +2229,7 @@ func TestInterceptTunnel_RedactionFailClosedWithoutProxyFallback(t *testing.T) {
 		},
 		Limits: redact.DefaultLimits(),
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2339,7 +2339,7 @@ func TestInterceptTunnel_BodyDLPAskFailsClosed(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionAsk
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024 // 1MB
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2370,7 +2370,7 @@ func TestInterceptTunnel_HeaderDLPAskFailsClosed(t *testing.T) {
 	cfg.RequestBodyScanning.Action = config.ActionAsk
 	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization", "Cookie", "X-Api-Key"}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -2663,7 +2663,7 @@ func TestInterceptTunnel_URLScanAuditMode(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	enforceOff := false
 	cfg.Enforce = &enforceOff
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	addr := upstream.Listener.Addr().String()
@@ -2700,7 +2700,7 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100 // high threshold, no escalation expected
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	et := scanner.NewEntropyTracker(1, 300) // 1-bit budget, 5 min window
@@ -2793,7 +2793,7 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 5
 	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
 	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	et := scanner.NewEntropyTracker(
@@ -3037,7 +3037,7 @@ func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := interceptRecordSignalCfg()
 			logger := audit.NewNop()
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			defer sc.Close()
 
 			p, err := New(cfg, logger, sc, metrics.New())
@@ -3406,7 +3406,7 @@ func TestInterceptTunnel_RequireReceiptsResponseBlockEmitsOutcome(t *testing.T) 
 	cfg.FlightRecorder.RequireReceipts = true
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -3647,7 +3647,7 @@ func TestInterceptTunnel_RequireReceiptsPostRoundTripOutcomeBranches(t *testing.
 			if tc.mutate != nil {
 				tc.mutate(cfg, host)
 				sc.Close()
-				sc = scanner.New(cfg)
+				sc = scanner.MustNew(cfg)
 				t.Cleanup(func() { sc.Close() })
 			}
 			p, err := New(cfg, logger, sc, m)
@@ -3694,7 +3694,7 @@ func TestInterceptTunnel_UnscannablePassthroughRequireReceiptsEmitsSingleIntentO
 		Reason:       "opaque signed archive",
 		Expires:      "2099-01-01",
 	}}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -3850,7 +3850,7 @@ func TestInterceptTunnel_A2ASSEStreamScanning(t *testing.T) {
 	cfg.A2AScanning.Action = config.ActionBlock
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := testLoopbackIP
@@ -3985,7 +3985,7 @@ func TestInterceptTunnel_A2ACompressedSSEStreamBlocked(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := testLoopbackIP
@@ -4028,7 +4028,7 @@ func TestInterceptTunnel_A2AResponseBodyBlocked(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := testLoopbackIP
@@ -4066,7 +4066,7 @@ func TestInterceptTunnel_A2AResponseBodyWarnMode(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.Action = config.ActionWarn
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := testLoopbackIP
@@ -4110,7 +4110,7 @@ func TestInterceptTunnel_A2AHeaderScanningBlocked(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.Action = config.ActionBlock
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -4146,7 +4146,7 @@ func TestInterceptTunnel_A2ARequestBodyBlocked(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn // body DLP warns, A2A blocks
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -4183,7 +4183,7 @@ func TestInterceptTunnel_ResponseScanExemptDomainWarnPath(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock // would normally block
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
 	cfg.ResponseScanning.ExemptDomains = []string{host} // but host is exempt
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -4245,7 +4245,7 @@ func TestInterceptTunnel_A2ASSEStreamWarnMode(t *testing.T) {
 	cfg.A2AScanning.Action = config.ActionWarn
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionWarn
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := testLoopbackIP
@@ -4295,7 +4295,7 @@ func TestInterceptTunnel_ResponseScanStripWithAdaptive(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	sm := NewSessionManager(&config.SessionProfiling{
@@ -4379,7 +4379,7 @@ func TestInterceptTunnel_A2AHeaderScanWarnMode(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.Action = config.ActionWarn
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -4411,7 +4411,7 @@ func TestInterceptTunnel_A2ARequestBodyAskFailsClosed(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
@@ -4547,7 +4547,7 @@ func TestInterceptTunnel_CanaryBodyBlocked(t *testing.T) {
 		Value: canaryValue,
 	}}
 	// Rebuild scanner so it compiles the canary token patterns.
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()

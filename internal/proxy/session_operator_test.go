@@ -310,7 +310,7 @@ func TestRecordSessionActivity_RecordsBlockEvent(t *testing.T) {
 	cfg.SessionProfiling.WindowMinutes = 5
 	cfg.Internal = nil
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	logger := audit.NewNop()

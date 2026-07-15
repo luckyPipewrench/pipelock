@@ -52,7 +52,7 @@ func TestForwardHTTP_EnvelopeSignedHappyPath(t *testing.T) {
 	cfg.APIAllowlist = nil
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestForwardHTTP_EnvelopeSignedRedirectChain(t *testing.T) {
 	cfg.APIAllowlist = nil
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {

@@ -96,7 +96,7 @@ func reverseTestSetupWithHandler(t *testing.T, cfg *config.Config, upstreamHandl
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -173,7 +173,7 @@ func reverseLiveLockSetupWithConfig(
 
 	cfg.ApplyDefaults()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -469,7 +469,7 @@ func TestReverseProxy_ServeHTTPSnapshotsUnderReloadLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -516,12 +516,12 @@ func TestReverseProxy_ServeHTTPSnapshotsUnderReloadLock(t *testing.T) {
 
 func TestReverseProxy_ModifyResponseUsesRequestSnapshot(t *testing.T) {
 	cfg := reverseTestConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	reloaded := reverseTestConfig()
 	reloaded.ResponseScanning.Enabled = false
-	reloadedSc := scanner.New(reloaded)
+	reloadedSc := scanner.MustNew(reloaded)
 	t.Cleanup(reloadedSc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -743,7 +743,7 @@ func TestReverseProxy_UpstreamError(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 	upstream.Close() // close immediately so connections fail
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -1057,7 +1057,7 @@ func TestReverseProxy_CreditCardBlocked(t *testing.T) {
 func TestReverseProxy_HotReload(t *testing.T) {
 	cfg := reverseTestConfig()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -1096,7 +1096,7 @@ func TestReverseProxy_HotReload(t *testing.T) {
 	newCfg.RequestBodyScanning.Action = config.ActionWarn
 	enforceOff := false
 	newCfg.Enforce = &enforceOff
-	newSc := scanner.New(newCfg)
+	newSc := scanner.MustNew(newCfg)
 	defer newSc.Close()
 	cfgPtr.Store(newCfg)
 	scPtr.Store(newSc)
@@ -1699,7 +1699,7 @@ func TestReverseProxy_ResponseReadErrorBlocked(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamURL, _ := url.Parse(upstream.URL)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -1888,7 +1888,7 @@ func TestReverseProxy_StripClearsValidators(t *testing.T) {
 
 func TestProxy_ConfigPtrAndScannerPtr(t *testing.T) {
 	cfg := reverseTestConfig()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	logger, _ := audit.New("json", "stdout", "", false, false)
@@ -2116,7 +2116,7 @@ func TestReverseProxy_ShieldEnabled(t *testing.T) {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]

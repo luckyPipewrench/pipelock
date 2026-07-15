@@ -183,7 +183,7 @@ func TestForwardHTTP_HeaderDLP_ExemptHost_NoSignal(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -236,7 +236,7 @@ func TestForwardHTTP_HeaderDLP_NonExemptHost_SignalRecorded(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)

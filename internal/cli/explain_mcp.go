@@ -95,7 +95,10 @@ Examples:
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read MCP response from stdin: %w", err))
 			}
-			report := buildMCPExplainReport(cfg, cfgLabel, serverName, line)
+			report, err := buildMCPExplainReport(cfg, cfgLabel, serverName, line)
+			if err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+			}
 			if jsonOutput {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -149,7 +152,7 @@ func mcpResponseTargetDisplay(serverName string) string {
 	return "mcp://<server-name>/response"
 }
 
-func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line []byte) mcpExplainReport {
+func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line []byte) (mcpExplainReport, error) {
 	report := mcpExplainReport{
 		ConfigFile: cfgLabel,
 		Mode:       cfg.Mode,
@@ -168,7 +171,10 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 	// MCP response scanning does not touch DNS; disabling the SSRF layer keeps
 	// scanner construction self-contained and avoids resolution.
 	cfg.Internal = nil
-	sc := scanner.New(cfg)
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		return report, fmt.Errorf("create scanner: %w", err)
+	}
 	defer sc.Close()
 
 	trust := config.ResponseTrustUntrusted
@@ -191,11 +197,11 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 
 	if verdict.Error != "" {
 		report.Error = verdict.Error
-		return report
+		return report, nil
 	}
 	if verdict.Clean {
 		report.Allowed = true
-		return report
+		return report, nil
 	}
 
 	report.Scanner = explainMCPResponseScanner
@@ -213,7 +219,7 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 			"no --server-name given: the suppress target is empty and no suppress entry can match. "+
 				"Re-run with --server-name <name> matching how the proxy is launched.")
 	}
-	return report
+	return report, nil
 }
 
 // dedupePatternNames returns the unique blocking pattern names in sorted order.

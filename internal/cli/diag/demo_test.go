@@ -194,7 +194,7 @@ func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 			cfg.ResponseScanning.Action = "block"
 			cfg.DLP.ScanEnv = false
 
-			sc := scanner.New(cfg)
+			sc := scanner.MustNew(cfg)
 			defer sc.Close()
 
 			blocked, detail, _ := s.run(sc)
@@ -252,7 +252,7 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 	cfg.ResponseScanning.Enabled = false
 	cfg.ResponseScanning.Patterns = nil
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	scenarios := buildScenarios(nil)

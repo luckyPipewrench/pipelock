@@ -31,7 +31,7 @@ func testMCPScanner() *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in unit tests)
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	return scanner.New(cfg)
+	return scanner.MustNew(cfg)
 }
 
 func TestCeeSessionKeyMCP_EmptyAgent(t *testing.T) {

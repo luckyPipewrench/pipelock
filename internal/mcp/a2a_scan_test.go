@@ -21,7 +21,7 @@ func testA2AScanner(t *testing.T) *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil // no SSRF DNS in tests
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	return scanner.New(cfg)
+	return scanner.MustNew(cfg)
 }
 
 func enabledA2ACfg() *config.A2AScanning {
@@ -394,7 +394,7 @@ func TestScanAgentCard_CleanCard(t *testing.T) {
 
 func TestScanAgentCard_URLFieldSSRFScanned(t *testing.T) {
 	cfg := enabledA2ACfg()
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	defer sc.Close()
 
 	card := A2AAgentCard{
@@ -419,7 +419,7 @@ func TestScanAgentCard_URLFieldSSRFScanned(t *testing.T) {
 
 func TestScanAgentCard_SiblingURLFieldsSSRFScanned(t *testing.T) {
 	cfg := enabledA2ACfg()
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	defer sc.Close()
 
 	tests := []struct {
@@ -475,7 +475,7 @@ func TestScanAgentCard_BenignURLFieldsPass(t *testing.T) {
 	cfg.DetectCardDrift = false
 	scannerCfg := config.Defaults()
 	scannerCfg.Internal = nil
-	sc := scanner.New(scannerCfg)
+	sc := scanner.MustNew(scannerCfg)
 	defer sc.Close()
 
 	card := A2AAgentCard{
@@ -700,7 +700,7 @@ func TestScanA2ARequestBody_URLFieldScanned(t *testing.T) {
 
 func TestScanA2ARequestBody_FilePartURISSRFScanned(t *testing.T) {
 	cfg := enabledA2ACfg()
-	sc := scanner.New(config.Defaults())
+	sc := scanner.MustNew(config.Defaults())
 	defer sc.Close()
 
 	body := []byte(`{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}`)

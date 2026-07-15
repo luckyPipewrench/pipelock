@@ -470,7 +470,7 @@ func TestSetupRequestPolicy_InvalidPatternFailsStartup(t *testing.T) {
 		Action: config.ActionBlock,
 		Route:  config.RequestPolicyRoute{Hosts: []string{rpTestHost}, PathPatterns: []string{"("}},
 	}}
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	logger, _ := audit.New("json", "stdout", "", false, false)
 	if _, err := New(cfg, logger, sc, metrics.New()); err == nil {
 		t.Fatal("New must fail closed when a request_policy path_pattern does not compile")
@@ -729,7 +729,7 @@ func TestRequestPolicy_RedirectHopReceiptUsesRedirectSnapshotPolicyHash(t *testi
 		Principal:  "test-principal",
 		Actor:      "test-actor",
 	})
-	oldSc := scanner.New(oldCfg)
+	oldSc := scanner.MustNew(oldCfg)
 	t.Cleanup(oldSc.Close)
 	p, err := New(oldCfg, audit.NewNop(), oldSc, metrics.New(), WithRecorder(rec), WithReceiptEmitter(emitter))
 	if err != nil {
@@ -865,7 +865,7 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 
 	// Reload with a blocking rule.
 	newCfg := reqPolicyConfig(blockRule(http.MethodDelete))
-	if !p.Reload(newCfg, scanner.New(newCfg)) {
+	if !p.Reload(newCfg, scanner.MustNew(newCfg)) {
 		t.Fatal("Reload returned false")
 	}
 	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Action != config.ActionBlock {
@@ -874,7 +874,7 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 
 	// Reload again removing the rule: enforcement clears.
 	cfgOff := reqPolicyConfig()
-	if !p.Reload(cfgOff, scanner.New(cfgOff)) {
+	if !p.Reload(cfgOff, scanner.MustNew(cfgOff)) {
 		t.Fatal("second Reload returned false")
 	}
 	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Matched() {

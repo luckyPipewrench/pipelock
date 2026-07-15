@@ -628,7 +628,7 @@ func TestSessionAPI_IntegrationViaProxy(t *testing.T) {
 	cfg.KillSwitch.APIToken = testSessionAPIToken
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -749,7 +749,7 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 	cfg.KillSwitch.APIToken = testSessionAPIToken
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {

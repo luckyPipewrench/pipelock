@@ -61,7 +61,7 @@ func TestEnvelope_FetchInjectsHeader(t *testing.T) {
 	cfg.MediationEnvelope.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
 
 	p, err := New(cfg, logger, sc, metrics.New(),
@@ -127,7 +127,7 @@ func TestEnvelope_FetchNoEmitter(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 
 	// No WithEnvelopeEmitter -- emitter is nil.
 	p, err := New(cfg, logger, sc, metrics.New())
@@ -168,7 +168,7 @@ func TestEnvelope_FetchStripsInbound(t *testing.T) {
 	cfg.MediationEnvelope.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
 
 	p, err := New(cfg, logger, sc, metrics.New(),
@@ -230,7 +230,7 @@ func TestEnvelope_ForwardHTTPInjectsHeader(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m, WithEnvelopeEmitter(em))
 	if err != nil {
@@ -376,7 +376,7 @@ func TestEnvelope_ForwardHTTPStripsInbound(t *testing.T) {
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m, WithEnvelopeEmitter(em))
 	if err != nil {
@@ -462,7 +462,7 @@ func TestEnvelope_ReloadEnablesEmitter(t *testing.T) {
 	cfg.MediationEnvelope.Enabled = false
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, err := New(cfg, logger, sc, m)
@@ -479,7 +479,7 @@ func TestEnvelope_ReloadEnablesEmitter(t *testing.T) {
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.MediationEnvelope.Enabled = true
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -499,7 +499,7 @@ func TestEnvelope_ReloadDisablesEmitter(t *testing.T) {
 	cfg.MediationEnvelope.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
 
@@ -517,7 +517,7 @@ func TestEnvelope_ReloadDisablesEmitter(t *testing.T) {
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.MediationEnvelope.Enabled = false
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -543,7 +543,7 @@ func TestEnvelope_ReloadInstallsFreshEmitter(t *testing.T) {
 	cfg.MediationEnvelope.Enabled = true
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
 
@@ -564,7 +564,7 @@ func TestEnvelope_ReloadInstallsFreshEmitter(t *testing.T) {
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.MediationEnvelope.Enabled = true
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
-	reloadSc := scanner.New(reloadCfg)
+	reloadSc := scanner.MustNew(reloadCfg)
 
 	p.Reload(reloadCfg, reloadSc)
 
@@ -605,7 +605,7 @@ func TestEnvelope_EnvelopeEmitterPtrAccessor(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 
 	p, err := New(cfg, logger, sc, m)
@@ -652,7 +652,7 @@ func TestEnvelope_ReverseProxyInjectsHeader(t *testing.T) {
 
 	cfg := reverseTestConfig()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -733,7 +733,7 @@ func TestEnvelope_ReverseProxyBindDefaultAgentIdentity(t *testing.T) {
 	cfg.DefaultAgentIdentity = "deployment/my-sidecar"
 	cfg.BindDefaultAgentIdentity = true
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -812,7 +812,7 @@ func TestEnvelope_ReverseProxyWarnBodyUsesWarnVerdict(t *testing.T) {
 	cfg.Enforce = &enforceOff
 	cfg.ApplyDefaults()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -881,7 +881,7 @@ func TestEnvelope_ReverseProxyNoEmitter(t *testing.T) {
 
 	cfg := reverseTestConfig()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
@@ -941,7 +941,7 @@ func TestEnvelope_ReverseProxyStripsInbound(t *testing.T) {
 
 	cfg := reverseTestConfig()
 
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]

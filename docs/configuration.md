@@ -2438,7 +2438,7 @@ learn_lock:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable the live-lock runtime. When false, the proxy ignores any active manifest and runs as scanner-only. When true, every other field below is required; partial config is rejected at startup so a half-wired lock never silently downgrades. |
-| `mode` | `shadow` (when `enabled` is true) | Gate semantics: `live` enforces (block on contract deny), `shadow` evaluates and emits drift but never blocks, `capture` is silent. Empty or unknown values resolve to `shadow`, so a misconfigured lock fails toward observation rather than enforcement. |
+| `mode` | `shadow` (when `enabled` is true) | Gate semantics: `live` enforces (block on contract deny), `shadow` evaluates and emits drift but never blocks, `capture` is silent. Empty values use `shadow`; unknown values are rejected so a misspelled lock mode cannot silently change enforcement. |
 | `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime watches this directory via fsnotify with a 100ms debounce and a 2s maximum-debounce cap; reload is fail-closed on initial load and missed-promote recovery walks the accepted-history chain. |
 | `roster_path` | `""` | Absolute path to the deployment-level roster JSON file naming which signing keys are authorised for which purposes. Required when `enabled` is true. The roster's root fingerprint must match `pinned_root_fingerprint`. |
 | `environment.id` | `""` | Deployment environment identifier (e.g., `production`, `staging`). Required key when `enabled` is true; non-empty value enforced by validation. |

@@ -196,7 +196,7 @@ func TestWriterRedaction(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	w, err := capture.NewWriter(capture.WriterConfig{
@@ -379,7 +379,7 @@ func TestWriterRedaction_PreservesRPCID(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	w, err := capture.NewWriter(capture.WriterConfig{
@@ -740,7 +740,7 @@ func TestWriterRedactionWithFindings(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
 	w, err := capture.NewWriter(capture.WriterConfig{

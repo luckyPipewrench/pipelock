@@ -579,7 +579,10 @@ Examples:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
-			sc := scanner.New(cfg)
+			sc, err := scanner.New(cfg)
+			if err != nil {
+				return fmt.Errorf("create scanner: %w", err)
+			}
 			defer sc.Close()
 
 			found, err := mcp.ScanStream(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput)
@@ -762,7 +765,10 @@ Key-free evidence capture:
 			// Build edition so _default fallback works the same as HTTP proxy.
 			// Bootstrap scanner is used only for edition init; closed before
 			// rebuilding with the resolved config.
-			bootSC := scanner.New(cfg)
+			bootSC, err := scanner.New(cfg)
+			if err != nil {
+				return fmt.Errorf("create edition scanner: %w", err)
+			}
 			ed, edErr := edition.NewEditionFunc(cfg, bootSC)
 			if edErr != nil {
 				bootSC.Close()
@@ -819,7 +825,10 @@ Key-free evidence capture:
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
 			// Rebuild scanner with the (possibly modified) resolved config.
-			sc := scanner.New(cfg)
+			sc, err := scanner.New(cfg)
+			if err != nil {
+				return fmt.Errorf("create scanner: %w", err)
+			}
 			defer sc.Close()
 			auditLogger := audit.NewNop()
 

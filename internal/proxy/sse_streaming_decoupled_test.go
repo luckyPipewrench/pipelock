@@ -357,7 +357,7 @@ func TestInterceptTunnel_SSE_StreamsWhenScanningDisabled(t *testing.T) {
 
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.ResponseScanning.Enabled = false
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
@@ -420,7 +420,7 @@ func TestInterceptTunnel_SSE_StreamsWithMediaPolicyDefault(t *testing.T) {
 	cfg.ResponseScanning.Enabled = false
 	enabledTrue := true
 	cfg.MediaPolicy.Enabled = &enabledTrue
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
@@ -513,7 +513,7 @@ func TestInterceptTunnel_ExemptDomain_StreamsBodyIntact(t *testing.T) {
 	cfg.MediaPolicy.Enabled = &enabledTrue
 	cfg.MediaPolicy.StripImageMetadata = &enabledTrue
 	cfg.TLSInterception.MaxResponseBytes = 64 // below the image size: non-exempt would size-block
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	clientConn, proxyConn := net.Pipe()
@@ -585,7 +585,7 @@ func TestInterceptTunnel_ExemptDomain_MediaPolicyRunsWhenResponseScanDisabled(t 
 	cfg.MediaPolicy.Enabled = &enabledTrue
 	cfg.MediaPolicy.StripImageMetadata = &enabledTrue
 	cfg.TLSInterception.MaxResponseBytes = 10 << 20 // large: media strip is what we assert, not size
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 
 	clientConn, proxyConn := net.Pipe()

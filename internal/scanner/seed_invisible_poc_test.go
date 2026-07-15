@@ -23,7 +23,7 @@ func TestScanTextForDLP_SeedZeroWidthSeparator(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	for _, tc := range []struct {
 		name string
@@ -48,7 +48,7 @@ func TestScanTextForDLP_EncodedSeedZeroWidthSeparator(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	zw := string(rune(0x200B))
 	seed := strings.ReplaceAll(testSeedPhrase12, " ", zw)
@@ -79,7 +79,7 @@ func TestScanTextForDLP_SeedZeroWidthSeparatorBenignSentence(t *testing.T) {
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
 	cfg.SeedPhraseDetection.MinWords = 12
 	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
-	s := New(cfg)
+	s := MustNew(cfg)
 
 	zw := string(rune(0x200B))
 	payload := strings.Join([]string{

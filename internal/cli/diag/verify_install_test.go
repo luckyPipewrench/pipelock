@@ -532,7 +532,7 @@ func testScanEnv(t *testing.T) *VerifyEnv {
 		t.Fatalf("EnableDefaultVerifyProofs: %v", err)
 	}
 	t.Cleanup(cleanup)
-	sc := scanner.New(cfg)
+	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	pc := policy.New(cfg.MCPToolPolicy)
 	return &VerifyEnv{

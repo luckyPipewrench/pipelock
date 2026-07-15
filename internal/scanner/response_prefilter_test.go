@@ -207,7 +207,7 @@ func TestResponsePatternRequiredLiterals_AttachedOnlyToCanonicalRegex(t *testing
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := New(cfg)
+	sc := MustNew(cfg)
 	defer sc.Close()
 
 	var canonical *compiledPattern
@@ -230,7 +230,7 @@ func TestResponsePatternRequiredLiterals_AttachedOnlyToCanonicalRegex(t *testing
 	replacementCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
 		{Name: "Markdown Link Credential Exfiltration", Regex: `(?i)mailto:`},
 	}
-	replacement := New(replacementCfg)
+	replacement := MustNew(replacementCfg)
 	defer replacement.Close()
 
 	if len(replacement.responsePatterns) != 1 {
@@ -275,7 +275,7 @@ func TestMarkdownLinkCredentialExfilVariantsRequireHTTPURL(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	clean := []string{
@@ -358,7 +358,7 @@ func TestPerPassPreFilterConstruction(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = "block"
-	s := New(cfg)
+	s := MustNew(cfg)
 	defer s.Close()
 
 	if s.responsePreFilter == nil {

@@ -512,7 +512,9 @@ func TestReceiptCoverage_VerifierRoundTrip_ConnectBlock(t *testing.T) {
 // against an O(n) receipt-growth DoS vector where every frame could otherwise
 // trigger an emission.
 func TestReceiptCoverage_WSFrameBurst_NoReceiptsForAllowed(t *testing.T) {
-	t.Parallel()
+	// This deliberately drives 100 synchronous frame round trips. Running it in
+	// the package's large parallel WebSocket pool turns scheduler contention into
+	// false per-frame deadline failures under the race detector.
 
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

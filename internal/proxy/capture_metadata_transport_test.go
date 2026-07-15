@@ -270,7 +270,9 @@ func TestCaptureMetadata_ReverseTransport(t *testing.T) {
 }
 
 func TestCaptureMetadata_WebSocketTransport(t *testing.T) {
-	t.Parallel()
+	// Keep the real listener/relay lifecycle out of the package's large parallel
+	// WebSocket pool. Under race instrumentation, scheduler starvation can spend
+	// the entire dial deadline before this test's accept loop runs.
 
 	backendAddr, backendClose := wsEchoServer(t)
 	defer backendClose()

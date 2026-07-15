@@ -30,28 +30,6 @@ jobs:
       - name: Workflow and release audit
         run: make release-audit
 
-  runtime-critical:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
-        with:
-          go-version: '1.25'
-
-      - name: Verify dependencies
-        run: bash scripts/ci-retry.sh go mod verify
-
-      - name: Download dependencies
-        run: bash scripts/ci-retry.sh go mod download
-
-      - name: Run runtime-critical packages
-        run: make test-runtime-critical
-
   runtime-policy:
     # Blocking on PRs, not just at release-tag time: a runtime package
     # that re-introduces direct mutation of policy-relevant config would

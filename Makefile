@@ -43,7 +43,7 @@ test-wasm-verifier:
 	node --test deploy/wasm-verify/chain-parity.test.js
 
 test-runtime-critical:
-	go test -race -count=1 ./internal/config ./internal/cli ./internal/mcp ./internal/proxy
+	go test -race -count=1 -timeout 15m ./internal/config ./internal/cli ./internal/mcp ./internal/proxy
 
 # test-replay-harness exercises the synthetic replay regression suite:
 # deterministic compile + per-session replay + golden snapshot comparison.

@@ -49,6 +49,27 @@ func TestClient_List_HappyPath(t *testing.T) {
 	}
 }
 
+func TestClient_List_RejectsDuplicateAndOversizedResponse(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "duplicate count", body: `{"sessions":[],"count":0,"count":1}`},
+		{name: "oversized valid prefix", body: `{"sessions":[],"count":0}` + strings.Repeat(" ", maxClientResponseBytes+1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			client := newClient(endpoint{URL: srv.URL, Token: testToken})
+			if _, err := client.List(context.Background(), ""); err == nil {
+				t.Fatal("List accepted hostile admin response")
+			}
+		})
+	}
+}
+
 func TestClient_List_NoTierOmitsParam(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "" {

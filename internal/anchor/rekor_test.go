@@ -4,6 +4,7 @@
 package anchor
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -21,6 +22,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -36,6 +38,10 @@ import (
 const (
 	fakeRekorIntegratedTime int64 = 1780000000
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
 	receipts, keyHex := testReceiptChain(t, 2)
@@ -80,6 +86,38 @@ func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
 	report = VerifyBundle(NewBundle(checkpoint, proof), receipts, []string{keyHex}, RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}})
 	if !report.Valid {
 		t.Fatalf("VerifyBundle with trusted Rekor key invalid: %s", report.Error)
+	}
+}
+
+func TestRekorLogSubmitRejectsOversizedValidPrefix(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, _ := fakeTrustedRekorServer(t)
+	baseTransport := server.Client().Transport
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		body = append(body, bytes.Repeat([]byte(" "), rekorMaxResponseBytes)...)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return resp, nil
+	})}
+	_, err = (RekorLog{URL: server.URL, Signer: priv, HTTPClient: client}).Submit(checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Submit oversized valid-prefix response error = %v, want explicit size rejection", err)
 	}
 }
 

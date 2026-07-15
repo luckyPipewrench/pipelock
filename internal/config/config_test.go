@@ -5648,6 +5648,10 @@ func TestValidate_SecretsFileWorldReadable(t *testing.T) {
 	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o644); err != nil { //nolint:gosec // G306: intentionally world-readable for test
 		t.Fatal(err)
 	}
+	worldReadableMode := os.FileMode(0o600 | 0o044)
+	if err := os.Chmod(secretsPath, worldReadableMode); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := Defaults()
 	cfg.DLP.SecretsFile = secretsPath
@@ -8834,6 +8838,10 @@ func TestTLSInterception_ValidatePermissiveKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(keyPath, []byte("fake"), 0o644); err != nil { //nolint:gosec // test: intentionally permissive
+		t.Fatal(err)
+	}
+	worldReadableMode := os.FileMode(0o600 | 0o044)
+	if err := os.Chmod(keyPath, worldReadableMode); err != nil {
 		t.Fatal(err)
 	}
 

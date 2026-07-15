@@ -193,7 +193,9 @@ you have two options:
 - HTTP reverse proxy mode (`pipelock run --mcp-listen ADDR --mcp-upstream URL`)
   preserves request headers through to the upstream. Use this when the upstream
   requires per-request `Authorization` or other client-supplied headers, or
-  when the client needs an HTTP MCP URL.
+  when the client needs an HTTP MCP URL. A non-loopback listener also requires
+  `--mcp-auth-token-file`; send that listener credential in
+  `Proxy-Authorization`, leaving `Authorization` available for the upstream.
 
 For outbound HTTP traffic from your agent code (API calls, web fetches), route
 those through `pipelock run` as a fetch proxy. See the

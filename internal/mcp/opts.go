@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"sync/atomic"
 
@@ -54,6 +55,27 @@ type MCPRedactionConfig struct {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	// ListenerBearerToken authenticates inbound HTTP-listener clients through
+	// Proxy-Authorization. It is never forwarded to the MCP upstream, whose
+	// independent credential continues to use Authorization.
+	ListenerBearerToken string
+	// ListenerBearerTokenFn refreshes the listener credential for each request.
+	// File-backed CLI modes use this so token replacement revokes old clients
+	// without restarting the listener. Errors fail the request closed.
+	ListenerBearerTokenFn func() (string, error)
+	// ListenerAllowedOrigins is an exact allowlist for browser Origin headers.
+	// An empty list rejects every request carrying Origin.
+	ListenerAllowedOrigins []string
+	// ListenerAllowUnauthenticated explicitly permits a non-loopback listener
+	// without ListenerBearerToken. This is intended only for deployments whose
+	// network policy is the authentication boundary.
+	ListenerAllowUnauthenticated bool
+	// UpstreamHeaders are operator-configured headers applied by the HTTP
+	// reverse listener. They take precedence over client-supplied headers, so a
+	// browser can use Authorization for listener authentication while Pipelock
+	// supplies a separate static Authorization credential to the upstream.
+	UpstreamHeaders http.Header
+
 	// Scanning
 	Scanner        *scanner.Scanner
 	ScannerFn      func() *scanner.Scanner

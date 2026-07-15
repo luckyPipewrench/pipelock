@@ -442,7 +442,8 @@ func TestGenerateSidecarPatch_MCPUpstream(t *testing.T) {
 	proxyContainer := templateSpec["containers"].([]interface{})[0].(map[string]interface{})
 	args := proxyContainer["args"].([]interface{})
 	if !containsInterfaceString(args, "--mcp-listen") || !containsInterfaceString(args, proxyMCPListenAddr()) ||
-		!containsInterfaceString(args, "--mcp-upstream") || !containsInterfaceString(args, mcpUpstream) {
+		!containsInterfaceString(args, "--mcp-upstream") || !containsInterfaceString(args, mcpUpstream) ||
+		!containsInterfaceString(args, "--mcp-allow-unauthenticated") {
 		t.Fatalf("proxy args missing MCP listener contract: %v", args)
 	}
 	ports := proxyContainer["ports"].([]interface{})

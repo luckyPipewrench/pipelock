@@ -40,52 +40,44 @@ func TestNewEntropyTracker_NonPositiveInputs(t *testing.T) {
 	}
 }
 
-func TestDataBudget_CleanupLoop_StopsOnClose(t *testing.T) {
+func TestDataBudget_CloseIdempotent(t *testing.T) {
 	db := NewDataBudget(1000)
 
 	// Record data so there's something to clean up.
 	db.Record("example.com", 100)
 
-	// Close should stop the cleanup goroutine without hanging.
+	// Close remains safe for callers even though cleanup is opportunistic.
 	db.Close()
-
-	// Verify the channel is closed (second close is a no-op via sync.Once).
 	db.Close()
 }
 
-func TestRateLimiter_CleanupLoop_StopsOnClose(t *testing.T) {
+func TestRateLimiter_CloseIdempotent(t *testing.T) {
 	rl := NewRateLimiter(100)
 
 	rl.Record("example.com")
 
-	// Close should stop the cleanup goroutine without hanging.
+	// Close remains safe for callers even though cleanup is opportunistic.
 	rl.Close()
-
-	// Verify the channel is closed (second close is a no-op via sync.Once).
 	rl.Close()
 }
 
-func TestFragmentBuffer_CleanupLoop_StopsOnClose(t *testing.T) {
+func TestFragmentBuffer_CloseIdempotentCoverage(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, 300)
 
 	fb.Append("session-1", []byte("data"))
 
-	// Close should stop the cleanup goroutine without hanging.
+	// Close remains safe for callers even though cleanup is opportunistic.
 	fb.Close()
-
-	// Verify the channel is closed (second close is a no-op via sync.Once).
 	fb.Close()
 }
 
-func TestEntropyTracker_CleanupLoop_StopsOnClose(t *testing.T) {
+func TestEntropyTracker_CloseIdempotentCoverage(t *testing.T) {
 	et := NewEntropyTracker(4096, 300)
 
 	et.Record("session-1", []byte("test data"))
 
-	// Close should stop the cleanup goroutine without hanging.
+	// Close remains safe for callers even though cleanup is opportunistic.
 	et.Close()
-
-	// Verify the channel is closed (second close is a no-op via sync.Once).
 	et.Close()
 }
 

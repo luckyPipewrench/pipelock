@@ -672,9 +672,9 @@ func (s *Scanner) IsInAPIAllowlist(hostname string) bool {
 // returns once Drained is true. If the timeout fires (a hung scan, an
 // adversarial slow-loris client), Close hands teardown off to a detached
 // goroutine that waits indefinitely for inUse to reach zero before
-// closing the rateLimiter and dataBudget tickers. The forced-teardown
+// releasing the rateLimiter lifecycle and stopping the dataBudget ticker. The forced-teardown
 // path is gone: a hung user can no longer end up calling Scan on a
-// scanner whose ticker resources have been torn down underneath it.
+// scanner whose background resources have been torn down underneath it.
 //
 // Trade-off: a permanently-hung scan retains the prior scanner forever.
 // That is preferable to fail-open enforcement; the proxy's reload-mu
@@ -699,7 +699,7 @@ func (s *Scanner) Close() {
 	case <-drainDone:
 		s.tearDown()
 	case <-time.After(scannerCloseDrainTimeout):
-		// Drain timed out. Do NOT tear down ticker resources mid-scan;
+		// Drain timed out. Do NOT tear down background resources mid-scan;
 		// hand off to a detached goroutine that waits indefinitely for
 		// the hung user to release. Drained() flips only once that
 		// goroutine actually completes teardown.
@@ -710,8 +710,8 @@ func (s *Scanner) Close() {
 	}
 }
 
-// tearDown stops the cleanup goroutines on rateLimiter and dataBudget and
-// flips drained=true. Safe to call exactly once per Close transition.
+// tearDown releases scanner lifecycle state and flips drained=true. Safe to
+// call exactly once per Close transition.
 func (s *Scanner) tearDown() {
 	if s.rateLimiter != nil {
 		s.rateLimiter.Close()

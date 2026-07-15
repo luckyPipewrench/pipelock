@@ -1257,4 +1257,71 @@ func TestLoadDashboardTokenFile(t *testing.T) {
 			t.Fatalf("want empty error, got %v", err)
 		}
 	})
+	t.Run("world readable", func(t *testing.T) {
+		path := writeDashTokenFile(t)
+		worldReadableMode := os.FileMode(0o600 | 0o044)
+		if err := os.Chmod(path, worldReadableMode); err != nil {
+			t.Fatalf("Chmod: %v", err)
+		}
+		if _, err := loadDashboardTokenFile("--auth-token-file", path); err == nil ||
+			!strings.Contains(err.Error(), "permissions") {
+			t.Fatalf("want permissions error, got %v", err)
+		}
+	})
+	t.Run("group readable secret volume", func(t *testing.T) {
+		path := writeDashTokenFile(t)
+		groupReadableMode := os.FileMode(0o600 | 0o040)
+		if err := os.Chmod(path, groupReadableMode); err != nil {
+			t.Fatalf("Chmod: %v", err)
+		}
+		if got, err := loadDashboardTokenFile("--auth-token-file", path); err != nil || got != dashTestToken {
+			t.Fatalf("got (%q, %v), want (%q, nil)", got, err, dashTestToken)
+		}
+	})
+	t.Run("in-directory secret volume symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		versionDir := filepath.Join(dir, "..2026_07_14")
+		if err := os.Mkdir(versionDir, 0o750); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		target := filepath.Join(versionDir, "token")
+		secretVolumeMode := os.FileMode(0o400 | 0o040)
+		if err := os.WriteFile(target, []byte(dashTestToken), secretVolumeMode); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		link := filepath.Join(dir, "token-link")
+		if err := os.Symlink(filepath.Join(filepath.Base(versionDir), "token"), link); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		if got, err := loadDashboardTokenFile("--auth-token-file", link); err != nil || got != dashTestToken {
+			t.Fatalf("managed secret-volume symlink rejected: got %q, err %v", got, err)
+		}
+	})
+	t.Run("escaping symlink", func(t *testing.T) {
+		target := writeDashTokenFile(t)
+		link := filepath.Join(t.TempDir(), "token-link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		if _, err := loadDashboardTokenFile("--auth-token-file", link); err == nil ||
+			!strings.Contains(err.Error(), "escapes") {
+			t.Fatalf("want escaping symlink error, got %v", err)
+		}
+	})
+	t.Run("non regular", func(t *testing.T) {
+		if _, err := loadDashboardTokenFile("--auth-token-file", t.TempDir()); err == nil ||
+			!strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("want regular-file error, got %v", err)
+		}
+	})
+	t.Run("oversized", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "oversized.token")
+		if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, dashboardTokenMaxBytes+1), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if _, err := loadDashboardTokenFile("--auth-token-file", path); err == nil ||
+			!strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("want size error, got %v", err)
+		}
+	})
 }

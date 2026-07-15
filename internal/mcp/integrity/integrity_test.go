@@ -4,6 +4,7 @@
 package integrity
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -112,6 +113,40 @@ func TestLoadManifest_InvalidJSON(t *testing.T) {
 	_, err := LoadManifest(path)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestLoadManifest_RejectsDuplicateAndOversizedJSON(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "duplicate entries", body: []byte(`{"version":1,"entries":{},"entries":{"/tmp/tool":"deadbeef"}}`), want: "duplicate object key"},
+		// A run of "x" is not JSON, so the decoder rejects it with or without the
+		// size ceiling and the case proves nothing. Pad valid JSON with
+		// insignificant whitespace so exceeding maxManifestFileSize is the only
+		// reason this can fail, and match the message so a decode error cannot
+		// masquerade as a size rejection.
+		{
+			name: "oversized valid prefix",
+			body: append([]byte(`{"version":1,"entries":{}}`), bytes.Repeat([]byte(" "), maxManifestFileSize)...),
+			want: "exceeds",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "manifest.json")
+			if err := os.WriteFile(path, tt.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadManifest(path)
+			if err == nil {
+				t.Fatal("LoadManifest accepted hostile manifest")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadManifest error = %v, want it to contain %q", err, tt.want)
+			}
+		})
 	}
 }
 

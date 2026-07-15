@@ -6,10 +6,11 @@ package replaycapture
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
 
@@ -21,11 +22,17 @@ import (
 // binary test proves the same packet verifies from a clean machine.
 func VerifyPacketDir(dir, keyHex string) error {
 	packetPath := filepath.Join(dir, "packet.json")
-	data, err := os.ReadFile(filepath.Clean(packetPath))
+	data, err := recorder.ReadEvidenceFileBounded(filepath.Clean(packetPath), recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
 		return fmt.Errorf("reading packet.json: %w", err)
 	}
 	var pkt auditpacket.Packet
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return fmt.Errorf("parsing packet.json: %w", err)
+	}
+	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
+		return fmt.Errorf("parsing packet.json: %w", err)
+	}
 	if err := json.Unmarshal(data, &pkt); err != nil {
 		return fmt.Errorf("parsing packet.json: %w", err)
 	}
@@ -40,7 +47,7 @@ func VerifyPacketDir(dir, keyHex string) error {
 		return fmt.Errorf("evidence path %q is not local to the packet directory", pkt.Artifacts.Evidence)
 	}
 	evidencePath := filepath.Join(dir, pkt.Artifacts.Evidence)
-	evidence, err := os.ReadFile(filepath.Clean(evidencePath))
+	evidence, err := recorder.ReadEvidenceFileBounded(filepath.Clean(evidencePath), recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
 		return fmt.Errorf("extracting evidence: %w", err)
 	}
@@ -52,7 +59,19 @@ func VerifyPacketDir(dir, keyHex string) error {
 // bytes. It is the browser/WASM verifier path: no directory or filesystem is
 // required.
 func VerifyPacketBytes(packetJSON, evidenceJSONL []byte, keyHex string) error {
+	if int64(len(packetJSON)) > recorder.MaxEvidenceReadFileBytes {
+		return fmt.Errorf("packet.json exceeds %d bytes", recorder.MaxEvidenceReadFileBytes)
+	}
+	if int64(len(evidenceJSONL)) > recorder.MaxEvidenceReadFileBytes {
+		return fmt.Errorf("evidence.jsonl exceeds %d bytes", recorder.MaxEvidenceReadFileBytes)
+	}
 	var pkt auditpacket.Packet
+	if err := jsonscan.RejectDuplicateKeys(packetJSON); err != nil {
+		return fmt.Errorf("parsing packet.json: %w", err)
+	}
+	if err := jsonscan.RejectUnsafeNumbers(packetJSON); err != nil {
+		return fmt.Errorf("parsing packet.json: %w", err)
+	}
 	if err := json.Unmarshal(packetJSON, &pkt); err != nil {
 		return fmt.Errorf("parsing packet.json: %w", err)
 	}
@@ -83,6 +102,9 @@ func validateInMemoryPacketArtifacts(pkt auditpacket.Packet) error {
 }
 
 func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) error {
+	if err := jsonscan.RejectUnsafeNumbers(evidenceJSONL); err != nil {
+		return fmt.Errorf("extracting evidence: %w", err)
+	}
 	receipts, err := receipt.ExtractReceiptsBytes(evidenceJSONL)
 	if err != nil {
 		return fmt.Errorf("extracting evidence: %w", err)

@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -169,11 +170,11 @@ func loadMaterial(layout Layout) (*materialSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load CA: %w", err)
 	}
-	serverCert, err := tls.LoadX509KeyPair(layout.ConductorServerCertPath, layout.ConductorServerKeyPath)
+	serverCert, err := tlsfile.LoadX509KeyPair(layout.ConductorServerCertPath, layout.ConductorServerKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load conductor server cert: %w", err)
 	}
-	clientCert, err := tls.LoadX509KeyPair(layout.FollowerClientCertPath, layout.FollowerClientKeyPath)
+	clientCert, err := tlsfile.LoadX509KeyPair(layout.FollowerClientCertPath, layout.FollowerClientKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load follower client cert: %w", err)
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
@@ -1162,6 +1163,9 @@ func cfAccessGuard(next http.Handler, verifier *cfAccessVerifier) http.Handler {
 }
 
 func (v *cfAccessVerifier) verify(ctx context.Context, raw string) error {
+	if err := rejectAmbiguousCompactJWT(raw); err != nil {
+		return fmt.Errorf("parse access jwt: %w", err)
+	}
 	tok, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
 		return fmt.Errorf("parse access jwt: %w", err)
@@ -1180,6 +1184,23 @@ func (v *cfAccessVerifier) verify(ctx context.Context, raw string) error {
 		Time:        v.now(),
 	}, 30*time.Second); err != nil {
 		return fmt.Errorf("validate access jwt claims: %w", err)
+	}
+	return nil
+}
+
+func rejectAmbiguousCompactJWT(raw string) error {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return errors.New("compact JWT must have three segments")
+	}
+	for i, segment := range parts[:2] {
+		decoded, err := base64.RawURLEncoding.DecodeString(segment)
+		if err != nil {
+			return fmt.Errorf("decode JWT segment %d: %w", i, err)
+		}
+		if err := jsonscan.RejectDuplicateKeys(decoded); err != nil {
+			return fmt.Errorf("ambiguous JWT segment %d: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -1237,8 +1258,19 @@ func (v *cfAccessVerifier) fetchKeys(ctx context.Context) (*jose.JSONWebKeySet, 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch Cloudflare Access JWKS: status %d", resp.StatusCode)
 	}
+	const maxJWKSBytes = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read Cloudflare Access JWKS: %w", err)
+	}
+	if len(raw) > maxJWKSBytes {
+		return nil, fmt.Errorf("cloudflare Access JWKS exceeds %d bytes", maxJWKSBytes)
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return nil, fmt.Errorf("decode Cloudflare Access JWKS: %w", err)
+	}
 	var keys jose.JSONWebKeySet
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&keys); err != nil {
+	if err := json.Unmarshal(raw, &keys); err != nil {
 		return nil, fmt.Errorf("decode Cloudflare Access JWKS: %w", err)
 	}
 	if len(keys.Keys) == 0 {

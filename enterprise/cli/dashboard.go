@@ -25,8 +25,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -36,6 +38,7 @@ const (
 	// kill_switch.api_listen).
 	dashboardDefaultListen  = "127.0.0.1:8896"
 	dashboardShutdownPeriod = 5 * time.Second
+	dashboardTokenMaxBytes  = 64 * 1024
 )
 
 // DashboardCmd returns the `pipelock dashboard` command tree (Pro/Enterprise).
@@ -426,7 +429,7 @@ func dashboardTLSConfig(opts dashboardServeOptions) (*tls.Config, error) {
 	if opts.tlsCert == "" {
 		return nil, nil
 	}
-	cert, err := tls.LoadX509KeyPair(filepath.Clean(opts.tlsCert), filepath.Clean(opts.tlsKey))
+	cert, err := tlsfile.LoadX509KeyPair(opts.tlsCert, opts.tlsKey)
 	if err != nil {
 		return nil, fmt.Errorf("load dashboard TLS certificate: %w", err)
 	}
@@ -661,7 +664,7 @@ func loadDashboardTokenFile(flag, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("%s is required", flag)
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: dashboardTokenMaxBytes, DisallowedPerms: 0o027})
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", flag, err)
 	}

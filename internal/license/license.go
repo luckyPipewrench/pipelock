@@ -106,7 +106,7 @@ func verifyAt(token string, publicKey ed25519.PublicKey, now time.Time) (License
 	}
 
 	var l License
-	if err := json.Unmarshal(payload, &l); err != nil {
+	if err := decodeLicenseJSON(payload, &l); err != nil {
 		return License{}, fmt.Errorf("parse license payload: %w", err)
 	}
 
@@ -146,7 +146,7 @@ func DecodeUnverified(token string) (License, error) {
 		return License{}, err
 	}
 	var l License
-	if err := json.Unmarshal(payload, &l); err != nil {
+	if err := decodeLicenseJSON(payload, &l); err != nil {
 		return License{}, fmt.Errorf("parse license payload: %w", err)
 	}
 	return l, nil

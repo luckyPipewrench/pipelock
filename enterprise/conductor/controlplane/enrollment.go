@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -38,6 +40,7 @@ const (
 	// a large or malicious enrollment store cannot force an unbounded response.
 	defaultFollowerListLimit = 100
 	maxFollowerListLimit     = 1000
+	maxEnrollmentStoreBytes  = 64 << 20
 )
 
 var (
@@ -775,16 +778,12 @@ func normalizeRuntimeStatusLimit(limit int) int {
 }
 
 func (s *FileEnrollmentStore) load() error {
-	data, err := os.ReadFile(s.path)
+	state, err := loadEnrollmentState(s.path, maxEnrollmentStoreBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read enrollment store: %w", err)
-	}
-	var state enrollmentDiskState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("decode enrollment store: %w", err)
+		return err
 	}
 	if state.Tokens == nil {
 		state.Tokens = make(map[string]enrollmentTokenRecord)
@@ -799,12 +798,27 @@ func (s *FileEnrollmentStore) load() error {
 	return nil
 }
 
+func loadEnrollmentState(path string, maxBytes int64) (enrollmentDiskState, error) {
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxBytes, DisallowedPerms: 0o037})
+	if err != nil {
+		return enrollmentDiskState{}, fmt.Errorf("read enrollment store: %w", err)
+	}
+	var state enrollmentDiskState
+	if err := contract.DecodeStrictJSON(data, &state); err != nil {
+		return enrollmentDiskState{}, fmt.Errorf("decode enrollment store: %w", err)
+	}
+	return state, nil
+}
+
 func (s *FileEnrollmentStore) saveLocked() error {
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode enrollment store: %w", err)
 	}
 	data = append(data, '\n')
+	if len(data) > maxEnrollmentStoreBytes {
+		return fmt.Errorf("enrollment store exceeds %d bytes", maxEnrollmentStoreBytes)
+	}
 	if err := durableWrite(s.path, data); err != nil {
 		return fmt.Errorf("write enrollment store: %w", err)
 	}

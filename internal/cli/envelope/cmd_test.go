@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -390,8 +391,8 @@ func TestDefaultTrustStoreSaveWithinStateHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat default store dir: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o750 {
-		t.Fatalf("default store dir mode = %v, want 0o750", got)
+	if got := info.Mode().Perm(); got&0o027 != 0 || got&0o700 != 0o700 {
+		t.Fatalf("default store dir mode = %v, want private owner-accessible directory", got)
 	}
 }
 
@@ -593,6 +594,44 @@ func TestDirectoryFetchRejectsUnsafeRedirect(t *testing.T) {
 	_, err := fetchDirectoryKey(t.Context(), server.URL+domenvelope.WellKnownPath)
 	if err == nil || !strings.Contains(err.Error(), "directory URL must be https or loopback http") {
 		t.Fatalf("redirect error = %v, want unsafe redirect rejection", err)
+	}
+}
+
+func TestDirectoryFetchRejectsDuplicateAndOversizedResponses(t *testing.T) {
+	_, _, pubHex := testTrustKey(t)
+	// Field names must match envelope.DirectoryKey's json tags ("keyid"/"alg").
+	// With the wrong names every key decodes with an empty Algorithm, so
+	// fetchDirectoryKey fails the "no pipelock Ed25519 key" check for any input
+	// and the assertions below pass whether or not the guards exist.
+	key := fmt.Sprintf(`{"keyid":"test","alg":"%s","public_key":"%s","use":"%s"}`, directoryAlg, pubHex, directoryUse)
+
+	// Control: the same key without tampering must be ACCEPTED. This is what
+	// makes the negative cases below meaningful rather than vacuous.
+	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[` + key + `]}`))
+	}))
+	got, err := fetchDirectoryKey(t.Context(), okServer.URL)
+	okServer.Close()
+	if err != nil {
+		t.Fatalf("control: fetchDirectoryKey rejected a well-formed directory: %v", err)
+	}
+	if got != pubHex {
+		t.Fatalf("control: got key %q, want %q", got, pubHex)
+	}
+
+	for name, body := range map[string]string{
+		"duplicate keys member": `{"keys":[` + key + `],"keys":[` + key + `]}`,
+		"oversized response":    `{"keys":[` + key + `]}` + strings.Repeat(" ", maxDirectoryResponseBytes) + `X`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			if _, err := fetchDirectoryKey(t.Context(), server.URL); err == nil {
+				t.Fatal("fetchDirectoryKey accepted ambiguous or oversized response")
+			}
+		})
 	}
 }
 

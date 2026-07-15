@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -402,8 +403,18 @@ func readEmergencyState(path string) (emergencyStateRecord, error) {
 		return emergencyStateRecord{}, fmt.Errorf("conductor emergency store open state: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxEmergencyStateJSONSize+1))
+	if err != nil {
+		return emergencyStateRecord{}, fmt.Errorf("conductor emergency store read state: %w", err)
+	}
+	if len(data) > maxEmergencyStateJSONSize {
+		return emergencyStateRecord{}, fmt.Errorf("%w: emergency state too large", conductor.ErrPayloadTooLarge)
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return emergencyStateRecord{}, fmt.Errorf("%w: decode emergency state: %w", ErrInvalidEmergencyRecord, err)
+	}
 	var record emergencyStateRecord
-	decoder := json.NewDecoder(io.LimitReader(file, maxEmergencyStateJSONSize+1))
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
 		return emergencyStateRecord{}, fmt.Errorf("%w: decode emergency state: %w", ErrInvalidEmergencyRecord, err)

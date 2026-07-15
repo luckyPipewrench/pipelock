@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { Receipt } from "./types.js";
 import { normalizeEvidenceReceipt, unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 import { validateV1Receipt } from "./strict.js";
-import { parseJSON, rejectDuplicateKeys, resolveSignerKey } from "./util.js";
+import { decodeUTF8, parseJSON, rejectDuplicateKeys, resolveSignerKey } from "./util.js";
 
 export interface ReceiptReport {
   path: string;
@@ -25,11 +25,17 @@ export async function runReceipt(
 ): Promise<ReceiptReport> {
   const clean = path.normalize(pathname);
   const keyHex = resolveSignerKey(signerKey);
-  const text = readFileSync(clean, "utf8");
   const report: ReceiptReport = {
     path: clean,
     valid: false,
   };
+  let text: string;
+  try {
+    text = decodeUTF8(readFileSync(clean), "receipt json");
+  } catch (err) {
+    report.error = (err as Error).message;
+    return report;
+  }
   try {
     // Reject duplicate object keys before parsing or populating report
     // metadata. Last-wins parsing would otherwise let attacker-controlled

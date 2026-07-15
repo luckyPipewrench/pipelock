@@ -650,6 +650,16 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("oversized source", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "evidence-agent-0.jsonl")
+		if err := os.WriteFile(path, bytes.Repeat([]byte{' '}, 8<<20+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !strings.Contains(err.Error(), "read limit exceeded") {
+			t.Fatalf("oversized source error = %v, want bounded-read rejection", err)
+		}
+	})
+
 	t.Run("unordered entries and multiple sources", func(t *testing.T) {
 		dir := t.TempDir()
 		first := filepath.Join(dir, "evidence-agent-a-0.jsonl")

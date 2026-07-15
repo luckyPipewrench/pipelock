@@ -3,7 +3,14 @@ import type { AuditPacket, AuditPacketReport, ChainResult, Receipt, Totals } fro
 import { computeTotals, verifyChain } from "./chain.js";
 import { extractReceipts } from "./recorder.js";
 import { validateAuditPacket } from "./schema.js";
-import { resolveArtifactPath, resolvePacketPath, resolveSignerKey, sha256Hex } from "./util.js";
+import {
+  decodeUTF8,
+  rejectDuplicateKeys,
+  resolveArtifactPath,
+  resolvePacketPath,
+  resolveSignerKey,
+  sha256Hex,
+} from "./util.js";
 
 export interface AuditPacketOptions {
   signerKey: string;
@@ -122,7 +129,13 @@ export async function verifyAuditPacket(
 
   let packet: AuditPacket;
   try {
-    packet = JSON.parse(rawPacket.toString("utf8")) as AuditPacket;
+    const packetText = decodeUTF8(rawPacket, "packet json");
+    // Reject duplicate object keys before parsing, matching the Go verifier and
+    // the receipt path. Last-wins parsing would otherwise let this verifier
+    // accept a packet the Go verifier rejects, resolving the duplicate to the
+    // attacker's second value.
+    rejectDuplicateKeys(packetText);
+    packet = JSON.parse(packetText) as AuditPacket;
   } catch (err) {
     pushError(report, `packet json: ${(err as Error).message}`);
     return report;

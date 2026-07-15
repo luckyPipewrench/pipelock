@@ -186,7 +186,7 @@ func ParseAndVerifyIntermediate(data []byte, rootPub ed25519.PublicKey, now time
 		return Intermediate{}, fmt.Errorf("%w: exceeds maximum size", ErrIntermediateMalformed)
 	}
 	var wire intermediateWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeLicenseJSON(data, &wire); err != nil {
 		return Intermediate{}, fmt.Errorf("%w: %w", ErrIntermediateMalformed, err)
 	}
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(wire.Payload)
@@ -207,7 +207,7 @@ func ExtractIntermediatePublicKey(data []byte) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("%w: exceeds maximum size", ErrIntermediateMalformed)
 	}
 	var wire intermediateWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeLicenseJSON(data, &wire); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrIntermediateMalformed, err)
 	}
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(wire.Payload)
@@ -215,7 +215,7 @@ func ExtractIntermediatePublicKey(data []byte) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("%w: decode payload: %w", ErrIntermediateMalformed, err)
 	}
 	var payload IntermediatePayload
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := decodeLicenseJSON(payloadBytes, &payload); err != nil {
 		return nil, fmt.Errorf("%w: parse payload: %w", ErrIntermediateMalformed, err)
 	}
 	return validateIntermediatePayload(payload)
@@ -257,7 +257,7 @@ func verifyIntermediateBytes(payloadBytes []byte, signatureB64 string, rootPub e
 		return Intermediate{}, ErrIntermediateSignature
 	}
 	var payload IntermediatePayload
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := decodeLicenseJSON(payloadBytes, &payload); err != nil {
 		return Intermediate{}, fmt.Errorf("%w: parse payload: %w", ErrIntermediateMalformed, err)
 	}
 	pub, err := validateIntermediatePayload(payload)

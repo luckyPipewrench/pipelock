@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	domenvelope "github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
@@ -31,6 +32,7 @@ const (
 	directoryUse               = "pipelock-mediation"
 	maxVerifyStdinBodyBytes    = 16 << 20
 	maxVerifyRawRequestBytes   = maxVerifyStdinBodyBytes + (1 << 20)
+	maxDirectoryResponseBytes  = 1 << 20
 	runtimeTrustAdvisoryFormat = "note: runtime proxy verification reads trusted keys from pipelock.yaml mediation_envelope.verify_inbound.trust_list; this trust store is for operator workflows until runtime trust-store loading is added.\n"
 )
 
@@ -303,8 +305,15 @@ func fetchDirectoryKey(ctx context.Context, sourceURL string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("directory returned HTTP %d", resp.StatusCode)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxDirectoryResponseBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading directory: %w", err)
+	}
+	if len(raw) > maxDirectoryResponseBytes {
+		return "", fmt.Errorf("directory exceeds %d bytes", maxDirectoryResponseBytes)
+	}
 	var dir domenvelope.Directory
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&dir); err != nil {
+	if err := contract.DecodeStrictJSON(raw, &dir); err != nil {
 		return "", fmt.Errorf("decoding directory: %w", err)
 	}
 	for _, key := range dir.Keys {

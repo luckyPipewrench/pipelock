@@ -224,6 +224,19 @@ func TestDashboardOIDCAuthenticate_VerifiesTokenAndMapsPermissions(t *testing.T)
 	}
 }
 
+func TestDecodeDashboardJWTJSONRejectsDuplicateMembers(t *testing.T) {
+	tests := []string{
+		`{"alg":"none","alg":"RS256"}`,
+		`{"claims":{"iss":"first","iss":"second"}}`,
+	}
+	for _, input := range tests {
+		var decoded any
+		if err := decodeDashboardJWTJSON([]byte(input), &decoded); err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("decodeDashboardJWTJSON(%s) error = %v, want duplicate rejection", input, err)
+		}
+	}
+}
+
 func TestDashboardOIDCAuthenticate_FailsClosed(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)

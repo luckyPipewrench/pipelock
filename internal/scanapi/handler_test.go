@@ -153,6 +153,23 @@ func TestHandler_UnknownFields(t *testing.T) {
 	}
 }
 
+func TestHandler_DuplicateMembersRejectedRecursively(t *testing.T) {
+	h := newTestHandler(t)
+	for _, body := range []string{
+		`{"kind":"url","kind":"dlp","input":{"text":"safe"}}`,
+		`{"kind":"dlp","input":{"text":"first","text":"second"}}`,
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400", body, w.Code)
+		}
+	}
+}
+
 func TestHandler_DLPClean(t *testing.T) {
 	h := newTestHandler(t)
 	body := `{"kind":"dlp","input":{"text":"hello world"}}`

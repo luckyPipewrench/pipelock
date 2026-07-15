@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/x509"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -259,6 +260,37 @@ func TestProofCaller_QueryBatchRejectsMissing(t *testing.T) {
 	ok, err := h.caller.queryBatch(context.Background(), h.identity, h.material.auditorToken, "audit-does-not-exist")
 	if err == nil && ok {
 		t.Fatal("queryBatch should not report a missing batch as present")
+	}
+}
+
+func TestProofCaller_QueryBatchRejectsSubstringAndDuplicateJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "substring", body: `{"batches":[{"batch_id":"prefix-proof-target-suffix"}],"count":1}`},
+		{name: "duplicate count", body: `{"batches":[],"count":0,"count":1}`},
+		{name: "count mismatch", body: `{"batches":[],"count":1}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			caller := &proofCaller{client: server.Client(), baseURL: server.URL}
+			ok, err := caller.queryBatch(context.Background(), controlplane.FollowerIdentity{}, "token", "proof-target")
+			if err == nil || ok {
+				t.Fatalf("queryBatch() = (%v, %v), want false and error", ok, err)
+			}
+		})
+	}
+}
+
+func TestReadProofResponseRejectsOversize(t *testing.T) {
+	if _, err := readProofResponse(strings.NewReader("12345"), 4); err == nil {
+		t.Fatal("readProofResponse accepted oversized response")
 	}
 }
 

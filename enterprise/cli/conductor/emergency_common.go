@@ -25,6 +25,7 @@ import (
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -254,7 +255,7 @@ func buildEmergencyClient(opts emergencyClientOptions) (*http.Client, error) {
 	case strings.TrimSpace(opts.serverCA) == "":
 		return nil, errors.New("--server-ca is required")
 	}
-	cert, err := tls.LoadX509KeyPair(filepath.Clean(opts.tlsCert), filepath.Clean(opts.tlsKey))
+	cert, err := tlsfile.LoadX509KeyPair(opts.tlsCert, opts.tlsKey)
 	if err != nil {
 		return nil, fmt.Errorf("load client certificate: %w", err)
 	}
@@ -289,18 +290,7 @@ func buildEmergencyClient(opts emergencyClientOptions) (*http.Client, error) {
 // name is inlined (not a named const): a credential-keyword const value trips
 // gosec G101, and the repo's goconst threshold (30) makes a few repeats fine.
 func loadBearerToken(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("%s is required", "--admin-token-file")
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", "--admin-token-file", err)
-	}
-	tok := strings.TrimSpace(string(data))
-	if tok == "" {
-		return "", fmt.Errorf("%s is empty", "--admin-token-file")
-	}
-	return tok, nil
+	return readSecureTokenFile("--admin-token-file", path)
 }
 
 // postEmergencyJSON sends a signed control-plane request and decodes the JSON

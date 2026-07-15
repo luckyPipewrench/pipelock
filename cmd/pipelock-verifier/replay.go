@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -119,7 +118,7 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 	}
 
 	// Step 1: load + verify the receipt.
-	receiptData, err := os.ReadFile(filepath.Clean(receiptPath))
+	receiptData, err := readVerifierFile(receiptPath)
 	if err != nil {
 		report.Error = fmt.Sprintf("read receipt: %v", err)
 		emitReplayReport(stdout, stderr, report, opts.jsonOutput)

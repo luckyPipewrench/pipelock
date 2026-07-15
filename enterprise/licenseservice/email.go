@@ -181,9 +181,12 @@ func (e *EmailSender) send(ctx context.Context, to, subject, html string) (strin
 
 	// Cap response body to prevent memory exhaustion.
 	const maxResponseBody = 64 * 1024 // 64 KiB: generous for Resend response
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
 		return "", fmt.Errorf("read email response: %w", err)
+	}
+	if len(body) > maxResponseBody {
+		return "", fmt.Errorf("read email response: exceeds %d bytes", maxResponseBody)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -191,7 +194,7 @@ func (e *EmailSender) send(ctx context.Context, to, subject, html string) (strin
 	}
 
 	var result resendResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := decodeVendorJSON(body, &result); err != nil {
 		return "", fmt.Errorf("parse email response: %w", err)
 	}
 

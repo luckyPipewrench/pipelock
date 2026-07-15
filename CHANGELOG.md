@@ -9,9 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Authenticated MCP HTTP listeners.** Standalone and combined MCP reverse
+  proxy modes can require a reloadable bearer-token file and an exact browser
+  Origin allowlist. Listener credentials are consumed before request scanning
+  and are never forwarded upstream; browser preflight and MCP protocol-version
+  headers are handled explicitly.
+
 ### Changed
 
+- **Non-loopback MCP HTTP listeners now fail closed by default.** Operators must
+  configure a listener token file or explicitly acknowledge unauthenticated
+  operation behind a verified network boundary. Helm MCP sidecars enforce the
+  same choice and reject Service/listener port mismatches.
+
 ### Fixed
+
+- **MCP HTTP listener boundary hardening.** Tokenless loopback listeners reject
+  DNS-rebound or wrong-port Host authorities; listener credentials are scrubbed
+  from both authentication headers, including duplicate-value attacks; and
+  operator-pinned Authorization, MCP protocol-version, and A2A service headers
+  cannot be replaced by client input. Duplicate or malformed session,
+  protocol-version, and A2A service headers fail closed before scanning or
+  upstream forwarding.
+
+- **Cross-language evidence parsing now rejects ambiguous JSON.** Go,
+  TypeScript, and Rust verifier paths reject duplicate keys, invalid UTF-8, and
+  numbers outside JavaScript's exact integer range before trusting receipts or
+  audit packets.
 
 ### Removed
 

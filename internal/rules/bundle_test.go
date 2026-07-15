@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
@@ -380,6 +382,35 @@ func TestValidate_InvalidRegex(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "regex") {
 		t.Errorf("error %q should mention 'regex'", err.Error())
+	}
+}
+
+func TestValidate_DLPValidator(t *testing.T) {
+	base := Rule{
+		ID: "dlp-account", Type: RuleTypeDLP, Status: StatusStable,
+		Name: "Account", Description: "Detects an account number",
+		Severity: severityHigh, Confidence: confidenceHigh,
+		Pattern: RulePattern{Regex: `\d{9}`, Validator: config.ValidatorABA},
+	}
+	for _, tc := range []struct {
+		name      string
+		rule      Rule
+		wantError string
+	}{
+		{name: "valid ABA", rule: base},
+		{name: "unknown", rule: func() Rule { r := base; r.Pattern.Validator = "unknown"; return r }(), wantError: "invalid validator"},
+		{name: "non-DLP", rule: func() Rule { r := base; r.Type = RuleTypeInjection; return r }(), wantError: "only valid for dlp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := &Bundle{FormatVersion: 1, Name: testValidBundleName, Version: testValidVersion, Author: testValidAuthor, Description: testValidDesc, Rules: []Rule{tc.rule}}
+			err := bundle.Validate()
+			if tc.wantError == "" && err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
+				t.Fatalf("error = %v, want %q", err, tc.wantError)
+			}
+		})
 	}
 }
 

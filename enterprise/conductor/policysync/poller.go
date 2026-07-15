@@ -27,6 +27,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
 
@@ -212,6 +214,9 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&bundle); err != nil {
 		return fmt.Errorf("%w: decode: %w", ErrPollResponse, err)
+	}
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return fmt.Errorf("%w: ambiguous response: %w", ErrPollResponse, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: trailing JSON document", ErrPollResponse)

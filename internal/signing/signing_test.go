@@ -870,6 +870,46 @@ func TestLoadPrivateKeyFile_SymlinkToLoosePermsRejected(t *testing.T) {
 	}
 }
 
+func TestLoadPrivateKeyFile_RejectsEscapingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege")
+	}
+	_, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	root := t.TempDir()
+	secretDir := filepath.Join(root, "secret")
+	mountDir := filepath.Join(root, "mount")
+	if err := os.MkdirAll(secretDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll secret: %v", err)
+	}
+	if err := os.MkdirAll(mountDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll mount: %v", err)
+	}
+	target := filepath.Join(secretDir, "private.key")
+	if err := SavePrivateKey(priv, target); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	link := filepath.Join(mountDir, "private.key")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, err := LoadPrivateKeyFile(link); err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("escaping symlink error = %v", err)
+	}
+}
+
+func TestLoadPrivateKeyFile_RejectsOversize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private.key")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), privateKeyFileMaxBytes+1), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := LoadPrivateKeyFile(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversize private key error = %v", err)
+	}
+}
+
 func TestLoadPrivateKeyFile_NonexistentFile(t *testing.T) {
 	_, err := LoadPrivateKeyFile("/nonexistent/key.pem")
 	if err == nil {

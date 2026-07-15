@@ -264,6 +264,11 @@ func TestParseWebhookEvent(t *testing.T) {
 			body:    []byte(`{not valid json`),
 			wantErr: true,
 		},
+		{
+			name:    "duplicate type",
+			body:    []byte(`{"type":"subscription.created","type":"order.paid","data":{"id":"sub_123"}}`),
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -307,6 +312,12 @@ func TestExtractSubscriptionID(t *testing.T) {
 		{
 			name:    "invalid json",
 			data:    json.RawMessage(`{broken`),
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "duplicate id",
+			data:    json.RawMessage(`{"id":"sub_good","id":"sub_bad"}`),
 			want:    "",
 			wantErr: true,
 		},
@@ -363,6 +374,18 @@ func TestPolarClient_GetSubscription(t *testing.T) {
 			name:       "invalid json response",
 			statusCode: http.StatusOK,
 			body:       `{not valid json`,
+			wantErr:    true,
+		},
+		{
+			name:       "duplicate security field",
+			statusCode: http.StatusOK,
+			body:       `{"id":"sub_test123","status":"active","status":"canceled"}`,
+			wantErr:    true,
+		},
+		{
+			name:       "oversized valid prefix",
+			statusCode: http.StatusOK,
+			body:       `{"id":"sub_test123","status":"active"}` + strings.Repeat(" ", (1<<20)+1),
 			wantErr:    true,
 		},
 	}

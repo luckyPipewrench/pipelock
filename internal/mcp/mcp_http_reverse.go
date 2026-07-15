@@ -6,12 +6,16 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -24,6 +28,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
+)
+
+const listenerProxyAuthorization = "Proxy-Authorization"
+
+const (
+	listenerAuthorization      = "Authorization"
+	listenerProtocolVersion    = "Mcp-Protocol-Version"
+	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version"
 )
 
 // newReverseUpstreamTransport builds the HTTP transport the MCP HTTP listener
@@ -71,6 +83,21 @@ func RunHTTPListenerProxy(
 	opts MCPProxyOpts,
 ) error {
 	safeLogW := &syncWriter{w: logW}
+	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
+	if err := validateListenerBearerToken(opts.ListenerBearerToken); err != nil {
+		return err
+	}
+	if err := validateListenerUpstreamHeaders(opts.UpstreamHeaders); err != nil {
+		return err
+	}
+	allowedOrigins, err := normalizeListenerOrigins(opts.ListenerAllowedOrigins)
+	if err != nil {
+		return err
+	}
+	opts.ListenerAllowedOrigins = allowedOrigins
+	if !listenerIsLoopback(ln) && opts.ListenerBearerToken == "" && !opts.ListenerAllowUnauthenticated {
+		return fmt.Errorf("non-loopback MCP listener requires bearer authentication or explicit unauthenticated acknowledgement")
+	}
 	if opts.ContractServer == "" {
 		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
 	}
@@ -211,18 +238,101 @@ func RunHTTPListenerProxy(
 		},
 	}
 
+	loopbackListener := listenerIsLoopback(ln)
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if loopbackListener && opts.ListenerBearerToken == "" && opts.ListenerBearerTokenFn == nil &&
+			!listenerLoopbackHostAllowed(r.Host, ln.Addr()) {
+			http.Error(w, "host not allowed", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !listenerOriginAllowed(r.Header.Values("Origin"), opts.ListenerAllowedOrigins) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			setListenerCORSHeaders(w.Header(), origin)
+			if r.Method == http.MethodOptions {
+				if !listenerCORSPreflightAllowed(r) {
+					http.Error(w, "CORS preflight not allowed", http.StatusForbidden)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		listenerToken, tokenErr := listenerBearerTokenForRequest(opts)
+		if tokenErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener credential refresh failed: %v\n", tokenErr)
+			http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		// A loopback bind is not an authentication boundary when a browser can
+		// reach it through a DNS-rebound hostname. Tokenless loopback listeners
+		// accept only literal loopback authorities or localhost on the actual
+		// bound port. Authenticated listeners may use deployment-specific names.
+		if loopbackListener && listenerToken == "" && !listenerLoopbackHostAllowed(r.Host, ln.Addr()) {
+			http.Error(w, "host not allowed", http.StatusForbidden)
+			return
+		}
+		consumedAuthHeader, authorized := listenerBearerAuthHeader(r.Header, listenerToken)
+		if listenerToken != "" && !authorized {
+			w.Header().Set("Proxy-Authenticate", `Bearer realm="pipelock-mcp"`)
+			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+			return
+		}
+		// The listener credential is an access-control secret, not agent data
+		// destined for the upstream. Remove it before header DLP and forwarding:
+		// otherwise credential-shaped listener tokens block their own valid
+		// requests, and Authorization-based browser auth could leak upstream.
+		//
+		// Deleting only the header that happened to authenticate is not enough. A
+		// client may present the listener token in BOTH headers; the consumed one
+		// is dropped and the other is forwarded upstream, leaking the credential.
+		// Proxy-Authorization is hop-by-hop (RFC 7235 s4.4) and must never be
+		// forwarded regardless of the auth outcome, so drop it unconditionally,
+		// and scrub Authorization whenever it also carries the listener token.
+		r.Header.Del(listenerProxyAuthorization)
+		if consumedAuthHeader != "" {
+			r.Header.Del(consumedAuthHeader)
+		}
+		if listenerToken != "" && listenerBearerAnyValueMatches(r.Header.Values(listenerAuthorization), listenerToken) {
+			r.Header.Del(listenerAuthorization)
+		}
+		// Normalize policy-bearing service headers to the operator-pinned values
+		// before validation and A2A scanning. Otherwise an ignored client override
+		// can still trigger a rejection or be scanned while a different value is
+		// forwarded, making the security log describe bytes the upstream never saw.
+		applyOperatorPinnedServiceHeaders(r.Header, opts.UpstreamHeaders)
 		if r.Method != http.MethodPost {
 			info := blockreason.MustNew(blockreason.BadRequest, blockreason.SeverityInfo, blockreason.RetryNone)
 			info.SetHeaders(w.Header())
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !validMCPSessionID(r.Header.Values("Mcp-Session-Id")) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid Mcp-Session-Id header")))
+			return
+		}
+		if !validMCPProtocolVersion(r.Header.Values(listenerProtocolVersion)) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid Mcp-Protocol-Version header")))
+			return
+		}
+		if !validA2AVersion(r.Header.Values("A2A-Version")) ||
+			!validA2AExtensions(r.Header.Values("A2A-Extensions")) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid or duplicate A2A service header")))
 			return
 		}
 
@@ -504,25 +614,30 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
+		for name, values := range opts.UpstreamHeaders {
+			for _, value := range values {
+				upReq.Header.Add(name, value)
+			}
+		}
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("Accept", "application/json, text/event-stream")
 
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			upReq.Header.Set("Authorization", auth)
-		}
+		// Client-supplied values fill in only where the operator did not pin the
+		// header via --header/--header-file. A bare Set here would let any client
+		// clobber an operator-pinned value: a downgraded Mcp-Protocol-Version or a
+		// swapped A2A-Extensions URI set. Route every forwarded client header
+		// through this helper so the next one added inherits the precedence rule.
+		forwardIfOperatorUnset(upReq, r, "Authorization")
 		if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
 			upReq.Header.Set("Mcp-Session-Id", sid)
 		}
+		forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
 
 		// Forward A2A service parameter headers to upstream.
 		// A2A-Extensions carries negotiated extension URIs (already scanned above).
 		// A2A-Version carries protocol version (informational, no scanning needed).
-		if ext := r.Header.Get("A2A-Extensions"); ext != "" {
-			upReq.Header.Set("A2A-Extensions", ext)
-		}
-		if ver := r.Header.Get("A2A-Version"); ver != "" {
-			upReq.Header.Set("A2A-Version", ver)
-		}
+		forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
+		forwardIfOperatorUnset(upReq, r, "A2A-Version")
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
@@ -697,4 +812,308 @@ func RunHTTPListenerProxy(
 		return fmt.Errorf("HTTP listener: %w", err)
 	}
 	return nil
+}
+
+func listenerIsLoopback(ln net.Listener) bool {
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	return ok && tcpAddr.IP.IsLoopback()
+}
+
+func listenerOriginAllowed(values []string, allowed []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 {
+		return false
+	}
+	origin := values[0]
+	normalized, err := normalizeListenerOrigin(origin)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range allowed {
+		if subtle.ConstantTimeCompare([]byte(normalized), []byte(candidate)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeListenerOrigins(origins []string) ([]string, error) {
+	normalized := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		value, err := normalizeListenerOrigin(origin)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MCP listener allowed origin %q: %w", origin, err)
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
+}
+
+func normalizeListenerOrigin(origin string) (string, error) {
+	if strings.TrimSpace(origin) != origin || origin == "" || origin == "null" {
+		return "", fmt.Errorf("must be a serialized origin")
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("must contain only scheme and host")
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host), nil
+}
+
+func validateListenerBearerToken(token string) error {
+	if token == "" {
+		return nil
+	}
+	if len(token) > 8192 {
+		return fmt.Errorf("MCP listener bearer token exceeds 8192 bytes")
+	}
+	for i := range len(token) {
+		if token[i] < 0x21 || token[i] > 0x7e {
+			return fmt.Errorf("MCP listener bearer token must contain visible ASCII without spaces")
+		}
+	}
+	return nil
+}
+
+// forwardIfOperatorUnset copies a client header to the upstream request only
+// when the operator has not already pinned it through --header/--header-file.
+// Operator-configured values are policy; a client must never override them.
+func forwardIfOperatorUnset(upReq, r *http.Request, name string) {
+	if v := r.Header.Get(name); v != "" && upReq.Header.Get(name) == "" {
+		upReq.Header.Set(name, v)
+	}
+}
+
+func applyOperatorPinnedServiceHeaders(request, operator http.Header) {
+	for _, name := range []string{listenerProtocolVersion, "A2A-Extensions", "A2A-Version"} {
+		values := operator.Values(name)
+		if len(values) == 0 {
+			continue
+		}
+		request.Del(name)
+		for _, value := range values {
+			request.Add(name, value)
+		}
+	}
+}
+
+func listenerBearerAuthorized(values []string, token string) bool {
+	if len(values) != 1 {
+		return false
+	}
+	scheme, presented, ok := strings.Cut(values[0], " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || presented == "" || strings.TrimSpace(presented) != presented {
+		return false
+	}
+	want := sha256.Sum256([]byte(token))
+	got := sha256.Sum256([]byte(presented))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
+}
+
+func listenerBearerAnyValueMatches(values []string, token string) bool {
+	for _, value := range values {
+		if listenerBearerAuthorized([]string{value}, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func listenerBearerAuthHeader(headers http.Header, token string) (string, bool) {
+	if token == "" {
+		return "", true
+	}
+	if proxyValues := headers.Values(listenerProxyAuthorization); len(proxyValues) > 0 {
+		return listenerProxyAuthorization, listenerBearerAuthorized(proxyValues, token)
+	}
+	return listenerAuthorization, listenerBearerAuthorized(headers.Values(listenerAuthorization), token)
+}
+
+func listenerBearerTokenForRequest(opts MCPProxyOpts) (string, error) {
+	if opts.ListenerBearerTokenFn == nil {
+		return opts.ListenerBearerToken, nil
+	}
+	token, err := opts.ListenerBearerTokenFn()
+	if err != nil {
+		return "", err
+	}
+	if err := validateListenerBearerToken(token); err != nil {
+		return "", err
+	}
+	if token == "" {
+		return "", fmt.Errorf("refreshed MCP listener bearer token is empty")
+	}
+	return token, nil
+}
+
+func setListenerCORSHeaders(headers http.Header, origin string) {
+	headers.Set("Access-Control-Allow-Origin", origin)
+	headers.Set("Access-Control-Allow-Methods", http.MethodPost)
+	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
+	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+	headers.Add("Vary", "Origin")
+	headers.Add("Vary", "Access-Control-Request-Method")
+	headers.Add("Vary", "Access-Control-Request-Headers")
+}
+
+func listenerCORSPreflightAllowed(r *http.Request) bool {
+	if r.Header.Get("Access-Control-Request-Method") != http.MethodPost {
+		return false
+	}
+	allowed := map[string]struct{}{}
+	for name := range strings.SplitSeq(listenerCORSAllowedHeaders, ",") {
+		allowed[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	for value := range strings.SplitSeq(r.Header.Get("Access-Control-Request-Headers"), ",") {
+		name := strings.ToLower(strings.TrimSpace(value))
+		if name == "" {
+			continue
+		}
+		if _, ok := allowed[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validMCPSessionID(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 {
+		return false
+	}
+	sessionID := values[0]
+	if len(sessionID) == 0 || len(sessionID) > 256 {
+		return false
+	}
+	for i := range len(sessionID) {
+		if sessionID[i] < 0x21 || sessionID[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validMCPProtocolVersion(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 || len(values[0]) != len("2006-01-02") {
+		return false
+	}
+	parsed, err := time.Parse("2006-01-02", values[0])
+	return err == nil && parsed.Format("2006-01-02") == values[0]
+}
+
+func validVisibleSingletonHeader(values []string, maxBytes int) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 || len(values[0]) == 0 || len(values[0]) > maxBytes {
+		return false
+	}
+	for i := range len(values[0]) {
+		if values[0][i] < 0x20 || values[0][i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validA2AVersion(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if !validVisibleSingletonHeader(values, 64) {
+		return false
+	}
+	major, minor, ok := strings.Cut(values[0], ".")
+	if !ok || major == "" || minor == "" || strings.Contains(minor, ".") {
+		return false
+	}
+	for _, component := range []string{major, minor} {
+		for i := range len(component) {
+			if component[i] < '0' || component[i] > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validA2AExtensions(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if !validVisibleSingletonHeader(values, 8192) {
+		return false
+	}
+	for extension := range strings.SplitSeq(values[0], ",") {
+		extension = strings.TrimSpace(extension)
+		if extension == "" {
+			return false
+		}
+		u, err := url.Parse(extension)
+		if err != nil || !u.IsAbs() || u.Scheme == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func validateListenerUpstreamHeaders(headers http.Header) error {
+	for _, name := range []string{listenerAuthorization, listenerProtocolVersion, "A2A-Extensions", "A2A-Version"} {
+		if len(headers.Values(name)) > 1 {
+			return fmt.Errorf("operator upstream header %s must appear at most once", name)
+		}
+	}
+	if !validMCPProtocolVersion(headers.Values(listenerProtocolVersion)) {
+		return fmt.Errorf("operator upstream %s must be a valid YYYY-MM-DD protocol version", listenerProtocolVersion)
+	}
+	if values := headers.Values(listenerAuthorization); len(values) > 0 && !validVisibleSingletonHeader(values, 8192) {
+		return fmt.Errorf("operator upstream %s must be a non-empty visible ASCII value of at most 8192 bytes", listenerAuthorization)
+	}
+	if !validA2AVersion(headers.Values("A2A-Version")) {
+		return fmt.Errorf("operator upstream A2A-Version must use Major.Minor format")
+	}
+	if !validA2AExtensions(headers.Values("A2A-Extensions")) {
+		return fmt.Errorf("operator upstream A2A-Extensions must be a comma-separated absolute URI list")
+	}
+	return nil
+}
+
+func canonicalizeListenerUpstreamHeaders(headers http.Header) http.Header {
+	canonical := make(http.Header, len(headers))
+	for name, values := range headers {
+		for _, value := range values {
+			canonical.Add(name, value)
+		}
+	}
+	return canonical
+}
+
+func listenerLoopbackHostAllowed(authority string, addr net.Addr) bool {
+	tcpAddr, ok := addr.(*net.TCPAddr)
+	if !ok || authority == "" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		// A Host without a port is only accurate for a listener on the default
+		// HTTP port. Non-default browser URLs always serialize the port.
+		if tcpAddr.Port != 80 || strings.Contains(authority, ":") {
+			return false
+		}
+		host = authority
+	} else if port != fmt.Sprintf("%d", tcpAddr.Port) {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt, RecorderEntry } from "./types.js";
 import { validateV1Receipt } from "./strict.js";
-import { InvalidError, RuntimeError, parseJSON, rejectDuplicateKeys } from "./util.js";
+import { InvalidError, RuntimeError, decodeUTF8, parseJSON, rejectDuplicateKeys } from "./util.js";
 
 const actionReceiptType = "action_receipt";
 const evidenceReceiptType = "evidence_receipt";
@@ -21,7 +21,7 @@ const skippableEntryTypes = new Set([
 ]);
 
 export function readEntries(file: string): RecorderEntry[] {
-  const text = readFileSync(path.normalize(file), "utf8");
+  const text = decodeUTF8(readFileSync(path.normalize(file)), "evidence jsonl");
   const entries: RecorderEntry[] = [];
   const lines = text.split(/\r?\n/u);
   for (let i = 0; i < lines.length; i++) {

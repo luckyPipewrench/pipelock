@@ -13,6 +13,7 @@ from pipelock_aarp_verify.number import (
     IJSONNumber,
     StrictParseError,
     UnsafeNumberError,
+    enforce_cross_language_number_range,
     enforce_safe_numbers,
     parse_json_strict,
     parse_seq,
@@ -103,6 +104,18 @@ def test_enforce_ignores_strings_bools_null():
     enforce_safe_numbers({"s": "x", "b": True, "n": None})
 
 
+def test_cross_language_range_rejects_large_and_nonfinite_magnitudes():
+    for literal in ("9007199254740993", "-9007199254740993", "1e999"):
+        tree = parse_json_strict(f'{{"x": {literal}}}')
+        with pytest.raises(UnsafeNumberError):
+            enforce_cross_language_number_range(tree)
+
+
+def test_cross_language_range_preserves_receipt_float_compatibility():
+    tree = parse_json_strict('{"fraction": 1.5, "exponent": 1e3, "zero": -0}')
+    enforce_cross_language_number_range(tree)
+
+
 def test_validate_hex256_ok():
     validate_hex256("a" * 64)
 
@@ -162,3 +175,22 @@ def test_ijson_number_equality_and_repr():
     assert IJSONNumber("1") != IJSONNumber("2")
     assert IJSONNumber("1") != "1"
     assert "IJSONNumber" in repr(IJSONNumber("1"))
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_parse_json_strict_rejects_non_standard_json_literals(literal):
+    # CPython routes these through parse_constant, so they never become an
+    # IJSONNumber and the range guards, which walk for IJSONNumber, skip them.
+    # Go, Rust, and TypeScript reject them outright; accepting them here would
+    # be the cross-language differential the range guards exist to close.
+    with pytest.raises(StrictParseError):
+        parse_json_strict(f'{{"chain_seq": {literal}}}')
+
+
+def test_parse_json_strict_still_accepts_ordinary_numbers():
+    tree = parse_json_strict('{"a": 42, "b": 1.5, "c": 9007199254740991}')
+    assert [tree[k].literal for k in ("a", "b", "c")] == [
+        "42",
+        "1.5",
+        "9007199254740991",
+    ]

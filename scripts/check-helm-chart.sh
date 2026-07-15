@@ -59,6 +59,19 @@ expect_template_error "fleetSink.replicaCount must be 1 when fleetSink.persisten
   -f "$chart/examples/values-enterprise-devfleet.yaml" \
   --set fleetSink.replicaCount=2
 
+expect_template_error "/mcp/allowUnauthenticated" \
+  --set mcp.allowUnauthenticated=not-a-boolean
+
+expect_template_error "/mcp/allowedOrigins" \
+  --set mcp.allowedOrigins=not-an-array
+
+expect_template_error "mcp.listen must end with the same port configured by service.mcpPort" \
+  --set mcp.enabled=true \
+  --set mcp.upstream=http://mcp.vendor.example \
+  --set mcp.listen=0.0.0.0:9999 \
+  --set mcp.allowUnauthenticated=true \
+  --set networkPolicy.enabled=true
+
 grep -q -- "- run" "$render_dir/default.yaml"
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"

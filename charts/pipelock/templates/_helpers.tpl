@@ -110,6 +110,23 @@ Validate mode and security-critical enterprise chart requirements.
 {{- if and (eq $mode "fleetSink") .Values.podMonitor.enabled -}}
 {{- fail "podMonitor.enabled is not supported in fleetSink mode because the standalone sink does not expose a Prometheus metrics endpoint" -}}
 {{- end -}}
+{{- if and .Values.mcp.enabled .Values.mcp.upstream -}}
+{{- $mcpPortText := regexFind "[0-9]+$" (default "" .Values.mcp.listen) -}}
+{{- $mcpHost := regexReplaceAll ":[0-9]+$" (default "" .Values.mcp.listen) "" -}}
+{{- $mcpLoopback := or (hasPrefix "127." $mcpHost) (eq $mcpHost "[::1]") -}}
+{{- if or (eq $mcpPortText "") (ne (int $mcpPortText) (int .Values.service.mcpPort)) -}}
+{{- fail "mcp.listen must end with the same port configured by service.mcpPort so the Service and container listener cannot diverge" -}}
+{{- end -}}
+{{- if and .Values.mcp.authTokenFile .Values.mcp.allowUnauthenticated -}}
+{{- fail "set only one of mcp.authTokenFile or mcp.allowUnauthenticated, not both" -}}
+{{- end -}}
+{{- if and (not $mcpLoopback) (not .Values.mcp.authTokenFile) (not .Values.mcp.allowUnauthenticated) -}}
+{{- fail "mcp.listen is non-loopback and reachable through the Service: set mcp.authTokenFile to a mounted bearer-token file, or set mcp.allowUnauthenticated=true (only sound with networkPolicy.enabled=true)" -}}
+{{- end -}}
+{{- if and .Values.mcp.allowUnauthenticated (not .Values.networkPolicy.enabled) -}}
+{{- fail "mcp.allowUnauthenticated=true requires networkPolicy.enabled=true; without it the MCP listener accepts unauthenticated calls from any pod in the cluster" -}}
+{{- end -}}
+{{- end -}}
 {{- if and (eq $mode "conductor") .Values.conductor.persistence.enabled (gt (int .Values.conductor.replicaCount) 1) (has "ReadWriteOnce" (default list .Values.conductor.persistence.accessModes)) -}}
 {{- fail "conductor.replicaCount must be 1 when conductor.persistence.accessModes includes ReadWriteOnce" -}}
 {{- end -}}

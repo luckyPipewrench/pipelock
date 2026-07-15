@@ -31,13 +31,12 @@ type EntropyTracker struct {
 	windowSecs  int     // sliding window duration in seconds
 	maxSessions int     // global session count cap (LRU eviction)
 	sessions    map[string]*entropySession
-	stopCleanup chan struct{}
-	closeOnce   sync.Once
+	lastCleanup time.Time
 }
 
 // NewEntropyTracker creates an entropy tracker with the given budget (bits per
-// window) and window duration (seconds). A cleanup goroutine prunes expired
-// entries at an interval derived from the window size (at most 60s, at least 1s).
+// window) and window duration (seconds). Expired entries are pruned
+// opportunistically at an interval derived from the window size.
 func NewEntropyTracker(budgetBits float64, windowSecs int) *EntropyTracker {
 	// Guard non-positive inputs to avoid silent misbehavior outside
 	// config-validated paths (e.g. tests with hand-built trackers).
@@ -52,9 +51,8 @@ func NewEntropyTracker(budgetBits float64, windowSecs int) *EntropyTracker {
 		windowSecs:  windowSecs,
 		maxSessions: 10000, // match FragmentBuffer and proxy maxCEESessions
 		sessions:    make(map[string]*entropySession),
-		stopCleanup: make(chan struct{}),
+		lastCleanup: time.Now(),
 	}
-	go et.cleanupLoop()
 	return et
 }
 
@@ -72,6 +70,7 @@ func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
 
 	et.mu.Lock()
 	defer et.mu.Unlock()
+	et.maybeCleanupLocked(time.Now())
 
 	sess, exists := et.sessions[sessionKey]
 	if !exists {
@@ -109,6 +108,7 @@ func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
 func (et *EntropyTracker) CurrentUsage(sessionKey string) float64 {
 	et.mu.Lock()
 	defer et.mu.Unlock()
+	et.maybeCleanupLocked(time.Now())
 
 	return et.currentUsageLocked(sessionKey)
 }
@@ -118,6 +118,7 @@ func (et *EntropyTracker) CurrentUsage(sessionKey string) float64 {
 func (et *EntropyTracker) Remaining(sessionKey string) float64 {
 	et.mu.Lock()
 	defer et.mu.Unlock()
+	et.maybeCleanupLocked(time.Now())
 
 	usage := et.currentUsageLocked(sessionKey)
 	remaining := et.budget - usage
@@ -132,6 +133,7 @@ func (et *EntropyTracker) Remaining(sessionKey string) float64 {
 func (et *EntropyTracker) BudgetExceeded(sessionKey string) bool {
 	et.mu.Lock()
 	defer et.mu.Unlock()
+	et.maybeCleanupLocked(time.Now())
 
 	return et.currentUsageLocked(sessionKey) >= et.budget
 }
@@ -148,10 +150,9 @@ func (et *EntropyTracker) Delete(key string) {
 	delete(et.sessions, key)
 }
 
-// Close stops the cleanup goroutine. Safe to call multiple times.
-func (et *EntropyTracker) Close() {
-	et.closeOnce.Do(func() { close(et.stopCleanup) })
-}
+// Close is retained for scanner lifecycle symmetry. EntropyTracker owns no
+// background resources, so closing it is intentionally a no-op.
+func (et *EntropyTracker) Close() {}
 
 // currentUsageLocked sums entropy bits within the sliding window.
 // Caller must hold et.mu.
@@ -218,10 +219,9 @@ func (et *EntropyTracker) evictLRUSession() {
 	}
 }
 
-// cleanupLoop periodically prunes expired entries from all sessions.
-// Interval is derived from the configured window: at most 60s, at least 1s,
-// so short windows get prompt memory reclamation.
-func (et *EntropyTracker) cleanupLoop() {
+// cleanupInterval is derived from the configured window: at most 60s and at
+// least 1s, so short windows get prompt reclamation on the next operation.
+func (et *EntropyTracker) cleanupInterval() time.Duration {
 	interval := time.Duration(et.windowSecs) * time.Second
 	if interval > 60*time.Second {
 		interval = 60 * time.Second
@@ -229,24 +229,25 @@ func (et *EntropyTracker) cleanupLoop() {
 	if interval < 1*time.Second {
 		interval = 1 * time.Second
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			et.cleanup()
-		case <-et.stopCleanup:
-			return
-		}
-	}
+	return interval
 }
 
 func (et *EntropyTracker) cleanup() {
 	et.mu.Lock()
 	defer et.mu.Unlock()
+	et.cleanupLocked(time.Now())
+}
 
-	cutoff := time.Now().Add(-time.Duration(et.windowSecs) * time.Second)
+func (et *EntropyTracker) maybeCleanupLocked(now time.Time) {
+	if now.Sub(et.lastCleanup) < et.cleanupInterval() {
+		return
+	}
+	et.cleanupLocked(now)
+	et.lastCleanup = now
+}
+
+func (et *EntropyTracker) cleanupLocked(now time.Time) {
+	cutoff := now.Add(-time.Duration(et.windowSecs) * time.Second)
 	for key, sess := range et.sessions {
 		valid := sess.entries[:0]
 		for _, e := range sess.entries {

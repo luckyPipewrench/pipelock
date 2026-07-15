@@ -198,6 +198,55 @@ func TestRunSignOnlyRejectsKeyMismatch(t *testing.T) {
 	}
 }
 
+func TestRunSignOnlyRejectsAmbiguousManifest(t *testing.T) {
+	dist := t.TempDir()
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x46}, ed25519.SeedSize))
+	manifest := releasetrust.Manifest{
+		Schema:             "pipelock-release-v1",
+		Repo:               "github.com/luckyPipewrench/pipelock",
+		Tag:                "v2.8.0",
+		Commit:             strings.Repeat("d", 40),
+		CreatedUTC:         "2026-06-19T12:00:00Z",
+		ChecksumFileSHA256: strings.Repeat("0", 64),
+		Assets: []releasetrust.Asset{{
+			Name: "pipelock_2.8.0_linux_amd64.tar.gz", SHA256: strings.Repeat("1", 64),
+			GOOS: "linux", GOARCH: "amd64", Binary: "pipelock",
+		}},
+		SignerKeyID: publicKeyHex(priv.Public().(ed25519.PublicKey)),
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"schema":"pipelock-release-v1"`), []byte(`"schema":"wrong","schema":"pipelock-release-v1"`), 1)
+	manifestPath := filepath.Join(dist, releasetrust.ManifestFile)
+	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = run([]string{"-sign-only", "-manifest", manifestPath, "-private-key-hex", hex.EncodeToString(priv)}, ioDiscard{}, ioDiscard{})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("run -sign-only ambiguous error = %v, want duplicate rejection", err)
+	}
+}
+
+func TestReadReleaseMetadataRejectsOversize(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "release-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := file.Name()
+	if err := file.Truncate(maxReleaseMetadataBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readReleaseMetadata(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("readReleaseMetadata error = %v, want oversize rejection", err)
+	}
+}
+
 func TestParsePrivateKeyForms(t *testing.T) {
 	seed := bytes.Repeat([]byte{0x55}, ed25519.SeedSize)
 	privFromSeed := ed25519.NewKeyFromSeed(seed)

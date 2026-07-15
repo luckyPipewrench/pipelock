@@ -273,13 +273,15 @@ func TestKeystoreDirectoryPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Agent directory should be 0700.
+	// MkdirAll requests 0750, but a stricter process umask may safely remove
+	// group bits. Require owner access and reject group-write/world access.
 	info, err := os.Stat(ks.agentDir("test"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != dirPermission {
-		t.Errorf("agent dir permissions = %04o, want %04o", info.Mode().Perm(), dirPermission)
+	perm := info.Mode().Perm()
+	if perm&0o700 != 0o700 || perm&0o027 != 0 {
+		t.Errorf("agent dir permissions = %04o, want owner rwx with no group-write/world access", perm)
 	}
 }
 

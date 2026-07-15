@@ -977,7 +977,7 @@ func TestReadRecordStrictDecodeFailures(t *testing.T) {
 				}
 				return append(data, []byte("\n{}")...)
 			},
-			want: "trailing JSON document",
+			want: "trailing tokens",
 		},
 		{
 			name: "unsupported_version",
@@ -1041,6 +1041,26 @@ func TestReadRecordRejectsOversizeRecordBeforeDecode(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCorruptRecord) {
 		t.Fatalf("readRecord() = %v, want ErrCorruptRecord", err)
+	}
+}
+
+func TestReadRecordRejectsDuplicateKeys(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := validDiskRecord(signedTestBatch(t, "batch-duplicate-record", priv))
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"version":1`, `"version":1,"version":1`, 1))
+	path := filepath.Join(t.TempDir(), "record.json")
+	if err := os.WriteFile(path, data, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecord(path, conductor.MaxAuditPayloadBytes); err == nil || !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord() = %v, want duplicate-key ErrCorruptRecord", err)
 	}
 }
 

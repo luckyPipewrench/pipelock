@@ -23,20 +23,18 @@
 package svidsidecar
 
 import (
-	"bytes"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/aarp"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/svid"
 )
+
+const maxSidecarBytes = 4 << 20
 
 // Sidecar is the on-disk --svid input. Its JSON shape is the cross-language
 // contract every reference verifier reads: evidence decodes straight into
@@ -74,15 +72,8 @@ type BundleGen struct {
 // object and then hits EOF.
 func Parse(data []byte) (*Sidecar, error) {
 	var sc Sidecar
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&sc); err != nil {
+	if err := contract.DecodeStrictJSON(data, &sc); err != nil {
 		return nil, fmt.Errorf("parse svid file: %w", err)
-	}
-	// Decode reads only the first value, so a second value (or junk) would
-	// otherwise pass silently. A clean file hits EOF on the next Decode.
-	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-		return nil, errors.New("parse svid file: unexpected trailing data after JSON value")
 	}
 	return &sc, nil
 }
@@ -146,7 +137,7 @@ func (s *Sidecar) Options() (aarp.SVIDVerifyOptions, error) {
 // evidence and the verifier-pinned options. It is the CLI's one-call entry; the
 // conformance corpus uses Parse + Options directly on in-memory sidecars.
 func Load(path string) (*aarp.SVIDEvidence, aarp.SVIDVerifyOptions, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxSidecarBytes})
 	if err != nil {
 		return nil, aarp.SVIDVerifyOptions{}, fmt.Errorf("read svid file: %w", err)
 	}

@@ -119,6 +119,29 @@ func TestForwardScanned_DoesNotSeedA2AMethodsFromToolsList(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_DuplicateToolsListCannotSeedBaselineBeforeBlock(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	baseline := tools.NewToolBaseline()
+	toolCfg := &tools.ToolScanConfig{Baseline: baseline, Action: config.ActionBlock}
+	resp := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"safe"}]},"result":{"tools":[{"name":"attacker_tool","description":"safe"}]}}`
+	var out bytes.Buffer
+	if _, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(resp+"\n")),
+		transport.NewStdioWriter(&out),
+		io.Discard,
+		nil,
+		MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.HasBaseline() {
+		t.Fatal("ambiguous blocked tools/list response seeded tool baseline")
+	}
+	if !strings.Contains(out.String(), "unambiguous JSON") {
+		t.Fatalf("response was not blocked at preflight: %s", out.String())
+	}
+}
+
 // cleanResponse is a JSON-RPC 2.0 response with safe text content.
 const cleanResponse = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"The weather is sunny today."}]}}`
 

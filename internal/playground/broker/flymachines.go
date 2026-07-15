@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // defaultFlyBaseURL is the Fly Machines API base. Override via FlyMachines.BaseURL
@@ -164,6 +166,9 @@ func (f *FlyMachines) CreateMachine(ctx context.Context, spec MachineSpec) (*Mac
 	if err != nil {
 		return nil, err
 	}
+	if err := jsonscan.RejectDuplicateKeys(respBody); err != nil {
+		return nil, fmt.Errorf("fly: parse create response: %w", err)
+	}
 	var m flyMachineResponse
 	if uerr := json.Unmarshal(respBody, &m); uerr != nil {
 		return nil, fmt.Errorf("fly: parse create response: %w", uerr)
@@ -292,6 +297,9 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 }
 
 func parseFlyListMachines(respBody []byte) ([]flyListMachine, string, error) {
+	if err := jsonscan.RejectDuplicateKeys(respBody); err != nil {
+		return nil, "", fmt.Errorf("fly: parse list machines response: %w", err)
+	}
 	var raw []flyListMachine
 	if err := json.Unmarshal(respBody, &raw); err == nil {
 		return raw, "", nil
@@ -369,9 +377,12 @@ func (f *FlyMachines) do(ctx context.Context, method, path string, query url.Val
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, flyMaxBodyBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, flyMaxBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("fly: read %s %s response: %w", method, path, err)
+	}
+	if len(respBody) > flyMaxBodyBytes {
+		return nil, fmt.Errorf("fly: %s %s response exceeds %d bytes", method, path, flyMaxBodyBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &apiError{

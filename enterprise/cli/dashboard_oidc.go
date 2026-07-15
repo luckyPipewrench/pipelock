@@ -5,6 +5,7 @@
 package entcli
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rsa"
@@ -133,6 +134,9 @@ func parseDashboardOIDCRoleMap(value string) (dashboardOIDCRoleMap, error) {
 	}
 	if len(value) > dashboardOIDCMaxDocumentSize {
 		return dashboardOIDCRoleMap{}, errors.New("--oidc-role-map exceeds the 1 MiB limit")
+	}
+	if err := rejectDashboardDuplicateJSONMembers([]byte(value)); err != nil {
+		return dashboardOIDCRoleMap{}, fmt.Errorf("parse --oidc-role-map: %w", err)
 	}
 	var document dashboardOIDCRoleMapDocument
 	decoder := json.NewDecoder(strings.NewReader(value))
@@ -325,7 +329,17 @@ func fetchDashboardOIDCJSON(ctx context.Context, client *http.Client, endpoint s
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("%s returned HTTP %d", endpoint, resp.StatusCode)
 	}
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, dashboardOIDCMaxDocumentSize+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, dashboardOIDCMaxDocumentSize+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > dashboardOIDCMaxDocumentSize {
+		return fmt.Errorf("%s response exceeds the 1 MiB limit", endpoint)
+	}
+	if err := rejectDashboardDuplicateJSONMembers(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
@@ -557,12 +571,91 @@ func (a *dashboardOIDCAuthenticator) authenticate(r *http.Request) (*dashboardOI
 }
 
 func decodeDashboardJWTJSON(data []byte, dst any) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	if err := rejectDashboardDuplicateJSONMembers(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
 	return requireJSONEOF(decoder)
+}
+
+func rejectDashboardDuplicateJSONMembers(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := walkDashboardJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func walkDashboardJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			member, memberErr := decoder.Token()
+			if memberErr != nil {
+				return memberErr
+			}
+			name, ok := member.(string)
+			if !ok {
+				return errors.New("JSON object member name is not a string")
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return fmt.Errorf("duplicate JSON member %q", name)
+			}
+			seen[name] = struct{}{}
+			if err := walkDashboardJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+		if closing != json.Delim('}') {
+			return errors.New("malformed JSON object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkDashboardJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+		if closing != json.Delim(']') {
+			return errors.New("malformed JSON array")
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
+	return nil
 }
 
 func dashboardBearerToken(r *http.Request) (string, error) {

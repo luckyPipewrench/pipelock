@@ -5,6 +5,7 @@
 package conductor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -112,11 +115,18 @@ func (c *CapabilitiesClient) Handshake(ctx context.Context) (NegotiatedCapabilit
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: status=%d body=%q", ErrCapabilityNegotiation, resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return NegotiatedCapabilities{}, fmt.Errorf("%w: read response: %w", ErrCapabilityNegotiation, err)
+	}
 	var capabilities CapabilitiesResponse
-	decoder := json.NewDecoder(body)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&capabilities); err != nil {
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: decode response: %w", ErrCapabilityNegotiation, err)
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return NegotiatedCapabilities{}, fmt.Errorf("%w: ambiguous response: %w", ErrCapabilityNegotiation, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: trailing JSON document", ErrCapabilityNegotiation)

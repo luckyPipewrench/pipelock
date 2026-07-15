@@ -648,8 +648,8 @@ func TestExecuteQuarantineWrite_CreatesDir(t *testing.T) {
 	if !info.IsDir() {
 		t.Error("expected directory")
 	}
-	if info.Mode().Perm() != 0o750 {
-		t.Errorf("expected 0o750 perms, got %o", info.Mode().Perm())
+	if info.Mode().Perm()&0o027 != 0 {
+		t.Errorf("quarantine directory permissions are too broad: %o", info.Mode().Perm())
 	}
 }
 

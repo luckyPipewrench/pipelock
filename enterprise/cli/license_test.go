@@ -929,8 +929,9 @@ func TestLicenseInstall_CreatesDirectory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat parent dir: %v", err)
 		}
-		if info.Mode().Perm() != 0o750 {
-			t.Errorf("parent dir mode = %04o, want 0750", info.Mode().Perm())
+		mode := info.Mode().Perm()
+		if mode&0o700 != 0o700 || mode&0o027 != 0 {
+			t.Errorf("parent dir mode = %04o, want owner rwx with no group-write or world permissions", mode)
 		}
 	}
 }

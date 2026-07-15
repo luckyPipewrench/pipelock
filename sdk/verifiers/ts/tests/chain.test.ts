@@ -398,6 +398,17 @@ test("JSONL recorder extraction rejects duplicate keys inside receipt detail", (
   }
 });
 
+test("JSONL recorder extraction rejects invalid UTF-8", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "invalid-utf8.jsonl");
+  try {
+    writeFileSync(file, Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]));
+    assert.throws(() => extractReceipts(file), /invalid UTF-8/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 async function buildEvidenceChain(count: number): Promise<Receipt[]> {
   const base = JSON.parse(readFileSync(validPlainV2, "utf8")) as Receipt;
   const receipts: Receipt[] = [];

@@ -15,13 +15,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 // Default timeout for admin API calls. Admin API operations are
 // lightweight (no bodies beyond tier transitions) so a short timeout
 // keeps the CLI snappy when the server is unreachable.
-const defaultClientTimeout = 10 * time.Second
+const (
+	defaultClientTimeout   = 10 * time.Second
+	maxClientResponseBytes = 1 << 20
+)
 
 // httpClientInterface is the subset of *http.Client the session client
 // actually uses. Extracted so tests can substitute an httptest round-
@@ -270,12 +274,14 @@ func (c *Client) do(ctx context.Context, method, target string, body io.Reader, 
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		if errors.Is(err, io.EOF) {
-			// Empty body on 200 is acceptable when the caller didn't
-			// request a typed value - do returns above when out is nil.
-			return fmt.Errorf("empty response body from %s %s", method, target)
-		}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxClientResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if len(raw) > maxClientResponseBytes {
+		return fmt.Errorf("response exceeds %d bytes", maxClientResponseBytes)
+	}
+	if err := contract.DecodeStrictJSON(raw, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil

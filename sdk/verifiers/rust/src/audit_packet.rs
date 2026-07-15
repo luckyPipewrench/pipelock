@@ -6,8 +6,8 @@ use crate::types::{
     Totals,
 };
 use crate::util::{
-    bool_at, parse_json_file, resolve_artifact_path, resolve_packet_path, resolve_signer_key,
-    sha256_hex, string_at, string_vec_at, u64_at, Result,
+    bool_at, parse_json_text, reject_duplicate_keys, resolve_artifact_path, resolve_packet_path,
+    resolve_signer_key, sha256_hex, string_at, string_vec_at, u64_at, Result,
 };
 use std::fs;
 
@@ -40,7 +40,25 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
         }
     }
 
-    let packet = match parse_json_file(&packet_path) {
+    let packet_text = match std::fs::read_to_string(&packet_path) {
+        Ok(text) => text,
+        Err(err) => {
+            push_error(
+                &mut report,
+                format!("packet json: read {}: {err}", packet_path.display()),
+            );
+            return Ok(report);
+        }
+    };
+    // Reject duplicate object keys before parsing, matching the Go verifier and
+    // the receipt path. Last-wins parsing would otherwise let this verifier
+    // accept a packet the Go verifier rejects, resolving the duplicate to the
+    // attacker's second value.
+    if let Err(err) = reject_duplicate_keys(&packet_text) {
+        push_error(&mut report, format!("packet json: {err}"));
+        return Ok(report);
+    }
+    let packet = match parse_json_text(&packet_text, "malformed JSON") {
         Ok(packet) => packet,
         Err(err) => {
             push_error(&mut report, format!("packet json: {err}"));

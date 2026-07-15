@@ -135,7 +135,7 @@ func ParseAndVerifyIssuanceExport(data []byte, publicKey ed25519.PublicKey) (Iss
 		return IssuanceExport{}, errors.New("issuance export exceeds maximum size")
 	}
 	var wire issuanceExportWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeLicenseJSON(data, &wire); err != nil {
 		return IssuanceExport{}, fmt.Errorf("parse issuance export: %w", err)
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(wire.Payload)
@@ -153,7 +153,7 @@ func ParseAndVerifyIssuanceExport(data []byte, publicKey ed25519.PublicKey) (Iss
 		return IssuanceExport{}, errors.New("invalid issuance export signature")
 	}
 	var claims IssuanceExportPayload
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	if err := decodeLicenseJSON(payload, &claims); err != nil {
 		return IssuanceExport{}, fmt.Errorf("parse issuance export payload: %w", err)
 	}
 	if err := validateIssuanceExportPayload(claims); err != nil {

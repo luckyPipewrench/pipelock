@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // Sentinel errors for payload dispatch and envelope validation.
@@ -44,6 +46,9 @@ var (
 func decodeStrict(raw json.RawMessage, target any) error {
 	if len(raw) == 0 || string(raw) == "null" {
 		return errors.New("empty or null payload")
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("strict decode: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()

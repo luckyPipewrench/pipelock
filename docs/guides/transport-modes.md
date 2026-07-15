@@ -149,6 +149,27 @@ Proxies a remote MCP server over HTTP with the same scanning as stdio mode.
 - **Stdio-to-HTTP bridge** (`pipelock mcp proxy --upstream URL`): Translates stdio JSON-RPC to HTTP requests against a streamable HTTP MCP server
 - **HTTP reverse proxy** (`pipelock mcp proxy --listen ADDR --upstream URL` or `pipelock run --mcp-listen ADDR --mcp-upstream URL`): Listens on an HTTP port and reverse-proxies to the upstream MCP server
 
+Non-loopback reverse-proxy listeners fail closed unless a bearer token file is
+configured. Standalone mode uses `--listener-auth-token-file`; combined mode
+uses `--mcp-auth-token-file`. Clients authenticate to Pipelock with
+`Proxy-Authorization: Bearer ...`; the independent `Authorization` header is
+preserved for the upstream. Browser clients instead use `Authorization` for
+the listener credential because browsers do not expose `Proxy-Authorization`
+to JavaScript; that consumed header is not forwarded, so configure any browser
+upstream credential separately. Browser requests carrying `Origin` are rejected by
+default and can be admitted one exact origin at a time with
+`--listener-allowed-origin` or `--mcp-allowed-origin`. The explicit
+`--listener-allow-unauthenticated` / `--mcp-allow-unauthenticated` escape hatch
+is for deployments where a verified network policy is the access boundary.
+Standalone reverse-listener mode also honors `--header` / `--header-file` for
+operator-configured upstream credentials; those values take precedence over
+client-supplied Authorization, MCP protocol-version, and A2A service headers.
+Duplicate or malformed session/protocol service headers are rejected before
+forwarding. A tokenless loopback listener additionally requires the request
+Host to be `localhost` or a literal loopback address on the listener's actual
+port, closing the browser DNS-rebinding path that a loopback bind alone leaves
+open.
+
 **Use when:** Connecting to remote MCP servers over HTTP and you want the same scanning coverage as local stdio servers.
 
 **Authenticated upstreams (`--header`):** When the upstream MCP server requires a static auth header (Bearer token, API key), pass it via `--header`:

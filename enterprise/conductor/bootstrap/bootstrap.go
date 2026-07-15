@@ -23,7 +23,9 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 const (
@@ -51,8 +53,9 @@ const (
 	auditKeyID    = "follower-audit-1"
 	recorderKeyID = "follower-recorder-1"
 
-	dirPerm  = 0o750
-	filePerm = 0o600
+	dirPerm          = 0o750
+	filePerm         = 0o600
+	manifestMaxBytes = 64 << 10
 )
 
 // Options configures a dev-fleet bootstrap. Zero-valued fields take dev
@@ -251,12 +254,12 @@ func writeManifest(layout Layout, opts Options, identity controlplane.FollowerId
 }
 
 func loadManifest(path string) (manifest, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: manifestMaxBytes, DisallowedPerms: 0o037})
 	if err != nil {
 		return manifest{}, fmt.Errorf("read bootstrap manifest: %w", err)
 	}
 	var m manifest
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := contract.DecodeStrictJSON(data, &m); err != nil {
 		return manifest{}, fmt.Errorf("decode bootstrap manifest: %w", err)
 	}
 	return m, nil

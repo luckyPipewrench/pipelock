@@ -85,3 +85,29 @@ func TestRejectDuplicateKeys_MalformedAfterStart(t *testing.T) {
 		}
 	}
 }
+
+func TestRejectCrossLanguageAmbiguity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		input []byte
+	}{
+		{name: "integer above JavaScript exact range", input: []byte(`{"count":9007199254740993}`)},
+		{name: "negative integer below JavaScript exact range", input: []byte(`{"count":-9007199254740993}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := RejectUnsafeNumbers(tc.input); err == nil {
+				t.Fatal("expected ambiguous JSON to be rejected")
+			}
+		})
+	}
+	if err := RejectUnsafeNumbers([]byte("{\"count\":1}\n{\"count\":9007199254740991}\n")); err != nil {
+		t.Fatalf("maximum cross-language-exact integer rejected: %v", err)
+	}
+	if err := RejectDuplicateKeys([]byte{'{', '"', 'x', '"', ':', '"', 0xff, '"', '}'}); err == nil {
+		t.Fatal("expected invalid UTF-8 to be rejected")
+	}
+	if err := RejectDuplicateKeys([]byte(`{"count":18446744073709551615}`)); err != nil {
+		t.Fatalf("generic duplicate scanner rejected a legitimate uint64: %v", err)
+	}
+}

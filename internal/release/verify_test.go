@@ -145,6 +145,9 @@ func TestVerifyManifestRejectsDuplicateKeysAfterSignaturePasses(t *testing.T) {
 	if _, err := VerifyManifest(data, sig, hex.EncodeToString(testPubA)); !errors.Is(err, ErrReleaseManifest) {
 		t.Fatalf("VerifyManifest duplicate key error = %v, want ErrReleaseManifest", err)
 	}
+	if _, err := ParseManifest(data); !errors.Is(err, ErrReleaseManifest) {
+		t.Fatalf("ParseManifest duplicate key error = %v, want ErrReleaseManifest", err)
+	}
 }
 
 func TestValidateManifestRejectsInvalidFields(t *testing.T) {

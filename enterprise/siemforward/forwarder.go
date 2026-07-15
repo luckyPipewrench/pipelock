@@ -40,6 +40,7 @@ const (
 	defaultTimeout       = 5 * time.Second
 	defaultRetry         = time.Second
 	defaultMaxSpoolBytes = int64(100) << 20 // 100 MiB
+	maxCursorBytes       = int64(64) << 10  // cursor JSON is normally under 1 KiB
 )
 
 var (
@@ -448,13 +449,16 @@ func loadCursor(spoolPath, cursorPath string) (cursor, error) {
 	if err != nil {
 		return cursor{}, fmt.Errorf("read siem forwarder cursor: %w", err)
 	}
-	b, err := io.ReadAll(file)
+	b, err := io.ReadAll(io.LimitReader(file, maxCursorBytes+1))
 	closeErr := file.Close()
 	if err != nil {
 		return cursor{}, fmt.Errorf("read siem forwarder cursor: %w", err)
 	}
 	if closeErr != nil {
 		return cursor{}, fmt.Errorf("close siem forwarder cursor: %w", closeErr)
+	}
+	if int64(len(b)) > maxCursorBytes {
+		return cursor{}, fmt.Errorf("siem forwarder cursor exceeds %d bytes", maxCursorBytes)
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()

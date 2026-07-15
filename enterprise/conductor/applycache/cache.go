@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 )
 
@@ -653,7 +654,17 @@ func readJSONFile(path string, maxBytes int, dst any) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(f, int64(maxBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	if err != nil {
+		return fmt.Errorf("%w: read JSON record: %w", ErrInvalidActiveRecord, err)
+	}
+	if len(data) > maxBytes {
+		return fmt.Errorf("%w: file_bytes>%d", conductor.ErrPayloadTooLarge, maxBytes)
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return fmt.Errorf("%w: decode JSON record: %w", ErrInvalidActiveRecord, err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return fmt.Errorf("%w: decode JSON record: %w", ErrInvalidActiveRecord, err)

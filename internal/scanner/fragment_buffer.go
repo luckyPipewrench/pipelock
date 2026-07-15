@@ -39,8 +39,7 @@ type FragmentBuffer struct {
 	maxSessions int // global session count cap (LRU eviction)
 	windowSecs  int // fragment retention window in seconds
 	sessions    map[string]*sessionBuffer
-	stopCleanup chan struct{}
-	closeOnce   sync.Once
+	lastCleanup time.Time
 }
 
 // NewFragmentBuffer creates a fragment buffer with the given per-session byte cap,
@@ -51,9 +50,8 @@ func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *Fragmen
 		maxSessions: maxSessions,
 		windowSecs:  windowSecs,
 		sessions:    make(map[string]*sessionBuffer),
-		stopCleanup: make(chan struct{}),
+		lastCleanup: time.Now(),
 	}
-	go fb.cleanupLoop()
 	return fb
 }
 
@@ -63,6 +61,7 @@ func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *Fragmen
 func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+	fb.maybeCleanupLocked(time.Now())
 
 	sb, exists := fb.sessions[sessionKey]
 	if !exists {
@@ -111,6 +110,7 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 // API call (the context carries the same secrets in every POST body).
 func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string, sc *Scanner) []DLPMatch {
 	fb.mu.Lock()
+	fb.maybeCleanupLocked(time.Now())
 	sb, exists := fb.sessions[sessionKey]
 	if !exists || len(sb.fragments) == 0 {
 		fb.mu.Unlock()
@@ -188,6 +188,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 func (fb *FragmentBuffer) TotalBufferBytes() int {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+	fb.maybeCleanupLocked(time.Now())
 
 	total := 0
 	for _, sb := range fb.sessions {
@@ -203,12 +204,9 @@ func (fb *FragmentBuffer) Delete(key string) {
 	delete(fb.sessions, key)
 }
 
-// Close stops the cleanup goroutine. Safe to call multiple times.
-func (fb *FragmentBuffer) Close() {
-	fb.closeOnce.Do(func() {
-		close(fb.stopCleanup)
-	})
-}
+// Close is retained for scanner lifecycle symmetry. FragmentBuffer owns no
+// background resources, so closing it is intentionally a no-op.
+func (fb *FragmentBuffer) Close() {}
 
 // concatenateFragments builds a single byte slice from non-expired session
 // fragments. Filters by windowSecs so scans never include stale data, even
@@ -270,10 +268,9 @@ func (fb *FragmentBuffer) evictLRUSession() {
 	}
 }
 
-// cleanupLoop periodically prunes expired fragments from all sessions.
-// Interval is derived from the configured window: at most 60s, at least 1s,
-// so short windows get prompt memory reclamation.
-func (fb *FragmentBuffer) cleanupLoop() {
+// cleanupInterval is derived from the configured window: at most 60s and at
+// least 1s, so short windows get prompt reclamation on the next operation.
+func (fb *FragmentBuffer) cleanupInterval() time.Duration {
 	interval := time.Duration(fb.windowSecs) * time.Second
 	if interval > 60*time.Second {
 		interval = 60 * time.Second
@@ -281,17 +278,7 @@ func (fb *FragmentBuffer) cleanupLoop() {
 	if interval < 1*time.Second {
 		interval = 1 * time.Second
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			fb.cleanup()
-		case <-fb.stopCleanup:
-			return
-		}
-	}
+	return interval
 }
 
 // cleanup removes fragments older than the retention window and prunes
@@ -299,8 +286,19 @@ func (fb *FragmentBuffer) cleanupLoop() {
 func (fb *FragmentBuffer) cleanup() {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+	fb.cleanupLocked(time.Now())
+}
 
-	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
+func (fb *FragmentBuffer) maybeCleanupLocked(now time.Time) {
+	if now.Sub(fb.lastCleanup) < fb.cleanupInterval() {
+		return
+	}
+	fb.cleanupLocked(now)
+	fb.lastCleanup = now
+}
+
+func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
+	cutoff := now.Add(-time.Duration(fb.windowSecs) * time.Second)
 
 	for key, sb := range fb.sessions {
 		// Front-pop expired fragments.

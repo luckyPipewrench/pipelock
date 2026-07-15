@@ -62,6 +62,23 @@ test("receipt command rejects duplicate keys before populating metadata", async 
   }
 });
 
+test("receipt command rejects invalid UTF-8 before parsing", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-utf8-${process.pid}.json`,
+  );
+  writeFileSync(pathname, Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]), {
+    mode: 0o600,
+  });
+  try {
+    const report = await runReceipt(pathname, "");
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /invalid UTF-8/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
 test("receipt command accepts a valid EvidenceReceipt v2 spanned proxy decision", async () => {
   const report = await runReceipt(validSpannedV2, v2GoldenPublicKey);
   assert.equal(report.valid, true, report.error);

@@ -147,6 +147,30 @@ func TestRateLimiter_CleanupKeepsRecentEntries(t *testing.T) {
 	}
 }
 
+func TestRateLimiter_RequestOpportunisticallyCleansStaleDomains(t *testing.T) {
+	rl := NewRateLimiter(10)
+
+	rl.mu.Lock()
+	rl.requests["old.example"] = []time.Time{time.Now().Add(-2 * time.Minute)}
+	rl.lastCleanup = time.Now().Add(-2 * time.Minute)
+	rl.mu.Unlock()
+
+	if !rl.CheckAndRecord("active.example") {
+		t.Fatal("active domain should be allowed")
+	}
+
+	rl.mu.Lock()
+	_, staleExists := rl.requests["old.example"]
+	activeCount := len(rl.requests["active.example"])
+	rl.mu.Unlock()
+	if staleExists {
+		t.Fatal("stale inactive domain survived opportunistic cleanup")
+	}
+	if activeCount != 1 {
+		t.Fatalf("active domain count = %d, want 1", activeCount)
+	}
+}
+
 func TestRateLimiter_CloseIsIdempotent(_ *testing.T) {
 	rl := NewRateLimiter(10)
 	rl.Close()

@@ -143,14 +143,14 @@ func (c CRL) MarshalJSON() ([]byte, error) {
 
 func (c *CRL) UnmarshalJSON(data []byte) error {
 	var wire crlWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeLicenseJSON(data, &wire); err != nil {
 		return err
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(wire.Payload)
 	if err != nil {
 		return fmt.Errorf("decode CRL payload: %w", err)
 	}
-	if err := json.Unmarshal(payload, &c.Payload); err != nil {
+	if err := decodeLicenseJSON(payload, &c.Payload); err != nil {
 		return fmt.Errorf("parse CRL payload: %w", err)
 	}
 	sum := sha256.Sum256(payload)
@@ -169,7 +169,7 @@ func ParseAndVerifyCRL(data []byte, publicKey ed25519.PublicKey, now time.Time) 
 		return CRL{}, errors.New("license CRL exceeds maximum size")
 	}
 	var wire crlWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeLicenseJSON(data, &wire); err != nil {
 		return CRL{}, fmt.Errorf("parse license CRL: %w", err)
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(wire.Payload)
@@ -187,7 +187,7 @@ func ParseAndVerifyCRL(data []byte, publicKey ed25519.PublicKey, now time.Time) 
 		return CRL{}, errors.New("invalid CRL signature")
 	}
 	var payloadClaims CRLPayload
-	if err := json.Unmarshal(payload, &payloadClaims); err != nil {
+	if err := decodeLicenseJSON(payload, &payloadClaims); err != nil {
 		return CRL{}, fmt.Errorf("parse CRL payload: %w", err)
 	}
 	if err := validateCRLPayload(payloadClaims, now); err != nil {
@@ -218,7 +218,7 @@ func ParseAndVerifyCRLSignatureOnly(data []byte, publicKey ed25519.PublicKey) (C
 		return CRL{}, errors.New("license CRL exceeds maximum size")
 	}
 	var wire crlWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := decodeLicenseJSON(data, &wire); err != nil {
 		return CRL{}, fmt.Errorf("parse license CRL: %w", err)
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(wire.Payload)
@@ -236,7 +236,7 @@ func ParseAndVerifyCRLSignatureOnly(data []byte, publicKey ed25519.PublicKey) (C
 		return CRL{}, errors.New("invalid CRL signature")
 	}
 	var payloadClaims CRLPayload
-	if err := json.Unmarshal(payload, &payloadClaims); err != nil {
+	if err := decodeLicenseJSON(payload, &payloadClaims); err != nil {
 		return CRL{}, fmt.Errorf("parse CRL payload: %w", err)
 	}
 	if payloadClaims.Version != CRLVersion {

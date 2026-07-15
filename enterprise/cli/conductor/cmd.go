@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -171,6 +172,11 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
+	serverCert, err := tlsfile.LoadX509KeyPair(opts.tlsCert, opts.tlsKey)
+	if err != nil {
+		return fmt.Errorf("load Conductor server TLS identity: %w", err)
+	}
+	tlsConfig.Certificates = []tls.Certificate{serverCert}
 	server := &http.Server{
 		Addr:              opts.listen,
 		Handler:           handler,
@@ -223,7 +229,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	serverCount := 1
 	errCh := make(chan error, 2)
 	go func() {
-		if err := server.ServeTLS(ln, opts.tlsCert, opts.tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
 		}
@@ -448,18 +454,7 @@ func serveTLSConfig(clientCAPath string) (*tls.Config, error) {
 }
 
 func loadTokenFile(flag, path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("%s is required", flag)
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", flag, err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("%s is empty", flag)
-	}
-	return token, nil
+	return readSecureTokenFile(flag, path)
 }
 
 func buildAuditKeyResolver(values []string) (controlplane.AuditKeyResolver, error) {

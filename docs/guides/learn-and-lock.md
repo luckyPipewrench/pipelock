@@ -148,7 +148,7 @@ learn:
   capture_dir: /var/lib/pipelock/learn       # recorder JSONL output
   privacy:
     salt_source: "${PIPELOCK_LEARN_SALT}"    # env / file:/abs / literal (fail-closed when empty)
-    public_allowlist_default: true           # ship canonical seed allowlist when explicit list is empty
+    public_allowlist_default: true           # reserved; no runtime effect yet
   inference:
     floors:
       min_sessions: 5                        # conditional-on-opportunity floor

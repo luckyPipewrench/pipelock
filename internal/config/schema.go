@@ -1975,11 +1975,8 @@ type LearnPrivacy struct {
 	// at observation time, not config-load time.
 	SaltSource string `yaml:"salt_source"`
 
-	// PublicAllowlistDefault toggles whether the privacy enforcer ships a
-	// canonical seed public-allowlist (common public APIs, well-known
-	// public domains) when the operator's explicit allowlist is empty.
-	// Default true. Security-sensitive boolean: 6-state default-true tests
-	// required (see CLAUDE.md's security invariants section).
+	// PublicAllowlistDefault is reserved for a future canonical seed public
+	// allowlist. The runtime does not consume it yet.
 	PublicAllowlistDefault bool `yaml:"public_allowlist_default"`
 }
 

@@ -4,6 +4,9 @@
 package chains
 
 import (
+	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1193,5 +1196,81 @@ func TestSensitivitySubsequenceMatch_DirectAxis(t *testing.T) {
 	// Negative: drop the sink.
 	if sensitivitySubsequenceMatch(records[:3], lethalTrifectaSequence, maxGap) {
 		t.Error("incomplete trifecta should not match")
+	}
+}
+
+func TestMatcherRejectsOversizedSessionKeyWithoutRetainingIt(t *testing.T) {
+	m := New(&config.ToolChainDetection{Enabled: true, WindowSize: 4, WindowSeconds: 60})
+	verdict := m.Record(strings.Repeat("x", maxSessionKeyBytes+1), "read_file")
+	if !verdict.Matched || verdict.Action != "block" || verdict.PatternName != "session-key-invalid" {
+		t.Fatalf("oversized session verdict = %+v, want fail-closed session-key-invalid", verdict)
+	}
+	if got := m.sessionCount.Load(); got != 0 {
+		t.Fatalf("tracked sessions = %d, want 0", got)
+	}
+}
+
+func TestMatcherCapsAttackerControlledSessions(t *testing.T) {
+	m := New(&config.ToolChainDetection{Enabled: true, WindowSize: 4, WindowSeconds: 60})
+	for i := range maxTrackedSessions {
+		verdict := m.Record(fmt.Sprintf("attacker-%d", i), "read_file")
+		if verdict.PatternName == "session-capacity" {
+			t.Fatalf("session %d rejected before capacity", i)
+		}
+	}
+	verdict := m.Record("one-too-many", "read_file")
+	if !verdict.Matched || verdict.Action != "block" || verdict.PatternName != "session-capacity" {
+		t.Fatalf("capacity verdict = %+v, want fail-closed session-capacity", verdict)
+	}
+	if got := m.sessionCount.Load(); got > maxTrackedSessions {
+		t.Fatalf("tracked sessions = %d, exceeds cap %d", got, maxTrackedSessions)
+	}
+}
+
+func TestMatcherPrunesExpiredSessions(t *testing.T) {
+	m := New(&config.ToolChainDetection{Enabled: true, WindowSize: 4, WindowSeconds: 1})
+	_ = m.Record("expired", "read_file")
+	value, ok := m.sessions.Load("expired")
+	if !ok {
+		t.Fatal("expected tracked session")
+	}
+	history := value.(*sessionHistory)
+	history.mu.Lock()
+	history.records[0].timestamp = time.Now().Add(-2 * time.Second)
+	history.mu.Unlock()
+	m.pruneExpiredSessions(time.Now())
+	if _, ok := m.sessions.Load("expired"); ok {
+		t.Fatal("expired session was retained")
+	}
+	if got := m.sessionCount.Load(); got != 0 {
+		t.Fatalf("tracked sessions = %d, want 0", got)
+	}
+}
+
+// Resource-limit verdicts return early, ahead of the match path that records
+// every other detection. An operator whose agents are being blocked by
+// session-capacity must still see a counter behind the block.
+func TestMatcherRecordsResourceLimitBlocksInMetrics(t *testing.T) {
+	var got []string
+	stub := &stubMetrics{recordFn: func(pattern, severity, action string) {
+		got = append(got, pattern+"/"+severity+"/"+action)
+	}}
+	m := New(&config.ToolChainDetection{Enabled: true, WindowSize: 4, WindowSeconds: 60}).WithMetrics(stub)
+
+	if v := m.Record(strings.Repeat("x", maxSessionKeyBytes+1), "read_file"); v.Action != "block" {
+		t.Fatalf("oversized session key verdict = %+v, want block", v)
+	}
+	for i := range maxTrackedSessions {
+		m.Record(fmt.Sprintf("attacker-%d", i), "read_file")
+	}
+	if v := m.Record("one-too-many", "read_file"); v.PatternName != "session-capacity" {
+		t.Fatalf("capacity verdict = %+v, want session-capacity", v)
+	}
+
+	want := []string{"session-key-invalid/" + sevCritical + "/block", "session-capacity/" + sevCritical + "/block"}
+	for _, w := range want {
+		if !slices.Contains(got, w) {
+			t.Errorf("resource-limit block %q not recorded in metrics; recorded=%v", w, got)
+		}
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -315,8 +317,18 @@ func (v TurnstileVerifier) Verify(ctx context.Context, token, remoteIP string) e
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("verify turnstile token: status %d", resp.StatusCode)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024+1))
+	if err != nil {
+		return fmt.Errorf("read turnstile response: %w", err)
+	}
+	if len(raw) > 64*1024 {
+		return errors.New("turnstile response exceeds 65536 bytes")
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("decode turnstile response: %w", err)
+	}
 	var out turnstileResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return fmt.Errorf("decode turnstile response: %w", err)
 	}
 	if !out.Success {

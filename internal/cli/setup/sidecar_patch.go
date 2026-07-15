@@ -576,6 +576,7 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 		args = append(args,
 			"--mcp-listen", proxyMCPListenAddr(),
 			"--mcp-upstream", mcpUpstream,
+			"--mcp-allow-unauthenticated",
 		)
 		ports = append(ports, map[string]interface{}{"name": "mcp", "containerPort": sidecarMCPPort, "protocol": "TCP"})
 	}

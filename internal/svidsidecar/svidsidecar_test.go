@@ -4,6 +4,7 @@
 package svidsidecar_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -258,6 +259,29 @@ func TestLoad(t *testing.T) {
 		}
 		if _, _, err := svidsidecar.Load(path); err == nil {
 			t.Fatal("Load(bad verify) = nil error, want error")
+		}
+	})
+
+	t.Run("duplicate top-level member", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "duplicate.svid.json")
+		body := `{"evidence":{"type":"x509"},"evidence":{"type":"x509"},"verify":{"trust_domain":"example.org","action_time":"nope","bundle":[]}}`
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := svidsidecar.Load(path); err == nil {
+			t.Fatal("Load(duplicate) = nil error, want error")
+		}
+	})
+
+	t.Run("oversized file", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "oversized.svid.json")
+		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), (4<<20)+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := svidsidecar.Load(path); err == nil {
+			t.Fatal("Load(oversized) = nil error, want error")
 		}
 	})
 }

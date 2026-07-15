@@ -20,7 +20,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
-	"github.com/luckyPipewrench/pipelock/internal/secperm"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 // SigExtension is the file extension for detached signature files.
@@ -28,8 +28,9 @@ const SigExtension = ".sig"
 
 // Key file header lines identify the format version.
 const (
-	publicKeyHeader  = "pipelock-ed25519-public-v1"
-	privateKeyHeader = "pipelock-ed25519-private-v1"
+	publicKeyHeader        = "pipelock-ed25519-public-v1"
+	privateKeyHeader       = "pipelock-ed25519-private-v1"
+	privateKeyFileMaxBytes = 16 * 1024
 )
 
 // GenerateKeyPair creates a new Ed25519 key pair using crypto/rand.
@@ -358,35 +359,15 @@ func LoadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
 }
 
 // LoadPrivateKeyFile reads and decodes a private key from a file.
-// Resolves symlinks before checking permissions (required for k8s Secret
-// volumes, which mount all files as symlinks). Fails if the resolved
-// file is writable by group or readable/writable/executable by others
-// (mode & 0o037 != 0). Group-read (0o040) is allowed because k8s
-// fsGroup sets it automatically on Secret volume mounts.
+// Kubernetes Secret-volume symlinks are allowed only when the resolved target
+// remains in the link's directory. The read is bounded and race-resistant, and
+// rejects non-regular files, group-writable files, and all world access.
+// Group-read (0o040) is allowed because k8s fsGroup sets it automatically.
 func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
-	// Resolve symlinks to get the real path. K8s Secret volumes mount
-	// files as symlinks (e.g., ..data/key -> ..2026_03_14.../key),
-	// so we must follow them to reach the actual file.
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("reading private key: %w", err)
-	}
-
-	// Check permissions on the resolved file, not the symlink.
-	// Mask 0o037: reject group-write (0o020), group-execute (0o010),
-	// and all other-access (0o007). Allow owner-rw (0o600) and
-	// group-read (0o040) for k8s fsGroup compatibility. On Windows the
-	// check is skipped (secperm.TooPermissive returns false) because Go
-	// reports the mode from the read-only attribute, not the NTFS ACL.
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("reading private key: %w", err)
-	}
-	if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
-		return nil, fmt.Errorf("private key %s has permissions %04o, want 0600 or 0640 (run: chmod 640 %s)", resolved, info.Mode().Perm(), resolved)
-	}
-
-	data, err := os.ReadFile(resolved)
+	data, err := securefile.Read(path, securefile.Options{
+		MaxBytes:        privateKeyFileMaxBytes,
+		DisallowedPerms: 0o037,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}

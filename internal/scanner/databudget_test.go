@@ -21,6 +21,24 @@ func TestNewDataBudget(t *testing.T) {
 	}
 }
 
+func TestDataBudget_OpportunisticCleanup(t *testing.T) {
+	db := NewDataBudget(1000)
+	db.records["expired.example"] = []dataEntry{{
+		bytes:     100,
+		timestamp: time.Now().Add(-2 * time.Minute),
+	}}
+	db.lastCleanup = time.Now().Add(-2 * time.Minute)
+
+	db.Record("active.example", 10)
+
+	if _, exists := db.records["expired.example"]; exists {
+		t.Fatal("expired domain survived opportunistic cleanup")
+	}
+	if len(db.records["active.example"]) != 1 {
+		t.Fatal("active record was not preserved")
+	}
+}
+
 func TestDataBudget_IsAllowed_UnderLimit(t *testing.T) {
 	db := NewDataBudget(1000)
 	defer db.Close()

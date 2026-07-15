@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 )
 
 const maxResponseBytes = 64 * 1024
@@ -83,9 +84,12 @@ func (c *Client) Enroll(ctx context.Context, reqBody Request) (Response, error) 
 		return Response{}, fmt.Errorf("enrollmentclient: enroll request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return Response{}, fmt.Errorf("enrollmentclient: read enroll response: %w", err)
+	}
+	if len(respBody) > maxResponseBytes {
+		return Response{}, fmt.Errorf("enrollmentclient: enroll response exceeds %d bytes", maxResponseBytes)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		msg := fmt.Sprintf("enrollmentclient: enroll status=%d body=%s", resp.StatusCode, snippet(respBody, reqBody.Token))
@@ -95,8 +99,16 @@ func (c *Client) Enroll(ctx context.Context, reqBody Request) (Response, error) 
 		return Response{}, errors.New(msg)
 	}
 	var out Response
-	if err := json.Unmarshal(respBody, &out); err != nil {
+	if _, err := contract.ParseJSONStrict(respBody); err != nil {
 		return Response{}, fmt.Errorf("enrollmentclient: decode enroll response: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(respBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&out); err != nil {
+		return Response{}, fmt.Errorf("enrollmentclient: decode enroll response: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Response{}, fmt.Errorf("enrollmentclient: trailing enroll response")
 	}
 	if err := validateResponse(out, reqBody); err != nil {
 		return Response{}, err

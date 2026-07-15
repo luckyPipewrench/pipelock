@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // Chat roles in the chat-completions message list.
@@ -142,9 +144,12 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return chatMessage{}, fmt.Errorf("read model response: %w", err)
+	}
+	if len(body) > maxResponseBytes {
+		return chatMessage{}, fmt.Errorf("model response exceeds %d bytes", maxResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Redact BEFORE truncating: if the key sat near the snippet boundary,
@@ -155,6 +160,9 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 		}
 	}
 
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return chatMessage{}, fmt.Errorf("decode model response: %w", err)
+	}
 	var parsed completionResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return chatMessage{}, fmt.Errorf("decode model response: %w", err)

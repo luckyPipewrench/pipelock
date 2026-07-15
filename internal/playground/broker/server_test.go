@@ -1359,6 +1359,21 @@ func TestServer_AttemptVMSessionResponseErrors(t *testing.T) {
 				writeBrokerJSON(w, http.StatusOK, vmSessionResponse{Token: "t", SessionID: "s", ExpiresAt: "tomorrow"})
 			},
 		},
+		{
+			name: "duplicate_token",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				expires := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+				_, _ = fmt.Fprintf(w, `{"token":"first","token":"second","session_id":"s","expires_at":%q}`, expires)
+			},
+		},
+		{
+			name: "oversized_valid_prefix",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				expires := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+				_, _ = fmt.Fprintf(w, `{"token":"t","session_id":"s","expires_at":%q}`, expires)
+				_, _ = io.WriteString(w, strings.Repeat(" ", maxBrokerBodyBytes)+`X`)
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vmsrv := httptest.NewServer(tc.handler)

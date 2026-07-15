@@ -12,9 +12,9 @@ Three classes of bug this configuration defends against:
 
 | Bug class | Real-world example | What this configuration adds |
 |---|---|---|
-| **Unauthenticated query-parameter command injection** | CVE-2025-49596 in MCP Inspector | Auth token required on every request; bad token → 401, never reaches the inspector |
+| **Unauthenticated query-parameter command injection** | CVE-2025-49596 in MCP Inspector | Auth token required on every mediated request; bad token → 407, never reaches the inspector |
 | **Drive-by browser exploitation via 0.0.0.0 bypass** | CVE-2025-49596 (same incident; the bypass is the delivery vector) | Origin allowlist rejects any browser tab whose Origin header isn't on the list |
-| **Localhost-port-scanning from rogue processes on the host** | Generic; any malicious script with network access on the dev machine | Listener stays on localhost; the token-gate shim rejects requests without a valid token (401) before they reach the inspector |
+| **Localhost-port-scanning from rogue processes on the host** | Generic; any malicious script with network access on the dev machine | Listener stays on localhost; Pipelock rejects requests without a valid token (407) before they reach the inspector |
 
 What this configuration does **not** protect against: a determined attacker who already has read access to the developer's shell environment can read `MCP_INSPECTOR_TOKEN` and forge a request. The configuration raises the cost of opportunistic exploitation; it does not replace process isolation or threat-model hygiene on the developer's machine.
 
@@ -23,17 +23,28 @@ What this configuration does **not** protect against: a determined attacker who 
 Pipelock reverse-proxies MCP traffic via `pipelock mcp proxy --listen ADDR --upstream URL`. The listener accepts MCP requests, runs them through the configured scanner pipeline, and forwards clean traffic to the upstream.
 
 ```bash
-# Generate a single-use token for this session
-export MCP_INSPECTOR_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)"
+# Generate a mode-0600 token file for this session
+umask 077
+head -c 32 /dev/urandom | base64 | tr -d '\n' > /tmp/pipelock-mcp-inspector.token
 
 # Run pipelock in front of MCP Inspector
 pipelock mcp proxy \
   --config ~/.config/pipelock/mcp-front.yaml \
   --listen 127.0.0.1:6300 \
-  --upstream http://127.0.0.1:6277
+  --upstream http://127.0.0.1:6277 \
+  --listener-auth-token-file /tmp/pipelock-mcp-inspector.token \
+  --listener-allowed-origin https://console.vendor.example
 ```
 
-Point your IDE / agent at `http://127.0.0.1:6300` and include the token in either the `Authorization: Bearer` header (preferred) or the `X-Pipelock-Token` header.
+Point your IDE or non-browser agent at `http://127.0.0.1:6300` and send the
+token in `Proxy-Authorization: Bearer ...`. Browser JavaScript uses
+`Authorization: Bearer ...` because browsers reserve `Proxy-Authorization`.
+Pipelock consumes whichever header authenticated the listener and never
+forwards it. With `Proxy-Authorization`, a separate `Authorization` header can
+still carry an upstream MCP credential.
+For a browser-facing listener whose upstream also needs a bearer token, add a
+mode-0600 `--header-file` containing `Authorization: Bearer ...`; operator-set
+upstream headers take precedence over client input.
 
 ## Config: `~/.config/pipelock/mcp-front.yaml`
 
@@ -57,18 +68,19 @@ mcp_session_binding:
 
 mcp_tool_policy:
   enabled: true
-  # Add per-tool allow/deny rules here for development-time policy.
+  action: block
+  # Tool policy requires at least one rule when enabled; pipelock refuses to
+  # start otherwise. Replace this with the rules that match your tool surface.
+  rules:
+    - name: "Block shell execution"
+      tool_pattern: "bash|shell|exec"
 
 # Inspector / dev-server traffic is local; SSRF defaults are fine.
 internal: []           # disable SSRF rejections for loopback upstream
 
-# Origin allowlist enforcement is handled by the reverse-proxy wrapper
-# documented below. Pipelock itself does not currently enforce Origin
-# allowlists on its mcp proxy listener — wrap with the included
-# `mcp-inspector-front.sh` until native support ships.
+# Listener authentication and Origin policy are CLI flags because they protect
+# the socket itself, before the MCP scanner parses a request.
 ```
-
-> **Status note.** Native Origin allowlist enforcement and a built-in auth token gate on `pipelock mcp proxy --listen` are tracked for a future release. Until then, run pipelock behind a small `socat`-or-similar shim that enforces the Origin header and the token before pipelock sees the request. The shim is ~20 lines of bash and is documented at the bottom of this page.
 
 ## Why not just bind the inspector to 127.0.0.1?
 
@@ -76,56 +88,38 @@ You should, where possible. `127.0.0.1` does close the `0.0.0.0` browser-bypass 
 
 - A scanner pipeline on every request (input scanning, tool scanning, tool policy)
 - A signed audit trail (receipts) for every tool call, including blocked ones
-- A clean revocation surface: rotate the token and every existing client breaks immediately
+- A clean revocation surface: replace the token file and every existing client using the old token breaks on its next request
 - Compatibility with the rest of pipelock's posture (kill switch, adaptive enforcement, etc.)
 
 The right answer for a high-stakes development environment is **both**: bind the inspector to `127.0.0.1`, and front it with pipelock.
-
-## Origin allowlist + token gate shim
-
-If your team needs Origin enforcement today (before native support lands), this shim does it. Save it as `~/.local/bin/mcp-inspector-front.sh`, `chmod +x`, and run it instead of pipelock directly. It forwards to `pipelock mcp proxy` after enforcing the Origin and token requirements.
-
-```bash
-#!/usr/bin/env bash
-# Reject non-allowlisted Origin headers and missing/wrong tokens before
-# forwarding to pipelock's mcp proxy reverse-proxy listener.
-
-set -euo pipefail
-
-ALLOWED_ORIGINS=(
-  "vscode-webview://"
-  "http://localhost:8000"
-)
-PORT_IN=6300
-PORT_PIPELOCK=6301
-
-# (left as an exercise — implement with a small Go program, mitmproxy
-# script, or Caddy with a header-check directive. Reach out to the
-# Pipelock maintainers if you need a reference implementation.)
-```
 
 ## Verifying the configuration
 
 Once running:
 
 ```bash
-# Confirm pipelock is listening
-curl -fsS -H "Authorization: Bearer $MCP_INSPECTOR_TOKEN" \
-  http://127.0.0.1:6300/health
-
-# Confirm an unauthenticated request is rejected
+# Confirm pipelock is listening (health intentionally contains no MCP data)
 curl -fsS http://127.0.0.1:6300/health
-# expected: HTTP/1.1 401 ... or whatever your shim returns
+
+# Confirm an unauthenticated MCP request is rejected
+curl -i -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://127.0.0.1:6300/
+# expected: HTTP/1.1 407 Proxy Authentication Required
 
 # Confirm the 0.0.0.0 bypass class is closed: requests with an
 # unexpected Origin header are rejected even with a valid token
-curl -fsS -H "Authorization: Bearer $MCP_INSPECTOR_TOKEN" \
+curl -i -H "Proxy-Authorization: Bearer $(cat /tmp/pipelock-mcp-inspector.token)" \
      -H "Origin: https://example.com" \
-     http://127.0.0.1:6300/health
-# expected: 403 from the shim
+     -H 'Content-Type: application/json' \
+     --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+     http://127.0.0.1:6300/
+# expected: HTTP/1.1 403 Forbidden
 ```
 
-If the inspector emits receipts via pipelock, every blocked call appears in the audit log with a `reason` field naming the gate that fired (`origin_not_allowed`, `token_invalid`, `policy_block`).
+Authentication and Origin failures are rejected before MCP parsing and do not
+produce action receipts. Requests that reach the scanner retain the normal
+policy receipts and audit trail.
 
 ## Related guides
 

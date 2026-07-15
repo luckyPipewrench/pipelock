@@ -387,6 +387,15 @@ func TestRun_MalformedModelResponse(t *testing.T) {
 	}
 }
 
+func TestRun_DuplicateModelResponseRejected(t *testing.T) {
+	model := &scriptedModel{rawBody: `{"choices":[{"message":{"role":"assistant","content":"safe"}}],"choices":[{"message":{"role":"assistant","content":"unsafe"}}]}`}
+	emit, _ := collectEvents()
+	a := newAgent(t, model, nil, emit)
+	if _, err := a.Run(context.Background(), "hi"); err == nil {
+		t.Fatal("want duplicate-key error on ambiguous model response")
+	}
+}
+
 // newAgentCfg builds an agent against a scripted model with an explicit config
 // (so memory/step settings can be exercised) and returns it.
 func newAgentCfg(t *testing.T, model *scriptedModel, tools []Tool, emit func(Event), cfg ModelConfig) *Agent {

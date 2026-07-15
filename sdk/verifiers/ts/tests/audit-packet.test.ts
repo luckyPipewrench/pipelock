@@ -172,3 +172,82 @@ test("CLI missing argument exits 64", () => {
   assert.equal(result.status, 64);
   assert.match(result.stderr, /Usage: pipelock-verifier-ts audit-packet/u);
 });
+
+// A duplicated object member must be rejected, not resolved last-wins. The Go
+// verifier rejects it; if this verifier accepted it, the same packet.json would
+// be VALID here and REJECTED there — a cross-language parser differential on the
+// artifact users are told to verify independently.
+test("audit packet rejects duplicate object members", async () => {
+  const dir = writePacket();
+  const packetPath = path.join(dir, "packet.json");
+  const text = readFileSync(packetPath, "utf8");
+  // Duplicate schema_version: the first is honest, the second is the attacker's.
+  const poisoned = text.replace(
+    /"schema_version": "([^"]+)",/,
+    '"schema_version": "$1",\n  "schema_version": "pipelock.audit_packet.vX-attacker",',
+  );
+  assert.notEqual(poisoned, text, "fixture must actually contain a duplicate member");
+  writeFileSync(packetPath, poisoned, { mode: 0o600 });
+
+  const report = await verifyAuditPacket(dir, defaultOptions);
+  assert.equal(report.valid, false);
+  assert.ok(
+    report.errors?.some((e) => e.includes("duplicate object key")),
+    `want a duplicate-key rejection, got ${JSON.stringify(report.errors)}`,
+  );
+});
+
+test("audit packet rejects integers outside the cross-language exact range", async () => {
+  const dir = writePacket();
+  const packetPath = path.join(dir, "packet.json");
+  let text = readFileSync(packetPath, "utf8");
+  text = text.replace('"receipt_count": 5', '"receipt_count": 9007199254740993');
+  text = text.replace('"allow": 5', '"allow": 9007199254740992');
+  writeFileSync(packetPath, text, { mode: 0o600 });
+
+  const report = await verifyAuditPacket(dir, { ...defaultOptions, offline: true });
+  assert.equal(report.valid, false);
+  assert.ok(
+    report.errors?.some((error) => error.includes("cross-language exact range")),
+    `want exact-range rejection, got ${JSON.stringify(report.errors)}`,
+  );
+});
+
+test("audit packet rejects a non-finite magnitude Go and Rust reject", async () => {
+  // 1e999 overflows to Infinity, which is not finite. A guard gated on
+  // Number.isFinite skips it, so TypeScript would accept a packet Go and Rust
+  // reject as out of range - the cross-language differential this guard closes.
+  const dir = writePacket();
+  const packetPath = path.join(dir, "packet.json");
+  const text = readFileSync(packetPath, "utf8").replace(
+    '"receipt_count": 5',
+    '"receipt_count": 1e999',
+  );
+  assert.ok(text.includes("1e999"), "fixture must contain the overflowing literal");
+  writeFileSync(packetPath, text, { mode: 0o600 });
+
+  const report = await verifyAuditPacket(dir, { ...defaultOptions, offline: true });
+  assert.equal(report.valid, false);
+  assert.ok(
+    report.errors?.some((error) => error.includes("cross-language exact range")),
+    `want exact-range rejection, got ${JSON.stringify(report.errors)}`,
+  );
+});
+
+test("audit packet rejects invalid UTF-8 instead of replacing bytes", async () => {
+  const dir = writePacket();
+  const packetPath = path.join(dir, "packet.json");
+  const raw = readFileSync(packetPath);
+  const marker = Buffer.from("test-agent");
+  const offset = raw.indexOf(marker);
+  assert.notEqual(offset, -1, "fixture must contain agent identity marker");
+  raw[offset] = 0xff;
+  writeFileSync(packetPath, raw, { mode: 0o600 });
+
+  const report = await verifyAuditPacket(dir, { ...defaultOptions, offline: true });
+  assert.equal(report.valid, false);
+  assert.ok(
+    report.errors?.some((error) => error.includes("invalid UTF-8")),
+    `want UTF-8 rejection, got ${JSON.stringify(report.errors)}`,
+  );
+});

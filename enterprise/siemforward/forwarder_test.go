@@ -5,6 +5,7 @@
 package siemforward
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -430,6 +431,17 @@ func TestForwarderCorruptCursorFailsClosed(t *testing.T) {
 	resolver := &sequenceResolver{answers: [][]string{{testPublicIP}}}
 	if _, err := New(cfg, Options{Resolver: resolver}); err == nil {
 		t.Fatal("New succeeded with corrupt cursor")
+	}
+}
+
+func TestLoadCursorRejectsOversizedState(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	if err := os.WriteFile(cfg.CursorFile, bytes.Repeat([]byte{'x'}, int(maxCursorBytes)+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCursor(cfg.SpoolFile, cfg.CursorFile); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("loadCursor error = %v, want size-limit rejection", err)
 	}
 }
 

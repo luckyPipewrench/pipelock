@@ -24,6 +24,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 // ManifestVersion is the schema version for MCP binary integrity manifests.
@@ -31,7 +34,10 @@ const ManifestVersion = 1
 
 // maxShebangLen caps the number of bytes read when looking for a #! line.
 // A shebang line exceeding this is treated as "no shebang" (safe default).
-const maxShebangLen = 256
+const (
+	maxShebangLen       = 256
+	maxManifestFileSize = 8 << 20
+)
 
 // interpreters is the set of known interpreter basenames. When command[0]
 // resolves to one of these, command[1] (the script) is also hashed.
@@ -110,7 +116,7 @@ type VerifyResult struct {
 
 // LoadManifest reads a binary integrity manifest from disk.
 func LoadManifest(path string) (*Manifest, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestFileSize})
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
@@ -121,6 +127,12 @@ func LoadManifest(path string) (*Manifest, error) {
 // that have already read the bytes (e.g. after signature verification) and
 // must avoid a re-read TOCTOU window.
 func ParseManifest(data []byte) (*Manifest, error) {
+	if len(data) > maxManifestFileSize {
+		return nil, fmt.Errorf("parsing manifest: exceeds %d bytes", maxManifestFileSize)
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)

@@ -346,6 +346,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 				Name:          patternName,
 				Regex:         r.Pattern.Regex,
 				Severity:      r.Severity,
+				Validator:     r.Pattern.Validator,
 				Bundle:        bundle.Name,
 				BundleVersion: bundle.Version,
 			})

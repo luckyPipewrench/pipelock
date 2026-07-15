@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
@@ -129,7 +130,7 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		CrossCheck:  statusSkipped,
 	}
 
-	rawPacket, err := os.ReadFile(filepath.Clean(packetPath))
+	rawPacket, err := readVerifierFile(packetPath)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read packet: %w", err))
 	}
@@ -143,6 +144,16 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 
 	var packet auditpacket.Packet
+	if err := jsonscan.RejectDuplicateKeys(rawPacket); err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("packet json: %v", err))
+		emitReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("unmarshal packet: %w", err))
+	}
+	if err := jsonscan.RejectUnsafeNumbers(rawPacket); err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("packet json: %v", err))
+		emitReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("unmarshal packet: %w", err))
+	}
 	if err := json.Unmarshal(rawPacket, &packet); err != nil {
 		report.Errors = append(report.Errors, fmt.Sprintf("packet json: %v", err))
 		emitReport(stdout, stderr, report, opts.jsonOutput)

@@ -19,10 +19,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/enrollmentclient"
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-const conductorEnrolledStateFileName = "enrolled.json"
+const (
+	conductorEnrolledStateFileName = "enrolled.json"
+	conductorEnrollmentFileMaxSize = 64 << 10
+)
 
 var newConductorEnrollmentHTTPClient = func(cfg config.Conductor) (enrollmentclient.HTTPDoer, error) {
 	return newConductorMTLSClient(cfg)
@@ -131,7 +136,7 @@ func conductorEnrollmentMarked(path string, cfg config.Conductor) (bool, error) 
 }
 
 func readConductorEnrollmentMarker(path string, cfg config.Conductor) (conductorEnrollmentMarker, bool, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: conductorEnrollmentFileMaxSize, DisallowedPerms: 0o077})
 	if os.IsNotExist(err) {
 		return conductorEnrollmentMarker{}, false, nil
 	}
@@ -139,7 +144,7 @@ func readConductorEnrollmentMarker(path string, cfg config.Conductor) (conductor
 		return conductorEnrollmentMarker{}, false, fmt.Errorf("read conductor enrollment marker: %w", err)
 	}
 	var marker conductorEnrollmentMarker
-	if err := json.Unmarshal(data, &marker); err != nil {
+	if err := contract.DecodeStrictJSON(data, &marker); err != nil {
 		return conductorEnrollmentMarker{}, false, fmt.Errorf("parse conductor enrollment marker: %w", err)
 	}
 	if marker.Version != 1 {
@@ -155,7 +160,7 @@ func readConductorEnrollmentMarker(path string, cfg config.Conductor) (conductor
 }
 
 func readConductorEnrollmentToken(path string) (string, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: conductorEnrollmentFileMaxSize, DisallowedPerms: 0o027})
 	if err != nil {
 		return "", fmt.Errorf("read conductor enrollment token: %w", err)
 	}

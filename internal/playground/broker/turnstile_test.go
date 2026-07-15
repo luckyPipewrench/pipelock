@@ -104,6 +104,20 @@ func TestTurnstileVerifier_FailsClosed(t *testing.T) {
 			},
 		},
 		{
+			name:  "duplicate_success",
+			token: "token",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"success":false,"success":true}`))
+			},
+		},
+		{
+			name:  "oversized_response",
+			token: "token",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"success":true}` + strings.Repeat(" ", 64*1024) + `X`))
+			},
+		},
+		{
 			name:  "rejected_without_error_codes",
 			token: "token",
 			handler: func(w http.ResponseWriter, _ *http.Request) {

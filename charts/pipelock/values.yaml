@@ -340,6 +340,16 @@ mcp:
   enabled: false
   upstream: ""
   listen: "0.0.0.0:8889"
+  # A non-loopback MCP listener is reachable by every pod that can route to the
+  # Service, so it must authenticate. Set exactly one of:
+  #   authTokenFile        - path to a mounted bearer-token file (recommended).
+  #                          Mount the Secret via extraVolumes/extraVolumeMounts.
+  #   allowUnauthenticated - acknowledge an unauthenticated listener. Only sound
+  #                          when networkPolicy.enabled=true restricts ingress.
+  authTokenFile: ""
+  allowUnauthenticated: false
+  # Browser Origins allowed to call the listener (exact serialized origin).
+  allowedOrigins: []
 
 # Monitoring (requires Prometheus Operator CRDs)
 podMonitor:

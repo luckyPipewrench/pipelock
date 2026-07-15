@@ -3244,7 +3244,7 @@ func TestScanner_Close_WithDataBudget(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 1000
 	s := New(cfg)
-	s.Close() // should close data budget cleanup goroutine
+	s.Close() // data-budget lifecycle remains safe with opportunistic cleanup
 }
 
 func TestScanner_Close_NilDataBudget(t *testing.T) {

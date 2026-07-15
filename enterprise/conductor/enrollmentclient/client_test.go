@@ -161,6 +161,31 @@ func TestEnrollHappyPathUsesEnrollEndpoint(t *testing.T) {
 	}
 }
 
+func TestEnrollRejectsAmbiguousOrOversizeSuccess(t *testing.T) {
+	valid := `{"org_id":"org-main","fleet_id":"prod","instance_id":"edge-01","environment":"prod","audit_key_id":"audit-key-1","enrolled_at":"2026-06-11T12:00:00Z"}`
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "duplicate identity", body: `{"org_id":"wrong","org_id":"org-main","fleet_id":"prod","instance_id":"edge-01","environment":"prod","audit_key_id":"audit-key-1","enrolled_at":"2026-06-11T12:00:00Z"}`, want: "duplicate"},
+		{name: "unknown member", body: strings.TrimSuffix(valid, "}") + `,"unexpected":true}`, want: "unknown field"},
+		{name: "oversize valid prefix", body: valid + strings.Repeat(" ", maxResponseBytes+1), want: "exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := New(Config{BaseURL: "https://conductor.example:8895", Client: &stubDoer{body: tc.body}})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			token := "pl_" + "enroll_test"
+			_, err = c.Enroll(context.Background(), Request{Token: token, AuditKeyID: "audit-key-1", AuditPublicKey: strings.Repeat("a", 64)})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Enroll error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateResponseMissingFields covers each per-field guard in
 // validateResponse so a malformed conductor response fails closed with a
 // specific diagnostic instead of accepting a partial enrollment.

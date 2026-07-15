@@ -144,6 +144,12 @@ When enabled, the chart sets `kill_switch.api_listen` in the generated pipelock.
 | `mcp.enabled` | `false` | Run as MCP HTTP listener bridging to `mcp.upstream` |
 | `mcp.upstream` | `""` | Upstream MCP server URL |
 | `mcp.listen` | `0.0.0.0:8889` | Listen address inside the pod |
+| `mcp.authTokenFile` | `""` | Mounted bearer-token file used to authenticate the listener; recommended for every non-loopback listener |
+| `mcp.allowUnauthenticated` | `false` | Explicitly acknowledge an unauthenticated listener; accepted only when the chart NetworkPolicy is enabled |
+| `mcp.allowedOrigins` | `[]` | Exact browser Origins allowed to call the listener |
+
+The port in `mcp.listen` must match `service.mcpPort`; the chart rejects a
+render that would expose a Service port where Pipelock is not listening.
 
 ### Network policy
 

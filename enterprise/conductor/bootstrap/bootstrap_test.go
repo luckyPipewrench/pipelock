@@ -63,6 +63,40 @@ func assertDeploymentKeyFile(t *testing.T, path string, purpose signing.KeyPurpo
 	}
 }
 
+func TestLoadManifestRejectsDuplicateAndOversizedJSON(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "duplicate", body: []byte(`{"schema":2,"schema":1}`), want: "duplicate object key"},
+		// A run of "x" is not JSON, so the decoder rejects it with or without the
+		// size ceiling and the case proves nothing. Pad valid JSON with
+		// insignificant whitespace so exceeding manifestMaxBytes is the only
+		// reason this can fail, and match the message so a decode error cannot
+		// masquerade as a size rejection.
+		{
+			name: "oversized valid prefix",
+			body: append([]byte(`{"schema":2}`), bytes.Repeat([]byte(" "), manifestMaxBytes)...),
+			want: "exceeds",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), manifestFile)
+			if err := os.WriteFile(path, tt.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadManifest(path)
+			if err == nil {
+				t.Fatal("loadManifest accepted hostile manifest")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("loadManifest error = %v, want it to contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // privateFleetDir returns an absolute fleet directory whose ancestors are not
 // world-writable. The conductor config validator rejects world-writable
 // parents, and the shared /tmp (mode 1777) trips that check, so fleet material

@@ -1040,6 +1040,7 @@ type SessionManager struct {
 	logger         *audit.Logger    // nil-safe; used for airlock de-escalation logging
 	done           chan struct{}
 	closed         sync.Once
+	maintenance    sync.Once
 
 	// Behavioral baseline: profile-then-lock analysis.
 	// nil when behavioral_baseline.enabled is false.
@@ -1052,7 +1053,8 @@ type SessionManagerOptions struct {
 	Logger     *audit.Logger
 }
 
-// NewSessionManager creates a session manager with background cleanup.
+// NewSessionManager creates a session manager. Periodic maintenance starts
+// lazily when the manager first holds session or IP-domain state.
 // The metrics parameter is optional (nil disables gauge/counter updates).
 // The adaptiveCfg parameter is optional (nil when adaptive enforcement is disabled).
 func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, opts ...SessionManagerOptions) *SessionManager {
@@ -1072,8 +1074,6 @@ func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.Adaptiv
 		sm.logger = opts[0].Logger
 	}
 
-	go sm.cleanupLoop()
-	go sm.deescalationLoop()
 	return sm
 }
 
@@ -1336,6 +1336,8 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 // GetOrCreate returns the session for a key, creating if needed.
 // Evicts oldest idle session if at capacity.
 func (sm *SessionManager) GetOrCreate(key string) *SessionState {
+	sm.startMaintenance()
+
 	// Fast path: read lock
 	sm.mu.RLock()
 	if sess, ok := sm.sessions[key]; ok {
@@ -1407,6 +1409,8 @@ func (sm *SessionManager) Len() int {
 // domain burst detection. Returns anomalies when the IP crosses the burst
 // threshold regardless of which agent identity was used.
 func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.SessionProfiling) []Anomaly {
+	sm.startMaintenance()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1476,7 +1480,7 @@ func (s *SessionState) recomputeScopedBlockAll(adaptiveCfg *config.AdaptiveEnfor
 	}
 }
 
-// Close stops the cleanup goroutine.
+// Close stops periodic session maintenance when it has been started.
 func (sm *SessionManager) Close() {
 	sm.closed.Do(func() {
 		close(sm.done)
@@ -2136,22 +2140,30 @@ func (sm *SessionManager) ForceSetAirlockTier(key, tier string) (found, changed 
 	return true, changed, from, to
 }
 
-// cleanupLoop runs periodic cleanup of expired sessions.
-// Uses a timer (not ticker) so that cleanup_interval_seconds changes
-// from UpdateConfig take effect on the next iteration.
-func (sm *SessionManager) cleanupLoop() {
-	interval := time.Duration(sm.cfgPtr.Load().CleanupIntervalSeconds) * time.Second
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
+func (sm *SessionManager) startMaintenance() {
+	sm.maintenance.Do(func() { go sm.maintenanceLoop() })
+}
+
+// maintenanceLoop owns both periodic jobs so an active session manager uses
+// one goroutine rather than two. The cleanup timer remains config-driven while
+// de-escalation keeps its fixed security interval and runs without traffic.
+func (sm *SessionManager) maintenanceLoop() {
+	cleanupInterval := time.Duration(sm.cfgPtr.Load().CleanupIntervalSeconds) * time.Second
+	cleanupTimer := time.NewTimer(cleanupInterval)
+	deescalationTicker := time.NewTicker(deescalationCheckInterval)
+	defer cleanupTimer.Stop()
+	defer deescalationTicker.Stop()
 
 	for {
 		select {
 		case <-sm.done:
 			return
-		case <-timer.C:
+		case <-cleanupTimer.C:
 			sm.cleanup()
-			interval = time.Duration(sm.cfgPtr.Load().CleanupIntervalSeconds) * time.Second
-			timer.Reset(interval)
+			cleanupInterval = time.Duration(sm.cfgPtr.Load().CleanupIntervalSeconds) * time.Second
+			cleanupTimer.Reset(cleanupInterval)
+		case <-deescalationTicker.C:
+			sm.sweepDeescalation()
 		}
 	}
 }
@@ -2222,23 +2234,6 @@ func (sm *SessionManager) cleanup() {
 	// Phase 2: record evicted sessions in baseline (lock-free path).
 	for _, sess := range evictedSessions {
 		sm.recordSessionBaseline(sess)
-	}
-}
-
-// deescalationLoop runs periodic de-escalation checks on all sessions.
-// Unlike cleanupLoop, this uses a fixed interval (not config-driven)
-// because recovery timing is a security property, not a tuning knob.
-func (sm *SessionManager) deescalationLoop() {
-	ticker := time.NewTicker(deescalationCheckInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-sm.done:
-			return
-		case <-ticker.C:
-			sm.sweepDeescalation()
-		}
 	}
 }
 

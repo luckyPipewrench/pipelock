@@ -35,6 +35,26 @@ func testFragmentScanner() *Scanner {
 	return New(cfg)
 }
 
+func TestFragmentBuffer_OpportunisticCleanup(t *testing.T) {
+	fb := NewFragmentBuffer(1024, 10, 1)
+	expiredAt := time.Now().Add(-2 * time.Second)
+	fb.sessions["expired"] = &sessionBuffer{
+		fragments:  []fragment{{data: []byte("old"), at: expiredAt}},
+		totalBytes: 3,
+		lastAccess: expiredAt,
+	}
+	fb.lastCleanup = time.Now().Add(-2 * time.Second)
+
+	fb.Append("active", []byte("fresh"))
+
+	if _, exists := fb.sessions["expired"]; exists {
+		t.Fatal("expired fragment session survived opportunistic cleanup")
+	}
+	if _, exists := fb.sessions["active"]; !exists {
+		t.Fatal("active fragment session was not preserved")
+	}
+}
+
 func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	// Split an AWS key across two fragments. DLP should catch the concatenated form.
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)

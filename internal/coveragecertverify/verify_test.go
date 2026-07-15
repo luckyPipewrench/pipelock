@@ -245,3 +245,21 @@ func TestRunFailsClosed(t *testing.T) {
 		t.Fatalf("Run missing file error = %v, want --cert", err)
 	}
 }
+
+func TestRunRejectsOversizedCertificate(t *testing.T) {
+	certFile := filepath.Join(t.TempDir(), "oversized.json")
+	if err := os.WriteFile(certFile, bytes.Repeat([]byte{'x'}, int(maxCertificateBytes)+1), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	err := Run(Options{CertFile: certFile})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Run oversized certificate err = %v, want bounded-read error", err)
+	}
+}
+
+func TestRunRejectsNonRegularCertificate(t *testing.T) {
+	err := Run(Options{CertFile: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("Run directory certificate err = %v, want regular-file error", err)
+	}
+}

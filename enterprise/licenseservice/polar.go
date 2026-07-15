@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // Polar webhook event types we handle.
@@ -107,14 +109,17 @@ func (p *PolarClient) getJSON(ctx context.Context, path, label string, out any) 
 	// Cap response body to prevent memory exhaustion from malformed responses.
 	// 1 MiB is generous for a single subscription/order JSON object.
 	const maxResponseBody = 1 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
 		return fmt.Errorf("read %s response: %w", label, err)
+	}
+	if len(body) > maxResponseBody {
+		return fmt.Errorf("read %s response: exceeds %d bytes", label, maxResponseBody)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("polar API returned %d for %s: %s", resp.StatusCode, label, string(body))
 	}
-	if err := json.Unmarshal(body, out); err != nil {
+	if err := decodeVendorJSON(body, out); err != nil {
 		return fmt.Errorf("parse %s response: %w", label, err)
 	}
 	return nil
@@ -229,7 +234,7 @@ func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, se
 // ParseWebhookEvent parses the raw body into a PolarWebhookEvent.
 func ParseWebhookEvent(body []byte) (*PolarWebhookEvent, error) {
 	var event PolarWebhookEvent
-	if err := json.Unmarshal(body, &event); err != nil {
+	if err := decodeVendorJSON(body, &event); err != nil {
 		return nil, fmt.Errorf("parse webhook event: %w", err)
 	}
 	if event.Type == "" {
@@ -244,7 +249,7 @@ func ExtractSubscriptionID(data json.RawMessage) (string, error) {
 	var partial struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(data, &partial); err != nil {
+	if err := decodeVendorJSON(data, &partial); err != nil {
 		return "", fmt.Errorf("extract subscription ID from event data: %w", err)
 	}
 	if partial.ID == "" {
@@ -283,11 +288,18 @@ type PolarOrder struct {
 // extractOrderData unmarshals the webhook event data into a PolarOrder.
 func extractOrderData(data json.RawMessage) (*PolarOrder, error) {
 	var order PolarOrder
-	if err := json.Unmarshal(data, &order); err != nil {
+	if err := decodeVendorJSON(data, &order); err != nil {
 		return nil, fmt.Errorf("parse order data: %w", err)
 	}
 	if order.ID == "" {
 		return nil, fmt.Errorf("order ID is empty in event data")
 	}
 	return &order, nil
+}
+
+func decodeVendorJSON(data []byte, out any) error {
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
 }

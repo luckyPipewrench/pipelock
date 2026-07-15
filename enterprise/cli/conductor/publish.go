@@ -33,6 +33,7 @@ import (
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -725,18 +726,7 @@ func loadPolicySigningKey(path string) (string, ed25519.PrivateKey, error) {
 // surrounding whitespace, and rejects an empty token. Mirrors loadTokenFile in
 // cmd.go (the server side) so producer and server agree on token-file handling.
 func readPublisherToken(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", errors.New("--publisher-token-file is required")
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("read --publisher-token-file: %w", err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", errors.New("--publisher-token-file is empty")
-	}
-	return token, nil
+	return readSecureTokenFile("--publisher-token-file", path)
 }
 
 // publishHTTPClient builds the mTLS HTTP client used to reach the Conductor.
@@ -772,7 +762,7 @@ func publishHTTPClient(opts publishOptions) (*http.Client, error) {
 	if strings.TrimSpace(opts.serverCA) == "" {
 		return nil, errors.New("--server-ca is required for an https Conductor URL")
 	}
-	cert, err := tls.LoadX509KeyPair(filepath.Clean(opts.tlsCert), filepath.Clean(opts.tlsKey))
+	cert, err := tlsfile.LoadX509KeyPair(opts.tlsCert, opts.tlsKey)
 	if err != nil {
 		return nil, fmt.Errorf("load mTLS client certificate: %w", err)
 	}

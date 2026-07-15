@@ -284,8 +284,15 @@ func createSession(parent context.Context, client *http.Client, cfg config) (str
 		discardBody(resp.Body)
 		return "", step
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil || len(raw) > maxResponseBytes {
+		step.Failed = true
+		step.Category = categoryOther
+		step.ErrMessage = "read session response: oversized or unreadable body"
+		return "", step
+	}
 	var out sessionResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		step.Failed = true
 		step.Category = categoryOther
 		step.ErrMessage = "decode session response: " + err.Error()

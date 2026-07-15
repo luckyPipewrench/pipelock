@@ -82,6 +82,9 @@ func decodeEvidenceReceipt(data []byte) (contractreceipt.EvidenceReceipt, error)
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return contractreceipt.EvidenceReceipt{}, err
 	}
+	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
+		return contractreceipt.EvidenceReceipt{}, err
+	}
 	var r contractreceipt.EvidenceReceipt
 	if err := contract.DecodeStrictJSON(data, &r); err != nil {
 		return contractreceipt.EvidenceReceipt{}, err

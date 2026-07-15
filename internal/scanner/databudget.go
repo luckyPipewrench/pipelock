@@ -19,19 +19,16 @@ type DataBudget struct {
 	mu             sync.Mutex
 	maxBytesPerMin int
 	records        map[string][]dataEntry
-	stopCleanup    chan struct{}
-	closeOnce      sync.Once
+	lastCleanup    time.Time
 }
 
 // NewDataBudget creates a data budget tracker with the given limit in bytes/minute.
 func NewDataBudget(maxBytesPerMinute int) *DataBudget {
-	db := &DataBudget{
+	return &DataBudget{
 		maxBytesPerMin: maxBytesPerMinute,
 		records:        make(map[string][]dataEntry),
-		stopCleanup:    make(chan struct{}),
+		lastCleanup:    time.Now(),
 	}
-	go db.cleanupLoop()
-	return db
 }
 
 // IsAllowed checks if a domain is within its data budget.
@@ -39,7 +36,9 @@ func (db *DataBudget) IsAllowed(domain string) bool {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	cutoff := time.Now().Add(-time.Minute)
+	now := time.Now()
+	db.maybeCleanupLocked(now)
+	cutoff := now.Add(-time.Minute)
 	total := 0
 	entries := db.records[domain]
 	for _, e := range entries {
@@ -55,36 +54,34 @@ func (db *DataBudget) Record(domain string, bytes int) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	now := time.Now()
+	db.maybeCleanupLocked(now)
 	db.records[domain] = append(db.records[domain], dataEntry{
 		bytes:     bytes,
-		timestamp: time.Now(),
+		timestamp: now,
 	})
 }
 
-// Close stops the cleanup goroutine. Safe to call multiple times.
-func (db *DataBudget) Close() {
-	db.closeOnce.Do(func() { close(db.stopCleanup) })
-}
-
-func (db *DataBudget) cleanupLoop() {
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			db.cleanup()
-		case <-db.stopCleanup:
-			return
-		}
-	}
-}
+// Close is retained for scanner lifecycle symmetry. DataBudget owns no
+// background resources, so closing it is intentionally a no-op.
+func (db *DataBudget) Close() {}
 
 func (db *DataBudget) cleanup() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	db.cleanupLocked(time.Now())
+}
 
-	cutoff := time.Now().Add(-time.Minute)
+func (db *DataBudget) maybeCleanupLocked(now time.Time) {
+	if now.Sub(db.lastCleanup) < time.Minute {
+		return
+	}
+	db.cleanupLocked(now)
+	db.lastCleanup = now
+}
+
+func (db *DataBudget) cleanupLocked(now time.Time) {
+	cutoff := now.Add(-time.Minute)
 	for domain, entries := range db.records {
 		valid := entries[:0]
 		for _, e := range entries {

@@ -47,6 +47,7 @@ export function parseJSON<T>(text: string, label: string): T {
 // reference verifiers on rejecting absurdly deep input. Receipts nest ~4
 // levels, so this never affects honest input.
 const maxDuplicateKeyScanDepth = 128;
+const maxExactJSONInteger = Number.MAX_SAFE_INTEGER;
 
 export function rejectDuplicateKeys(text: string): void {
   interface Frame {
@@ -112,6 +113,22 @@ export function rejectDuplicateKeys(text: string): void {
       }
       continue;
     }
+    if (c === "-" || (c >= "0" && c <= "9")) {
+      const match = text.slice(i).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u);
+      if (match !== null) {
+        const numberText = match[0];
+        const value = Number(numberText);
+        // A magnitude JS cannot represent (1e999) parses to Infinity, which is
+        // not finite. Gating the check on isFinite would SKIP it and accept a
+        // number Go and Rust reject as out of range, reintroducing the
+        // cross-language differential this guard exists to close.
+        if (!Number.isFinite(value) || Math.abs(value) > maxExactJSONInteger) {
+          throw new InvalidError(`JSON number ${numberText} exceeds cross-language exact range`);
+        }
+        i += numberText.length;
+        continue;
+      }
+    }
     if (c === "{" || c === "[") {
       if (stack.length >= maxDuplicateKeyScanDepth) {
         throw new InvalidError(`JSON nesting exceeds maximum depth ${maxDuplicateKeyScanDepth}`);
@@ -131,6 +148,14 @@ export function rejectDuplicateKeys(text: string): void {
       if (top !== undefined && top.isObject) top.expectKey = true;
     }
     i++;
+  }
+}
+
+export function decodeUTF8(data: Buffer, label: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(data);
+  } catch {
+    throw new InvalidError(`${label}: invalid UTF-8`);
   }
 }
 

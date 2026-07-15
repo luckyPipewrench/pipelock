@@ -74,8 +74,8 @@ func VerifyManifest(data, sig []byte, keyringHex string) (Verification, error) {
 	preimage := append([]byte(signingDomain), data...)
 	for i, key := range keys {
 		if ed25519.Verify(key, preimage, rawSig) {
-			var manifest Manifest
-			if err := decodeManifest(data, &manifest); err != nil {
+			manifest, err := ParseManifest(data)
+			if err != nil {
 				return Verification{}, err
 			}
 			// Bind the verifying key to the manifest's declared signer_key_id
@@ -161,17 +161,20 @@ func ValidateManifest(m Manifest) error {
 	return nil
 }
 
-func decodeManifest(data []byte, manifest *Manifest) error {
+// ParseManifest decodes an unsigned or signed release manifest using the same
+// unambiguous JSON and schema contract enforced during signature verification.
+func ParseManifest(data []byte) (Manifest, error) {
+	var manifest Manifest
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return fmt.Errorf("%w: %w", ErrReleaseManifest, err)
+		return Manifest{}, fmt.Errorf("%w: %w", ErrReleaseManifest, err)
 	}
-	if err := json.Unmarshal(data, manifest); err != nil {
-		return fmt.Errorf("%w: %w", ErrReleaseManifest, err)
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("%w: %w", ErrReleaseManifest, err)
 	}
-	if err := ValidateManifest(*manifest); err != nil {
-		return err
+	if err := ValidateManifest(manifest); err != nil {
+		return Manifest{}, err
 	}
-	return nil
+	return manifest, nil
 }
 
 func parseKeyring(keyringHex string) ([]ed25519.PublicKey, error) {

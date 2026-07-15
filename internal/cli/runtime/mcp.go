@@ -74,6 +74,17 @@ var reservedTransportHeaders = map[string]struct{}{
 	http.CanonicalHeaderKey("Host"):              {},
 }
 
+// singletonUpstreamHeaders carry credentials or negotiated service policy.
+// Multiple ordinary HTTP header values are legitimate and remain supported,
+// but these values must have exactly one operator meaning before the listener
+// applies precedence and protocol validation.
+var singletonUpstreamHeaders = map[string]struct{}{
+	http.CanonicalHeaderKey("Authorization"):        {},
+	http.CanonicalHeaderKey("Mcp-Protocol-Version"): {},
+	http.CanonicalHeaderKey("A2A-Version"):          {},
+	http.CanonicalHeaderKey("A2A-Extensions"):       {},
+}
+
 // parseHeaderFlags converts repeatable --header "Key: Value" entries into an
 // http.Header. Returns nil for an empty input so callers can pass the result
 // straight to transports that interpret nil as "no extras". Both an empty
@@ -116,7 +127,15 @@ func parseHeaderFlags(raw []string) (http.Header, error) {
 		if _, reserved := reservedTransportHeaders[http.CanonicalHeaderKey(key)]; reserved {
 			return nil, fmt.Errorf("--header %q: %q is managed by the MCP HTTP transport and cannot be overridden via --header", entry, key)
 		}
-		h.Add(key, value)
+		canonicalKey := http.CanonicalHeaderKey(key)
+		if _, exists := h[canonicalKey]; exists {
+			if _, singleton := singletonUpstreamHeaders[canonicalKey]; !singleton {
+				h.Add(canonicalKey, value)
+				continue
+			}
+			return nil, fmt.Errorf("--header %q: duplicate header %q is ambiguous", entry, canonicalKey)
+		}
+		h.Add(canonicalKey, value)
 	}
 	return h, nil
 }
@@ -596,6 +615,9 @@ func mcpProxyCmd() *cobra.Command {
 	var sandboxWorkspace string
 	var captureOutput string
 	var captureEscrowKey string
+	var listenerAuthTokenFile string
+	var listenerAllowedOrigins []string
+	var listenerAllowUnauthenticated bool
 
 	cmd := &cobra.Command{
 		Use:   "proxy [flags] [-- COMMAND [ARGS...]]",
@@ -683,6 +705,19 @@ Key-free evidence capture:
 			}
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
+			}
+			if !hasListen && (listenerAuthTokenFile != "" || len(listenerAllowedOrigins) > 0 || listenerAllowUnauthenticated) {
+				return errors.New("MCP listener authentication flags require --listen")
+			}
+			if err := validateMCPListenerOrigins(listenerAllowedOrigins); err != nil {
+				return err
+			}
+			listenerAuthToken, err := readMCPListenerTokenFile(listenerAuthTokenFile)
+			if err != nil {
+				return err
+			}
+			if err := validateMCPListenerBoundary(listenAddr, listenerAuthToken, listenerAllowUnauthenticated); err != nil {
+				return err
 			}
 			if adaptiveResetFile != "" && runtime.GOOS == "windows" {
 				// The reset file authorizes a privilege de-escalation; its owner
@@ -1150,8 +1185,8 @@ Key-free evidence capture:
 				if headerErr != nil {
 					return headerErr
 				}
-				if len(extraHeaders) > 0 && (hasListen || isWSUpstream) {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --header is only honored in stdio-to-HTTP --upstream mode; ignored for --listen and ws/wss upstreams")
+				if len(extraHeaders) > 0 && isWSUpstream {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --header is only honored for HTTP upstreams; ignored for ws/wss upstreams")
 				}
 
 				ctx, cancel := signal.NotifyContext(heartbeatCtx, syscall.SIGINT, syscall.SIGTERM)
@@ -1183,7 +1218,11 @@ Key-free evidence capture:
 						return adaptiveCfg
 					})
 					listenerOpts := mcp.MCPProxyOpts{
-						Scanner: sc, Approver: approver,
+						ListenerBearerToken:          listenerAuthToken,
+						ListenerAllowedOrigins:       listenerAllowedOrigins,
+						ListenerAllowUnauthenticated: listenerAllowUnauthenticated,
+						UpstreamHeaders:              extraHeaders,
+						Scanner:                      sc, Approver: approver,
 						InputCfg: inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1202,6 +1241,11 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
+					}
+					if listenerAuthTokenFile != "" {
+						listenerOpts.ListenerBearerTokenFn = func() (string, error) {
+							return readMCPListenerTokenFile(listenerAuthTokenFile)
+						}
 					}
 					applyMCPResponseSuppressOpts(&listenerOpts, cfg, serverName)
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
@@ -1631,6 +1675,9 @@ Key-free evidence capture:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
+	cmd.Flags().StringVar(&listenerAuthTokenFile, "listener-auth-token-file", "", "secure file containing the HTTP listener bearer token")
+	cmd.Flags().StringArrayVar(&listenerAllowedOrigins, "listener-allowed-origin", nil, "browser Origin allowed to call the HTTP listener (repeatable, exact serialized origin)")
+	cmd.Flags().BoolVar(&listenerAllowUnauthenticated, "listener-allow-unauthenticated", false, "explicitly allow a non-loopback listener without authentication (network-policy-isolated deployments only)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
 	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")

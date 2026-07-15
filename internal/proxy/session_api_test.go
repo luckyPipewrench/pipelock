@@ -1266,6 +1266,7 @@ func TestDecodeJSONBody(t *testing.T) {
 		{name: "valid", body: `{"name":"alice"}`, wantErr: false, wantVal: "alice"},
 		{name: "empty_body", body: "", wantErr: false, wantVal: ""},
 		{name: "unknown_field", body: `{"name":"x","extra":1}`, wantErr: true},
+		{name: "duplicate_field", body: `{"name":"alice","name":"alice"}`, wantErr: true},
 		{name: "trailing_data", body: `{"name":"a"}garbage`, wantErr: true},
 		{name: "malformed", body: `{bad`, wantErr: true},
 	}
@@ -1314,6 +1315,18 @@ func TestDecodeJSONBody_SizeLimit(t *testing.T) {
 	err := decodeJSONBody(req, &v)
 	if err == nil {
 		t.Fatal("expected decode error on oversized body, got nil")
+	}
+}
+
+func TestDecodeJSONBodyRejectsValidPrefixHiddenAtSizeLimit(t *testing.T) {
+	prefix := `{"name":"alice"}`
+	body := prefix + strings.Repeat(" ", sessionAPIMaxBodyBytes-len(prefix)) + `X`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", strings.NewReader(body))
+	var v struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSONBody(req, &v); err == nil {
+		t.Fatal("accepted oversized body whose valid prefix ended at the byte ceiling")
 	}
 }
 

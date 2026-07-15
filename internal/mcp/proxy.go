@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -369,6 +370,21 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			continue
 		}
 		line = mediaResult.Line
+
+		// Reject ambiguous/malformed JSON before any provenance, tool-baseline,
+		// capture, or adaptive side effect. The later response scanner also
+		// rejects duplicates, but tool scanning intentionally runs first; without
+		// this preflight an ultimately-blocked tools/list document could still
+		// seed the session binding baseline before the parser error was observed.
+		if err := jsonscan.RejectDuplicateKeys(line); err != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: invalid or ambiguous JSON before tool processing: %v\n", lineNum, err)
+			resp := blockResponseReason(recoverTopLevelJSONRPCID(line), "upstream response is not unambiguous JSON")
+			if err := writer.WriteMessage(resp); err != nil {
+				return foundInjection, fmt.Errorf("writing preflight JSON block: %w", err)
+			}
+			emitTrackedOutcome("error", "parse_error", resp)
+			continue
+		}
 
 		// Tool scanning runs first. tools/list responses contain instructional
 		// text ("you must call this tool") that the general injection scanner

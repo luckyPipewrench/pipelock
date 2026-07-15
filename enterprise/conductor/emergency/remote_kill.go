@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 var (
@@ -287,8 +289,18 @@ func readRemoteKillStateFile(clean string) (remoteKillState, error) {
 		return remoteKillState{}, fmt.Errorf("open conductor remote kill state: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxRemoteKillStateBytes+1))
+	if err != nil {
+		return remoteKillState{}, fmt.Errorf("read conductor remote kill state: %w", err)
+	}
+	if len(data) > maxRemoteKillStateBytes {
+		return remoteKillState{}, fmt.Errorf("conductor remote kill state too large")
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return remoteKillState{}, fmt.Errorf("decode conductor remote kill state: %w", err)
+	}
 	var state remoteKillState
-	decoder := json.NewDecoder(io.LimitReader(file, maxRemoteKillStateBytes+1))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&state); err != nil {
 		return remoteKillState{}, fmt.Errorf("decode conductor remote kill state: %w", err)
@@ -564,7 +576,7 @@ func remoteKillReplayContextPresent(path string) (bool, error) {
 }
 
 func readRemoteKillStateContext(path string) (bool, error) {
-	data, err := os.ReadFile(filepath.Clean(remoteKillStateContextPath(path))) // #nosec G304 -- path derives from configured local replay-state path
+	data, err := securefile.Read(remoteKillStateContextPath(path), securefile.Options{MaxBytes: maxRemoteKillStateBytes, DisallowedPerms: 0o037})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -572,6 +584,9 @@ func readRemoteKillStateContext(path string) (bool, error) {
 		return false, fmt.Errorf("read conductor remote kill state context: %w", err)
 	}
 	var ctx remoteKillStateContext
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return false, fmt.Errorf("parse conductor remote kill state context: %w", err)
+	}
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		return false, fmt.Errorf("parse conductor remote kill state context: %w", err)
 	}

@@ -24,20 +24,23 @@ import (
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/enrollmentclient"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
-	proofSessionID   = "bootstrap-proof"
-	proofEntryType   = "bootstrap_demo"
-	proofTransport   = "bootstrap"
-	enrollTokenID    = "bootstrap-enroll-1"
-	enrollTokenTTL   = 5 * time.Minute
-	proofHTTPTimeout = 20 * time.Second
-	proofReadyTries  = 50
-	proofReadyDelay  = 20 * time.Millisecond
+	proofSessionID    = "bootstrap-proof"
+	proofEntryType    = "bootstrap_demo"
+	proofTransport    = "bootstrap"
+	enrollTokenID     = "bootstrap-enroll-1"
+	enrollTokenTTL    = 5 * time.Minute
+	proofHTTPTimeout  = 20 * time.Second
+	proofReadyTries   = 50
+	proofReadyDelay   = 20 * time.Millisecond
+	proofJSONMaxBytes = 1 << 20
 )
 
 // ProofResult records what the live round-trip proved. Every field is evidence
@@ -403,13 +406,16 @@ func (c *proofCaller) awaitCapabilities(ctx context.Context) error {
 			}
 			continue
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		body, readErr := readProofResponse(resp.Body, 1<<16)
 		_ = resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("read capabilities: %w", readErr)
+		}
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("capabilities status %d: %s", resp.StatusCode, snippet(body))
 		}
 		var caps conductorcore.CapabilitiesResponse
-		if err := json.Unmarshal(body, &caps); err != nil {
+		if err := contract.DecodeStrictJSON(body, &caps); err != nil {
 			return fmt.Errorf("decode capabilities: %w", err)
 		}
 		if err := caps.Validate(); err != nil {
@@ -433,19 +439,23 @@ func (c *proofCaller) enroll(ctx context.Context, opts Options, identity control
 	if err != nil {
 		return err
 	}
-	tokenBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	tokenBody, readErr := readProofResponse(resp.Body, 1<<16)
 	_ = resp.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read enrollment token: %w", readErr)
+	}
 	if resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("create enrollment token status %d: %s", resp.StatusCode, snippet(tokenBody))
 	}
-	var issued struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(tokenBody, &issued); err != nil {
+	var issued issuedEnrollmentTokenResponse
+	if err := contract.DecodeStrictJSON(tokenBody, &issued); err != nil {
 		return fmt.Errorf("decode enrollment token: %w", err)
 	}
 	if issued.Token == "" {
 		return errors.New("conductor returned an empty enrollment token")
+	}
+	if issued.TokenID != enrollTokenID || issued.ExpiresAt.IsZero() {
+		return errors.New("conductor enrollment token response does not match the requested token")
 	}
 
 	enrollReq := map[string]any{
@@ -457,10 +467,22 @@ func (c *proofCaller) enroll(ctx context.Context, opts Options, identity control
 	if err != nil {
 		return err
 	}
-	enrollBody, _ := io.ReadAll(io.LimitReader(enrollResp.Body, 1<<16))
+	enrollBody, readErr := readProofResponse(enrollResp.Body, 1<<16)
 	_ = enrollResp.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read enrollment response: %w", readErr)
+	}
 	if enrollResp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("enroll status %d: %s", enrollResp.StatusCode, snippet(enrollBody))
+	}
+	var enrolled enrollmentclient.Response
+	if err := contract.DecodeStrictJSON(enrollBody, &enrolled); err != nil {
+		return fmt.Errorf("decode enrollment response: %w", err)
+	}
+	if enrolled.OrgID != identity.OrgID || enrolled.FleetID != identity.FleetID ||
+		enrolled.InstanceID != identity.InstanceID || enrolled.Environment != identity.Environment ||
+		enrolled.AuditKeyID != auditKeyID || enrolled.EnrolledAt.IsZero() {
+		return errors.New("conductor enrollment response does not match requested follower identity")
 	}
 	return nil
 }
@@ -474,13 +496,16 @@ func (c *proofCaller) ingestBatch(ctx context.Context, batch auditbatcher.Batch)
 	if err != nil {
 		return 0, ingestResponse{}, err
 	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	raw, readErr := readProofResponse(resp.Body, 1<<16)
 	_ = resp.Body.Close()
+	if readErr != nil {
+		return 0, ingestResponse{}, fmt.Errorf("read ingest response: %w", readErr)
+	}
 	if resp.StatusCode != http.StatusAccepted {
 		return resp.StatusCode, ingestResponse{}, fmt.Errorf("ingest rejected: %s", snippet(raw))
 	}
 	var out ingestResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := contract.DecodeStrictJSON(raw, &out); err != nil {
 		return resp.StatusCode, ingestResponse{}, fmt.Errorf("decode ingest response: %w", err)
 	}
 	return resp.StatusCode, out, nil
@@ -492,17 +517,46 @@ func (c *proofCaller) queryBatch(ctx context.Context, identity controlplane.Foll
 	if err != nil {
 		return false, err
 	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, readErr := readProofResponse(resp.Body, proofJSONMaxBytes)
 	_ = resp.Body.Close()
+	if readErr != nil {
+		return false, fmt.Errorf("read audit query: %w", readErr)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("audit query status %d: %s", resp.StatusCode, snippet(raw))
 	}
+	var listed struct {
+		Batches []controlplane.AuditBatchSummary `json:"batches"`
+		Count   int                              `json:"count"`
+	}
+	if err := contract.DecodeStrictJSON(raw, &listed); err != nil {
+		return false, fmt.Errorf("decode audit query: %w", err)
+	}
+	if listed.Count != len(listed.Batches) {
+		return false, fmt.Errorf("audit query count %d does not match %d batches", listed.Count, len(listed.Batches))
+	}
+	for _, batch := range listed.Batches {
+		if batch.BatchID == batchID {
+			return true, nil
+		}
+	}
 	// The metadata-only query returns the accepted batch summaries; the proof
-	// batch must appear by id.
-	if !bytes.Contains(raw, []byte(batchID)) {
+	// batch must appear as an exact id, not merely as a substring elsewhere.
+	if batchID != "" {
 		return false, fmt.Errorf("queried audit batches do not include proof batch %q", batchID)
 	}
-	return true, nil
+	return false, errors.New("proof batch id is empty")
+}
+
+func readProofResponse(body io.Reader, maxBytes int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 
 func (c *proofCaller) do(ctx context.Context, method, path, bearer string, body any) (*http.Response, error) {
@@ -529,11 +583,18 @@ func (c *proofCaller) do(ctx context.Context, method, path, bearer string, body 
 }
 
 type ingestResponse struct {
+	Status       string    `json:"status"`
 	BatchID      string    `json:"batch_id"`
 	EnvelopeHash string    `json:"envelope_hash"`
 	SeqStart     uint64    `json:"seq_start"`
 	SeqEnd       uint64    `json:"seq_end"`
 	AcceptedAt   time.Time `json:"accepted_at"`
+}
+
+type issuedEnrollmentTokenResponse struct {
+	TokenID   string    `json:"token_id"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 func snippet(b []byte) string {

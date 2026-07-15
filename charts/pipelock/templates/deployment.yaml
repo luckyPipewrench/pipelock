@@ -47,6 +47,17 @@ spec:
             - {{ .Values.mcp.listen | quote }}
             - --mcp-upstream
             - {{ .Values.mcp.upstream | quote }}
+            {{- with .Values.mcp.authTokenFile }}
+            - --mcp-auth-token-file
+            - {{ . | quote }}
+            {{- end }}
+            {{- range .Values.mcp.allowedOrigins }}
+            - --mcp-allowed-origin
+            - {{ . | quote }}
+            {{- end }}
+            {{- if .Values.mcp.allowUnauthenticated }}
+            - --mcp-allow-unauthenticated
+            {{- end }}
             {{- end }}
           ports:
             - name: http

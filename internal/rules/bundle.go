@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,6 +52,7 @@ type Rule struct {
 type RulePattern struct {
 	Regex     string `yaml:"regex"`
 	ScanField string `yaml:"scan_field"`
+	Validator string `yaml:"validator,omitempty"`
 	// ExemptDomains is accepted for v1 parse compatibility but silently
 	// ignored at runtime. External bundle rules are deny-only - exemptions
 	// must be configured in the local pipelock config, not in bundles.
@@ -350,6 +352,17 @@ func validatePattern(p *RulePattern, ruleType, ruleID string) error {
 
 	if _, err := regexp.Compile(p.Regex); err != nil {
 		return fmt.Errorf("invalid regex for rule %q: %w", ruleID, err)
+	}
+
+	if p.Validator != "" {
+		if ruleType != RuleTypeDLP {
+			return fmt.Errorf("validator is only valid for %s rules (rule %q)", RuleTypeDLP, ruleID)
+		}
+		switch p.Validator {
+		case config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorABA, config.ValidatorWIF:
+		default:
+			return fmt.Errorf("invalid validator %q for rule %q", p.Validator, ruleID)
+		}
 	}
 
 	// scan_field validation for tool-poison rules.

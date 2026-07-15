@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -172,7 +173,7 @@ func newConductorClient(opts clientOptions) (*conductorClient, error) {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, errors.New("--ca-file contains no PEM certificates")
 	}
-	cert, err := tls.LoadX509KeyPair(filepath.Clean(opts.clientCertFile), filepath.Clean(opts.clientKeyFile))
+	cert, err := tlsfile.LoadX509KeyPair(opts.clientCertFile, opts.clientKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load operator client certificate: %w", err)
 	}
@@ -286,18 +287,7 @@ func readClientBody(r io.Reader) ([]byte, error) {
 }
 
 func readClientTokenFile(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", errors.New("--token-file is required")
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("read --token-file: %w", err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", errors.New("--token-file is empty")
-	}
-	return token, nil
+	return readSecureTokenFile("--token-file", path)
 }
 
 func clientSnippet(b []byte, secrets ...string) string {

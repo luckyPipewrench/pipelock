@@ -313,6 +313,11 @@ func TestParse_Errors(t *testing.T) {
 			wantErr: "unmarshal manifest",
 		},
 		{
+			name:    "duplicate session id",
+			data:    []byte(`{"schema_version":1,"session_id":"first","session_id":"second","transport":"mcp_stdio"}`),
+			wantErr: "duplicate",
+		},
+		{
 			name:    "missing session_id",
 			data:    []byte(`{"schema_version":1,"session_id":"","transport":"mcp_stdio"}`),
 			wantErr: "session_id is required",

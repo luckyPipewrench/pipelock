@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
@@ -298,6 +299,16 @@ func TestVerifyPacketBytes_BrowserBundlePath(t *testing.T) {
 	if err := VerifyPacketBytes(tamperedJSON, evidenceJSONL, eng.PublicKeyHex()); err == nil ||
 		!strings.Contains(err.Error(), "evidence artifact path") {
 		t.Fatalf("evidence path mismatch error = %v", err)
+	}
+}
+
+func TestVerifyPacketBytesRejectsOversizeBeforeParsing(t *testing.T) {
+	oversize := make([]byte, recorder.MaxEvidenceReadFileBytes+1)
+	if err := VerifyPacketBytes(oversize, []byte("{}"), strings.Repeat("00", 32)); err == nil || !strings.Contains(err.Error(), "packet.json exceeds") {
+		t.Fatalf("oversize packet error = %v", err)
+	}
+	if err := VerifyPacketBytes([]byte("{}"), oversize, strings.Repeat("00", 32)); err == nil || !strings.Contains(err.Error(), "evidence.jsonl exceeds") {
+		t.Fatalf("oversize evidence error = %v", err)
 	}
 }
 

@@ -1088,6 +1088,26 @@ func TestParseHeaderFlags(t *testing.T) {
 			input:   []string{"Host: evil.example"},
 			wantErr: `--header "Host: evil.example": "Host" is managed by the MCP HTTP transport and cannot be overridden via --header`,
 		},
+		{
+			name:    "duplicate authorization rejected",
+			input:   []string{"Authorization: Bearer first", "authorization: Bearer second"},
+			wantErr: `--header "authorization: Bearer second": duplicate header "Authorization" is ambiguous`,
+		},
+		{
+			name:    "duplicate protocol version rejected",
+			input:   []string{"Mcp-Protocol-Version: 2025-03-26", "mcp-protocol-version: 2025-06-18"},
+			wantErr: `--header "mcp-protocol-version: 2025-06-18": duplicate header "Mcp-Protocol-Version" is ambiguous`,
+		},
+		{
+			name:    "duplicate A2A version rejected",
+			input:   []string{"A2A-Version: 0.3", "a2a-version: 1.0"},
+			wantErr: `--header "a2a-version: 1.0": duplicate header "A2a-Version" is ambiguous`,
+		},
+		{
+			name:    "duplicate A2A extensions rejected",
+			input:   []string{"A2A-Extensions: urn:one", "a2a-extensions: urn:two"},
+			wantErr: `--header "a2a-extensions: urn:two": duplicate header "A2a-Extensions" is ambiguous`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1446,6 +1466,10 @@ func TestReadHeaderFile_Strict(t *testing.T) {
 	// 0o644 (world-readable) is rejected.
 	loose := filepath.Join(dir, "loose.headers")
 	if err := os.WriteFile(loose, []byte("X-Foo: bar\n"), 0o644); err != nil { //nolint:gosec // intentionally loose for the rejection test
+		t.Fatal(err)
+	}
+	worldReadableMode := os.FileMode(0o600 | 0o044)
+	if err := os.Chmod(loose, worldReadableMode); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readHeaderFile(loose); err == nil {

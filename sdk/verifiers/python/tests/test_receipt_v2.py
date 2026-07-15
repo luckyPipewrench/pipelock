@@ -63,6 +63,18 @@ def test_valid_plain_v2_receipt_verifies() -> None:
     assert report["policy_hash"] == V2_GOLDEN_POLICY_HASH
 
 
+def test_receipt_rejects_number_outside_cross_language_range(tmp_path: Path) -> None:
+    text = VALID_PLAIN_V2.read_text()
+    poisoned = text.replace('"chain_seq": 1', '"chain_seq": 9007199254740993')
+    assert poisoned != text
+    path = tmp_path / "unsafe-number.json"
+    path.write_text(poisoned)
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "cross-language exact range" in report["error"]
+
+
 def test_valid_v1_run_nonce_receipt_verifies() -> None:
     report = verify_receipt_file(CORPUS / "golden/11-run-nonce-bound.json", CORPUS_KEY)
     assert report["valid"] is True, report.get("error")
@@ -598,6 +610,23 @@ def test_mixed_action_and_evidence_chain_rejects_controlled(tmp_path: Path) -> N
         assert "mixed action/evidence receipt chains are not supported" in str(exc)
     else:
         raise AssertionError("mixed chain unexpectedly loaded")
+
+
+def test_jsonl_chain_rejects_number_outside_cross_language_range(
+    tmp_path: Path,
+) -> None:
+    text = (TESTDATA / "g1-valid-chain.jsonl").read_text()
+    poisoned = text.replace('"chain_seq":0', '"chain_seq":9007199254740993', 1)
+    assert poisoned != text
+    path = tmp_path / "unsafe-chain.jsonl"
+    path.write_text(poisoned)
+
+    try:
+        load_evidence_chain(path)
+    except ReceiptError as exc:
+        assert "cross-language exact range" in str(exc)
+    else:
+        raise AssertionError("unsafe JSONL number unexpectedly loaded")
 
 
 def test_v2_tampered_chain_fails_closed() -> None:

@@ -27,7 +27,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 // sinkReadyHook, when non-nil, is invoked after the store, handler, and
@@ -111,6 +113,13 @@ func SinkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if tlsCert != "" {
+				identity, loadErr := tlsfile.LoadX509KeyPair(tlsCert, tlsKey)
+				if loadErr != nil {
+					return fmt.Errorf("load fleet sink TLS identity: %w", loadErr)
+				}
+				tlsConfig.Certificates = []tls.Certificate{identity}
+			}
 			server.TLSConfig = tlsConfig
 
 			probeHandler := newProbeHandler()
@@ -169,7 +178,7 @@ func SinkCmd() *cobra.Command {
 			go func() {
 				var err error
 				if tlsCert != "" || tlsKey != "" {
-					err = server.ServeTLS(ln, tlsCert, tlsKey)
+					err = server.ServeTLS(ln, "", "")
 				} else {
 					err = server.Serve(ln)
 				}
@@ -342,7 +351,7 @@ func loadReaderToken(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: 64 << 10, DisallowedPerms: 0o027})
 	if err != nil {
 		return "", fmt.Errorf("read reader token file: %w", err)
 	}

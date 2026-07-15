@@ -3516,6 +3516,10 @@ func TestBaseline_VerifyIntegrityManifestRejectsMalformedFiles(t *testing.T) {
 		}
 		return data
 	}
+	manifestJSON, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name string
@@ -3523,6 +3527,7 @@ func TestBaseline_VerifyIntegrityManifestRejectsMalformedFiles(t *testing.T) {
 	}{
 		{name: "invalid_json", data: []byte("{")},
 		{name: "trailing_data", data: append(mustJSON(t, integrityManifestFile{Manifest: valid, HMAC: mac}), []byte("\n{}")...)},
+		{name: "duplicate_manifest", data: []byte(fmt.Sprintf(`{"manifest":%s,"manifest":%s,"hmac_sha256":%q}`, manifestJSON, manifestJSON, mac))},
 		{name: "wrong_schema", data: mustJSON(t, integrityManifestFile{Manifest: integrityManifest{SchemaVersion: 99, Algorithm: integrityManifestAlg}, HMAC: mac})},
 		{name: "wrong_algorithm", data: mustJSON(t, integrityManifestFile{Manifest: integrityManifest{SchemaVersion: integrityManifestVersion, Algorithm: "none"}, HMAC: mac})},
 		{name: "bad_hmac_hex", data: mustJSON(t, integrityManifestFile{Manifest: valid, HMAC: "not-hex"})},

@@ -84,18 +84,18 @@ Define patterns for detecting secrets and sensitive data in URLs, request bodies
 
 ```yaml
 dlp:
-  scan_environment: true       # Check env vars for leaked values
-  min_env_length: 16           # Min env var value length to flag
+  scan_env: true               # Check env vars for leaked values
+  min_env_secret_length: 16    # Min env var value length to flag
   patterns:
+    # A per-pattern action may only DOWNGRADE to warn; block comes from the
+    # global dlp action, which these patterns inherit by omitting action.
     - name: "Anthropic API Key"
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
-      action: block
 
     - name: "AWS Access Key"
       regex: '(AKIA|ASIA)[A-Z0-9]{16,}'
       severity: critical
-      action: block
 
     - name: "Credential in URL"
       regex: '(password|token|secret|api_?key)=[^\s&]{8,}'
@@ -110,7 +110,7 @@ dlp:
 | `name` | string | yes | Pattern identifier (used in audit events) |
 | `regex` | string | yes | Case-insensitive regex |
 | `severity` | string | yes | `critical`, `high`, `medium`, `low` |
-| `action` | string | no | `block` or `warn` (overrides global DLP action) |
+| `action` | string | no | `warn` only. A per-pattern action may downgrade the global DLP action but never raise it, so `block` and `strip` are rejected. Omit to inherit the global action. |
 
 Regexes are always applied case-insensitive. Implementations should support at minimum: PCRE-compatible syntax, character classes, alternation, and quantifiers.
 

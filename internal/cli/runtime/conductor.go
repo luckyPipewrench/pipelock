@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
 
 const (
@@ -600,7 +601,7 @@ func buildConductorTrustResolver(cfg config.Conductor, now func() time.Time) (co
 }
 
 func newConductorMTLSClient(cfg config.Conductor) (*http.Client, error) {
-	cert, err := tls.LoadX509KeyPair(filepath.Clean(cfg.ClientCertPath), filepath.Clean(cfg.ClientKeyPath))
+	cert, err := tlsfile.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading conductor mTLS client certificate: %w", err)
 	}

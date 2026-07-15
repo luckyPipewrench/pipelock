@@ -43,6 +43,7 @@ const (
 	// unset. Pipelock Rekor submissions use Ed25519 keys; Rekor v1 validates
 	// those hashedrekord signatures as Ed25519ph over a SHA-512 digest.
 	rekorDefaultSubmitHashAlgorithm = rekorSHA512Algorithm
+	rekorMaxResponseBytes           = 10 << 20
 
 	// DefaultRekorHashAlgorithm is the hashedrekord data.hash.algorithm used
 	// when RekorLog.HashAlgorithm is unset. It is exported so CLI defaults stay
@@ -201,9 +202,12 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 		return Proof{}, fmt.Errorf("submit rekor entry: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, rekorMaxResponseBytes+1))
 	if err != nil {
 		return Proof{}, fmt.Errorf("read rekor response: %w", err)
+	}
+	if len(respBody) > rekorMaxResponseBytes {
+		return Proof{}, fmt.Errorf("read rekor response: exceeds %d bytes", rekorMaxResponseBytes)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return Proof{}, fmt.Errorf("rekor submit status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))

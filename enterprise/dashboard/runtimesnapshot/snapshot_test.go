@@ -49,8 +49,8 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat snapshot dir: %v", err)
 	}
-	if got := dirInfo.Mode().Perm(); got != 0o750 {
-		t.Fatalf("snapshot dir mode = %04o, want 0750", got)
+	if got := dirInfo.Mode().Perm(); got&0o027 != 0 || got&0o700 != 0o700 {
+		t.Fatalf("snapshot dir mode = %04o, want private owner-accessible directory", got)
 	}
 
 	got, fresh, err := Read(path, time.Minute, now.Add(5*time.Second))

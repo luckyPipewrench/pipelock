@@ -59,13 +59,7 @@ Every bundle declares a `tier`. Tiers describe source and trust, not rule qualit
 | `community` | Community contributors via `pipelock-community` | Signed with the production key; reviewed in the public bundle repo |
 | `pro` | Paid-tier customers (future) | Signed with a delegated per-tier key; gated by license when loaded |
 
-The core scanner runs before any bundle and cannot be replaced or disabled. Standard-tier rules load from the binary embed by default. To override the standard tier from disk, set the source path:
-
-```yaml
-rules:
-  standard_dlp_source: /path/to/standard-dlp.yaml
-  standard_response_source: /path/to/standard-response.yaml
-```
+The core scanner runs before any bundle and cannot be replaced or disabled. Standard-tier rules load from the binary embed and cannot be replaced from disk either: there is no config field that repoints them, which is what keeps a writable path from swapping out standard detection. `pipelock rules status` reports the tier's origin in its `standard_dlp_source` and `standard_response_source` output fields.
 
 Bundles cannot override or disable the core or standard tiers. They only extend detection.
 
@@ -148,7 +142,9 @@ pipelock rules install --source https://example.com/finance-pii/bundle.yaml fina
 
 `pipelock rules list` shows every installed bundle with its tier, version, and rule counts. Bundles are additive — they cannot override or disable the core or standard tiers, and they cannot override each other; identical rules across bundles dedupe at load time.
 
-> The `healthcare-phi-pii` community bundle is staged and pending CLA before publication. It will appear in the official bundle list once the contributor agreement lands.
+The official registry also publishes the independently versioned
+`healthcare-phi-pii` community bundle for regex-detectable healthcare and
+financial identifiers.
 
 ## Verifying Signatures
 
@@ -186,6 +182,11 @@ rules:
     pattern:
       regex: 'vendor_[a-zA-Z0-9]{32}'
 ```
+
+DLP rules may set `pattern.validator` to `luhn`, `mod97`, `aba`, or `wif` when
+the identifier carries that checksum. Pipelock applies the validator after a
+regex match, so malformed lookalikes do not become DLP findings. Bundle
+validators require Pipelock 3.2 or newer; set `min_pipelock` accordingly.
 
 `format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `monotonic_version`, `published_at`, and `expires_at`.
 

@@ -29,6 +29,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	appconfig "github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // safeAgentKeyRe restricts agent keys to alphanumeric, hyphens, underscores,
@@ -973,6 +974,9 @@ func (m *Manager) readIntegrityHighWater(key []byte) (uint64, string, bool, erro
 		return 0, "", false, err
 	}
 	var state integrityHighWaterState
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return 0, "", false, fmt.Errorf("parse baseline integrity generation high-water: %w", err)
+	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return 0, "", false, fmt.Errorf("parse baseline integrity generation high-water: %w", err)
 	}
@@ -1476,6 +1480,9 @@ func verifyIntegrityManifest(data, key []byte) (integrityManifest, error) {
 }
 
 func verifyIntegrityManifestWithHMAC(data, key []byte) (integrityManifest, string, error) {
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return integrityManifest{}, "", fmt.Errorf("decoding integrity manifest: %w", err)
+	}
 	var file integrityManifestFile
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -1704,6 +1711,9 @@ func (m *Manager) verifyPersistedProfileIntegrity(agentKey string) error {
 			return fmt.Errorf("pending baseline profile %q hash mismatch against integrity manifest", agentKey)
 		}
 		var profile Profile
+		if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+			return fmt.Errorf("parsing pending baseline profile %q required by integrity manifest: %w", agentKey, err)
+		}
 		if err := json.Unmarshal(data, &profile); err != nil {
 			return fmt.Errorf("parsing pending baseline profile %q required by integrity manifest: %w", agentKey, err)
 		}
@@ -1795,6 +1805,10 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 			return nil, m.logIntegrityVerificationFailure("hash_mismatch", err, "agent_key", expected.AgentKey, "generation", manifest.Generation)
 		}
 		var profile Profile
+		if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+			err := fmt.Errorf("parsing integrity-bound baseline profile %q required by integrity manifest: %w", expected.AgentKey, err)
+			return nil, m.logIntegrityVerificationFailure("profile_parse_failed", err, "agent_key", expected.AgentKey, "generation", manifest.Generation)
+		}
 		if err := json.Unmarshal(data, &profile); err != nil {
 			err := fmt.Errorf("parsing integrity-bound baseline profile %q required by integrity manifest: %w", expected.AgentKey, err)
 			return nil, m.logIntegrityVerificationFailure("profile_parse_failed", err, "agent_key", expected.AgentKey, "generation", manifest.Generation)
@@ -1874,6 +1888,18 @@ func (m *Manager) loadProfiles() error {
 				continue
 			}
 
+			if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+				if m.cfg.enforces() {
+					err := fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with an ambiguous profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+					return m.logIntegrityVerificationFailure("profile_parse_failed", err, "profile", entry.Name())
+				}
+				slog.Warn("skipping corrupt persisted baseline profile", sanitizeLogAttrs([]any{
+					"profile", entry.Name(),
+					"deviation_action", m.cfg.DeviationAction,
+					"error", err,
+				})...)
+				continue
+			}
 			if err := json.Unmarshal(data, &profile); err != nil {
 				if m.cfg.enforces() {
 					err := fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with a corrupt profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)

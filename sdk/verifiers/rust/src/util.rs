@@ -79,6 +79,7 @@ pub fn reject_duplicate_keys(text: &str) -> Result<()> {
 }
 
 const MAX_NESTING_DEPTH: usize = 128;
+const MAX_EXACT_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
 /// NoDup deserializes any JSON value purely to assert there are no duplicate
 /// object keys; it carries no data.
@@ -154,24 +155,39 @@ impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
                 Ok(())
             }
 
-            fn visit_i64<E>(self, _v: i64) -> std::result::Result<(), E>
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<(), E>
             where
                 E: de::Error,
             {
+                if v.unsigned_abs() > MAX_EXACT_JSON_INTEGER {
+                    return Err(de::Error::custom(format!(
+                        "JSON number {v} exceeds cross-language exact range"
+                    )));
+                }
                 Ok(())
             }
 
-            fn visit_u64<E>(self, _v: u64) -> std::result::Result<(), E>
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<(), E>
             where
                 E: de::Error,
             {
+                if v > MAX_EXACT_JSON_INTEGER {
+                    return Err(de::Error::custom(format!(
+                        "JSON number {v} exceeds cross-language exact range"
+                    )));
+                }
                 Ok(())
             }
 
-            fn visit_f64<E>(self, _v: f64) -> std::result::Result<(), E>
+            fn visit_f64<E>(self, v: f64) -> std::result::Result<(), E>
             where
                 E: de::Error,
             {
+                if v.abs() > MAX_EXACT_JSON_INTEGER as f64 {
+                    return Err(de::Error::custom(format!(
+                        "JSON number {v} exceeds cross-language exact range"
+                    )));
+                }
                 Ok(())
             }
 
@@ -347,4 +363,19 @@ pub fn string_vec_at(value: &Value, path: &[&str]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_duplicate_keys;
+
+    #[test]
+    fn rejects_numbers_outside_cross_language_exact_range() {
+        let err = reject_duplicate_keys(r#"{"count":9007199254740993}"#)
+            .expect_err("unsafe integer must be rejected");
+        assert!(err.to_string().contains("cross-language exact range"));
+
+        reject_duplicate_keys(r#"{"count":9007199254740991}"#)
+            .expect("maximum exact integer must remain valid");
+    }
 }

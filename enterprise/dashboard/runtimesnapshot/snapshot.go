@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -171,6 +172,9 @@ func Read(path string, maxAge time.Duration, now time.Time) (Envelope, Freshness
 	}
 	if len(data) > MaxFileBytes {
 		return Envelope{}, Freshness{}, fmt.Errorf("%w: exceeded %d bytes", ErrOversized, MaxFileBytes)
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return Envelope{}, Freshness{}, fmt.Errorf("%w: %w", ErrMalformed, err)
 	}
 
 	var snap Envelope

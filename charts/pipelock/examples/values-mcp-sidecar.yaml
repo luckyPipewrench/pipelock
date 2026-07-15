@@ -9,6 +9,18 @@ mcp:
   enabled: true
   upstream: "http://your-mcp-server.namespace.svc.cluster.local:3000/mcp"
   listen: "0.0.0.0:8889"
+  # The listener is reachable through the Service, so it must either
+  # authenticate or be isolated. This example relies on the NetworkPolicy
+  # below, which admits the MCP port only from pods labelled
+  # pipelock.io/agent-egress=true. On a shared cluster prefer a bearer token:
+  # mount a Secret via extraVolumes/extraVolumeMounts and set
+  # mcp.authTokenFile to its path instead of acknowledging below.
+  allowUnauthenticated: true
+
+# Required by mcp.allowUnauthenticated: restricts the MCP listener to agent pods.
+networkPolicy:
+  enabled: true
+  preset: dev
 
 pipelock:
   mode: balanced

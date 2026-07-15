@@ -4,6 +4,7 @@
 package rules
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -479,6 +480,26 @@ func TestFreshnessState_LoadCorrupt_FailsClosed(t *testing.T) {
 	_, err := LoadFreshnessState(dir)
 	if err == nil {
 		t.Fatal("expected error for corrupt freshness state, got nil")
+	}
+}
+
+func TestFreshnessState_RejectsDuplicateAndOversizedState(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "duplicate floor", body: []byte(`{"highest_seen":{},"highest_seen":{"community:test":99}}`)},
+		{name: "oversized", body: bytes.Repeat([]byte("x"), maxFreshnessStateBytes+1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, freshnessFilename), tt.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFreshnessState(dir); err == nil {
+				t.Fatal("LoadFreshnessState accepted hostile state")
+			}
+		})
 	}
 }
 

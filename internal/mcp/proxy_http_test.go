@@ -2286,6 +2286,267 @@ func TestHTTPListener_HealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_AuthenticationAndOriginFailClosed(t *testing.T) {
+	var upstreamAuthorization, upstreamProxyAuthorization, upstreamProtocolVersion string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAuthorization = r.Header.Get("Authorization")
+		upstreamProxyAuthorization = r.Header.Get(listenerProxyAuthorization)
+		upstreamProtocolVersion = r.Header.Get(listenerProtocolVersion)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                testScannerForHTTP(t),
+		ListenerBearerToken:    "listener-secret",
+		ListenerAllowedOrigins: []string{"https://console.vendor.example"},
+	})
+
+	request := func(proxyAuth, origin string, duplicateAuth bool) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer upstream-secret")
+		req.Header.Set(listenerProtocolVersion, "2025-06-18")
+		if proxyAuth != "" {
+			req.Header.Set(listenerProxyAuthorization, proxyAuth)
+		}
+		if duplicateAuth {
+			req.Header.Add(listenerProxyAuthorization, proxyAuth)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		return status
+	}
+
+	if got := request("", "", false); got != http.StatusProxyAuthRequired {
+		t.Fatalf("missing auth status = %d, want %d", got, http.StatusProxyAuthRequired)
+	}
+	if got := request("Bearer wrong", "", false); got != http.StatusProxyAuthRequired {
+		t.Fatalf("wrong auth status = %d, want %d", got, http.StatusProxyAuthRequired)
+	}
+	if got := request("Bearer listener-secret", "", true); got != http.StatusProxyAuthRequired {
+		t.Fatalf("duplicate auth status = %d, want %d", got, http.StatusProxyAuthRequired)
+	}
+	if got := request("Bearer listener-secret", "https://hostile.example", false); got != http.StatusForbidden {
+		t.Fatalf("hostile origin status = %d, want %d", got, http.StatusForbidden)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+	if err != nil {
+		t.Fatalf("NewRequest duplicate Origin: %v", err)
+	}
+	req.Header.Set(listenerProxyAuthorization, "Bearer listener-secret")
+	req.Header["Origin"] = []string{"https://console.vendor.example", "https://hostile.example"}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("duplicate Origin request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("duplicate Origin status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if got := request("Bearer listener-secret", "https://console.vendor.example", false); got != http.StatusOK {
+		t.Fatalf("authorized status = %d, want %d", got, http.StatusOK)
+	}
+	if upstreamAuthorization != "Bearer upstream-secret" {
+		t.Fatalf("upstream Authorization = %q", upstreamAuthorization)
+	}
+	if upstreamProxyAuthorization != "" {
+		t.Fatalf("listener credential leaked upstream: %q", upstreamProxyAuthorization)
+	}
+	if upstreamProtocolVersion != "2025-06-18" {
+		t.Fatalf("upstream protocol version = %q", upstreamProtocolVersion)
+	}
+}
+
+func TestHTTPListener_BrowserCORSAndAuthorization(t *testing.T) {
+	var upstreamAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	defer upstream.Close()
+
+	const origin = "https://console.vendor.example"
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                testScannerForHTTP(t),
+		ListenerBearerToken:    testGHPPrefix + strings.Repeat("a", 36),
+		ListenerAllowedOrigins: []string{origin},
+		UpstreamHeaders:        http.Header{"Authorization": []string{"Bearer upstream-static"}},
+	})
+
+	preflight, err := http.NewRequestWithContext(context.Background(), http.MethodOptions, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest preflight: %v", err)
+	}
+	preflight.Header.Set("Origin", origin)
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	preflight.Header.Set("Access-Control-Request-Headers", "authorization,content-type,mcp-protocol-version")
+	resp, err := http.DefaultClient.Do(preflight)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("allow origin = %q", got)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+	if err != nil {
+		t.Fatalf("NewRequest POST: %v", err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testGHPPrefix+strings.Repeat("a", 36))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("browser POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("browser POST status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if upstreamAuthorization != "Bearer upstream-static" {
+		t.Fatalf("upstream Authorization = %q, want operator-configured credential", upstreamAuthorization)
+	}
+}
+
+func TestHTTPListener_CORSRejectsUnapprovedRequestedHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("preflight must not reach upstream")
+	}))
+	defer upstream.Close()
+	const origin = "https://console.vendor.example"
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                testScannerForHTTP(t),
+		ListenerBearerToken:    "listener-secret",
+		ListenerAllowedOrigins: []string{origin},
+	})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodOptions, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "x-unapproved-secret-header")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestHTTPListener_RotatesBearerTokenAndFailsClosedOnRefreshError(t *testing.T) {
+	upstreamCalls := atomic.Int32{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	defer upstream.Close()
+
+	var token atomic.Value
+	token.Store("first-token")
+	var refreshErr atomic.Bool
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:             testScannerForHTTP(t),
+		ListenerBearerToken: "first-token",
+		ListenerBearerTokenFn: func() (string, error) {
+			if refreshErr.Load() {
+				return "", errors.New("token source unavailable")
+			}
+			return token.Load().(string), nil
+		},
+	})
+
+	request := func(presented string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerProxyAuthorization, "Bearer "+presented)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+
+	if got := request("first-token"); got != http.StatusOK {
+		t.Fatalf("initial token status = %d", got)
+	}
+	token.Store("second-token")
+	if got := request("first-token"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("revoked token status = %d", got)
+	}
+	if got := request("second-token"); got != http.StatusOK {
+		t.Fatalf("rotated token status = %d", got)
+	}
+	refreshErr.Store(true)
+	if got := request("second-token"); got != http.StatusServiceUnavailable {
+		t.Fatalf("refresh failure status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}
+
+func TestHTTPListener_NonLoopbackRequiresExplicitBoundary(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	err = RunHTTPListenerProxy(context.Background(), ln, "http://127.0.0.1:1", io.Discard, MCPProxyOpts{})
+	if err == nil || !strings.Contains(err.Error(), "requires bearer authentication") {
+		t.Fatalf("RunHTTPListenerProxy error = %v, want authentication requirement", err)
+	}
+}
+
+func TestHTTPListener_RejectsInvalidSecurityInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts MCPProxyOpts
+	}{
+		{name: "token whitespace", opts: MCPProxyOpts{ListenerBearerToken: "bad token"}},
+		{name: "origin path", opts: MCPProxyOpts{ListenerAllowedOrigins: []string{"https://console.vendor.example/path"}}},
+		{name: "opaque origin", opts: MCPProxyOpts{ListenerAllowedOrigins: []string{"null"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			defer func() { _ = ln.Close() }()
+			if err := RunHTTPListenerProxy(context.Background(), ln, "http://127.0.0.1:1", io.Discard, tc.opts); err == nil {
+				t.Fatal("expected security input validation error")
+			}
+		})
+	}
+}
+
 func TestRunHTTPListenerProxy_SessionBindingBlocksNoBaseline(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -3697,6 +3958,36 @@ func TestHTTPListener_HeaderPassthrough(t *testing.T) {
 	}
 	if resp.Header.Get("Mcp-Session-Id") != "sess-response" {
 		t.Errorf("Mcp-Session-Id not returned: got %q", resp.Header.Get("Mcp-Session-Id"))
+	}
+}
+
+func TestHTTPListener_RejectsHostileSessionIDsBeforeUpstream(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), nil, nil, nil)
+	for _, sessionID := range []string{strings.Repeat("x", 257), "contains space"} {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST hostile session ID: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("session ID %q status = %d, want 400", sessionID, resp.StatusCode)
+		}
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
 	}
 }
 

@@ -18,10 +18,14 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 // ManifestVersion is the current manifest schema version.
 const ManifestVersion = 1
+
+const maxManifestBytes = 32 << 20
 
 // DefaultManifestFile is the default manifest filename within a workspace.
 const DefaultManifestFile = ".integrity-manifest.json"
@@ -44,12 +48,15 @@ type FileEntry struct {
 
 // Load reads and parses a manifest from disk.
 func Load(path string) (*Manifest, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestBytes})
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
 
 	var m Manifest
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}

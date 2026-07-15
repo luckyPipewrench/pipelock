@@ -254,3 +254,29 @@ func TestLoadFileMalformedReturnsError(t *testing.T) {
 		t.Fatal("LoadFile error = nil, want parse error")
 	}
 }
+
+func TestLoadFileRejectsOversizedAndEscapingSymlink(t *testing.T) {
+	t.Run("oversized", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "proof.json")
+		if err := os.WriteFile(path, make([]byte, maxRuntimeProofBytes+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(path); err == nil {
+			t.Fatal("LoadFile accepted oversized posture proof")
+		}
+	})
+	t.Run("escaping symlink", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(t.TempDir(), "proof.json")
+		if err := os.WriteFile(target, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(root, "proof.json")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(link); err == nil {
+			t.Fatal("LoadFile accepted symlink escaping the proof directory")
+		}
+	})
+}

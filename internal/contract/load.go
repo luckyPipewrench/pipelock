@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // ErrEmptyPayload rejects empty or JSON-null inputs at the strict transport boundary.
@@ -44,6 +46,9 @@ func DecodeStrictJSON(raw []byte, target any) error {
 	trimmed = bytes.TrimRight(trimmed, " \t\n\r")
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ErrEmptyPayload
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("strict decode: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()

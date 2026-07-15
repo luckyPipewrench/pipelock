@@ -182,9 +182,8 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	deferSection, _ := raw["defer"].(map[string]interface{})
 	setBoolDefault(deferSection, "enabled", &cfg.Defer.Enabled)
 
-	// Learn privacy: public_allowlist_default defaults to true so the
-	// canonical seed allowlist ships when the operator omits the privacy
-	// section or the field. Fail-closed for the privacy enforcer.
+	// Learn privacy: preserve the reserved public_allowlist_default wire shape
+	// and its historical default. The runtime does not consume this field yet.
 	learn, _ := raw["learn"].(map[string]interface{})
 	var privacy map[string]interface{}
 	if learn != nil {

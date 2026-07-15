@@ -143,6 +143,27 @@ func TestEmailSender_Send_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestEmailSender_Send_RejectsDuplicateAndOversizedResponse(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "duplicate id", body: `{"id":"first","id":"second"}`},
+		{name: "oversized valid prefix", body: `{"id":"sent"}` + strings.Repeat(" ", (64*1024)+1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			sender := &EmailSender{apiKey: "key", fromEmail: "from@example.com", client: srv.Client(), apiURL: srv.URL}
+			if _, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro, "cert"); err == nil {
+				t.Fatal("SendLicenseDelivery accepted hostile provider response")
+			}
+		})
+	}
+}
+
 func TestEmailSender_Send_NetworkError(t *testing.T) {
 	// Create a sender pointing at a server that's already closed.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

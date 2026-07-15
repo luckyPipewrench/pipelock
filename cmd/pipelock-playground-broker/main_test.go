@@ -1259,6 +1259,50 @@ func TestCFAccessVerifierErrorsAndCache(t *testing.T) {
 	}
 }
 
+func TestCFAccessRejectsAmbiguousJWTAndJWKS(t *testing.T) {
+	encode := base64.RawURLEncoding.EncodeToString
+	for _, token := range []string{
+		encode([]byte(`{"alg":"RS256","alg":"RS256"}`)) + "." + encode([]byte(`{"sub":"x"}`)) + ".sig",
+		encode([]byte(`{"alg":"RS256"}`)) + "." + encode([]byte(`{"iss":"safe","iss":"unsafe"}`)) + ".sig",
+	} {
+		if err := rejectAmbiguousCompactJWT(token); err == nil {
+			t.Fatal("accepted duplicate JWT header or claim")
+		}
+	}
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate JWKS key: %v", err)
+	}
+	keyJSON, err := json.Marshal([]jose.JSONWebKey{{
+		Key:       &priv.PublicKey,
+		KeyID:     "proof-key",
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}})
+	if err != nil {
+		t.Fatalf("marshal JWKS key: %v", err)
+	}
+	// Both bodies are otherwise valid, non-empty JWKS documents. Before the
+	// ambiguity/size guards, json.Decoder accepted the duplicate last-wins and
+	// accepted the oversized document after decoding its valid prefix. Empty
+	// key arrays would make the old code fail too and prove neither invariant.
+	for _, body := range []string{
+		`{"keys":` + string(keyJSON) + `,"keys":` + string(keyJSON) + `}`,
+		`{"keys":` + string(keyJSON) + `}` + strings.Repeat(" ", (1<<20)),
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		verifier := &cfAccessVerifier{certsURL: server.URL, client: server.Client()}
+		_, err = verifier.fetchKeys(context.Background())
+		server.Close()
+		if err == nil {
+			t.Fatal("accepted duplicate or oversized Cloudflare Access JWKS")
+		}
+	}
+}
+
 func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	t.Parallel()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

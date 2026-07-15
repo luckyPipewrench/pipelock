@@ -37,6 +37,25 @@ func TestEntropyTrackerRecord(t *testing.T) {
 	}
 }
 
+func TestEntropyTrackerOpportunisticCleanup(t *testing.T) {
+	et := NewEntropyTracker(1000, 1)
+	expiredAt := time.Now().Add(-2 * time.Second)
+	et.sessions["expired"] = &entropySession{
+		entries:    []entropyEntry{{bits: 10, timestamp: expiredAt}},
+		lastAccess: expiredAt,
+	}
+	et.lastCleanup = time.Now().Add(-2 * time.Second)
+
+	et.Record("active", []byte("fresh payload"))
+
+	if _, exists := et.sessions["expired"]; exists {
+		t.Fatal("expired entropy session survived opportunistic cleanup")
+	}
+	if _, exists := et.sessions["active"]; !exists {
+		t.Fatal("active entropy session was not preserved")
+	}
+}
+
 func TestEntropyTrackerRecordMatchesShannonEntropy(t *testing.T) {
 	et := NewEntropyTracker(testDefaultBudget, testDefaultWindow)
 	defer et.Close()

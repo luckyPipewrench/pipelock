@@ -5,9 +5,15 @@ package chains
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+)
+
+const (
+	maxTrackedSessions = 4096
+	maxSessionKeyBytes = 256
 )
 
 // Verdict describes the result of checking a tool call against chain patterns.
@@ -25,10 +31,12 @@ type MetricsRecorder interface {
 
 // Matcher tracks tool call history per session and matches against patterns.
 type Matcher struct {
-	cfg      *config.ToolChainDetection
-	patterns []pattern
-	sessions sync.Map // sessionKey -> *sessionHistory
-	metrics  MetricsRecorder
+	cfg          *config.ToolChainDetection
+	patterns     []pattern
+	sessions     sync.Map // sessionKey -> *sessionHistory
+	metrics      MetricsRecorder
+	sessionCount atomic.Int64
+	pruneMu      sync.Mutex
 }
 
 // pattern is an internal compiled representation of a chain pattern.
@@ -178,9 +186,24 @@ func (m *Matcher) Record(sessionKey, toolName string, argHint ...string) Verdict
 	if category == "unknown" && sensitivity == SensitivityNeutral {
 		return Verdict{}
 	}
+	if len(sessionKey) == 0 || len(sessionKey) > maxSessionKeyBytes {
+		return m.recordResourceLimit("session-key-invalid")
+	}
 
 	// Get or create session history.
-	val, _ := m.sessions.LoadOrStore(sessionKey, &sessionHistory{})
+	val, loaded := m.sessions.LoadOrStore(sessionKey, &sessionHistory{})
+	if !loaded {
+		count := m.sessionCount.Add(1)
+		if count%256 == 0 || count > maxTrackedSessions {
+			m.pruneExpiredSessions(time.Now())
+		}
+		if m.sessionCount.Load() > maxTrackedSessions {
+			if _, deleted := m.sessions.LoadAndDelete(sessionKey); deleted {
+				m.sessionCount.Add(-1)
+			}
+			return m.recordResourceLimit("session-capacity")
+		}
+	}
 	sess := val.(*sessionHistory)
 
 	sess.mu.Lock()
@@ -209,7 +232,43 @@ func (m *Matcher) Record(sessionKey, toolName string, argHint ...string) Verdict
 // ClearSession removes all tool call history for the given session key.
 // Safe to call with a non-existent key (no-op).
 func (m *Matcher) ClearSession(sessionKey string) {
-	m.sessions.Delete(sessionKey)
+	if _, deleted := m.sessions.LoadAndDelete(sessionKey); deleted {
+		m.sessionCount.Add(-1)
+	}
+}
+
+func (m *Matcher) pruneExpiredSessions(now time.Time) {
+	m.pruneMu.Lock()
+	defer m.pruneMu.Unlock()
+	cutoff := now.Add(-time.Duration(m.cfg.WindowSeconds) * time.Second)
+	m.sessions.Range(func(key, value any) bool {
+		sess := value.(*sessionHistory)
+		sess.mu.Lock()
+		expired := len(sess.records) > 0 && sess.records[len(sess.records)-1].timestamp.Before(cutoff)
+		sess.mu.Unlock()
+		if expired {
+			if _, deleted := m.sessions.LoadAndDelete(key); deleted {
+				m.sessionCount.Add(-1)
+			}
+		}
+		return true
+	})
+}
+
+func resourceLimitVerdict(pattern string) Verdict {
+	return Verdict{Matched: true, PatternName: pattern, Severity: "critical", Action: "block"}
+}
+
+// recordResourceLimit emits the resource-limit block to metrics before returning
+// it. These verdicts return early, ahead of the match path that records every
+// other detection, so without this an operator whose agents are being blocked by
+// session-capacity sees a block with no counter behind it and no way to diagnose it.
+func (m *Matcher) recordResourceLimit(pattern string) Verdict {
+	v := resourceLimitVerdict(pattern)
+	if m.metrics != nil {
+		m.metrics.RecordChainDetection(v.PatternName, v.Severity, v.Action)
+	}
+	return v
 }
 
 // evict removes stale entries from the session history.

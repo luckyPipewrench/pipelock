@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -402,6 +403,27 @@ func TestFileEnrollmentStoreValidatesInputsAndPersists(t *testing.T) {
 	}
 	if _, err := reopened.ResolveEnrolledAuditKey(FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "other"}, "audit-key-1"); !errors.Is(err, conductor.ErrSignatureVerification) {
 		t.Fatalf("ResolveEnrolledAuditKey(wrong identity) error = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestLoadEnrollmentStateRejectsDuplicateAndOversizedJSON(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		body     string
+		maxBytes int64
+	}{
+		{name: "duplicate", body: `{"tokens":{},"tokens":{},"followers":{},"runtime_status":{}}`, maxBytes: 1024},
+		{name: "oversized", body: `{"tokens":{},"followers":{},"runtime_status":{}}`, maxBytes: 4},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "enrollments.json")
+			if err := os.WriteFile(path, []byte(tt.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadEnrollmentState(path, tt.maxBytes); err == nil {
+				t.Fatal("loadEnrollmentState accepted hostile state")
+			}
+		})
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 const (
@@ -28,6 +29,7 @@ const (
 	// DefaultContainRunProofPath is where `pipelock contain run` writes the
 	// signed runtime posture capsule by default.
 	DefaultContainRunProofPath = "/var/lib/pipelock/contain/posture/proof.json"
+	maxRuntimeProofBytes       = 4 << 20
 )
 
 // LoadRuntime returns the posture binding for the configured runtime proof
@@ -71,7 +73,7 @@ func LoadFile(path string) (receipt.PostureBinding, error) {
 	if strings.TrimSpace(path) == "" {
 		return receipt.PostureBinding{}, nil
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxRuntimeProofBytes, DisallowedPerms: 0o022})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return receipt.PostureBinding{}, nil

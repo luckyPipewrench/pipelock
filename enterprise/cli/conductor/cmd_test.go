@@ -529,8 +529,8 @@ func TestRunServeReturnsTLSLoadError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "missing-server.pem") {
 		t.Fatalf("runServe() error = %v, want missing TLS cert error", err)
 	}
-	if !strings.Contains(out.String(), "pipelock: conductor listening on 127.0.0.1:0") {
-		t.Fatalf("runServe() output = %q, want listening line", out.String())
+	if out.String() != "" {
+		t.Fatalf("runServe() output = %q, want no listening claim before TLS identity validation", out.String())
 	}
 }
 

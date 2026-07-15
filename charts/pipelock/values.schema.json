@@ -223,7 +223,14 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "upstream": { "type": "string" },
-        "listen": { "type": "string" }
+        "listen": { "type": "string", "minLength": 1 },
+        "authTokenFile": { "type": "string" },
+        "allowUnauthenticated": { "type": "boolean" },
+        "allowedOrigins": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
       }
     },
     "podMonitor": {

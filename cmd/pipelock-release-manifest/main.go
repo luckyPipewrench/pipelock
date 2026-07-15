@@ -29,6 +29,8 @@ import (
 
 var pipelockArchiveRE = regexp.MustCompile(`^pipelock_([^_]+)_([^_]+)_([^_]+)\.(tar\.gz|zip)$`)
 
+const maxReleaseMetadataBytes int64 = 8 << 20
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "pipelock-release-manifest: %v\n", err)
@@ -79,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return errors.New("--signer-key-id must be a 32-byte Ed25519 public key encoded as 64 hex characters")
 	}
 	checksumsPath := filepath.Join(*dist, "checksums.txt")
-	checksums, err := os.ReadFile(checksumsPath) // #nosec G304 -- release tool reads caller-supplied dist dir
+	checksums, err := readReleaseMetadata(checksumsPath)
 	if err != nil {
 		return fmt.Errorf("read checksums.txt: %w", err)
 	}
@@ -123,15 +125,12 @@ func runSignOnly(dist, manifestPath, keyHex string) error {
 	if strings.TrimSpace(manifestPath) == "" {
 		manifestPath = filepath.Join(dist, releasetrust.ManifestFile)
 	}
-	data, err := os.ReadFile(filepath.Clean(manifestPath)) // #nosec G304 -- release owner supplies manifest path
+	data, err := readReleaseMetadata(manifestPath)
 	if err != nil {
 		return fmt.Errorf("read release.json: %w", err)
 	}
-	var manifest releasetrust.Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return fmt.Errorf("parse release.json: %w", err)
-	}
-	if err := releasetrust.ValidateManifest(manifest); err != nil {
+	manifest, err := releasetrust.ParseManifest(data)
+	if err != nil {
 		return err
 	}
 	pub := publicKeyHex(priv.Public().(ed25519.PublicKey))
@@ -217,11 +216,11 @@ func manifestAssets(dist string, entries map[string]string) ([]releasetrust.Asse
 			continue
 		}
 		archivePath := filepath.Join(dist, name)
-		archive, err := os.ReadFile(archivePath) // #nosec G304 -- release tool reads caller-supplied dist dir
+		got, err := sha256FileHex(archivePath)
 		if err != nil {
 			return nil, fmt.Errorf("read archive %s: %w", name, err)
 		}
-		if got := sha256Hex(archive); got != checksum {
+		if got != checksum {
 			return nil, fmt.Errorf("archive %s checksum mismatch: got %s want %s", name, got, checksum)
 		}
 		goos := match[2]
@@ -238,6 +237,63 @@ func manifestAssets(dist string, entries map[string]string) ([]releasetrust.Asse
 		return nil, errors.New("no pipelock archives found in checksums.txt")
 	}
 	return assets, nil
+}
+
+func readReleaseMetadata(path string) ([]byte, error) {
+	file, err := openReleaseInput(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("release metadata must be a regular file")
+	}
+	if info.Size() > maxReleaseMetadataBytes {
+		return nil, fmt.Errorf("release metadata exceeds %d bytes", maxReleaseMetadataBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxReleaseMetadataBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxReleaseMetadataBytes {
+		return nil, fmt.Errorf("release metadata exceeds %d bytes", maxReleaseMetadataBytes)
+	}
+	return data, nil
+}
+
+func sha256FileHex(path string) (string, error) {
+	file, err := openReleaseInput(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func openReleaseInput(path string) (*os.File, error) {
+	clean := filepath.Clean(path)
+	root, err := os.OpenRoot(filepath.Dir(clean))
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.Open(filepath.Base(clean))
+	closeErr := root.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		_ = file.Close()
+		return nil, closeErr
+	}
+	return file, nil
 }
 
 func archiveBinaryName(goos string) string {

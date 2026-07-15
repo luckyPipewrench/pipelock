@@ -149,17 +149,9 @@ func buildReadModelIndex(paths []string, rebuiltAt time.Time) (ReadModelIndex, e
 	index := ReadModelIndex{RebuildVersion: rebuildVersion, RebuiltAt: rebuiltAt}
 	combined := sha256.New()
 	for _, path := range paths {
-		file, _, err := openRegularEvidence(path)
+		data, err := recorder.ReadEvidenceFileBounded(path, recorder.MaxEvidenceReadFileBytes)
 		if err != nil {
 			return ReadModelIndex{}, fmt.Errorf("read source evidence %s: %w", filepath.Base(path), err)
-		}
-		data, readErr := io.ReadAll(file)
-		closeErr := file.Close()
-		if readErr != nil {
-			return ReadModelIndex{}, fmt.Errorf("read source evidence %s: %w", filepath.Base(path), readErr)
-		}
-		if closeErr != nil {
-			return ReadModelIndex{}, fmt.Errorf("close source evidence %s: %w", filepath.Base(path), closeErr)
 		}
 		parsed, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 		if err != nil {

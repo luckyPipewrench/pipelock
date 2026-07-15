@@ -102,6 +102,9 @@ func RunCmd() *cobra.Command {
 	var mcpListen string
 	var mcpUpstream string
 	var mcpServerName string
+	var mcpAuthTokenFile string
+	var mcpAllowedOrigins []string
+	var mcpAllowUnauthenticated bool
 	var reverseProxy bool
 	var reverseUpstream string
 	var reverseListen string
@@ -143,22 +146,25 @@ Examples:
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := ServerOpts{
-				ConfigFile:       configFile,
-				Mode:             mode,
-				Listen:           listen,
-				MCPListen:        mcpListen,
-				MCPUpstream:      mcpUpstream,
-				MCPServerName:    mcpServerName,
-				ReverseProxy:     reverseProxy,
-				ReverseUpstream:  reverseUpstream,
-				ReverseListen:    reverseListen,
-				CaptureOutput:    captureOutput,
-				CaptureDuration:  captureDuration,
-				CaptureEscrowKey: captureEscrowKey,
-				ModeChanged:      cmd.Flags().Changed("mode"),
-				ListenChanged:    cmd.Flags().Changed("listen"),
-				Stdout:           cmd.OutOrStdout(),
-				Stderr:           cmd.ErrOrStderr(),
+				ConfigFile:              configFile,
+				Mode:                    mode,
+				Listen:                  listen,
+				MCPListen:               mcpListen,
+				MCPUpstream:             mcpUpstream,
+				MCPServerName:           mcpServerName,
+				MCPAuthTokenFile:        mcpAuthTokenFile,
+				MCPAllowedOrigins:       mcpAllowedOrigins,
+				MCPAllowUnauthenticated: mcpAllowUnauthenticated,
+				ReverseProxy:            reverseProxy,
+				ReverseUpstream:         reverseUpstream,
+				ReverseListen:           reverseListen,
+				CaptureOutput:           captureOutput,
+				CaptureDuration:         captureDuration,
+				CaptureEscrowKey:        captureEscrowKey,
+				ModeChanged:             cmd.Flags().Changed("mode"),
+				ListenChanged:           cmd.Flags().Changed("listen"),
+				Stdout:                  cmd.OutOrStdout(),
+				Stderr:                  cmd.ErrOrStderr(),
 			}
 
 			opts.AgentArgs = agentArgsAfterDash(args, cmd.ArgsLenAtDash())
@@ -188,6 +194,9 @@ Examples:
 	cmd.Flags().StringVar(&mcpListen, "mcp-listen", "", "MCP HTTP listener address (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringVar(&mcpUpstream, "mcp-upstream", "", "upstream MCP server URL for HTTP listener")
 	cmd.Flags().StringVar(&mcpServerName, "mcp-server-name", "", "stable identity for the MCP listener; enables per-server response trust and suppression via target 'mcp://<name>/response'")
+	cmd.Flags().StringVar(&mcpAuthTokenFile, "mcp-auth-token-file", "", "secure file containing the MCP listener bearer token")
+	cmd.Flags().StringArrayVar(&mcpAllowedOrigins, "mcp-allowed-origin", nil, "browser Origin allowed to call the MCP listener (repeatable, exact serialized origin)")
+	cmd.Flags().BoolVar(&mcpAllowUnauthenticated, "mcp-allow-unauthenticated", false, "explicitly allow a non-loopback MCP listener without authentication (network-policy-isolated deployments only)")
 	cmd.Flags().BoolVar(&reverseProxy, "reverse-proxy", false, "enable reverse proxy mode with body scanning")
 	cmd.Flags().StringVar(&reverseUpstream, "reverse-upstream", "", "upstream URL for reverse proxy (e.g. http://localhost:7899)")
 	cmd.Flags().StringVar(&reverseListen, "reverse-listen", ":8890", "listen address for reverse proxy")

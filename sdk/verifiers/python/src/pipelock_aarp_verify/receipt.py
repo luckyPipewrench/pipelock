@@ -16,6 +16,12 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .canonical import canonicalize
+from .number import (
+    StrictParseError,
+    UnsafeNumberError,
+    enforce_cross_language_number_range,
+    parse_json_strict,
+)
 
 V2_RECORD_TYPE = "evidence_receipt_v2"
 SIGNATURE_PREFIX = "ed25519:"
@@ -333,6 +339,20 @@ _SKIPPABLE_ENTRY_TYPES = frozenset(
 
 def load_receipt(path: str | Path) -> dict[str, Any]:
     data = Path(path).read_text(encoding="utf-8")
+    # Python is arbitrary-precision, so it neither rounds nor overflows on a
+    # number outside the I-JSON safe range: it silently ACCEPTS what the Go,
+    # Rust, and TypeScript verifiers now reject, which is the same
+    # cross-language differential wearing a different mask. The AARP envelope
+    # path already enforces this (envelope.py); the receipt path must match.
+    #
+    # Validate against the literal-preserving tree, then decode normally: the
+    # safe-number check reads each number's SOURCE TEXT, which json.loads has
+    # already discarded by converting to int, and callers of this function
+    # expect plain ints rather than IJSONNumber.
+    try:
+        enforce_cross_language_number_range(parse_json_strict(data))
+    except (StrictParseError, UnsafeNumberError) as exc:
+        raise ReceiptError(str(exc)) from exc
     try:
         value = json.loads(data, object_pairs_hook=_reject_duplicate_pairs)
     except ReceiptError:
@@ -421,6 +441,10 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
         raw = line.strip()
         if raw == "":
             continue
+        try:
+            enforce_cross_language_number_range(parse_json_strict(raw))
+        except (StrictParseError, UnsafeNumberError) as exc:
+            raise ReceiptError(f"line {index}: {exc}") from exc
         try:
             entry = json.loads(raw, object_pairs_hook=_reject_duplicate_pairs)
         except ReceiptError:

@@ -54,6 +54,20 @@ func TestNewHandlerValidation(t *testing.T) {
 	}
 }
 
+func TestDecodeStrictJSONRejectsDuplicateMembersRecursively(t *testing.T) {
+	for _, body := range []string{
+		`{"action":"allow","action":"block"}`,
+		`{"nested":{"role":"reader","role":"admin"}}`,
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
+		var dest map[string]any
+		err := decodeStrictJSON(httptest.NewRecorder(), req, 1024, &dest)
+		if err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("decodeStrictJSON(%s) error = %v, want duplicate-member rejection", body, err)
+		}
+	}
+}
+
 func TestHandlerDefaultAuthorizersDenyNewScopedOperations(t *testing.T) {
 	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {

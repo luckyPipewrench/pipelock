@@ -68,6 +68,26 @@ func testDLPRule(id, confidence, status string) Rule {
 	}
 }
 
+func TestLoadBundles_PropagatesDLPValidator(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rule := testDLPRule("dlp-aba", confidenceHigh, StatusStable)
+	rule.Pattern.Validator = config.ValidatorABA
+	bundle := testBundle(testBundleName, []Rule{rule})
+	writeUnsignedBundle(t, bundleDir, bundle)
+
+	result := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion})
+	if len(result.DLP) != 1 {
+		t.Fatalf("DLP patterns = %d, errors=%v", len(result.DLP), result.Errors)
+	}
+	if result.DLP[0].Validator != config.ValidatorABA {
+		t.Fatalf("validator = %q, want %q", result.DLP[0].Validator, config.ValidatorABA)
+	}
+}
+
 // testInjectionRule creates a valid injection rule.
 func testInjectionRule(id, confidence string) Rule {
 	return Rule{

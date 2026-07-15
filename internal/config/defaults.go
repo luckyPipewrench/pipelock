@@ -619,7 +619,7 @@ func Defaults() *Config {
 			CaptureDir: "",
 			Privacy: LearnPrivacy{
 				SaltSource:             "",
-				PublicAllowlistDefault: true, // security-sensitive default
+				PublicAllowlistDefault: true, // reserved wire-shape default
 			},
 		},
 		MediaPolicy: MediaPolicy{

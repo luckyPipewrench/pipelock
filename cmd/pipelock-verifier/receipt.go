@@ -6,13 +6,13 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -87,9 +87,14 @@ func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) er
 	}
 
 	clean := filepath.Clean(target)
-	data, err := os.ReadFile(clean)
+	data, err := readVerifierFile(clean)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read receipt: %w", err))
+	}
+	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
+		report := receiptReport{Path: clean, Valid: false, Error: err.Error()}
+		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("parse receipt: %w", err))
 	}
 
 	recordType, detectErr := detectSingleReceiptRecordType(data)

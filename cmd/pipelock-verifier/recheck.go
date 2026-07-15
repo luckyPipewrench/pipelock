@@ -8,8 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -44,7 +42,7 @@ func recheckEvidenceReceiptSpan(r contractreceipt.EvidenceReceipt, sourcePath st
 	if span.RedactedSample == "" {
 		return recheckResult{}, fmt.Errorf("source_spans[%d].redacted_sample is required for recheck", spanIndex)
 	}
-	source, err := os.ReadFile(filepath.Clean(sourcePath))
+	source, err := readVerifierFile(sourcePath)
 	if err != nil {
 		return recheckResult{}, fmt.Errorf("read recheck source: %w", err)
 	}

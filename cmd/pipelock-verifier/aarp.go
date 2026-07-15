@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -117,7 +116,7 @@ func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
 	}
 
 	clean := filepath.Clean(target)
-	data, err := os.ReadFile(clean)
+	data, err := readVerifierFile(clean)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read envelope: %w", err))
 	}
@@ -284,7 +283,7 @@ func loadTrustFile(path string) (aarp.VerifyOptions, error) {
 	if path == "" {
 		return opts, nil
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := readVerifierFile(path)
 	if err != nil {
 		return aarp.VerifyOptions{}, fmt.Errorf("read trust file: %w", err)
 	}

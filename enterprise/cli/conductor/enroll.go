@@ -8,8 +8,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -98,18 +96,7 @@ func runEnroll(cmd *cobra.Command, opts enrollOptions) error {
 }
 
 func loadEnrollmentToken(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("%s is required", "--enrollment-token-file")
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", "--enrollment-token-file", err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("%s is empty", "--enrollment-token-file")
-	}
-	return token, nil
+	return readSecureTokenFile("--enrollment-token-file", path)
 }
 
 func loadEnrollmentAuditKey(path, overrideKeyID string) (string, ed25519.PublicKey, error) {

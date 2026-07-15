@@ -5,6 +5,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
@@ -1421,7 +1423,14 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, de
 	}
 	body := http.MaxBytesReader(w, r.Body, maxBytes)
 	defer func() { _ = body.Close() }()
-	decoder := json.NewDecoder(body)
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if _, err := contract.ParseJSONStrict(raw); err != nil {
+		return fmt.Errorf("strict JSON: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dest); err != nil {
 		return err

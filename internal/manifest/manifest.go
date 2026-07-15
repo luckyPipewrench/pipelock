@@ -13,6 +13,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // SchemaVersion is the current manifest schema version.
@@ -198,6 +200,9 @@ func (m Manifest) Validate() error {
 // Parse decodes and validates a manifest JSON blob.
 func Parse(data []byte) (Manifest, error) {
 	var m Manifest
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return Manifest{}, fmt.Errorf("unmarshal manifest: %w", err)
+	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return Manifest{}, fmt.Errorf("unmarshal manifest: %w", err)
 	}

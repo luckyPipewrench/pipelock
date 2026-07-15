@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 // FreshnessState tracks the highest seen version per bundle identity for
@@ -30,6 +32,8 @@ type FreshnessState struct {
 const freshnessFilename = ".freshness.json"
 
 const freshnessContextFile = "context.json"
+
+const maxFreshnessStateBytes = 1 << 20
 
 type freshnessContext struct {
 	Context string `json:"context"`
@@ -169,7 +173,7 @@ func readFreshnessStatePair(rulesDir string) (*FreshnessState, bool, error) {
 }
 
 func readFreshnessStateFile(path, rulesDir, label string) (*FreshnessState, bool, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxFreshnessStateBytes, DisallowedPerms: 0o037})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, false, nil
@@ -179,6 +183,9 @@ func readFreshnessStateFile(path, rulesDir, label string) (*FreshnessState, bool
 	}
 
 	var state FreshnessState
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return nil, false, fmt.Errorf("parse %s: %w (fail-closed: run explicit reset)", label, err)
+	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		// Fail closed: corrupted JSON could mask rollback.
 		return nil, false, fmt.Errorf("parse %s: %w (fail-closed: run explicit reset)", label, err)
@@ -224,6 +231,9 @@ func writeFreshnessStateFile(path, rulesDir string, state *FreshnessState) error
 	if err != nil {
 		return fmt.Errorf("marshal freshness state: %w", err)
 	}
+	if len(data) > maxFreshnessStateBytes {
+		return fmt.Errorf("freshness state exceeds %d bytes", maxFreshnessStateBytes)
+	}
 	return atomicfile.Write(filepath.Clean(path), data, 0o600)
 }
 
@@ -258,7 +268,7 @@ func freshnessDigest(rulesDir string, highest map[string]uint64) string {
 }
 
 func readFreshnessContext(rulesDir string) (bool, error) {
-	data, err := os.ReadFile(filepath.Clean(freshnessContextPath(rulesDir))) // #nosec G304 -- path derives from configured rules dir
+	data, err := securefile.Read(freshnessContextPath(rulesDir), securefile.Options{MaxBytes: maxFreshnessStateBytes, DisallowedPerms: 0o037})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -266,6 +276,9 @@ func readFreshnessContext(rulesDir string) (bool, error) {
 		return false, fmt.Errorf("read freshness context: %w", err)
 	}
 	var ctx freshnessContext
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return false, fmt.Errorf("parse freshness context: %w", err)
+	}
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		return false, fmt.Errorf("parse freshness context: %w", err)
 	}

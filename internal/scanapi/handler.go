@@ -20,6 +20,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -183,6 +184,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse request with strict decoding (reject unknown fields).
+	if _, err := contract.ParseJSONStrict(body); err != nil {
+		h.writeError(w, http.StatusBadRequest, "", "invalid_json",
+			fmt.Sprintf("Invalid request: %v", err), false)
+		return
+	}
 	var req Request
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

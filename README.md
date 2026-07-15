@@ -130,8 +130,8 @@ pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server
 # Proxy a remote MCP server (HTTP)
 pipelock mcp proxy --upstream http://localhost:8080/mcp
 
-# Combined mode (fetch/forward proxy + MCP on separate ports)
-pipelock run --config pipelock.yaml --mcp-listen 0.0.0.0:8889 --mcp-upstream http://localhost:3000/mcp
+# Combined mode (local fetch/forward proxy + local MCP listener)
+pipelock run --config pipelock.yaml --mcp-listen 127.0.0.1:8889 --mcp-upstream http://localhost:3000/mcp
 ```
 
 ### MCP Tool Policy

@@ -46,18 +46,21 @@ import (
 // config default", matching the cobra.Flag.Changed semantics RunCmd relied on
 // before the extraction.
 type ServerOpts struct {
-	ConfigFile       string
-	Mode             string
-	Listen           string
-	MCPListen        string
-	MCPUpstream      string
-	MCPServerName    string
-	ReverseProxy     bool
-	ReverseUpstream  string
-	ReverseListen    string
-	CaptureOutput    string
-	CaptureDuration  time.Duration
-	CaptureEscrowKey string
+	ConfigFile              string
+	Mode                    string
+	Listen                  string
+	MCPListen               string
+	MCPUpstream             string
+	MCPServerName           string
+	MCPAuthTokenFile        string
+	MCPAllowedOrigins       []string
+	MCPAllowUnauthenticated bool
+	ReverseProxy            bool
+	ReverseUpstream         string
+	ReverseListen           string
+	CaptureOutput           string
+	CaptureDuration         time.Duration
+	CaptureEscrowKey        string
 
 	// ModeChanged is set when the --mode flag was supplied on the command
 	// line (cobra.Flag.Changed("mode")). Only then does Mode override the
@@ -93,18 +96,19 @@ type Server struct {
 	cfg          *config.Config
 	bundleResult *rules.LoadResult
 
-	sentry          *plsentry.Client
-	logger          *audit.Logger
-	emitter         *emit.Emitter
-	scanner         *scanner.Scanner
-	metrics         *metrics.Metrics
-	killswitch      *killswitch.Controller
-	ksAPI           *killswitch.APIHandler
-	proxy           *proxy.Proxy
-	receiptEmitter  *receipt.Emitter
-	envelopeEmitter *envelope.Emitter
-	captureWriter   *capture.Writer
-	recorder        *recorder.Recorder
+	sentry                 *plsentry.Client
+	logger                 *audit.Logger
+	emitter                *emit.Emitter
+	scanner                *scanner.Scanner
+	metrics                *metrics.Metrics
+	killswitch             *killswitch.Controller
+	ksAPI                  *killswitch.APIHandler
+	proxy                  *proxy.Proxy
+	receiptEmitter         *receipt.Emitter
+	envelopeEmitter        *envelope.Emitter
+	captureWriter          *capture.Writer
+	mcpListenerBearerToken string
+	recorder               *recorder.Recorder
 	// conductorApply holds *applycache.Cache in the enterprise build (nil
 	// in the core build). Stored as any so server.go has no compile-time
 	// dependency on the enterprise conductor packages; the build-tagged
@@ -237,6 +241,19 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			return nil, fmt.Errorf("invalid --mcp-upstream %q: must be http:// or https:// with a host", opts.MCPUpstream)
 		}
 	}
+	if !hasMCPListen && (opts.MCPAuthTokenFile != "" || len(opts.MCPAllowedOrigins) > 0 || opts.MCPAllowUnauthenticated) {
+		return nil, errors.New("MCP listener authentication flags require --mcp-listen")
+	}
+	if err := validateMCPListenerOrigins(opts.MCPAllowedOrigins); err != nil {
+		return nil, err
+	}
+	mcpAuthToken, mcpAuthErr := readMCPListenerTokenFile(opts.MCPAuthTokenFile)
+	if mcpAuthErr != nil {
+		return nil, mcpAuthErr
+	}
+	if err := validateMCPListenerBoundary(opts.MCPListen, mcpAuthToken, opts.MCPAllowUnauthenticated); err != nil {
+		return nil, err
+	}
 
 	if opts.ReverseProxy && opts.ReverseUpstream == "" {
 		return nil, errors.New("--reverse-proxy requires --reverse-upstream")
@@ -290,6 +307,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		opts:         opts,
 		hasMCPListen: hasMCPListen,
 	}
+	s.mcpListenerBearerToken = mcpAuthToken
 
 	sentryClient, sentryErr := plsentry.Init(cfg, cliutil.Version)
 	if sentryErr != nil {

@@ -5,6 +5,7 @@ package contract
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,18 @@ func TestDecodeStrictJSON_RejectsTrailingTokens(t *testing.T) {
 	var c Contract
 	if err := DecodeStrictJSON(raw, &c); !errors.Is(err, ErrTrailingTokens) {
 		t.Errorf("got %v, want ErrTrailingTokens", err)
+	}
+}
+
+func TestDecodeStrictJSON_RejectsDuplicateMembersRecursively(t *testing.T) {
+	for _, raw := range []string{
+		`{"schema":"one","schema":"two"}`,
+		`{"nested":{"value":1,"value":2}}`,
+	} {
+		var target map[string]any
+		if err := DecodeStrictJSON([]byte(raw), &target); err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("DecodeStrictJSON(%s) error = %v, want duplicate-member rejection", raw, err)
+		}
 	}
 }
 

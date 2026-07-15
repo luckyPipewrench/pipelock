@@ -16,6 +16,7 @@ non-whitespace token after the top-level value.
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 # The I-JSON safe-integer range. Outside it, a JavaScript or other-language
@@ -72,11 +73,28 @@ def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return obj
 
 
+def _reject_json_constant(name: str) -> Any:
+    """parse_constant hook that rejects Python's non-standard JSON literals.
+
+    CPython's decoder accepts the bare literals ``NaN``, ``Infinity``, and
+    ``-Infinity`` as an extension to RFC 8259, and routes them through
+    ``parse_constant`` -- NOT ``parse_float``/``parse_int``. They therefore never
+    become an :class:`IJSONNumber`, so the numeric range guards, which walk for
+    IJSONNumber, skip them entirely. Go, Rust, and TypeScript all reject these
+    literals outright, so accepting them here is the same cross-language
+    differential the range guards exist to close, one parser layer deeper.
+    """
+    raise StrictParseError(
+        f"non-standard JSON literal {name!r}: RFC 8259 defines no such value"
+    )
+
+
 def parse_json_strict(data: bytes | str) -> Any:
     """Parse ``data`` rejecting duplicate keys and trailing non-whitespace tokens.
 
     Numbers are preserved as :class:`IJSONNumber`. Trailing whitespace is allowed
-    (matching the Go reference); any other trailing token is rejected.
+    (matching the Go reference); any other trailing token is rejected. The
+    non-standard ``NaN``/``Infinity`` literals are rejected outright.
     """
     if isinstance(data, bytes):
         text = data.decode("utf-8")
@@ -86,6 +104,7 @@ def parse_json_strict(data: bytes | str) -> Any:
         object_pairs_hook=_reject_duplicates,
         parse_float=IJSONNumber,
         parse_int=IJSONNumber,
+        parse_constant=_reject_json_constant,
     )
     # raw_decode begins at the given index and does not itself skip leading
     # whitespace; the JSON spec permits leading whitespace, so advance past it
@@ -117,6 +136,35 @@ def enforce_safe_numbers(tree: Any, path: str = "$") -> None:
             enforce_safe_numbers(value, f"{path}[{i}]")
         return
     # Strings, bools, and None carry no numeric interoperability hazard.
+
+
+def enforce_cross_language_number_range(tree: Any, path: str = "$") -> None:
+    """Reject magnitudes outside the range shared by receipt verifiers.
+
+    This is intentionally narrower than :func:`enforce_safe_numbers`. AARP's
+    canonical JSON contract forbids float, exponent, and negative-zero forms;
+    receipt and audit artifacts only require that every supported runtime can
+    represent the numeric magnitude without JavaScript rounding or Infinity.
+    """
+    if isinstance(tree, IJSONNumber):
+        try:
+            value = Decimal(tree.literal)
+        except InvalidOperation as exc:
+            raise UnsafeNumberError(
+                f"invalid number {tree.literal!r} at {path}"
+            ) from exc
+        if not value.is_finite() or abs(value) > MAX_SAFE_INTEGER:
+            raise UnsafeNumberError(
+                f"{tree.literal!r} outside cross-language exact range at {path}"
+            )
+        return
+    if isinstance(tree, dict):
+        for key, value in tree.items():
+            enforce_cross_language_number_range(value, f"{path}.{key}")
+        return
+    if isinstance(tree, list):
+        for i, value in enumerate(tree):
+            enforce_cross_language_number_range(value, f"{path}[{i}]")
 
 
 def _check_safe_number(lit: str, path: str) -> None:

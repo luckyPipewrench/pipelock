@@ -140,6 +140,7 @@ func TestCapabilitiesClientRejectsUnsafeBaseURL(t *testing.T) {
 }
 
 func TestCapabilitiesClientRejectsMalformedResponses(t *testing.T) {
+	duplicate := strings.Replace(mustJSON(t, validHandshakeCapabilitiesResponse()), "{", `{"conductor_id":"first-parser-value",`, 1)
 	tests := []struct {
 		name   string
 		status int
@@ -148,6 +149,7 @@ func TestCapabilitiesClientRejectsMalformedResponses(t *testing.T) {
 		{name: "non_200", status: http.StatusForbidden, body: "nope"},
 		{name: "unknown_field", status: http.StatusOK, body: `{"schema_version":1,"unexpected":true}`},
 		{name: "trailing_document", status: http.StatusOK, body: mustJSON(t, validHandshakeCapabilitiesResponse()) + `{}`},
+		{name: "duplicate_member", status: http.StatusOK, body: duplicate},
 	}
 
 	for _, tc := range tests {

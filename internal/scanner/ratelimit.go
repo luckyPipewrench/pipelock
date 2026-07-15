@@ -10,27 +10,23 @@ import (
 
 // RateLimiter enforces per-domain sliding window rate limits.
 // It tracks request timestamps per domain and removes stale entries
-// via a background cleanup goroutine.
+// opportunistically while holding the request lock.
 type RateLimiter struct {
 	mu           sync.Mutex
 	maxPerMinute int
 	requests     map[string][]time.Time
-	stopCleanup  chan struct{}
-	closeOnce    sync.Once
+	lastCleanup  time.Time
 }
 
 // NewRateLimiter creates a rate limiter with the specified limit.
-// It starts a background goroutine to clean up stale entries every 60 seconds.
+// Stale entries are pruned opportunistically under the request lock instead of
+// assigning a background goroutine to every scanner instance.
 func NewRateLimiter(maxPerMinute int) *RateLimiter {
-	rl := &RateLimiter{
+	return &RateLimiter{
 		maxPerMinute: maxPerMinute,
 		requests:     make(map[string][]time.Time),
-		stopCleanup:  make(chan struct{}),
+		lastCleanup:  time.Now(),
 	}
-
-	go rl.cleanupLoop()
-
-	return rl
 }
 
 // IsAllowed checks if a new request for the domain would be within the limit.
@@ -39,7 +35,9 @@ func (rl *RateLimiter) IsAllowed(domain string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	cutoff := time.Now().Add(-time.Minute)
+	now := time.Now()
+	rl.maybeCleanupLocked(now)
+	cutoff := now.Add(-time.Minute)
 
 	timestamps := rl.requests[domain]
 	valid := timestamps[:0]
@@ -59,7 +57,9 @@ func (rl *RateLimiter) Record(domain string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	rl.requests[domain] = append(rl.requests[domain], time.Now())
+	now := time.Now()
+	rl.maybeCleanupLocked(now)
+	rl.requests[domain] = append(rl.requests[domain], now)
 }
 
 // CheckAndRecord atomically checks the rate limit and records a request
@@ -71,6 +71,7 @@ func (rl *RateLimiter) CheckAndRecord(domain string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
+	rl.maybeCleanupLocked(now)
 	cutoff := now.Add(-time.Minute)
 
 	timestamps := rl.requests[domain]
@@ -90,30 +91,26 @@ func (rl *RateLimiter) CheckAndRecord(domain string) bool {
 	return true
 }
 
-// Close stops the cleanup goroutine. Safe to call multiple times.
-func (rl *RateLimiter) Close() {
-	rl.closeOnce.Do(func() { close(rl.stopCleanup) })
-}
-
-func (rl *RateLimiter) cleanupLoop() {
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			rl.cleanup()
-		case <-rl.stopCleanup:
-			return
-		}
-	}
-}
+// Close is retained for scanner lifecycle symmetry. RateLimiter owns no
+// background resources, so closing it is intentionally a no-op.
+func (rl *RateLimiter) Close() {}
 
 func (rl *RateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+	rl.cleanupLocked(time.Now())
+}
 
-	cutoff := time.Now().Add(-time.Minute)
+func (rl *RateLimiter) maybeCleanupLocked(now time.Time) {
+	if now.Sub(rl.lastCleanup) < time.Minute {
+		return
+	}
+	rl.cleanupLocked(now)
+	rl.lastCleanup = now
+}
+
+func (rl *RateLimiter) cleanupLocked(now time.Time) {
+	cutoff := now.Add(-time.Minute)
 
 	for domain, timestamps := range rl.requests {
 		valid := timestamps[:0]

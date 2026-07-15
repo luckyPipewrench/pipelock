@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,6 +32,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 const (
@@ -560,20 +561,18 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 	if info.Size() > limit {
 		return diskRecord{}, corruptRecordError(fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit))
 	}
-	f, err := os.Open(path)
+	data, err := securefile.Read(path, securefile.Options{
+		MaxBytes:        limit,
+		DisallowedPerms: 0o077,
+		RejectSymlink:   true,
+	})
 	if err != nil {
-		return diskRecord{}, fmt.Errorf("auditbatcher: open record: %w", err)
+		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: read record: %w", err))
 	}
-	defer func() { _ = f.Close() }()
 
 	var record diskRecord
-	decoder := json.NewDecoder(io.LimitReader(f, limit))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&record); err != nil {
+	if err := contract.DecodeStrictJSON(data, &record); err != nil {
 		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: decode record: %w", err))
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return diskRecord{}, corruptRecordError(errors.New("auditbatcher: trailing JSON document"))
 	}
 	if record.Version != recordVersion {
 		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record version=%d want=%d", record.Version, recordVersion))

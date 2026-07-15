@@ -9,12 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
+
+const maxCertificateBytes int64 = 1 << 20
 
 // Options configures one offline certificate verification run.
 type Options struct {
@@ -26,7 +27,7 @@ type Options struct {
 // Run reads and verifies a coverage certificate, prints bounded verification
 // lines, and fails closed on invalid signatures or aggregate mismatches.
 func Run(opts Options) error {
-	data, err := os.ReadFile(filepath.Clean(opts.CertFile))
+	data, err := securefile.Read(opts.CertFile, securefile.Options{MaxBytes: maxCertificateBytes})
 	if err != nil {
 		return fmt.Errorf("--cert: %w", err)
 	}

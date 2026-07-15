@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
 
@@ -149,6 +151,9 @@ func (p *RemoteKillPoller) PollOnce(ctx context.Context) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&msg); err != nil {
 		return fmt.Errorf("%w: decode: %w", ErrRemoteKillPollResponse, err)
+	}
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return fmt.Errorf("%w: ambiguous response: %w", ErrRemoteKillPollResponse, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: trailing JSON document", ErrRemoteKillPollResponse)

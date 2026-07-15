@@ -71,6 +71,23 @@ func TestAPIHandler_Toggle_Deactivate(t *testing.T) {
 	}
 }
 
+func TestAPIHandler_ToggleRejectsDuplicateActive(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.APIToken = testAPIToken
+	c := New(cfg)
+	h := NewAPIHandler(c)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", strings.NewReader(`{"active":true,"active":false}`))
+	r.Header.Set("Authorization", testBearer123)
+	w := httptest.NewRecorder()
+	h.HandleToggle(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if c.IsActiveHTTP(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)).Active {
+		t.Fatal("ambiguous request mutated kill-switch state")
+	}
+}
+
 func TestAPIHandler_Toggle_NoToken(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.APIToken = "secret"

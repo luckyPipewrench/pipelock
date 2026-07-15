@@ -146,7 +146,14 @@ func TestReleaseCmd_InvalidTo(t *testing.T) {
 }
 
 func TestReleaseCmd_JSON(t *testing.T) {
-	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			detail := makeDetail()
+			detail.Key = testKeyIdent
+			detail.AirlockTier = tierHard
+			writeJSONResponse(w, http.StatusOK, detail)
+			return
+		}
 		writeJSONResponse(w, http.StatusOK, airlockResponse{
 			Key: testKeyIdent, PreviousTier: tierHard, NewTier: tierNone, Changed: true,
 		})

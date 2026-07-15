@@ -1265,6 +1265,14 @@ func TestCapsule_UnmarshalJSONRejectsTrailingPayload(t *testing.T) {
 	}
 }
 
+func TestCapsule_UnmarshalJSONRejectsDuplicateMembers(t *testing.T) {
+	raw := []byte(`{"schema_version":"1","schema_version":"0","config_hash":"a","generated_at":"2026-04-16T00:00:00Z","expires_at":"2026-05-16T00:00:00Z","tool_version":"t","evidence":{"discover":{},"verify_install":{},"simulate":{},"flight_recorder":{}},"signature":"de","signer_key_id":"ca"}`)
+	var capsule Capsule
+	if err := json.Unmarshal(raw, &capsule); err == nil {
+		t.Fatal("expected error for duplicate schema_version")
+	}
+}
+
 func goldenCapsule() *Capsule {
 	return &Capsule{
 		SchemaVersion: "1",

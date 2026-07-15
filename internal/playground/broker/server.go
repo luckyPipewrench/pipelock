@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
@@ -1046,12 +1047,18 @@ func (s *Server) attemptVMSession(ctx context.Context, target string, reqBody []
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBrokerBodyBytes))
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBrokerBodyBytes+1))
 	if err != nil {
 		return vmSessionResponse{}, time.Time{}, false, fmt.Errorf("broker: read vm session response: %w", err)
 	}
+	if len(respBody) > maxBrokerBodyBytes {
+		return vmSessionResponse{}, time.Time{}, false, fmt.Errorf("broker: vm session response exceeds %d bytes", maxBrokerBodyBytes)
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return vmSessionResponse{}, time.Time{}, false, fmt.Errorf("broker: vm session status %d", httpResp.StatusCode)
+	}
+	if err := jsonscan.RejectDuplicateKeys(respBody); err != nil {
+		return vmSessionResponse{}, time.Time{}, false, fmt.Errorf("broker: parse vm session response: %w", err)
 	}
 	var vmResp vmSessionResponse
 	if err := json.Unmarshal(respBody, &vmResp); err != nil {

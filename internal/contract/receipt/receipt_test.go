@@ -563,7 +563,7 @@ func TestVerifyV2BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 			raw:        []byte{0xff, '{', '"'},
 			pubKey:     pub,
 			signerID:   "receipt-key",
-			wantErrSub: "strict decode",
+			wantErrSub: "valid UTF-8",
 		},
 	}
 	for _, tc := range cases {

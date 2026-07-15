@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -991,8 +992,18 @@ func readBundleRecordWithOptions(path string, allowLegacyPolicyHash bool) (Publi
 		return PublishedBundle{}, fmt.Errorf("conductor control plane open bundle record: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxBundleRecordJSONSize+1))
+	if err != nil {
+		return PublishedBundle{}, fmt.Errorf("conductor control plane read bundle record: %w", err)
+	}
+	if len(data) > maxBundleRecordJSONSize {
+		return PublishedBundle{}, fmt.Errorf("%w: bundle record too large", conductor.ErrPayloadTooLarge)
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return PublishedBundle{}, fmt.Errorf("%w: decode bundle record: %w", ErrInvalidStoreRecord, err)
+	}
 	var record PublishedBundle
-	decoder := json.NewDecoder(io.LimitReader(file, maxBundleRecordJSONSize+1))
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
 		return PublishedBundle{}, fmt.Errorf("%w: decode bundle record: %w", ErrInvalidStoreRecord, err)
@@ -1036,8 +1047,18 @@ func readStreamHeadRecord(path string) (streamHeadRecord, error) {
 		return streamHeadRecord{}, fmt.Errorf("conductor control plane open stream-head record: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxStreamHeadJSONSize+1))
+	if err != nil {
+		return streamHeadRecord{}, fmt.Errorf("conductor control plane read stream-head record: %w", err)
+	}
+	if len(data) > maxStreamHeadJSONSize {
+		return streamHeadRecord{}, fmt.Errorf("%w: stream-head record too large", conductor.ErrPayloadTooLarge)
+	}
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return streamHeadRecord{}, fmt.Errorf("%w: decode stream-head record: %w", ErrInvalidStoreRecord, err)
+	}
 	var record streamHeadRecord
-	decoder := json.NewDecoder(io.LimitReader(file, maxStreamHeadJSONSize+1))
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
 		return streamHeadRecord{}, fmt.Errorf("%w: decode stream-head record: %w", ErrInvalidStoreRecord, err)

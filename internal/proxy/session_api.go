@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -39,7 +41,7 @@ const sessionAPIMaxBodyBytes = 64 * 1024 // 64 KiB
 
 // decodeJSONBody is the shared strict decoder for admin API endpoints.
 // It enforces:
-//   - a hard size limit via io.LimitReader (defends against large bodies)
+//   - a hard size limit with max+1 oversize detection
 //   - DisallowUnknownFields (rejects typos and field injection attempts)
 //   - exactly-one-JSON-value (rejects trailing garbage after the object)
 //
@@ -50,7 +52,20 @@ func decodeJSONBody(r *http.Request, v any) error {
 	if r.Body == nil {
 		return nil
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, sessionAPIMaxBodyBytes))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, sessionAPIMaxBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+	if len(raw) > sessionAPIMaxBodyBytes {
+		return fmt.Errorf("decode body: exceeds %d bytes", sessionAPIMaxBodyBytes)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("decode body: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		if errors.Is(err, io.EOF) {

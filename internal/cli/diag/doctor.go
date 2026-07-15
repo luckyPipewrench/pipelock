@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -857,31 +856,6 @@ func openReadable(path string) bool {
 	}
 	_ = f.Close()
 	return true
-}
-
-func dirWritableExecutableByCurrentUser(info os.FileInfo) bool {
-	mode := info.Mode().Perm()
-	if os.Geteuid() == 0 {
-		return mode&0o111 != 0
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return mode&0o333 == 0o333
-	}
-	// Widen both sides rather than narrowing the euid: uint32 -> int64 cannot
-	// overflow, so the comparison is exact on every platform.
-	if int64(stat.Uid) == int64(os.Geteuid()) {
-		return mode&0o300 == 0o300
-	}
-	groups, err := os.Getgroups()
-	if err == nil {
-		for _, gid := range groups {
-			if int64(stat.Gid) == int64(gid) {
-				return mode&0o030 == 0o030
-			}
-		}
-	}
-	return mode&0o003 == 0o003
 }
 
 func doctorGlobalEnforce(cfg *config.Config) bool {

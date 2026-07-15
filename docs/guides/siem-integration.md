@@ -115,6 +115,7 @@ narrow forwarding pipe into an operator-owned endpoint; it is not a SIEM,
 search index, or second evidence database.
 
 ```yaml
+# pipelock-enterprise-skip-id: siem-durable-forwarder
 emit:
   forwarder:
     url: "https://api.vendor.example/events"

@@ -327,6 +327,7 @@ sink cannot verify its evidence — the Conductor has no audit key registered fo
 it. Enrollment is what turns both on.
 
 ```yaml
+# pipelock-enterprise-skip-id: conductor-production-follower
 conductor:
   enabled: true
   conductor_url: https://conductor.pipelock-control.svc.cluster.local:8895

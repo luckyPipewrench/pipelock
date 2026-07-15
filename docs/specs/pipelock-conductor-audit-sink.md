@@ -792,6 +792,7 @@ A future `LicenseBundle` requires:
 Draft YAML shape:
 
 ```yaml
+# pipelock-enterprise-skip-id: conductor-audit-sink-follower
 conductor:
   enabled: true
   conductor_url: "https://conductor.example.internal"

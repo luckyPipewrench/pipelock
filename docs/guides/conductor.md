@@ -218,6 +218,7 @@ parses the block in any build but **refuses to run with `conductor.enabled: true
 unless it is an enterprise build with the `fleet` entitlement**.
 
 ```yaml
+# pipelock-enterprise-skip-id: conductor-follower-guide
 conductor:
   enabled: true
   conductor_url: https://conductor.example.internal:8895

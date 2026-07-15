@@ -110,31 +110,35 @@ is_config_block() {
 # allowlists, regexes, optional sentinel files, and output paths do not need those
 # resources at startup and must still exercise the runtime.
 enterprise_skip_allowed() {
-    case "$1" in
-        "docs/guides/conductor-production-runbook.md (yaml block 4)" | \
-        "docs/guides/conductor.md (yaml block 1)" | \
-        "docs/guides/siem-integration.md (yaml block 2)" | \
-        "docs/specs/pipelock-conductor-audit-sink.md (yaml block 3)") return 0 ;;
+    local id
+    id="$(metadata_value pipelock-enterprise-skip-id "$1")"
+    case "$id" in
+        conductor-production-follower | \
+        conductor-follower-guide | \
+        siem-durable-forwarder | \
+        conductor-audit-sink-follower) return 0 ;;
         *) return 1 ;;
     esac
 }
 
 fragment_expected_error() {
     case "$1" in
-        "docs/configuration.md (yaml block 29)") echo "mcp_session_binding.enabled requires mcp_tool_scanning.enabled" ;;
-        "docs/configuration.md (yaml block 33)") echo "adaptive_enforcement.enabled requires session_profiling.enabled" ;;
-        "docs/configuration.md (yaml block 52)") echo "unmarshal errors" ;;
-        "docs/configuration.md (yaml block 54)" | \
-        "docs/configuration.md (yaml block 56)" | \
-        "docs/configuration.md (yaml block 57)") echo "license" ;;
-        "docs/configuration.md (yaml block 61)") echo "public_key must be exactly 64 hex chars" ;;
-        "docs/configuration.md (yaml block 69)") echo "trusted_agent_card_keys" ;;
-        "docs/configuration.md (yaml block 76)" | \
-        "docs/guides/federation.md (yaml block 1)") echo "mediation_envelope.verify_inbound.trust_list[0].public_key" ;;
-        "docs/configuration.md (yaml block 80)") echo "flight_recorder.signing_key_path required when conductor.enabled is true" ;;
-        "docs/configuration.md (yaml block 83)") echo "learn_lock.pinned_root_fingerprint" ;;
+        mcp-session-binding) echo "mcp_session_binding.enabled requires mcp_tool_scanning.enabled" ;;
+        adaptive-enforcement) echo "adaptive_enforcement.enabled requires session_profiling.enabled" ;;
+        license-path-precedence) echo "unmarshal errors" ;;
+        license-complete-reference | license-container-layout | license-activation) echo "license" ;;
+        trusted-rule-key) echo "public_key must be exactly 64 hex chars" ;;
+        a2a-trusted-card-key) echo "trusted_agent_card_keys" ;;
+        mediation-signing | federation-inbound-key) echo "mediation_envelope.verify_inbound.trust_list[0].public_key" ;;
+        conductor-follower) echo "flight_recorder.signing_key_path required when conductor.enabled is true" ;;
+        learn-lock) echo "learn_lock.pinned_root_fingerprint" ;;
         *) echo "" ;;
     esac
+}
+
+metadata_value() {
+    local key="$1" cfg="$2"
+    sed -nE "s/^#[[:space:]]*${key}:[[:space:]]*([a-z0-9-]+)[[:space:]]*$/\\1/p" "$cfg" | head -1
 }
 
 environment_failure_reason() {
@@ -163,7 +167,7 @@ environment_failure_reason() {
     # second schema, path, or security-validation error in the same output.
     local enterprise_refusals other_refusals
     enterprise_refusals="$(grep -ciE 'requires an enterprise build|requires an Enterprise license that grants' "$out" || true)"
-    if [ "$phase" = "run" ] && [ "$enterprise_refusals" -gt 0 ] && enterprise_skip_allowed "$label"; then
+    if [ "$phase" = "run" ] && [ "$enterprise_refusals" -gt 0 ] && enterprise_skip_allowed "$cfg"; then
         # Count independent refusal lines after removing the one entitlement
         # refusal. The entitlement line is not guaranteed to contain an
         # "error:" prefix, so counting it as part of the generic total makes
@@ -236,19 +240,24 @@ probe() {
     HOME="$PROBE_HOME" "$BIN" check --config "$run_cfg" >"$check_out" 2>&1 && check_ok=1
     if [ "$check_ok" -eq 0 ]; then
         if [ "$intent" = "fragment" ]; then
-            local expected_fragment_error
-            expected_fragment_error="$(fragment_expected_error "$label")"
+            local fragment_id expected_fragment_error
+            fragment_id="$(metadata_value pipelock-fragment-id "$run_cfg")"
+            expected_fragment_error="$(fragment_expected_error "$fragment_id")"
             if [ -z "$expected_fragment_error" ]; then
                 failed=$((failed+1))
-                echo "  ✗ $label" >>"$FAILURES"
-                echo "      undeclared fragment exemption; add its exact expected refusal to fragment_expected_error" >>"$FAILURES"
+                {
+                    echo "  ✗ $label"
+                    echo "      unknown or missing pipelock-fragment-id; add its exact expected refusal to fragment_expected_error"
+                } >>"$FAILURES"
                 return 0
             fi
             if ! grep -Fqi "$expected_fragment_error" "$check_out"; then
                 failed=$((failed+1))
-                echo "  ✗ $label" >>"$FAILURES"
-                echo "      fragment refusal changed; expected: $expected_fragment_error" >>"$FAILURES"
-                echo "      $(grep -m1 -vE '^[[:space:]]*$' "$check_out" | head -c 180)" >>"$FAILURES"
+                {
+                    echo "  ✗ $label"
+                    echo "      fragment '$fragment_id' refusal changed; expected: $expected_fragment_error"
+                    echo "      $(grep -m1 -vE '^[[:space:]]*$' "$check_out" | head -c 180)"
+                } >>"$FAILURES"
                 return 0
             fi
             rejected=$((rejected+1))
@@ -353,6 +362,17 @@ mapfile -t FILES < <(git ls-files \
     'examples/**/*.yaml' 'examples/**/*.yml' \
     'charts/**/examples/*.yaml' \
     'configs/*.yaml' 2>/dev/null | sort -u)
+
+# Stable metadata IDs replace brittle markdown block numbers. They are globally
+# unique so moving a block cannot change its policy identity and copying one
+# cannot silently inherit another block's exemption.
+duplicate_metadata_ids="$(git grep -hE '^#[[:space:]]*pipelock-(fragment|enterprise-skip)-id:[[:space:]]*[a-z0-9-]+' -- 'docs/*.md' 'docs/**/*.md' \
+    | sed -E 's/^#[[:space:]]*pipelock-(fragment|enterprise-skip)-id:[[:space:]]*//' \
+    | sort | uniq -d)"
+if [ -n "$duplicate_metadata_ids" ]; then
+    echo "config-examples: duplicate exemption metadata ID(s): $duplicate_metadata_ids" >&2
+    exit 1
+fi
 
 for f in "${FILES[@]}"; do
     [ -f "$f" ] || continue

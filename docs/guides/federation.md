@@ -19,6 +19,7 @@ Inbound (new in v2.4): when a request arrives carrying a `pipelock-mediation` si
 Inbound verification is opt-in. Add `mediation_envelope.verify_inbound` to `pipelock.yaml`:
 
 ```yaml pipelock-fragment
+# pipelock-fragment-id: federation-inbound-key
 mediation_envelope:
   verify_inbound:
     enabled: true

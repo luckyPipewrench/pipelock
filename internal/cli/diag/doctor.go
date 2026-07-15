@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -728,18 +729,21 @@ func checkDoctorStartupDLPSecretsFile(cfg *config.Config) doctorReportCheck {
 			Detail:  "dlp.secrets_file is not configured",
 		}
 	}
-	f, err := os.Open(filepath.Clean(cfg.DLP.SecretsFile))
+	minLen := cfg.DLP.MinEnvSecretLength
+	if minLen <= 0 {
+		minLen = 16
+	}
+	_, err := scanner.LoadSecretsFile(filepath.Clean(cfg.DLP.SecretsFile), minLen)
 	if err != nil {
 		return doctorReportCheck{
 			Name:       "startup_dlp_secrets_file",
 			Surface:    doctorSurfaceHost,
 			Status:     doctorStatusFail,
 			Configured: true,
-			Detail:     "configured secrets file cannot be opened: " + err.Error(),
+			Detail:     "configured secrets file cannot be loaded: " + err.Error(),
 			Next:       "fix dlp.secrets_file ownership, path, or mode for the service user",
 		}
 	}
-	_ = f.Close()
 	return doctorReportCheck{
 		Name:       "startup_dlp_secrets_file",
 		Surface:    doctorSurfaceHost,
@@ -747,7 +751,7 @@ func checkDoctorStartupDLPSecretsFile(cfg *config.Config) doctorReportCheck {
 		Configured: true,
 		Reachable:  true,
 		Enforcing:  true,
-		Detail:     "configured secrets file is openable",
+		Detail:     "configured secrets file is loadable",
 	}
 }
 

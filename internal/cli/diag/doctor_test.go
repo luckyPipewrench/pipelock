@@ -129,7 +129,7 @@ func TestCheckDoctorStartupDLPSecretsFile(t *testing.T) {
 			detail: "not configured",
 		},
 		{
-			name: "openable",
+			name: "loadable",
 			setup: func(t *testing.T, cfg *config.Config) {
 				path := filepath.Join(t.TempDir(), "secrets.txt")
 				if err := os.WriteFile(path, []byte("secret-value-for-doctor\n"), 0o600); err != nil {
@@ -138,7 +138,15 @@ func TestCheckDoctorStartupDLPSecretsFile(t *testing.T) {
 				cfg.DLP.SecretsFile = path
 			},
 			status: doctorStatusOK,
-			detail: "openable",
+			detail: "loadable",
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, cfg *config.Config) {
+				cfg.DLP.SecretsFile = t.TempDir()
+			},
+			status: doctorStatusFail,
+			detail: "cannot be loaded",
 		},
 		{
 			name: "missing",
@@ -146,7 +154,7 @@ func TestCheckDoctorStartupDLPSecretsFile(t *testing.T) {
 				cfg.DLP.SecretsFile = filepath.Join(t.TempDir(), "missing.txt")
 			},
 			status: doctorStatusFail,
-			detail: "cannot be opened",
+			detail: "cannot be loaded",
 		},
 	}
 

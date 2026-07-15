@@ -36,6 +36,7 @@ const (
 	dashboardOIDCMaxTokenSize    = 16 << 10
 	dashboardOIDCMaxRoleValues   = 64
 	dashboardOIDCMaxRoleLength   = 256
+	dashboardOIDCMaxJSONDepth    = 64
 	dashboardOIDCMinKeyRefresh   = 30 * time.Second
 )
 
@@ -585,7 +586,7 @@ func decodeDashboardJWTJSON(data []byte, dst any) error {
 func rejectDashboardDuplicateJSONMembers(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := walkDashboardJSONValue(decoder); err != nil {
+	if err := walkDashboardJSONValue(decoder, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -597,7 +598,7 @@ func rejectDashboardDuplicateJSONMembers(data []byte) error {
 	return nil
 }
 
-func walkDashboardJSONValue(decoder *json.Decoder) error {
+func walkDashboardJSONValue(decoder *json.Decoder, depth int) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -605,6 +606,9 @@ func walkDashboardJSONValue(decoder *json.Decoder) error {
 	delim, composite := token.(json.Delim)
 	if !composite {
 		return nil
+	}
+	if depth >= dashboardOIDCMaxJSONDepth {
+		return fmt.Errorf("JSON nesting exceeds maximum depth %d", dashboardOIDCMaxJSONDepth)
 	}
 	switch delim {
 	case '{':
@@ -622,7 +626,7 @@ func walkDashboardJSONValue(decoder *json.Decoder) error {
 				return fmt.Errorf("duplicate JSON member %q", name)
 			}
 			seen[name] = struct{}{}
-			if err := walkDashboardJSONValue(decoder); err != nil {
+			if err := walkDashboardJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}
@@ -638,7 +642,7 @@ func walkDashboardJSONValue(decoder *json.Decoder) error {
 		}
 	case '[':
 		for decoder.More() {
-			if err := walkDashboardJSONValue(decoder); err != nil {
+			if err := walkDashboardJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}

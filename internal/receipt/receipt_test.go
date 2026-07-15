@@ -427,7 +427,7 @@ func TestVerifyV1BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 			name:       "hostile non-json bytes",
 			raw:        []byte{0xff, '{', '"'},
 			keyHex:     expectedKey,
-			wantErrSub: "strict decode",
+			wantErrSub: "not valid UTF-8",
 		},
 	}
 	for _, tc := range cases {

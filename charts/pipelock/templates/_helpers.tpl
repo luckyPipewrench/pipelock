@@ -113,7 +113,8 @@ Validate mode and security-critical enterprise chart requirements.
 {{- if and .Values.mcp.enabled .Values.mcp.upstream -}}
 {{- $mcpPortText := regexFind "[0-9]+$" (default "" .Values.mcp.listen) -}}
 {{- $mcpHost := regexReplaceAll ":[0-9]+$" (default "" .Values.mcp.listen) "" -}}
-{{- $mcpLoopback := or (hasPrefix "127." $mcpHost) (eq $mcpHost "[::1]") -}}
+{{- $ipv4Octet := "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])" -}}
+{{- $mcpLoopback := or (regexMatch (printf "^127\\.%s\\.%s\\.%s$" $ipv4Octet $ipv4Octet $ipv4Octet) $mcpHost) (eq $mcpHost "[::1]") -}}
 {{- if or (eq $mcpPortText "") (ne (int $mcpPortText) (int .Values.service.mcpPort)) -}}
 {{- fail "mcp.listen must end with the same port configured by service.mcpPort so the Service and container listener cannot diverge" -}}
 {{- end -}}

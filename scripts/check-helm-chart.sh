@@ -72,6 +72,24 @@ expect_template_error "mcp.listen must end with the same port configured by serv
   --set mcp.allowUnauthenticated=true \
   --set networkPolicy.enabled=true
 
+for deceptive_loopback in 127.evil 127.0.0.1.example.com 127.0.0.999; do
+  expect_template_error "mcp.listen is non-loopback" \
+    --set mcp.enabled=true \
+    --set mcp.upstream=http://mcp.vendor.example \
+    --set "mcp.listen=${deceptive_loopback}:8889"
+done
+
+# Syntactically valid IPv4 and IPv6 loopback literals remain valid without an
+# auth token because they are not reachable through the Service network path.
+helm template pipelock "$chart" \
+  --set mcp.enabled=true \
+  --set mcp.upstream=http://mcp.vendor.example \
+  --set mcp.listen=127.0.0.42:8889 >"$render_dir/mcp-loopback-ipv4.yaml"
+helm template pipelock "$chart" \
+  --set mcp.enabled=true \
+  --set mcp.upstream=http://mcp.vendor.example \
+  --set 'mcp.listen=[::1]:8889' >"$render_dir/mcp-loopback-ipv6.yaml"
+
 grep -q -- "- run" "$render_dir/default.yaml"
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"

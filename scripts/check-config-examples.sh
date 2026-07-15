@@ -126,8 +126,14 @@ environment_failure_reason() {
     local enterprise_refusals other_refusals
     enterprise_refusals="$(grep -ciE 'requires an enterprise build|requires an Enterprise license that grants' "$out" || true)"
     if [ "$enterprise_refusals" -eq 1 ]; then
-        other_refusals="$(grep -ciE '(FAILED:|(^|[[:space:]])error:|invalid config:)' "$out" || true)"
-        if [ "$other_refusals" -eq 1 ]; then
+        # Count independent refusal lines after removing the one entitlement
+        # refusal. The entitlement line is not guaranteed to contain an
+        # "error:" prefix, so counting it as part of the generic total makes
+        # equivalent OSS-build and missing-license failures classify
+        # differently.
+        other_refusals="$(grep -viE 'requires an enterprise build|requires an Enterprise license that grants' "$out" \
+            | grep -ciE '(FAILED:|(^|[[:space:]])error:|invalid config:)' || true)"
+        if [ "$other_refusals" -eq 0 ]; then
             echo "requires an enterprise build or license"
             return
         fi

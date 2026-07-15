@@ -334,7 +334,7 @@ conductor:
   fleet_id: prod
   instance_id: edge-01
   trust_roster_path: /etc/pipelock/trust-roster.json
-  # Replace this syntactically valid example with the fingerprint from step 1.
+  # EXAMPLE ONLY: replace this with the fingerprint from step 1; do not deploy this value.
   trust_roster_root_fingerprint: sha256:e7064a5e10402f71d33b8629c63ae81e2fdf528594577a8ffa5febf0fa48c9ee
   server_ca_file: /etc/pipelock/conductor-ca.pem
   client_cert_path: /etc/pipelock/follower.crt

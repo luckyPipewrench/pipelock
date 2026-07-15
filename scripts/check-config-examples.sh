@@ -48,6 +48,16 @@ if [ -z "$BIN" ]; then
 fi
 [ -x "$BIN" ] || { echo "config-examples: no usable pipelock binary at '$BIN'" >&2; exit 1; }
 
+# Never inherit operator state from the machine running this gate. In particular,
+# a real ~/.pipelock CA made TLS examples pass locally and fail on a clean CI
+# runner. Give every probe a disposable HOME and fixture the default CA there.
+PROBE_HOME="$WORK/home"
+mkdir -p "$PROBE_HOME"
+if ! HOME="$PROBE_HOME" "$BIN" tls init --out "$PROBE_HOME/.pipelock" >/dev/null 2>&1; then
+    echo "config-examples: could not fixture the default TLS CA" >&2
+    exit 1
+fi
+
 # Fixture a real recorder signing key. Without this the check is CIRCULAR: a snippet
 # that correctly sets signing_key_path names a file this host does not have, gets
 # skipped as environment-dependent, and is never booted — so the policy would not
@@ -99,8 +109,36 @@ is_config_block() {
 # Merely mentioning a path or placeholder host must not exempt the entire block:
 # allowlists, regexes, optional sentinel files, and output paths do not need those
 # resources at startup and must still exercise the runtime.
+enterprise_skip_allowed() {
+    case "$1" in
+        "docs/guides/conductor-production-runbook.md (yaml block 4)" | \
+        "docs/guides/conductor.md (yaml block 1)" | \
+        "docs/guides/siem-integration.md (yaml block 2)" | \
+        "docs/specs/pipelock-conductor-audit-sink.md (yaml block 3)") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+fragment_expected_error() {
+    case "$1" in
+        "docs/configuration.md (yaml block 29)") echo "mcp_session_binding.enabled requires mcp_tool_scanning.enabled" ;;
+        "docs/configuration.md (yaml block 33)") echo "adaptive_enforcement.enabled requires session_profiling.enabled" ;;
+        "docs/configuration.md (yaml block 52)") echo "unmarshal errors" ;;
+        "docs/configuration.md (yaml block 54)" | \
+        "docs/configuration.md (yaml block 56)" | \
+        "docs/configuration.md (yaml block 57)") echo "license" ;;
+        "docs/configuration.md (yaml block 61)") echo "public_key must be exactly 64 hex chars" ;;
+        "docs/configuration.md (yaml block 69)") echo "trusted_agent_card_keys" ;;
+        "docs/configuration.md (yaml block 76)" | \
+        "docs/guides/federation.md (yaml block 1)") echo "mediation_envelope.verify_inbound.trust_list[0].public_key" ;;
+        "docs/configuration.md (yaml block 80)") echo "flight_recorder.signing_key_path required when conductor.enabled is true" ;;
+        "docs/configuration.md (yaml block 83)") echo "learn_lock.pinned_root_fingerprint" ;;
+        *) echo "" ;;
+    esac
+}
+
 environment_failure_reason() {
-    local cfg="$1" out="$2"
+    local cfg="$1" out="$2" phase="$3" label="$4"
 
     if grep -qE "^[[:space:]]*(license_file|license_crl_file|license_intermediate_file|trust_roster_path|server_ca_file|client_cert_path|client_key_path|enrollment_token_path|ca_cert|ca_key|secrets_file|signing_key_path|manifest_path|signature_path|keystore|roster_path):[[:space:]]*(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#][^#]*)" "$cfg" \
         && grep -qiE '(no such file|permission denied|not found|cannot (open|read)|failed to (open|read|load)|load(ing)? .*(file|key|cert|roster|manifest))' "$out"; then
@@ -125,7 +163,7 @@ environment_failure_reason() {
     # second schema, path, or security-validation error in the same output.
     local enterprise_refusals other_refusals
     enterprise_refusals="$(grep -ciE 'requires an enterprise build|requires an Enterprise license that grants' "$out" || true)"
-    if [ "$enterprise_refusals" -eq 1 ]; then
+    if [ "$phase" = "run" ] && [ "$enterprise_refusals" -gt 0 ] && enterprise_skip_allowed "$label"; then
         # Count independent refusal lines after removing the one entitlement
         # refusal. The entitlement line is not guaranteed to contain an
         # "error:" prefix, so counting it as part of the generic total makes
@@ -195,9 +233,24 @@ probe() {
     fi
 
     local check_ok=0 check_out="$WORK/check-$total.txt"
-    "$BIN" check --config "$run_cfg" >"$check_out" 2>&1 && check_ok=1
+    HOME="$PROBE_HOME" "$BIN" check --config "$run_cfg" >"$check_out" 2>&1 && check_ok=1
     if [ "$check_ok" -eq 0 ]; then
         if [ "$intent" = "fragment" ]; then
+            local expected_fragment_error
+            expected_fragment_error="$(fragment_expected_error "$label")"
+            if [ -z "$expected_fragment_error" ]; then
+                failed=$((failed+1))
+                echo "  ✗ $label" >>"$FAILURES"
+                echo "      undeclared fragment exemption; add its exact expected refusal to fragment_expected_error" >>"$FAILURES"
+                return 0
+            fi
+            if ! grep -Fqi "$expected_fragment_error" "$check_out"; then
+                failed=$((failed+1))
+                echo "  ✗ $label" >>"$FAILURES"
+                echo "      fragment refusal changed; expected: $expected_fragment_error" >>"$FAILURES"
+                echo "      $(grep -m1 -vE '^[[:space:]]*$' "$check_out" | head -c 180)" >>"$FAILURES"
+                return 0
+            fi
             rejected=$((rejected+1))
             {
                 echo "  check rejected (declared fragment): $label"
@@ -207,7 +260,7 @@ probe() {
         fi
 
         local check_why
-        check_why="$(environment_failure_reason "$run_cfg" "$check_out")"
+        check_why="$(environment_failure_reason "$run_cfg" "$check_out" check "$label")"
         if [ -n "$check_why" ]; then
             skipped=$((skipped+1))
             echo "  skip ($check_why): $label" >>"$SKIPS"
@@ -223,6 +276,15 @@ probe() {
         return 0
     fi
 
+    if [ "$intent" = "fragment" ]; then
+        failed=$((failed+1))
+        {
+            echo "  ✗ $label"
+            echo "      declared fragment unexpectedly became a valid config; remove the exemption or restore the incomplete example"
+        } >>"$FAILURES"
+        return 0
+    fi
+
     # The startup banner is printed before auxiliary and main listeners bind, so
     # it is not a readiness marker. Complete an HTTP exchange with the main
     # listener, then allow a short grace window for immediate post-bind failures.
@@ -230,7 +292,7 @@ probe() {
     for attempt in 1 2 3; do
         ready=0
         port="$(choose_port)" || { echo "config-examples: could not find a free probe port" >&2; exit 1; }
-        "$BIN" run --listen "127.0.0.1:$port" --config "$run_cfg" >"$out_file" 2>&1 </dev/null &
+        HOME="$PROBE_HOME" "$BIN" run --listen "127.0.0.1:$port" --config "$run_cfg" >"$out_file" 2>&1 </dev/null &
         RUN_PID=$!
         # Generous backstop, not the gate: readiness is detected the instant /health
         # answers (~60ms), so a large deadline costs nothing on success and only
@@ -271,7 +333,7 @@ probe() {
     # startup refusal is a validator/runtime divergence unless the actual runtime
     # error proves that an operator-supplied resource is unavailable.
     local why
-    why="$(environment_failure_reason "$run_cfg" "$out_file")"
+    why="$(environment_failure_reason "$run_cfg" "$out_file" run "$label")"
     if [ -n "$why" ]; then
         skipped=$((skipped+1))
         echo "  skip ($why): $label" >>"$SKIPS"
@@ -328,7 +390,7 @@ done
 echo ""
 echo "config-examples: $total config blocks | $booted booted OK | $skipped skipped | $rejected check-rejected | $failed FAILED"
 [ "$skipped" -gt 0 ] && { echo "skipped (not silently dropped):"; cat "$SKIPS"; }
-[ "$rejected" -gt 0 ] && { echo "declared reference fragments rejected by pipelock check (not gated):"; cat "$REJECTED"; }
+[ "$rejected" -gt 0 ] && { echo "declared reference fragments rejected with their audited expected error:"; cat "$REJECTED"; }
 
 if [ "$failed" -gt 0 ]; then
     echo ""

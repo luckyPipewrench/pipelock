@@ -43,6 +43,22 @@ if [ -z "$BIN" ]; then
 fi
 [ -x "$BIN" ] || { echo "config-examples: no usable pipelock binary at '$BIN'" >&2; exit 1; }
 
+# Fixture a real recorder signing key. Without this the check is CIRCULAR: a snippet
+# that correctly sets signing_key_path names a file this host does not have, gets
+# skipped as environment-dependent, and is never booted — so the policy would not
+# exercise the very examples it exists to protect. A signing key is trivially
+# fixture-creatable (init generates one), so it must be fixtured, not skipped. Skips
+# are reserved for dependencies that cannot reasonably be created here (a real signed
+# license, an operator's CA). `init` writes keys/ next to the config it generates.
+FIXTURE_KEY=""
+if "$BIN" init --output "$WORK/keygen/pipelock.yaml" --skip-canary --skip-validate >/dev/null 2>&1 \
+    && [ -s "$WORK/keygen/keys/flight-recorder-signing.key" ]; then
+    FIXTURE_KEY="$WORK/keygen/keys/flight-recorder-signing.key"
+else
+    echo "config-examples: WARNING - could not fixture a recorder signing key;" >&2
+    echo "  snippets naming signing_key_path will be skipped instead of booted." >&2
+fi
+
 # Top-level keys of config.Config. A yaml block is a pipelock config only if every
 # top-level key it declares is one of these — that excludes k8s manifests, Helm
 # values, CI workflows, and JSON without hand-maintaining an ignore list.
@@ -149,6 +165,13 @@ probe() {
         >"$run_cfg"
     mkdir -p "$WORK/d$total"
 
+    # Point signing_key_path at the fixtured key so a snippet that correctly names one
+    # is BOOTED rather than skipped. This is what makes the policy actually verify the
+    # recorder examples instead of only detecting a missing key line.
+    if [ -n "$FIXTURE_KEY" ]; then
+        sed -i -E "s@^([[:space:]]*signing_key_path:[[:space:]])(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#]([^#]*[^[:space:]#])?)([[:space:]]*#.*)?\$@\1\"$FIXTURE_KEY\"\4@" "$run_cfg"
+    fi
+
     local check_ok=0 check_out="$WORK/check-$total.txt"
     "$BIN" check --config "$run_cfg" >"$check_out" 2>&1 && check_ok=1
     if [ "$check_ok" -eq 0 ]; then
@@ -169,7 +192,12 @@ probe() {
         port="$(choose_port)" || { echo "config-examples: could not find a free probe port" >&2; exit 1; }
         "$BIN" run --listen "127.0.0.1:$port" --config "$run_cfg" >"$out_file" 2>&1 </dev/null &
         RUN_PID=$!
-        deadline=$((SECONDS + 10))
+        # Generous backstop, not the gate: readiness is detected the instant /health
+        # answers (~60ms), so a large deadline costs nothing on success and only
+        # protects a legitimately slow boot (cold TLS cert generation, sandbox init)
+        # on a loaded runner from being misreported as a config-shape failure. A
+        # timeout here is NOT retried, so it must not be the thing that fires first.
+        deadline=$((SECONDS + ${CONFIG_EXAMPLES_BOOT_TIMEOUT:-30}))
         while (( SECONDS < deadline )); do
             kill -0 "$RUN_PID" 2>/dev/null || break
             if http_ready "$port"; then

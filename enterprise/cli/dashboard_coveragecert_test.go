@@ -192,6 +192,9 @@ func TestRunCoverageCertGenerate_RoundTrip(t *testing.T) {
 	if cert.Body.Agent != actor {
 		t.Errorf("cert agent = %q, want %q", cert.Body.Agent, actor)
 	}
+	if !strings.Contains(out.String(), "receipt chains: self-consistent only") {
+		t.Fatalf("generate output = %q, want self-consistent-only receipt-chain label", out.String())
+	}
 	// Honest boundary wording is present and never over-claims.
 	if !bytes.Contains(data, []byte("mediated egress inside the declared Pipelock boundary")) {
 		t.Error("cert boundary is missing the required mediated-egress phrase")
@@ -201,6 +204,103 @@ func TestRunCoverageCertGenerate_RoundTrip(t *testing.T) {
 	}
 	if len(cert.Body.Sessions) == 0 {
 		t.Error("cert should summarize at least one session")
+	}
+}
+
+func TestRunCoverageCertGenerate_TrustedReceiptSignerMode(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "trusted-chain", "agent-a", 2)
+
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent:                 "agent-a",
+		receiptDir:            dir,
+		signingKeyFile:        keyFile,
+		trustedReceiptSigners: []string{"inline=" + hex.EncodeToString(pub)},
+		windowStart:           start.Format(time.RFC3339),
+		windowEnd:             start.Add(time.Hour).Format(time.RFC3339),
+		outFile:               certFile,
+	}); err != nil {
+		t.Fatalf("runCoverageCertGenerate: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(certFile))
+	if err != nil {
+		t.Fatalf("read cert: %v", err)
+	}
+	cert, err := coveragecert.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Unmarshal cert: %v", err)
+	}
+	if cert.Body.ChainsIntact != 1 || !cert.Body.Sessions[0].ChainIntact {
+		t.Fatalf("trusted receipt signer chain_intact = body:%d session:%v, want trusted intact",
+			cert.Body.ChainsIntact, cert.Body.Sessions[0].ChainIntact)
+	}
+	if !strings.Contains(out.String(), "receipt chains: verified against trusted signer set") {
+		t.Fatalf("generate output = %q, want trusted receipt-chain label", out.String())
+	}
+}
+
+func TestRunCoverageCertGenerate_UntrustedReceiptSignerMarksChainBroken(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	otherPub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair other: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "untrusted-chain", "agent-a", 2)
+
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent:                 "agent-a",
+		receiptDir:            dir,
+		signingKeyFile:        keyFile,
+		trustedReceiptSigners: []string{"inline=" + hex.EncodeToString(otherPub)},
+		windowStart:           start.Format(time.RFC3339),
+		windowEnd:             start.Add(time.Hour).Format(time.RFC3339),
+		outFile:               certFile,
+	}); err != nil {
+		t.Fatalf("runCoverageCertGenerate: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(certFile))
+	if err != nil {
+		t.Fatalf("read cert: %v", err)
+	}
+	cert, err := coveragecert.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Unmarshal cert: %v", err)
+	}
+	if cert.Body.ChainsBroken != 1 || cert.Body.Sessions[0].ChainIntact {
+		t.Fatalf("untrusted receipt signer chain result = broken:%d session:%v, want broken",
+			cert.Body.ChainsBroken, cert.Body.Sessions[0].ChainIntact)
 	}
 }
 
@@ -388,6 +488,33 @@ func TestRunCoverageCertVerify(t *testing.T) {
 		}
 	})
 
+	t.Run("no trusted signer fails closed by default", func(t *testing.T) {
+		cmd, buf := newCmd()
+		err := runCoverageCertVerify(cmd, coverageCertVerifyOptions{
+			certFile: certFile,
+		})
+		if err == nil || !strings.Contains(err.Error(), "no trusted-signer set supplied") {
+			t.Fatalf("verify (unpinned default) err = %v, want fail-closed missing trusted-signer error", err)
+		}
+		if strings.Contains(buf.String(), "STRUCTURAL ONLY") {
+			t.Fatalf("verify output = %q, must not report structural-only opt-in by default", buf.String())
+		}
+	})
+
+	t.Run("no trusted signer structural opt in exits zero", func(t *testing.T) {
+		cmd, buf := newCmd()
+		err := runCoverageCertVerify(cmd, coverageCertVerifyOptions{
+			certFile:      certFile,
+			allowUnpinned: true,
+		})
+		if err != nil {
+			t.Fatalf("verify (structural opt-in) error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "STRUCTURAL ONLY — signer NOT trusted") {
+			t.Fatalf("verify output = %q, want explicit structural-only label", buf.String())
+		}
+	})
+
 	t.Run("untrusted signer fails closed", func(t *testing.T) {
 		_, otherPriv, _ := signing.GenerateKeyPair()
 		otherPub := otherPriv.Public().(ed25519.PublicKey)
@@ -456,6 +583,12 @@ func TestCoverageCertCmd_Structure(t *testing.T) {
 	}
 	if coverageCertVerifyCmd().Flags().Lookup("cert") == nil {
 		t.Error("verify missing --cert flag")
+	}
+	if coverageCertVerifyCmd().Flags().Lookup("allow-unpinned") == nil {
+		t.Error("verify missing --allow-unpinned flag")
+	}
+	if coverageCertGenerateCmd().Flags().Lookup("trusted-receipt-signer") == nil {
+		t.Error("generate missing --trusted-receipt-signer flag")
 	}
 }
 

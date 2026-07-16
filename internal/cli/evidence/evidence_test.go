@@ -908,6 +908,60 @@ func TestVerifyCertCmd_UntrustedSigner_Reported(t *testing.T) {
 	}
 }
 
+func TestVerifyCertCmd_NoTrustedSigner_DefaultFailsClosed(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	certData := signTestCert(t, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+	})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "no trusted-signer set supplied") {
+		t.Fatalf("Execute err = %v, want fail-closed missing trusted-signer error", err)
+	}
+	if strings.Contains(stdout.String(), "STRUCTURAL ONLY") {
+		t.Fatalf("stdout = %q, must not report structural-only opt-in by default", stdout.String())
+	}
+}
+
+func TestVerifyCertCmd_AllowUnpinned(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	certData := signTestCert(t, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+		"--allow-unpinned",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "STRUCTURAL ONLY — signer NOT trusted") {
+		t.Fatalf("stdout = %q, want explicit structural-only label", stdout.String())
+	}
+}
+
 func TestVerifyCertCmd_Tampered_NonZero(t *testing.T) {
 	t.Parallel()
 	pub, priv := genKey(t)
@@ -1069,6 +1123,7 @@ func TestVerifyCertCmd_NoLicenseRequired(t *testing.T) {
 	cmd.SetArgs([]string{
 		"verify-cert",
 		"--cert", certFile,
+		"--trusted-signer", "inline=" + hex.EncodeToString(pub),
 	})
 
 	if err := cmd.Execute(); err != nil {

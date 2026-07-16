@@ -17,10 +17,19 @@ import (
 
 const maxCertificateBytes int64 = 1 << 20
 
+const noTrustedSignerSetError = "no trusted-signer set supplied; refusing to report the certificate as verified — pass --trusted-signer to check trust, or --allow-unpinned for an explicit structural-only check."
+
+type noTrustedSignerSetSuppliedError struct{}
+
+func (noTrustedSignerSetSuppliedError) Error() string {
+	return noTrustedSignerSetError
+}
+
 // Options configures one offline certificate verification run.
 type Options struct {
 	CertFile       string
 	TrustedSigners []string
+	AllowUnpinned  bool
 	Out            io.Writer
 }
 
@@ -73,10 +82,14 @@ func Run(opts Options) error {
 		// Fail closed: the caller pinned a trusted-signer set and the certificate
 		// signer is not in it. A cryptographically valid signature from an
 		// untrusted key must not verify, or an operator scripting on exit code
-		// would accept a certificate signed by an unrecognized key. (When no
-		// trusted set is provided the check above is skipped: that is the
-		// explicit unpinned/structural case.)
+		// would accept a certificate signed by an unrecognized key.
 		return errors.New("coverage certificate signer is not in the trusted-signer set")
+	}
+	if len(trustedKeySet) == 0 {
+		if !opts.AllowUnpinned {
+			return noTrustedSignerSetSuppliedError{}
+		}
+		_, _ = fmt.Fprintln(out, "STRUCTURAL ONLY — signer NOT trusted")
 	}
 	return nil
 }

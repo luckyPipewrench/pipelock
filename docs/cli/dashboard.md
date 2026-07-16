@@ -390,9 +390,15 @@ pipelock dashboard coverage-cert generate \
   --agent agent-a \
   --window-start 2026-07-01T00:00:00Z \
   --window-end 2026-07-12T00:00:00Z \
+  --trusted-receipt-signer file=/etc/pipelock/keys/receipt-signing.pub,source=security-team \
   --signing-key /etc/pipelock/keys/coverage-cert.key \
   --out agent-a-coverage.json
 ```
+
+When `--trusted-receipt-signer` is supplied, generation verifies each session's
+receipt chain against that trusted signer set. Its CLI output says
+`receipt chains: verified against trusted signer set`. Without it, generation
+uses self-consistency checks and prints `receipt chains: self-consistent only`.
 
 Verify is free and offline:
 
@@ -402,8 +408,11 @@ pipelock evidence verify-cert \
   --trusted-signer file=/etc/pipelock/keys/coverage-cert.pub,source=security-team
 ```
 
-With a `--trusted-signer` set, verification exits non-zero when the certificate
-signer is not trusted. With no trusted signer, verification is structural-only.
+Verification exits zero only when the certificate signer is in the
+`--trusted-signer` set. With no trusted signer, verification fails closed by
+default. Pass `--allow-unpinned` only for an explicit structural-only
+check; that output is labeled `STRUCTURAL ONLY` and does not report the signer
+as trusted.
 
 ## Backup, restore, and read-model rebuild
 

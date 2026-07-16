@@ -382,6 +382,7 @@ func resolveServeSession(dir, explicit string) (string, error) {
 type verifyCertOptions struct {
 	certFile       string
 	trustedSigners []string
+	allowUnpinned  bool
 }
 
 func verifyCertCmd() *cobra.Command {
@@ -397,9 +398,10 @@ Fully offline: no license, no server, no network. The Free viewer
 VERIFIES a Pro-issued certificate; only Pro issues one.
 
 Fails closed with a non-zero exit if the signature is invalid, the
-aggregate counts do not match, or a trusted-signer set is supplied and the
-certificate signer is not in it. With no trusted-signer set, verification is
-structural-only and exits zero. The signer status is always reported.`,
+aggregate counts do not match, the certificate signer is not in the trusted-
+signer set, or no trusted-signer set is supplied. Pass
+--allow-unpinned only for an explicit structural-only check whose
+signer is not trusted. The signer status is always reported.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVerifyCert(cmd, opts)
@@ -409,6 +411,8 @@ structural-only and exits zero. The signer status is always reported.`,
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
 		"trusted signing key as comma-separated kv pairs: "+
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
+	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false,
+		"allow structural-only verification when no trusted-signer set is supplied")
 	_ = cmd.MarkFlagRequired("cert")
 	return cmd
 }
@@ -417,6 +421,7 @@ func runVerifyCert(cmd *cobra.Command, opts verifyCertOptions) error {
 	return coveragecertverify.Run(coveragecertverify.Options{
 		CertFile:       opts.certFile,
 		TrustedSigners: opts.trustedSigners,
+		AllowUnpinned:  opts.allowUnpinned,
 		Out:            cmd.OutOrStdout(),
 	})
 }

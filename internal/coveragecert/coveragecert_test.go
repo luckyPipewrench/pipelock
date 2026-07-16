@@ -80,6 +80,12 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	if !result.SignatureValid {
 		t.Error("expected SignatureValid=true")
 	}
+	if !result.AggregateValid {
+		t.Error("expected AggregateValid=true")
+	}
+	if !result.StructuralValid {
+		t.Error("expected StructuralValid=true")
+	}
 	if !result.SignerTrusted {
 		t.Error("expected SignerTrusted=true")
 	}
@@ -178,6 +184,22 @@ func TestVerify_UntrustedSigner_NotTOFU(t *testing.T) {
 	}
 	if resultNil.SignerTrusted {
 		t.Error("expected SignerTrusted=false with nil trusted keys")
+	}
+	if !resultNil.StructuralValid {
+		t.Error("expected StructuralValid=true with nil trusted keys")
+	}
+	resultJSON, err := json.Marshal(resultNil)
+	if err != nil {
+		t.Fatalf("Marshal VerifyResult: %v", err)
+	}
+	if !strings.Contains(string(resultJSON), `"structural_valid":true`) {
+		t.Fatalf("VerifyResult JSON = %s, want structural_valid=true", resultJSON)
+	}
+	if !strings.Contains(string(resultJSON), `"signer_trusted":false`) {
+		t.Fatalf("VerifyResult JSON = %s, want signer_trusted=false", resultJSON)
+	}
+	if strings.Contains(string(resultJSON), `"valid":true`) {
+		t.Fatalf("VerifyResult JSON = %s, must not expose bare valid=true", resultJSON)
 	}
 }
 

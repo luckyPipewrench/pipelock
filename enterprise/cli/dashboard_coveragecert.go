@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
 
 const coverageCertReceiptReadLimit = 100000
@@ -38,13 +40,14 @@ func coverageCertCmd() *cobra.Command {
 }
 
 type coverageCertGenerateOptions struct {
-	agent          string
-	receiptDir     string
-	signingKeyFile string
-	windowStart    string
-	windowEnd      string
-	outFile        string
-	licenseCRLFile string
+	agent                 string
+	receiptDir            string
+	signingKeyFile        string
+	trustedReceiptSigners []string
+	windowStart           string
+	windowEnd             string
+	outFile               string
+	licenseCRLFile        string
 }
 
 func coverageCertGenerateCmd() *cobra.Command {
@@ -75,6 +78,9 @@ the Ed25519 private key specified by --signing-key.`,
 		"flight-recorder evidence directory holding action receipts")
 	cmd.Flags().StringVar(&opts.signingKeyFile, "signing-key", "",
 		"Ed25519 private key file for signing the certificate")
+	cmd.Flags().StringArrayVar(&opts.trustedReceiptSigners, "trusted-receipt-signer", nil,
+		"trusted receipt signing key as comma-separated kv pairs: "+
+			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
 	cmd.Flags().StringVar(&opts.windowStart, "window-start", "",
 		"coverage window start (RFC3339)")
 	cmd.Flags().StringVar(&opts.windowEnd, "window-end", "",
@@ -137,6 +143,14 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		return fmt.Errorf("--signing-key: not an Ed25519 private key")
 	}
 	pubHex := hex.EncodeToString(pub)
+	trustedReceiptKeys, err := parseCoverageCertTrustedReceiptSigners(opts.trustedReceiptSigners)
+	if err != nil {
+		return err
+	}
+	receiptChainSummary := "self-consistent only"
+	if len(trustedReceiptKeys) > 0 {
+		receiptChainSummary = "verified against trusted signer set"
+	}
 
 	var sessionCoverages []coveragecert.SessionCoverage
 	var totalReceipts uint64
@@ -160,7 +174,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 			continue
 		}
 
-		chainResult := receipt.VerifyChainTrusted(receipts, nil)
+		chainResult := receipt.VerifyChainTrusted(receipts, trustedReceiptKeys)
 		report := completeness.Analyze(receipts, chainResult)
 
 		intact := chainResult.Valid
@@ -218,11 +232,33 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 			return fmt.Errorf("--out: %w", writeErr)
 		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "coverage certificate written to %s\n", cleanOut)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "receipt chains: %s\n", receiptChainSummary)
 		return nil
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", data)
 	return nil
+}
+
+func parseCoverageCertTrustedReceiptSigners(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(raw))
+	keys := make([]string, 0, len(raw))
+	for _, value := range raw {
+		keyHex, _, err := signingflag.ParseTrustedSignerSpec(value)
+		if err != nil {
+			return nil, fmt.Errorf("--trusted-receipt-signer %q: %w", value, err)
+		}
+		if _, ok := seen[keyHex]; ok {
+			return nil, fmt.Errorf("--trusted-receipt-signer %q: duplicate key %s", value, keyHex)
+		}
+		seen[keyHex] = struct{}{}
+		keys = append(keys, keyHex)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func loadCoverageCertSessionReceipts(dir, sessionID string, limit int) ([]receipt.Receipt, error) {
@@ -312,6 +348,7 @@ func sessionBelongsToAgent(sessionID string, receipts []receipt.Receipt, agent s
 type coverageCertVerifyOptions struct {
 	certFile       string
 	trustedSigners []string
+	allowUnpinned  bool
 }
 
 func coverageCertVerifyCmd() *cobra.Command {
@@ -324,9 +361,9 @@ against the trusted-signer set. Re-derives aggregate counts from the sessions
 and flags any mismatch. Fully offline: no license, no server.
 
 Fails closed with a non-zero exit if the signature is invalid, the aggregate
-counts do not match, or a trusted-signer set is supplied and the certificate
-signer is not in it. With no trusted-signer set, verification is
-structural-only and exits zero.`,
+counts do not match, the certificate signer is not in the trusted-signer set,
+or no trusted-signer set is supplied. Pass --allow-unpinned only
+for an explicit structural-only check whose signer is not trusted.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCoverageCertVerify(cmd, opts)
@@ -336,6 +373,8 @@ structural-only and exits zero.`,
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
 		"trusted signing key as comma-separated kv pairs: "+
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
+	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false,
+		"allow structural-only verification when no trusted-signer set is supplied")
 	_ = cmd.MarkFlagRequired("cert")
 	return cmd
 }
@@ -344,6 +383,7 @@ func runCoverageCertVerify(cmd *cobra.Command, opts coverageCertVerifyOptions) e
 	return coveragecertverify.Run(coveragecertverify.Options{
 		CertFile:       opts.certFile,
 		TrustedSigners: opts.trustedSigners,
+		AllowUnpinned:  opts.allowUnpinned,
 		Out:            cmd.OutOrStdout(),
 	})
 }

@@ -124,6 +124,97 @@ func TestRunTrustedSignerVerifies(t *testing.T) {
 	}
 }
 
+func TestRunNoTrustedSignerFailsClosedByDefault(t *testing.T) {
+	certFile, _ := writeCoverageCertVerifyFixture(t)
+	var out bytes.Buffer
+
+	err := Run(Options{
+		CertFile: certFile,
+		Out:      &out,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no trusted-signer set supplied") {
+		t.Fatalf("Run err = %v, want fail-closed missing trusted-signer error", err)
+	}
+	if strings.Contains(out.String(), "STRUCTURAL ONLY") {
+		t.Fatalf("Run output = %q, must not label default verification as structural-only opt-in", out.String())
+	}
+}
+
+func TestRunTrustModeTable(t *testing.T) {
+	certFile, pubHex := writeCoverageCertVerifyFixture(t)
+	otherPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	otherPubHex := hex.EncodeToString(otherPub)
+
+	tests := []struct {
+		name             string
+		trustedSigners   []string
+		allowStructural  bool
+		wantErrContains  string
+		wantOutContains  []string
+		rejectOutContain []string
+	}{
+		{
+			name:            "no trusted set no flag fails nonzero",
+			wantErrContains: "no trusted-signer set supplied",
+			wantOutContains: []string{"Signature: valid", "Signer: NOT TRUSTED"},
+		},
+		{
+			name:            "no trusted set structural flag exits zero",
+			allowStructural: true,
+			wantOutContains: []string{"Signature: valid", "Signer: NOT TRUSTED", "STRUCTURAL ONLY — signer NOT trusted"},
+		},
+		{
+			name:             "trusted set matching signer verifies",
+			trustedSigners:   []string{"inline=" + pubHex},
+			wantOutContains:  []string{"Signature: valid", "Signer: TRUSTED"},
+			rejectOutContain: []string{"STRUCTURAL ONLY"},
+		},
+		{
+			name:            "trusted set wrong signer fails",
+			trustedSigners:  []string{"inline=" + otherPubHex},
+			wantErrContains: "not in the trusted-signer set",
+			wantOutContains: []string{"Signature: valid", "Signer: NOT TRUSTED"},
+		},
+		{
+			name:            "forged self-signed cert fails by default",
+			wantErrContains: "no trusted-signer set supplied",
+			wantOutContains: []string{"Signature: valid", "Signer: NOT TRUSTED"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := Run(Options{
+				CertFile:       certFile,
+				TrustedSigners: tt.trustedSigners,
+				AllowUnpinned:  tt.allowStructural,
+				Out:            &out,
+			})
+			if tt.wantErrContains == "" {
+				if err != nil {
+					t.Fatalf("Run err = %v, want nil", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErrContains) {
+				t.Fatalf("Run err = %v, want containing %q", err, tt.wantErrContains)
+			}
+			for _, want := range tt.wantOutContains {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("Run output = %q, want containing %q", out.String(), want)
+				}
+			}
+			for _, reject := range tt.rejectOutContain {
+				if strings.Contains(out.String(), reject) {
+					t.Fatalf("Run output = %q, must not contain %q", out.String(), reject)
+				}
+			}
+		})
+	}
+}
+
 func TestRunUntrustedSignerFailsClosed(t *testing.T) {
 	certFile, _ := writeCoverageCertVerifyFixture(t)
 	otherPub, _, err := ed25519.GenerateKey(nil)

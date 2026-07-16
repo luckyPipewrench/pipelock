@@ -105,11 +105,12 @@ type Certificate struct {
 
 // VerifyResult is the output of offline verification.
 type VerifyResult struct {
-	SignatureValid bool     `json:"signature_valid"`
-	SignerTrusted  bool     `json:"signer_trusted"`
-	AggregateValid bool     `json:"aggregate_valid"`
-	Body           Body     `json:"body"`
-	Lines          []string `json:"lines"`
+	SignatureValid  bool     `json:"signature_valid"`
+	AggregateValid  bool     `json:"aggregate_valid"`
+	StructuralValid bool     `json:"structural_valid"`
+	SignerTrusted   bool     `json:"signer_trusted"`
+	Body            Body     `json:"body"`
+	Lines           []string `json:"lines"`
 }
 
 // SignablePreimage returns JCS-canonical bytes of the body for signing and
@@ -384,9 +385,12 @@ func Verify(cert Certificate, trustedKeys map[string]struct{}) (VerifyResult, er
 	// Verify signature.
 	result.SignatureValid = ed25519.Verify(signerKeyBytes, preimage, sigBytes)
 	if !result.SignatureValid {
+		result.StructuralValid = false
 		result.Lines = buildVerifyLines(cert, result, nil)
 		return result, fmt.Errorf("%w: signature is invalid", ErrVerifyFailed)
 	}
+	result.AggregateValid = true
+	result.StructuralValid = true
 
 	// Check signer trust (NEVER TOFU).
 	if trustedKeys != nil {
@@ -396,8 +400,6 @@ func Verify(cert Certificate, trustedKeys map[string]struct{}) (VerifyResult, er
 			return result, fmt.Errorf("%w: signer is not in the trusted-signer set", ErrVerifyFailed)
 		}
 	}
-
-	result.AggregateValid = true
 
 	// Build bounded per-fact lines.
 	result.Lines = buildVerifyLines(cert, result, nil)

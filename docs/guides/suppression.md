@@ -119,19 +119,24 @@ Use the `exclude-paths` input (one pattern per line):
 
 ### Config-level suppression
 
-Use the `config` input to provide inline YAML config with suppress entries:
+Write a Pipelock config file, then pass its path with the `config` input:
 
 ```yaml
+- name: Write Pipelock config
+  run: |
+    cat > pipelock-ci.yaml <<'EOF'
+    suppress:
+      - rule: "Credential in URL"
+        path: "docs/"
+        reason: "Documentation examples"
+      - rule: "JWT Token"
+        path: "test/"
+        reason: "Test tokens"
+    EOF
+
 - uses: luckyPipewrench/pipelock@v2
   with:
-    config: |
-      suppress:
-        - rule: "Credential in URL"
-          path: "docs/"
-          reason: "Documentation examples"
-        - rule: "JWT Token"
-          path: "test/"
-          reason: "Test tokens"
+    config: pipelock-ci.yaml
 ```
 
 ### Inline comments

@@ -132,7 +132,9 @@ Examples:
   pipelock run                                       # standalone proxy
   pipelock run --config pipelock.yaml                # with config file (hot-reload)
   pipelock run --mode strict --listen 0.0.0.0:9999   # override mode and listen address
-  pipelock run --mcp-listen 0.0.0.0:8889 --mcp-upstream http://mcp-server:3000/mcp`,
+  pipelock run --mcp-listen 0.0.0.0:8889 \
+    --mcp-upstream http://mcp-server:3000/mcp \
+    --mcp-auth-token-file /run/pipelock/mcp-listener.token`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()
 			switch {

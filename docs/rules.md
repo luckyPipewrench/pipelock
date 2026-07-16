@@ -186,7 +186,9 @@ rules:
 DLP rules may set `pattern.validator` to `luhn`, `mod97`, `aba`, or `wif` when
 the identifier carries that checksum. Pipelock applies the validator after a
 regex match, so malformed lookalikes do not become DLP findings. Bundle
-validators require Pipelock 3.2 or newer; set `min_pipelock` accordingly.
+authors should declare `required_features: ["checksum"]` and set
+`min_pipelock` to the oldest Pipelock release whose rule-bundle loader supports
+the `pattern.validator` field.
 
 `format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `monotonic_version`, `published_at`, and `expires_at`.
 

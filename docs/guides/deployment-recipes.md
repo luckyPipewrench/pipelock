@@ -88,6 +88,10 @@ services:
       --listen 0.0.0.0:8888
       --mcp-listen 0.0.0.0:8889
       --mcp-upstream http://mcp-server:3000/mcp
+      --mcp-auth-token-file /run/pipelock/mcp-listener.token
+    volumes:
+      - ./pipelock.yaml:/config/pipelock.yaml:ro
+      - ./mcp-listener.token:/run/pipelock/mcp-listener.token:ro
     # ...
 
   mcp-server:
@@ -95,6 +99,8 @@ services:
     networks:
       - agent-internal
 ```
+
+Create `mcp-listener.token` with a long random bearer token and mount it read-only. Non-loopback MCP listeners fail closed unless you provide a token file or explicitly acknowledge unauthenticated operation behind a verified network boundary.
 
 ### Kill Switch API on a Separate Port
 

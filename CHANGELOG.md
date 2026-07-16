@@ -5,7 +5,7 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.2.0] - UNRELEASED
 
 ### Added
 
@@ -13,31 +13,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy modes can require a reloadable bearer-token file and an exact browser
   Origin allowlist. Listener credentials are consumed before request scanning
   and are never forwarded upstream; browser preflight and MCP protocol-version
-  headers are handled explicitly.
+  headers are handled explicitly. (#1010)
+- **Runnable security examples now ship with offline verification.** New
+  examples cover MCP tool policy, fetch-proxy SSRF blocking, and kill-switch
+  activation with scripts that stand up the scenario and prove the expected
+  allow and deny paths locally. (#1004, #1005, #1006)
+- **Coverage-certificate signing keys are first-class.** `pipelock signing key
+  generate --purpose coverage-cert-signing` now emits keys with the purpose
+  expected by coverage-certificate generation and verification. (#1012)
 
 ### Changed
 
 - **Non-loopback MCP HTTP listeners now fail closed by default.** Operators must
   configure a listener token file or explicitly acknowledge unauthenticated
   operation behind a verified network boundary. Helm MCP sidecars enforce the
-  same choice and reject Service/listener port mismatches.
+  same choice and reject Service/listener port mismatches. (#1010)
+- **Startup validation is now split between config-lint checks and
+  startup-equivalent doctor checks.** `pipelock check` still catches parse
+  errors, deterministic semantic contradictions, and path existence and
+  permission-shape errors. Preconditions that must open and read a file, such as
+  a secrets file that exists but cannot be read, moved to `pipelock doctor
+  --startup`, so operators keep a startup-equivalent preflight. (#1012)
+- **Scanner construction now returns operator errors instead of panicking.**
+  Invalid merged scanner inputs, such as unreadable secrets files, invalid DLP
+  validators, bad CIDRs, or invalid response patterns, now produce ordinary
+  startup errors; hot reload preserves the running scanner when a replacement
+  cannot be built. (#1012)
+- **Executable config examples are release-gated.** CI now extracts shipped YAML
+  examples, runs `pipelock check`, boots valid runtime configs, and fails when a
+  documented config cannot start; examples that referenced unsupported fields
+  or non-booting recorder settings were corrected. (#1009, #1011)
+- **Credential guard watches are exact.** Contained-install credential guards
+  now watch the configured credential files and atomic rewrites directly instead
+  of broad parent-directory changes. (#1008)
 
 ### Fixed
 
+- **Coverage-certificate verification now fails closed without trusted
+  signers.** `dashboard coverage-cert verify` and `evidence verify-cert` now
+  exit non-zero when no trusted signer is supplied, separate structural
+  validity from signer trust in the result, and require the explicit
+  `--allow-unpinned` opt-in for structural-only checks. (#1014)
+- **Receipt replay verification now fails closed without a pinned signer.**
+  `pipelock-verifier replay` previously accepted a receipt's own embedded key as
+  proof, so a forged self-consistent receipt replayed as verified. Replay now
+  requires `--key`, or the explicit `--allow-unpinned` opt-in for structural-only
+  verification, and reports verification failure as exit 1 to match the sibling
+  verifiers. A `warnings` field distinguishes a structurally valid receipt whose
+  signatures were not verified. (#1016)
+- **A2A forward-proxy request bodies are scanned.** A2A request bodies now flow
+  through the plain forward-proxy scanning path, block reasons are mapped from
+  scanner findings, and FilePart metadata URI SSRF coverage protects the
+  regression case. (#1013)
 - **MCP HTTP listener boundary hardening.** Tokenless loopback listeners reject
   DNS-rebound or wrong-port Host authorities; listener credentials are scrubbed
   from both authentication headers, including duplicate-value attacks; and
   operator-pinned Authorization, MCP protocol-version, and A2A service headers
   cannot be replaced by client input. Duplicate or malformed session,
   protocol-version, and A2A service headers fail closed before scanning or
-  upstream forwarding.
-
+  upstream forwarding. (#1010)
 - **Cross-language evidence parsing now rejects ambiguous JSON.** Go,
-  TypeScript, and Rust verifier paths reject duplicate keys, invalid UTF-8, and
-  numbers outside JavaScript's exact integer range before trusting receipts or
-  audit packets.
+  TypeScript, Rust, and Python verifier paths reject duplicate keys, invalid
+  UTF-8, and numbers outside JavaScript's exact integer range before trusting
+  receipts or audit packets. Python also rejects CPython's non-standard
+  `NaN` and `Infinity` constants during receipt parsing. (#1010)
+- **Parser and trust-boundary inputs are bounded.** Internal duplicate-key
+  parsing, secure file reads, tool-chain matching, verifier inputs, OIDC
+  discovery documents, JWKS responses, release-manifest payloads, and related
+  trust-boundary parsers now enforce fixed input bounds before parsing or
+  verification. (#1010)
+- **Scanner cleanup goroutines no longer leak per instance.** Scanner lifetime
+  cleanup now avoids creating per-instance background goroutines for rate-limit,
+  data-budget, entropy, and fragment buffers. (#1010)
 
-### Removed
+### Dependencies / CI
+
+- **Python conformance verifier `setuptools` bumped to 83.0.0** (security
+  advisory). (#1007)
+
+### ⚠️ Breaking Changes / Upgrade Notes
+
+Six of the seven below fail closed: they reject configuration or an invocation that
+v3.1.0 accepted, and none of them opens a hole. The seventh moves a check rather
+than removing it, so a CI gate that depended on the old location needs updating.
+Review before upgrading.
+
+- **Non-loopback MCP HTTP listeners require an explicit auth choice.**
+  `pipelock run --mcp-listen 0.0.0.0:PORT --mcp-upstream ...` now refuses to
+  start without listener authentication or an explicit unauthenticated
+  acknowledgement. For combined `pipelock run` mode, set
+  `--mcp-auth-token-file` to a secure bearer-token file, or set
+  `--mcp-allow-unauthenticated` only behind a verified network boundary. For
+  standalone `pipelock mcp proxy --listen`, use `--listener-auth-token-file` or
+  `--listener-allow-unauthenticated`. Helm users can set
+  `mcp.authTokenFile` or, behind a verified NetworkPolicy boundary,
+  `mcp.allowUnauthenticated`. (#1010)
+- **Helm MCP Service ports must match the listener port.** The chart now rejects
+  values where `mcp.listen` does not end with `service.mcpPort`, because that
+  rendered a Service port where Pipelock was not actually listening. Set
+  `service.mcpPort` to the port in `mcp.listen`, or change `mcp.listen` to end
+  with the existing Service port. (#1010)
+- **Unpinned verification now exits non-zero.** `pipelock-verifier replay`,
+  `dashboard coverage-cert verify`, and `evidence verify-cert` previously exited
+  zero when no trusted signer was supplied, so a consumer keying on the exit code
+  could treat a forged artifact as verified. All three now fail closed. Pass the
+  trusted signer (`--key` for replay, `--trusted-signer` for the certificate
+  verifiers), or pass `--allow-unpinned` for an explicit structural-only check
+  that reports the signer as untrusted. Replay's verification-failure exit code
+  also moved from 2 to 1 to match the sibling verifiers; exit 2 now means
+  malformed input or an unloadable key or policy. (#1014, #1016)
+- **File-loaded `fetch_proxy.listen: ":0"` is rejected.** Config files must use
+  a real TCP port for fetch-proxy listeners instead of asking the runtime to
+  pick an ephemeral port. (#1012)
+- **Required receipts now require a signing key.** A config with
+  `flight_recorder.require_receipts: true` and no `signing_key_path` is
+  rejected because the old shape silently wrote no signed receipts. Set
+  `flight_recorder.signing_key_path` to a recorder signing key. (#1012)
+- **Raw escrow now validates its public key offline.** A config with
+  `flight_recorder.raw_escrow: true` is rejected unless
+  `escrow_public_key` is exactly 64 hexadecimal characters. (#1012)
+- **Some host-dependent startup checks moved out of `pipelock check`.** CI gates
+  that relied on `pipelock check` to catch an existing but unreadable
+  `dlp.secrets_file` will now pass that config and fail at startup instead.
+  Missing files and unsafe permission shapes are still config-validation errors.
+  Use `pipelock doctor --startup --config FILE` when the mounted host files are
+  present and startup-equivalent validation is required. (#1012)
 
 ## [3.1.0] - 2026-07-13
 

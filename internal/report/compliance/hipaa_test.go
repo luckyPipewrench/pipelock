@@ -53,10 +53,10 @@ func TestHIPAASecurityRule_StructuralInvariants(t *testing.T) {
 	}
 }
 
-// TestHIPAASecurityRule_NoFabricatedClaims guards against the class of
-// overclaim Codex caught on 2026-05-21 (HTTPS-only enforcement, MRN
-// detection). Add a phrase here when a future edit risks promising
-// behavior the binary does not implement.
+// TestHIPAASecurityRule_NoFabricatedClaims guards against a class of overclaim
+// an independent review found: HTTPS-only enforcement and MRN detection are not
+// implemented by the binary. Add a phrase here when a future edit risks
+// promising behavior the binary does not implement.
 func TestHIPAASecurityRule_NoFabricatedClaims(t *testing.T) {
 	f := HIPAASecurityRule()
 	type forbidden struct {

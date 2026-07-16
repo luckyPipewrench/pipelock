@@ -2,8 +2,8 @@ apiVersion: v2
 name: pipelock
 description: Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement.
 type: application
-version: 0.7.0
-appVersion: "3.1.0"
+version: 0.8.0
+appVersion: "3.2.0"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock
@@ -30,15 +30,15 @@ annotations:
     - name: Audit Packet verifier
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
-    - kind: added
-      description: Pipelock appVersion 3.1.0. Operator dashboard revamp with evidence, agents, budgets, trust and keys, fleet overview, signed-action workbench, incident cockpit, and a free single-session evidence viewer.
-    - kind: added
-      description: Conductor dry-run and decision replay for publish, kill, resume, and rollback actions, plus runtime/apply-state drift preflight for policy publish.
     - kind: changed
-      description: Receipt and evidence verification hardening - strict unknown-field rejection, durable session lifecycle evidence, evidence-health metrics, cross-language verifier parity, and honest kernel_observed containment wording.
+      description: Pipelock appVersion 3.2.0. MCP listener authentication, Origin allowlists, non-loopback fail-closed defaults, and parser hardening across trust boundaries.
+    - kind: changed
+      description: Startup validation now separates offline config checks from host-dependent doctor checks, with scanner construction returning errors and failed reloads preserving the running scanner.
+    - kind: changed
+      description: Executable config examples are release-gated in CI, so shipped YAML examples must pass check and boot when they claim to be runnable.
     - kind: added
-      description: Dashboard mTLS/OIDC/token authentication, RBAC permissions, exemption lifecycle records, coverage certificates, backup/restore, and durable SIEM forwarding.
+      description: Verified runnable examples for MCP tool policy, fetch-proxy SSRF blocking, and kill-switch activation.
     - kind: fixed
-      description: Rekor anchoring now requires an explicit URL, submits Ed25519 Rekor v1 hashedrekord entries with sha512 by default, and verifies anchored receipts with pinned Rekor log keys.
+      description: Coverage-certificate verification fails closed without trusted signers unless --allow-unpinned is set for structural-only checks.
     - kind: fixed
-      description: Reloads fail closed when bundle-resolution errors would drop live detections; coverage-certificate verification fails closed on untrusted pinned signers.
+      description: A2A forward-proxy request bodies are scanned, credential guard watches are exact, and release certification runs faster with sharded race-test gates.

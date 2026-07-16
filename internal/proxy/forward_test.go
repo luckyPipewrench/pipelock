@@ -37,6 +37,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -458,6 +459,48 @@ func TestForwardA2ARequestBodyFilePartURIBlocked(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestA2ABodyBlockReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		result mcp.A2AScanResult
+		want   blockreason.Reason
+	}{
+		{
+			name: "url ssrf",
+			result: mcp.A2AScanResult{
+				URLFindings: []scanner.Result{{Scanner: scanner.ScannerSSRF}},
+			},
+			want: blockreason.SSRFPrivateIP,
+		},
+		{
+			name: "prompt injection",
+			result: mcp.A2AScanResult{
+				InjectFindings: []scanner.ResponseMatch{{PatternName: "prompt_injection"}},
+			},
+			want: blockreason.PromptInjection,
+		},
+		{
+			name: "dlp",
+			result: mcp.A2AScanResult{
+				DLPFindings: []scanner.TextDLPMatch{{PatternName: "api_key"}},
+			},
+			want: blockreason.DLPMatch,
+		},
+		{
+			name:   "parser fallback",
+			result: mcp.A2AScanResult{Reason: "a2a: invalid JSON: empty body"},
+			want:   blockreason.ParseError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := a2aBodyBlockReason(tt.result); got != tt.want {
+				t.Fatalf("reason = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

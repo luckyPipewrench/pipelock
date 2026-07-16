@@ -1364,6 +1364,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 					p.logger.LogBlocked(actx, scannerLabelA2A, reason)
+					blockReason := a2aBodyBlockReason(a2aBodyResult)
 					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:            actionID,
 						Verdict:             config.ActionBlock,
@@ -1386,7 +1387,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}))
 					p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabelA2A, time.Since(start), agentLabel)
 					writeBlockedError(w,
-						blockInfoFor(blockreason.DLPMatch, scannerLabelA2A),
+						blockInfoFor(blockReason, scannerLabelA2A),
 						"blocked: "+reason, http.StatusForbidden)
 					return
 				}
@@ -2549,6 +2550,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
+}
+
+func a2aBodyBlockReason(result mcp.A2AScanResult) blockreason.Reason {
+	if len(result.URLFindings) > 0 {
+		return reasonFromScanner(result.URLFindings[0].Scanner)
+	}
+	if len(result.InjectFindings) > 0 {
+		return blockreason.PromptInjection
+	}
+	if len(result.DLPFindings) > 0 {
+		return blockreason.DLPMatch
+	}
+	return blockreason.ParseError
 }
 
 // copyResponseHeaders copies upstream response headers to the client response,

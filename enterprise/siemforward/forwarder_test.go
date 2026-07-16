@@ -663,7 +663,18 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New after shutdown: %v", err)
 	}
-	waitFor(t, func() bool { return received.Load() >= accepted.Load() })
+	waitFor(t, func() bool {
+		acceptedMu.Lock()
+		defer acceptedMu.Unlock()
+		receivedMu.Lock()
+		defer receivedMu.Unlock()
+		for sequence := range acceptedSequences {
+			if receivedBySequence[sequence] == 0 {
+				return false
+			}
+		}
+		return true
+	})
 	if err := f2.Close(); err != nil {
 		t.Fatalf("Close restarted forwarder: %v", err)
 	}

@@ -1124,6 +1124,96 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// the signer would have to re-drain req.Body itself and the caller
 	// would lose deterministic bookkeeping about byte counts.
 	var forwardBodyBytes []byte
+	scanA2AForwardBody := func(buf []byte) bool {
+		a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), buf, sc, &cfg.A2AScanning)
+		if a2aBodyResult.Clean {
+			return false
+		}
+		if !a2aBodyResult.IsInfrastructureError() {
+			hasFinding = true
+		}
+		action := a2aBodyResult.Action
+		if action == "" {
+			action = cfg.A2AScanning.Action
+		}
+		reason := a2aBodyResult.Reason
+		if reason == "" {
+			reason = "a2a: request body finding"
+		}
+		if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
+			blockReason := a2aBodyBlockReason(a2aBodyResult)
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               scannerLabelA2A,
+				Pattern:             reason,
+				Transport:           "forward",
+				Method:              r.Method,
+				Target:              targetURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+				SessionContaminated: forwardTaint.Risk.Contaminated,
+				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       forwardTaint.Authority.String(),
+				TaintDecision:       forwardTaint.Result.Decision.String(),
+				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+			}))
+			p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabelA2A, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockReason, scannerLabelA2A),
+				"blocked: "+reason, http.StatusForbidden)
+			return true
+		}
+		p.logger.LogAnomaly(actx, scannerLabelA2A, reason, 0.8)
+		return false
+	}
+	if !cfg.RequestBodyScanning.Enabled && isA2A && cfg.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
+		buf, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes)
+		if err != nil {
+			reason := "a2a: " + err.Error()
+			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               scannerLabelA2A,
+				Pattern:             reason,
+				Transport:           "forward",
+				Method:              r.Method,
+				Target:              targetURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+				SessionContaminated: forwardTaint.Risk.Contaminated,
+				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       forwardTaint.Authority.String(),
+				TaintDecision:       forwardTaint.Result.Decision.String(),
+				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+			}))
+			p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabelA2A, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ParseError, scannerLabelA2A),
+				"blocked: "+reason, http.StatusForbidden)
+			return
+		}
+		if scanA2AForwardBody(buf) {
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+		r.ContentLength = int64(len(buf))
+		bufCopy := buf
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bufCopy)), nil
+		}
+		forwardBodyBytes = buf
+	}
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
 			Body:            r.Body,
@@ -1342,6 +1432,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					"blocked: "+reason+" (escalated)", http.StatusForbidden)
 				return
 			}
+		}
+
+		// A2A request body scanning: field-aware classification of JSON leaves.
+		// Generic body DLP sees opaque text, but A2A file/url fields need the
+		// protocol-aware URL scanner so non-text FilePart URIs cannot bypass
+		// SSRF protections on the plain forward-proxy path.
+		if isA2A && cfg.A2AScanning.Enabled && buf != nil && scanA2AForwardBody(buf) {
+			return
 		}
 
 		// Re-wrap body so the forwarded request gets the buffered bytes.
@@ -2499,6 +2597,34 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
+}
+
+func a2aBodyBlockReason(result mcp.A2AScanResult) blockreason.Reason {
+	if len(result.URLFindings) > 0 {
+		return reasonFromScanner(result.URLFindings[0].Scanner)
+	}
+	if len(result.InjectFindings) > 0 {
+		return blockreason.PromptInjection
+	}
+	if len(result.DLPFindings) > 0 {
+		return blockreason.DLPMatch
+	}
+	return blockreason.ParseError
+}
+
+func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxBytes int) ([]byte, error) {
+	if hasNonIdentityEncoding(contentEncoding) {
+		return nil, fmt.Errorf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", contentEncoding)
+	}
+
+	buf, err := io.ReadAll(io.LimitReader(body, int64(maxBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("error reading request body: %w", err)
+	}
+	if len(buf) > maxBytes {
+		return nil, fmt.Errorf("request body exceeds max_body_bytes (%d)", maxBytes)
+	}
+	return buf, nil
 }
 
 // copyResponseHeaders copies upstream response headers to the client response,

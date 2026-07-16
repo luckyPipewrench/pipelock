@@ -498,6 +498,42 @@ func TestScanAgentCard_BenignURLFieldsPass(t *testing.T) {
 	}
 }
 
+func TestScanAgentCard_BenignSecurityToolPasses(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.DetectCardDrift = false
+	scannerCfg := config.Defaults()
+	scannerCfg.Internal = nil
+	sc := scanner.MustNew(scannerCfg)
+	defer sc.Close()
+
+	card := A2AAgentCard{
+		Name:        "security-scanner",
+		Description: "Scans code repositories for vulnerabilities and security issues.",
+		URL:         "https://security.example.com/agent",
+		Skills: []A2ASkill{
+			{
+				ID:          "scan",
+				Name:        "Vulnerability Scan",
+				Description: "Scans for SQL injection, XSS, command injection, and other OWASP Top 10 vulnerabilities.",
+			},
+			{
+				ID:          "report",
+				Name:        "Security Report",
+				Description: "Generates a security assessment report with findings and remediation steps.",
+			},
+		},
+	}
+	body, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	result := ScanAgentCard(context.Background(), body, sc, NewCardBaseline(10),
+		CardCacheKeyFromRequest("https://security.example.com/.well-known/agent-card.json", ""), cfg)
+	if !result.Clean {
+		t.Fatalf("benign security Agent Card should pass: %+v", result)
+	}
+}
+
 func TestScanAgentCard_DriftDetection(t *testing.T) {
 	card1 := A2AAgentCard{
 		Name:   "Agent",
@@ -700,7 +736,9 @@ func TestScanA2ARequestBody_URLFieldScanned(t *testing.T) {
 
 func TestScanA2ARequestBody_FilePartURISSRFScanned(t *testing.T) {
 	cfg := enabledA2ACfg()
-	sc := scanner.MustNew(config.Defaults())
+	scanCfg := config.Defaults()
+	scanCfg.Internal = []string{"169.254.0.0/16"}
+	sc := scanner.MustNew(scanCfg)
 	defer sc.Close()
 
 	body := []byte(`{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}`)
@@ -710,6 +748,9 @@ func TestScanA2ARequestBody_FilePartURISSRFScanned(t *testing.T) {
 	}
 	if len(result.URLFindings) == 0 {
 		t.Fatal("expected URL finding for FilePart URI")
+	}
+	if got := result.URLFindings[0].Scanner; got != scanner.ScannerSSRFMetadata {
+		t.Fatalf("URL scanner = %s, want %s", got, scanner.ScannerSSRFMetadata)
 	}
 }
 

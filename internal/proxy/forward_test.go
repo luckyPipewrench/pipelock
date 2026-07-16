@@ -37,6 +37,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -416,6 +417,406 @@ func TestForwardLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardA2ARequestBodyFilePartURIBlocked(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-012","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"169.254.0.0/16"}
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	body := `{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, backend.URL+"/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFMetadata) {
+		t.Fatalf("block reason = %q, want %s; layer=%q", got, blockreason.SSRFMetadata, resp.Header.Get(blockreason.HeaderLayer))
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardA2ARequestBodyFilePartURIBlockedWithGenericBodyScanningDisabled(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-012","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"169.254.0.0/16"}
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = false
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	body := `{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, backend.URL+"/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFMetadata) {
+		t.Fatalf("block reason = %q, want %s; layer=%q", got, blockreason.SSRFMetadata, resp.Header.Get(blockreason.HeaderLayer))
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardA2ARequestBodyDirectBlockWithGenericBodyScanningDisabled(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-013","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"10.0.0.0/8"}
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = false
+	})
+	defer cleanup()
+
+	body := `{"jsonrpc":"2.0","id":"req-013","method":"message/send","params":{"message":{"messageId":"msg-013","role":"user","parts":[{"kind":"file","file":{"uri":"http://10.0.0.5/private/object","mimeType":"text/plain"}}]}}}`
+	req := newA2AForwardBodyRequest(t, backend.URL+"/message:send", body)
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.SSRFPrivateIP)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardA2ARequestBodyDirectBlockAfterGenericBodyScanningWarn(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-014","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"10.0.0.0/8"}
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+	})
+	defer cleanup()
+
+	body := `{"jsonrpc":"2.0","id":"req-014","method":"message/send","params":{"message":{"messageId":"msg-014","role":"user","parts":[{"kind":"file","file":{"uri":"http://10.0.0.5/private/object","mimeType":"text/plain"}}]}}}`
+	req := newA2AForwardBodyRequest(t, backend.URL+"/message:send", body)
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.SSRFPrivateIP)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardA2ARequestBodyForwardedWithGenericBodyScanningDisabled(t *testing.T) {
+	var gotBody atomic.Value
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		gotBody.Store(string(body))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-013","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = false
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	body := `{"jsonrpc":"2.0","id":"req-013","method":"message/send","params":{"message":{"messageId":"msg-013","role":"user","parts":[{"kind":"text","text":"hello"}]}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got, ok := gotBody.Load().(string); !ok || got != body {
+		t.Fatalf("upstream body = %q, want %q", got, body)
+	}
+}
+
+func TestForwardA2ARequestBodyWarnModeForwardsAndReplaysBufferedBody(t *testing.T) {
+	var gotBody atomic.Value
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		gotBody.Store(string(body))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-015","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"10.0.0.0/8"}
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionWarn
+		cfg.RequestBodyScanning.Enabled = false
+	})
+	defer cleanup()
+
+	body := `{"jsonrpc":"2.0","id":"req-015","method":"message/send","params":{"message":{"messageId":"msg-015","role":"user","parts":[{"kind":"file","file":{"uri":"http://10.0.0.5/private/object","mimeType":"text/plain"}}]}}}`
+	req := newA2AForwardBodyRequest(t, backend.URL+"/message:send", body)
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got, ok := gotBody.Load().(string); !ok || got != body {
+		t.Fatalf("upstream body = %q, want %q", got, body)
+	}
+	if req.GetBody == nil {
+		t.Fatal("GetBody was not installed")
+	}
+	replay, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	defer func() { _ = replay.Close() }()
+	replayBody, err := io.ReadAll(replay)
+	if err != nil {
+		t.Fatalf("read replay body: %v", err)
+	}
+	if string(replayBody) != body {
+		t.Fatalf("replay body = %q, want %q", string(replayBody), body)
+	}
+}
+
+func TestForwardA2ARequestBodyFailsClosedWithGenericBodyScanningDisabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		config   func(*config.Config)
+		request  func(*http.Request)
+		rawShort bool
+	}{
+		{
+			name: "compressed",
+			body: `{"jsonrpc":"2.0","id":"req-014","method":"message/send","params":{"message":{"messageId":"msg-014","role":"user","parts":[{"kind":"text","text":"hello"}]}}}`,
+			request: func(req *http.Request) {
+				req.Header.Set("Content-Encoding", "gzip")
+			},
+		},
+		{
+			name: "oversized",
+			body: `{"jsonrpc":"2.0","id":"req-015","method":"message/send","params":{"message":{"messageId":"msg-015","role":"user","parts":[{"kind":"text","text":"hello"}]}}}`,
+			config: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.MaxBodyBytes = 8
+			},
+		},
+		{
+			name:     "read error",
+			body:     `{"jsonrpc":"2.0","id":"req-016"`,
+			rawShort: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var hits atomic.Int32
+			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req","result":{"ok":true}}`))
+			}))
+			defer backend.Close()
+
+			proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.A2AScanning.Enabled = true
+				cfg.A2AScanning.Action = config.ActionBlock
+				cfg.RequestBodyScanning.Enabled = false
+				if tt.config != nil {
+					tt.config(cfg)
+				}
+			})
+			defer cleanup()
+			installForwardTestDialer(p, backend.Listener.Addr().String())
+
+			var resp *http.Response
+			var err error
+			if tt.rawShort {
+				resp, err = rawA2AForwardRequestWithShortBody(t, proxyAddr, tt.body, len(tt.body)+32)
+			} else {
+				req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/message:send", strings.NewReader(tt.body))
+				if reqErr != nil {
+					t.Fatalf("NewRequest: %v", reqErr)
+				}
+				req.Header.Set("Content-Type", "application/a2a+json")
+				if tt.request != nil {
+					tt.request(req)
+				}
+				resp, err = forwardHTTPClient(t, proxyAddr).Do(req)
+			}
+			if err != nil {
+				t.Fatalf("forward request: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", resp.StatusCode)
+			}
+			if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ParseError) {
+				t.Fatalf("block reason = %q, want %s", got, blockreason.ParseError)
+			}
+			if hits.Load() != 0 {
+				t.Fatalf("upstream hits = %d, want 0", hits.Load())
+			}
+		})
+	}
+}
+
+func newA2AForwardBodyRequest(t *testing.T, targetURL, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, targetURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+	req.RemoteAddr = "127.0.0.1:12345"
+	return req
+}
+
+func rawA2AForwardRequestWithShortBody(t *testing.T, proxyAddr, body string, contentLength int) (*http.Response, error) {
+	t.Helper()
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(t.Context(), "tcp", proxyAddr)
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, err = fmt.Fprintf(conn, "POST http://api.example.com/message:send HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/a2a+json\r\nContent-Length: %d\r\n\r\n%s", contentLength, body)
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
+	}
+	return http.ReadResponse(bufio.NewReader(conn), nil)
+}
+
+func TestA2ABodyBlockReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		result mcp.A2AScanResult
+		want   blockreason.Reason
+	}{
+		{
+			name: "url ssrf",
+			result: mcp.A2AScanResult{
+				URLFindings: []scanner.Result{{Scanner: scanner.ScannerSSRF}},
+			},
+			want: blockreason.SSRFPrivateIP,
+		},
+		{
+			name: "url metadata ssrf",
+			result: mcp.A2AScanResult{
+				URLFindings: []scanner.Result{{Scanner: scanner.ScannerSSRFMetadata}},
+			},
+			want: blockreason.SSRFMetadata,
+		},
+		{
+			name: "prompt injection",
+			result: mcp.A2AScanResult{
+				InjectFindings: []scanner.ResponseMatch{{PatternName: "prompt_injection"}},
+			},
+			want: blockreason.PromptInjection,
+		},
+		{
+			name: "dlp",
+			result: mcp.A2AScanResult{
+				DLPFindings: []scanner.TextDLPMatch{{PatternName: "api_key"}},
+			},
+			want: blockreason.DLPMatch,
+		},
+		{
+			name:   "parser fallback",
+			result: mcp.A2AScanResult{Reason: "a2a: invalid JSON: empty body"},
+			want:   blockreason.ParseError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := a2aBodyBlockReason(tt.result); got != tt.want {
+				t.Fatalf("reason = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

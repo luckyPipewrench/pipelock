@@ -22,7 +22,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "=0.22.1"
-ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["std"] }
 hex = "=0.4.3"
 jsonschema = { version = "=0.18.3", default-features = false, features = ["draft202012"] }
 p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "pkcs8"] }

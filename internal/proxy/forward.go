@@ -1344,6 +1344,56 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// A2A request body scanning: field-aware classification of JSON leaves.
+		// Generic body DLP sees opaque text, but A2A file/url fields need the
+		// protocol-aware URL scanner so non-text FilePart URIs cannot bypass
+		// SSRF protections on the plain forward-proxy path.
+		if isA2A && buf != nil {
+			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), buf, sc, &cfg.A2AScanning)
+			if !a2aBodyResult.Clean {
+				if !a2aBodyResult.IsInfrastructureError() {
+					hasFinding = true
+				}
+				action := a2aBodyResult.Action
+				if action == "" {
+					action = cfg.A2AScanning.Action
+				}
+				reason := a2aBodyResult.Reason
+				if reason == "" {
+					reason = "a2a: request body finding"
+				}
+				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+					p.logger.LogBlocked(actx, scannerLabelA2A, reason)
+					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+						ActionID:            actionID,
+						Verdict:             config.ActionBlock,
+						Layer:               scannerLabelA2A,
+						Pattern:             reason,
+						Transport:           "forward",
+						Method:              r.Method,
+						Target:              targetURL,
+						RequestID:           requestID,
+						Agent:               agent,
+						SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+						SessionContaminated: forwardTaint.Risk.Contaminated,
+						RecentTaintSources:  forwardTaint.Risk.Sources,
+						SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+						SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+						AuthorityKind:       forwardTaint.Authority.String(),
+						TaintDecision:       forwardTaint.Result.Decision.String(),
+						TaintDecisionReason: forwardTaint.Result.Reason,
+						TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+					}))
+					p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabelA2A, time.Since(start), agentLabel)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.DLPMatch, scannerLabelA2A),
+						"blocked: "+reason, http.StatusForbidden)
+					return
+				}
+				p.logger.LogAnomaly(actx, scannerLabelA2A, reason, 0.8)
+			}
+		}
+
 		// Re-wrap body so the forwarded request gets the buffered bytes.
 		// GetBody is set so stdlib can replay on 307/308 redirects when
 		// the forward proxy's client follows a method-preserving hop.

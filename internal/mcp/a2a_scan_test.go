@@ -498,6 +498,42 @@ func TestScanAgentCard_BenignURLFieldsPass(t *testing.T) {
 	}
 }
 
+func TestScanAgentCard_BenignSecurityToolPasses(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.DetectCardDrift = false
+	scannerCfg := config.Defaults()
+	scannerCfg.Internal = nil
+	sc := scanner.MustNew(scannerCfg)
+	defer sc.Close()
+
+	card := A2AAgentCard{
+		Name:        "security-scanner",
+		Description: "Scans code repositories for vulnerabilities and security issues.",
+		URL:         "https://security.example.com/agent",
+		Skills: []A2ASkill{
+			{
+				ID:          "scan",
+				Name:        "Vulnerability Scan",
+				Description: "Scans for SQL injection, XSS, command injection, and other OWASP Top 10 vulnerabilities.",
+			},
+			{
+				ID:          "report",
+				Name:        "Security Report",
+				Description: "Generates a security assessment report with findings and remediation steps.",
+			},
+		},
+	}
+	body, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	result := ScanAgentCard(context.Background(), body, sc, NewCardBaseline(10),
+		CardCacheKeyFromRequest("https://security.example.com/.well-known/agent-card.json", ""), cfg)
+	if !result.Clean {
+		t.Fatalf("benign security Agent Card should pass: %+v", result)
+	}
+}
+
 func TestScanAgentCard_DriftDetection(t *testing.T) {
 	card1 := A2AAgentCard{
 		Name:   "Agent",

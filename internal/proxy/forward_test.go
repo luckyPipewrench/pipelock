@@ -419,6 +419,48 @@ func TestForwardLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	}
 }
 
+func TestForwardA2ARequestBodyFilePartURIBlocked(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-012","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"169.254.0.0/16"}
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	body := `{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://api.example.com/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.SSRFPrivateIP)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
 func TestForwardLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
 	var hits atomic.Int32
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

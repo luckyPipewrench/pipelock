@@ -85,8 +85,12 @@ wait_for_health() {
 health_field() {
   local port="$1"
   local field="$2"
-  curl -sf "http://127.0.0.1:${port}/health" | python3 -c \
-    'import json,sys; print(json.load(sys.stdin).get(sys.argv[1],""))' "$field"
+  local health_json
+  health_json="$(mktemp "$WORK/health.XXXXXX.json")"
+  curl -sf -o "$health_json" "http://127.0.0.1:${port}/health"
+  python3 -c \
+    'import json,sys; print(json.load(open(sys.argv[2], encoding="utf-8")).get(sys.argv[1],""))' \
+    "$field" "$health_json"
 }
 
 start_echo() {

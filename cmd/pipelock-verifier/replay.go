@@ -6,8 +6,8 @@ package main
 // `pipelock-verifier replay` re-evaluates a Pipelock action receipt against
 // a current policy. The point: turn receipts from "what happened" into
 // "what would happen today under current policy" - the governance-evidence
-// shift. Codex 2026-05-21 leadership review framed this as the
-// load-bearing primitive for receipts as evidence rather than logs.
+// shift. This is the load-bearing primitive for treating receipts as
+// evidence rather than logs.
 //
 // Free-tier scope (single-agent): load one receipt, load one YAML policy,
 // re-run the scanner pipeline against the receipt's preserved target URL,
@@ -31,9 +31,10 @@ import (
 )
 
 type replayOptions struct {
-	policyPath string
-	signerKey  string
-	jsonOutput bool
+	policyPath    string
+	signerKey     string
+	jsonOutput    bool
+	allowUnpinned bool
 }
 
 func newReplayCmd() *cobra.Command {
@@ -49,9 +50,9 @@ The receipt's preserved target URL is fed through the same scanner pipeline
 the live proxy uses, with the loaded policy as the current ground truth.
 The replay verdict is compared against the receipt's original verdict.
 
-The receipt is also re-verified against its embedded signer key (or the key
-supplied via --key); a tampered or unverifiable receipt is reported as a
-replay-blocking error before any policy comparison is attempted.
+The receipt is also re-verified against the key supplied via --key. Without
+--key, replay fails closed unless --allow-unpinned is passed for loud
+structural-only verification. Self-consistency does not prove provenance.
 
 Use cases:
   - Confirm a previously-blocked action would still be blocked under the
@@ -62,9 +63,10 @@ Use cases:
     ("policy loosened; surface this for review").
 
 Exit codes:
-  0  receipt verified and policy verdict matches original (no change)
-  1  receipt verified but policy verdict differs from original
-  2  receipt malformed, signature invalid, or policy could not be loaded
+  0  receipt verification accepted and policy verdict matches original (no change)
+  1  receipt verification accepted but policy verdict differs, verification
+     failed, or unpinned structural-only verification was not explicitly allowed
+  2  receipt malformed, signer key could not be loaded, or policy could not be loaded
   64 usage error`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
@@ -78,6 +80,7 @@ Exit codes:
 	cmd.Flags().StringVar(&opts.policyPath, "policy", "", "path to YAML policy to replay against (required)")
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON report on stdout")
+	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 
 	return cmd
 }
@@ -85,19 +88,22 @@ Exit codes:
 // replayReport is the structured output emitted by `replay`. Stable JSON
 // shape so external tooling can consume it.
 type replayReport struct {
-	ReceiptPath     string   `json:"receipt_path"`
-	PolicyPath      string   `json:"policy_path"`
-	ActionID        string   `json:"action_id,omitempty"`
-	Target          string   `json:"target,omitempty"`
-	Transport       string   `json:"transport,omitempty"`
-	OriginalVerdict string   `json:"original_verdict,omitempty"`
-	ReplayVerdict   string   `json:"replay_verdict,omitempty"`
-	ReplayScanner   string   `json:"replay_scanner,omitempty"`
-	ReplayReason    string   `json:"replay_reason,omitempty"`
-	VerdictChanged  bool     `json:"verdict_changed"`
-	ReceiptValid    bool     `json:"receipt_valid"`
-	Details         []string `json:"details,omitempty"`
-	Error           string   `json:"error,omitempty"`
+	ReceiptPath        string   `json:"receipt_path"`
+	PolicyPath         string   `json:"policy_path"`
+	ActionID           string   `json:"action_id,omitempty"`
+	Target             string   `json:"target,omitempty"`
+	Transport          string   `json:"transport,omitempty"`
+	OriginalVerdict    string   `json:"original_verdict,omitempty"`
+	ReplayVerdict      string   `json:"replay_verdict,omitempty"`
+	ReplayScanner      string   `json:"replay_scanner,omitempty"`
+	ReplayReason       string   `json:"replay_reason,omitempty"`
+	VerdictChanged     bool     `json:"verdict_changed"`
+	ReceiptValid       bool     `json:"receipt_valid"`
+	SignaturesVerified bool     `json:"signatures_verified"`
+	Unpinned           bool     `json:"unpinned,omitempty"`
+	Warnings           []string `json:"warnings,omitempty"`
+	Details            []string `json:"details,omitempty"`
+	Error              string   `json:"error,omitempty"`
 }
 
 // Verdict tags emitted by `replay`. Aligned with config.Action* but kept as
@@ -143,19 +149,31 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
-	var verifyErr error
 	if keyHex == "" {
-		verifyErr = receipt.VerifyInternalConsistencyOnly(r)
+		if verifyErr := receipt.VerifyInternalConsistencyOnly(r); verifyErr != nil {
+			report.ReceiptValid = false
+			report.Error = fmt.Sprintf("verify receipt: %v", verifyErr)
+			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, verifyErr)
+		}
+		report.Unpinned = true
+		report.Warnings = append(report.Warnings, unpinnedReceiptBanner)
+		report.ReceiptValid = opts.allowUnpinned
+		if !opts.allowUnpinned {
+			report.Error = "verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification"
+			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("replay verification unpinned"))
+		}
 	} else {
-		verifyErr = receipt.VerifyWithKey(r, keyHex)
+		if verifyErr := receipt.VerifyWithKey(r, keyHex); verifyErr != nil {
+			report.ReceiptValid = false
+			report.Error = fmt.Sprintf("verify receipt: %v", verifyErr)
+			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, verifyErr)
+		}
+		report.SignaturesVerified = true
+		report.ReceiptValid = true
 	}
-	if verifyErr != nil {
-		report.ReceiptValid = false
-		report.Error = fmt.Sprintf("verify receipt: %v", verifyErr)
-		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitConfig, verifyErr)
-	}
-	report.ReceiptValid = true
 
 	// Step 2: load the current policy.
 	cfg, err := config.Load(filepath.Clean(opts.policyPath))
@@ -258,6 +276,12 @@ func emitReplayReport(stdout, stderr io.Writer, report replayReport, jsonOutput 
 		_, _ = fmt.Fprintf(dst, "transport:     %s\n", report.Transport)
 	}
 	_, _ = fmt.Fprintf(dst, "receipt_valid: %v\n", report.ReceiptValid)
+	_, _ = fmt.Fprintf(dst, "signatures_verified: %v\n", report.SignaturesVerified)
+	if report.Unpinned {
+		_, _ = fmt.Fprintf(dst, "unpinned:      true\n")
+		_, _ = fmt.Fprintf(dst, "warning:       %s\n", unpinnedReceiptBanner)
+		_, _ = fmt.Fprintln(dst, "signature:     not checked (self-consistency only; pass --key for provenance)")
+	}
 	if report.Error != "" {
 		_, _ = fmt.Fprintf(dst, "error:         %s\n", report.Error)
 		return

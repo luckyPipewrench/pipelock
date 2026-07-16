@@ -21,12 +21,16 @@ import (
 )
 
 // writeSignedReceiptFile signs an ActionRecord and writes the receipt JSON
-// under dir/receipt.json. Returns the path. (The public-key hex is recovered
-// inside receipt.VerifyWithKey via the receipt's embedded signer_key field
-// when --key is not passed, so the test helper doesn't need to return it.)
+// under dir/receipt.json. Returns the path.
 func writeSignedReceiptFile(t *testing.T, dir string, ar receipt.ActionRecord) string {
 	t.Helper()
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	path, _ := writeSignedReceiptFileWithKey(t, dir, ar)
+	return path
+}
+
+func writeSignedReceiptFileWithKey(t *testing.T, dir string, ar receipt.ActionRecord) (string, string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("keypair: %v", err)
 	}
@@ -42,7 +46,7 @@ func writeSignedReceiptFile(t *testing.T, dir string, ar receipt.ActionRecord) s
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write receipt: %v", err)
 	}
-	return path
+	return path, hex.EncodeToString(pub)
 }
 
 // writePolicyFile writes a YAML pipelock config under dir/policy.yaml. The
@@ -116,11 +120,12 @@ func TestReplay_StableVerdict(t *testing.T) {
 		ChainSeq:      0,
 		PolicyHash:    "policy-fixture",
 	}
-	receiptPath := writeSignedReceiptFile(t, dir, ar)
+	receiptPath, signerKey := writeSignedReceiptFileWithKey(t, dir, ar)
 	policyPath := writePolicyFile(t, dir, nil)
 
 	report, _, exitCode := runReplayCommand(t,
 		"--policy", policyPath,
+		"--key", signerKey,
 		"--json",
 		receiptPath,
 	)
@@ -137,8 +142,59 @@ func TestReplay_StableVerdict(t *testing.T) {
 	if report.VerdictChanged {
 		t.Errorf("verdicts should agree, got changed=true")
 	}
+	if !report.SignaturesVerified {
+		t.Error("trusted replay should report signatures_verified=true")
+	}
+	if report.Unpinned {
+		t.Error("trusted replay should not report unpinned=true")
+	}
 	if exitCode != 0 {
 		t.Errorf("exit code: got %d, want 0", exitCode)
+	}
+}
+
+func TestReplay_ForgedSelfConsistentReceiptFailsClosedWithoutPinnedKey(t *testing.T) {
+	dir := t.TempDir()
+	ar := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     time.Now(),
+		Target:        "https://allowed.example/",
+		Verdict:       "allow",
+		Transport:     "https",
+		ChainPrevHash: receipt.GenesisHash,
+		ChainSeq:      0,
+		PolicyHash:    "policy-fixture",
+	}
+	receiptPath := writeSignedReceiptFile(t, dir, ar)
+	policyPath := writePolicyFile(t, dir, nil)
+
+	report, _, exitCode := runReplayCommand(t,
+		"--policy", policyPath,
+		"--json",
+		receiptPath,
+	)
+
+	if report.ReceiptValid {
+		t.Error("self-consistent receipt should not be accepted without --key or --allow-unpinned")
+	}
+	if !report.Unpinned {
+		t.Error("self-consistent no-key replay should report unpinned=true")
+	}
+	if report.SignaturesVerified {
+		t.Error("self-consistent no-key replay should not report signatures_verified=true")
+	}
+	if len(report.Warnings) == 0 || !strings.Contains(report.Warnings[0], "UNPINNED") {
+		t.Fatalf("self-consistent no-key replay should report JSON warning, got %#v", report.Warnings)
+	}
+	for _, want := range []string{"pass --key for provenance", "--allow-unpinned for structural-only verification"} {
+		if !strings.Contains(report.Error, want) {
+			t.Errorf("error missing %q: %q", want, report.Error)
+		}
+	}
+	if exitCode != cliutil.ExitGeneral {
+		t.Errorf("exit code: got %d, want %d", exitCode, cliutil.ExitGeneral)
 	}
 }
 
@@ -162,6 +218,7 @@ func TestReplay_VerdictChanged_PolicyTightened(t *testing.T) {
 
 	report, _, exitCode := runReplayCommand(t,
 		"--policy", policyPath,
+		"--allow-unpinned",
 		"--json",
 		receiptPath,
 	)
@@ -177,6 +234,15 @@ func TestReplay_VerdictChanged_PolicyTightened(t *testing.T) {
 	}
 	if !report.VerdictChanged {
 		t.Error("VerdictChanged should be true")
+	}
+	if !report.Unpinned {
+		t.Error("structural-only replay should report unpinned=true")
+	}
+	if report.SignaturesVerified {
+		t.Error("structural-only replay should not report signatures_verified=true")
+	}
+	if len(report.Warnings) == 0 || !strings.Contains(report.Warnings[0], "UNPINNED") {
+		t.Fatalf("structural-only replay should report JSON warning, got %#v", report.Warnings)
 	}
 	if exitCode != cliutil.ExitGeneral {
 		t.Errorf("exit code: got %d want %d (ExitGeneral)", exitCode, cliutil.ExitGeneral)
@@ -203,6 +269,7 @@ func TestReplay_VerdictChanged_PolicyLoosened(t *testing.T) {
 
 	report, _, exitCode := runReplayCommand(t,
 		"--policy", policyPath,
+		"--allow-unpinned",
 		"--json",
 		receiptPath,
 	)
@@ -215,6 +282,12 @@ func TestReplay_VerdictChanged_PolicyLoosened(t *testing.T) {
 	}
 	if !report.VerdictChanged {
 		t.Error("VerdictChanged should be true (block -> allow)")
+	}
+	if !report.Unpinned {
+		t.Error("structural-only replay should report unpinned=true")
+	}
+	if len(report.Warnings) == 0 || !strings.Contains(report.Warnings[0], "UNPINNED") {
+		t.Fatalf("structural-only replay should report JSON warning, got %#v", report.Warnings)
 	}
 	if exitCode != cliutil.ExitGeneral {
 		t.Errorf("exit code: got %d want %d", exitCode, cliutil.ExitGeneral)
@@ -303,8 +376,156 @@ func TestReplay_BadKeyMismatch(t *testing.T) {
 	if report.ReceiptValid {
 		t.Error("receipt signed by another key should not validate against the supplied --key")
 	}
-	if exitCode != cliutil.ExitConfig {
-		t.Errorf("exit code: got %d want %d", exitCode, cliutil.ExitConfig)
+	if exitCode != cliutil.ExitGeneral {
+		t.Errorf("exit code: got %d want %d", exitCode, cliutil.ExitGeneral)
+	}
+}
+
+func TestReplay_AllowUnpinnedDoesNotWeakenPinnedVerification(t *testing.T) {
+	dir := t.TempDir()
+	ar := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     time.Now(),
+		Target:        "https://example.com/",
+		Verdict:       "allow",
+		Transport:     "https",
+		ChainPrevHash: receipt.GenesisHash,
+		ChainSeq:      0,
+		PolicyHash:    "policy-fixture",
+	}
+	receiptPath, signerKey := writeSignedReceiptFileWithKey(t, dir, ar)
+	policyPath := writePolicyFile(t, dir, nil)
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKeyHex := hex.EncodeToString(otherPub)
+
+	report, _, exitCode := runReplayCommand(t,
+		"--policy", policyPath,
+		"--key", otherKeyHex,
+		"--allow-unpinned",
+		"--json",
+		receiptPath,
+	)
+	if report.ReceiptValid {
+		t.Fatal("--allow-unpinned must not accept a receipt signed by a different pinned key")
+	}
+	if report.Unpinned {
+		t.Fatal("--allow-unpinned with --key should stay on the pinned path, not report unpinned")
+	}
+	if report.SignaturesVerified {
+		t.Fatal("mismatched pinned key should not report signatures_verified=true")
+	}
+	if exitCode != cliutil.ExitGeneral {
+		t.Fatalf("exit code with wrong pinned key: got %d want %d", exitCode, cliutil.ExitGeneral)
+	}
+
+	report, _, exitCode = runReplayCommand(t,
+		"--policy", policyPath,
+		"--key", signerKey,
+		"--allow-unpinned",
+		"--json",
+		receiptPath,
+	)
+	if !report.ReceiptValid || !report.SignaturesVerified || report.Unpinned {
+		t.Fatalf("correct pinned key with --allow-unpinned should remain trusted: %#v", report)
+	}
+	if len(report.Warnings) != 0 {
+		t.Fatalf("trusted replay should not report unpinned warnings: %#v", report.Warnings)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code with correct pinned key: got %d want 0", exitCode)
+	}
+}
+
+func TestReplay_EmptyKeyFlagStillFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	ar := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     time.Now(),
+		Target:        "https://allowed.example/",
+		Verdict:       "allow",
+		Transport:     "https",
+		ChainPrevHash: receipt.GenesisHash,
+		ChainSeq:      0,
+		PolicyHash:    "policy-fixture",
+	}
+	receiptPath := writeSignedReceiptFile(t, dir, ar)
+	policyPath := writePolicyFile(t, dir, nil)
+
+	report, _, exitCode := runReplayCommand(t,
+		"--policy", policyPath,
+		"--key", "",
+		"--json",
+		receiptPath,
+	)
+
+	if report.ReceiptValid {
+		t.Fatal(`--key "" should be treated as unpinned and fail closed without --allow-unpinned`)
+	}
+	if !report.Unpinned || report.SignaturesVerified {
+		t.Fatalf(`--key "" report = %#v, want unpinned structural-only without signatures`, report)
+	}
+	if exitCode != cliutil.ExitGeneral {
+		t.Fatalf("exit code: got %d want %d", exitCode, cliutil.ExitGeneral)
+	}
+}
+
+func TestReplay_MalformedEmbeddedSignerFailsClosedEvenWhenUnpinnedAllowed(t *testing.T) {
+	dir := t.TempDir()
+	ar := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     time.Now(),
+		Target:        "https://allowed.example/",
+		Verdict:       "allow",
+		Transport:     "https",
+		ChainPrevHash: receipt.GenesisHash,
+		ChainSeq:      0,
+		PolicyHash:    "policy-fixture",
+	}
+	receiptPath := writeSignedReceiptFile(t, dir, ar)
+	data, err := os.ReadFile(filepath.Clean(receiptPath))
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	r, err := receipt.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("unmarshal receipt: %v", err)
+	}
+	r.SignerKey = ""
+	data, err = receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	if err := os.WriteFile(receiptPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed receipt: %v", err)
+	}
+	policyPath := writePolicyFile(t, dir, nil)
+
+	for _, args := range [][]string{
+		{"--policy", policyPath, "--json", receiptPath},
+		{"--policy", policyPath, "--allow-unpinned", "--json", receiptPath},
+	} {
+		report, _, exitCode := runReplayCommand(t, args...)
+		if report.ReceiptValid {
+			t.Fatalf("%v accepted receipt with empty signer_key: %#v", args, report)
+		}
+		if report.Unpinned || report.SignaturesVerified {
+			t.Fatalf("%v report = %#v, want invalid before unpinned/trusted states", args, report)
+		}
+		if !strings.Contains(report.Error, "receipt has no signer_key") {
+			t.Fatalf("%v error = %q, want signer_key failure", args, report.Error)
+		}
+		if exitCode != cliutil.ExitGeneral {
+			t.Fatalf("%v exit code: got %d want %d", args, exitCode, cliutil.ExitGeneral)
+		}
 	}
 }
 
@@ -327,13 +548,24 @@ func TestReplay_HumanReadableOutput(t *testing.T) {
 
 	_, stdout, exitCode := runReplayCommand(t,
 		"--policy", policyPath,
+		"--allow-unpinned",
 		receiptPath,
 	)
 
 	if exitCode != 0 {
 		t.Errorf("exit code: got %d want 0", exitCode)
 	}
-	mustContain := []string{"receipt:", "policy:", "receipt_valid: true", "original:", "replay:", "verdict:"}
+	mustContain := []string{
+		"receipt:",
+		"policy:",
+		"receipt_valid: true",
+		"signatures_verified: false",
+		"unpinned:      true",
+		"self-consistency only",
+		"original:",
+		"replay:",
+		"verdict:",
+	}
 	for _, want := range mustContain {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout missing %q\n%s", want, stdout)

@@ -448,32 +448,7 @@ Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspectio
 - **MCP proxy** (`pipelock mcp proxy`): Wraps stdio or HTTP MCP servers with bidirectional scanning.
 - **A2A inspection**: Inspects Google Agent-to-Agent protocol traffic as it crosses the forward and MCP paths.
 
-```mermaid
-flowchart LR
-    subgraph PRIV["PRIVILEGED ZONE"]
-        Agent["AI Agent\nAPI keys + credentials + source code\nNetwork-isolated by deployment"]
-    end
-
-    subgraph FW["FIREWALL ZONE"]
-        Proxy["Pipelock\n11-layer scanner pipeline\nNo agent secrets"]
-    end
-
-    subgraph NET["INTERNET"]
-        Web["APIs + MCP Servers + Web"]
-    end
-
-    Agent -- "fetch / CONNECT / ws / MCP / A2A" --> Proxy
-    Proxy -- "scanned request" --> Web
-    Web -- "response" --> Proxy
-    Proxy -- "scanned content" --> Agent
-
-    style PRIV fill:#2d1117,stroke:#f85149,color:#e6edf3
-    style FW fill:#0d2818,stroke:#3fb950,color:#e6edf3
-    style NET fill:#0d1b2e,stroke:#58a6ff,color:#e6edf3
-    style Agent fill:#1a1a2e,stroke:#f85149,color:#e6edf3
-    style Proxy fill:#0d2818,stroke:#3fb950,color:#e6edf3
-    style Web fill:#0d1b2e,stroke:#58a6ff,color:#e6edf3
-```
+![Pipelock capability separation: agent traffic is scanned by the firewall before reaching internet services](docs/assets/how-it-works.svg)
 
 <details>
 <summary>Text diagram (for terminals)</summary>

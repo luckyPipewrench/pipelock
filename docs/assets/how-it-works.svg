@@ -1,0 +1,202 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="500" viewBox="0 0 1280 500" role="img" aria-labelledby="title desc">
+  <title id="title">Pipelock capability separation</title>
+  <desc id="desc">An AI agent with secrets but no direct network access sends mediated traffic through the Pipelock agent firewall. Pipelock scans requests and responses while connecting to internet APIs, MCP servers, tools, and A2A services.</desc>
+
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1280" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#09090b"/>
+      <stop offset="0.5" stop-color="#0e0e11"/>
+      <stop offset="1" stop-color="#09090b"/>
+    </linearGradient>
+    <radialGradient id="firewall-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#00e5a0" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#00e5a0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="logo-shackle" x1="200" y1="40" x2="200" y2="180" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00ffc8"/>
+      <stop offset="1" stop-color="#00b894"/>
+    </linearGradient>
+    <linearGradient id="logo-body" x1="200" y1="160" x2="200" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#0f0f1a"/>
+    </linearGradient>
+    <linearGradient id="divider" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="logo-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="logo-text-glow" x="-30%" y="-60%" width="160%" height="220%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="flow-glow" x="-30%" y="-80%" width="160%" height="260%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <marker id="arrow-out" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#00e5a0"/>
+    </marker>
+    <marker id="arrow-return" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "Helvetica Neue", "Segoe UI", sans-serif; }
+      .mono { font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Consolas, monospace; }
+    </style>
+  </defs>
+
+  <!-- Canvas -->
+  <rect width="1280" height="500" rx="16" fill="url(#background)"/>
+  <rect x="1" y="1" width="1278" height="498" rx="15" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
+  <ellipse cx="640" cy="295" rx="330" ry="250" fill="url(#firewall-glow)"/>
+
+  <!-- Header -->
+  <text x="640" y="38" text-anchor="middle" class="mono" fill="#e2e8f0" font-size="16" font-weight="700">CAPABILITY SEPARATION</text>
+  <text x="640" y="59" text-anchor="middle" fill="#64748b" font-size="12">Agent secrets and network access never share the same trust zone</text>
+  <rect x="350" y="78" width="580" height="1" fill="url(#divider)"/>
+
+  <!-- Zone pills, centered over each card -->
+  <g>
+    <rect x="126" y="98" width="152" height="28" rx="14" fill="#ffffff" fill-opacity="0.035" stroke="#ffffff" stroke-opacity="0.08"/>
+    <circle cx="145" cy="112" r="4" fill="#94a3b8"/>
+    <text x="158" y="116" class="mono" fill="#94a3b8" font-size="11" font-weight="700">PRIVILEGED ZONE</text>
+  </g>
+  <g>
+    <rect x="567" y="98" width="146" height="28" rx="14" fill="#00e5a0" fill-opacity="0.07" stroke="#00e5a0" stroke-opacity="0.24"/>
+    <circle cx="586" cy="112" r="4" fill="#00e5a0"/>
+    <text x="599" y="116" class="mono" fill="#00e5a0" font-size="11" font-weight="700">FIREWALL ZONE</text>
+  </g>
+  <g>
+    <rect x="1030" y="98" width="96" height="28" rx="14" fill="#ffffff" fill-opacity="0.035" stroke="#ffffff" stroke-opacity="0.08"/>
+    <circle cx="1049" cy="112" r="4" fill="#94a3b8"/>
+    <text x="1062" y="116" class="mono" fill="#94a3b8" font-size="11" font-weight="700">INTERNET</text>
+  </g>
+
+  <!-- Cards: centers at 202, 640, and 1078 -->
+  <rect x="52" y="146" width="300" height="334" rx="12" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+  <rect x="438" y="146" width="404" height="334" rx="12" fill="#00e5a0" fill-opacity="0.035" stroke="#00e5a0" stroke-opacity="0.26" stroke-width="1.5"/>
+  <rect x="928" y="146" width="300" height="334" rx="12" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+
+  <!-- Agent card -->
+  <rect x="80" y="174" width="44" height="44" rx="8" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.06"/>
+  <path d="M90 187H114V205H90Z M95 193L99 196L95 199 M103 201H110" fill="none" stroke="#94a3b8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="140" y="192" class="mono" fill="#e2e8f0" font-size="18" font-weight="700">AI Agent</text>
+  <text x="140" y="212" fill="#64748b" font-size="12">Runs code and makes tool calls</text>
+  <line x1="80" y1="240" x2="324" y2="240" stroke="#ffffff" stroke-opacity="0.07"/>
+
+  <circle cx="88" cy="270" r="3.5" fill="#94a3b8"/>
+  <text x="103" y="275" fill="#cbd5e1" font-size="14">API keys and credentials</text>
+  <circle cx="88" cy="306" r="3.5" fill="#94a3b8"/>
+  <text x="103" y="311" fill="#cbd5e1" font-size="14">Private source and context</text>
+  <circle cx="88" cy="342" r="3.5" fill="#94a3b8"/>
+  <text x="103" y="347" fill="#cbd5e1" font-size="14">Network-isolated by deployment</text>
+
+  <rect x="80" y="382" width="244" height="1" fill="url(#divider)"/>
+  <path d="M116 429V422C116 414 122 410 128 410C134 410 140 414 140 422V429" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+  <rect x="112" y="428" width="32" height="24" rx="4" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="160" y="429" class="mono" fill="#94a3b8" font-size="10" font-weight="700">HOLDS SECRETS</text>
+  <text x="160" y="448" fill="#64748b" font-size="11">No direct internet route</text>
+  <!-- Official Pipelock mark, scaled from assets/pipelock-logo.svg -->
+  <g transform="translate(580 154) scale(0.30)">
+    <path d="M130 180L130 110C130 65 160 40 200 40C240 40 270 65 270 110V180"
+          stroke="url(#logo-shackle)" stroke-width="28" stroke-linecap="round" fill="none" filter="url(#logo-glow)"/>
+    <rect x="114" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+    <rect x="254" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+    <rect x="90" y="180" width="220" height="160" rx="16" fill="url(#logo-body)" stroke="#00ffc8" stroke-width="2.5" filter="url(#logo-glow)"/>
+    <rect x="100" y="190" width="200" height="140" rx="10" fill="none" stroke="#00ffc8" stroke-width="0.5" opacity="0.2"/>
+    <circle cx="200" cy="248" r="18" fill="#00ffc8" opacity="0.9" filter="url(#logo-glow)"/>
+    <circle cx="200" cy="248" r="10" fill="#0f0f1a"/>
+    <rect x="196" y="256" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+    <rect x="196" y="256" width="8" height="24" rx="3" fill="#0f0f1a" opacity="0.4"/>
+    <line x1="95" y1="210" x2="95" y2="215" stroke="#00ffc8" opacity="0.3"/>
+    <line x1="95" y1="222" x2="95" y2="227" stroke="#00ffc8" opacity="0.3"/>
+    <line x1="95" y1="234" x2="95" y2="239" stroke="#00ffc8" opacity="0.3"/>
+    <line x1="305" y1="210" x2="305" y2="215" stroke="#00ffc8" opacity="0.3"/>
+    <line x1="305" y1="222" x2="305" y2="227" stroke="#00ffc8" opacity="0.3"/>
+    <line x1="305" y1="234" x2="305" y2="239" stroke="#00ffc8" opacity="0.3"/>
+    <text x="200" y="420" text-anchor="middle" class="mono" font-size="52" font-weight="700" letter-spacing="6" fill="#00ffc8" filter="url(#logo-text-glow)">PIPELOCK</text>
+    <text x="200" y="455" text-anchor="middle" font-size="14" font-weight="400" letter-spacing="4" fill="#94a3b8">AGENT FIREWALL</text>
+  </g>
+
+  <line x1="466" y1="302" x2="814" y2="302" stroke="#00e5a0" stroke-opacity="0.12"/>
+
+  <rect x="466" y="322" width="160" height="42" rx="8" fill="#00e5a0" fill-opacity="0.045" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="546" y="339" text-anchor="middle" class="mono" fill="#00e5a0" font-size="11" font-weight="700">DESTINATION</text>
+  <text x="546" y="355" text-anchor="middle" fill="#64748b" font-size="10">URL · SSRF · DNS</text>
+
+  <rect x="654" y="322" width="160" height="42" rx="8" fill="#00e5a0" fill-opacity="0.045" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="734" y="339" text-anchor="middle" class="mono" fill="#00e5a0" font-size="11" font-weight="700">DATA</text>
+  <text x="734" y="355" text-anchor="middle" fill="#64748b" font-size="10">DLP · secrets · budgets</text>
+
+  <rect x="466" y="376" width="160" height="42" rx="8" fill="#00e5a0" fill-opacity="0.045" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="546" y="393" text-anchor="middle" class="mono" fill="#00e5a0" font-size="11" font-weight="700">CONTENT</text>
+  <text x="546" y="409" text-anchor="middle" fill="#64748b" font-size="10">injection · tool poisoning</text>
+
+  <rect x="654" y="376" width="160" height="42" rx="8" fill="#00e5a0" fill-opacity="0.045" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="734" y="393" text-anchor="middle" class="mono" fill="#00e5a0" font-size="11" font-weight="700">POLICY</text>
+  <text x="734" y="409" text-anchor="middle" fill="#64748b" font-size="10">allow · block · redact</text>
+
+  <rect x="466" y="436" width="348" height="26" rx="6" fill="#00e5a0" fill-opacity="0.07" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="640" y="453" text-anchor="middle" class="mono" fill="#00e5a0" font-size="10" font-weight="700">FETCH · CONNECT · WS · MCP · A2A</text>
+
+  <!-- Internet card -->
+  <rect x="956" y="174" width="44" height="44" rx="8" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.06"/>
+  <circle cx="978" cy="196" r="13" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M965 196H991M978 183C983 188 985 192 985 196C985 200 983 204 978 209M978 183C973 188 971 192 971 196C971 200 973 204 978 209" fill="none" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="1016" y="192" class="mono" fill="#e2e8f0" font-size="18" font-weight="700">Internet</text>
+  <text x="1016" y="212" fill="#64748b" font-size="12">External services and data</text>
+  <line x1="956" y1="240" x2="1200" y2="240" stroke="#ffffff" stroke-opacity="0.07"/>
+
+  <rect x="956" y="260" width="244" height="44" rx="8" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+  <circle cx="977" cy="282" r="4" fill="#94a3b8"/>
+  <text x="994" y="287" fill="#cbd5e1" font-size="14">Web APIs and websites</text>
+  <rect x="956" y="316" width="244" height="44" rx="8" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+  <circle cx="977" cy="338" r="4" fill="#94a3b8"/>
+  <text x="994" y="343" fill="#cbd5e1" font-size="14">MCP servers and tools</text>
+  <rect x="956" y="372" width="244" height="44" rx="8" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+  <circle cx="977" cy="394" r="4" fill="#94a3b8"/>
+  <text x="994" y="399" fill="#cbd5e1" font-size="14">A2A services</text>
+
+  <rect x="956" y="436" width="244" height="26" rx="6" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.06"/>
+  <text x="1078" y="453" text-anchor="middle" class="mono" fill="#94a3b8" font-size="10" font-weight="700">EXTERNAL DESTINATIONS</text>
+
+  <!-- Outbound paths: detached from card borders with a restrained brand glow -->
+  <rect x="361" y="170" width="68" height="22" rx="11" fill="#00e5a0" fill-opacity="0.055" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="395" y="184" text-anchor="middle" class="mono" fill="#00e5a0" font-size="8" font-weight="700">MEDIATED</text>
+  <path d="M366 211H416" fill="none" stroke="#00e5a0" stroke-opacity="0.14" stroke-width="8" stroke-linecap="round" filter="url(#flow-glow)"/>
+  <circle cx="366" cy="211" r="2.5" fill="#00e5a0"/>
+  <path d="M366 211H416" fill="none" stroke="#00e5a0" stroke-width="2.25" stroke-linecap="round" marker-end="url(#arrow-out)"/>
+
+  <rect x="851" y="170" width="68" height="22" rx="11" fill="#00e5a0" fill-opacity="0.055" stroke="#00e5a0" stroke-opacity="0.14"/>
+  <text x="885" y="184" text-anchor="middle" class="mono" fill="#00e5a0" font-size="8" font-weight="700">APPROVED</text>
+  <path d="M856 211H906" fill="none" stroke="#00e5a0" stroke-opacity="0.14" stroke-width="8" stroke-linecap="round" filter="url(#flow-glow)"/>
+  <circle cx="856" cy="211" r="2.5" fill="#00e5a0"/>
+  <path d="M856 211H906" fill="none" stroke="#00e5a0" stroke-width="2.25" stroke-linecap="round" marker-end="url(#arrow-out)"/>
+
+  <!-- Return paths: equally spaced, quieter, and visually paired -->
+  <rect x="851" y="413" width="68" height="22" rx="11" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+  <text x="885" y="427" text-anchor="middle" class="mono" fill="#94a3b8" font-size="8" font-weight="700">RESPONSE</text>
+  <path d="M914 451H864" fill="none" stroke="#94a3b8" stroke-opacity="0.10" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="914" cy="451" r="2.5" fill="#94a3b8"/>
+  <path d="M914 451H864" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow-return)"/>
+
+  <rect x="361" y="413" width="68" height="22" rx="11" fill="#ffffff" fill-opacity="0.025" stroke="#ffffff" stroke-opacity="0.07"/>
+  <text x="395" y="427" text-anchor="middle" class="mono" fill="#94a3b8" font-size="8" font-weight="700">SCANNED</text>
+  <path d="M424 451H374" fill="none" stroke="#94a3b8" stroke-opacity="0.10" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="424" cy="451" r="2.5" fill="#94a3b8"/>
+  <path d="M424 451H374" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow-return)"/>
+
+</svg>

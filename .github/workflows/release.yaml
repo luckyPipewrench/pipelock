@@ -8,7 +8,24 @@ on:
 permissions: {}
 
 jobs:
+  # Hard gate: runs first, every build/publish job needs it. Fails the release
+  # BEFORE anything is built if the tag's metadata is wrong (CHANGELOG dated
+  # UNRELEASED/placeholder, or Chart appVersion not bumped). These are the
+  # recurring release mistakes that a human checklist kept missing.
+  release-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Release-readiness gate
+        run: scripts/check-release-ready.sh "$GITHUB_REF_NAME"
+
   release-tests:
+    needs: [release-preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:

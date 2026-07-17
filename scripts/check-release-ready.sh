@@ -32,13 +32,21 @@ note() { printf '  [FAIL] %s\n' "$1" >&2; fail=1; }
 echo "release-ready gate: version=$VER"
 
 # 1. CHANGELOG: a "## [<ver>] - <YYYY-MM-DD>" heading must exist with a real date.
-line="$(grep -E "^## \[${VER//./\\.}\]" "$CHANGELOG" | head -n 1 || true)"
-if [ -z "$line" ]; then
-  note "CHANGELOG.md has no '## [$VER]' section. The version heading never landed on this ref."
-elif ! printf '%s\n' "$line" | grep -qE "^## \[${VER//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}( .*)?$"; then
-  note "CHANGELOG.md '$VER' section is not dated YYYY-MM-DD (found: '${line}'). Stamp the real release date; 'UNRELEASED' and blanks are the recurring bug."
+# Match the version LITERALLY (grep -F) so metacharacters in a version string
+# (e.g. the '+' in '3.2.0+build.1') are never interpreted as regex; validate the
+# date part on its own, where no version text is interpolated.
+heading="$(grep -F "## [$VER] - " "$CHANGELOG" | head -n 1 || true)"
+if [ -n "$heading" ]; then
+  date_part="${heading#"## [$VER] - "}"
+  if printf '%s\n' "$date_part" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}( .*)?$'; then
+    echo "  [ok]   CHANGELOG: ${heading}"
+  else
+    note "CHANGELOG.md '$VER' date is '${date_part}', not YYYY-MM-DD. Stamp the real release date; 'UNRELEASED' and blanks are the recurring bug."
+  fi
+elif grep -Fq "## [$VER]" "$CHANGELOG"; then
+  note "CHANGELOG.md '$VER' section exists but has no '## [$VER] - <date>' heading. Stamp the real release date; 'UNRELEASED' and blanks are the recurring bug."
 else
-  echo "  [ok]   CHANGELOG: ${line}"
+  note "CHANGELOG.md has no '## [$VER]' section. The version heading never landed on this ref."
 fi
 
 # 2. Chart appVersion must equal the release version.

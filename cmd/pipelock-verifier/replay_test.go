@@ -133,6 +133,12 @@ func TestReplay_StableVerdict(t *testing.T) {
 	if !report.ReceiptValid {
 		t.Errorf("receipt should be valid, got error %q", report.Error)
 	}
+	if !report.StructuralValid {
+		t.Error("trusted replay should report structural_valid=true")
+	}
+	if !report.VerificationAccepted {
+		t.Error("trusted replay should report verification_accepted=true")
+	}
 	if report.OriginalVerdict != "allow" {
 		t.Errorf("original verdict: got %q, want allow", report.OriginalVerdict)
 	}
@@ -179,6 +185,12 @@ func TestReplay_ForgedSelfConsistentReceiptFailsClosedWithoutPinnedKey(t *testin
 	if report.ReceiptValid {
 		t.Error("self-consistent receipt should not be accepted without --key or --allow-unpinned")
 	}
+	if !report.StructuralValid {
+		t.Error("self-consistent receipt should report structural_valid=true")
+	}
+	if report.VerificationAccepted {
+		t.Error("self-consistent receipt should not be accepted without --allow-unpinned")
+	}
 	if !report.Unpinned {
 		t.Error("self-consistent no-key replay should report unpinned=true")
 	}
@@ -223,8 +235,11 @@ func TestReplay_VerdictChanged_PolicyTightened(t *testing.T) {
 		receiptPath,
 	)
 
-	if !report.ReceiptValid {
-		t.Fatalf("receipt should be valid, got %q", report.Error)
+	if report.ReceiptValid {
+		t.Fatalf("structural-only replay should not report receipt_valid=true: %#v", report)
+	}
+	if !report.StructuralValid || !report.VerificationAccepted {
+		t.Fatalf("structural-only replay should be accepted but not trusted: %#v", report)
 	}
 	if report.OriginalVerdict != "allow" {
 		t.Errorf("original verdict: got %q want allow", report.OriginalVerdict)
@@ -274,8 +289,11 @@ func TestReplay_VerdictChanged_PolicyLoosened(t *testing.T) {
 		receiptPath,
 	)
 
-	if !report.ReceiptValid {
-		t.Fatalf("receipt should be valid, got %q", report.Error)
+	if report.ReceiptValid {
+		t.Fatalf("structural-only replay should not report receipt_valid=true: %#v", report)
+	}
+	if !report.StructuralValid || !report.VerificationAccepted {
+		t.Fatalf("structural-only replay should be accepted but not trusted: %#v", report)
 	}
 	if report.ReplayVerdict != "allow" {
 		t.Errorf("replay verdict: got %q want allow", report.ReplayVerdict)
@@ -430,7 +448,7 @@ func TestReplay_AllowUnpinnedDoesNotWeakenPinnedVerification(t *testing.T) {
 		"--json",
 		receiptPath,
 	)
-	if !report.ReceiptValid || !report.SignaturesVerified || report.Unpinned {
+	if !report.ReceiptValid || !report.StructuralValid || !report.VerificationAccepted || !report.SignaturesVerified || report.Unpinned {
 		t.Fatalf("correct pinned key with --allow-unpinned should remain trusted: %#v", report)
 	}
 	if len(report.Warnings) != 0 {
@@ -458,21 +476,66 @@ func TestReplay_EmptyKeyFlagStillFailsClosed(t *testing.T) {
 	receiptPath := writeSignedReceiptFile(t, dir, ar)
 	policyPath := writePolicyFile(t, dir, nil)
 
+	for _, args := range [][]string{
+		{"--policy", policyPath, "--key", "", "--json", receiptPath},
+		{"--policy", policyPath, "--key", "", "--allow-unpinned", "--json", receiptPath},
+	} {
+		report, _, exitCode := runReplayCommand(t, args...)
+		if report.ReceiptValid || report.StructuralValid || report.VerificationAccepted {
+			t.Fatalf(`%v report = %#v, want no trusted or structural acceptance`, args, report)
+		}
+		if report.Unpinned || report.SignaturesVerified {
+			t.Fatalf(`%v report = %#v, want config failure before unpinned/trusted states`, args, report)
+		}
+		if !strings.Contains(report.Error, "--key was provided but empty") {
+			t.Fatalf("%v error = %q, want empty --key config error", args, report.Error)
+		}
+		if exitCode != cliutil.ExitConfig {
+			t.Fatalf("%v exit code: got %d want %d", args, exitCode, cliutil.ExitConfig)
+		}
+	}
+}
+
+func TestReplay_EmptyKeyFileFailsClosedEvenWhenUnpinnedAllowed(t *testing.T) {
+	dir := t.TempDir()
+	ar := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     time.Now(),
+		Target:        "https://allowed.example/",
+		Verdict:       "allow",
+		Transport:     "https",
+		ChainPrevHash: receipt.GenesisHash,
+		ChainSeq:      0,
+		PolicyHash:    "policy-fixture",
+	}
+	receiptPath := writeSignedReceiptFile(t, dir, ar)
+	policyPath := writePolicyFile(t, dir, nil)
+	emptyKeyPath := filepath.Join(dir, "empty.pub")
+	if err := os.WriteFile(emptyKeyPath, nil, 0o600); err != nil {
+		t.Fatalf("write empty key file: %v", err)
+	}
+
 	report, _, exitCode := runReplayCommand(t,
 		"--policy", policyPath,
-		"--key", "",
+		"--key", emptyKeyPath,
+		"--allow-unpinned",
 		"--json",
 		receiptPath,
 	)
 
-	if report.ReceiptValid {
-		t.Fatal(`--key "" should be treated as unpinned and fail closed without --allow-unpinned`)
+	if report.ReceiptValid || report.StructuralValid || report.VerificationAccepted {
+		t.Fatalf("empty key file report = %#v, want no trusted or structural acceptance", report)
 	}
-	if !report.Unpinned || report.SignaturesVerified {
-		t.Fatalf(`--key "" report = %#v, want unpinned structural-only without signatures`, report)
+	if report.Unpinned || report.SignaturesVerified {
+		t.Fatalf("empty key file report = %#v, want config failure before unpinned/trusted states", report)
 	}
-	if exitCode != cliutil.ExitGeneral {
-		t.Fatalf("exit code: got %d want %d", exitCode, cliutil.ExitGeneral)
+	if !strings.Contains(report.Error, "resolve signer key:") || !strings.Contains(report.Error, "public key") {
+		t.Fatalf("error = %q, want public-key resolution failure", report.Error)
+	}
+	if exitCode != cliutil.ExitConfig {
+		t.Fatalf("exit code: got %d want %d", exitCode, cliutil.ExitConfig)
 	}
 }
 
@@ -558,9 +621,12 @@ func TestReplay_HumanReadableOutput(t *testing.T) {
 	mustContain := []string{
 		"receipt:",
 		"policy:",
-		"receipt_valid: true",
+		"receipt_valid: false",
+		"structural_valid: true",
+		"verification_accepted: true",
 		"signatures_verified: false",
 		"unpinned:      true",
+		"receipt_valid=false",
 		"self-consistency only",
 		"original:",
 		"replay:",

@@ -33,6 +33,7 @@ import (
 type replayOptions struct {
 	policyPath    string
 	signerKey     string
+	keyProvided   bool
 	jsonOutput    bool
 	allowUnpinned bool
 }
@@ -72,6 +73,7 @@ Exit codes:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.keyProvided = cmd.Flags().Changed("key")
 			return runReplay(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
@@ -88,22 +90,24 @@ Exit codes:
 // replayReport is the structured output emitted by `replay`. Stable JSON
 // shape so external tooling can consume it.
 type replayReport struct {
-	ReceiptPath        string   `json:"receipt_path"`
-	PolicyPath         string   `json:"policy_path"`
-	ActionID           string   `json:"action_id,omitempty"`
-	Target             string   `json:"target,omitempty"`
-	Transport          string   `json:"transport,omitempty"`
-	OriginalVerdict    string   `json:"original_verdict,omitempty"`
-	ReplayVerdict      string   `json:"replay_verdict,omitempty"`
-	ReplayScanner      string   `json:"replay_scanner,omitempty"`
-	ReplayReason       string   `json:"replay_reason,omitempty"`
-	VerdictChanged     bool     `json:"verdict_changed"`
-	ReceiptValid       bool     `json:"receipt_valid"`
-	SignaturesVerified bool     `json:"signatures_verified"`
-	Unpinned           bool     `json:"unpinned,omitempty"`
-	Warnings           []string `json:"warnings,omitempty"`
-	Details            []string `json:"details,omitempty"`
-	Error              string   `json:"error,omitempty"`
+	ReceiptPath          string   `json:"receipt_path"`
+	PolicyPath           string   `json:"policy_path"`
+	ActionID             string   `json:"action_id,omitempty"`
+	Target               string   `json:"target,omitempty"`
+	Transport            string   `json:"transport,omitempty"`
+	OriginalVerdict      string   `json:"original_verdict,omitempty"`
+	ReplayVerdict        string   `json:"replay_verdict,omitempty"`
+	ReplayScanner        string   `json:"replay_scanner,omitempty"`
+	ReplayReason         string   `json:"replay_reason,omitempty"`
+	VerdictChanged       bool     `json:"verdict_changed"`
+	ReceiptValid         bool     `json:"receipt_valid"`
+	StructuralValid      bool     `json:"structural_valid"`
+	VerificationAccepted bool     `json:"verification_accepted"`
+	SignaturesVerified   bool     `json:"signatures_verified"`
+	Unpinned             bool     `json:"unpinned,omitempty"`
+	Warnings             []string `json:"warnings,omitempty"`
+	Details              []string `json:"details,omitempty"`
+	Error                string   `json:"error,omitempty"`
 }
 
 // Verdict tags emitted by `replay`. Aligned with config.Action* but kept as
@@ -143,8 +147,21 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 	report.Transport = r.ActionRecord.Transport
 	report.OriginalVerdict = r.ActionRecord.Verdict
 
+	if opts.keyProvided && strings.TrimSpace(opts.signerKey) == "" {
+		err := fmt.Errorf("--key was provided but empty")
+		report.Error = fmt.Sprintf("resolve signer key: %v", err)
+		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+
 	keyHex, err := resolveSignerKey(strings.TrimSpace(opts.signerKey))
 	if err != nil {
+		report.Error = fmt.Sprintf("resolve signer key: %v", err)
+		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+	if opts.keyProvided && keyHex == "" {
+		err := fmt.Errorf("--key resolved to empty signer key")
 		report.Error = fmt.Sprintf("resolve signer key: %v", err)
 		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
@@ -152,13 +169,16 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 	if keyHex == "" {
 		if verifyErr := receipt.VerifyInternalConsistencyOnly(r); verifyErr != nil {
 			report.ReceiptValid = false
+			report.StructuralValid = false
 			report.Error = fmt.Sprintf("verify receipt: %v", verifyErr)
 			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, verifyErr)
 		}
+		report.StructuralValid = true
+		report.VerificationAccepted = opts.allowUnpinned
 		report.Unpinned = true
 		report.Warnings = append(report.Warnings, unpinnedReceiptBanner)
-		report.ReceiptValid = opts.allowUnpinned
+		report.ReceiptValid = false
 		if !opts.allowUnpinned {
 			report.Error = "verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification"
 			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
@@ -171,6 +191,8 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, verifyErr)
 		}
+		report.StructuralValid = true
+		report.VerificationAccepted = true
 		report.SignaturesVerified = true
 		report.ReceiptValid = true
 	}
@@ -260,7 +282,7 @@ func emitReplayReport(stdout, stderr io.Writer, report replayReport, jsonOutput 
 	}
 
 	dst := stdout
-	if report.Error != "" || !report.ReceiptValid {
+	if report.Error != "" || !report.VerificationAccepted {
 		dst = stderr
 	}
 
@@ -276,11 +298,13 @@ func emitReplayReport(stdout, stderr io.Writer, report replayReport, jsonOutput 
 		_, _ = fmt.Fprintf(dst, "transport:     %s\n", report.Transport)
 	}
 	_, _ = fmt.Fprintf(dst, "receipt_valid: %v\n", report.ReceiptValid)
+	_, _ = fmt.Fprintf(dst, "structural_valid: %v\n", report.StructuralValid)
+	_, _ = fmt.Fprintf(dst, "verification_accepted: %v\n", report.VerificationAccepted)
 	_, _ = fmt.Fprintf(dst, "signatures_verified: %v\n", report.SignaturesVerified)
 	if report.Unpinned {
 		_, _ = fmt.Fprintf(dst, "unpinned:      true\n")
 		_, _ = fmt.Fprintf(dst, "warning:       %s\n", unpinnedReceiptBanner)
-		_, _ = fmt.Fprintln(dst, "signature:     not checked (self-consistency only; pass --key for provenance)")
+		_, _ = fmt.Fprintln(dst, "signature:     not checked (self-consistency only; receipt_valid=false; pass --key for provenance)")
 	}
 	if report.Error != "" {
 		_, _ = fmt.Fprintf(dst, "error:         %s\n", report.Error)

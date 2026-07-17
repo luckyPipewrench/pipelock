@@ -207,7 +207,15 @@ The free single-session evidence viewer shown above is separate. It needs no lic
 
 ## What It Catches
 
-Pipelock's detection is measured against a public, reproducible benchmark. [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) runs a corpus of agent-exfiltration and prompt-injection attacks against Pipelock or any other tool, so the numbers come from a run anyone can repeat rather than a claim. See the [live results](https://pipelab.org/gauntlet/).
+<div align="center">
+
+### Measured against a public, reproducible benchmark
+
+[**agent-egress-bench**](https://github.com/luckyPipewrench/agent-egress-bench) runs a corpus of agent-exfiltration and prompt-injection attacks against Pipelock, or against any other tool. The numbers come from a run anyone can repeat, not a claim.
+
+[**See the live results**](https://pipelab.org/gauntlet/) · [**Run it yourself**](https://github.com/luckyPipewrench/agent-egress-bench)
+
+</div>
 
 Pipelock runs in three modes:
 
@@ -416,11 +424,13 @@ All detection, enforcement, containment, and single-agent evidence is free forev
 | Action receipts, flight recorder, anchors, free evidence viewer, `verify-cert`, standalone verifier | Yes | Yes | Yes |
 | Canary tokens, skill-scan, `explain`, single-instance Prometheus and Grafana | Yes | Yes | Yes |
 | Per-agent profiles: identity, budgets, config and scanner isolation, per-agent sandbox | No | Yes | Yes |
+| Per-agent routing by source CIDR and network selector | No | Yes | Yes |
 | Operator dashboard: Overview, Evidence, Exemptions, Agents, Budgets, Trust & Keys | No | Yes | Yes |
 | Per-agent coverage certificates | No | Yes | Yes |
-| Conductor fleet control plane, `fleet-sink` audit sink, remote kill, rollback, decision replay, drift preflight | No | No | Yes |
-| Dashboard fleet views: Fleet, Workbench, Incident | No | No | Yes |
 | Legal hold and compliance metadata | No | Yes | Yes |
+| Conductor fleet control plane, `fleet-sink` audit sink, remote kill, rollback, decision replay, drift preflight | No | No | Yes |
+| mTLS follower enrollment and roster-verified signed policy distribution | No | No | Yes |
+| Dashboard fleet views: Fleet, Workbench, Incident | No | No | Yes |
 
 The signed `pipelock assess` report is a separate `assess` entitlement, independent of Pro and Enterprise. The free assess grade is unchanged.
 
@@ -585,13 +595,33 @@ python3 demo.py    # needs python3 + cryptography + pipelock on PATH
 
 ## Community Rules
 
-Signed rule bundles add detection patterns beyond the built-in DLP, injection, and tool-poison defaults. Community rules span DLP, injection, and tool-poison categories:
+<div align="center">
+
+**Detection you can extend, share, and ship faster than the core binary.**
+
+</div>
+
+Pipelock's built-in DLP, injection, and tool-poison detection is strong out of the box. Community rule bundles let you go further: add your own patterns for the exfiltration shapes, secret formats, and injection tricks your stack sees, sign them, and ship them on a cadence you control instead of waiting for a release.
+
+Install the official bundle in one line:
 
 ```bash
 pipelock rules install pipelock-community
 ```
 
-See [docs/rules.md](docs/rules.md) for details.
+Rule bundles are signed and version-locked. The full lifecycle is a shipped command, not a config edit:
+
+```bash
+pipelock rules list                    # what is installed
+pipelock rules diff pipelock-community # what a new version would change
+pipelock rules update pipelock-community
+pipelock rules verify                  # confirm signatures against the trusted keyring
+pipelock rules remove pipelock-community
+```
+
+**Write your own.** A rule is a small YAML entry with a name, a category (DLP, injection, or tool-poison), and a pattern. Sign it with your key, drop it in a bundle, and every Pipelock instance you run picks it up. Share it with the community and it protects everyone else too.
+
+Contribute a rule to the public [pipelock-rules](https://github.com/luckyPipewrench/pipelock-rules) bundle, or read [docs/rules.md](docs/rules.md) to build and sign your own.
 
 ---
 

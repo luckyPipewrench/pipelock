@@ -295,8 +295,9 @@ pipelock anchor receipts /var/lib/pipelock/evidence \
 
 The Rekor backend submits checkpoint material to a remote transparency log. It
 has no public default URL: name the log explicitly and acknowledge the remote
-submission. The hashedrekord data hash defaults to `sha256`; set
-`--rekor-hash-algorithm sha512` only when your Rekor deployment requires it.
+submission. The hashedrekord data hash is `sha512`, which Ed25519 Rekor v1
+requires; the `--rekor-hash-algorithm` flag accepts only `sha512` and rejects
+anything else.
 
 ```bash
 pipelock anchor receipts /var/lib/pipelock/evidence \
@@ -306,7 +307,6 @@ pipelock anchor receipts /var/lib/pipelock/evidence \
   --backend rekor \
   --rekor-url https://rekor.vendor.example \
   --rekor-key /etc/pipelock/keys/rekor-checkpoint.key \
-  --rekor-hash-algorithm sha256 \
   --yes-send-to-remote-log \
   --out /var/lib/pipelock/evidence/agent-a.rekor-anchor.json
 ```

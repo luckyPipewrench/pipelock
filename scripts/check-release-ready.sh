@@ -35,14 +35,14 @@ echo "release-ready gate: version=$VER"
 line="$(grep -E "^## \[${VER//./\\.}\]" "$CHANGELOG" | head -1 || true)"
 if [ -z "$line" ]; then
   note "CHANGELOG.md has no '## [$VER]' section. The version heading never landed on this ref."
-elif ! printf '%s' "$line" | grep -qE "^## \[${VER//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}( .*)?$"; then
+elif ! printf '%s\n' "$line" | grep -qE "^## \[${VER//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}( .*)?$"; then
   note "CHANGELOG.md '$VER' section is not dated YYYY-MM-DD (found: '${line}'). Stamp the real release date; 'UNRELEASED' and blanks are the recurring bug."
 else
   echo "  [ok]   CHANGELOG: ${line}"
 fi
 
 # 2. Chart appVersion must equal the release version.
-app="$(grep -E '^appVersion:' "$CHART" | head -1 | sed -E 's/^appVersion:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/')"
+app="$(grep -E '^appVersion:' "$CHART" | head -1 | sed -E 's/^appVersion:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/' || true)"
 if [ "$app" != "$VER" ]; then
   note "charts/pipelock/Chart.yaml appVersion is '$app', expected '$VER'. values.yaml defaults image.tag to appVersion, so a mismatch deploys the wrong image."
 else

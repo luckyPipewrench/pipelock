@@ -13,6 +13,7 @@ jobs:
   # UNRELEASED/placeholder, or Chart appVersion not bumped). These are the
   # recurring release mistakes that a human checklist kept missing.
   release-preflight:
+    name: release-preflight (metadata gate)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

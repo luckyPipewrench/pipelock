@@ -79,7 +79,7 @@ The built-in demo fires real attack scenarios, blocks them, and writes signed re
 
 ```bash
 pipelock demo --receipts-dir ./out                                   # runs attack scenarios, writes 7 signed receipts + signer.pub
-pipelock verify-receipt ./out/<receipt>.json --key ./out/signer.pub  # check a signature yourself
+pipelock verify-receipt ./out/RECEIPT.json --key ./out/signer.pub  # check a signature yourself (RECEIPT.json is one of the files in ./out)
 ```
 
 <div align="center">

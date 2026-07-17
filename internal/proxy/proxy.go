@@ -1290,13 +1290,14 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		return receiptEmitterStage{}, fmt.Errorf("loading posture binding: %w", bindErr)
 	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:       p.recorder,
-		PrivKey:        privKey,
-		ConfigHash:     cfg.Hash(),
-		Principal:      "local",
-		Actor:          "pipelock",
-		Metrics:        p.metrics,
-		PostureBinding: postureBinding,
+		Recorder:         p.recorder,
+		PrivKey:          privKey,
+		ConfigHash:       cfg.Hash(),
+		Principal:        "local",
+		Actor:            "pipelock",
+		Metrics:          p.metrics,
+		PostureBinding:   postureBinding,
+		HeartbeatSeconds: cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 	})
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {
@@ -3317,6 +3318,17 @@ func (p *Proxy) Handler() http.Handler {
 // is cancelled or the server encounters a fatal error.
 func (p *Proxy) Start(ctx context.Context) error {
 	return p.start(ctx, nil)
+}
+
+// StartWithListener runs the proxy on an already-bound listener instead of
+// binding cfg.FetchProxy.Listen itself. It lets the runtime pre-bind the fetch
+// listener so a bind failure surfaces before serving and the OS-chosen address
+// (when the configured port is ephemeral, e.g. ":0") can be read back and
+// reported at startup. The listener is owned by the proxy once passed:
+// http.Server.Serve closes it when it returns. A nil listener is equivalent to
+// Start (the proxy binds cfg.FetchProxy.Listen itself).
+func (p *Proxy) StartWithListener(ctx context.Context, ln net.Listener) error {
+	return p.start(ctx, ln)
 }
 
 func (p *Proxy) start(ctx context.Context, ln net.Listener) error {

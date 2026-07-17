@@ -104,11 +104,15 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 	}, nil
 }
 
-func (s *Server) startupSummaryLine(cfg *config.Config) string {
+// startupSummaryLine renders the one-line startup diagnostic. fetchAddr is the
+// resolved fetch listener address (the OS-chosen port when the configured
+// address is ephemeral), so the summary matches the per-endpoint lines instead
+// of echoing a stale ":0".
+func (s *Server) startupSummaryLine(cfg *config.Config, fetchAddr string) string {
 	return fmt.Sprintf(
 		"  Check:  mode=%s listeners=%s allowlist=%d dlp_patterns=%d checks=%d entropy=%s; run `pipelock explain` to see why a request was blocked",
 		cfg.Mode,
-		strings.Join(s.startupListeners(cfg), ","),
+		strings.Join(s.startupListeners(cfg, fetchAddr), ","),
 		len(cfg.APIAllowlist),
 		len(cfg.DLP.Patterns),
 		startupEnabledCheckCount(cfg),
@@ -116,8 +120,8 @@ func (s *Server) startupSummaryLine(cfg *config.Config) string {
 	)
 }
 
-func (s *Server) startupListeners(cfg *config.Config) []string {
-	listeners := []string{"fetch=" + cfg.FetchProxy.Listen}
+func (s *Server) startupListeners(cfg *config.Config, fetchAddr string) []string {
+	listeners := []string{"fetch=" + fetchAddr}
 	if cfg.MetricsListen != "" && cfg.MetricsListen != cfg.FetchProxy.Listen {
 		listeners = append(listeners, "stats="+cfg.MetricsListen)
 	}
@@ -125,7 +129,7 @@ func (s *Server) startupListeners(cfg *config.Config) []string {
 		listeners = append(listeners, "forward=enabled")
 	}
 	if cfg.WebSocketProxy.Enabled {
-		listeners = append(listeners, "ws="+cfg.FetchProxy.Listen)
+		listeners = append(listeners, "ws="+fetchAddr)
 	}
 	if cfg.ScanAPI.Listen != "" {
 		listeners = append(listeners, "scan_api="+cfg.ScanAPI.Listen)
@@ -134,7 +138,7 @@ func (s *Server) startupListeners(cfg *config.Config) []string {
 		if s.apiOnSeparatePort {
 			listeners = append(listeners, "kill_api="+cfg.KillSwitch.APIListen)
 		} else {
-			listeners = append(listeners, "kill_api="+cfg.FetchProxy.Listen)
+			listeners = append(listeners, "kill_api="+fetchAddr)
 		}
 	}
 	if s.hasMCPListen {
@@ -374,22 +378,43 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer stopFileSentry()
 
+	// Pre-bind the fetch listener so the startup summary reports the real
+	// OS-chosen address when the configured port is ephemeral (":0"), instead
+	// of echoing the literal ":0". Pre-binding also fails fast here on
+	// a bind conflict rather than at Serve. The listener is handed to the proxy
+	// below via StartWithListener. http.Server.Serve closes it when serving ends;
+	// this deferred close is an idempotent backstop guaranteeing the listener is
+	// released on EVERY early-return path before serving (a double close on an
+	// already-closed listener returns net.ErrClosed, ignored here). It is
+	// unconditional so the "closed unless owned" invariant can never be defeated
+	// by a future early return added inside proxy.start before it reaches Serve.
+	fetchLn, fetchLnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.FetchProxy.Listen)
+	if fetchLnErr != nil {
+		err := wrapBindError("fetch_proxy.listen", cfg.FetchProxy.Listen, fetchLnErr)
+		if s.sentry != nil {
+			s.sentry.CaptureError(err)
+		}
+		return err
+	}
+	defer func() { _ = fetchLn.Close() }()
+	boundFetchAddr := fetchLn.Addr().String()
+
 	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock %s starting\n", cliutil.DisplayVersion())
-	_, _ = fmt.Fprintln(s.opts.Stderr, s.startupSummaryLine(cfg))
+	_, _ = fmt.Fprintln(s.opts.Stderr, s.startupSummaryLine(cfg, boundFetchAddr))
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Mode:   %s\n", cfg.Mode)
-	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
-	_, _ = fmt.Fprintf(s.opts.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
-	_, _ = fmt.Fprintf(s.opts.Stderr, "  Health: http://%s/health\n", cfg.FetchProxy.Listen)
+	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", boundFetchAddr)
+	_, _ = fmt.Fprintf(s.opts.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", boundFetchAddr)
+	_, _ = fmt.Fprintf(s.opts.Stderr, "  Health: http://%s/health\n", boundFetchAddr)
 	if cfg.MetricsListen != "" {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats (separate port)\n", cfg.MetricsListen)
 	} else {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats\n", boundFetchAddr)
 	}
 	if cfg.ForwardProxy.Enabled {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Proxy:  HTTP/HTTPS forward proxy enabled (CONNECT + absolute-URI)\n")
 	}
 	if cfg.WebSocketProxy.Enabled {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "  WS:     http://%s/ws?url=<ws-url> (WebSocket proxy enabled)\n", cfg.FetchProxy.Listen)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  WS:     http://%s/ws?url=<ws-url> (WebSocket proxy enabled)\n", boundFetchAddr)
 	}
 	if cfg.Emit.Webhook.URL != "" {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Emit:   webhook -> %s (min_severity: %s)\n", RedactEndpoint(cfg.Emit.Webhook.URL), cfg.Emit.Webhook.MinSeverity)
@@ -401,7 +426,7 @@ func (s *Server) Start(ctx context.Context) error {
 		if s.apiOnSeparatePort {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "  API:    http://%s/api/v1/killswitch (kill switch remote control, separate port)\n", cfg.KillSwitch.APIListen)
 		} else {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "  API:    http://%s/api/v1/killswitch (kill switch remote control)\n", cfg.FetchProxy.Listen)
+			_, _ = fmt.Fprintf(s.opts.Stderr, "  API:    http://%s/api/v1/killswitch (kill switch remote control)\n", boundFetchAddr)
 		}
 	}
 	if s.opts.ConfigFile != "" {
@@ -444,7 +469,7 @@ func (s *Server) Start(ctx context.Context) error {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Agent:  %v\n", s.opts.AgentArgs)
 		_, _ = fmt.Fprintln(s.opts.Stderr, "\nNote: agent process launching is not yet implemented (Phase 2).")
 		_, _ = fmt.Fprintln(s.opts.Stderr, "The fetch proxy is running — configure your agent to use:")
-		_, _ = fmt.Fprintf(s.opts.Stderr, "  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", cfg.FetchProxy.Listen)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", boundFetchAddr)
 	}
 
 	var conductorWG sync.WaitGroup
@@ -1102,12 +1127,14 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
-	// Start the fetch proxy (blocks until context cancelled or error).
-	if err := s.proxy.Start(ctx); err != nil {
+	// Start the fetch proxy on the pre-bound listener (blocks until context
+	// cancelled or error). The listener was already bound above, so an error
+	// here is a serve/runtime failure, not a bind failure — do not relabel it as
+	// a bind error.
+	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
 		}
-		err = wrapBindError("fetch_proxy.listen", cfg.FetchProxy.Listen, err)
 		if s.sentry != nil {
 			s.sentry.CaptureError(err)
 		}

@@ -1374,74 +1374,92 @@ func TestRunCmd_ReverseUpstreamInvalidURL(t *testing.T) {
 }
 
 // TestRunCmd_EarlyBindErrorJoinsListenerGoroutines guards the runtime shutdown
-// lifecycle. When the fetch proxy fails to bind (an early-error return) after
-// an MCP listener goroutine has already been spawned, Server.cleanup() must
-// not run before that goroutine is joined: the goroutine reads shared Server
-// fields (e.g. s.logger) while cleanup() closes and nils them. The MCP
-// listener binds and its serving goroutine starts before proxy.Start, so
-// pre-binding the fetch port reliably reaches the early return with a live
-// goroutine. Without the lifecycle join, the race detector reports a write to
-// s.logger in cleanup() racing the goroutine's read. This is a regression
-// guard: it must pass under -race.
+// lifecycle. When a listener bind fails (an early-error return) after a listener
+// goroutine that reads shared Server state is already live, Server.cleanup()
+// must not run before that goroutine is joined: the deferred cancel() +
+// lifecycleWG.Wait() must complete before cleanup() closes and nils those
+// fields. Without the join, the race detector reports the cleanup write racing
+// the goroutine.
+//
+// The fetch listener now pre-binds before the other listeners, so holding the
+// fetch port would fail before any goroutine spawns. Instead we let the MCP
+// listener bind successfully — its serving goroutine reads s.logger — and hold
+// the reverse_proxy listener port, so the reverse-proxy bind (which runs after
+// the MCP goroutine is live) takes the early-error return with that goroutine
+// still in lifecycleWG. Must pass under -race.
 func TestRunCmd_EarlyBindErrorJoinsListenerGoroutines(t *testing.T) {
-	// Hold the fetch_proxy.listen port open so proxy.Start fails to bind and
-	// Start() takes the early-error return path.
-	blocker, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen blocker: %v", err)
-	}
-	defer func() { _ = blocker.Close() }()
-	mainAddr := blocker.Addr().String()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		fetchAddr := addrs[0]
 
-	mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer mcpUpstream.Close()
+		// Hold the reverse_proxy.listen port so its bind fails and Start() takes
+		// the early-error return after the MCP listener goroutine is live.
+		blocker, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen blocker: %v", err)
+		}
+		defer func() { _ = blocker.Close() }()
+		heldReverseAddr := blocker.Addr().String()
 
-	cfgYAML := fmt.Sprintf(`version: 1
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer upstream.Close()
+
+		cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: %q
   timeout_seconds: 5
+reverse_proxy:
+  enabled: true
+  upstream: %q
+  listen: %q
 logging:
   format: json
   output: stdout
-`, mainAddr)
+`, fetchAddr, upstream.URL, heldReverseAddr)
 
-	cfgPath := filepath.Join(t.TempDir(), "pipelock-earlybind.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+		cfgPath := filepath.Join(t.TempDir(), "pipelock-earlybind.yaml")
+		if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := RunCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"--config", cfgPath,
-		// Ephemeral MCP listen port: the test never dials it, it only needs
-		// the listener goroutine to spawn (and read s.logger) before the held
-		// fetch port forces the early-error return. :0 avoids close-then-reuse
-		// TOCTOU for a port that is never connected to.
-		"--mcp-listen", "127.0.0.1:0",
-		"--mcp-upstream", mcpUpstream.URL,
+		cmd := RunCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"--config", cfgPath,
+			// Ephemeral MCP listen: its serving goroutine (which reads s.logger)
+			// spawns before the held reverse-proxy bind fails.
+			"--mcp-listen", "127.0.0.1:0",
+			"--mcp-upstream", upstream.URL,
+		})
+		var stderr syncBuffer
+		cmd.SetErr(&stderr)
+		cmd.SetOut(&stderr)
+
+		// Synchronous run: the held reverse_proxy port forces a fast bind error
+		// after the MCP goroutine is live. Start() must join it before cleanup()
+		// returns, so by the time Execute() returns no goroutine is still reading
+		// the fields cleanup() nils.
+		err = cmd.Execute()
+		if err == nil {
+			t.Fatal("expected reverse_proxy bind error, got nil")
+		}
+		if strings.Contains(err.Error(), "reverse_proxy.listen bind") {
+			return nil // the guarded early-error path ran with the MCP goroutine live
+		}
+		// A fetch bind conflict is a port TOCTOU (another process grabbed the
+		// testport-provided address), not the scenario under test — signal
+		// testport to retry with fresh ports rather than failing.
+		if strings.Contains(err.Error(), "bind") {
+			return err
+		}
+		t.Errorf("expected reverse_proxy bind error, got: %v", err)
+		return nil
 	})
-	var stderr syncBuffer
-	cmd.SetErr(&stderr)
-	cmd.SetOut(&stderr)
-
-	// Synchronous run: the held fetch port forces a fast bind error. Start()
-	// must join the spawned MCP listener goroutine before cleanup() returns,
-	// so by the time Execute() returns there is no goroutine still reading the
-	// fields cleanup() nils.
-	err = cmd.Execute()
-	if err == nil {
-		t.Fatal("expected fetch_proxy bind error, got nil")
-	}
-	if !strings.Contains(err.Error(), "proxy error") {
-		t.Errorf("expected proxy bind error, got: %v", err)
-	}
 }
 
 // TestRunCmd_MCPListenerAskModeShutdown exercises the MCP approver lifecycle.

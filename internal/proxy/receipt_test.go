@@ -1413,6 +1413,9 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 		receipts[1].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
 		t.Fatalf("rotated first receipt session_control = %+v, want session_open", receipts[1].ActionRecord.SessionControl)
 	}
+	if got := receipts[1].ActionRecord.SessionControl.Open.HeartbeatSeconds; got != 60 {
+		t.Fatalf("rotated session_open heartbeat_seconds = %d, want configured default 60", got)
+	}
 	if receipts[1].ActionRecord.KeyTransition == nil {
 		t.Fatal("rotated session_open missing key_transition")
 	}

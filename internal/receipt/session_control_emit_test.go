@@ -87,6 +87,44 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	}
 }
 
+func TestEmitter_SessionOpenRecordsConfiguredHeartbeatSeconds(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{
+		Recorder:         rec,
+		PrivKey:          priv,
+		ConfigHash:       testConfigHash,
+		Principal:        testPrincipal,
+		Actor:            testActor,
+		HeartbeatSeconds: 5,
+	})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) == 0 {
+		t.Fatal("no receipts emitted")
+	}
+	open := receipts[0].ActionRecord.SessionControl.Open
+	if open == nil {
+		t.Fatalf("first receipt is not session_open: %#v", receipts[0].ActionRecord.SessionControl)
+	}
+	// The configured cadence must be recorded on the run anchor so a witness
+	// reading session_open learns the expected liveness interval without
+	// inferring it from observed heartbeat spacing (previously left at 0).
+	if open.HeartbeatSeconds != 5 {
+		t.Fatalf("session_open HeartbeatSeconds = %d, want 5 (the configured cadence)", open.HeartbeatSeconds)
+	}
+}
+
 func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 	t.Parallel()
 

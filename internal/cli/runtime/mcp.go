@@ -1018,13 +1018,14 @@ Key-free evidence capture:
 				// nil MetricsSink is a safe no-op in the emitter, so emit-
 				// failure counters are wired opportunistically here.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
-					Recorder:       rec,
-					PrivKey:        recPrivKey,
-					ConfigHash:     cfg.Hash(),
-					Principal:      "local",
-					Actor:          "pipelock",
-					Metrics:        mcpMetrics,
-					PostureBinding: postureBinding,
+					Recorder:         rec,
+					PrivKey:          recPrivKey,
+					ConfigHash:       cfg.Hash(),
+					Principal:        "local",
+					Actor:            "pipelock",
+					Metrics:          mcpMetrics,
+					PostureBinding:   postureBinding,
+					HeartbeatSeconds: cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)

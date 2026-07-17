@@ -106,6 +106,12 @@ type Emitter struct {
 	openNonce     string
 	heartbeatBeat uint64
 
+	// heartbeatSeconds is the configured heartbeat cadence (seconds) recorded
+	// in the session_open record's Open.HeartbeatSeconds so a witness reading
+	// the anchor learns the expected liveness interval without having to infer
+	// it from observed heartbeat spacing. 0 means "not configured".
+	heartbeatSeconds int
+
 	postureBinding PostureBinding
 
 	// pendingTransition is set by resumeChain when the on-disk tail was
@@ -149,6 +155,11 @@ type EmitterConfig struct {
 	// containment assessment can bind a receipt chain to a signed posture
 	// capsule and contained UID.
 	PostureBinding PostureBinding
+	// HeartbeatSeconds is the configured heartbeat cadence in seconds. It is
+	// recorded verbatim in the session_open record so a consumer can read the
+	// expected liveness interval off the run anchor. 0 (the default) means the
+	// cadence is unset / heartbeats disabled.
+	HeartbeatSeconds int
 }
 
 // PostureBinding carries the signed posture-capsule fields that session_open
@@ -171,15 +182,16 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	}
 	runNonce, nonceErr := newRunNonce()
 	e := &Emitter{
-		recorder:       cfg.Recorder,
-		privKey:        cfg.PrivKey,
-		principal:      cfg.Principal,
-		actor:          cfg.Actor,
-		metrics:        cfg.Metrics,
-		onReceipt:      cfg.OnReceipt,
-		runNonce:       runNonce,
-		chainPrevHash:  GenesisHash,
-		postureBinding: cfg.PostureBinding,
+		recorder:         cfg.Recorder,
+		privKey:          cfg.PrivKey,
+		principal:        cfg.Principal,
+		actor:            cfg.Actor,
+		metrics:          cfg.Metrics,
+		onReceipt:        cfg.OnReceipt,
+		runNonce:         runNonce,
+		chainPrevHash:    GenesisHash,
+		postureBinding:   cfg.PostureBinding,
+		heartbeatSeconds: cfg.HeartbeatSeconds,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	if nonceErr != nil {
@@ -351,6 +363,7 @@ func (e *Emitter) EmitSessionOpen() error {
 				RunNonce:             e.runNonce,
 				OpenNonce:            openNonce,
 				RecorderSession:      recorderSessionID,
+				HeartbeatSeconds:     e.heartbeatSeconds,
 				PolicyHash:           configHashString(e.configHash.Load()),
 				SignerKeyEpoch:       fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)),
 				PostureCapsuleSHA256: e.postureBinding.CapsuleSHA256,

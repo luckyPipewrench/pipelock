@@ -540,13 +540,14 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		// effective policy should produce identical envelope ph
 		// regardless of YAML formatting.
 		s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
-			Recorder:       rec,
-			PrivKey:        recPrivKey,
-			ConfigHash:     cfg.Hash(),
-			Principal:      "local",
-			Actor:          "pipelock",
-			Metrics:        m,
-			PostureBinding: postureBinding,
+			Recorder:         rec,
+			PrivKey:          recPrivKey,
+			ConfigHash:       cfg.Hash(),
+			Principal:        "local",
+			Actor:            "pipelock",
+			Metrics:          m,
+			PostureBinding:   postureBinding,
+			HeartbeatSeconds: cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 		})
 		if s.receiptEmitter != nil {
 			// Loud, one-time startup signal when the chain could not be

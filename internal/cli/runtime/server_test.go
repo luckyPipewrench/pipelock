@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -344,11 +345,14 @@ func TestStartupSummaryLine(t *testing.T) {
 		o.ListenChanged = true
 	})
 
-	line := s.startupSummaryLine(s.cfg)
+	// Pass a resolved address DISTINCT from cfg.FetchProxy.Listen (":0") so the
+	// assertions prove the summary uses the passed fetchAddr rather than
+	// re-reading the configured listen value.
+	line := s.startupSummaryLine(s.cfg, "127.0.0.1:65432")
 	for _, want := range []string{
 		"Check:",
 		"mode=balanced",
-		"listeners=fetch=127.0.0.1:0",
+		"listeners=fetch=127.0.0.1:65432",
 		"allowlist=6",
 		"dlp_patterns=",
 		"checks=",
@@ -375,7 +379,10 @@ kill_switch:
 		o.ConfigFile = cfgPath
 	})
 
-	line := s.startupSummaryLine(s.cfg)
+	// Pass a resolved address DISTINCT from cfg.FetchProxy.Listen (":0") so the
+	// assertions prove the summary uses the passed fetchAddr rather than
+	// re-reading the configured listen value.
+	line := s.startupSummaryLine(s.cfg, "127.0.0.1:65432")
 	if !strings.Contains(line, "kill_api=127.0.0.1:19091") {
 		t.Fatalf("summary missing env-token kill API listener:\n%s", line)
 	}
@@ -403,7 +410,7 @@ func TestStartupSummaryLineKillAPIResolvedMatrix(t *testing.T) {
 kill_switch:
   api_token: "yaml-token"
 `,
-			want: "kill_api=127.0.0.1:0",
+			want: "kill_api=127.0.0.1:65432",
 		},
 		{
 			name: "yaml token separate listener",
@@ -438,7 +445,10 @@ kill_switch:
 				o.ConfigFile = cfgPath
 			})
 
-			line := s.startupSummaryLine(s.cfg)
+			// Pass a resolved address DISTINCT from cfg.FetchProxy.Listen (":0") so the
+			// assertions prove the summary uses the passed fetchAddr rather than
+			// re-reading the configured listen value.
+			line := s.startupSummaryLine(s.cfg, "127.0.0.1:65432")
 			if tt.want != "" && !strings.Contains(line, tt.want) {
 				t.Fatalf("summary missing %q:\n%s", tt.want, line)
 			}
@@ -835,6 +845,80 @@ func TestServer_StartShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Start did not return within 5s of Shutdown")
 	}
+}
+
+// TestServer_StartupReportsResolvedFetchPort asserts the startup summary
+// reports the OS-chosen port when the listen address is ephemeral (:0), not
+// the literal ":0". An operator or script must be able to learn the
+// real port from stdout without shelling out to `ss`.
+func TestServer_StartupReportsResolvedFetchPort(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = serverTestEphemeralListen // 127.0.0.1:0
+		o.ListenChanged = true
+		o.AgentArgs = []string{"agent", "--flag"}
+	})
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	waitForServerCancel(t, s)
+	// Wait for the LAST-printed address line (PIPELOCK_FETCH_URL, emitted after
+	// the "Listen:" line) before snapshotting, so both are present and the
+	// snapshot is not racing the URL assertion.
+	waitForServerOutput(t, buf, "PIPELOCK_FETCH_URL=http://127.0.0.1:")
+
+	out := buf.String()
+	if strings.Contains(out, "Listen: 127.0.0.1:0\n") {
+		t.Fatalf("startup still reports the ephemeral :0 instead of the resolved port:\n%s", out)
+	}
+	port := resolvedListenPort(t, out)
+	if port <= 0 {
+		t.Fatalf("resolved fetch port = %d, want a real OS-chosen port:\n%s", port, out)
+	}
+	if strings.Contains(out, "127.0.0.1:0") {
+		t.Fatalf("startup output still contains unresolved ephemeral listen address:\n%s", out)
+	}
+	if want := fmt.Sprintf("PIPELOCK_FETCH_URL=http://127.0.0.1:%d/fetch", port); !strings.Contains(out, want) {
+		t.Fatalf("startup agent fetch URL missing resolved port %q:\n%s", want, out)
+	}
+	if want := fmt.Sprintf("fetch=127.0.0.1:%d", port); !strings.Contains(out, want) {
+		t.Fatalf("startup summary listeners line missing the resolved fetch port %q:\n%s", want, out)
+	}
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}
+
+// resolvedListenPort extracts the port from the startup "Listen: 127.0.0.1:<port>" line.
+func resolvedListenPort(t *testing.T, out string) int {
+	t.Helper()
+	const marker = "Listen: 127.0.0.1:"
+	i := strings.Index(out, marker)
+	if i < 0 {
+		t.Fatalf("no %q line in startup output:\n%s", marker, out)
+	}
+	rest := out[i+len(marker):]
+	if end := strings.IndexAny(rest, "\n \t"); end >= 0 {
+		rest = rest[:end]
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil {
+		t.Fatalf("parse port from %q: %v", rest, err)
+	}
+	return port
 }
 
 func TestServer_StartArmsFileSentry(t *testing.T) {

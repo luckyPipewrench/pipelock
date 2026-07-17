@@ -1498,6 +1498,20 @@ func (f FlightRecorder) HeartbeatIntervalDuration() time.Duration {
 	return interval
 }
 
+// HeartbeatIntervalSecondsForReceipt returns the heartbeat cadence in whole
+// seconds for the session_open receipt's audit field. HeartbeatIntervalDuration
+// always yields a positive interval (empty, unparseable, or non-positive values
+// fall back to the default), so this rounds to the nearest second and floors at
+// 1: a sub-second cadence is never truncated to 0, which the field documents as
+// "unset / heartbeats disabled".
+func (f FlightRecorder) HeartbeatIntervalSecondsForReceipt() int {
+	secs := int((f.HeartbeatIntervalDuration() + 500*time.Millisecond) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
 func (f FlightRecorder) EvidenceHealthEnabled() bool {
 	if !f.Enabled {
 		return false

@@ -2779,9 +2779,35 @@ func (c *Config) validateFileSentry() error {
 	return nil
 }
 
+// reservedControlActorNames are the actor identities pipelock stamps on its own
+// receipts: "pipelock" for session-control receipts and "anonymous" for
+// unattributed request traffic. Allowing an agent profile keyed to one of these
+// would let a named agent's receipts carry a reserved actor, folding its traffic
+// into the control actor's (or the unattributed) coverage story. Reserving the
+// names at config load fails closed. Match is case-insensitive and trimmed so a
+// confusing near-variant is also rejected and the guard survives any later
+// agent-name normalization.
+var reservedControlActorNames = map[string]struct{}{
+	"pipelock":  {},
+	"anonymous": {},
+}
+
+// reservedControlActorName reports the reserved actor name that agentName
+// collides with (trimmed, case-insensitive), or "" when it is registerable.
+func reservedControlActorName(agentName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(agentName))
+	if _, ok := reservedControlActorNames[normalized]; ok {
+		return normalized
+	}
+	return ""
+}
+
 func (c *Config) validateAgents() error {
 	// Validate budget dow_action for all agent profiles (OSS + enterprise).
 	for name, ap := range c.Agents {
+		if reserved := reservedControlActorName(name); reserved != "" {
+			return fmt.Errorf("agents.%s: %q is a reserved control-actor identity and cannot be used as an agent name", name, reserved)
+		}
 		if err := ap.Budget.ValidateDoW(); err != nil {
 			return fmt.Errorf("agents.%s.budget: %w", name, err)
 		}
@@ -3519,6 +3545,9 @@ func (c *Config) validateDefaultAgentIdentity() error {
 	}
 	if c.DefaultAgentIdentity != "" && identity != c.DefaultAgentIdentity {
 		return fmt.Errorf("default_agent_identity must not contain leading or trailing whitespace")
+	}
+	if reserved := reservedControlActorName(identity); reserved != "" {
+		return fmt.Errorf("default_agent_identity %q is a reserved control-actor identity and cannot be used", reserved)
 	}
 	return nil
 }

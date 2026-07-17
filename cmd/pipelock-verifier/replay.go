@@ -187,6 +187,11 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 	} else {
 		if verifyErr := receipt.VerifyWithKey(r, keyHex); verifyErr != nil {
 			report.ReceiptValid = false
+			if structuralErr := receipt.VerifyInternalConsistencyOnly(r); structuralErr == nil {
+				report.StructuralValid = true
+			} else {
+				report.Details = append(report.Details, fmt.Sprintf("structural verification: %v", structuralErr))
+			}
 			report.Error = fmt.Sprintf("verify receipt: %v", verifyErr)
 			emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, verifyErr)
@@ -304,7 +309,7 @@ func emitReplayReport(stdout, stderr io.Writer, report replayReport, jsonOutput 
 	if report.Unpinned {
 		_, _ = fmt.Fprintf(dst, "unpinned:      true\n")
 		_, _ = fmt.Fprintf(dst, "warning:       %s\n", unpinnedReceiptBanner)
-		_, _ = fmt.Fprintln(dst, "signature:     not checked (self-consistency only; receipt_valid=false; pass --key for provenance)")
+		_, _ = fmt.Fprintln(dst, "signature:     verified against untrusted embedded signer_key only (provenance not verified; receipt_valid=false; pass --key for trusted provenance)")
 	}
 	if report.Error != "" {
 		_, _ = fmt.Fprintf(dst, "error:         %s\n", report.Error)

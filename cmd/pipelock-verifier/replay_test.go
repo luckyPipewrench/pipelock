@@ -176,37 +176,49 @@ func TestReplay_ForgedSelfConsistentReceiptFailsClosedWithoutPinnedKey(t *testin
 	receiptPath := writeSignedReceiptFile(t, dir, ar)
 	policyPath := writePolicyFile(t, dir, nil)
 
-	report, _, exitCode := runReplayCommand(t,
-		"--policy", policyPath,
-		"--json",
-		receiptPath,
-	)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "omitted_allow_unpinned",
+			args: []string{"--policy", policyPath, "--json", receiptPath},
+		},
+		{
+			name: "explicit_allow_unpinned_false",
+			args: []string{"--policy", policyPath, "--allow-unpinned=false", "--json", receiptPath},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, _, exitCode := runReplayCommand(t, tc.args...)
 
-	if report.ReceiptValid {
-		t.Error("self-consistent receipt should not be accepted without --key or --allow-unpinned")
-	}
-	if !report.StructuralValid {
-		t.Error("self-consistent receipt should report structural_valid=true")
-	}
-	if report.VerificationAccepted {
-		t.Error("self-consistent receipt should not be accepted without --allow-unpinned")
-	}
-	if !report.Unpinned {
-		t.Error("self-consistent no-key replay should report unpinned=true")
-	}
-	if report.SignaturesVerified {
-		t.Error("self-consistent no-key replay should not report signatures_verified=true")
-	}
-	if len(report.Warnings) == 0 || !strings.Contains(report.Warnings[0], "UNPINNED") {
-		t.Fatalf("self-consistent no-key replay should report JSON warning, got %#v", report.Warnings)
-	}
-	for _, want := range []string{"pass --key for provenance", "--allow-unpinned for structural-only verification"} {
-		if !strings.Contains(report.Error, want) {
-			t.Errorf("error missing %q: %q", want, report.Error)
-		}
-	}
-	if exitCode != cliutil.ExitGeneral {
-		t.Errorf("exit code: got %d, want %d", exitCode, cliutil.ExitGeneral)
+			if report.ReceiptValid {
+				t.Error("self-consistent receipt should not be accepted without --key or --allow-unpinned")
+			}
+			if !report.StructuralValid {
+				t.Error("self-consistent receipt should report structural_valid=true")
+			}
+			if report.VerificationAccepted {
+				t.Error("self-consistent receipt should not be accepted without --allow-unpinned")
+			}
+			if !report.Unpinned {
+				t.Error("self-consistent no-key replay should report unpinned=true")
+			}
+			if report.SignaturesVerified {
+				t.Error("self-consistent no-key replay should not report signatures_verified=true")
+			}
+			if len(report.Warnings) == 0 || !strings.Contains(report.Warnings[0], "UNPINNED") {
+				t.Fatalf("self-consistent no-key replay should report JSON warning, got %#v", report.Warnings)
+			}
+			for _, want := range []string{"pass --key for provenance", "--allow-unpinned for structural-only verification"} {
+				if !strings.Contains(report.Error, want) {
+					t.Errorf("error missing %q: %q", want, report.Error)
+				}
+			}
+			if exitCode != cliutil.ExitGeneral {
+				t.Errorf("exit code: got %d, want %d", exitCode, cliutil.ExitGeneral)
+			}
+		})
 	}
 }
 
@@ -394,6 +406,12 @@ func TestReplay_BadKeyMismatch(t *testing.T) {
 	if report.ReceiptValid {
 		t.Error("receipt signed by another key should not validate against the supplied --key")
 	}
+	if !report.StructuralValid {
+		t.Error("receipt signed by another key should still report structural_valid=true when internally self-consistent")
+	}
+	if report.VerificationAccepted {
+		t.Error("receipt signed by another key should not be accepted")
+	}
 	if exitCode != cliutil.ExitGeneral {
 		t.Errorf("exit code: got %d want %d", exitCode, cliutil.ExitGeneral)
 	}
@@ -430,6 +448,12 @@ func TestReplay_AllowUnpinnedDoesNotWeakenPinnedVerification(t *testing.T) {
 	)
 	if report.ReceiptValid {
 		t.Fatal("--allow-unpinned must not accept a receipt signed by a different pinned key")
+	}
+	if !report.StructuralValid {
+		t.Fatal("wrong pinned key should still report structural_valid=true for internally self-consistent receipt")
+	}
+	if report.VerificationAccepted {
+		t.Fatal("wrong pinned key should not report verification_accepted=true")
 	}
 	if report.Unpinned {
 		t.Fatal("--allow-unpinned with --key should stay on the pinned path, not report unpinned")
@@ -476,23 +500,34 @@ func TestReplay_EmptyKeyFlagStillFailsClosed(t *testing.T) {
 	receiptPath := writeSignedReceiptFile(t, dir, ar)
 	policyPath := writePolicyFile(t, dir, nil)
 
-	for _, args := range [][]string{
-		{"--policy", policyPath, "--key", "", "--json", receiptPath},
-		{"--policy", policyPath, "--key", "", "--allow-unpinned", "--json", receiptPath},
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "empty_key",
+			args: []string{"--policy", policyPath, "--key", "", "--json", receiptPath},
+		},
+		{
+			name: "empty_key_with_allow_unpinned",
+			args: []string{"--policy", policyPath, "--key", "", "--allow-unpinned", "--json", receiptPath},
+		},
 	} {
-		report, _, exitCode := runReplayCommand(t, args...)
-		if report.ReceiptValid || report.StructuralValid || report.VerificationAccepted {
-			t.Fatalf(`%v report = %#v, want no trusted or structural acceptance`, args, report)
-		}
-		if report.Unpinned || report.SignaturesVerified {
-			t.Fatalf(`%v report = %#v, want config failure before unpinned/trusted states`, args, report)
-		}
-		if !strings.Contains(report.Error, "--key was provided but empty") {
-			t.Fatalf("%v error = %q, want empty --key config error", args, report.Error)
-		}
-		if exitCode != cliutil.ExitConfig {
-			t.Fatalf("%v exit code: got %d want %d", args, exitCode, cliutil.ExitConfig)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			report, _, exitCode := runReplayCommand(t, tc.args...)
+			if report.ReceiptValid || report.StructuralValid || report.VerificationAccepted {
+				t.Fatalf(`%v report = %#v, want no trusted or structural acceptance`, tc.args, report)
+			}
+			if report.Unpinned || report.SignaturesVerified {
+				t.Fatalf(`%v report = %#v, want config failure before unpinned/trusted states`, tc.args, report)
+			}
+			if !strings.Contains(report.Error, "--key was provided but empty") {
+				t.Fatalf("%v error = %q, want empty --key config error", tc.args, report.Error)
+			}
+			if exitCode != cliutil.ExitConfig {
+				t.Fatalf("%v exit code: got %d want %d", tc.args, exitCode, cliutil.ExitConfig)
+			}
+		})
 	}
 }
 
@@ -572,23 +607,41 @@ func TestReplay_MalformedEmbeddedSignerFailsClosedEvenWhenUnpinnedAllowed(t *tes
 	}
 	policyPath := writePolicyFile(t, dir, nil)
 
-	for _, args := range [][]string{
-		{"--policy", policyPath, "--json", receiptPath},
-		{"--policy", policyPath, "--allow-unpinned", "--json", receiptPath},
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "no_key",
+			args: []string{"--policy", policyPath, "--json", receiptPath},
+		},
+		{
+			name: "allow_unpinned",
+			args: []string{"--policy", policyPath, "--allow-unpinned", "--json", receiptPath},
+		},
+		{
+			name: "pinned_key",
+			args: []string{"--policy", policyPath, "--key", strings.Repeat("0", 64), "--json", receiptPath},
+		},
 	} {
-		report, _, exitCode := runReplayCommand(t, args...)
-		if report.ReceiptValid {
-			t.Fatalf("%v accepted receipt with empty signer_key: %#v", args, report)
-		}
-		if report.Unpinned || report.SignaturesVerified {
-			t.Fatalf("%v report = %#v, want invalid before unpinned/trusted states", args, report)
-		}
-		if !strings.Contains(report.Error, "receipt has no signer_key") {
-			t.Fatalf("%v error = %q, want signer_key failure", args, report.Error)
-		}
-		if exitCode != cliutil.ExitGeneral {
-			t.Fatalf("%v exit code: got %d want %d", args, exitCode, cliutil.ExitGeneral)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			report, _, exitCode := runReplayCommand(t, tc.args...)
+			if report.ReceiptValid {
+				t.Fatalf("%v accepted receipt with empty signer_key: %#v", tc.args, report)
+			}
+			if report.Unpinned || report.SignaturesVerified || report.StructuralValid || report.VerificationAccepted {
+				t.Fatalf("%v report = %#v, want invalid before unpinned/trusted states", tc.args, report)
+			}
+			if tc.name == "pinned_key" && len(report.Details) == 0 {
+				t.Fatalf("%v report = %#v, want structural verification detail", tc.args, report)
+			}
+			if !strings.Contains(report.Error, "receipt has no signer_key") {
+				t.Fatalf("%v error = %q, want signer_key failure", tc.args, report.Error)
+			}
+			if exitCode != cliutil.ExitGeneral {
+				t.Fatalf("%v exit code: got %d want %d", tc.args, exitCode, cliutil.ExitGeneral)
+			}
+		})
 	}
 }
 
@@ -627,7 +680,8 @@ func TestReplay_HumanReadableOutput(t *testing.T) {
 		"signatures_verified: false",
 		"unpinned:      true",
 		"receipt_valid=false",
-		"self-consistency only",
+		"untrusted embedded signer_key",
+		"provenance not verified",
 		"original:",
 		"replay:",
 		"verdict:",

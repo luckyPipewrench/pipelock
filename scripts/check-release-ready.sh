@@ -32,7 +32,7 @@ note() { printf '  [FAIL] %s\n' "$1" >&2; fail=1; }
 echo "release-ready gate: version=$VER"
 
 # 1. CHANGELOG: a "## [<ver>] - <YYYY-MM-DD>" heading must exist with a real date.
-line="$(grep -E "^## \[${VER//./\\.}\]" "$CHANGELOG" | head -1 || true)"
+line="$(grep -E "^## \[${VER//./\\.}\]" "$CHANGELOG" | head -n 1 || true)"
 if [ -z "$line" ]; then
   note "CHANGELOG.md has no '## [$VER]' section. The version heading never landed on this ref."
 elif ! printf '%s\n' "$line" | grep -qE "^## \[${VER//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}( .*)?$"; then
@@ -42,7 +42,7 @@ else
 fi
 
 # 2. Chart appVersion must equal the release version.
-app="$(grep -E '^appVersion:' "$CHART" | head -1 | sed -E 's/^appVersion:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/' || true)"
+app="$(grep -E '^appVersion:' "$CHART" | head -n 1 | sed -E 's/^appVersion:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/' || true)"
 if [ "$app" != "$VER" ]; then
   note "charts/pipelock/Chart.yaml appVersion is '$app', expected '$VER'. values.yaml defaults image.tag to appVersion, so a mismatch deploys the wrong image."
 else

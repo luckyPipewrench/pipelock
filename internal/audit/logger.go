@@ -184,7 +184,8 @@ func (e *logEntry) int64Field(key string, value int64) *logEntry {
 	return e
 }
 
-func (e *logEntry) float64Field(key string, value float64) *logEntry {
+func (e *logEntry) scoreField(value float64) *logEntry {
+	const key = "score"
 	e.event = e.event.Float64(key, value)
 	e.fields[key] = value
 	return e
@@ -727,8 +728,34 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 		optStr("scanner", scanner).
 		optStr("mitre_technique", technique).
 		str("reason", reason).
-		float64Field("score", score)
+		scoreField(score)
 	e.msg("anomaly detected")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
+	}
+}
+
+// LogAgentIdentityCollision records a self-declared agent name that was
+// neutralized because it collided with a reserved control actor.
+func (l *Logger) LogAgentIdentityCollision(ctx LogContext, reservedAgent string) {
+	const scanner = "agent_identity"
+	technique := TechniqueForScanner(scanner)
+
+	e := newLogEntry(l.zl.Warn(), EventAnomaly).
+		str("method", ctx.method).
+		optStr("url", ctx.url).
+		optStr("target", ctx.target).
+		optStr("resource", ctx.resource).
+		optStr("client_ip", ctx.clientIP).
+		optStr("request_id", ctx.requestID).
+		optStr("agent", ctx.agent).
+		str("scanner", scanner).
+		optStr("mitre_technique", technique).
+		str("reason", "self-declared agent neutralized: reserved control actor").
+		str("reserved_agent", reservedAgent).
+		scoreField(0.7)
+	e.msg("agent identity collision")
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
@@ -1333,7 +1360,7 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 		str("detail", detail).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
-		float64Field("score", score).
+		scoreField(score).
 		str("mitre_technique", technique)
 	e.msg("session anomaly detected")
 
@@ -1364,7 +1391,7 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 		str("to", to).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
-		float64Field("score", score)
+		scoreField(score)
 	e.msg("enforcement escalated")
 
 	if l.emitter != nil {

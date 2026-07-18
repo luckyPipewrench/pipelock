@@ -534,6 +534,16 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agent = edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity).Name
 	}
 	targetURL := reverseTargetURL(rp.upstream, r)
+	if reservedAgent, ok := edition.RejectedSelfDeclaredReservedControlActor(r, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity); ok {
+		auditAgent := agent
+		if auditAgent == "" {
+			auditAgent = agentAnonymous
+		}
+		rp.logger.LogAgentIdentityCollision(
+			newHTTPAuditContext(rp.logger, r.Method, audit.RedactContentBearingURL(targetURL), clientIP, requestID, auditAgent),
+			reservedAgent,
+		)
+	}
 	var reverseGate ContractGateOutput
 	withReverseContractReceipt := func(opts receipt.EmitOpts) receipt.EmitOpts {
 		if reverseGate.HasContractContext() {

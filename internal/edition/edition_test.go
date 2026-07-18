@@ -447,6 +447,89 @@ func TestResolveAgentIdentity_NeutralizesSelfDeclaredReservedControlActor(t *tes
 	}
 }
 
+func TestRejectedSelfDeclaredReservedControlActor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		setup           func(*http.Request) *http.Request
+		defaultIdentity string
+		bindDefault     bool
+		wantReserved    string
+		wantOK          bool
+	}{
+		{
+			name: "reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "PIPELOCK")
+				return r
+			},
+			wantReserved: "pipelock",
+			wantOK:       true,
+		},
+		{
+			name: "reserved query",
+			setup: func(r *http.Request) *http.Request {
+				q := r.URL.Query()
+				q.Set("agent", "pipelock")
+				r.URL.RawQuery = q.Encode()
+				return r
+			},
+			wantReserved: "pipelock",
+			wantOK:       true,
+		},
+		{
+			name: "normal header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "agent-a")
+				return r
+			},
+		},
+		{
+			name: "context-bound identity ignores reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r.WithContext(WithAgentOverride(r.Context(), testAgentA))
+			},
+		},
+		{
+			name: "bound default ignores reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+			bindDefault:     true,
+		},
+		{
+			name: "config default wins over reserved query",
+			setup: func(r *http.Request) *http.Request {
+				q := r.URL.Query()
+				q.Set("agent", "pipelock")
+				r.URL.RawQuery = q.Encode()
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+			r = tt.setup(r)
+
+			got, ok := RejectedSelfDeclaredReservedControlActor(r, tt.defaultIdentity, tt.bindDefault)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.wantReserved {
+				t.Fatalf("reserved = %q, want %q", got, tt.wantReserved)
+			}
+		})
+	}
+}
+
 func TestResolveAgentIdentity_ActorAuth(t *testing.T) {
 	t.Parallel()
 
@@ -733,5 +816,20 @@ func TestResetHooks(t *testing.T) {
 	defer ed.Close()
 	if _, ok := ed.(*noopEdition); !ok {
 		t.Errorf("NewEditionFunc after reset should return *noopEdition, got %T", ed)
+	}
+}
+
+func TestRejectedSelfDeclaredReservedControlActor_AnonymousAndEmpty(t *testing.T) {
+	t.Parallel()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+	r.Header.Set(AgentHeader, "anonymous")
+	if reserved, ok := RejectedSelfDeclaredReservedControlActor(r, "", false); !ok || reserved != agentAnonymous {
+		t.Errorf("anonymous header: got (%q,%v), want (anonymous,true)", reserved, ok)
+	}
+
+	empty := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+	if reserved, ok := RejectedSelfDeclaredReservedControlActor(empty, "", false); ok || reserved != "" {
+		t.Errorf("empty request: got (%q,%v), want empty/false", reserved, ok)
 	}
 }

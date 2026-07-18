@@ -255,6 +255,40 @@ func resolveSelfDeclaredName(name string, knownProfiles map[string]bool) AgentId
 	return AgentIdentity{Name: name, Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
 }
 
+// RejectedSelfDeclaredReservedControlActor reports the reserved control actor
+// name a request attempted to claim through a self-declared identity, when the
+// same request would be neutralized by ResolveAgentIdentity. Bound identities
+// ignore self-declared request values, so they do not count as rejected claims.
+func RejectedSelfDeclaredReservedControlActor(r *http.Request, defaultIdentity string, bindDefaultIdentity bool) (string, bool) {
+	if _, ok := AgentOverrideFromContext(r.Context()); ok {
+		return "", false
+	}
+	if _, ok := boundDefaultIdentity(defaultIdentity, bindDefaultIdentity); ok {
+		return "", false
+	}
+	if header := r.Header.Get(AgentHeader); header != "" {
+		return rejectedSelfDeclaredReservedControlActor(header)
+	}
+	if defaultIdentity != "" {
+		return "", false
+	}
+	if queryAgent := r.URL.Query().Get("agent"); queryAgent != "" {
+		return rejectedSelfDeclaredReservedControlActor(queryAgent)
+	}
+	return "", false
+}
+
+func rejectedSelfDeclaredReservedControlActor(raw string) (string, bool) {
+	name := sanitizeAgentName(raw)
+	if name == agentAnonymous {
+		return agentAnonymous, true
+	}
+	if reserved := config.ReservedControlActorName(name); reserved != "" {
+		return reserved, true
+	}
+	return "", false
+}
+
 // ExtractAgentWithDefault reads the agent name from the request header,
 // default identity, or query param before "anonymous".
 // Priority:

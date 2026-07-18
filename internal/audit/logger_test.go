@@ -4461,3 +4461,37 @@ func TestLogTaintDecision_OmitsOptionalSourceFields(t *testing.T) {
 		t.Error("source_kind should be omitted when empty (optStr)")
 	}
 }
+
+func TestLogAgentIdentityCollision_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogAgentIdentityCollision(LogContext{method: testMethodGet, url: "https://vendor.example/api", clientIP: testClientIP, requestID: "req-collide", agent: "anonymous"}, "pipelock")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["event"] != "anomaly" {
+		t.Errorf("expected event=anomaly, got %v", entry["event"])
+	}
+	if entry["scanner"] != "agent_identity" {
+		t.Errorf("expected scanner=agent_identity, got %v", entry["scanner"])
+	}
+	if entry["reserved_agent"] != "pipelock" {
+		t.Errorf("expected reserved_agent=pipelock, got %v", entry["reserved_agent"])
+	}
+	if entry["agent"] != "anonymous" {
+		t.Errorf("expected agent=anonymous, got %v", entry["agent"])
+	}
+	score, ok := entry["score"].(float64)
+	if !ok || score < 0.69 || score > 0.71 {
+		t.Errorf("expected score ~0.7, got %v", entry["score"])
+	}
+}

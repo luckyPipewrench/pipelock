@@ -690,13 +690,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					urlDLPAction = config.ActionBlock
 				}
 			}
+			captureAgent := reverseCaptureAgent(r)
 			rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:        "dlp_reverse_url",
 				Transport:         "reverse",
-				SessionID:         captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
-				SessionIDOriginal: captureSessionKeyOriginal(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
+				SessionID:         captureSessionKey(captureAgent, reverseClientIP(r)),
+				SessionIDOriginal: captureSessionKeyOriginal(captureAgent, reverseClientIP(r)),
 				ConfigHash:        cfg.CanonicalPolicyHash(),
-				Agent:             r.Header.Get("X-Pipelock-Agent"),
+				Agent:             captureAgent,
 				Profile:           edition.ProfileDefault,
 				ActionClass:       captureHTTPActionClass(r.Method),
 				Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
@@ -1142,13 +1143,14 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 				bodyAction = config.ActionBlock
 			}
 		}
+		captureAgent := reverseCaptureAgent(r)
 		rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:               "dlp_reverse_request",
 			Transport:                "reverse",
-			SessionID:                captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
-			SessionIDOriginal:        captureSessionKeyOriginal(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
+			SessionID:                captureSessionKey(captureAgent, reverseClientIP(r)),
+			SessionIDOriginal:        captureSessionKeyOriginal(captureAgent, reverseClientIP(r)),
 			ConfigHash:               cfg.CanonicalPolicyHash(),
-			Agent:                    r.Header.Get("X-Pipelock-Agent"),
+			Agent:                    captureAgent,
 			Profile:                  edition.ProfileDefault,
 			ActionClass:              captureHTTPActionClass(r.Method),
 			Request:                  capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
@@ -1715,13 +1717,14 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
 					Closer: resp.Body,
 				}
+				captureAgent := reverseCaptureAgent(resp.Request)
 				rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_reverse",
 					Transport:         "reverse",
-					SessionID:         captureSessionKey(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
-					SessionIDOriginal: captureSessionKeyOriginal(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
+					SessionID:         captureSessionKey(captureAgent, reverseClientIP(resp.Request)),
+					SessionIDOriginal: captureSessionKeyOriginal(captureAgent, reverseClientIP(resp.Request)),
 					ConfigHash:        cfg.CanonicalPolicyHash(),
-					Agent:             resp.Request.Header.Get("X-Pipelock-Agent"),
+					Agent:             captureAgent,
 					Profile:           edition.ProfileDefault,
 					ActionClass:       captureHTTPActionClass(resp.Request.Method),
 					Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
@@ -1855,13 +1858,14 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if result.Clean {
 			revAction = config.ActionAllow
 		}
+		captureAgent := reverseCaptureAgent(resp.Request)
 		rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_reverse",
 			Transport:         "reverse",
-			SessionID:         captureSessionKey(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
-			SessionIDOriginal: captureSessionKeyOriginal(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
+			SessionID:         captureSessionKey(captureAgent, reverseClientIP(resp.Request)),
+			SessionIDOriginal: captureSessionKeyOriginal(captureAgent, reverseClientIP(resp.Request)),
 			ConfigHash:        cfg.CanonicalPolicyHash(),
-			Agent:             resp.Request.Header.Get("X-Pipelock-Agent"),
+			Agent:             captureAgent,
 			Profile:           edition.ProfileDefault,
 			ActionClass:       captureHTTPActionClass(resp.Request.Method),
 			Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
@@ -2097,4 +2101,12 @@ func reverseClientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+func reverseCaptureAgent(r *http.Request) string {
+	agent, _ := r.Context().Value(ctxKeyAgent).(string)
+	if agent == "" {
+		return agentAnonymous
+	}
+	return agent
 }

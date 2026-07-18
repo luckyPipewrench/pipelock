@@ -2802,6 +2802,12 @@ func reservedControlActorName(agentName string) string {
 	return ""
 }
 
+// ReservedControlActorName reports the reserved actor name that agentName
+// collides with (trimmed, case-insensitive), or "" when it is registerable.
+func ReservedControlActorName(agentName string) string {
+	return reservedControlActorName(agentName)
+}
+
 func (c *Config) validateAgents() error {
 	// Validate budget dow_action for all agent profiles (OSS + enterprise).
 	for name, ap := range c.Agents {

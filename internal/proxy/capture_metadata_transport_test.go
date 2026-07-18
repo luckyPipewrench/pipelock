@@ -126,6 +126,32 @@ func (o *captureMetadataObserver) ObserveToolScanVerdict(_ context.Context, rec 
 
 func (o *captureMetadataObserver) Close() error { return nil }
 
+type reverseDLPRecordObserver struct {
+	ch chan capture.DLPVerdictRecord
+}
+
+func newReverseDLPRecordObserver() *reverseDLPRecordObserver {
+	return &reverseDLPRecordObserver{ch: make(chan capture.DLPVerdictRecord, 16)}
+}
+
+func (o *reverseDLPRecordObserver) ObserveURLVerdict(context.Context, *capture.URLVerdictRecord) {}
+
+func (o *reverseDLPRecordObserver) ObserveResponseVerdict(context.Context, *capture.ResponseVerdictRecord) {
+}
+
+func (o *reverseDLPRecordObserver) ObserveDLPVerdict(_ context.Context, rec *capture.DLPVerdictRecord) {
+	o.ch <- *rec
+}
+
+func (o *reverseDLPRecordObserver) ObserveCEEVerdict(context.Context, *capture.CEERecord) {}
+
+func (o *reverseDLPRecordObserver) ObserveToolPolicyVerdict(context.Context, *capture.ToolPolicyRecord) {
+}
+
+func (o *reverseDLPRecordObserver) ObserveToolScanVerdict(context.Context, *capture.ToolScanRecord) {}
+
+func (o *reverseDLPRecordObserver) Close() error { return nil }
+
 func summaryFromURLRecord(rec *capture.URLVerdictRecord) capture.CaptureSummary {
 	return capture.CaptureSummary{
 		Surface:           capture.SurfaceURL,
@@ -174,6 +200,21 @@ func waitCaptureRecord(t *testing.T, obs *captureMetadataObserver, surface, subs
 			}
 		case <-deadline:
 			t.Fatalf("timeout waiting for capture record surface=%s subsurface=%s", surface, subsurface)
+		}
+	}
+}
+
+func waitReverseDLPRecord(t *testing.T, obs *reverseDLPRecordObserver, subsurface string) capture.DLPVerdictRecord {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-obs.ch:
+			if got.Subsurface == subsurface {
+				return got
+			}
+		case <-deadline:
+			t.Fatalf("timeout waiting for reverse DLP record subsurface=%s", subsurface)
 		}
 	}
 }
@@ -267,6 +308,49 @@ func TestCaptureMetadata_ReverseTransport(t *testing.T) {
 
 	got := waitCaptureRecord(t, obs, capture.SurfaceDLP, "dlp_reverse_request")
 	requireCaptureMetadata(t, got, capture.SurfaceDLP, "dlp_reverse_request")
+}
+
+func TestReverseCaptureNeutralizesReservedSelfDeclaredAgent(t *testing.T) {
+	t.Parallel()
+
+	cfg := captureMetadataConfig()
+	obs := newReverseDLPRecordObserver()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("should not be reached"))
+	}))
+	defer upstream.Close()
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), obs, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api", strings.NewReader(`{"key":"`+fakeAPIKey()+`"}`))
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(AgentHeader, "pipelock")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("reverse status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+
+	got := waitReverseDLPRecord(t, obs, "dlp_reverse_request")
+	if got.Agent != agentAnonymous {
+		t.Fatalf("capture agent = %q, want %q", got.Agent, agentAnonymous)
+	}
+	if got.SessionID != "192.0.2.10" {
+		t.Fatalf("capture session_id = %q, want client-IP anonymous session", got.SessionID)
+	}
+	if got.SessionIDOriginal != "" {
+		t.Fatalf("capture session_id_original = %q, want empty", got.SessionIDOriginal)
+	}
 }
 
 func TestCaptureMetadata_WebSocketTransport(t *testing.T) {

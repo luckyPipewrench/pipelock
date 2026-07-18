@@ -218,6 +218,18 @@ func configDefaultIdentity(knownProfiles map[string]bool, defaultIdentity string
 	return AgentIdentity{Name: resolved, Profile: ProfileDefault, Auth: envelope.ActorAuthConfigDefault}
 }
 
+func sanitizeSelfDeclaredAgentName(agent string) string {
+	name := sanitizeAgentName(agent)
+	if config.ReservedControlActorName(name) != "" {
+		return agentAnonymous
+	}
+	return name
+}
+
+func anonymousSelfDeclaredIdentity() AgentIdentity {
+	return AgentIdentity{Name: "", Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
+}
+
 // ExtractAgentWithDefault reads the agent name from the request header,
 // default identity, or query param before "anonymous".
 // Priority:
@@ -233,7 +245,7 @@ func ExtractAgentWithDefault(r *http.Request, defaultIdentity string, bindDefaul
 	}
 	agent := r.Header.Get(AgentHeader)
 	if agent != "" {
-		return sanitizeAgentName(agent)
+		return sanitizeSelfDeclaredAgentName(agent)
 	}
 	if defaultIdentity != "" {
 		return sanitizeAgentName(defaultIdentity)
@@ -242,7 +254,7 @@ func ExtractAgentWithDefault(r *http.Request, defaultIdentity string, bindDefaul
 	if agent == "" {
 		return agentAnonymous
 	}
-	return sanitizeAgentName(agent)
+	return sanitizeSelfDeclaredAgentName(agent)
 }
 
 // sanitizeAgentName strips disallowed characters and truncates.
@@ -274,8 +286,12 @@ func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool, defaul
 		return configDefaultIdentity(knownProfiles, defaultIdentity)
 	}
 
-	headerName := sanitizeAgentName(r.Header.Get(AgentHeader))
-	if headerName != agentAnonymous {
+	header := r.Header.Get(AgentHeader)
+	if header != "" {
+		headerName := sanitizeAgentName(header)
+		if config.ReservedControlActorName(headerName) != "" {
+			return anonymousSelfDeclaredIdentity()
+		}
 		if knownProfiles[headerName] {
 			return AgentIdentity{Name: headerName, Profile: headerName, Auth: envelope.ActorAuthMatched}
 		}
@@ -286,9 +302,13 @@ func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool, defaul
 		return configDefaultIdentity(knownProfiles, defaultIdentity)
 	}
 
-	name := sanitizeAgentName(r.URL.Query().Get("agent"))
-	if name == agentAnonymous {
-		return AgentIdentity{Name: "", Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
+	queryAgent := r.URL.Query().Get("agent")
+	if queryAgent == "" {
+		return anonymousSelfDeclaredIdentity()
+	}
+	name := sanitizeAgentName(queryAgent)
+	if config.ReservedControlActorName(name) != "" {
+		return anonymousSelfDeclaredIdentity()
 	}
 
 	if knownProfiles[name] {

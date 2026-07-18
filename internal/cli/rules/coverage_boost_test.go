@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
 )
 
 // ---------- validateBundlePath (additional cases not in rules_test.go) ----------
@@ -193,6 +195,35 @@ func TestCheckExistingInstall_SameVersionSameDigest(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "skipping") {
 		t.Errorf("expected 'skipping' message, got: %v", err)
+	}
+}
+
+func TestRulesResetFreshnessCommand(t *testing.T) {
+	rulesDir := t.TempDir()
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
+	if err := domrules.SaveFreshnessState(rulesDir, &domrules.FreshnessState{
+		HighestSeen: map[string]uint64{"community:stale-bundle": 99},
+	}); err != nil {
+		t.Fatalf("seed stale freshness state: %v", err)
+	}
+
+	cmd := testRootCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"rules", "reset-freshness", "--rules-dir", rulesDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("reset-freshness: %v", err)
+	}
+	if !strings.Contains(out.String(), "Reset rules freshness state") || !strings.Contains(out.String(), rulesDir) {
+		t.Fatalf("reset-freshness output = %q", out.String())
+	}
+	state, err := domrules.LoadFreshnessState(rulesDir)
+	if err != nil {
+		t.Fatalf("load freshness state after reset: %v", err)
+	}
+	if len(state.HighestSeen) != 0 {
+		t.Fatalf("freshness state after reset = %+v, want no stale rollback floors", state.HighestSeen)
 	}
 }
 

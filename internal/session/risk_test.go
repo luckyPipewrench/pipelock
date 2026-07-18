@@ -79,6 +79,58 @@ func TestSessionRiskSnapshotCopiesSources(t *testing.T) {
 	}
 }
 
+func TestRiskWireLabels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"taint trusted", session.TaintTrusted.String(), "trusted"},
+		{"taint internal", session.TaintInternalGenerated.String(), "internal_generated"},
+		{"taint allowlisted", session.TaintAllowlistedReference.String(), "allowlisted_reference"},
+		{"taint low risk", session.TaintExternalLowRisk.String(), "external_low_risk"},
+		{"taint untrusted", session.TaintExternalUntrusted.String(), "external_untrusted"},
+		{"taint hostile", session.TaintExternalHostile.String(), "external_hostile"},
+		{"taint unknown", session.TaintLevel(255).String(), "unknown"},
+		{"action read", session.ActionClassRead.String(), "read"},
+		{"action browse", session.ActionClassBrowse.String(), "browse"},
+		{"action summarize", session.ActionClassSummarize.String(), "summarize"},
+		{"action write", session.ActionClassWrite.String(), "write"},
+		{"action exec", session.ActionClassExec.String(), "exec"},
+		{"action secret", session.ActionClassSecret.String(), "secret"},
+		{"action publish", session.ActionClassPublish.String(), "publish"},
+		{"action network", session.ActionClassNetwork.String(), "network"},
+		{"action unknown", session.ActionClass(255).String(), "unknown"},
+		{"sensitivity normal", session.SensitivityNormal.String(), "normal"},
+		{"sensitivity elevated", session.SensitivityElevated.String(), "elevated"},
+		{"sensitivity protected", session.SensitivityProtected.String(), "protected"},
+		{"sensitivity unknown", session.ActionSensitivity(255).String(), "unknown"},
+		{"authority unknown", session.AuthorityUnknown.String(), "unknown"},
+		{"authority external", session.AuthorityExternal.String(), "external"},
+		{"authority policy", session.AuthorityPolicy.String(), "policy"},
+		{"authority user broad", session.AuthorityUserBroad.String(), "user_broad"},
+		{"authority user exact", session.AuthorityUserExact.String(), "user_exact"},
+		{"authority operator override", session.AuthorityOperatorOverride.String(), "operator_override"},
+		{"authority invalid", session.AuthorityKind(255).String(), "unknown"},
+		{"decision allow", session.PolicyAllow.String(), "allow"},
+		{"decision warn", session.PolicyWarn.String(), "warn"},
+		{"decision ask", session.PolicyAsk.String(), "ask"},
+		{"decision block", session.PolicyBlock.String(), "block"},
+		{"decision unknown", session.PolicyDecision(255).String(), "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if tt.got != tt.want {
+				t.Fatalf("label = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPolicyMatrixEvaluate(t *testing.T) {
 	pm := session.PolicyMatrix{Profile: "balanced"}
 

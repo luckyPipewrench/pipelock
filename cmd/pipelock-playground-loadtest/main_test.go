@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -183,6 +185,39 @@ func TestInFlightTracker(t *testing.T) {
 				t.Fatalf("peakValue() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseFlags(t *testing.T) {
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+	})
+	flag.CommandLine = flag.NewFlagSet("pipelock-playground-loadtest", flag.ContinueOnError)
+	os.Args = []string{
+		"pipelock-playground-loadtest",
+		"--broker-url", "https://broker.example",
+		"--code", "demo-code",
+		"--turnstile-token", "test-token",
+		"--concurrency", "3",
+		"--ramp", "2s",
+		"--prompt", "hello",
+		"--timeout", "5s",
+		"--json",
+	}
+
+	got := parseFlags()
+	if got.brokerURL != "https://broker.example" ||
+		got.code != "demo-code" ||
+		got.turnstileToken != "test-token" ||
+		got.concurrency != 3 ||
+		got.ramp != 2*time.Second ||
+		got.prompt != "hello" ||
+		got.timeout != 5*time.Second ||
+		!got.jsonOutput {
+		t.Fatalf("parseFlags() = %#v, want parsed CLI values", got)
 	}
 }
 

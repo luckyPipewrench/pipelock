@@ -134,6 +134,35 @@ func TestBuildServerWithInjectedProvider(t *testing.T) {
 	}
 }
 
+func TestMergeSessionAndBaseEnvLayersSessionOverBase(t *testing.T) {
+	t.Parallel()
+	baseEnv := map[string]string{
+		"PLAYGROUND_LISTEN":            "0.0.0.0:0",
+		"PLAYGROUND_MODEL":             "base-model",
+		"PLAYGROUND_MODEL_BASE_URL":    "https://model.example",
+		"PLAYGROUND_DAILY_TURN_BUDGET": "20",
+	}
+	sessionEnv := map[string]string{
+		"PLAYGROUND_MODEL":            "session-model",
+		"PLAYGROUND_MODEL_KEY":        "session-key",
+		"PLAYGROUND_ORCHESTRATOR_KEY": "orchestrator-key",
+	}
+
+	got := mergeSessionAndBaseEnv(sessionEnv, baseEnv, "visitor-code")
+	if got["PLAYGROUND_CODE"] != "visitor-code" {
+		t.Fatalf("PLAYGROUND_CODE = %q, want visitor-code", got["PLAYGROUND_CODE"])
+	}
+	if got["PLAYGROUND_MODEL"] != "session-model" {
+		t.Fatalf("session env did not override model: %#v", got)
+	}
+	if got["PLAYGROUND_LISTEN"] != "0.0.0.0:0" || got["PLAYGROUND_MODEL_KEY"] != "session-key" {
+		t.Fatalf("merged env missing base/session values: %#v", got)
+	}
+	if _, ok := baseEnv["PLAYGROUND_CODE"]; ok {
+		t.Fatal("base env mutated with PLAYGROUND_CODE")
+	}
+}
+
 func TestBuildServerStaticDir(t *testing.T) {
 	dir := t.TempDir()
 	uiDir := filepath.Join(dir, "ui")

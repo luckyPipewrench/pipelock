@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/report/attestation"
 )
 
@@ -60,6 +61,64 @@ func TestAssessVerifyAttestation_MissingAttestation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "attestation not present") {
 		t.Errorf("error should mention missing attestation, got: %v", err)
+	}
+}
+
+func TestAssessVerifyAttestationCmd_OutputModes(t *testing.T) {
+	runDir, keystoreDir, agentName := setupFinalizedRunWithAttestation(t)
+
+	t.Run("human verified", func(t *testing.T) {
+		cmd := assessVerifyAttestationCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{runDir, "--agent", agentName, "--keystore", keystoreDir})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute human verify-attestation: %v\nout:\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "Attestation: verified") {
+			t.Fatalf("human output = %q, want verified status", out.String())
+		}
+	})
+
+	t.Run("json verified", func(t *testing.T) {
+		cmd := assessVerifyAttestationCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{runDir, "--agent", agentName, "--keystore", keystoreDir, "--json"})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute json verify-attestation: %v\nout:\n%s", err, out.String())
+		}
+		var result map[string]interface{}
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatalf("json output: %v\nout:\n%s", err, out.String())
+		}
+		if result["verified"] != true || result["exit_code"] != float64(0) {
+			t.Fatalf("json result = %#v, want verified true exit_code 0", result)
+		}
+	})
+}
+
+func TestAssessVerifyAttestationCmd_JSONMissingAttestationReturnsUnsigned(t *testing.T) {
+	runDir, keystoreDir, agentName := setupFinalizedRunSigned(t)
+	cmd := assessVerifyAttestationCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{runDir, "--agent", agentName, "--keystore", keystoreDir, "--json"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("execute missing attestation succeeded\nout:\n%s", out.String())
+	}
+	if code := cliutil.ExitCodeOf(err); code != verifyExitUnsigned {
+		t.Fatalf("exit code = %d, want %d; err=%v", code, verifyExitUnsigned, err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("json error output = %q, want no partial JSON when verifier fails before rendering", out.String())
 	}
 }
 

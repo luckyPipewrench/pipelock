@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
@@ -66,6 +68,84 @@ func TestSingleConnListener_Addr(t *testing.T) {
 	addr := l.Addr()
 	if addr == nil {
 		t.Error("Addr() returned nil")
+	}
+}
+
+func TestSandboxCmdRequiresDashCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd := SandboxCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"echo", "ok"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "usage: pipelock sandbox -- COMMAND") {
+		t.Fatalf("SandboxCmd without -- err = %v, want usage error", err)
+	}
+}
+
+func TestSandboxCmdRejectsStrictBestEffortTogether(t *testing.T) {
+	t.Parallel()
+
+	cmd := SandboxCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--strict", "--best-effort", "--", "echo", "ok"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("SandboxCmd strict+best-effort err = %v, want mutual exclusion", err)
+	}
+}
+
+func TestSandboxCmdDryRunJSON(t *testing.T) {
+	t.Parallel()
+
+	cmd := SandboxCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", "echo", "ok"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	execErr := cmd.Execute()
+
+	var result sandbox.PreflightResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("dry-run JSON = %q, unmarshal: %v", out.String(), err)
+	}
+	if result.Status == sandbox.StatusReady && execErr != nil {
+		t.Fatalf("ready dry-run returned error: %v", execErr)
+	}
+	if result.Status != sandbox.StatusReady && execErr == nil {
+		t.Fatalf("dry-run status %q returned success", result.Status)
+	}
+	if len(result.Command) != 2 || filepath.Base(result.Command[0]) != "echo" || result.Command[1] != "ok" {
+		t.Fatalf("dry-run command = %v, want echo ok", result.Command)
+	}
+	if result.Workspace == "" {
+		t.Fatal("dry-run result should include workspace")
+	}
+}
+
+func TestSandboxCmdRejectsDangerousEnvBeforeLaunch(t *testing.T) {
+	t.Parallel()
+
+	cmd := SandboxCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--workspace", t.TempDir(), "--env", "LD_PRELOAD=/tmp/hook.so", "--", "echo", "ok"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD is blocked") {
+		t.Fatalf("SandboxCmd dangerous env err = %v, want blocked LD_PRELOAD", err)
 	}
 }
 

@@ -39,6 +39,12 @@ ignore:
   # those code paths from the in-tree test process; integration testing
   # happens via `make bench-egress` instead.
   - "bench/egress/**"
+  # Playground/demo harnesses exercise full subprocess, VM, LLM, browser, and
+  # live-proxy flows. They are validated through integration/demo tests and
+  # published audit-packet verification rather than treated as core library
+  # unit-coverage denominator for the OpenSSF badge.
+  - "cmd/pipelock-playground-*"
+  - "internal/playground/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
   # Remaining sandbox paths require kernel capabilities unavailable on GitHub's
   # hosted runners. Parent and child process coverage for the runnable sandbox
@@ -46,6 +52,15 @@ ignore:
   # CI-only instrumented build support.
   - "internal/sandbox/subprocess_coverage.go"
   - "internal/sandbox/subprocess_coverage_enabled.go"
+  # Sandbox files that require kernel namespace primitives
+  # (CLONE_NEWUSER+CLONE_NEWNET). Child init entrypoints stay in project
+  # coverage so the merged subprocess coverage upload can account for them.
+  - "internal/sandbox/launcher.go"
+  - "internal/sandbox/standalone_launch.go"
+  - "internal/sandbox/landlock_linux.go"
+  - "internal/sandbox/seccomp_linux.go"
+  - "internal/sandbox/rlimit_linux.go"
+  - "internal/mcp/proxy_sandbox.go"
   - "internal/sandbox/subreaper_linux.go"  # kernel primitive (prctl)
   - "internal/sandbox/shm_linux.go"  # kernel primitive (mount), runs in forked child
   - "cmd/pipelock-playground-broker/control_signals_windows.go"  # build-tagged windows, compiled by Windows CI but absent from Linux coverage
@@ -59,7 +74,6 @@ ignore:
   - "internal/sandbox/rlimit_darwin.go"
   - "internal/sandbox/shm_darwin.go"
   - "internal/sandbox/preflight.go"  # probes kernel capabilities via Detect()
-  - "internal/cli/diagnose.go"  # sandbox diagnose path uses Detect() + CLI orchestration
   - "cmd/pipelock/main.go"  # sandbox init hooks in main(), untestable
 comment:
   layout: "reach, diff, files"

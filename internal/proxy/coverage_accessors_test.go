@@ -7,7 +7,11 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -45,6 +49,79 @@ func TestProxy_Accessors(t *testing.T) {
 			t.Error("FragmentBufferPtr() returned nil")
 		}
 	})
+
+	t.Run("EnvelopeVerifierPtr", func(t *testing.T) {
+		ptr := p.EnvelopeVerifierPtr()
+		if ptr == nil {
+			t.Error("EnvelopeVerifierPtr() returned nil")
+		}
+	})
+
+	t.Run("V2EmitterPtr", func(t *testing.T) {
+		ptr := p.V2EmitterPtr()
+		if ptr == nil {
+			t.Error("V2EmitterPtr() returned nil")
+		}
+	})
+
+	t.Run("ContractLoaderPtr", func(t *testing.T) {
+		ptr := p.ContractLoaderPtr()
+		if ptr == nil {
+			t.Error("ContractLoaderPtr() returned nil")
+		}
+	})
+}
+
+func TestProxy_OptionAndBlockedErrorBranches(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		t.Fatalf("scanner.New: %v", err)
+	}
+	t.Cleanup(sc.Close)
+
+	loader := &contractruntime.Loader{}
+	receiptEmitter := &receipt.Emitter{}
+	v2Emitter := &proxydecision.Emitter{}
+	envEmitter := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "hash"})
+
+	p, err := New(cfg, nil, sc, metrics.New(),
+		WithContractLoader(loader),
+		WithReceiptEmitter(receiptEmitter),
+		WithV2ReceiptEmitter(v2Emitter),
+		WithEnvelopeEmitter(envEmitter),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.ContractLoaderPtr().Load(); got != loader {
+		t.Fatalf("ContractLoaderPtr.Load() = %p, want %p", got, loader)
+	}
+	if got := p.ReceiptEmitterPtr().Load(); got != receiptEmitter {
+		t.Fatalf("ReceiptEmitterPtr.Load() = %p, want %p", got, receiptEmitter)
+	}
+	if got := p.V2EmitterPtr().Load(); got != v2Emitter {
+		t.Fatalf("V2EmitterPtr.Load() = %p, want %p", got, v2Emitter)
+	}
+	if got := p.EnvelopeEmitterPtr().Load(); got != envEmitter {
+		t.Fatalf("EnvelopeEmitterPtr.Load() = %p, want %p", got, envEmitter)
+	}
+
+	var nilBlocked *blockedRequestError
+	if got := nilBlocked.Error(); got != "" {
+		t.Fatalf("nil blockedRequestError Error() = %q, want empty", got)
+	}
+	blocked := newBlockedRequestError("scanner", "blocked", "")
+	if blocked.detail != "blocked" {
+		t.Fatalf("empty detail should default to reason, got %q", blocked.detail)
+	}
+	redirect := newRedirectBlockedRequest("", "bad redirect")
+	if redirect.layer != "redirect" {
+		t.Fatalf("empty redirect layer = %q, want redirect", redirect.layer)
+	}
 }
 
 func TestSessionManager_SessionExists(t *testing.T) {

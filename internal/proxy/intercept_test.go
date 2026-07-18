@@ -3490,6 +3490,44 @@ func TestInterceptTunnel_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) 
 	}
 }
 
+func TestInterceptTunnel_SSRFDialBlockEmitsSSRFOutcome(t *testing.T) {
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.FlightRecorder.RequireReceipts = true
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	host := testLoopbackIP
+	port := "9999"
+	blockIP := net.ParseIP("127.0.0.1")
+	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, newSSRFDialBlockError(req.Context(), "rebind.test", blockIP, ssrfDialBlockDetail("rebind.test", blockIP))
+	})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://"+net.JoinHostPort(host, port)+"/ssrf-dial-block", nil)
+
+	resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+		&InterceptContext{Proxy: p, TargetHost: host, TargetPort: port}, req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
+		t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.SSRFPrivateIP)
+	}
+	outcome := requireSingleInterceptIntentOutcome(t, rph.findReceipts(t))
+	if outcome.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("outcome verdict = %q, want %q", outcome.ActionRecord.Verdict, config.ActionBlock)
+	}
+	if !strings.Contains(outcome.ActionRecord.Pattern, "status=403") ||
+		!strings.Contains(outcome.ActionRecord.Pattern, "reason="+string(blockreason.SSRFPrivateIP)) {
+		t.Fatalf("outcome pattern = %q, want status=403 reason=%s", outcome.ActionRecord.Pattern, blockreason.SSRFPrivateIP)
+	}
+}
+
 func TestInterceptTunnel_RequireReceiptsResponseBlockEmitsOutcome(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.FlightRecorder.RequireReceipts = true

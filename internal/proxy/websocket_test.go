@@ -834,6 +834,83 @@ func TestWSProxyRequireReceipts_UpstreamDialFailureEmitsOutcome(t *testing.T) {
 	}
 }
 
+func TestWSProxySSRFDialBlockWritesPolicyClose(t *testing.T) {
+	const rebindHost = "rebind.test"
+
+	cfg := config.Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.DNS.HostOverrides = map[string][]string{rebindHost: {"8.8.8.8"}}
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	dialCfg := config.Defaults()
+	dialCfg.DNS.HostOverrides = map[string][]string{rebindHost: {"127.0.0.1"}}
+	dialSc := scanner.MustNew(dialCfg)
+	t.Cleanup(dialSc.Close)
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKeyAgentScanner, dialSc))
+	t.Cleanup(cancel)
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p.handleWebSocket(w, r)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext: func(_ net.Listener) context.Context {
+			return ctx
+		},
+	}
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = srv.Shutdown(shutdownCtx)
+	})
+	go func() {
+		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			t.Errorf("serve websocket proxy: %v", serveErr)
+		}
+	}()
+
+	conn, err := dialWSConn(ln.Addr().String(), net.JoinHostPort(rebindHost, "443"))
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if deadlineErr := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); deadlineErr != nil {
+		t.Fatalf("set read deadline: %v", deadlineErr)
+	}
+
+	hdr, err := ws.ReadHeader(conn)
+	if err != nil {
+		t.Fatalf("read close frame header: %v", err)
+	}
+	if hdr.OpCode != ws.OpClose {
+		t.Fatalf("opcode = %v, want OpClose", hdr.OpCode)
+	}
+	payload := make([]byte, hdr.Length)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("read close frame payload: %v", err)
+	}
+	if len(payload) < 2 {
+		t.Fatalf("close frame payload length = %d, want status code", len(payload))
+	}
+	if got := ws.StatusCode(binary.BigEndian.Uint16(payload[:2])); got != ws.StatusPolicyViolation {
+		t.Fatalf("close code = %v, want %v", got, ws.StatusPolicyViolation)
+	}
+	if !strings.Contains(string(payload[2:]), string(blockreason.SSRFDNSRebind)) {
+		t.Fatalf("close payload = %q, want %s", string(payload[2:]), blockreason.SSRFDNSRebind)
+	}
+}
+
 func TestWSProxyRequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var upstreamHits atomic.Int32
 	lc := net.ListenConfig{}

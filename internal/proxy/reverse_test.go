@@ -368,6 +368,70 @@ func TestReverseLiveLock_AuditScannerBlockContinuesAsWarn(t *testing.T) {
 	}
 }
 
+func TestReverseLiveLock_HeaderWarnDoesNotDowngradeURLBlockEffectiveAction(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.HeaderMode = "all"
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionWarn}
+	addBodyDLPTestPattern(cfg)
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodGet)
+	rule.Selector["effective_action"] = config.ActionBlock
+	proxy := reverseLiveLockSetupWithConfig(t, cfg, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			if got := r.Header.Get("Authorization"); !strings.Contains(got, fakeBodyDLPSecret()) {
+				t.Fatalf("Authorization header = %q, want test DLP fixture", got)
+			}
+			_, _ = fmt.Fprint(w, "forwarded")
+		})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/v1/chat?secret="+fakeBodyDLPSecret(), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestStrongestRequestAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		next    string
+		want    string
+	}{
+		{name: "block beats warn", current: config.ActionBlock, next: config.ActionWarn, want: config.ActionBlock},
+		{name: "ask beats warn", current: config.ActionWarn, next: config.ActionAsk, want: config.ActionAsk},
+		{name: "block beats ask", current: config.ActionAsk, next: config.ActionBlock, want: config.ActionBlock},
+		{name: "allow stays lowest", current: config.ActionAllow, next: "", want: config.ActionAllow},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strongestRequestAction(tc.current, tc.next); got != tc.want {
+				t.Fatalf("strongestRequestAction(%q, %q) = %q, want %q", tc.current, tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReverseLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
 	var hits atomic.Int32
 	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)

@@ -3520,6 +3520,87 @@ func TestAllowedSSRFDialScanSnapshotPreservesPublicAllowlistedIP(t *testing.T) {
 	}
 }
 
+func TestAllowedSSRFDialScanSnapshotClearsIneligibleSameHost(t *testing.T) {
+	tests := []struct {
+		name   string
+		result scanner.Result
+	}{
+		{
+			name: "blocked current scan",
+			result: scanner.Result{
+				Allowed:         false,
+				SSRFResolvedIPs: []string{"203.0.113.10"},
+			},
+		},
+		{
+			name: "no current IPs",
+			result: scanner.Result{
+				Allowed: true,
+			},
+		},
+		{
+			name: "private current IP",
+			result: scanner.Result{
+				Allowed:         true,
+				SSRFResolvedIPs: []string{"127.0.0.1"},
+			},
+		},
+		{
+			name: "metadata current IP",
+			result: scanner.Result{
+				Allowed:         true,
+				SSRFResolvedIPs: []string{"169.254.169.254"},
+			},
+		},
+		{
+			name: "invalid current IP",
+			result: scanner.Result{
+				Allowed:         true,
+				SSRFResolvedIPs: []string{"not-an-ip"},
+			},
+		},
+		{
+			name: "nil scanner",
+			result: scanner.Result{
+				Allowed:         true,
+				SSRFResolvedIPs: []string{"203.0.113.10"},
+			},
+		},
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	var nilCtx context.Context
+	if got := withAllowedSSRFDialScanSnapshot(nilCtx, sc, "rebind.test", scanner.Result{
+		Allowed:         true,
+		SSRFResolvedIPs: []string{"203.0.113.10"},
+	}); got != nil {
+		t.Fatal("nil context should remain nil")
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := withSSRFDialScanSnapshot(context.Background(), "rebind.test", []string{"203.0.113.10"})
+			currentScanner := sc
+			if tc.name == "nil scanner" {
+				currentScanner = nil
+			}
+			ctx = withAllowedSSRFDialScanSnapshot(ctx, currentScanner, "rebind.test", tc.result)
+
+			if isSSRFDNSRebind(ctx, "rebind.test", net.ParseIP("127.0.0.1")) {
+				t.Fatal("stale same-host public snapshot survived an ineligible current scan")
+			}
+			blocked := newSSRFDialBlockError(ctx, "rebind.test", net.ParseIP("127.0.0.1"), "blocked")
+			if blocked.reason != blockreason.SSRFPrivateIP {
+				t.Fatalf("block reason = %s, want %s", blocked.reason, blockreason.SSRFPrivateIP)
+			}
+		})
+	}
+}
+
 func TestSSRFSafeDialContext_DNSRebindToCoreCIDRsBlockedWhenInternalConfigNil(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3574,6 +3655,7 @@ func TestSSRFSafeDialContext_PrivateFromStartStaysPrivateIP(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -4710,12 +4792,12 @@ func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
-	// p.Close() closes the scanner; no separate defer sc.Close() needed.
+	t.Cleanup(sc.Close)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	defer p.Close()
+	t.Cleanup(p.Close)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, backend.URL+"/safe", nil)
 	if err != nil {

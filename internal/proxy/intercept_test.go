@@ -850,58 +850,60 @@ func interceptAndRequestWithProxy(
 	return resp
 }
 
+type interceptRequestOptions struct {
+	Upstream *httptest.Server
+	Cache    *certgen.CertCache
+	Pool     *x509.CertPool
+	Config   *config.Config
+	Scanner  *scanner.Scanner
+	Logger   *audit.Logger
+	Metrics  *metrics.Metrics
+	Request  *http.Request
+	Recorder session.Recorder
+	Proxy    *Proxy
+}
+
 // interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
 // session.Recorder for adaptive enforcement signal testing.
-func interceptAndRequestWithRecorder(
-	t *testing.T,
-	upstream *httptest.Server,
-	cache *certgen.CertCache,
-	pool *x509.CertPool,
-	cfg *config.Config,
-	sc *scanner.Scanner,
-	logger *audit.Logger,
-	m *metrics.Metrics,
-	req *http.Request,
-	rec session.Recorder,
-) *http.Response {
+func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions) *http.Response {
 	t.Helper()
 
 	clientConn, proxyConn := net.Pipe()
 	t.Cleanup(func() { _ = clientConn.Close() })
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+	host := opts.Upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", opts.Upstream.Listener.Addr().(*net.TCPAddr).Port)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-
 	go func() {
 		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
 			TargetHost: host,
 			TargetPort: port,
-			Config:     cfg,
-			Scanner:    sc,
-			CertCache:  cache,
-			Logger:     logger,
-			Metrics:    m,
+			Config:     opts.Config,
+			Scanner:    opts.Scanner,
+			CertCache:  opts.Cache,
+			Logger:     opts.Logger,
+			Metrics:    opts.Metrics,
 			ClientIP:   "10.0.0.1",
 			RequestID:  "test-req-1",
-			UpstreamRT: upstream.Client().Transport,
-			Recorder:   rec,
+			UpstreamRT: opts.Upstream.Client().Transport,
+			Recorder:   opts.Recorder,
+			Proxy:      opts.Proxy,
 		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
-		RootCAs:    pool,
+		RootCAs:    opts.Pool,
 		ServerName: host,
 	})
 	t.Cleanup(func() { _ = tlsConn.Close() })
 
-	if err := req.Write(tlsConn); err != nil {
+	if err := opts.Request.Write(tlsConn); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), opts.Request)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
@@ -982,7 +984,17 @@ func TestInterceptTunnel_ConfigMismatch_NearMissSignal(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
 
-	resp := interceptAndRequestWithRecorder(t, upstream, cache, pool, cfg, sc, logger, m, req, rec)
+	resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+		Upstream: upstream,
+		Cache:    cache,
+		Pool:     pool,
+		Config:   cfg,
+		Scanner:  sc,
+		Logger:   logger,
+		Metrics:  m,
+		Request:  req,
+		Recorder: rec,
+	})
 	defer func() { _ = resp.Body.Close() }()
 
 	// Request should be blocked (SSRF on internal IP).
@@ -1580,6 +1592,60 @@ func TestInterceptTunnel_HeaderDLPSuppressedCriticalAllowed(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (suppressed critical header DLP should forward)", resp.StatusCode)
+	}
+}
+
+func TestInterceptTunnel_HeaderDLPAdaptiveWarnUpgradeBlocks(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = fmt.Fprint(w, "unexpected")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+	cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionWarn}
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = ptrStr(config.ActionBlock)
+	addBodyDLPTestPattern(cfg)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
+	req.Header.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+
+	proxy := &Proxy{captureObs: capture.NopObserver{}, metrics: m}
+	resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+		Upstream: upstream,
+		Cache:    cache,
+		Pool:     pool,
+		Config:   cfg,
+		Scanner:  sc,
+		Logger:   logger,
+		Metrics:  m,
+		Request:  req,
+		Recorder: &interceptMockRecorder{level: 1},
+		Proxy:    proxy,
+	})
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for adaptive header warn->block; body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "escalated") {
+		t.Fatalf("body = %q, want escalated adaptive block reason", body)
+	}
+	if upstreamHit.Load() {
+		t.Fatal("upstream was reached; adaptive header DLP block should fail closed before forwarding")
 	}
 }
 
@@ -4345,7 +4411,17 @@ func TestInterceptTunnel_RecordCleanAfterCleanRequest(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/clean", nil)
 
-	resp := interceptAndRequestWithRecorder(t, upstream, cache, pool, cfg, sc, logger, m, req, rec)
+	resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+		Upstream: upstream,
+		Cache:    cache,
+		Pool:     pool,
+		Config:   cfg,
+		Scanner:  sc,
+		Logger:   logger,
+		Metrics:  m,
+		Request:  req,
+		Recorder: rec,
+	})
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {

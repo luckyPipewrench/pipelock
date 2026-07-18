@@ -724,8 +724,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if action == "" {
 				action = config.ActionBlock
 			}
-			requestEffectiveAction = action
-			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
+			requestEffectiveAction = strongestRequestAction(requestEffectiveAction, action)
+			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(pathDLP.Matches)
 			rp.logger.LogBodyDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""),
 				action,
@@ -766,8 +766,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if headerHardBlock {
 				action = config.ActionBlock
 			}
-			requestEffectiveAction = action
-			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
+			requestEffectiveAction = strongestRequestAction(requestEffectiveAction, action)
+			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(headerResult.DLPMatches)
 			rp.logger.LogHeaderDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""), headerResult.HeaderName,
 				action, patternNames, nil)
@@ -804,8 +804,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			forwardedVerdict = verdict
 		}
 		if bodyFinding && verdict != "" {
-			requestEffectiveAction = verdict
-			requestScannerVerdict = scannerVerdictForContinuingAction(verdict, cfg.EnforceEnabled())
+			requestEffectiveAction = strongestRequestAction(requestEffectiveAction, verdict)
+			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 		}
 		reverseBodyBytes = bodyBytes
 	}
@@ -2154,4 +2154,24 @@ func reverseCaptureAgent(r *http.Request) string {
 		return agentAnonymous
 	}
 	return agent
+}
+
+func strongestRequestAction(current, next string) string {
+	if requestActionRank(next) > requestActionRank(current) {
+		return next
+	}
+	return current
+}
+
+func requestActionRank(action string) int {
+	switch action {
+	case config.ActionBlock:
+		return 3
+	case config.ActionAsk:
+		return 2
+	case config.ActionWarn:
+		return 1
+	default:
+		return 0
+	}
 }

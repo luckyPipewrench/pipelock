@@ -287,6 +287,9 @@ func requestWSHandshake(t *testing.T, proxyAddr, backendAddr string, headers htt
 		t.Fatalf("dial proxy: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set handshake deadline: %v", err)
+	}
 	_, _ = fmt.Fprintf(conn, "GET /ws?url=ws://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n", backendAddr, proxyAddr)
 	for name, values := range headers {
 		for _, value := range values {

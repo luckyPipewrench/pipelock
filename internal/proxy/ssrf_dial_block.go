@@ -66,13 +66,19 @@ func withSSRFDialScanSnapshot(ctx context.Context, host string, ips []string) co
 }
 
 func withAllowedSSRFDialScanSnapshot(ctx context.Context, sc *scanner.Scanner, host string, result scanner.Result) context.Context {
-	if ctx == nil || sc == nil || !result.Allowed || len(result.SSRFResolvedIPs) == 0 {
-		return ctx
+	if ctx == nil {
+		return nil
+	}
+	clearSnapshot := func() context.Context {
+		return context.WithValue(ctx, ctxKeySSRFDialScanSnapshot, ssrfDialScanSnapshot{})
+	}
+	if sc == nil || !result.Allowed || len(result.SSRFResolvedIPs) == 0 {
+		return clearSnapshot()
 	}
 	for _, ipStr := range result.SSRFResolvedIPs {
 		ip := normalizeSSRFDialIP(net.ParseIP(strings.TrimSpace(stripIPv6Zone(ipStr))))
 		if ip == nil || scanner.IsCloudMetadataIP(ip) || sc.IsInternalIP(ip) {
-			return ctx
+			return clearSnapshot()
 		}
 	}
 	return withSSRFDialScanSnapshot(ctx, host, result.SSRFResolvedIPs)

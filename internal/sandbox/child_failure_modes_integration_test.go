@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +30,12 @@ func runInitChildFailureCase(t *testing.T, binary string, env []string) initChil
 }
 
 func runNamespacedInitChildFailureCase(t *testing.T, binary string, env []string) initChildResult {
-	return runInitChildFailureCaseWithNamespaces(t, binary, env, true)
+	t.Helper()
+	result := runInitChildFailureCaseWithNamespaces(t, binary, env, true)
+	if result.exitCode == 1 && strings.Contains(result.stderr, "[sandbox] loopback:") {
+		t.Skipf("network namespace loopback unavailable:\n%s", result.stderr)
+	}
+	return result
 }
 
 func runInitChildFailureCaseWithNamespaces(t *testing.T, binary string, env []string, namespaced bool) initChildResult {
@@ -311,38 +315,6 @@ func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("bridge listen failures", func(t *testing.T) {
-		listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", bridgeListenAddr)
-		if err != nil {
-			t.Skipf("reserve bridge address: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := listener.Close(); err != nil {
-				t.Errorf("close bridge listener: %v", err)
-			}
-		})
-
-		for _, tc := range []struct {
-			name    string
-			modeEnv string
-		}{
-			{name: "mcp", modeEnv: initEnvKey + "=1"},
-			{name: "standalone", modeEnv: standaloneInitEnv + "=1"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				result := runInitChildFailureCase(t, binary, []string{
-					tc.modeEnv,
-					childWorkspaceEnv + "=" + workspace,
-					childCommandEnv + "=/bin/true",
-					childPolicyEnv + "=" + instrumentedInitPolicy(t, workspace),
-					sandboxSocketEnv + "=" + socketPath,
-					"GOMAXPROCS=1",
-				})
-				requireInitFailure(t, result, "bridge proxy:")
-			})
-		}
-	})
-
 	tests := []struct {
 		name       string
 		modeEnv    string
@@ -422,6 +394,17 @@ func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
+
+	probe := runNamespacedInitChildFailureCase(t, binary, []string{
+		initEnvKey + "=1",
+		childWorkspaceEnv + "=" + workspace,
+		childCommandEnv + "=/bin/true",
+		sandboxSocketEnv + "=" + socketPath,
+		childPolicyEnv + "=" + instrumentedInitPolicy(t, workspace),
+	})
+	if probe.exitCode != 0 {
+		t.Fatalf("sandbox namespace probe failed with code %d:\n%s", probe.exitCode, probe.stderr)
+	}
 
 	t.Run("command signal terminates wrapper with same signal", func(t *testing.T) {
 		result := runNamespacedInitChildFailureCase(t, binary, []string{

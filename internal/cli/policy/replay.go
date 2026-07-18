@@ -4,7 +4,6 @@
 package policy
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -249,15 +248,15 @@ func writeCaptureSurfaceStatus(w io.Writer, diff *capture.DiffReport) {
 	}
 }
 
-// writeReport renders completely before atomically publishing the DiffReport.
+// writeReport renders into a private temporary file before atomically
+// publishing the DiffReport.
 type renderFunc func(w io.Writer, d *capture.DiffReport) error
 
 func writeReport(path string, diff *capture.DiffReport, renderFn renderFunc) error {
-	var data bytes.Buffer
-	if err := renderFn(&data, diff); err != nil {
-		return err
-	}
-	if err := atomicfile.Write(filepath.Clean(path), data.Bytes(), 0o600); err != nil {
+	err := atomicfile.WriteFunc(filepath.Clean(path), 0o600, func(w io.Writer) error {
+		return renderFn(w, diff)
+	})
+	if err != nil {
 		return fmt.Errorf("opening report file: %w", err)
 	}
 	return nil

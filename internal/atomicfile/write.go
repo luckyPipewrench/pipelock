@@ -7,6 +7,7 @@ package atomicfile
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -28,21 +29,37 @@ type file interface {
 // state (keys, receipts, posture proofs, revocation high-water marks, learned
 // baselines), so durability is the default rather than an opt-in.
 func Write(path string, data []byte, perm os.FileMode) error {
+	return WriteFunc(path, perm, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteFunc atomically and durably publishes data written by writeFn without
+// buffering the complete payload in memory.
+func WriteFunc(path string, perm os.FileMode, writeFn func(io.Writer) error) error {
 	path = filepath.Clean(path)
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	return finalize(tmp, path, data, perm)
+	return finalizeFunc(tmp, path, perm, writeFn)
 }
 
 // finalize completes the atomic write using the given file.
 // Unexported; tests in the same package can access it directly.
-func finalize(f file, targetPath string, data []byte, perm os.FileMode) error {
+func finalize(f file, targetPath string, data []byte) error {
+	return finalizeFunc(f, targetPath, 0o600, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+func finalizeFunc(f file, targetPath string, perm os.FileMode, writeFn func(io.Writer) error) error {
 	tmpPath := f.Name()
 
-	if _, err := f.Write(data); err != nil {
+	if err := writeFn(f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing temp file: %w", err)

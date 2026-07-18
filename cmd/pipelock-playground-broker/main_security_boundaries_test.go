@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestBrokerMainRejectsInvalidProcessInvocation(t *testing.T) {
@@ -318,17 +319,13 @@ func TestAdminServerStartsAndCleansUpLoopbackListener(t *testing.T) {
 	_ = conn.Close()
 	stop()
 
-	deadline := time.Now().Add(2 * time.Second)
 	dialer.Timeout = 50 * time.Millisecond
-	for {
+	testwait.For(t, 2*time.Second, func() bool {
 		conn, dialErr := dialer.DialContext(context.Background(), "tcp", addr)
 		if dialErr != nil {
-			break
+			return true
 		}
 		_ = conn.Close()
-		if time.Now().After(deadline) {
-			t.Fatalf("admin listener %s remained reachable after stop", addr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	}, "admin listener %s to close after stop", addr)
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,10 +31,23 @@ import (
 // mockRecorder, allowing tests to inspect signal accumulation without needing a
 // real SessionManager.
 type mockStore struct {
-	rec *mockRecorder
+	mu   sync.Mutex
+	rec  *mockRecorder
+	keys []string
 }
 
-func (s *mockStore) GetOrCreate(_ string) session.Recorder { return s.rec }
+func (s *mockStore) GetOrCreate(key string) session.Recorder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys = append(s.keys, key)
+	return s.rec
+}
+
+func (s *mockStore) capturedKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.keys...)
+}
 
 // mockRecorder is a test-only implementation of session.Recorder that captures
 // signal calls so tests can assert on adaptive side-effects without needing a

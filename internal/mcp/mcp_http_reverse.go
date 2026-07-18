@@ -699,8 +699,6 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
-				w.WriteHeader(upResp.StatusCode)
-				return
 			}
 			w.WriteHeader(upResp.StatusCode)
 			return
@@ -800,10 +798,7 @@ func RunHTTPListenerProxy(
 		chainSessionKey := r.Header.Get("Mcp-Session-Id")
 		auditSessionKey := chainSessionKey
 		if chainSessionKey == "" {
-			host, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				host = r.RemoteAddr
-			}
+			host := adaptiveHostFromRemoteAddr(r.RemoteAddr)
 			chainSessionKey = host
 			// Hash the IP for audit logs to avoid persisting raw client
 			// addresses in a field that bypasses report IP redaction.
@@ -816,11 +811,7 @@ func RunHTTPListenerProxy(
 		// for first request, session ID for subsequent ones).
 		var reqRec session.Recorder
 		if opts.Store != nil {
-			adaptiveHost, _, adaptiveErr := net.SplitHostPort(r.RemoteAddr)
-			if adaptiveErr != nil {
-				adaptiveHost = r.RemoteAddr
-			}
-			reqRec = opts.Store.GetOrCreate(adaptiveHost)
+			reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
 		}
 		baselineRec := newMCPRequestBaselineRecorder()
 		baselineOpts := requestBaseOpts
@@ -837,11 +828,7 @@ func RunHTTPListenerProxy(
 			warnCtx.PolicyHash = policyHash
 		}
 		if warnCtx.ClientIP == "" {
-			host, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				host = r.RemoteAddr
-			}
-			warnCtx.ClientIP = host
+			warnCtx.ClientIP = adaptiveHostFromRemoteAddr(r.RemoteAddr)
 		}
 		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), warnCtx)
 		r = r.WithContext(httpWarnCtx)

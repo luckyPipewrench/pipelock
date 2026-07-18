@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -338,6 +339,9 @@ func TestHTTPListener_GETStreamWithStoreRecordsRemoteHost(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if got := store.capturedKeys(); !slices.Contains(got, "127.0.0.1") {
+		t.Fatalf("store captured keys = %v, want listener client host 127.0.0.1", got)
 	}
 }
 
@@ -854,6 +858,10 @@ func TestHTTPListener_GETAndDELETEA2AEnabledCleanForwards(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
 			var upstreamCalls atomic.Int32
+			wantStatus := http.StatusOK
+			if method == http.MethodDelete {
+				wantStatus = http.StatusAccepted
+			}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				upstreamCalls.Add(1)
 				if method == http.MethodGet {
@@ -884,9 +892,9 @@ func TestHTTPListener_GETAndDELETEA2AEnabledCleanForwards(t *testing.T) {
 				t.Fatalf("%s: %v", method, err)
 			}
 			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			if resp.StatusCode != wantStatus {
 				body, _ := io.ReadAll(resp.Body)
-				t.Fatalf("status = %d, want 200 or 202; body=%s", resp.StatusCode, body)
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, wantStatus, body)
 			}
 			if upstreamCalls.Load() != 1 {
 				t.Fatalf("upstream calls = %d, want 1", upstreamCalls.Load())

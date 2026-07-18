@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -37,7 +38,7 @@ const listenerProxyAuthorization = "Proxy-Authorization"
 const (
 	listenerAuthorization      = "Authorization"
 	listenerProtocolVersion    = "Mcp-Protocol-Version"
-	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version"
+	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version, Last-Event-ID"
 )
 
 // newReverseUpstreamTransport builds the HTTP transport the MCP HTTP listener
@@ -239,8 +240,13 @@ func RunHTTPListenerProxy(
 			return http.ErrUseLastResponse
 		},
 	}
-	upstreamStreamClient := *upstreamClient
-	upstreamStreamClient.Timeout = 0
+	upstreamStreamTransport := newReverseUpstreamTransport()
+	upstreamStreamTransport.ResponseHeaderTimeout = 30 * time.Second
+	upstreamStreamClient := &http.Client{
+		Timeout:       0,
+		Transport:     upstreamStreamTransport,
+		CheckRedirect: upstreamClient.CheckRedirect,
+	}
 
 	loopbackListener := listenerIsLoopback(ln)
 	mux := http.NewServeMux()
@@ -357,6 +363,7 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
+		reqA2ACfg := requestBaseOpts.a2aCfg()
 		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
@@ -397,6 +404,27 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(resp)
 			return true
 		}
+		blockedByA2AHeaders := func() bool {
+			if reqA2ACfg == nil || !reqA2ACfg.Enabled {
+				return false
+			}
+			headerResult := ScanA2AHeaders(r.Context(), r.Header, reqScanner, reqA2ACfg)
+			if headerResult.Clean {
+				return false
+			}
+			if headerResult.IsInfrastructureError() {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header scan infrastructure error: %s\n", headerResult.Reason)
+				return false
+			}
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
+			w.Header().Set("Content-Type", "application/json")
+			resp, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by A2A header scanning"},
+			})
+			_, _ = w.Write(resp)
+			return true
+		}
 
 		if r.Method == http.MethodGet {
 			if !acceptAllowsSSE(r.Header.Values("Accept")) {
@@ -414,6 +442,9 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if blockedByForwardedHeaderDLP() {
+				return
+			}
+			if blockedByA2AHeaders() {
 				return
 			}
 			upReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL, nil)
@@ -436,6 +467,7 @@ func RunHTTPListenerProxy(
 			forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
 			forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
 			forwardIfOperatorUnset(upReq, r, "A2A-Version")
+			forwardIfOperatorUnset(upReq, r, "Last-Event-ID")
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
@@ -535,6 +567,9 @@ func RunHTTPListenerProxy(
 			if blockedByForwardedHeaderDLP() {
 				return
 			}
+			if blockedByA2AHeaders() {
+				return
+			}
 			upReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, upstreamURL, nil)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -564,6 +599,13 @@ func RunHTTPListenerProxy(
 				return
 			}
 			defer func() { _ = upResp.Body.Close() }()
+			if upResp.StatusCode >= 500 {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
 			w.WriteHeader(upResp.StatusCode)
 			return
 		}
@@ -571,8 +613,6 @@ func RunHTTPListenerProxy(
 			methodNotAllowed()
 			return
 		}
-
-		reqA2ACfg := requestBaseOpts.a2aCfg()
 
 		// Cap request body to prevent memory exhaustion.
 		r.Body = http.MaxBytesReader(w, r.Body, int64(transport.MaxLineSize))
@@ -1121,7 +1161,7 @@ func acceptAllowsSSE(values []string) bool {
 			q := strings.TrimSpace(params["q"])
 			if q != "" {
 				weight, err := strconv.ParseFloat(q, 64)
-				if err != nil || weight <= 0 {
+				if err != nil || math.IsNaN(weight) || math.IsInf(weight, 0) || weight <= 0 || weight > 1 {
 					continue
 				}
 			}

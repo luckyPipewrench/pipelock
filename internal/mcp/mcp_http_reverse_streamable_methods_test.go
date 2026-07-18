@@ -23,12 +23,14 @@ import (
 
 func TestHTTPListener_GETStreamForwardsScannedSSE(t *testing.T) {
 	const sessionID = "session-get-stream"
+	const lastEventID = "event-42"
 	message := `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"hello world"}}`
-	var upstreamMethod, upstreamAccept, upstreamSession string
+	var upstreamMethod, upstreamAccept, upstreamSession, upstreamLastEventID string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamMethod = r.Method
 		upstreamAccept = r.Header.Get("Accept")
 		upstreamSession = r.Header.Get("Mcp-Session-Id")
+		upstreamLastEventID = r.Header.Get("Last-Event-ID")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Mcp-Session-Id", sessionID)
 		_, _ = w.Write([]byte("data: " + message + "\n\n"))
@@ -42,6 +44,7 @@ func TestHTTPListener_GETStreamForwardsScannedSSE(t *testing.T) {
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Mcp-Session-Id", sessionID)
+	req.Header.Set("Last-Event-ID", lastEventID)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET stream: %v", err)
@@ -69,6 +72,9 @@ func TestHTTPListener_GETStreamForwardsScannedSSE(t *testing.T) {
 	}
 	if upstreamSession != sessionID {
 		t.Fatalf("upstream session = %q, want %q", upstreamSession, sessionID)
+	}
+	if upstreamLastEventID != lastEventID {
+		t.Fatalf("upstream Last-Event-ID = %q, want %q", upstreamLastEventID, lastEventID)
 	}
 	if !bytes.Contains(body, []byte("data: "+message+"\n\n")) {
 		t.Fatalf("GET stream body = %q, want SSE data event", body)
@@ -115,15 +121,21 @@ func TestHTTPListener_GETStreamBlocksInjectedServerMessage(t *testing.T) {
 }
 
 func TestHTTPListener_GETWithoutSSEAcceptReturns405(t *testing.T) {
-	var upstreamCalls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		upstreamCalls.Add(1)
-	}))
-	defer upstream.Close()
-
-	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
-	for _, accept := range []string{"", "application/json, text/event-stream;q=0"} {
+	for _, accept := range []string{
+		"",
+		"application/json, text/event-stream;q=0",
+		"text/event-stream;q=NaN",
+		"text/event-stream;q=+Inf",
+		"text/event-stream;q=2",
+	} {
 		t.Run("accept="+accept, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				upstreamCalls.Add(1)
+			}))
+			defer upstream.Close()
+
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
 			if err != nil {
 				t.Fatalf("NewRequest: %v", err)
@@ -143,10 +155,10 @@ func TestHTTPListener_GETWithoutSSEAcceptReturns405(t *testing.T) {
 			if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.BadRequest) {
 				t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.BadRequest)
 			}
+			if got := upstreamCalls.Load(); got != 0 {
+				t.Fatalf("upstream calls = %d, want 0", got)
+			}
 		})
-	}
-	if got := upstreamCalls.Load(); got != 0 {
-		t.Fatalf("upstream calls = %d, want 0", got)
 	}
 }
 
@@ -182,6 +194,67 @@ func TestHTTPListener_GETStreamBlocksCompressedUpstream(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte("upstream body must not leak")) {
 		t.Fatalf("compressed upstream body leaked: %s", body)
+	}
+}
+
+func TestHTTPListener_GETStreamFailsClosedOnUpstreamError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream body must not leak", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte("upstream body must not leak")) {
+		t.Fatalf("upstream error body leaked: %s", body)
+	}
+}
+
+func TestHTTPListener_GETStreamFailsClosedOnNonSSEContentType(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"upstream body must not leak"}`))
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte("upstream body must not leak")) {
+		t.Fatalf("non-SSE upstream body leaked: %s", body)
 	}
 }
 
@@ -237,6 +310,7 @@ func TestHTTPListener_GETAndDELETEDeniedWhenKillSwitchActive(t *testing.T) {
 
 func TestHTTPListener_StreamableMethodsHonorPerRequestUpstreamContract(t *testing.T) {
 	var upstreamCalls atomic.Int32
+	var unexpectedUpstreamMethods atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
 		switch r.Method {
@@ -246,7 +320,7 @@ func TestHTTPListener_StreamableMethodsHonorPerRequestUpstreamContract(t *testin
 		case http.MethodDelete:
 			w.WriteHeader(http.StatusAccepted)
 		default:
-			t.Errorf("unexpected upstream method: %s", r.Method)
+			unexpectedUpstreamMethods.Add(1)
 		}
 	}))
 	defer upstream.Close()
@@ -294,6 +368,9 @@ func TestHTTPListener_StreamableMethodsHonorPerRequestUpstreamContract(t *testin
 	}
 	if got := upstreamCalls.Load(); got != 0 {
 		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+	if got := unexpectedUpstreamMethods.Load(); got != 0 {
+		t.Fatalf("unexpected upstream methods = %d, want 0", got)
 	}
 }
 
@@ -348,6 +425,35 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_DELETEFailsClosedOnUpstreamServerError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream body must not leak", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte("upstream body must not leak")) {
+		t.Fatalf("DELETE upstream error body leaked: %s", body)
+	}
+}
+
 func TestHTTPListener_GETStreamScrubsListenerBearerToken(t *testing.T) {
 	listenerToken := testGHPPrefix + strings.Repeat("b", 36)
 	var gotAuth, gotProxyAuth string
@@ -387,8 +493,9 @@ func TestHTTPListener_GETStreamScrubsListenerBearerToken(t *testing.T) {
 }
 
 func TestHTTPListener_CORSPreflightAllowsStreamableMethods(t *testing.T) {
+	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("preflight must not reach upstream")
+		upstreamCalls.Add(1)
 	}))
 	defer upstream.Close()
 
@@ -406,7 +513,7 @@ func TestHTTPListener_CORSPreflightAllowsStreamableMethods(t *testing.T) {
 			}
 			req.Header.Set("Origin", origin)
 			req.Header.Set("Access-Control-Request-Method", method)
-			req.Header.Set("Access-Control-Request-Headers", "authorization,mcp-session-id,mcp-protocol-version")
+			req.Header.Set("Access-Control-Request-Headers", "authorization,mcp-session-id,mcp-protocol-version,last-event-id")
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatalf("preflight: %v", err)
@@ -420,6 +527,12 @@ func TestHTTPListener_CORSPreflightAllowsStreamableMethods(t *testing.T) {
 				if !strings.Contains(allowMethods, want) {
 					t.Fatalf("allow methods = %q, missing %s", allowMethods, want)
 				}
+			}
+			if allowHeaders := resp.Header.Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(allowHeaders), "last-event-id") {
+				t.Fatalf("allow headers = %q, missing Last-Event-ID", allowHeaders)
+			}
+			if got := upstreamCalls.Load(); got != 0 {
+				t.Fatalf("upstream calls = %d, want 0", got)
 			}
 		})
 	}
@@ -466,6 +579,52 @@ func TestHTTPListener_GETAndDELETEBlockSecretInForwardedHeader(t *testing.T) {
 			}
 			if !bytes.Contains(body, []byte(`"code":-32001`)) {
 				t.Fatalf("expected header DLP block (-32001), got: %s", body)
+			}
+		})
+	}
+}
+
+func TestHTTPListener_GETAndDELETEBlockA2AExtensionSSRFBeforeUpstream(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+			}))
+			defer upstream.Close()
+
+			a2aCfg := &config.A2AScanning{
+				Enabled: true,
+				Action:  config.ActionBlock,
+			}
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t),
+				A2ACfg:  a2aCfg,
+			})
+			req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			if method == http.MethodGet {
+				req.Header.Set("Accept", "text/event-stream")
+			}
+			req.Header.Set("A2A-Extensions", "http://169.254.169.254/latest/meta-data/")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+
+			if upstreamCalls.Load() != 0 {
+				t.Fatalf("upstream was called %d times despite blocked A2A extension", upstreamCalls.Load())
+			}
+			if !bytes.Contains(body, []byte("A2A header scanning")) {
+				t.Fatalf("expected A2A header block response, got: %s", body)
 			}
 		})
 	}

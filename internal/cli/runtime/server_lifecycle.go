@@ -83,8 +83,20 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		}
 	}()
 
-	_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s) (action=%s)\n",
-		len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action)
+	// Report the count of paths that actually ARMED, not the configured count.
+	// A non-required watch_path that failed to install is recorded in
+	// DegradedPaths() and is NOT being watched; printing the configured count
+	// would falsely assure the operator that every path is covered.
+	configuredPaths := len(cfg.FileSentry.WatchPaths)
+	degradedPaths := len(watcher.DegradedPaths())
+	armedPaths := configuredPaths - degradedPaths
+	if degradedPaths > 0 {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d of %d path(s) (action=%s; %d degraded/unarmed)\n",
+			armedPaths, configuredPaths, cfg.FileSentry.Action, degradedPaths)
+	} else {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s) (action=%s)\n",
+			armedPaths, cfg.FileSentry.Action)
+	}
 
 	return func() {
 		_ = watcher.Close()

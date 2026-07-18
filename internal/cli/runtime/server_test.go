@@ -887,6 +887,58 @@ func TestServer_StartArmsFileSentry(t *testing.T) {
 	}
 }
 
+// TestServer_StartReportsArmedWatchCount asserts the file-sentry startup line
+// reports the count of paths that actually ARMED, not the configured count,
+// when a non-required watch path fails to install. Reporting the
+// configured count would falsely assure the operator that every path is watched.
+func TestServer_StartReportsArmedWatchCount(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-armed-count")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(watchDir),
+		"    - " + strconv.Quote(missing),
+		"  scan_content: true",
+		"",
+	}, "\n"))
+
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	waitForServerCancel(t, s)
+	// One of the two configured paths is non-required and cannot arm, so the
+	// startup line must report 1 of 2 armed with the degraded count.
+	waitForServerOutput(t, buf, "file sentry watching 1 of 2 path(s)")
+	if out := buf.String(); !strings.Contains(out, "1 degraded/unarmed") {
+		t.Fatalf("startup missing degraded/unarmed count:\n%s", out)
+	}
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}
+
 func TestServer_StateHelpers(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 

@@ -8764,6 +8764,86 @@ func TestValidate_RequestBodyScanning_ValidActions(t *testing.T) {
 	}
 }
 
+func TestValidate_RequestBodyScanning_PatternKnobs(t *testing.T) {
+	cases := []struct {
+		name            string
+		disablePatterns []string
+		patternActions  map[string]string
+		wantErr         string
+	}{
+		{
+			name:            "known disabled pattern",
+			disablePatterns: []string{"Custom Body Secret"},
+		},
+		{
+			name:           "known pattern action",
+			patternActions: map[string]string{"Custom Body Secret": ActionWarn},
+		},
+		{
+			name:            "core disabled pattern rejected",
+			disablePatterns: []string{"AWS Access ID"},
+			wantErr:         "immutable core DLP",
+		},
+		{
+			name:           "core warn downgrade rejected",
+			patternActions: map[string]string{"AWS Access ID": ActionWarn},
+			wantErr:        "immutable core DLP",
+		},
+		{
+			name:           "core block action allowed",
+			patternActions: map[string]string{"AWS Access ID": ActionBlock},
+		},
+		{
+			name:            "unknown disabled pattern rejected",
+			disablePatterns: []string{"No Such Pattern"},
+			wantErr:         "request_body_scanning.disable_patterns",
+		},
+		{
+			name:           "unknown pattern action rejected",
+			patternActions: map[string]string{"No Such Pattern": ActionWarn},
+			wantErr:        "request_body_scanning.pattern_actions",
+		},
+		{
+			name:           "invalid pattern action rejected",
+			patternActions: map[string]string{"Custom Body Secret": ActionAsk},
+			wantErr:        "request_body_scanning.pattern_actions",
+		},
+		{
+			name:            "pattern action cannot target disabled pattern",
+			disablePatterns: []string{"Custom Body Secret"},
+			patternActions:  map[string]string{"Custom Body Secret": ActionWarn},
+			wantErr:         "request_body_scanning.pattern_actions",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.DLP.Patterns = append(cfg.DLP.Patterns, DLPPattern{
+				Name:     "Custom Body Secret",
+				Regex:    `CUSTOMBODY-[A-Z0-9]{12}`,
+				Severity: SeverityCritical,
+			})
+			cfg.RequestBodyScanning.DisablePatterns = tc.disablePatterns
+			cfg.RequestBodyScanning.PatternActions = tc.patternActions
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() error = nil, want containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_RedactionRequiresRequestBodyScanning(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBodyScanning.Enabled = false

@@ -2129,15 +2129,52 @@ func validOptionalCardOriginPort(hostport, port string) bool {
 }
 
 func (c *Config) validateRequestBodyScanning() error {
+	knownPatterns := c.effectiveBodyDLPPatternNames()
+	disabledPatterns := make(map[string]struct{}, len(c.RequestBodyScanning.DisablePatterns))
+	for i, pattern := range c.RequestBodyScanning.DisablePatterns {
+		if pattern == "" {
+			return fmt.Errorf("request_body_scanning.disable_patterns[%d] must not be empty", i)
+		}
+		if _, ok := knownPatterns[pattern]; !ok {
+			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q does not match any effective DLP pattern", i, pattern)
+		}
+		if IsCoreDLPPatternName(pattern) {
+			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q targets immutable core DLP and cannot be disabled", i, pattern)
+		}
+		disabledPatterns[pattern] = struct{}{}
+	}
+	for pattern, action := range c.RequestBodyScanning.PatternActions {
+		if pattern == "" {
+			return fmt.Errorf("request_body_scanning.pattern_actions contains an empty pattern name")
+		}
+		if _, ok := knownPatterns[pattern]; !ok {
+			return fmt.Errorf("request_body_scanning.pattern_actions[%q] does not match any effective DLP pattern", pattern)
+		}
+		switch action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("request_body_scanning.pattern_actions[%q] has invalid action %q: must be warn or block", pattern, action)
+		}
+		if action == ActionWarn && IsCoreDLPPatternName(pattern) {
+			return fmt.Errorf("request_body_scanning.pattern_actions[%q] cannot downgrade immutable core DLP to warn", pattern)
+		}
+		if _, disabled := disabledPatterns[pattern]; disabled {
+			return fmt.Errorf("request_body_scanning.pattern_actions[%q] is inert because the pattern is also listed in request_body_scanning.disable_patterns", pattern)
+		}
+	}
+
 	// Validate request body scanning config
+	if c.RequestBodyScanning.Enabled {
+		switch c.RequestBodyScanning.Action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid request_body_scanning.action %q: must be warn or block", c.RequestBodyScanning.Action)
+		}
+	}
 	if !c.RequestBodyScanning.Enabled {
 		return nil
-	}
-	switch c.RequestBodyScanning.Action {
-	case ActionWarn, ActionBlock:
-		// valid
-	default:
-		return fmt.Errorf("invalid request_body_scanning.action %q: must be warn or block", c.RequestBodyScanning.Action)
 	}
 	if c.RequestBodyScanning.MaxBodyBytes <= 0 {
 		return fmt.Errorf("request_body_scanning.max_body_bytes must be positive")
@@ -2149,6 +2186,36 @@ func (c *Config) validateRequestBodyScanning() error {
 		return fmt.Errorf("invalid request_body_scanning.header_mode %q: must be sensitive or all", c.RequestBodyScanning.HeaderMode)
 	}
 	return nil
+}
+
+func (c *Config) effectiveBodyDLPPatternNames() map[string]struct{} {
+	names := make(map[string]struct{}, len(c.DLP.Patterns)+len(c.CanaryTokens.Tokens)+8)
+	for _, pattern := range CoreDLPPatterns() {
+		names[pattern.Name] = struct{}{}
+	}
+	for _, pattern := range c.DLP.Patterns {
+		if pattern.Name != "" {
+			names[pattern.Name] = struct{}{}
+		}
+	}
+	if c.SeedPhraseDetection.Enabled == nil || *c.SeedPhraseDetection.Enabled {
+		names["BIP-39 Seed Phrase"] = struct{}{}
+	}
+	names["Hostname Exfiltration"] = struct{}{}
+	if c.DLP.ScanEnv {
+		names["Environment Variable Leak"] = struct{}{}
+	}
+	if c.DLP.SecretsFile != "" {
+		names["Known Secret Leak"] = struct{}{}
+	}
+	if c.CanaryTokens.Enabled {
+		for _, token := range c.CanaryTokens.Tokens {
+			if token.Name != "" {
+				names["Canary Token ("+token.Name+")"] = struct{}{}
+			}
+		}
+	}
+	return names
 }
 
 func (c *Config) validateSeedPhraseDetection() error {

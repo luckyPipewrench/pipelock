@@ -755,11 +755,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		headerResult := scanRequestHeadersForTarget(r.Context(), r.Header, cfg, sc, dlpTarget.String())
 		if headerResult != nil {
 			hasFinding = true
-			action := cfg.RequestBodyScanning.Action
+			action := headerResult.Action
+			if action == "" {
+				action = cfg.RequestBodyScanning.Action
+			}
 			if action == "" {
 				action = config.ActionBlock
 			}
-			headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, cfg.EnforceEnabled())
+			headerHardBlock := shouldHardBlockRequestDLP(headerResult.DLPMatches, cfg)
 			if headerHardBlock {
 				action = config.ActionBlock
 			}
@@ -1137,6 +1140,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		Path:            r.URL.Path,
 		Target:          receiptInput.Target,
 		Suppress:        cfg.Suppress,
+		Action:          cfg.RequestBodyScanning.Action,
+		DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
+		PatternActions:  cfg.RequestBodyScanning.PatternActions,
 	}
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)

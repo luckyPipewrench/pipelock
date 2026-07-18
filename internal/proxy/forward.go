@@ -1230,6 +1230,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Path:            r.URL.Path,
 			Target:          targetURL,
 			Suppress:        cfg.Suppress,
+			Action:          cfg.RequestBodyScanning.Action,
+			DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
+			PatternActions:  cfg.RequestBodyScanning.PatternActions,
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)

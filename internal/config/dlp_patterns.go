@@ -358,6 +358,22 @@ var coreOnlyDLPPatterns = []DLPPattern{
 	{Name: "GCP Service Account Key", Regex: `"type"\s*:\s*"service_account"`, Severity: SeverityCritical},
 }
 
+// IsCoreDLPPatternName reports whether name belongs to the immutable DLP
+// safety floor used by the scanner.
+func IsCoreDLPPatternName(name string) bool {
+	for _, coreName := range coreDLPPatternNames {
+		if name == coreName {
+			return true
+		}
+	}
+	for _, pattern := range coreOnlyDLPPatterns {
+		if name == pattern.Name {
+			return true
+		}
+	}
+	return false
+}
+
 // PresetDLPPatterns returns the generated DLP pattern set for a shipped preset
 // profile. Profile-specific deltas preserve current shipped YAML behavior.
 func PresetDLPPatterns(profile string) ([]DLPPattern, error) {

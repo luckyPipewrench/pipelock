@@ -914,6 +914,9 @@ func newInterceptHandler(
 				Path:            r.URL.Path,
 				Target:          targetURL,
 				Suppress:        ic.Config.Suppress,
+				Action:          ic.Config.RequestBodyScanning.Action,
+				DisablePatterns: ic.Config.RequestBodyScanning.DisablePatterns,
+				PatternActions:  ic.Config.RequestBodyScanning.PatternActions,
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
@@ -1163,8 +1166,11 @@ func newInterceptHandler(
 				hdrHasFinding := headerResult != nil && !headerResult.Clean
 				hdrAction := config.ActionAllow
 				if hdrHasFinding {
-					hdrAction = ic.Config.RequestBodyScanning.Action
-					if shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled()) {
+					hdrAction = headerResult.Action
+					if hdrAction == "" {
+						hdrAction = ic.Config.RequestBodyScanning.Action
+					}
+					if shouldHardBlockRequestDLP(headerResult.DLPMatches, ic.Config) {
 						hdrAction = config.ActionBlock
 					}
 				}
@@ -1187,8 +1193,11 @@ func newInterceptHandler(
 
 			if headerResult != nil && !headerResult.Clean {
 				hasFinding = true
-				action := ic.Config.RequestBodyScanning.Action
-				headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled())
+				action := headerResult.Action
+				if action == "" {
+					action = ic.Config.RequestBodyScanning.Action
+				}
+				headerHardBlock := shouldHardBlockRequestDLP(headerResult.DLPMatches, ic.Config)
 				if headerHardBlock {
 					action = config.ActionBlock
 				}

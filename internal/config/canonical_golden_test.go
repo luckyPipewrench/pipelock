@@ -293,7 +293,10 @@ const (
 	// exfiltration without bridging coordinated objects like "send your invoice
 	// and include your account token ... [billing]". See
 	// TestCore_MarkdownLinkCredentialExfiltrationIntentAnchor.
-	goldenHashDefaults = "f0368215f7fc693880af230b3f7a41bdfbc0b78adb9244418a532a817ff76a0f"
+	// Re-bumped for request_body_scanning.disable_patterns and pattern_actions:
+	// these per-pattern body/header DLP tuning knobs change enforcement and
+	// must flow into signed policy hashes, even when empty in defaults.
+	goldenHashDefaults = "c56bf20543cddac23d0828721a078181af0a845c50c83c983bd7210b8dd2810a"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -433,7 +436,7 @@ const (
 	// shifts in lockstep.
 	// Re-bumped for the Markdown Link Credential Exfiltration verb-to-noun
 	// separator. See goldenHashDefaults note above.
-	goldenHashRichConfig = "21595dabe082d838709dd9af8a6871e491672a77a056862e00ca7c2ccb0ee568"
+	goldenHashRichConfig = "cfc38baedc12555b6faeb3c308a86e39da1dee9e59c6cb6ab860adfd1df10cf6"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -442,7 +442,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
-	if blocked, hardBlock, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL); blocked {
+	if blocked, hardBlock, action, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL); blocked {
+		if action == "" {
+			action = cfg.RequestBodyScanning.Action
+		}
+		wsHeaderBlocked := hardBlock || (action == config.ActionBlock && cfg.EnforceEnabled())
+		if wsHeaderBlocked {
+			action = config.ActionBlock
+		} else {
+			action = config.ActionWarn
+		}
 		// Capture observer: record WS header DLP verdict for policy replay.
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:        "dlp_ws_header",
@@ -458,8 +467,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			ActionClass:     captureHTTPActionClass(r.Method),
 			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			TransformKind:   capture.TransformHeaderValue,
-			EffectiveAction: config.ActionBlock,
-			Outcome:         capture.OutcomeBlocked,
+			EffectiveAction: action,
+			Outcome:         captureOutcome(action, false),
 			SkipReason:      reason,
 		})
 		wsHasFinding = true
@@ -470,12 +479,12 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Hostname:   parsed.Hostname(),
 			RequestID:  requestID,
 			UserAgent:  r.UserAgent(),
-			Result:     scanner.Result{Allowed: false, Score: 0.9},
+			Result:     scanner.Result{Allowed: !wsHeaderBlocked, Score: 0.9},
 			Config:     cfg,
 			Logger:     log,
 			DeferClean: false,
 		})
-		if hardBlock || cfg.EnforceEnabled() {
+		if wsHeaderBlocked {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
@@ -975,7 +984,8 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 // dlpScanWSHeaders runs DLP scanning on all forwarded header values before the
 // upstream handshake. Headers are scanned regardless of destination (no
 // allowlist skip) because agents can exfiltrate secrets in any header value.
-func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string) (blocked bool, hardBlock bool, reason string) {
+func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string) (blocked bool, hardBlock bool, action string, reason string) {
+	disabled := bodyDLPDisabledSet(cfg.RequestBodyScanning.DisablePatterns)
 	// Scan all headers that buildWSForwardHeaders may forward. This covers
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
 	// can exfiltrate data in any of these values.
@@ -989,7 +999,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		}
 		result := sc.ScanTextForDLP(ctx, val)
 		if !result.Clean {
-			matches := unsuppressedDLPMatches(result.Matches, targetURL, cfg.Suppress)
+			matches := filterBodyDLPMatches(result.Matches, targetURL, cfg.Suppress, disabled)
 			if len(matches) == 0 {
 				continue
 			}
@@ -997,10 +1007,11 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			for i, m := range matches {
 				names[i] = m.PatternName
 			}
-			return true, shouldHardBlockCriticalDLP(matches, cfg.EnforceEnabled()), fmt.Sprintf("DLP match in %s header: %s", key, strings.Join(names, ", "))
+			action := requestBodyDLPAction(matches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions)
+			return true, shouldHardBlockRequestDLP(matches, cfg), action, fmt.Sprintf("DLP match in %s header: %s", key, strings.Join(names, ", "))
 		}
 	}
-	return false, false, ""
+	return false, false, "", ""
 }
 
 // isHostAllowlisted checks if a hostname matches any pattern in the allowlist.
@@ -1130,16 +1141,19 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 	}
 
 	bodyReq := BodyScanRequest{
-		Body:        bytes.NewReader(msg),
-		Method:      http.MethodGet,
-		ContentType: contentType,
-		MaxBytes:    maxBytes,
-		Scanner:     r.scanner,
-		AgentID:     r.agent,
-		Host:        r.hostname,
-		Path:        r.path,
-		Target:      r.targetURL,
-		Suppress:    r.cfg.Suppress,
+		Body:            bytes.NewReader(msg),
+		Method:          http.MethodGet,
+		ContentType:     contentType,
+		MaxBytes:        maxBytes,
+		Scanner:         r.scanner,
+		AgentID:         r.agent,
+		Host:            r.hostname,
+		Path:            r.path,
+		Target:          r.targetURL,
+		Suppress:        r.cfg.Suppress,
+		Action:          r.cfg.RequestBodyScanning.Action,
+		DisablePatterns: r.cfg.RequestBodyScanning.DisablePatterns,
+		PatternActions:  r.cfg.RequestBodyScanning.PatternActions,
 	}
 	applyBodyScanRedaction(&bodyReq, r.redaction)
 	return scanRequestBody(ctx, bodyReq)

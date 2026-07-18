@@ -1780,6 +1780,88 @@ func TestWSProxyHeaderDLPBlock(t *testing.T) {
 	}
 }
 
+func TestWSProxyHeaderDLPDisablePatternAllowsNonCore(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		addBodyDLPTestPattern(cfg)
+		cfg.RequestBodyScanning.DisablePatterns = []string{testBodyDLPPatternName}
+	})
+	defer proxyCleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("disabled non-core header DLP should allow websocket dial: %v", err)
+	}
+	defer conn.Close() //nolint:errcheck // test
+}
+
+func TestWSProxyHeaderDLPPatternWarnOverrideAllowsNonCore(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		addBodyDLPTestPattern(cfg)
+		cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionWarn}
+	})
+	defer proxyCleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("warn-only non-core header DLP should allow websocket dial: %v", err)
+	}
+	defer conn.Close() //nolint:errcheck // test
+}
+
+func TestWSProxyHeaderDLPDisabledPatternDoesNotMaskCoreMatch(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		addBodyDLPTestPattern(cfg)
+		cfg.RequestBodyScanning.DisablePatterns = []string{testBodyDLPPatternName}
+	})
+	defer proxyCleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
+			"X-Api-Key":     []string{fakeAPIKey()},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("expected core header DLP match to block despite disabled non-core pattern")
+	}
+}
+
 func TestWSProxyHeaderDLPBlocksAllowlistedHost(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

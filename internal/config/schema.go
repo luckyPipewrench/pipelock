@@ -1165,13 +1165,15 @@ type A2ATrustedCardKey struct {
 // smuggled in Authorization/Cookie headers. CONNECT tunnels are out of scope
 // (TLS-encrypted, can't scan without MITM).
 type RequestBodyScanning struct {
-	Enabled          bool     `yaml:"enabled"`
-	Action           string   `yaml:"action"`            // warn, block (no strip for bodies)
-	MaxBodyBytes     int      `yaml:"max_body_bytes"`    // fail-closed above this limit
-	ScanHeaders      bool     `yaml:"scan_headers"`      // scan request headers for DLP
-	HeaderMode       string   `yaml:"header_mode"`       // "sensitive" (listed headers) or "all" (everything except ignore list)
-	SensitiveHeaders []string `yaml:"sensitive_headers"` // headers to scan in sensitive mode
-	IgnoreHeaders    []string `yaml:"ignore_headers"`    // headers to skip in all mode
+	Enabled          bool              `yaml:"enabled"`
+	Action           string            `yaml:"action"`            // warn, block (no strip for bodies)
+	PatternActions   map[string]string `yaml:"pattern_actions"`   // per-DLP-pattern action override: warn or block; cannot downgrade core DLP
+	DisablePatterns  []string          `yaml:"disable_patterns"`  // non-core DLP pattern names skipped by request body/header scanning
+	MaxBodyBytes     int               `yaml:"max_body_bytes"`    // fail-closed above this limit
+	ScanHeaders      bool              `yaml:"scan_headers"`      // scan request headers for DLP
+	HeaderMode       string            `yaml:"header_mode"`       // "sensitive" (listed headers) or "all" (everything except ignore list)
+	SensitiveHeaders []string          `yaml:"sensitive_headers"` // headers to scan in sensitive mode
+	IgnoreHeaders    []string          `yaml:"ignore_headers"`    // headers to skip in all mode
 }
 
 // CrossRequestDetection configures cross-request exfiltration detection.

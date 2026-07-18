@@ -321,6 +321,9 @@ Scans request bodies and headers for secret exfiltration and prompt injection be
 request_body_scanning:
   enabled: true
   action: warn              # warn or block (no strip for bodies)
+  pattern_actions:          # optional per-DLP-pattern body/header action override
+    Custom Body Secret: warn
+  disable_patterns: []      # optional exact DLP pattern names to skip on this surface
   max_body_bytes: 5242880   # 5MB; fail-closed above this
   scan_headers: true        # scan request headers for DLP
   header_mode: sensitive    # "sensitive" (listed headers) or "all" (everything except ignore list)
@@ -337,6 +340,8 @@ request_body_scanning:
 |-------|---------|-------------|
 | `enabled` | `true` | Enable request body/header DLP scanning and request body prompt-injection scanning |
 | `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Critical DLP and prompt-injection hard-blocks still reject non-provider destinations in enforce mode. |
+| `pattern_actions` | `{}` | Map of exact DLP pattern name to `warn` or `block` for request body/header DLP. The per-pattern action overrides `action` for that pattern only. Unknown pattern names and unsupported actions are rejected at config load. Immutable core DLP patterns cannot be downgraded to `warn`. |
+| `disable_patterns` | `[]` | Exact DLP pattern names to skip for request body/header DLP only. Unknown names are rejected at config load. Immutable core DLP patterns cannot be disabled. Disabling one pattern does not suppress other DLP matches in the same body or header set. |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
 | `scan_headers` | `true` | Scan request headers for DLP patterns |
 | `header_mode` | `sensitive` | `sensitive`: scan only listed headers. `all`: scan all headers except ignore list |
@@ -358,7 +363,9 @@ request_body_scanning:
 
 **Header scanning:** Headers are scanned regardless of destination host. An agent can exfiltrate secrets via `Authorization: Bearer <secret>` to any host, including allowlisted ones. The URL allowlist controls URL-level blocking, not header DLP bypass.
 
-**Security hard-blocks:** In enforce mode, critical-severity DLP findings in request bodies hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected critical patterns can set those individual patterns to `action: warn` or run the deployment with `enforce: false`.
+**Security hard-blocks:** In enforce mode, immutable core DLP findings in request bodies and headers hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`; they cannot be disabled or downgraded by `pattern_actions`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected non-core critical body-DLP patterns can set those exact names under `request_body_scanning.pattern_actions` with `warn`, or run the deployment with `enforce: false`.
+
+**Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
 
 **Note on security defaults:** Omitting `request_body_scanning.enabled` or `request_body_scanning.scan_headers` defaults both to `true`. Set either field to `false` explicitly only when you intend to disable that protection.
 

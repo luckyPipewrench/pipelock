@@ -29,13 +29,33 @@ func buildTestBinary(t *testing.T) string {
 	}); err != nil {
 		t.Skipf("standalone sandbox unavailable: %v", err)
 	}
+	return buildTestBinaryWithoutSandboxProbe(t)
+}
 
+func buildTestBinaryWithoutSandboxProbe(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != osLinux {
+		t.Skip("sandbox requires linux")
+	}
 	binary := filepath.Join(t.TempDir(), "pipelock-test")
 	repoRoot := filepath.Join("..", "..")
 	ctx := context.Background()
+	buildArgs := []string{"build", "-o", binary}
+	if os.Getenv("PIPELOCK_SUBPROCESS_COVERAGE") == "1" {
+		buildArgs = append(buildArgs,
+			"-cover",
+			"-covermode=atomic",
+			"-coverpkg=./...",
+			"-tags=subprocess_coverage",
+		)
+	}
+	buildArgs = append(buildArgs, "./cmd/pipelock/")
 	//nolint:gosec // G204: controlled build command for integration tests
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/pipelock/")
+	cmd := exec.CommandContext(ctx, "go", buildArgs...)
 	cmd.Dir = repoRoot
+	if os.Getenv("PIPELOCK_SUBPROCESS_COVERAGE") == "1" {
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build pipelock: %v\n%s", err, out)
 	}

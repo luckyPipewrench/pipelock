@@ -1,0 +1,6 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "The advisory affects golang.org/x/crypto/openpgp, which Pipelock does not import or compile; CI rejects that package in OSS and enterprise dependency graphs."

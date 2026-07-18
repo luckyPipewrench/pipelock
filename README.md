@@ -737,7 +737,7 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | Metric | Value |
 |--------|-------|
 | Go tests (with `-race`) | Unit, integration, and end-to-end paths |
-| Coverage gate (codecov) | 95% project, 75% patch on new code |
+| Coverage gate (codecov) | 91% Apache-2.0 core project, 95% patch on new code |
 | Evasion coverage | Public bypass-resistance matrix + private adversarial corpus |
 | Scanner hot-path overhead | ~40us per URL scan (hot-path benchmark; see [docs/performance.md](docs/performance.md)) |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |

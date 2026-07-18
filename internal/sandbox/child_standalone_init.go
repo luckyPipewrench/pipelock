@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Standalone sandbox child-process entry point. Runs inside a re-exec'd
-// child with network namespace isolation. Cannot be covered by Go's
-// standard coverage tool (runs in a separate process).
-//
-// Follow-up: add GOCOVERDIR/covdata subprocess coverage merging.
+// child with network namespace isolation. CI exercises it through an
+// instrumented binary and merges its GOCOVERDIR output with parent coverage.
 
 package sandbox
 
@@ -33,7 +31,7 @@ func RunStandaloneInit() {
 
 	if workspace == "" || commandStr == "" || socketPath == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] missing workspace, command, or socket path\n")
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
 	command := strings.Split(commandStr, "\x1f")
@@ -44,19 +42,29 @@ func RunStandaloneInit() {
 
 	strict := IsStrictMode()
 
+	// Initialize Go's signal thread before RLIMIT_NPROC is lowered. This keeps
+	// process exhaustion on a shared UID in the controlled command-error path.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
 	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
+	}
+	binary, err := lookPathIn(command[0], env)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
+		exitSandboxProcess(127)
 	}
 
 	// Strict mode: mount private /dev/shm BEFORE Landlock.
 	if strict {
 		if err := mountPrivateShm(); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] private /dev/shm: %v\n", err)
-			os.Exit(1)
+			exitSandboxProcess(1)
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
@@ -79,11 +87,11 @@ func RunStandaloneInit() {
 	resolvedPolicy, err := ResolvePolicyPaths(policy)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resolve policy: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 	if err := ValidatePolicy(resolvedPolicy); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: validate policy: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 	policy = resolvedPolicy
 	llStatus, llErr := ApplyLandlock(policy)
@@ -123,7 +131,7 @@ func RunStandaloneInit() {
 		// In best-effort mode without netns, loopback is already up.
 		if err := bringUpLoopback(); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
-			os.Exit(1)
+			exitSandboxProcess(1)
 		}
 	}
 
@@ -142,11 +150,8 @@ func RunStandaloneInit() {
 	bridge, err := NewBridgeProxy(socketPath, bridgeAddr)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
 
 	go bridge.Serve(ctx)
 	defer bridge.Close()
@@ -162,7 +167,7 @@ func RunStandaloneInit() {
 	// Strict mode: fail-closed if any layer is inactive.
 	if strict && active < totalLayers {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: strict mode requires all %d layers active, got %d\n", totalLayers, active)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 
@@ -180,12 +185,6 @@ func RunStandaloneInit() {
 	}
 
 	// Run the agent command as a subprocess.
-	binary, err := lookPathIn(command[0], env)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
-		os.Exit(127)
-	}
-
 	agentCmd := exec.CommandContext(ctx, binary, command[1:]...) //nolint:gosec // G204: user-specified agent command
 	agentCmd.Stdin = os.Stdin
 	agentCmd.Stdout = os.Stdout
@@ -196,9 +195,9 @@ func RunStandaloneInit() {
 	if err := agentCmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
+			exitSandboxProcess(exitErr.ExitCode())
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 }

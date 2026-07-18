@@ -2,12 +2,31 @@ coverage:
   status:
     project:
       default:
-        target: 95%
-        threshold: 2%
+        target: 91%
+        threshold: 0%
     patch:
       default:
-        target: 75%
+        target: 95%
+        # Child init entrypoints terminate or replace their own process and
+        # retain kernel-dependent failure branches. They remain in project
+        # coverage and have a dedicated merged subprocess-coverage CI job.
+        paths:
+          - "!internal/sandbox/child_init.go"
+          - "!internal/sandbox/child_standalone_init.go"
 ignore:
+  # The OpenSSF Best Practices entry certifies the Apache-2.0 FLOSS core.
+  # ELv2 production sources remain fully tested in CI but are outside that
+  # badge and coverage scope.
+  - "enterprise/**"
+  - "cmd/license-service/**"
+  - "cmd/pipelock/enterprise.go"
+  - "internal/cli/runtime/conductor.go"
+  - "internal/cli/runtime/conductor_enrollment.go"
+  - "internal/cli/runtime/conductor_status.go"
+  - "internal/cli/runtime/dashboard_snapshot_enterprise.go"
+  - "internal/cli/runtime/emit_forwarder_enterprise.go"
+  - "internal/metrics/conductor.go"
+  - "internal/metrics/siem_forwarder.go"
   - "tests/ws-helper/**"
   # Golden-fixture generator for the verifiable-shadow-rollout example. It
   # imports internal packages to deterministically emit a signed shadow bundle
@@ -21,20 +40,12 @@ ignore:
   # happens via `make bench-egress` instead.
   - "bench/egress/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
-  # Sandbox files that run inside forked child processes or require kernel
-  # namespace primitives (CLONE_NEWUSER+CLONE_NEWNET). These are exercised by
-  # 130+ subprocess integration tests but Go's coverage tool cannot cross
-  # process boundaries. TODO: GOCOVERDIR/covdata subprocess coverage merging.
-  - "internal/sandbox/child_init.go"
-  - "internal/sandbox/child_standalone_init.go"
-  - "internal/sandbox/launcher.go"
-  - "internal/sandbox/standalone_launch.go"
-  - "internal/sandbox/landlock_linux.go"
-  - "internal/sandbox/seccomp_linux.go"
-  - "internal/sandbox/rlimit_linux.go"
-  - "internal/cli/sandbox.go"
-  - "internal/cli/mcp.go"  # sandbox path additions require kernel primitives
-  - "internal/mcp/proxy_sandbox.go"
+  # Remaining sandbox paths require kernel capabilities unavailable on GitHub's
+  # hosted runners. Parent and child process coverage for the runnable sandbox
+  # paths is merged separately by scripts/coverage-with-subprocess.sh.
+  # CI-only instrumented build support.
+  - "internal/sandbox/subprocess_coverage.go"
+  - "internal/sandbox/subprocess_coverage_enabled.go"
   - "internal/sandbox/subreaper_linux.go"  # kernel primitive (prctl)
   - "internal/sandbox/shm_linux.go"  # kernel primitive (mount), runs in forked child
   - "cmd/pipelock-playground-broker/control_signals_windows.go"  # build-tagged windows, compiled by Windows CI but absent from Linux coverage

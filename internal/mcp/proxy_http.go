@@ -21,6 +21,7 @@ import (
 var defaultMCPListenerSensitiveHeaders = []string{
 	"Authorization",
 	"Cookie",
+	listenerLastEventID,
 	"X-Api-Key",
 	"X-Token",
 	"Proxy-Authorization",
@@ -83,7 +84,7 @@ func scanMCPListenerHeadersForDLP(
 
 func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanning) map[string][]string {
 	if cfg == nil || !cfg.Enabled || !cfg.ScanHeaders {
-		return mcpListenerExplicitHeaders(headers, []string{"Authorization"})
+		return mcpListenerExplicitHeaders(headers, []string{listenerAuthorization, listenerLastEventID})
 	}
 	if cfg.HeaderMode == config.HeaderModeAll {
 		ignored := make(map[string]struct{}, len(cfg.IgnoreHeaders))
@@ -104,6 +105,9 @@ func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanni
 	sensitiveHeaders := cfg.SensitiveHeaders
 	if len(sensitiveHeaders) == 0 {
 		sensitiveHeaders = defaultMCPListenerSensitiveHeaders
+	} else {
+		sensitiveHeaders = append([]string{}, sensitiveHeaders...)
+		sensitiveHeaders = append(sensitiveHeaders, listenerLastEventID)
 	}
 	return mcpListenerExplicitHeaders(headers, sensitiveHeaders)
 }

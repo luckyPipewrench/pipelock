@@ -37,9 +37,21 @@ const listenerProxyAuthorization = "Proxy-Authorization"
 
 const (
 	listenerAuthorization      = "Authorization"
+	listenerLastEventID        = "Last-Event-ID"
 	listenerProtocolVersion    = "Mcp-Protocol-Version"
 	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version, Last-Event-ID"
 )
+
+type mcpListenerBlockDecision struct {
+	reason          blockreason.Reason
+	headerSeverity  blockreason.Severity
+	retry           blockreason.Retry
+	layer           string
+	pattern         string
+	target          string
+	receiptSeverity string
+	mutateReceipt   func(receipt.EmitOpts) receipt.EmitOpts
+}
 
 // newReverseUpstreamTransport builds the HTTP transport the MCP HTTP listener
 // uses to reach its configured upstream. It clones http.DefaultTransport for
@@ -364,15 +376,76 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		reqA2ACfg := requestBaseOpts.a2aCfg()
+		emitListenerBlockDecision := func(dec mcpListenerBlockDecision) {
+			actionID := receipt.NewActionID()
+			receiptOpts := requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     dec.layer,
+				Pattern:   dec.pattern,
+				Severity:  dec.receiptSeverity,
+				Transport: requestBaseOpts.Transport,
+				Target:    dec.target,
+			})
+			if dec.mutateReceipt != nil {
+				receiptOpts = dec.mutateReceipt(receiptOpts)
+			}
+			receiptEmitted := false
+			emitter := requestBaseOpts.receiptEmitter()
+			if emitter != nil || requestBaseOpts.requireReceipts() {
+				if _, emitErr := EmitMCPDecision(emitter, requestBaseOpts.v2ReceiptEmitter(), nil, MCPDecision{
+					Receipt:        receiptOpts,
+					RequireReceipt: requestBaseOpts.requireReceipts(),
+				}); emitErr != nil {
+					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
+				} else if emitter != nil {
+					receiptEmitted = true
+				}
+			}
+
+			info := blockreason.MustNew(dec.reason, dec.headerSeverity, dec.retry)
+			if dec.layer != "" {
+				if withLayer, layerErr := info.WithLayer(dec.layer); layerErr == nil {
+					info = withLayer
+				}
+			}
+			if receiptEmitted {
+				if withReceipt, receiptErr := info.WithReceipt(actionID); receiptErr == nil {
+					info = withReceipt
+				}
+			}
+			info.SetHeaders(w.Header())
+		}
 		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
+				emitListenerBlockDecision(mcpListenerBlockDecision{
+					reason:          blockreason.ParseError,
+					headerSeverity:  blockreason.SeverityCritical,
+					retry:           blockreason.RetryNone,
+					layer:           "mcp_contract",
+					pattern:         "contract_upstream_evaluation_failed",
+					target:          "mcp:contract:upstream",
+					receiptSeverity: config.SeverityHigh,
+				})
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(rpcID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed")))
 				return true
 			} else if gate.Verdict == config.ActionBlock {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
+				emitListenerBlockDecision(mcpListenerBlockDecision{
+					reason:          mcpContractBlockReason(gate),
+					headerSeverity:  blockreason.SeverityCritical,
+					retry:           blockreason.RetryNone,
+					layer:           "mcp_contract",
+					pattern:         firstNonEmpty(gate.Reason, "contract_upstream_denied"),
+					target:          "mcp:contract:upstream",
+					receiptSeverity: config.SeverityHigh,
+					mutateReceipt: func(opts receipt.EmitOpts) receipt.EmitOpts {
+						return mcpWithContractReceipt(opts, gate)
+					},
+				})
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(rpcID, gate, "pipelock: upstream URL blocked by live-lock contract")))
@@ -396,6 +469,15 @@ func RunHTTPListenerProxy(
 				pattern = headerResult.matches[0].PatternName
 			}
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in %s header: %s\n", headerResult.header, pattern)
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          blockreason.DLPMatch,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryNone,
+				layer:           mcpReceiptLayerInput,
+				pattern:         pattern,
+				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
+				receiptSeverity: config.SeverityHigh,
+			})
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -414,9 +496,18 @@ func RunHTTPListenerProxy(
 			}
 			if headerResult.IsInfrastructureError() {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header scan infrastructure error: %s\n", headerResult.Reason)
-				return false
+			} else {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
 			}
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          a2aHeaderBlockReason(headerResult),
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryNone,
+				layer:           mcpReceiptLayerA2A,
+				pattern:         firstNonEmpty(headerResult.Reason, mcpReceiptA2AHeaderPattern),
+				target:          mcpReceiptA2AHeaderTarget,
+				receiptSeverity: config.SeverityHigh,
+			})
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -431,8 +522,25 @@ func RunHTTPListenerProxy(
 				methodNotAllowed()
 				return
 			}
+			if !validVisibleSingletonHeader(r.Header.Values(listenerLastEventID), 256) {
+				info := blockreason.MustNew(blockreason.BadRequest, blockreason.SeverityInfo, blockreason.RetryNone)
+				info.SetHeaders(w.Header())
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid Last-Event-ID header")))
+				return
+			}
 			if opts.KillSwitch != nil {
 				if d := opts.KillSwitch.IsActiveMCP(nil); d.Active {
+					emitListenerBlockDecision(mcpListenerBlockDecision{
+						reason:          blockreason.KillSwitchActive,
+						headerSeverity:  blockreason.SeverityCritical,
+						retry:           blockreason.RetryTransient,
+						layer:           "kill_switch",
+						pattern:         firstNonEmpty(d.Source, "kill_switch"),
+						target:          "mcp:kill-switch",
+						receiptSeverity: config.SeverityCritical,
+					})
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write(killswitch.ErrorResponse(nil, d.Message))
 					return
@@ -467,7 +575,7 @@ func RunHTTPListenerProxy(
 			forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
 			forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
 			forwardIfOperatorUnset(upReq, r, "A2A-Version")
-			forwardIfOperatorUnset(upReq, r, "Last-Event-ID")
+			forwardIfOperatorUnset(upReq, r, listenerLastEventID)
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
@@ -556,6 +664,15 @@ func RunHTTPListenerProxy(
 		if r.Method == http.MethodDelete {
 			if opts.KillSwitch != nil {
 				if d := opts.KillSwitch.IsActiveMCP(nil); d.Active {
+					emitListenerBlockDecision(mcpListenerBlockDecision{
+						reason:          blockreason.KillSwitchActive,
+						headerSeverity:  blockreason.SeverityCritical,
+						retry:           blockreason.RetryTransient,
+						layer:           "kill_switch",
+						pattern:         firstNonEmpty(d.Source, "kill_switch"),
+						target:          "mcp:kill-switch",
+						receiptSeverity: config.SeverityCritical,
+					})
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write(killswitch.ErrorResponse(nil, d.Message))
 					return
@@ -1349,6 +1466,25 @@ func validA2AExtensions(values []string) bool {
 		}
 	}
 	return true
+}
+
+func a2aHeaderBlockReason(result A2AScanResult) blockreason.Reason {
+	if len(result.DLPFindings) > 0 {
+		return blockreason.DLPMatch
+	}
+	if len(result.InjectFindings) > 0 {
+		return blockreason.PromptInjection
+	}
+	if len(result.URLFindings) > 0 {
+		if result.URLFindings[0].IsInfrastructureError() {
+			if result.URLFindings[0].DNSErrorKind == scanner.DNSErrorTimeout {
+				return blockreason.Timeout
+			}
+			return blockreason.PatternUnavailable
+		}
+		return mcpURLBlockReason(result.URLFindings[0].Scanner)
+	}
+	return blockreason.ParseError
 }
 
 func validateListenerUpstreamHeaders(headers http.Header) error {

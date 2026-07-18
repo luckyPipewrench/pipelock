@@ -135,9 +135,17 @@ func TestListenerProtocolValidatorsRejectAmbiguousBoundaries(t *testing.T) {
 
 	t.Run("preflight", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "http://listener.example/", nil)
-		req.Header.Set("Access-Control-Request-Method", http.MethodGet)
-		if listenerCORSPreflightAllowed(req) {
-			t.Fatal("non-POST preflight was accepted")
+		for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+			req.Header.Set("Access-Control-Request-Method", method)
+			if !listenerCORSPreflightAllowed(req) {
+				t.Fatalf("%s preflight was rejected", method)
+			}
+		}
+		for _, method := range []string{http.MethodPut, http.MethodPatch} {
+			req.Header.Set("Access-Control-Request-Method", method)
+			if listenerCORSPreflightAllowed(req) {
+				t.Fatalf("unsupported %s preflight was accepted", method)
+			}
 		}
 		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
 		req.Header.Set("Access-Control-Request-Headers", " , Authorization")

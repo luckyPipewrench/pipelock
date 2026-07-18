@@ -29,7 +29,14 @@ func buildTestBinary(t *testing.T) string {
 	}); err != nil {
 		t.Skipf("standalone sandbox unavailable: %v", err)
 	}
+	return buildTestBinaryWithoutSandboxProbe(t)
+}
 
+func buildTestBinaryWithoutSandboxProbe(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != osLinux {
+		t.Skip("sandbox requires linux")
+	}
 	binary := filepath.Join(t.TempDir(), "pipelock-test")
 	repoRoot := filepath.Join("..", "..")
 	ctx := context.Background()

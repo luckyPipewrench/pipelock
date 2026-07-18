@@ -1,6 +1,8 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build linux
+
 package sandbox
 
 import (
@@ -54,6 +56,9 @@ func runInitChildFailureCaseWithNamespaces(t *testing.T, binary string, env []st
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		t.Fatalf("sandbox init child timed out: %v\nstderr: %s", ctx.Err(), stderr.String())
+	}
+	if namespaced && errors.Is(err, syscall.EPERM) {
+		t.Skipf("user namespaces unavailable: %v", err)
 	}
 	if err == nil {
 		return initChildResult{stderr: stderr.String()}
@@ -144,7 +149,7 @@ func requireInitFailure(t *testing.T, result initChildResult, wantStderr string)
 }
 
 func TestIntegration_InitChildrenRejectUnsafeResolvedPolicies(t *testing.T) {
-	binary := buildTestBinary(t)
+	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
 	missingPath := filepath.Join(t.TempDir(), "missing")
@@ -214,7 +219,7 @@ func TestIntegration_InitChildrenRejectUnsafeResolvedPolicies(t *testing.T) {
 }
 
 func TestIntegration_InitChildrenFailClosedOnEnvironmentAndNetworkStartup(t *testing.T) {
-	binary := buildTestBinary(t)
+	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
 
@@ -277,7 +282,7 @@ func TestIntegration_InitChildrenFailClosedOnEnvironmentAndNetworkStartup(t *tes
 }
 
 func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
-	binary := buildTestBinary(t)
+	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
 
@@ -378,7 +383,7 @@ func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
 }
 
 func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
-	binary := buildTestBinary(t)
+	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
 
@@ -422,6 +427,9 @@ func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 		cmd.Stderr = stderrFile
 		cmd.SysProcAttr = initChildNamespaceAttributes()
 		if err := cmd.Start(); err != nil {
+			if errors.Is(err, syscall.EPERM) {
+				t.Skipf("user namespaces unavailable: %v", err)
+			}
 			t.Fatalf("start sandbox init child: %v", err)
 		}
 

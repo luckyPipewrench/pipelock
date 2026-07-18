@@ -3115,6 +3115,11 @@ func isShieldExempt(hostname string, exempts []string) bool {
 // Used by both the HTTP client transport and CONNECT tunnel dialing.
 // Trusted domains (from config.trusted_domains) bypass the internal-IP check.
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	currentSc, _ := ctx.Value(ctxKeyAgentScanner).(*scanner.Scanner)
+	if currentSc == nil {
+		currentSc = p.scannerPtr.Load()
+	}
+
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("ssrfSafeDialContext: split addr %q: %w", addr, err)
@@ -3129,7 +3134,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
 		}
-		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) {
+		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) {
 			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
 		}
 		return p.dialer.DialContext(ctx, network, addr)
@@ -3138,7 +3143,6 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	// Resolve DNS and validate every IP before connecting. Use the scanner's
 	// resolver so dns.host_overrides applies uniformly to both the SSRF
 	// scanner check and this dial-time check, preventing TOCTOU drift.
-	currentSc := p.scannerPtr.Load()
 	ips, err := currentSc.HostResolver().LookupHost(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("ssrfSafeDialContext: DNS lookup %q: %w", host, err)

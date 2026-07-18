@@ -3498,6 +3498,22 @@ func TestSSRFSafeDialContext_DNSRebindBlockCarriesDistinctReason(t *testing.T) {
 	}
 }
 
+func TestAllowedSSRFDialScanSnapshotPreservesPublicAllowlistedIP(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.SSRF.IPAllowlist = []string{"203.0.113.0/24"}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	ctx := withAllowedSSRFDialScanSnapshot(context.Background(), sc, "rebind.test", scanner.Result{
+		Allowed:         true,
+		SSRFResolvedIPs: []string{"203.0.113.10"},
+	})
+
+	if !isSSRFDNSRebind(ctx, "rebind.test", net.ParseIP("127.0.0.1")) {
+		t.Fatal("expected public allowlisted scan-time IP to preserve DNS-rebind snapshot")
+	}
+}
+
 func TestSSRFSafeDialContext_DNSRebindToCoreCIDRsBlockedWhenInternalConfigNil(t *testing.T) {
 	tests := []struct {
 		name string

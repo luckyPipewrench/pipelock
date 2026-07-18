@@ -1011,6 +1011,8 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	// Scan all headers that buildWSForwardHeaders may forward. This covers
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
 	// can exfiltrate data in any of these values.
+	var allMatches []scanner.TextDLPMatch
+	matchedHeaders := make([]string, 0, 2)
 	for _, key := range []string{
 		"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", "Sec-WebSocket-Protocol", "User-Agent",
@@ -1025,15 +1027,30 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			if len(matches) == 0 {
 				continue
 			}
-			names := make([]string, len(matches))
-			for i, m := range matches {
-				names[i] = m.PatternName
-			}
-			action := requestBodyDLPAction(matches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions)
-			return true, shouldHardBlockRequestDLP(matches, cfg), action, fmt.Sprintf("DLP match in %s header: %s", key, strings.Join(names, ", "))
+			allMatches = append(allMatches, matches...)
+			matchedHeaders = append(matchedHeaders, key)
 		}
 	}
+	allMatches = uniqueBodyDLPMatches(allMatches)
+	if len(allMatches) > 0 {
+		names := make([]string, len(allMatches))
+		for i, m := range allMatches {
+			names[i] = m.PatternName
+		}
+		action := requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions)
+		return true, shouldHardBlockRequestDLP(allMatches, cfg), action, fmt.Sprintf("DLP match in %s header: %s", wsHeaderDLPSource(matchedHeaders), strings.Join(names, ", "))
+	}
 	return false, false, "", ""
+}
+
+func wsHeaderDLPSource(headers []string) string {
+	switch len(headers) {
+	case 0:
+		return ""
+	case 1:
+		return headers[0]
+	}
+	return "multiple"
 }
 
 // isHostAllowlisted checks if a hostname matches any pattern in the allowlist.

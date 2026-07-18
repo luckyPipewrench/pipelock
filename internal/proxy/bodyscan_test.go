@@ -136,6 +136,13 @@ func TestScanRequestBody_DisablePatternsAndPatternActions(t *testing.T) {
 			wantAction:     config.ActionWarn,
 			wantPatterns:   []string{testBodyDLPPatternName},
 		},
+		{
+			name:           "warn override does not mask later core match",
+			body:           `{"custom":"` + fakeBodyDLPSecret() + `","aws":"` + fakeAPIKey() + `"}`,
+			patternActions: map[string]string{testBodyDLPPatternName: config.ActionWarn},
+			wantAction:     config.ActionBlock,
+			wantPatterns:   []string{testBodyDLPPatternName, "AWS Access ID"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1180,6 +1187,31 @@ func TestScanRequestHeaders_DisabledPatternDoesNotMaskCoreMatch(t *testing.T) {
 	}
 	if !hasDLPMatchName(result.DLPMatches, "AWS Access ID") {
 		t.Fatalf("DLPMatches = %v, want AWS Access ID", dlpMatchNames(result.DLPMatches))
+	}
+}
+
+func TestScanRequestHeaders_WarnPatternDoesNotMaskCoreMatch(t *testing.T) {
+	cfg := testScannerConfig()
+	addBodyDLPTestPattern(cfg)
+	cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionWarn}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+	headers.Set("X-Api-Key", fakeAPIKey())
+
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
+	if result == nil || result.Clean {
+		t.Fatal("expected core DLP match after warn-only header match")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
+	}
+	for _, want := range []string{testBodyDLPPatternName, "AWS Access ID"} {
+		if !hasDLPMatchName(result.DLPMatches, want) {
+			t.Fatalf("DLPMatches = %v, missing %q", dlpMatchNames(result.DLPMatches), want)
+		}
 	}
 }
 

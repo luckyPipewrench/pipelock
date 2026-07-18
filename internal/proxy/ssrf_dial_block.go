@@ -71,7 +71,7 @@ func withAllowedSSRFDialScanSnapshot(ctx context.Context, sc *scanner.Scanner, h
 	}
 	for _, ipStr := range result.SSRFResolvedIPs {
 		ip := normalizeSSRFDialIP(net.ParseIP(strings.TrimSpace(stripIPv6Zone(ipStr))))
-		if ip == nil || scanner.IsCloudMetadataIP(ip) || sc.IsInternalIP(ip) || sc.IsIPAllowlisted(ip) {
+		if ip == nil || scanner.IsCloudMetadataIP(ip) || sc.IsInternalIP(ip) {
 			return ctx
 		}
 	}

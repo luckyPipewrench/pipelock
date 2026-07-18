@@ -362,25 +362,13 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 		{
 			name: "request_body_scanning.disable_patterns changed",
 			mut: func(c *Config) {
-				c.RequestBodyScanning.Enabled = true
-				c.DLP.Patterns = append(c.DLP.Patterns, DLPPattern{
-					Name:     "Custom Body Secret",
-					Regex:    `CUSTOMBODY-[A-Z0-9]{12}`,
-					Severity: SeverityCritical,
-				})
-				c.RequestBodyScanning.DisablePatterns = []string{"Custom Body Secret"}
+				c.RequestBodyScanning.DisablePatterns = []string{"Google API Key"}
 			},
 		},
 		{
 			name: "request_body_scanning.pattern_actions changed",
 			mut: func(c *Config) {
-				c.RequestBodyScanning.Enabled = true
-				c.DLP.Patterns = append(c.DLP.Patterns, DLPPattern{
-					Name:     "Custom Body Secret",
-					Regex:    `CUSTOMBODY-[A-Z0-9]{12}`,
-					Severity: SeverityCritical,
-				})
-				c.RequestBodyScanning.PatternActions = map[string]string{"Custom Body Secret": ActionWarn}
+				c.RequestBodyScanning.PatternActions = map[string]string{"Google API Key": ActionWarn}
 			},
 		},
 		{

@@ -25,7 +25,7 @@ while IFS= read -r -d '' path; do
 	fi
 done < <(
 	git ls-files -z \
-		'*.go' '*.sh' '*.py' '*.js' '*.ts' '*.rs' \
+		'*.go' '*.sh' '*.py' '*.js' '*.mjs' '*.ts' '*.rs' '*.html' '*.tpl' \
 		'Dockerfile' 'Dockerfile.*'
 )
 

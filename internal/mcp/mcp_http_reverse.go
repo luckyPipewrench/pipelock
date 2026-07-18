@@ -570,14 +570,7 @@ func RunHTTPListenerProxy(
 				}
 			}
 			upReq.Header.Set("Accept", "text/event-stream")
-			forwardIfOperatorUnset(upReq, r, "Authorization")
-			if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
-				upReq.Header.Set("Mcp-Session-Id", sid)
-			}
-			forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
-			forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
-			forwardIfOperatorUnset(upReq, r, "A2A-Version")
-			forwardIfOperatorUnset(upReq, r, listenerLastEventID)
+			forwardListenerUpstreamHeaders(upReq, r, true)
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
@@ -596,15 +589,11 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
-			if hasNonIdentityEncoding(upResp.Header.Get("Content-Encoding")) {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", upResp.Header.Get("Content-Encoding"))
-				info, err := blockreason.New(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
-				if err == nil {
-					if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
-						info = withLayer
-					}
-				} else {
-					info = blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
+			if contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ","); hasNonIdentityEncoding(contentEncoding) {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
+				info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
+				if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
+					info = withLayer
 				}
 				info.SetHeaders(w.Header())
 				w.Header().Set("Content-Type", "application/json")
@@ -622,11 +611,7 @@ func RunHTTPListenerProxy(
 
 			var reqRec session.Recorder
 			if opts.Store != nil {
-				adaptiveHost, _, adaptiveErr := net.SplitHostPort(r.RemoteAddr)
-				if adaptiveErr != nil {
-					adaptiveHost = r.RemoteAddr
-				}
-				reqRec = opts.Store.GetOrCreate(adaptiveHost)
+				reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
 			}
 			baselineRec := newMCPRequestBaselineRecorder()
 			baselineOpts := requestBaseOpts
@@ -701,13 +686,7 @@ func RunHTTPListenerProxy(
 					upReq.Header.Add(name, value)
 				}
 			}
-			forwardIfOperatorUnset(upReq, r, "Authorization")
-			if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
-				upReq.Header.Set("Mcp-Session-Id", sid)
-			}
-			forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
-			forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
-			forwardIfOperatorUnset(upReq, r, "A2A-Version")
+			forwardListenerUpstreamHeaders(upReq, r, false)
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
@@ -1004,22 +983,7 @@ func RunHTTPListenerProxy(
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("Accept", "application/json, text/event-stream")
 
-		// Client-supplied values fill in only where the operator did not pin the
-		// header via --header/--header-file. A bare Set here would let any client
-		// clobber an operator-pinned value: a downgraded Mcp-Protocol-Version or a
-		// swapped A2A-Extensions URI set. Route every forwarded client header
-		// through this helper so the next one added inherits the precedence rule.
-		forwardIfOperatorUnset(upReq, r, "Authorization")
-		if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
-			upReq.Header.Set("Mcp-Session-Id", sid)
-		}
-		forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
-
-		// Forward A2A service parameter headers to upstream.
-		// A2A-Extensions carries negotiated extension URIs (already scanned above).
-		// A2A-Version carries protocol version (informational, no scanning needed).
-		forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
-		forwardIfOperatorUnset(upReq, r, "A2A-Version")
+		forwardListenerUpstreamHeaders(upReq, r, false)
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
@@ -1056,15 +1020,11 @@ func RunHTTPListenerProxy(
 		// guard is authoritative; the same fail-closed pattern lives in
 		// internal/proxy/forward.go and reverse.go, completing transport
 		// parity for compressed responses on the MCP HTTP listener.
-		if hasNonIdentityEncoding(upResp.Header.Get("Content-Encoding")) {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", upResp.Header.Get("Content-Encoding"))
-			info, err := blockreason.New(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
-			if err == nil {
-				if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
-					info = withLayer
-				}
-			} else {
-				info = blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
+		if contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ","); hasNonIdentityEncoding(contentEncoding) {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
+			info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
+			if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
+				info = withLayer
 			}
 			info.SetHeaders(w.Header())
 			w.Header().Set("Content-Type", "application/json")
@@ -1266,6 +1226,30 @@ func forwardIfOperatorUnset(upReq, r *http.Request, name string) {
 	if v := r.Header.Get(name); v != "" && upReq.Header.Get(name) == "" {
 		upReq.Header.Set(name, v)
 	}
+}
+
+func forwardListenerUpstreamHeaders(upReq, r *http.Request, includeLastEventID bool) {
+	// Client-supplied values fill in only where the operator did not pin the
+	// header via --header/--header-file. A bare Set here would let any client
+	// clobber operator-pinned service headers.
+	forwardIfOperatorUnset(upReq, r, "Authorization")
+	if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+		upReq.Header.Set("Mcp-Session-Id", sid)
+	}
+	forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
+	forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
+	forwardIfOperatorUnset(upReq, r, "A2A-Version")
+	if includeLastEventID {
+		forwardIfOperatorUnset(upReq, r, listenerLastEventID)
+	}
+}
+
+func adaptiveHostFromRemoteAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
 }
 
 func acceptAllowsSSE(values []string) bool {

@@ -708,7 +708,7 @@ func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *t
 	}
 }
 
-func TestForwardScanned_ResponseReceiptFailureEmitsReplacementBlockReceipt(t *testing.T) {
+func TestForwardScanned_ResponseV2ReceiptFailureDoesNotReplaceWhenV1Emits(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
 	var out, log bytes.Buffer
 	emitter, rec, dir, _ := newReceiptTestHarness(t)
@@ -743,18 +743,20 @@ func TestForwardScanned_ResponseReceiptFailureEmitsReplacementBlockReceipt(t *te
 	if !found {
 		t.Fatal("expected injection detected")
 	}
-	if !strings.Contains(out.String(), "receipt emission failed") {
-		t.Fatalf("expected fail-closed receipt error response, got: %s", out.String())
+	if !strings.Contains(out.String(), "Ignore all previous instructions") {
+		t.Fatalf("expected warn-mode response to pass after v1 receipt, got: %s", out.String())
 	}
-	if !strings.Contains(log.String(), "audit_gap=true") {
-		t.Fatalf("expected v2 block receipt audit-gap log, got: %s", log.String())
+	if strings.Contains(out.String(), "receipt emission failed") {
+		t.Fatalf("unexpected fail-closed receipt error response: %s", out.String())
+	}
+	if strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("unexpected v2 audit-gap log after v1 receipt succeeded: %s", log.String())
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 	receipts := readActionReceipts(t, dir)
 	var originalActionID string
-	var replacement receipt.Receipt
 	for _, rcpt := range receipts {
 		if rcpt.ActionRecord.Layer == "mcp_response_scan" {
 			originalActionID = rcpt.ActionRecord.ActionID
@@ -762,17 +764,11 @@ func TestForwardScanned_ResponseReceiptFailureEmitsReplacementBlockReceipt(t *te
 		if rcpt.ActionRecord.Verdict == config.ActionBlock &&
 			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
 			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed") {
-			replacement = rcpt
+			t.Fatalf("unexpected replacement block receipt after v1 receipt succeeded: %+v", rcpt.ActionRecord)
 		}
-	}
-	if replacement.ActionRecord.ActionID == "" {
-		t.Fatalf("missing replacement block receipt in %d receipts", len(receipts))
 	}
 	if originalActionID == "" {
 		t.Fatalf("missing original mcp_response_scan receipt in %d receipts", len(receipts))
-	}
-	if replacement.ActionRecord.ParentActionID != originalActionID {
-		t.Fatalf("replacement parent_action_id = %q, want original action_id %q", replacement.ActionRecord.ParentActionID, originalActionID)
 	}
 }
 

@@ -262,6 +262,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(wsScanCtx)
 	result := sc.Scan(wsScanCtx, scanURL)
+	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, parsed.Hostname(), result))
 
 	// Capture observer: record WebSocket URL verdict for policy replay.
 	{
@@ -804,6 +805,27 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Dial upstream via SSRF-safe dialer.
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
+		var ssrfErr *ssrfDialBlockError
+		if errors.As(dialErr, &ssrfErr) {
+			log.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
+			p.metrics.RecordWSBlocked()
+			emitWebSocketReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     scanner.ScannerSSRF,
+				Pattern:   string(ssrfErr.reason),
+				Transport: TransportWS,
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().CloseFramePayload())
+			outcomeStatus = strconv.Itoa(int(ws.StatusPolicyViolation))
+			outcomeBytes = 0
+			outcomeReason = string(ssrfErr.reason)
+			return
+		}
 		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
 		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
 		outcomeStatus = strconv.Itoa(int(ws.StatusInternalServerError))

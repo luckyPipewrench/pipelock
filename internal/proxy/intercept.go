@@ -686,6 +686,7 @@ func newInterceptHandler(
 		})
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
+		r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), ic.Scanner, r.URL.Hostname(), urlResult))
 
 		// Capture observer: record intercept URL verdict for policy replay.
 		if ic.Proxy != nil {
@@ -1519,6 +1520,25 @@ func newInterceptHandler(
 		// Forward to upstream.
 		resp, err := upstream.RoundTrip(r)
 		if err != nil {
+			var ssrfErr *ssrfDialBlockError
+			if errors.As(err, &ssrfErr) {
+				ic.Logger.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
+				ic.Metrics.RecordTLSRequestBlocked("url_scan")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     scanner.ScannerSSRF,
+					Pattern:   string(ssrfErr.reason),
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				writeBlockedError(w, ssrfErr.blockInfo(), "blocked: "+ssrfErr.detail, http.StatusForbidden)
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, string(ssrfErr.reason))
+				return
+			}
 			ic.Logger.LogError(actx, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			emitBlockedPostRoundTripOutcome(http.StatusBadGateway, "upstream_error")

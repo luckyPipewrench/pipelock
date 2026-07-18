@@ -1804,7 +1804,7 @@ func TestWSProxyHeaderDLPDisablePatternAllowsNonCore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disabled non-core header DLP should allow websocket dial: %v", err)
 	}
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 }
 
 func TestWSProxyHeaderDLPPatternWarnOverrideAllowsNonCore(t *testing.T) {
@@ -1831,7 +1831,7 @@ func TestWSProxyHeaderDLPPatternWarnOverrideAllowsNonCore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("warn-only non-core header DLP should allow websocket dial: %v", err)
 	}
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 }
 
 func TestWSProxyHeaderDLPDisabledPatternDoesNotMaskCoreMatch(t *testing.T) {

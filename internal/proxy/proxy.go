@@ -118,6 +118,12 @@ const (
 	// the transport that originated the request rather than the
 	// hardcoded default. See Info 2 on the envelope-signing review.
 	ctxKeyRedirectTransport
+
+	// ctxKeySSRFDialScanSnapshot carries the DNS answers from an allowed
+	// scanner SSRF pass into the later dial-time re-resolution. The safe
+	// dialer uses it only to label public-to-internal changes as DNS
+	// rebinding; blocking itself does not depend on the snapshot.
+	ctxKeySSRFDialScanSnapshot
 )
 
 type envelopeEmitterSnapshot struct {
@@ -664,7 +670,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			} else {
 				redirectWarnCtx.Transport = TransportFetch
 			}
-			result := currentScanner.Scan(scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx), redirectURL)
+			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
+			result := currentScanner.Scan(redirectScanCtx, redirectURL)
+			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), result))
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
@@ -3122,7 +3130,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			ip = v4
 		}
 		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) {
-			return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
+			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
 		}
 		return p.dialer.DialContext(ctx, network, addr)
 	}
@@ -3157,7 +3165,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 				// allow/deny decision and logging.
 				continue
 			}
-			return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
+			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
 		}
 	}
 
@@ -4181,6 +4189,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
+	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, parsed.Hostname(), result)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		log.LogError(actx, err)
@@ -4303,6 +4312,42 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
+		var ssrfErr *ssrfDialBlockError
+		if errors.As(err, &ssrfErr) {
+			log.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
+			p.metrics.RecordBlocked(parsed.Hostname(), scanner.ScannerSSRF, time.Since(start), agentLabel)
+			emitFetchReceipt(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               scanner.ScannerSSRF,
+				Pattern:             string(ssrfErr.reason),
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+			})
+			writeBlockedJSON(w,
+				ssrfErr.blockInfo(),
+				http.StatusForbidden, FetchResponse{
+					URL:         displayURL,
+					Agent:       agent,
+					Blocked:     true,
+					BlockReason: string(ssrfErr.reason),
+				})
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeReason = string(ssrfErr.reason)
+			return
+		}
 		// Detect fail-closed blocks from CheckRedirect and report them as blocked.
 		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)

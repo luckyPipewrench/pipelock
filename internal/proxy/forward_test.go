@@ -3465,6 +3465,150 @@ func TestSSRFSafeDialContext_DNSResolvesToInternal(t *testing.T) {
 	}
 }
 
+func TestSSRFSafeDialContext_DNSRebindBlockCarriesDistinctReason(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.DNS.HostOverrides = map[string][]string{"rebind.test": {"127.0.0.1"}}
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx = withSSRFDialScanSnapshot(ctx, "rebind.test", []string{"203.0.113.10"})
+
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "rebind.test:443")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected SSRF DNS rebind block, got nil")
+	}
+
+	var blocked *ssrfDialBlockError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("error type = %T, want *ssrfDialBlockError: %v", err, err)
+	}
+	if blocked.reason != blockreason.SSRFDNSRebind {
+		t.Fatalf("block reason = %s, want %s", blocked.reason, blockreason.SSRFDNSRebind)
+	}
+}
+
+func TestSSRFSafeDialContext_DNSRebindToCoreCIDRsBlockedWhenInternalConfigNil(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		ip   string
+	}{
+		{name: "metadata", host: "metadata-rebind.test", ip: "169.254.169.254"},
+		{name: "private", host: "private-rebind.test", ip: "10.0.0.1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DNS.HostOverrides = map[string][]string{tt.host: {tt.ip}}
+
+			logger := audit.NewNop()
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			ctx = withSSRFDialScanSnapshot(ctx, tt.host, []string{"203.0.113.10"})
+
+			conn, err := p.ssrfSafeDialContext(ctx, "tcp", net.JoinHostPort(tt.host, "443"))
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if err == nil {
+				t.Fatal("expected SSRF DNS rebind block, got nil")
+			}
+
+			var blocked *ssrfDialBlockError
+			if !errors.As(err, &blocked) {
+				t.Fatalf("error type = %T, want *ssrfDialBlockError: %v", err, err)
+			}
+			if blocked.reason != blockreason.SSRFDNSRebind {
+				t.Fatalf("block reason = %s, want %s", blocked.reason, blockreason.SSRFDNSRebind)
+			}
+		})
+	}
+}
+
+func TestSSRFSafeDialContext_PrivateFromStartStaysPrivateIP(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "127.0.0.1:443")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected SSRF private IP block, got nil")
+	}
+
+	var blocked *ssrfDialBlockError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("error type = %T, want *ssrfDialBlockError: %v", err, err)
+	}
+	if blocked.reason != blockreason.SSRFPrivateIP {
+		t.Fatalf("block reason = %s, want %s", blocked.reason, blockreason.SSRFPrivateIP)
+	}
+}
+
+func TestFetchDialDNSRebindEmitsDistinctBlockReason(t *testing.T) {
+	cfg := config.Defaults()
+	enforce := true
+	cfg.Enforce = &enforce
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.DNS.HostOverrides = map[string][]string{"rebind.test": {"203.0.113.10"}}
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		ip := net.ParseIP("127.0.0.1")
+		return nil, newSSRFDialBlockError(req.Context(), req.URL.Hostname(), ip, ssrfDialBlockDetail(req.URL.Hostname(), ip))
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fetch?url=http://rebind.test/", nil)
+	w := httptest.NewRecorder()
+
+	p.handleFetch(w, req)
+
+	resp := w.Result()
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFDNSRebind) {
+		t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.SSRFDNSRebind)
+	}
+}
+
 func TestSSRFSafeDialContext_AllowedIP(t *testing.T) {
 	// Start a local listener to accept the connection
 	lc := net.ListenConfig{}

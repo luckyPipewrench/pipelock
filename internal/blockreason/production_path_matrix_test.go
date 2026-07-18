@@ -104,16 +104,6 @@ var nonProductionEmitReasons = map[blockreason.Reason]string{
 	// alongside real blocks without forking into observed-vs-blocking.
 	blockreason.ContractObservedOnly: "shadow/capture mode annotation; never emitted on a block path",
 
-	// SSRFDNSRebind is part of the SSRF reason set on the wire, but the
-	// scanner pipeline currently emits SSRFPrivateIP / SSRFMetadata from
-	// the DNS rebinding TOCTOU path because the rebind detection lives
-	// upstream of the blockheaders helper that maps to the typed Reason.
-	// Vocabulary stays in the canonical allowlist so receipts and the
-	// public spec doc can name DNS rebinding distinctly from generic
-	// private-IP SSRF; the wire emit site lands when the SSRF block path
-	// is refactored to surface the more specific reason.
-	blockreason.SSRFDNSRebind: "vocabulary placeholder; SSRF block path collapses TOCTOU rebinds onto SSRFPrivateIP today",
-
 	// Timeout is reserved for fail-closed timeouts on scanner / HITL
 	// surfaces. Today the timeout paths return ParseError or do not
 	// surface a header at all (HITL has no HTTP response surface). The

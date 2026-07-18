@@ -2233,7 +2233,7 @@ func TestIsInternalIP_MatchesConfiguredCIDR(t *testing.T) {
 		{"10.255.255.255", true},
 		{"127.0.0.1", true},
 		{"8.8.8.8", false},
-		{"192.168.1.1", false},
+		{"192.168.1.1", true},
 	}
 
 	for _, tt := range tests {
@@ -2261,7 +2261,7 @@ func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
 		{"::ffff:127.0.0.1", true},
 		{"::ffff:10.0.0.1", true},
 		{"::ffff:8.8.8.8", false},
-		{"::ffff:192.168.1.1", false}, // 192.168.0.0/16 not in this config
+		{"::ffff:192.168.1.1", true},
 	}
 
 	for _, tt := range tests {
@@ -2276,14 +2276,29 @@ func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
 	}
 }
 
-func TestIsInternalIP_DisabledReturnsAlwaysFalse(t *testing.T) {
+func TestIsInternalIP_EmptyConfigStillBlocksCoreCIDRs(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := MustNew(cfg)
 
-	if s.IsInternalIP(net.ParseIP("127.0.0.1")) {
-		t.Error("expected false when SSRF is disabled")
+	tests := []struct {
+		name     string
+		ip       string
+		internal bool
+	}{
+		{name: "loopback", ip: "127.0.0.1", internal: true},
+		{name: "metadata", ip: "169.254.169.254", internal: true},
+		{name: "private", ip: "10.0.0.1", internal: true},
+		{name: "public", ip: "8.8.8.8", internal: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := s.IsInternalIP(net.ParseIP(tt.ip)); got != tt.internal {
+				t.Fatalf("IsInternalIP(%s) = %v, want %v", tt.ip, got, tt.internal)
+			}
+		})
 	}
 }
 

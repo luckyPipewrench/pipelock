@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -177,6 +178,40 @@ func TestProxy_SafeDialerBlocksInternalIP(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SSRF blocked") {
 		t.Fatalf("SafeDialer error = %v, want SSRF blocked", err)
+	}
+}
+
+func TestSubmitProfile_SafeDialerCoreCIDRBlockFailsClosedAsUpstreamError(t *testing.T) {
+	cfg, upstreamURL := submitProfileTestConfig("http://submit-rebind.test:1")
+	cfg.Internal = nil
+	cfg.DNS.HostOverrides = map[string][]string{
+		"submit-rebind.test": {"10.0.0.1"},
+	}
+
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("New proxy: %v", err)
+	}
+
+	handlerProxy := submitProfileReverseProxyWithDialer(t, cfg, upstreamURL, p.SafeDialer())
+
+	req, _ := http.NewRequestWithContext(context.Background(),
+		http.MethodPost, handlerProxy.URL+"/v1/batch", strings.NewReader(`{"clean":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post through reverse proxy: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != "" {
+		t.Fatalf("%s = %q, want empty generic upstream error", blockreason.HeaderReason, got)
 	}
 }
 

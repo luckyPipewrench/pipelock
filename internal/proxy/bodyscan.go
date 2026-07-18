@@ -741,10 +741,6 @@ func (req BodyScanRequest) suppressTarget() string {
 	return req.Host + req.Path
 }
 
-func unsuppressedDLPMatches(matches []scanner.TextDLPMatch, target string, suppress []config.SuppressEntry) []scanner.TextDLPMatch {
-	return filterBodyDLPMatches(matches, target, suppress, nil)
-}
-
 func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppress []config.SuppressEntry, disabled map[string]struct{}) []scanner.TextDLPMatch {
 	if len(matches) == 0 || len(suppress) == 0 || target == "" {
 		if len(matches) == 0 || len(disabled) == 0 {

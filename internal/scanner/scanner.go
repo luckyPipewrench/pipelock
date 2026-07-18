@@ -129,15 +129,16 @@ const (
 
 // Result describes the outcome of scanning a URL.
 type Result struct {
-	Allowed      bool         `json:"allowed"`
-	Reason       string       `json:"reason,omitempty"`
-	Scanner      string       `json:"scanner,omitempty"` // which scanner triggered
-	Hint         string       `json:"hint,omitempty"`    // actionable guidance when blocked
-	Score        float64      `json:"score"`             // anomaly score 0.0-1.0
-	Class        ResultClass  `json:"-"`                 // internal: threat vs protective classification
-	DNSErrorKind DNSErrorKind `json:"-"`                 // internal: DNS resolver failure subtype (set only when Class == ClassInfrastructureError on the DNS path)
-	WarnMatches  []WarnMatch  `json:"warn_matches,omitempty"`
-	spans        []MatchSpan
+	Allowed         bool         `json:"allowed"`
+	Reason          string       `json:"reason,omitempty"`
+	Scanner         string       `json:"scanner,omitempty"` // which scanner triggered
+	Hint            string       `json:"hint,omitempty"`    // actionable guidance when blocked
+	Score           float64      `json:"score"`             // anomaly score 0.0-1.0
+	Class           ResultClass  `json:"-"`                 // internal: threat vs protective classification
+	DNSErrorKind    DNSErrorKind `json:"-"`                 // internal: DNS resolver failure subtype (set only when Class == ClassInfrastructureError on the DNS path)
+	SSRFResolvedIPs []string     `json:"-"`                 // internal: DNS answers observed by the SSRF scan on an allowed URL, for dial-time rebind detection
+	WarnMatches     []WarnMatch  `json:"warn_matches,omitempty"`
+	spans           []MatchSpan
 }
 
 // Spans returns retained scanner match coordinates for this result.
@@ -604,13 +605,16 @@ func (s *Scanner) AddressChecker() *addressprotect.Checker {
 	return s.addressChecker
 }
 
-// IsInternalIP checks whether the given IP falls within any configured
-// internal CIDR. Returns false when SSRF protection is disabled (no CIDRs).
+// IsInternalIP checks whether the given IP falls within immutable core CIDRs
+// or any configured internal CIDR.
 func (s *Scanner) IsInternalIP(ip net.IP) bool {
 	// Normalize IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1) to
 	// their 4-byte IPv4 form so they match IPv4 CIDRs like 127.0.0.0/8.
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
+	}
+	if s.isCoreCIDRBlocked(ip) {
+		return true
 	}
 	for _, cidr := range s.internalCIDRs {
 		if cidr.Contains(ip) {
@@ -973,8 +977,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// When active, core CIDRs are always included via mergedSSRFCIDRs()
 	// so private ranges (10.x, 172.16.x, 192.168.x, loopback, link-local)
 	// cannot be removed from the check set via config alone.
-	if result := s.checkSSRF(ctx, hostname); !result.Allowed {
-		return result
+	ssrfResult := s.checkSSRF(ctx, hostname)
+	if !ssrfResult.Allowed {
+		return ssrfResult
 	}
 
 	// Rate limit check (per-domain)
@@ -998,7 +1003,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		}
 	}
 
-	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
+	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0, SSRFResolvedIPs: ssrfResult.SSRFResolvedIPs}
 }
 
 // parseAlternativeIP decodes non-standard IP address notations that
@@ -1245,7 +1250,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 
 	}
 
-	return Result{Allowed: true}
+	return Result{Allowed: true, SSRFResolvedIPs: append([]string(nil), ips...)}
 }
 
 // checkAllowlist rejects requests to domains not in the allowlist.

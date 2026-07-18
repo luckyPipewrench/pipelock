@@ -2997,6 +2997,8 @@ func TestHealthIncludesForwardProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
+	t.Cleanup(p.Close)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -3379,6 +3381,8 @@ func TestSSRFSafeDialContext_DirectIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
+	t.Cleanup(p.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3403,6 +3407,7 @@ func TestSSRFSafeDialContext_InvalidAddr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3424,6 +3429,7 @@ func TestSSRFSafeDialContext_LoopbackBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3537,6 +3543,7 @@ func TestSSRFSafeDialContext_DNSRebindToCoreCIDRsBlockedWhenInternalConfigNil(t 
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
 			}
+			t.Cleanup(p.Close)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -3571,6 +3578,7 @@ func TestSSRFSafeDialContext_PrivateFromStartStaysPrivateIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3605,6 +3613,7 @@ func TestFetchDialDNSRebindEmitsDistinctBlockReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 	p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		ip := net.ParseIP("127.0.0.1")
 		return nil, newSSRFDialBlockError(req.Context(), req.URL.Hostname(), ip, ssrfDialBlockDetail(req.URL.Hostname(), ip))

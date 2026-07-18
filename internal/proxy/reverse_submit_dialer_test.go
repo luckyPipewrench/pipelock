@@ -198,6 +198,7 @@ func TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New proxy: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	var cfgPtr atomic.Pointer[config.Config]
 	var scPtr atomic.Pointer[scanner.Scanner]

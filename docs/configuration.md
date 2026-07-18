@@ -339,7 +339,7 @@ request_body_scanning:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `true` | Enable request body/header DLP scanning and request body prompt-injection scanning |
-| `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Critical DLP and prompt-injection hard-blocks still reject non-provider destinations in enforce mode. |
+| `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Immutable core DLP findings and prompt-injection hard-blocks still reject non-provider destinations in enforce mode; non-core DLP findings follow this action or a per-pattern override. |
 | `pattern_actions` | `{}` | Map of exact DLP pattern name to `warn` or `block` for request body/header DLP. The per-pattern action overrides `action` for that pattern only. Unknown pattern names and unsupported actions are rejected at config load. Immutable core DLP patterns cannot be downgraded to `warn`. |
 | `disable_patterns` | `[]` | Exact DLP pattern names to skip for request body/header DLP only. Unknown names are rejected at config load. Immutable core DLP patterns cannot be disabled. Disabling one pattern does not suppress other DLP matches in the same body or header set. |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |

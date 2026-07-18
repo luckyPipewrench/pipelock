@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -197,6 +200,193 @@ func TestScanRequestBody_DisablePatternsAndPatternActions(t *testing.T) {
 				if hasDLPMatchName(result.DLPMatches, disabled) {
 					t.Fatalf("disabled pattern %q still present in matches %v", disabled, dlpMatchNames(result.DLPMatches))
 				}
+			}
+		})
+	}
+}
+
+func TestRequestDLPPatternControlsAcrossTransports(t *testing.T) {
+	t.Run("forward HTTP", func(t *testing.T) {
+		runForwardHTTPHeaderDLPPatternControls(t)
+	})
+	t.Run("intercepted CONNECT", func(t *testing.T) {
+		runInterceptHeaderDLPPatternControls(t)
+	})
+	t.Run("reverse", func(t *testing.T) {
+		runReverseHeaderDLPPatternControls(t)
+	})
+}
+
+func requestDLPPatternControlCases() []struct {
+	name            string
+	configure       func(*config.Config)
+	wantStatus      int
+	wantUpstreamHit bool
+} {
+	return []struct {
+		name            string
+		configure       func(*config.Config)
+		wantStatus      int
+		wantUpstreamHit bool
+	}{
+		{
+			name: "disabled pattern omitted and forwarded",
+			configure: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Action = config.ActionBlock
+				cfg.RequestBodyScanning.DisablePatterns = []string{testBodyDLPPatternName}
+			},
+			wantStatus:      http.StatusOK,
+			wantUpstreamHit: true,
+		},
+		{
+			name: "pattern block overrides global warn",
+			configure: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Action = config.ActionWarn
+				cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionBlock}
+			},
+			wantStatus:      http.StatusForbidden,
+			wantUpstreamHit: false,
+		},
+	}
+}
+
+func runForwardHTTPHeaderDLPPatternControls(t *testing.T) {
+	t.Helper()
+
+	for _, tc := range requestDLPPatternControlCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamHit atomic.Bool
+			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamHit.Store(true)
+				if got := r.Header.Get("Authorization"); !strings.Contains(got, fakeBodyDLPSecret()) {
+					t.Fatalf("Authorization header = %q, want test secret", got)
+				}
+				_, _ = fmt.Fprint(w, "ok")
+			}))
+			t.Cleanup(backend.Close)
+
+			proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.Mode = config.ModeStrict
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+				cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+				addBodyDLPTestPattern(cfg)
+				tc.configure(cfg)
+			})
+			t.Cleanup(cleanup)
+			installForwardTestDialer(p, backend.Listener.Addr().String())
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://api.example.com/v1/chat", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+
+			resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			if resp.StatusCode != tc.wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
+			}
+			if upstreamHit.Load() != tc.wantUpstreamHit {
+				t.Fatalf("upstream hit = %v, want %v", upstreamHit.Load(), tc.wantUpstreamHit)
+			}
+		})
+	}
+}
+
+func runInterceptHeaderDLPPatternControls(t *testing.T) {
+	t.Helper()
+
+	for _, tc := range requestDLPPatternControlCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamHit atomic.Bool
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamHit.Store(true)
+				if got := r.Header.Get("Authorization"); !strings.Contains(got, fakeBodyDLPSecret()) {
+					t.Fatalf("Authorization header = %q, want test secret", got)
+				}
+				_, _ = fmt.Fprint(w, "ok")
+			}))
+			t.Cleanup(upstream.Close)
+
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.Mode = config.ModeStrict
+			host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+			cfg.APIAllowlist = []string{host}
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+			cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+			addBodyDLPTestPattern(cfg)
+			tc.configure(cfg)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+upstream.Listener.Addr().String()+"/api", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+
+			resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
+			}
+			if upstreamHit.Load() != tc.wantUpstreamHit {
+				t.Fatalf("upstream hit = %v, want %v", upstreamHit.Load(), tc.wantUpstreamHit)
+			}
+		})
+	}
+}
+
+func runReverseHeaderDLPPatternControls(t *testing.T) {
+	t.Helper()
+
+	for _, tc := range requestDLPPatternControlCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.Mode = config.ModeStrict
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.HeaderMode = "all"
+			addBodyDLPTestPattern(cfg)
+			tc.configure(cfg)
+
+			var upstreamHit atomic.Bool
+			upstream := func(w http.ResponseWriter, r *http.Request) {
+				upstreamHit.Store(true)
+				if got := r.Header.Get("Authorization"); !strings.Contains(got, fakeBodyDLPSecret()) {
+					t.Fatalf("Authorization header = %q, want test secret", got)
+				}
+				_, _ = fmt.Fprint(w, "ok")
+			}
+			proxy := reverseTestSetup(t, cfg, upstream)
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/api/data", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			if resp.StatusCode != tc.wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
+			}
+			if upstreamHit.Load() != tc.wantUpstreamHit {
+				t.Fatalf("upstream hit = %v, want %v", upstreamHit.Load(), tc.wantUpstreamHit)
 			}
 		})
 	}

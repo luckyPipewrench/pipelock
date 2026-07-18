@@ -2030,11 +2030,8 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 			RequestID: requestID,
 			Agent:     agent,
 		}
-		if rp.cfgPtr != nil {
-			cfg := rp.cfgPtr.Load()
-			if cfg != nil {
-				opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
-			}
+		if cfg, _ := r.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config); cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
 		_ = rp.emitReceipt(opts)
 		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo(), string(ssrfErr.reason))

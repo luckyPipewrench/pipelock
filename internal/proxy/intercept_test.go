@@ -89,6 +89,7 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	if err := rph.rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)

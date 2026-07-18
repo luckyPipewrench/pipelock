@@ -218,9 +218,18 @@ func configDefaultIdentity(knownProfiles map[string]bool, defaultIdentity string
 	return AgentIdentity{Name: resolved, Profile: ProfileDefault, Auth: envelope.ActorAuthConfigDefault}
 }
 
+// isReservedSelfDeclaredName reports whether a sanitized self-declared agent
+// name must be neutralized to the anonymous identity: the anonymous sentinel
+// itself, or any reserved control-actor name. The explicit agentAnonymous
+// check keeps neutralization correct even if the reserved control-actor list
+// stops including "anonymous".
+func isReservedSelfDeclaredName(name string) bool {
+	return name == agentAnonymous || config.ReservedControlActorName(name) != ""
+}
+
 func sanitizeSelfDeclaredAgentName(agent string) string {
 	name := sanitizeAgentName(agent)
-	if config.ReservedControlActorName(name) != "" {
+	if isReservedSelfDeclaredName(name) {
 		return agentAnonymous
 	}
 	return name
@@ -228,6 +237,22 @@ func sanitizeSelfDeclaredAgentName(agent string) string {
 
 func anonymousSelfDeclaredIdentity() AgentIdentity {
 	return AgentIdentity{Name: "", Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
+}
+
+// resolveSelfDeclaredName maps a sanitized, self-declared (request-supplied)
+// agent name to an identity. A reserved or anonymous name is neutralized to the
+// unattributed identity so it can never be stamped as a control actor; a
+// registered name resolves to its profile; anything else is an unregistered
+// self-declared identity. Header and query paths share this so they cannot
+// diverge.
+func resolveSelfDeclaredName(name string, knownProfiles map[string]bool) AgentIdentity {
+	if isReservedSelfDeclaredName(name) {
+		return anonymousSelfDeclaredIdentity()
+	}
+	if knownProfiles[name] {
+		return AgentIdentity{Name: name, Profile: name, Auth: envelope.ActorAuthMatched}
+	}
+	return AgentIdentity{Name: name, Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
 }
 
 // ExtractAgentWithDefault reads the agent name from the request header,
@@ -286,16 +311,8 @@ func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool, defaul
 		return configDefaultIdentity(knownProfiles, defaultIdentity)
 	}
 
-	header := r.Header.Get(AgentHeader)
-	if header != "" {
-		headerName := sanitizeAgentName(header)
-		if config.ReservedControlActorName(headerName) != "" {
-			return anonymousSelfDeclaredIdentity()
-		}
-		if knownProfiles[headerName] {
-			return AgentIdentity{Name: headerName, Profile: headerName, Auth: envelope.ActorAuthMatched}
-		}
-		return AgentIdentity{Name: headerName, Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
+	if header := r.Header.Get(AgentHeader); header != "" {
+		return resolveSelfDeclaredName(sanitizeAgentName(header), knownProfiles)
 	}
 
 	if defaultIdentity != "" {
@@ -306,14 +323,5 @@ func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool, defaul
 	if queryAgent == "" {
 		return anonymousSelfDeclaredIdentity()
 	}
-	name := sanitizeAgentName(queryAgent)
-	if config.ReservedControlActorName(name) != "" {
-		return anonymousSelfDeclaredIdentity()
-	}
-
-	if knownProfiles[name] {
-		return AgentIdentity{Name: name, Profile: name, Auth: envelope.ActorAuthMatched}
-	}
-
-	return AgentIdentity{Name: name, Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
+	return resolveSelfDeclaredName(sanitizeAgentName(queryAgent), knownProfiles)
 }

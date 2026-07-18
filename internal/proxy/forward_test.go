@@ -4732,6 +4732,88 @@ func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 	}
 }
 
+func TestForwardHTTPSSRFDialBlockErrorResponse(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.FetchProxy.TimeoutSeconds = 5
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+	p.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		ip := net.ParseIP("127.0.0.1")
+		return nil, newSSRFDialBlockError(req.Context(), req.URL.Hostname(), ip, ssrfDialBlockDetail(req.URL.Hostname(), ip))
+	})}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/data", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	w := httptest.NewRecorder()
+
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	if got := w.Header().Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
+		t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.SSRFPrivateIP)
+	}
+	if !strings.Contains(w.Body.String(), "api.vendor.example") {
+		t.Fatalf("body = %q, want blocked host detail", w.Body.String())
+	}
+}
+
+func TestSSRFDialBlockHelpersEdgeCases(t *testing.T) {
+	var nilErr *ssrfDialBlockError
+	if nilErr.Error() != "" {
+		t.Fatalf("nil Error() = %q, want empty", nilErr.Error())
+	}
+	if got := nilErr.blockInfo().Reason; got != blockreason.SSRFPrivateIP {
+		t.Fatalf("nil block reason = %q, want %q", got, blockreason.SSRFPrivateIP)
+	}
+	if nilErr.logDetail() != "" {
+		t.Fatalf("nil logDetail() = %q, want empty", nilErr.logDetail())
+	}
+
+	ctx := withSSRFDialScanSnapshot(context.Background(), " Rebind.Test. ", []string{"bad-ip", "203.0.113.10", "2001:db8::1%eth0"})
+	if ctx == nil {
+		t.Fatal("snapshot context is nil")
+	}
+	var nilContext context.Context
+	if isSSRFDNSRebind(nilContext, "rebind.test", net.ParseIP("127.0.0.1")) {
+		t.Fatal("nil context reported DNS rebind")
+	}
+	if isSSRFDNSRebind(ctx, "other.test", net.ParseIP("127.0.0.1")) {
+		t.Fatal("different host reported DNS rebind")
+	}
+	if isSSRFDNSRebind(ctx, "rebind.test", nil) {
+		t.Fatal("nil IP reported DNS rebind")
+	}
+	if isSSRFDNSRebind(ctx, "rebind.test", net.ParseIP("203.0.113.10")) {
+		t.Fatal("scan-time IP reported DNS rebind")
+	}
+	if !isSSRFDNSRebind(ctx, "rebind.test", net.ParseIP("127.0.0.1")) {
+		t.Fatal("new private IP did not report DNS rebind")
+	}
+	if got := normalizeSSRFDialHost("Example.COM."); got != "example.com" {
+		t.Fatalf("normalize host = %q, want example.com", got)
+	}
+	if got := normalizeSSRFDialIP(nil); got != nil {
+		t.Fatalf("normalize nil IP = %v, want nil", got)
+	}
+	if got := stripIPv6Zone("2001:db8::1%eth0"); got != "2001:db8::1" {
+		t.Fatalf("stripIPv6Zone = %q, want 2001:db8::1", got)
+	}
+	if got := stripIPv6Zone("203.0.113.10"); got != "203.0.113.10" {
+		t.Fatalf("stripIPv6Zone no-zone = %q, want 203.0.113.10", got)
+	}
+}
+
 // TestForwardHTTPResponseCleanPasses verifies that clean forward HTTP
 // responses pass through when response scanning is enabled.
 func TestForwardHTTPResponseCleanPasses(t *testing.T) {

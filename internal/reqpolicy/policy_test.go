@@ -306,6 +306,7 @@ func TestEffectiveMethod(t *testing.T) {
 		{"x-http-method-override", "POST", map[string]string{"X-HTTP-Method-Override": "DELETE"}, "DELETE"},
 		{"x-method-override", "POST", map[string]string{"X-Method-Override": "delete"}, "DELETE"},
 		{"x-http-method", "POST", map[string]string{"X-HTTP-Method": "PATCH"}, "PATCH"},
+		{"query override recognized as standard", "POST", map[string]string{"X-HTTP-Method-Override": "QUERY"}, "QUERY"},
 		{"invalid override falls back to base method", "POST", map[string]string{"X-HTTP-Method-Override": "DELETE, GET"}, "POST"},
 	}
 	for _, tc := range tests {

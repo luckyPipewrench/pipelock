@@ -1695,11 +1695,21 @@ func validateRequestPolicyDiscriminator(rule string, d *RequestPolicyDiscriminat
 	return nil
 }
 
+// methodQuery is the HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body).
+// Go's net/http has no constant for it. It is a safe method that carries a
+// request body, so operators may want to name it in request_policy rules and
+// reverse_proxy allow-lists.
+const methodQuery = "QUERY"
+
 func validHTTPMethod(m string) bool {
 	switch m {
 	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
 		http.MethodPatch, http.MethodDelete, http.MethodConnect,
-		http.MethodOptions, http.MethodTrace:
+		http.MethodOptions, http.MethodTrace,
+		// The HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body) is a
+		// safe method that carries a request body; recognize it so operators
+		// can write request_policy rules that target QUERY requests.
+		methodQuery:
 		return true
 	default:
 		return false
@@ -3046,7 +3056,7 @@ func (c *Config) validateReverseProxySubmit(u *url.URL) error {
 	for i, m := range rp.AllowedMethods {
 		switch strings.ToUpper(m) {
 		case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
-			http.MethodPatch, http.MethodDelete, http.MethodOptions:
+			http.MethodPatch, http.MethodDelete, http.MethodOptions, methodQuery:
 		default:
 			return fmt.Errorf("reverse_proxy.allowed_methods[%d] %q is not a recognized HTTP method", i, m)
 		}

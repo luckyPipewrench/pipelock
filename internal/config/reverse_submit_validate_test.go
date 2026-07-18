@@ -219,6 +219,14 @@ func TestValidate_ReverseProxySubmit_UnknownMethodRejected(t *testing.T) {
 	}
 }
 
+func TestValidate_ReverseProxySubmit_QueryMethodAccepted(t *testing.T) {
+	cfg := submitValidCfg()
+	cfg.ReverseProxy.AllowedMethods = []string{"QUERY"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("QUERY method must be accepted in reverse_proxy.allowed_methods, got %v", err)
+	}
+}
+
 func TestValidate_ReverseProxySubmit_BodyBytesRequiredPositive(t *testing.T) {
 	cfg := submitValidCfg()
 	cfg.ReverseProxy.MaxBodyBytes = 0

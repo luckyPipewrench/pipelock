@@ -27,6 +27,7 @@ func TestClassifyHTTP(t *testing.T) {
 		{name: "PUT", method: http.MethodPut, want: ActionWrite},
 		{name: "PATCH", method: http.MethodPatch, want: ActionWrite},
 		{name: "DELETE", method: http.MethodDelete, want: ActionWrite},
+		{name: "QUERY", method: "QUERY", want: ActionWrite},
 		{name: "custom_method", method: "CUSTOM", want: ActionUnclassified},
 		{name: "empty_method", method: "", want: ActionUnclassified},
 	}
@@ -59,6 +60,7 @@ func TestSideEffectFromMethod(t *testing.T) {
 		{name: "PUT", method: http.MethodPut, want: SideEffectExternalWrite},
 		{name: "PATCH", method: http.MethodPatch, want: SideEffectExternalWrite},
 		{name: "DELETE", method: http.MethodDelete, want: SideEffectExternalWrite},
+		{name: "QUERY", method: "QUERY", want: SideEffectExternalWrite},
 		{name: "custom_method", method: "CUSTOM", want: SideEffectNone},
 		{name: "empty_method", method: "", want: SideEffectNone},
 	}
@@ -91,6 +93,7 @@ func TestReversibilityFromMethod(t *testing.T) {
 		{name: "POST", method: http.MethodPost, want: ReversibilityCompensatable},
 		{name: "PUT", method: http.MethodPut, want: ReversibilityCompensatable},
 		{name: "PATCH", method: http.MethodPatch, want: ReversibilityCompensatable},
+		{name: "QUERY", method: "QUERY", want: ReversibilityCompensatable},
 		{name: "custom_method", method: "CUSTOM", want: ReversibilityUnknown},
 		{name: "empty_method", method: "", want: ReversibilityUnknown},
 	}

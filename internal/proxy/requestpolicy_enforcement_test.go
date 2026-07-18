@@ -95,6 +95,25 @@ func TestEvaluateRequestPolicy_MethodOverrideCannotDowngrade(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequestPolicy_QueryMatchesAndOverrideIsDoubleChecked(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProxyWithConfig(t, reqPolicyConfig(blockRule("QUERY")))
+	if d := p.evaluateRequestPolicy(rpTestHost, "QUERY", http.Header{}, "/v1/search", "", requestPolicyBody{}); d.Action != config.ActionBlock {
+		t.Fatalf("real QUERY request should match QUERY-scoped rule, got action=%q", d.Action)
+	}
+
+	h := http.Header{}
+	h.Set("X-HTTP-Method-Override", "QUERY")
+	if d := p.evaluateRequestPolicy(rpTestHost, http.MethodPost, h, "/v1/search", "", requestPolicyBody{}); d.Action != config.ActionBlock {
+		t.Fatalf("POST with override QUERY should match QUERY-scoped rule, got action=%q", d.Action)
+	}
+
+	if d := p.evaluateRequestPolicy(rpTestHost, http.MethodPost, http.Header{}, "/v1/search", "", requestPolicyBody{}); d.Matched() {
+		t.Fatalf("bare POST should not match a QUERY-only rule, got %+v", d)
+	}
+}
+
 // --- Shared helper: block / warn / shadow + metric + receipt ----------------
 
 func TestApplyRequestPolicy_Outcomes(t *testing.T) {

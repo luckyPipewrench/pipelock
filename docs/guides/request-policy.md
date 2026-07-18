@@ -143,7 +143,10 @@ A request that tunnels a different verb through `X-HTTP-Method-Override`,
 method and the overridden method, and the stricter result wins. This stops a `POST`
 with `X-HTTP-Method-Override: DELETE` from dodging a `DELETE`-scoped rule, and
 equally stops a real `POST` from being downgraded by an override the upstream
-ignores.
+ignores. The recognized verbs include the HTTP `QUERY` method
+(draft-ietf-httpbis-safe-method-w-body), a safe method that carries a request
+body; `methods: ["QUERY"]` is valid in a route and its body is scanned like any
+other body-bearing request.
 
 ## Transport coverage
 

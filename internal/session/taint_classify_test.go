@@ -174,6 +174,40 @@ func TestClassifyMCPToolCallWithOptions_FailSafeUnknownTool(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPAction_QueryIsPublish(t *testing.T) {
+	t.Parallel()
+
+	// The HTTP QUERY method carries a request body; it is classified with the
+	// body-bearing write methods (Publish), not the bodyless read methods, so an
+	// agent cannot move a body to an upstream at lower taint risk than POST.
+	class, _ := session.ClassifyHTTPAction("QUERY", "/search", nil, nil)
+	if class != session.ActionClassPublish {
+		t.Fatalf("ClassifyHTTPAction(QUERY) class = %v, want publish", class)
+	}
+}
+
+func TestClassifyMCPToolCall_QueryMethodIsMutatingNetworkIntent(t *testing.T) {
+	t.Parallel()
+
+	// An MCP tool call that tunnels a QUERY request (a body-bearing method)
+	// must classify as publish, exactly like POST — otherwise an agent could
+	// move a body to an upstream at lower taint risk by choosing QUERY. The
+	// neutral tool name "invoke" isolates the method-based classification: it
+	// matches no name heuristic, so only the QUERY method drives the verdict.
+	class, _, target := session.ClassifyMCPToolCall(
+		"invoke",
+		`{"method":"QUERY","url":"https://api.example.com/search"}`,
+		nil,
+		nil,
+	)
+	if class != session.ActionClassPublish {
+		t.Fatalf("ClassifyMCPToolCall(invoke, method=QUERY) class = %v, want publish", class)
+	}
+	if target != "https://api.example.com/search" {
+		t.Fatalf("target = %q, want the request URL", target)
+	}
+}
+
 func TestClassifyMCPToolCall_MutatingNetworkIntentWithSpacedJSON(t *testing.T) {
 	t.Parallel()
 

@@ -3111,7 +3111,7 @@ reverse_proxy:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `profile` | `""` | Empty keeps generic reverse-proxy behavior. `submit` enables the constrained submission gate. |
-| `allowed_methods` | `["POST"]` | HTTP methods allowed by the submit listener. Values must be known methods. |
+| `allowed_methods` | `["POST"]` | HTTP methods allowed by the submit listener. Values must be known methods (the standard verbs plus the safe body-bearing `QUERY` method). |
 | `allowed_paths` | required | Exact canonical paths allowed by the submit listener. Entries must start with `/`; encoded dot, slash, backslash, semicolon path parameters, and non-canonical request paths are rejected. |
 | `trusted_upstream` | required | Auditable host+port trust declaration. `host` and `port` must exactly match `upstream`; IP literals are rejected; `reason` and `added` are required; expired `expires` dates fail config load. |
 | `max_body_bytes` | required | Positive listener body cap. The effective cap is the smaller of this value and `request_body_scanning.max_body_bytes`. |

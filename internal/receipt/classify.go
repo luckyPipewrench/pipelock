@@ -9,14 +9,22 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// methodQuery is the HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body).
+// It is defined safe and idempotent but carries a request body. Go's net/http
+// has no constant for it. For risk, side-effect, and taint purposes Pipelock
+// classifies QUERY with the body-bearing write methods rather than the bodyless
+// safe methods: the body is an exfil vector and a non-conformant upstream may
+// treat QUERY as mutating, so the conservative (fail-closed) grouping applies.
+const methodQuery = "QUERY"
+
 // ClassifyHTTP infers an action type from an HTTP method.
-// GET/HEAD/OPTIONS → read, POST/PUT/PATCH/DELETE → write.
+// GET/HEAD/OPTIONS → read, POST/PUT/PATCH/DELETE/QUERY → write.
 // Unknown methods are classified as unclassified (high-risk by definition).
 func ClassifyHTTP(method string) ActionType {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return ActionRead
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
 		return ActionWrite
 	case http.MethodTrace:
 		return ActionRead
@@ -34,7 +42,7 @@ func SideEffectFromMethod(method string) SideEffectClass {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace, http.MethodConnect:
 		return SideEffectExternalRead
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
 		return SideEffectExternalWrite
 	default:
 		return SideEffectNone
@@ -49,7 +57,7 @@ func ReversibilityFromMethod(method string) Reversibility {
 		return ReversibilityFull
 	case http.MethodDelete:
 		return ReversibilityIrreversible
-	case http.MethodPost, http.MethodPut, http.MethodPatch:
+	case http.MethodPost, http.MethodPut, http.MethodPatch, methodQuery:
 		return ReversibilityCompensatable
 	default:
 		return ReversibilityUnknown

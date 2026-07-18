@@ -158,6 +158,46 @@ func TestSubmitProfile_BodyDLPBlocksBeforeForward(t *testing.T) {
 	}
 }
 
+func TestSubmitProfile_QueryBodyDLPBlocksBeforeForward(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := newIPv4Server(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		upstreamHit.Store(true)
+		t.Errorf("upstream MUST NOT be invoked when QUERY body trips DLP; got %s %s", r.Method, r.URL.Path)
+	}))
+	defer upstream.Close()
+
+	cfg, upstreamURL := submitProfileTestConfig(upstream.URL)
+	cfg.ReverseProxy.AllowedMethods = []string{"QUERY"}
+	proxy := submitProfileReverseProxy(t, cfg, upstreamURL)
+
+	body := `{"k":"AKIA` + `IOSFODNN7EXAMPLE"}`
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		"QUERY",
+		proxy.URL+"/v1/batch",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (QUERY DLP body match must block)", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
+		t.Errorf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	}
+	if upstreamHit.Load() {
+		t.Error("upstream was invoked despite QUERY body DLP block - fail-closed contract violated")
+	}
+}
+
 // TestSubmitProfile_MethodNotAllowed verifies the per-listener method
 // allowlist rejects requests with a non-allowed method before any
 // scanning or upstream dial.

@@ -170,7 +170,7 @@ func (m *Metrics) RecordReverseProxyScanBlocked(direction, reason string) {
 // Unknown methods are grouped as "OTHER" to prevent cardinality explosion.
 func normalizeHTTPMethod(method string) string {
 	switch method {
-	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "QUERY":
 		return method
 	default:
 		return "OTHER"

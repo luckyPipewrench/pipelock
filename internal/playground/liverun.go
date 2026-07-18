@@ -233,9 +233,9 @@ func liveRunProxyConfig(opts LiveRunOpts) (*config.Config, error) {
 		cfg.BindDefaultAgentIdentity = true
 
 		// The benign read host is the one approved interactive destination, so lock
-		// it to reads: a request_policy rule blocks the standard write methods at
-		// the proxy (with a signed receipt), so a shell `curl -X POST` cannot use
-		// the approved host as a body-exfil channel. NOTE: this is a method
+		// it to reads: a request_policy rule blocks the standard write/body-bearing
+		// methods at the proxy (with a signed receipt), so a shell `curl -X POST`
+		// cannot use the approved host as a body-exfil channel. NOTE: this is a method
 		// deny-list, not a true default-deny "only GET" route (an exotic custom
 		// verb is not covered here -- the SafeTarget handler 405s those as
 		// defense-in-depth). Route-level default-deny allow-routes with receipts is
@@ -249,7 +249,7 @@ func liveRunProxyConfig(opts LiveRunOpts) (*config.Config, error) {
 			Action: config.ActionBlock,
 			Route: config.RequestPolicyRoute{
 				Hosts:   []string{liveRunSafeHost},
-				Methods: []string{"POST", "PUT", "PATCH", "DELETE"},
+				Methods: []string{"POST", "PUT", "PATCH", "DELETE", "QUERY"},
 			},
 			Reason: "benign lab read host is GET-only; a write method could carry a secret body",
 		})

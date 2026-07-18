@@ -132,6 +132,22 @@ func TestValidateRequestPolicy_Errors(t *testing.T) {
 
 // Disabled sections are still structurally validated so dormant bad config
 // cannot activate silently on reload.
+func TestValidHTTPMethodRecognizesQuery(t *testing.T) {
+	if !validHTTPMethod("QUERY") {
+		t.Fatal("validHTTPMethod(QUERY) = false, want true (the HTTP QUERY method must be a valid request_policy method)")
+	}
+	if validHTTPMethod("FOO") {
+		t.Fatal("validHTTPMethod(FOO) = true, want false")
+	}
+}
+
+func TestValidateRequestPolicy_RequestPolicyQueryMethodAccepted(t *testing.T) {
+	cfg := enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"QUERY"}}})
+	if _, err := cfg.ValidateWithWarnings(); err != nil {
+		t.Fatalf("request_policy rule with QUERY method must validate, got %v", err)
+	}
+}
+
 func TestValidateRequestPolicy_DormantValidation(t *testing.T) {
 	c := Defaults()
 	c.RequestPolicy = RequestPolicy{

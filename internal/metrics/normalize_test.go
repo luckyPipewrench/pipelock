@@ -20,6 +20,7 @@ func TestNormalizeHTTPMethod(t *testing.T) {
 		{"PATCH", "PATCH", "PATCH"},
 		{"HEAD", "HEAD", "HEAD"},
 		{"OPTIONS", "OPTIONS", "OPTIONS"},
+		{"QUERY", "QUERY", "QUERY"},
 		{"unknown TRACE", "TRACE", "OTHER"},
 		{"unknown CONNECT", "CONNECT", "OTHER"},
 		{"empty string", "", "OTHER"},

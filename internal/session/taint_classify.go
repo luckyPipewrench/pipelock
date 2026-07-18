@@ -126,6 +126,10 @@ func failSafeSensitivity(opts ClassificationOptions, confident bool) ActionSensi
 	return SensitivityNormal
 }
 
+// methodQuery is the HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body),
+// a safe method that carries a request body. Go's net/http has no constant.
+const methodQuery = "QUERY"
+
 // ClassifyHTTPAction returns the taint policy action class for an HTTP request.
 func ClassifyHTTPAction(method, targetPath string, protectedPatterns, elevatedPatterns []string) (ActionClass, ActionSensitivity) {
 	classified := ClassifyHTTPActionWithOptions(method, targetPath, protectedPatterns, elevatedPatterns, ClassificationOptions{})
@@ -139,7 +143,10 @@ func ClassifyHTTPActionWithOptions(method, targetPath string, protectedPatterns,
 	switch strings.ToUpper(method) {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
 		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), Confident: pathClass.Confident}
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
+		// The HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body) carries a
+		// request body; classify it with the body-bearing write methods so an
+		// agent cannot move a body to an upstream at lower taint risk than POST.
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: pathClass.Confident}
 	default:
 		return ActionClassification{Class: ActionClassNetwork, Sensitivity: pathClass.Sensitivity, Confident: false}
@@ -417,7 +424,7 @@ func hasMutatingNetworkIntent(argsJSON string) bool {
 	}
 	lower := normalizeIntentJSON(argsJSON)
 	return containsAny(lower,
-		`"method":"post"`, `"method":"put"`, `"method":"patch"`, `"method":"delete"`,
+		`"method":"post"`, `"method":"put"`, `"method":"patch"`, `"method":"delete"`, `"method":"query"`,
 		`"webhook"`, `"endpoint"`, `"payload"`, `"request_body"`, `"form_data"`, `"upload"`)
 }
 
@@ -448,7 +455,7 @@ func hasMutatingNetworkMethod(argsJSON string) bool {
 	if !ok {
 		lower := normalizeIntentJSON(argsJSON)
 		return containsAny(lower,
-			`"method":"post"`, `"method":"put"`, `"method":"patch"`, `"method":"delete"`)
+			`"method":"post"`, `"method":"put"`, `"method":"patch"`, `"method":"delete"`, `"method":"query"`)
 	}
 	return jsonWalk(decoded, func(key string, value any) bool {
 		if !strings.EqualFold(key, "method") {
@@ -459,7 +466,7 @@ func hasMutatingNetworkMethod(argsJSON string) bool {
 			return false
 		}
 		switch strings.ToUpper(strings.TrimSpace(method)) {
-		case "POST", "PUT", "PATCH", "DELETE":
+		case "POST", "PUT", "PATCH", "DELETE", methodQuery:
 			return true
 		default:
 			return false

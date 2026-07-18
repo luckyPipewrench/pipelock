@@ -519,12 +519,21 @@ func isStandardMethod(method string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
 		http.MethodPatch, http.MethodDelete, http.MethodConnect,
-		http.MethodOptions, http.MethodTrace:
+		http.MethodOptions, http.MethodTrace,
+		// The HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body). A
+		// method-override header carrying QUERY must be recognized so the
+		// dual base/override rule check cannot be evaded via QUERY.
+		methodQuery:
 		return true
 	default:
 		return false
 	}
 }
+
+// methodQuery is the HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body),
+// a safe method that carries a request body. Go's net/http has no constant for
+// it.
+const methodQuery = "QUERY"
 
 // NormalizeHost lowercases a host and strips a DNS trailing dot, optional URL
 // scheme, and optional port. It is deliberately permissive because callers may

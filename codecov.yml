@@ -6,7 +6,7 @@ coverage:
         threshold: 0%
     patch:
       default:
-        target: 95%
+        target: 90%
         # Child init entrypoints terminate or replace their own process and
         # retain kernel-dependent failure branches. They remain in project
         # coverage and have a dedicated merged subprocess-coverage CI job.

@@ -6,7 +6,7 @@ coverage:
         threshold: 0%
     patch:
       default:
-        target: 75%
+        target: 95%
 ignore:
   # The OpenSSF Best Practices entry certifies the Apache-2.0 FLOSS core.
   # ELv2 production sources remain fully tested in CI but are outside that
@@ -38,6 +38,7 @@ ignore:
   # hosted runners. Parent and child process coverage for the runnable sandbox
   # paths is merged separately by scripts/coverage-with-subprocess.sh.
   # CI-only instrumented build support.
+  - "internal/sandbox/subprocess_coverage.go"
   - "internal/sandbox/subprocess_coverage_enabled.go"
   - "internal/sandbox/subreaper_linux.go"  # kernel primitive (prctl)
   - "internal/sandbox/shm_linux.go"  # kernel primitive (mount), runs in forked child

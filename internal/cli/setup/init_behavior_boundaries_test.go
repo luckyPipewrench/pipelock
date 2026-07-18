@@ -141,7 +141,7 @@ func TestInitVerifyAndCanaryFailClosed(t *testing.T) {
 	if verify.Failed != 1 || !strings.Contains(verify.Detail, "config validation failed") {
 		t.Fatalf("verify result = %+v", verify)
 	}
-	if scanCanaryURL(invalid, "https://github.com/test?key="+canaryToken()) {
+	if scanCanaryURL(invalid, "https://api.vendor.example/test?key="+canaryToken()) {
 		t.Fatal("canary scan must fail closed when scanner construction fails")
 	}
 

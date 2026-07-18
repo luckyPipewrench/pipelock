@@ -67,6 +67,10 @@ func TestReadEvidenceSourcesRejectsMalformedReports(t *testing.T) {
 
 func TestWriteEvidenceJSONLRejectsUnencodableRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	original := []byte("previous complete evidence\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	err := writeEvidenceJSONL(path, []any{
 		map[string]string{"status": "valid"},
 		map[string]float64{"invalid": math.Inf(1)},
@@ -83,12 +87,8 @@ func TestWriteEvidenceJSONLRejectsUnencodableRecord(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	text := string(data)
-	if !strings.Contains(text, `"status":"valid"`) {
-		t.Fatalf("first valid record was not written: %q", text)
-	}
-	if strings.Contains(text, "must-not-be-written") {
-		t.Fatalf("writer continued after serialization failure: %q", text)
+	if string(data) != string(original) {
+		t.Fatalf("failed generation replaced complete evidence: %q", data)
 	}
 }
 

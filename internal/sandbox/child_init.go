@@ -46,6 +46,16 @@ func RunInit() {
 
 	strict := IsStrictMode()
 
+	var bridgeSignals chan os.Signal
+	if socketPath != "" {
+		// Initialize Go's signal thread before RLIMIT_NPROC is lowered. On a
+		// shared UID that is already above the limit, doing this afterward can
+		// crash the runtime instead of returning a controlled command error.
+		bridgeSignals = make(chan os.Signal, 1)
+		signal.Notify(bridgeSignals, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(bridgeSignals)
+	}
+
 	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
@@ -151,7 +161,7 @@ func RunInit() {
 	}
 
 	if socketPath != "" {
-		runInitWithBridge(command, env, workspace, socketPath)
+		runInitWithBridge(command, env, workspace, socketPath, bridgeSignals)
 		return
 	}
 
@@ -182,7 +192,7 @@ func RunInit() {
 	exitSandboxProcess(1)
 }
 
-func runInitWithBridge(command, env []string, workspace, socketPath string) {
+func runInitWithBridge(command, env []string, workspace, socketPath string, sigCh <-chan os.Signal) {
 	noNetNS := IsNoNetNS()
 	bridgeAddr := ""
 	if noNetNS {
@@ -195,9 +205,6 @@ func runInitWithBridge(command, env []string, workspace, socketPath string) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sigCh)
 
 	go bridge.Serve(ctx)
 

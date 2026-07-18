@@ -43,25 +43,73 @@ func TestHardeningLiveRunRejectsMalformedConfiguration(t *testing.T) {
 func TestHardeningLiveRunProbeCancellationStopsProcess(t *testing.T) {
 	t.Parallel()
 
-	script := filepath.Join(t.TempDir(), "probe")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil { // #nosec G306 -- executable test fixture.
-		t.Fatalf("write probe: %v", err)
+	tests := []struct {
+		name string
+		run  func(*LiveRun) error
+	}{
+		{
+			name: "egress",
+			run: func(lr *LiveRun) error {
+				_, err := lr.runEgressProbe([]string{"127.0.0.1:1"}, false)
+				return err
+			},
+		},
+		{
+			name: "local escape",
+			run: func(lr *LiveRun) error {
+				_, err := lr.runLocalEscapeProbe(false)
+				return err
+			},
+		},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	lr := &LiveRun{ctx: ctx, agentBin: script}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "started")
+			script := filepath.Join(t.TempDir(), "probe")
+			body := "#!/bin/sh\n: > \"" + marker + "\"\nexec sleep 30\n"
+			if err := os.WriteFile(script, []byte(body), 0o700); err != nil { // #nosec G306 -- executable test fixture.
+				t.Fatalf("write probe: %v", err)
+			}
 
-	start := time.Now()
-	if _, err := lr.runEgressProbe([]string{"127.0.0.1:1"}, false); !errors.Is(err, context.Canceled) {
-		t.Fatalf("runEgressProbe error = %v, want context cancellation", err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("canceled probe took %s", elapsed)
-	}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lr := &LiveRun{ctx: ctx, agentBin: script}
+			result := make(chan error, 1)
+			go func() {
+				result <- tc.run(lr)
+			}()
 
-	if _, err := lr.runLocalEscapeProbe(false); !errors.Is(err, context.Canceled) {
-		t.Fatalf("runLocalEscapeProbe error = %v, want context cancellation", err)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			startDeadline := time.NewTimer(2 * time.Second)
+			defer startDeadline.Stop()
+		waitForStart:
+			for {
+				select {
+				case <-ticker.C:
+					if _, err := os.Stat(marker); err == nil {
+						break waitForStart
+					} else if !os.IsNotExist(err) {
+						t.Fatalf("stat start marker: %v", err)
+					}
+				case err := <-result:
+					t.Fatalf("probe exited before cancellation: %v", err)
+				case <-startDeadline.C:
+					t.Fatal("probe process did not start")
+				}
+			}
+
+			cancel()
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("probe error = %v, want context cancellation", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("probe process did not terminate after cancellation")
+			}
+		})
 	}
 }
 
@@ -126,8 +174,14 @@ func TestHardeningHostWitnessProbeErrorsFailClosed(t *testing.T) {
 		}
 		return nil, errors.New("agent probe unavailable")
 	}
+	proxyLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("proxy listener: %v", err)
+	}
+	t.Cleanup(func() { _ = proxyLn.Close() })
+	lr.proxyLn = proxyLn
 	if _, err := lr.buildHostContainmentWitness(ctx); err == nil ||
-		!strings.Contains(err.Error(), "proxy listener not initialized") {
-		t.Fatalf("buildHostContainmentWitness nil proxy error = %v", err)
+		!strings.Contains(err.Error(), "contained agent probe: agent probe unavailable") {
+		t.Fatalf("buildHostContainmentWitness agent probe error = %v", err)
 	}
 }

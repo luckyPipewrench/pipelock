@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -303,8 +304,31 @@ func TestAdminServerStartsAndCleansUpLoopbackListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startAdminServer: %v", err)
 	}
+	line := strings.TrimSpace(out.String())
+	const prefix = "broker admin serving on "
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("admin startup output = %q", line)
+	}
+	addr := strings.TrimPrefix(line, prefix)
+	dialer := &net.Dialer{Timeout: time.Second}
+	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("admin listener %s was not reachable: %v", addr, err)
+	}
+	_ = conn.Close()
 	stop()
-	if got := out.String(); !strings.Contains(got, "broker admin serving on 127.0.0.1:0") {
-		t.Fatalf("admin startup output = %q", got)
+
+	deadline := time.Now().Add(2 * time.Second)
+	dialer.Timeout = 50 * time.Millisecond
+	for {
+		conn, dialErr := dialer.DialContext(context.Background(), "tcp", addr)
+		if dialErr != nil {
+			break
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatalf("admin listener %s remained reachable after stop", addr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

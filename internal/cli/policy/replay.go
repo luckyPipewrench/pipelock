@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
@@ -247,16 +249,18 @@ func writeCaptureSurfaceStatus(w io.Writer, diff *capture.DiffReport) {
 	}
 }
 
-// writeReport opens path and calls renderFn to write the DiffReport.
+// writeReport renders completely before atomically publishing the DiffReport.
 type renderFunc func(w io.Writer, d *capture.DiffReport) error
 
 func writeReport(path string, diff *capture.DiffReport, renderFn renderFunc) error {
-	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
+	var data bytes.Buffer
+	if err := renderFn(&data, diff); err != nil {
+		return err
+	}
+	if err := atomicfile.Write(filepath.Clean(path), data.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("opening report file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-	return renderFn(f, diff)
+	return nil
 }
 
 // hashFile returns the hex-encoded SHA-256 of the file at path.

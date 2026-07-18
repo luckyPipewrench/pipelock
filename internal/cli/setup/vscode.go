@@ -429,6 +429,11 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 		unwrapped++
 	}
 
+	if unwrapped == 0 && !dryRun {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unwrapped 0 server(s) in %s\n", targetPath)
+		return nil
+	}
+
 	output, err := marshalVscodeConfig(existingData, mcpCfg)
 	if err != nil {
 		return fmt.Errorf("marshaling mcp.json: %w", err)

@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -23,7 +22,7 @@ func runSandboxInitBinary(t *testing.T, binary string, env []string) (string, in
 
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary) // #nosec G204 -- controlled test binary.
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = initChildEnvironment(env)
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {

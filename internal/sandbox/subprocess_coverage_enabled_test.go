@@ -6,9 +6,12 @@
 package sandbox
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +66,30 @@ func TestPrepareSubprocessCoverageEnabledWithoutDirectory(t *testing.T) {
 	}
 	if err := flushSubprocessCoverage(); err != nil {
 		t.Fatalf("flushSubprocessCoverage() without GOCOVERDIR: %v", err)
+	}
+}
+
+func TestReportSubprocessCoverageError(t *testing.T) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = writeEnd
+	reportSubprocessCoverageError(errors.New("forced coverage failure"))
+	os.Stderr = oldStderr
+	if err := writeEnd.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	data, err := io.ReadAll(readEnd)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := readEnd.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+	if !strings.Contains(string(data), "forced coverage failure") {
+		t.Fatalf("stderr = %q, want coverage failure", data)
 	}
 }
 

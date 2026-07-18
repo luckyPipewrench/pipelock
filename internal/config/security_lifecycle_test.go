@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
@@ -175,8 +176,13 @@ func TestReloaderWatchSetupFailureResolvesLifecycleChannels(t *testing.T) {
 	default:
 		t.Fatal("Ready remained blocked after watcher setup failed")
 	}
-	if _, ok := <-reloader.Changes(); ok {
-		t.Fatal("Changes remained open after Start returned")
+	select {
+	case _, ok := <-reloader.Changes():
+		if ok {
+			t.Fatal("Changes remained open after Start returned")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changes did not close after Start returned")
 	}
 }
 

@@ -89,16 +89,24 @@ func TestHardeningBrokerUpstreamReadFailuresDoNotReturnArtifacts(t *testing.T) {
 	}
 	lease := &Lease{Machine: &Machine{PrivateIP: "127.0.0.1"}}
 
-	if _, err := srv.fetchVMArtifact(context.Background(), lease, "token", ""); err == nil ||
+	artifact, err := srv.fetchVMArtifact(context.Background(), lease, "token", "")
+	if err == nil ||
 		!strings.Contains(err.Error(), "read bundle body") {
 		t.Fatalf("fetchVMArtifact error = %v", err)
 	}
-	if _, _, retryable, err := srv.attemptVMSession(
+	if artifact.status != 0 || artifact.body != nil || artifact.contentType != "" || artifact.contentDisposition != "" {
+		t.Fatalf("fetchVMArtifact returned partial artifact: %#v", artifact)
+	}
+	session, expiresAt, retryable, err := srv.attemptVMSession(
 		context.Background(),
 		"http://127.0.0.1:8080/api/live/session",
 		[]byte(`{"code":"code"}`),
-	); err == nil || retryable || !strings.Contains(err.Error(), "read vm session response") {
+	)
+	if err == nil || retryable || !strings.Contains(err.Error(), "read vm session response") {
 		t.Fatalf("attemptVMSession retryable=%v error=%v", retryable, err)
+	}
+	if session != (vmSessionResponse{}) || !expiresAt.IsZero() {
+		t.Fatalf("attemptVMSession returned partial state: session=%#v expires=%v", session, expiresAt)
 	}
 }
 

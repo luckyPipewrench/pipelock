@@ -23,14 +23,14 @@ func TestProxyEnvTransaction_DoesNotPublishPartialMutation(t *testing.T) {
 			map[string]interface{}{"name": "agent", "env": originalEnv},
 		},
 	}
+	before := cloneManifestValue(t, podSpec)
 
 	err := injectProxyEnvs(podSpec, "http://proxy:8888", "", "")
 	if err == nil || !strings.Contains(err.Error(), envHTTPProxy+" already defined") {
 		t.Fatalf("error = %v, want conflicting proxy rejection", err)
 	}
-	agent := podSpec["containers"].([]interface{})[2].(map[string]interface{})
-	if !reflect.DeepEqual(agent["env"], originalEnv) {
-		t.Fatalf("failed injection published a partial env list: %#v", agent["env"])
+	if !reflect.DeepEqual(podSpec, before) {
+		t.Fatalf("failed injection changed manifest:\n got: %#v\nwant: %#v", podSpec, before)
 	}
 }
 
@@ -281,9 +281,9 @@ func TestVscodeRemove_InvalidMetadataLeavesConfigAndSidecarUntouched(t *testing.
 	cmd := VscodeCmd()
 	var stderr strings.Builder
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"remove", "--project", "--dry-run"})
+	cmd.SetArgs([]string{"remove", "--project"})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("remove dry-run: %v", err)
+		t.Fatalf("remove: %v", err)
 	}
 	if !strings.Contains(stderr.String(), "header sidecar path must be absolute") {
 		t.Fatalf("missing fail-closed warning: %q", stderr.String())

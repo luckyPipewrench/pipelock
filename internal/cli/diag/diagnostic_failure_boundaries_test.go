@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
@@ -147,7 +148,16 @@ func TestDiagnosticTransportFailuresDoNotBecomePasses(t *testing.T) {
 		t.Fatalf("unhealthy endpoint result = %#v", health)
 	}
 
-	unreachable := "http://127.0.0.1:1"
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack failing diagnostic server: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(failing.Close)
+	unreachable := failing.URL
 	checks := []struct {
 		name string
 		run  func() diagnoseResult
@@ -229,6 +239,7 @@ func TestConnectThroughProxyRejectsMalformedAndContradictoryResponses(t *testing
 					return
 				}
 				defer func() { _ = conn.Close() }()
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 				buf := make([]byte, 1024)
 				_, _ = conn.Read(buf)
 				_, _ = io.WriteString(conn, tc.response)
@@ -238,7 +249,11 @@ func TestConnectThroughProxyRejectsMalformedAndContradictoryResponses(t *testing
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want substring %q", err, tc.want)
 			}
-			<-done
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("proxy peer did not complete before deadline")
+			}
 		})
 	}
 

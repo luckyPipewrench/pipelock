@@ -42,6 +42,11 @@ func RunStandaloneInit() {
 
 	strict := IsStrictMode()
 
+	// Initialize Go's signal thread before RLIMIT_NPROC is lowered. This keeps
+	// process exhaustion on a shared UID in the controlled command-error path.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
 	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
@@ -147,9 +152,6 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
 		exitSandboxProcess(1)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
 
 	go bridge.Serve(ctx)
 	defer bridge.Close()

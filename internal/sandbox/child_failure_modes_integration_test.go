@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,13 +18,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-)
-
-const (
-	childWorkspaceEnv = "__PIPELOCK_SANDBOX_WORKSPACE"
-	childCommandEnv   = "__PIPELOCK_SANDBOX_COMMAND"
-	childExtraEnv     = "__PIPELOCK_SANDBOX_EXTRA_ENV"
-	childPolicyEnv    = "__PIPELOCK_SANDBOX_POLICY"
 )
 
 type initChildResult struct {
@@ -91,33 +85,6 @@ func initChildNamespaceAttributes() *syscall.SysProcAttr {
 		Pdeathsig: syscall.SIGTERM,
 		Setpgid:   true,
 	}
-}
-
-func initChildEnvironment(overrides []string) []string {
-	keys := map[string]struct{}{
-		initEnvKey:        {},
-		standaloneInitEnv: {},
-		strictEnvKey:      {},
-		noNetNSEnvKey:     {},
-		sandboxSocketEnv:  {},
-		childWorkspaceEnv: {},
-		childCommandEnv:   {},
-		childExtraEnv:     {},
-		childPolicyEnv:    {},
-	}
-	for _, entry := range overrides {
-		key, _, _ := strings.Cut(entry, "=")
-		keys[key] = struct{}{}
-	}
-
-	env := make([]string, 0, len(os.Environ())+len(overrides))
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if _, replaced := keys[key]; !replaced {
-			env = append(env, entry)
-		}
-	}
-	return append(env, overrides...)
 }
 
 func marshalInitPolicy(t *testing.T, policy Policy) string {
@@ -307,6 +274,75 @@ func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
 		requireInitFailure(t, result, "chdir "+restrictedWorkspace+":")
 	})
 
+	t.Run("late command failures", func(t *testing.T) {
+		invalidExecutable := filepath.Join(workspace, "invalid-executable")
+		// #nosec G306 -- executable permission is required to reach the
+		// syscall.Exec invalid-format failure after sandbox setup.
+		if err := os.WriteFile(invalidExecutable, []byte("not an executable format\n"), 0o700); err != nil {
+			t.Fatalf("write invalid executable: %v", err)
+		}
+
+		tests := []struct {
+			name       string
+			modeEnv    string
+			command    string
+			wantStderr string
+		}{
+			{
+				name:       "mcp exec",
+				modeEnv:    initEnvKey + "=1",
+				command:    invalidExecutable,
+				wantStderr: "exec failed:",
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				env := []string{
+					tc.modeEnv,
+					childWorkspaceEnv + "=" + workspace,
+					childCommandEnv + "=" + tc.command,
+					childPolicyEnv + "=" + instrumentedInitPolicy(t, workspace),
+					noNetNSEnvKey + "=1",
+					"GOMAXPROCS=1",
+				}
+				result := runInitChildFailureCase(t, binary, env)
+				requireInitFailure(t, result, tc.wantStderr)
+			})
+		}
+	})
+
+	t.Run("bridge listen failures", func(t *testing.T) {
+		listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", bridgeListenAddr)
+		if err != nil {
+			t.Skipf("reserve bridge address: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := listener.Close(); err != nil {
+				t.Errorf("close bridge listener: %v", err)
+			}
+		})
+
+		for _, tc := range []struct {
+			name    string
+			modeEnv string
+		}{
+			{name: "mcp", modeEnv: initEnvKey + "=1"},
+			{name: "standalone", modeEnv: standaloneInitEnv + "=1"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				result := runInitChildFailureCase(t, binary, []string{
+					tc.modeEnv,
+					childWorkspaceEnv + "=" + workspace,
+					childCommandEnv + "=/bin/true",
+					childPolicyEnv + "=" + instrumentedInitPolicy(t, workspace),
+					sandboxSocketEnv + "=" + socketPath,
+					"GOMAXPROCS=1",
+				})
+				requireInitFailure(t, result, "bridge proxy:")
+			})
+		}
+	})
+
 	tests := []struct {
 		name       string
 		modeEnv    string
@@ -316,27 +352,27 @@ func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
 		wantStderr string
 	}{
 		{
-			name:       "mcp exec failure without bridge",
+			name:       "mcp rejects missing command without bridge",
 			modeEnv:    initEnvKey + "=1",
 			command:    "/definitely/missing/pipelock-test-command",
-			wantCode:   1,
-			wantStderr: "exec failed:",
+			wantCode:   127,
+			wantStderr: "command not found:",
 		},
 		{
-			name:       "mcp bridge start failure",
+			name:       "mcp bridge rejects missing command",
 			modeEnv:    initEnvKey + "=1",
 			command:    "/definitely/missing/pipelock-test-command",
 			socketEnv:  sandboxSocketEnv + "=" + socketPath,
-			wantCode:   1,
-			wantStderr: "command error:",
+			wantCode:   127,
+			wantStderr: "command not found:",
 		},
 		{
-			name:       "standalone start failure",
+			name:       "standalone rejects missing command",
 			modeEnv:    standaloneInitEnv + "=1",
 			command:    "/definitely/missing/pipelock-test-command",
 			socketEnv:  sandboxSocketEnv + "=" + socketPath,
-			wantCode:   1,
-			wantStderr: "command error:",
+			wantCode:   127,
+			wantStderr: "command not found:",
 		},
 		{
 			name:      "mcp bridge preserves exit code",

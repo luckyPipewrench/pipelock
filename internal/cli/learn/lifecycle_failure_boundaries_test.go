@@ -423,11 +423,13 @@ func TestPromoteSwapFailureEmitsRejectedTerminalReceipt(t *testing.T) {
 		t.Fatal("runPromote unexpectedly accepted an unwritable active path")
 	}
 	assertRejectedTerminalReceipt(t, receiptOut, contractreceipt.PayloadContractPromoteCommitted)
-	if _, _, latestErr := latestAccepted(contractstore.New(fixture.storeDir), contractstore.Options{
+	if _, hasLatest, latestErr := latestAccepted(contractstore.New(fixture.storeDir), contractstore.Options{
 		Roster: fixture.roster,
 		Now:    lifecycleTestNow,
 	}); latestErr != nil {
 		t.Fatalf("latestAccepted after rejected promote: %v", latestErr)
+	} else if hasLatest {
+		t.Fatal("rejected promote entered accepted history")
 	}
 }
 

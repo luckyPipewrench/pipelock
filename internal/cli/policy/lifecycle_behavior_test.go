@@ -217,11 +217,30 @@ func TestReplayReportFailuresDoNotCreatePartialRegularFiles(t *testing.T) {
 func TestWriteReportPropagatesRendererFailureAndUsesPrivateMode(t *testing.T) {
 	sentinel := errors.New("render failed")
 	path := filepath.Join(t.TempDir(), "report.json")
+	original := []byte("previous complete report\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	err := writeReport(path, &capture.DiffReport{}, func(io.Writer, *capture.DiffReport) error {
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("render error = %v", err)
+	}
+	data, readErr := os.ReadFile(path) // #nosec G304 -- path is inside t.TempDir.
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("failed render replaced complete report: %q", data)
+	}
+
+	err = writeReport(path, &capture.DiffReport{}, func(w io.Writer, _ *capture.DiffReport) error {
+		_, writeErr := io.WriteString(w, "complete report\n")
+		return writeErr
+	})
+	if err != nil {
+		t.Fatalf("writeReport success path: %v", err)
 	}
 	info, statErr := os.Stat(path)
 	if statErr != nil {

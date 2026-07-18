@@ -7,6 +7,12 @@ coverage:
     patch:
       default:
         target: 95%
+        # Child init entrypoints terminate or replace their own process and
+        # retain kernel-dependent failure branches. They remain in project
+        # coverage and have a dedicated merged subprocess-coverage CI job.
+        paths:
+          - "!internal/sandbox/child_init.go"
+          - "!internal/sandbox/child_standalone_init.go"
 ignore:
   # The OpenSSF Best Practices entry certifies the Apache-2.0 FLOSS core.
   # ELv2 production sources remain fully tested in CI but are outside that

@@ -7,12 +7,13 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -22,19 +23,70 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+type streamableUpstreamObservation struct {
+	method      string
+	accept      string
+	session     string
+	lastEventID string
+	auth        string
+	proxyAuth   string
+	operator    string
+}
+
+func receiveStreamableUpstreamObservation(t *testing.T, ch <-chan streamableUpstreamObservation) streamableUpstreamObservation {
+	t.Helper()
+	select {
+	case obs := <-ch:
+		return obs
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for upstream observation")
+		return streamableUpstreamObservation{}
+	}
+}
+
+func assertStreamableBlockReceipt(
+	t *testing.T,
+	h *mcpDecisionReceiptHarness,
+	resp *http.Response,
+	wantLayer string,
+	wantTarget string,
+) {
+	t.Helper()
+	actionID := resp.Header.Get(blockreason.HeaderReceipt)
+	if actionID == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderReceipt)
+	}
+	blocks := receiptsByVerdict(readActionReceipts(t, h.dir), config.ActionBlock)
+	if len(blocks) != 1 {
+		t.Fatalf("block receipts = %d, want 1", len(blocks))
+	}
+	record := blocks[0].ActionRecord
+	if record.ActionID != actionID {
+		t.Fatalf("%s = %q, want emitted action id %q", blockreason.HeaderReceipt, actionID, record.ActionID)
+	}
+	if record.Layer != wantLayer {
+		t.Fatalf("receipt layer = %q, want %q", record.Layer, wantLayer)
+	}
+	if record.Target != wantTarget {
+		t.Fatalf("receipt target = %q, want %q", record.Target, wantTarget)
+	}
+	if record.PolicyHash == "" {
+		t.Fatal("receipt policy hash is empty")
+	}
+}
+
 func TestHTTPListener_GETStreamForwardsScannedSSE(t *testing.T) {
 	const sessionID = "session-get-stream"
-	const lastEventID = "event-42"
+	lastEventID := "event 42 caf\u00e9"
 	message := `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"hello world"}}`
-	var upstreamMethod, upstreamAccept, upstreamSession, upstreamLastEventID string
-	var upstreamMu sync.Mutex
+	upstreamObs := make(chan streamableUpstreamObservation, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamMu.Lock()
-		upstreamMethod = r.Method
-		upstreamAccept = r.Header.Get("Accept")
-		upstreamSession = r.Header.Get("Mcp-Session-Id")
-		upstreamLastEventID = r.Header.Get("Last-Event-ID")
-		upstreamMu.Unlock()
+		upstreamObs <- streamableUpstreamObservation{
+			method:      r.Method,
+			accept:      r.Header.Get("Accept"),
+			session:     r.Header.Get("Mcp-Session-Id"),
+			lastEventID: r.Header.Get("Last-Event-ID"),
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Mcp-Session-Id", sessionID)
 		_, _ = w.Write([]byte("data: " + message + "\n\n"))
@@ -68,23 +120,18 @@ func TestHTTPListener_GETStreamForwardsScannedSSE(t *testing.T) {
 	if got := resp.Header.Get("Mcp-Session-Id"); got != sessionID {
 		t.Fatalf("response session = %q, want %q", got, sessionID)
 	}
-	upstreamMu.Lock()
-	gotMethod := upstreamMethod
-	gotAccept := upstreamAccept
-	gotSession := upstreamSession
-	gotLastEventID := upstreamLastEventID
-	upstreamMu.Unlock()
-	if gotMethod != http.MethodGet {
-		t.Fatalf("upstream method = %q, want GET", gotMethod)
+	obs := receiveStreamableUpstreamObservation(t, upstreamObs)
+	if obs.method != http.MethodGet {
+		t.Fatalf("upstream method = %q, want GET", obs.method)
 	}
-	if gotAccept != "text/event-stream" {
-		t.Fatalf("upstream Accept = %q, want text/event-stream", gotAccept)
+	if obs.accept != "text/event-stream" {
+		t.Fatalf("upstream Accept = %q, want text/event-stream", obs.accept)
 	}
-	if gotSession != sessionID {
-		t.Fatalf("upstream session = %q, want %q", gotSession, sessionID)
+	if obs.session != sessionID {
+		t.Fatalf("upstream session = %q, want %q", obs.session, sessionID)
 	}
-	if gotLastEventID != lastEventID {
-		t.Fatalf("upstream Last-Event-ID = %q, want %q", gotLastEventID, lastEventID)
+	if obs.lastEventID != lastEventID {
+		t.Fatalf("upstream Last-Event-ID = %q, want %q", obs.lastEventID, lastEventID)
 	}
 	if !bytes.Contains(body, []byte("data: "+message+"\n\n")) {
 		t.Fatalf("GET stream body = %q, want SSE data event", body)
@@ -237,6 +284,123 @@ func TestHTTPListener_GETStreamFailsClosedOnUpstreamError(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_GETStreamFailsClosedOnUpstreamTransportError(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	upstreamURL := "http://" + ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstreamURL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte("upstream HTTP request failed")) {
+		t.Fatalf("GET transport-error body = %s, want sanitized upstream failure", body)
+	}
+}
+
+func TestHTTPListener_GETAndDELETEFailClosedOnMalformedUpstreamURL(t *testing.T) {
+	baseURL, _ := startListenerProxyWithOpts(t, "://bad-upstream", MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			if method == http.MethodGet {
+				req.Header.Set("Accept", "text/event-stream")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+			}
+			if !bytes.Contains(body, []byte("upstream HTTP request failed")) {
+				t.Fatalf("%s malformed-upstream body = %s, want sanitized upstream failure", method, body)
+			}
+		})
+	}
+}
+
+func TestHTTPListener_GETAndDELETEForwardOperatorUpstreamHeaders(t *testing.T) {
+	const operatorHeader = "operator-pinned"
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			upstreamObs := make(chan streamableUpstreamObservation, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamObs <- streamableUpstreamObservation{
+					method:   r.Method,
+					operator: r.Header.Get("X-Operator-Trace"),
+				}
+				if method == http.MethodGet {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte(`data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"clean"}}` + "\n\n"))
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			defer upstream.Close()
+
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t),
+				UpstreamHeaders: http.Header{
+					"X-Operator-Trace": []string{operatorHeader},
+				},
+			})
+			req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			if method == http.MethodGet {
+				req.Header.Set("Accept", "text/event-stream")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+
+			obs := receiveStreamableUpstreamObservation(t, upstreamObs)
+			if obs.method != method {
+				t.Fatalf("upstream method = %q, want %q", obs.method, method)
+			}
+			if obs.operator != operatorHeader {
+				t.Fatalf("upstream operator header = %q, want %q", obs.operator, operatorHeader)
+			}
+		})
+	}
+}
+
 func TestHTTPListener_GETStreamFailsClosedOnNonSSEContentType(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -318,6 +482,140 @@ func TestHTTPListener_GETAndDELETEDeniedWhenKillSwitchActive(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_GETAndDELETEBlockPathsEmitReceipts(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			for _, tc := range []struct {
+				name       string
+				wantStatus int
+				wantLayer  string
+				wantTarget string
+				configure  func(t *testing.T, opts *MCPProxyOpts)
+				mutateReq  func(*http.Request)
+			}{
+				{
+					name:       "header_dlp",
+					wantStatus: http.StatusOK,
+					wantLayer:  mcpReceiptLayerInput,
+					wantTarget: "mcp:listener-header:Authorization",
+					configure: func(t *testing.T, opts *MCPProxyOpts) {
+						t.Helper()
+						cfg := config.Defaults()
+						cfg.Internal = nil
+						cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+						sc := scanner.MustNew(cfg)
+						t.Cleanup(sc.Close)
+						opts.Scanner = sc
+					},
+					mutateReq: func(req *http.Request) {
+						req.Header.Set("Authorization", "Bearer "+mcpSyntheticAWSAccessKey())
+					},
+				},
+				{
+					name:       "a2a",
+					wantStatus: http.StatusOK,
+					wantLayer:  mcpReceiptLayerA2A,
+					wantTarget: mcpReceiptA2AHeaderTarget,
+					configure: func(_ *testing.T, opts *MCPProxyOpts) {
+						opts.A2ACfg = &config.A2AScanning{
+							Enabled: true,
+							Action:  config.ActionBlock,
+						}
+					},
+					mutateReq: func(req *http.Request) {
+						req.Header.Set("A2A-Extensions", "http://169.254.169.254/latest/meta-data/")
+					},
+				},
+				{
+					name:       "kill_switch",
+					wantStatus: http.StatusOK,
+					wantLayer:  "kill_switch",
+					wantTarget: "mcp:kill-switch",
+					configure: func(_ *testing.T, opts *MCPProxyOpts) {
+						cfg := config.Defaults()
+						cfg.Internal = nil
+						cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+						cfg.KillSwitch.Enabled = true
+						cfg.KillSwitch.Message = "emergency shutdown"
+						opts.KillSwitch = killswitch.New(cfg)
+					},
+				},
+				{
+					name:       "contract_deny",
+					wantStatus: http.StatusForbidden,
+					wantLayer:  "mcp_contract",
+					wantTarget: "mcp:contract:upstream",
+					configure: func(t *testing.T, opts *MCPProxyOpts) {
+						t.Helper()
+						var loaderCalls atomic.Int32
+						rule := contractruntimetest.HTTPEnforceRule("r-post-only", "api.vendor.example", "/", http.MethodPost)
+						deniedLoader := mcpLiveLockLoader(t, contractruntime.ModeLive, rule)
+						opts.ContractLoaderFn = func() *contractruntime.Loader {
+							if loaderCalls.Add(1) == 1 {
+								return nil
+							}
+							return deniedLoader
+						}
+						opts.ContractAgent = mcpLiveLockAgent
+						opts.ContractServer = mcpLiveLockServer
+					},
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var upstreamCalls atomic.Int32
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						upstreamCalls.Add(1)
+						w.Header().Set("Content-Type", "text/event-stream")
+					}))
+					defer upstream.Close()
+
+					h := newMCPDecisionReceiptHarness(t)
+					opts := MCPProxyOpts{
+						Scanner:          testScannerForHTTP(t),
+						ReceiptEmitter:   h.v1,
+						V2ReceiptEmitter: h.v2,
+						PolicyHash:       mcpTestPolicyHash,
+					}
+					if tc.configure != nil {
+						tc.configure(t, &opts)
+					}
+					baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+					req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+					if err != nil {
+						t.Fatalf("NewRequest: %v", err)
+					}
+					if method == http.MethodGet {
+						req.Header.Set("Accept", "text/event-stream")
+					}
+					if tc.mutateReq != nil {
+						tc.mutateReq(req)
+					}
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatalf("%s: %v", method, err)
+					}
+					defer func() { _ = resp.Body.Close() }()
+					body, err := io.ReadAll(resp.Body)
+					if err != nil {
+						t.Fatalf("ReadAll: %v", err)
+					}
+
+					if resp.StatusCode != tc.wantStatus {
+						t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
+					}
+					if upstreamCalls.Load() != 0 {
+						t.Fatalf("upstream was called %d times despite block", upstreamCalls.Load())
+					}
+					if resp.Header.Get(blockreason.HeaderReason) == "" {
+						t.Fatalf("%s is empty", blockreason.HeaderReason)
+					}
+					assertStreamableBlockReceipt(t, h, resp, tc.wantLayer, tc.wantTarget)
+				})
+			}
+		})
+	}
+}
+
 func TestHTTPListener_StreamableMethodsHonorPerRequestUpstreamContract(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	var unexpectedUpstreamMethods atomic.Int32
@@ -394,13 +692,12 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "session-delete"
-			var upstreamMethod, upstreamSession string
-			var upstreamMu sync.Mutex
+			upstreamObs := make(chan streamableUpstreamObservation, 1)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upstreamMu.Lock()
-				upstreamMethod = r.Method
-				upstreamSession = r.Header.Get("Mcp-Session-Id")
-				upstreamMu.Unlock()
+				upstreamObs <- streamableUpstreamObservation{
+					method:  r.Method,
+					session: r.Header.Get("Mcp-Session-Id"),
+				}
 				w.WriteHeader(tc.statusCode)
 				_, _ = w.Write([]byte("upstream body must not leak"))
 			}))
@@ -425,15 +722,12 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 			if resp.StatusCode != tc.statusCode {
 				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.statusCode, body)
 			}
-			upstreamMu.Lock()
-			gotMethod := upstreamMethod
-			gotSession := upstreamSession
-			upstreamMu.Unlock()
-			if gotMethod != http.MethodDelete {
-				t.Fatalf("upstream method = %q, want DELETE", gotMethod)
+			obs := receiveStreamableUpstreamObservation(t, upstreamObs)
+			if obs.method != http.MethodDelete {
+				t.Fatalf("upstream method = %q, want DELETE", obs.method)
 			}
-			if gotSession != sessionID {
-				t.Fatalf("upstream session = %q, want %q", gotSession, sessionID)
+			if obs.session != sessionID {
+				t.Fatalf("upstream session = %q, want %q", obs.session, sessionID)
 			}
 			if len(bytes.TrimSpace(body)) != 0 {
 				t.Fatalf("DELETE response body = %q, want empty", body)
@@ -442,7 +736,7 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 	}
 }
 
-func TestHTTPListener_DELETEFailsClosedOnUpstreamServerError(t *testing.T) {
+func TestHTTPListener_DELETEMirrorsUpstreamServerErrorStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "upstream body must not leak", http.StatusInternalServerError)
 	}))
@@ -463,23 +757,58 @@ func TestHTTPListener_DELETEFailsClosedOnUpstreamServerError(t *testing.T) {
 		t.Fatalf("ReadAll: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", resp.StatusCode, body)
 	}
 	if bytes.Contains(body, []byte("upstream body must not leak")) {
 		t.Fatalf("DELETE upstream error body leaked: %s", body)
+	}
+	if len(bytes.TrimSpace(body)) != 0 {
+		t.Fatalf("DELETE response body = %q, want empty", body)
+	}
+}
+
+func TestHTTPListener_DELETEFailsClosedOnUpstreamTransportError(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	upstreamURL := "http://" + ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstreamURL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte("upstream HTTP request failed")) {
+		t.Fatalf("DELETE transport-error body = %s, want sanitized upstream failure", body)
 	}
 }
 
 func TestHTTPListener_GETStreamScrubsListenerBearerToken(t *testing.T) {
 	listenerToken := testGHPPrefix + strings.Repeat("b", 36)
-	var gotAuth, gotProxyAuth string
-	var upstreamMu sync.Mutex
+	upstreamObs := make(chan streamableUpstreamObservation, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamMu.Lock()
-		gotAuth = r.Header.Get(listenerAuthorization)
-		gotProxyAuth = r.Header.Get(listenerProxyAuthorization)
-		upstreamMu.Unlock()
+		upstreamObs <- streamableUpstreamObservation{
+			auth:      r.Header.Get(listenerAuthorization),
+			proxyAuth: r.Header.Get(listenerProxyAuthorization),
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(`data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"clean"}}` + "\n\n"))
 	}))
@@ -504,15 +833,12 @@ func TestHTTPListener_GETStreamScrubsListenerBearerToken(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	upstreamMu.Lock()
-	auth := gotAuth
-	proxyAuth := gotProxyAuth
-	upstreamMu.Unlock()
-	if strings.Contains(auth, listenerToken) {
-		t.Fatalf("listener token leaked in Authorization: %q", auth)
+	obs := receiveStreamableUpstreamObservation(t, upstreamObs)
+	if strings.Contains(obs.auth, listenerToken) {
+		t.Fatalf("listener token leaked in Authorization: %q", obs.auth)
 	}
-	if strings.Contains(proxyAuth, listenerToken) {
-		t.Fatalf("listener token leaked in Proxy-Authorization: %q", proxyAuth)
+	if strings.Contains(obs.proxyAuth, listenerToken) {
+		t.Fatalf("listener token leaked in Proxy-Authorization: %q", obs.proxyAuth)
 	}
 }
 
@@ -673,6 +999,133 @@ func TestHTTPListener_GETBlocksSecretInLastEventIDBeforeUpstreamAndEmitsReceipt(
 	}
 	if blocks[0].ActionRecord.PolicyHash == "" {
 		t.Fatal("receipt policy hash is empty")
+	}
+}
+
+func TestHTTPListener_GETCustomSensitiveHeadersStillScansLastEventID(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	reqBodyCfg := config.Defaults().RequestBodyScanning
+	reqBodyCfg.Enabled = true
+	reqBodyCfg.ScanHeaders = true
+	reqBodyCfg.HeaderMode = config.HeaderModeSensitive
+	reqBodyCfg.SensitiveHeaders = []string{"X-Api-Key"}
+
+	h := newMCPDecisionReceiptHarness(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:          sc,
+		RequestBodyCfg:   &reqBodyCfg,
+		ReceiptEmitter:   h.v1,
+		V2ReceiptEmitter: h.v2,
+		PolicyHash:       mcpTestPolicyHash,
+	})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(listenerLastEventID, "event-"+mcpSyntheticAWSAccessKey())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("upstream was called %d times despite a credential in Last-Event-ID", upstreamCalls.Load())
+	}
+	if !bytes.Contains(body, []byte(`"code":-32001`)) {
+		t.Fatalf("expected Last-Event-ID DLP block (-32001), got: %s", body)
+	}
+	assertStreamableBlockReceipt(t, h, resp, mcpReceiptLayerInput, "mcp:listener-header:Last-Event-Id")
+}
+
+func TestHTTPListener_GETV2OnlyReceiptEmitterSetsBlockHeader(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	h := newMCPDecisionReceiptHarness(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:          sc,
+		V2ReceiptEmitter: h.v2,
+		PolicyHash:       mcpTestPolicyHash,
+	})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(listenerLastEventID, "event-"+mcpSyntheticAWSAccessKey())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("upstream was called %d times despite a credential in Last-Event-ID", upstreamCalls.Load())
+	}
+	if !bytes.Contains(body, []byte(`"code":-32001`)) {
+		t.Fatalf("expected Last-Event-ID DLP block (-32001), got: %s", body)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReceipt); got == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderReceipt)
+	}
+	if receipts := mcpV2Receipts(t, h); len(receipts) != 1 {
+		t.Fatalf("v2 receipts = %d, want 1", len(receipts))
+	}
+}
+
+func TestValidLastEventIDHeaderAllowsUTF8AndRejectsControls(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []string
+		want bool
+	}{
+		{name: "absent", want: true},
+		{name: "utf8 spaces", in: []string{"cursor 42 caf\u00e9"}, want: true},
+		{name: "duplicate", in: []string{"event-1", "event-2"}},
+		{name: "empty", in: []string{""}},
+		{name: "nul", in: []string{"event\x00id"}},
+		{name: "lf", in: []string{"event\nid"}},
+		{name: "cr", in: []string{"event\rid"}},
+		{name: "invalid utf8", in: []string{string([]byte{0xff})}},
+		{name: "oversize", in: []string{strings.Repeat("a", 257)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validLastEventIDHeader(tc.in, 256); got != tc.want {
+				t.Fatalf("validLastEventIDHeader(%q) = %t, want %t", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

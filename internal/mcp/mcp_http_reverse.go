@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -392,13 +393,14 @@ func RunHTTPListenerProxy(
 			}
 			receiptEmitted := false
 			emitter := requestBaseOpts.receiptEmitter()
-			if emitter != nil || requestBaseOpts.requireReceipts() {
-				if _, emitErr := EmitMCPDecision(emitter, requestBaseOpts.v2ReceiptEmitter(), nil, MCPDecision{
+			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
+			if emitter != nil || v2Emitter != nil || requestBaseOpts.requireReceipts() {
+				if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-				} else if emitter != nil {
+				} else if emitter != nil || v2Emitter != nil {
 					receiptEmitted = true
 				}
 			}
@@ -522,7 +524,7 @@ func RunHTTPListenerProxy(
 				methodNotAllowed()
 				return
 			}
-			if !validVisibleSingletonHeader(r.Header.Values(listenerLastEventID), 256) {
+			if !validLastEventIDHeader(r.Header.Values(listenerLastEventID), 256) {
 				info := blockreason.MustNew(blockreason.BadRequest, blockreason.SeverityInfo, blockreason.RetryNone)
 				info.SetHeaders(w.Header())
 				w.Header().Set("Content-Type", "application/json")
@@ -718,9 +720,7 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadGateway)
-				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				w.WriteHeader(upResp.StatusCode)
 				return
 			}
 			w.WriteHeader(upResp.StatusCode)
@@ -928,8 +928,10 @@ func RunHTTPListenerProxy(
 				// listener header block previously returned silently with no
 				// receipt. Transport is the wire (mcp_http_listener); A2A
 				// attribution lives in the layer.
-				if emitter := requestBaseOpts.receiptEmitter(); emitter != nil {
-					if _, emitErr := EmitMCPDecision(emitter, requestBaseOpts.v2ReceiptEmitter(), nil, MCPDecision{
+				emitter := requestBaseOpts.receiptEmitter()
+				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
+				if emitter != nil || v2Emitter != nil || requestBaseOpts.requireReceipts() {
+					if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  receipt.NewActionID(),
 							Verdict:   config.ActionBlock,
@@ -943,6 +945,7 @@ func RunHTTPListenerProxy(
 							// carry the A2A-header attribution.
 							Target: mcpReceiptA2AHeaderTarget,
 						}),
+						RequireReceipt: requestBaseOpts.requireReceipts(),
 					}); emitErr != nil {
 						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
 					}
@@ -1425,6 +1428,16 @@ func validVisibleSingletonHeader(values []string, maxBytes int) bool {
 		}
 	}
 	return true
+}
+
+func validLastEventIDHeader(values []string, maxBytes int) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 || len(values[0]) == 0 || len(values[0]) > maxBytes || !utf8.ValidString(values[0]) {
+		return false
+	}
+	return !strings.ContainsAny(values[0], "\x00\r\n")
 }
 
 func validA2AVersion(values []string) bool {

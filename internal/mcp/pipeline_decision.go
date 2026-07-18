@@ -98,6 +98,7 @@ func EmitMCPDecision(
 	outbound = d.InboundMsg
 
 	v1Emitted := false
+	v2Emitted := false
 	receiptRequired := d.RequireReceipt
 	escalateReceiptError := func() (bool, error) {
 		if !receiptRequired || err == nil {
@@ -134,8 +135,6 @@ func EmitMCPDecision(
 	markIntent := receiptRequired && verdict == config.ActionAllow && d.Receipt.DecisionPhase == ""
 	if receiptRequired && d.Receipt.ActionID == "" {
 		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
-	} else if receiptRequired && receiptEmitter == nil {
-		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
 		if markIntent {
 			d.Receipt.DecisionPhase = receipt.DecisionPhaseIntent
@@ -150,13 +149,18 @@ func EmitMCPDecision(
 		// RequireReceipt gate below upgrades errors to fail-closed before
 		// envelope mutation.
 	}
-	if done, escalateErr := escalateReceiptError(); done {
-		return outbound, escalateErr
-	}
-	if v1Emitted && v2Emitter != nil {
+	if d.Receipt.ActionID != "" && v2Emitter != nil {
 		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired); v2Err != nil && err == nil {
 			err = v2Err
+		} else if v2Err == nil {
+			v2Emitted = true
 		}
+	}
+	if receiptRequired && v2Emitted {
+		err = nil
+	}
+	if receiptRequired && !v1Emitted && !v2Emitted && err == nil {
+		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	}
 	if done, escalateErr := escalateReceiptError(); done {
 		return outbound, escalateErr

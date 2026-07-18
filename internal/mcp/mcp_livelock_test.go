@@ -393,6 +393,14 @@ func TestMCPUpstreamGateForMethodRejectsGETWithPOSTOnlyContract(t *testing.T) {
 		t.Fatalf("POST upstream gate = %+v, want contract allow", postGate)
 	}
 
+	defaultGate, err := evaluateMCPUpstreamGateForMethod(context.Background(), "https://api.example.com/", "", opts)
+	if err != nil {
+		t.Fatalf("default upstream gate err = %v", err)
+	}
+	if defaultGate.Verdict != config.ActionAllow || defaultGate.RuleID != "r-post-only" {
+		t.Fatalf("default upstream gate = %+v, want POST contract allow", defaultGate)
+	}
+
 	getGate, err := evaluateMCPUpstreamGateForMethod(context.Background(), "https://api.example.com/", http.MethodGet, opts)
 	if err != nil {
 		t.Fatalf("GET upstream gate err = %v", err)

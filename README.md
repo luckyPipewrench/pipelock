@@ -659,6 +659,7 @@ Full docs directory: [docs/](docs/)
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
+| [Evidence Terminology](docs/evidence/README.md) | Quick reference for ActionReceipt, EvidenceReceipt, flight recorder, checkpoints, anchors, coverage certificates, and Audit Packets, with the integrity-vs-completeness and pinned-vs-unpinned distinctions |
 | [Receipt Verification](docs/guides/receipt-verification.md) | `pipelock verify-receipt`, Fleet Receipt Report verification, standalone `pipelock-verifier`, conformance suite, chain integrity |
 | [Receipt Spec Profiles](docs/specs/in-toto-agent-action-receipt-v0.1.md) | in-toto attestation predicate for action receipts, with companion SCITT and AARP profiles and prior-art mapping |
 | [Audit Packet Threat Model](docs/security/audit-packet-threat-model.md) | What verified Audit Packets prove, what they do not prove, and the trust assumptions relying parties must pin |
@@ -736,7 +737,7 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | Metric | Value |
 |--------|-------|
 | Go tests (with `-race`) | Unit, integration, and end-to-end paths |
-| Coverage gate (codecov) | 95% project, 75% patch on new code |
+| Coverage gate (codecov) | 91% Apache-2.0 core project, 95% patch on new code |
 | Evasion coverage | Public bypass-resistance matrix + private adversarial corpus |
 | Scanner hot-path overhead | ~40us per URL scan (hot-path benchmark; see [docs/performance.md](docs/performance.md)) |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |

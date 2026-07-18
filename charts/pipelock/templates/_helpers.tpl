@@ -160,3 +160,7 @@ PVC names.
 {{- define "pipelock.followerAuditQueueName" -}}
 {{- printf "%s-follower-audit-queue" (include "pipelock.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end }}
+{{/*
+Copyright 2026 Pipelock contributors
+SPDX-License-Identifier: Apache-2.0
+*/}}

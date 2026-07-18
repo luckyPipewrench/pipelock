@@ -83,6 +83,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if cfg.Policy != nil {
 		policy = *cfg.Policy
 	}
+	policy, coverageEnv := prepareSubprocessCoverage(policy, nil)
 	policy, err := ResolvePolicyPaths(policy)
 	if err != nil {
 		return fmt.Errorf("resolve policy paths: %w", err)
@@ -170,6 +171,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
 		sandboxSocketEnv + "=" + socketPath,
 	}
+	cmd.Env = append(cmd.Env, coverageEnv...)
 	if cfg.Strict {
 		cmd.Env = append(cmd.Env, strictEnvKey+"=1")
 	}

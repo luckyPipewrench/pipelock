@@ -556,6 +556,9 @@ func (lr *LiveRun) runEgressProbe(targets []string, asAgent bool) ([]ProbeResult
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		if lr.ctx.Err() != nil {
+			return nil, lr.ctx.Err()
+		}
 		return nil, fmt.Errorf("egress probe exec: %w", err)
 	}
 
@@ -582,6 +585,9 @@ func (lr *LiveRun) runLocalEscapeProbe(asAgent bool) ([]ProbeResult, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		if lr.ctx.Err() != nil {
+			return nil, lr.ctx.Err()
+		}
 		return nil, fmt.Errorf("local escape probe exec: %w", err)
 	}
 

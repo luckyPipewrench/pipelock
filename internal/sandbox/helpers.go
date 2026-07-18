@@ -88,7 +88,15 @@ func removeEnvKey(env []string, key string) []string {
 func lookPathIn(name string, env []string) (string, error) {
 	// If the name contains a slash, it's already a path.
 	if strings.Contains(name, "/") {
-		return filepath.Clean(name), nil
+		path := filepath.Clean(name)
+		if !filepath.IsAbs(path) {
+			return path, nil
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			return "", fmt.Errorf("%w: %s", exec.ErrNotFound, path)
+		}
+		return path, nil
 	}
 
 	// Find PATH in the env slice.

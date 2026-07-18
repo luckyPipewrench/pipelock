@@ -9,12 +9,6 @@ cd "$repo_root"
 
 missing=0
 while IFS= read -r -d '' path; do
-	case "$path" in
-		testdata/* | */testdata/*)
-			continue
-			;;
-	esac
-
 	if ! grep -q 'Copyright' "$path"; then
 		echo "$path: missing copyright statement" >&2
 		missing=1
@@ -31,7 +25,7 @@ while IFS= read -r -d '' path; do
 	fi
 done < <(
 	git ls-files -z \
-		'*.go' '*.sh' '*.py' '*.js' '*.ts' '*.rs' \
+		'*.go' '*.sh' '*.py' '*.js' '*.mjs' '*.ts' '*.rs' '*.html' '*.tpl' \
 		'Dockerfile' 'Dockerfile.*'
 )
 

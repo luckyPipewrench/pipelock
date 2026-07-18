@@ -1907,6 +1907,46 @@ func TestWSProxyHeaderDLPAdaptiveWarnUpgradeBlocks(t *testing.T) {
 	}
 }
 
+func TestWSProxyHeaderDLPSessionAnomalyBlocksHandshake(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	obs := newWSDLPRecordObserver()
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithCaptureAndProxy(t, func(cfg *config.Config) {
+		addBodyDLPTestPattern(cfg)
+		cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionWarn}
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+		cfg.SessionProfiling.DomainBurst = 100
+		cfg.BehavioralBaseline = *testBaselineBlockConfig(t)
+		cfg.BehavioralBaseline.LockDimensions = []string{"requests"}
+	}, obs)
+	defer proxyCleanup()
+
+	sm := p.sessionMgrPtr.Load()
+	lockHTTPBaseline(t, sm, "agent-a")
+
+	resp := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
+		"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
+		AgentHeader:     []string{"agent-a"},
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if got := resp.Header.Get("X-Pipelock-Block-Reason"); got != string(blockreason.SessionAnomaly) {
+		t.Fatalf("X-Pipelock-Block-Reason = %q, want %q", got, blockreason.SessionAnomaly)
+	}
+
+	rec := waitWSDLPRecord(t, obs)
+	if rec.EffectiveAction != config.ActionWarn {
+		t.Fatalf("EffectiveAction = %q, want %q", rec.EffectiveAction, config.ActionWarn)
+	}
+	if !strings.Contains(rec.SkipReason, testBodyDLPPatternName) {
+		t.Fatalf("SkipReason = %q, want pattern %q", rec.SkipReason, testBodyDLPPatternName)
+	}
+}
+
 func TestWSProxyHeaderDLPPatternWarnOverrideAllowsNonCore(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

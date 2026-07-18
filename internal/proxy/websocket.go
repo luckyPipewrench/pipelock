@@ -497,6 +497,24 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		captureHeaderDLP(action, reason)
+		if !wsHeaderBlocked && headerSR.Blocked {
+			p.metrics.RecordWSBlocked()
+			emitWebSocketReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "session_profiling",
+				Pattern:   headerSR.Detail,
+				Transport: TransportWS,
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
+				headerSR.Detail, http.StatusForbidden)
+			return
+		}
 		if wsHeaderBlocked {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()

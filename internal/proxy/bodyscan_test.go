@@ -110,6 +110,7 @@ func TestScanRequestBody_DisablePatternsAndPatternActions(t *testing.T) {
 	cases := []struct {
 		name            string
 		body            string
+		defaultAction   string
 		disablePatterns []string
 		patternActions  map[string]string
 		wantClean       bool
@@ -128,6 +129,14 @@ func TestScanRequestBody_DisablePatternsAndPatternActions(t *testing.T) {
 			disablePatterns: []string{testBodyDLPPatternName},
 			wantAction:      config.ActionBlock,
 			wantPatterns:    []string{"AWS Access ID"},
+		},
+		{
+			name:           "pattern action block overrides global warn",
+			body:           `{"key":"` + fakeBodyDLPSecret() + `"}`,
+			defaultAction:  config.ActionWarn,
+			patternActions: map[string]string{testBodyDLPPatternName: config.ActionBlock},
+			wantAction:     config.ActionBlock,
+			wantPatterns:   []string{testBodyDLPPatternName},
 		},
 		{
 			name:           "pattern action warn overrides global block",
@@ -149,6 +158,9 @@ func TestScanRequestBody_DisablePatternsAndPatternActions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testScannerConfig()
 			addBodyDLPTestPattern(cfg)
+			if tc.defaultAction != "" {
+				cfg.RequestBodyScanning.Action = tc.defaultAction
+			}
 			cfg.RequestBodyScanning.DisablePatterns = tc.disablePatterns
 			cfg.RequestBodyScanning.PatternActions = tc.patternActions
 			sc := scanner.MustNew(cfg)

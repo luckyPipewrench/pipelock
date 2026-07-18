@@ -444,6 +444,26 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
 	if blocked, hardBlock, action, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL); blocked {
+		captureHeaderDLP := func(effectiveAction, skipReason string) {
+			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+				Subsurface:        "dlp_ws_header",
+				Transport:         TransportWS,
+				SessionID:         captureSessionKey(agent, clientIP),
+				SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+				RequestID:         requestID,
+				ConfigHash:        cfg.CanonicalPolicyHash(),
+				Agent:             agent,
+				Profile:           id.Profile,
+				// Header DLP captures describe the HTTP upgrade handshake, not
+				// later bidirectional frame semantics.
+				ActionClass:     captureHTTPActionClass(r.Method),
+				Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+				TransformKind:   capture.TransformHeaderValue,
+				EffectiveAction: effectiveAction,
+				Outcome:         captureOutcome(effectiveAction, false),
+				SkipReason:      skipReason,
+			})
+		}
 		if action == "" {
 			action = cfg.RequestBodyScanning.Action
 		}
@@ -453,25 +473,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		} else {
 			action = config.ActionWarn
 		}
-		// Capture observer: record WS header DLP verdict for policy replay.
-		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-			Subsurface:        "dlp_ws_header",
-			Transport:         TransportWS,
-			SessionID:         captureSessionKey(agent, clientIP),
-			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
-			RequestID:         requestID,
-			ConfigHash:        cfg.CanonicalPolicyHash(),
-			Agent:             agent,
-			Profile:           id.Profile,
-			// Header DLP captures describe the HTTP upgrade handshake, not
-			// later bidirectional frame semantics.
-			ActionClass:     captureHTTPActionClass(r.Method),
-			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
-			TransformKind:   capture.TransformHeaderValue,
-			EffectiveAction: action,
-			Outcome:         captureOutcome(action, false),
-			SkipReason:      reason,
-		})
 		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.
 		headerSR := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
@@ -485,6 +486,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Logger:     log,
 			DeferClean: false,
 		})
+		if !wsHeaderBlocked && cfg.AdaptiveEnforcement.Enabled && headerSR.Level > 0 {
+			effectiveAction := decide.UpgradeAction(action, headerSR.Level, &cfg.AdaptiveEnforcement)
+			if effectiveAction == config.ActionBlock {
+				sessionKey := sessionKeyFor(agent, clientIP)
+				recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: action, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: clientIP, RequestID: requestID})
+				action = effectiveAction
+				reason += " (escalated)"
+				wsHeaderBlocked = true
+			}
+		}
+		captureHeaderDLP(action, reason)
 		if wsHeaderBlocked {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()

@@ -2703,9 +2703,14 @@ func copyResponseHeaders(dst, src http.Header) {
 
 // dlpMatchNames extracts pattern names from a slice of DLP matches.
 func dlpMatchNames(matches []scanner.TextDLPMatch) []string {
-	names := make([]string, len(matches))
-	for i, m := range matches {
-		names[i] = m.PatternName
+	names := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		if _, ok := seen[m.PatternName]; ok {
+			continue
+		}
+		seen[m.PatternName] = struct{}{}
+		names = append(names, m.PatternName)
 	}
 	return names
 }

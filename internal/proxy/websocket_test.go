@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1830,6 +1831,22 @@ func TestWSProxyHeaderDLPDisablePatternAllowsNonCore(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
 
+	blockingProxyAddr, blockingProxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		addBodyDLPTestPattern(cfg)
+	})
+	defer blockingProxyCleanup()
+
+	blockedResp := requestWSHandshake(t, blockingProxyAddr, backendAddr, http.Header{
+		"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
+	})
+	defer func() { _ = blockedResp.Body.Close() }()
+	if blockedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("control status = %d, want %d", blockedResp.StatusCode, http.StatusForbidden)
+	}
+	if got := blockedResp.Header.Get("X-Pipelock-Block-Reason"); got != string(blockreason.DLPMatch) {
+		t.Fatalf("control X-Pipelock-Block-Reason = %q, want %q", got, blockreason.DLPMatch)
+	}
+
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
 		addBodyDLPTestPattern(cfg)
 		cfg.RequestBodyScanning.DisablePatterns = []string{testBodyDLPPatternName}
@@ -1851,6 +1868,43 @@ func TestWSProxyHeaderDLPDisablePatternAllowsNonCore(t *testing.T) {
 		t.Fatalf("disabled non-core header DLP should allow websocket dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
+}
+
+func TestWSProxyHeaderDLPAdaptiveWarnUpgradeBlocks(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	cfg := adaptiveConfig()
+	cfg.WebSocketProxy.Enabled = true
+	addBodyDLPTestPattern(cfg)
+	cfg.RequestBodyScanning.PatternActions = map[string]string{testBodyDLPPatternName: config.ActionWarn}
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sm := p.sessionMgrPtr.Load()
+	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
+	escalateRec(rec, 1)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url=ws://"+backendAddr, nil)
+	req.Header.Set("Authorization", "Bearer "+fakeBodyDLPSecret())
+	w := httptest.NewRecorder()
+
+	p.handleWebSocket(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "escalated") {
+		t.Fatalf("body = %q, want escalated DLP block", w.Body.String())
+	}
 }
 
 func TestWSProxyHeaderDLPPatternWarnOverrideAllowsNonCore(t *testing.T) {

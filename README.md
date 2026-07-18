@@ -659,6 +659,7 @@ Full docs directory: [docs/](docs/)
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
+| [Evidence Terminology](docs/evidence/README.md) | Quick reference for ActionReceipt, EvidenceReceipt, flight recorder, checkpoints, anchors, coverage certificates, and Audit Packets, with the integrity-vs-completeness and pinned-vs-unpinned distinctions |
 | [Receipt Verification](docs/guides/receipt-verification.md) | `pipelock verify-receipt`, Fleet Receipt Report verification, standalone `pipelock-verifier`, conformance suite, chain integrity |
 | [Receipt Spec Profiles](docs/specs/in-toto-agent-action-receipt-v0.1.md) | in-toto attestation predicate for action receipts, with companion SCITT and AARP profiles and prior-art mapping |
 | [Audit Packet Threat Model](docs/security/audit-packet-threat-model.md) | What verified Audit Packets prove, what they do not prove, and the trust assumptions relying parties must pin |

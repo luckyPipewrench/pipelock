@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -2245,6 +2246,94 @@ func TestInterceptTunnel_RedactionFailClosedWithoutProxyFallback(t *testing.T) {
 	if upstreamHit.Load() {
 		t.Fatal("intercept forwarded a fail-closed redaction request without Proxy fallback")
 	}
+}
+
+func TestInterceptTunnel_RedactionMetricUsesProfileLabel(t *testing.T) {
+	var upstreamBody []byte
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		upstreamBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	cfg.Enforce = ptrBool(false)
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+	proxy := testInterceptRedactProxyWithScanner(t, cfg, sc)
+	proxy.metrics = m
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-redaction-metric",
+			UpstreamRT: upstream.Client().Transport,
+			Proxy:      proxy,
+			Agent:      "arbitrary-attacker-chosen-name",
+			Profile:    edition.ProfileDefault,
+		})
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: host,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	body := `{"prompt":"use ` + redactionE2ESecret() + ` to deploy"}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentTypeJSON)
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if strings.Contains(string(upstreamBody), redactionE2ESecret()) {
+		t.Fatalf("upstream body leaked unredacted secret: %q", string(upstreamBody))
+	}
+	assertMetricsContain(t, m, `pipelock_body_redactions_total{agent="_default",class="aws-access-key",parser="json",provider="generic-json",transport="connect"} 1`)
+	assertMetricsNotContain(t, m, `pipelock_body_redactions_total{agent="arbitrary-attacker-chosen-name",class="aws-access-key",parser="json",provider="generic-json",transport="connect"} 1`)
 }
 
 // errorReader is an io.ReadCloser that returns an error after reading some bytes.

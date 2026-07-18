@@ -61,6 +61,7 @@ type wsRelay struct {
 	cfg          *config.Config
 	redaction    *redactionRuntime
 	agent        string
+	metricAgent  string
 	actorAuth    envelope.ActorAuth // provenance of agent identity; gates CEE session-key namespacing
 	clientIP     string
 	requestID    string
@@ -832,6 +833,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		cfg:          cfg,
 		redaction:    p.currentRedactionRuntimeFor(cfg),
 		agent:        agent,
+		metricAgent:  id.Profile,
 		actorAuth:    id.Auth,
 		clientIP:     clientIP,
 		requestID:    requestID,
@@ -1952,7 +1954,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			buf, bodyResult := r.scanClientMessageBody(ctx, msg)
 			wsMergeRedactionReport(&r.redactionLog, bodyResult.RedactionReport)
 			if r.proxy != nil {
-				recordBodyRedactionMetrics(r.proxy.metrics, TransportWS, r.agent, bodyResult.RedactionReport)
+				recordBodyRedactionMetrics(r.proxy.metrics, TransportWS, r.metricAgent, bodyResult.RedactionReport)
 			}
 			if r.handleClientMessageBodyResult(log, buf, bodyResult) {
 				blocked = true

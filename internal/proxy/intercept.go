@@ -962,7 +962,7 @@ func newInterceptHandler(
 			}
 			interceptRedactionReport = result.RedactionReport
 			if ic.Proxy != nil {
-				recordBodyRedactionMetrics(ic.Proxy.metrics, "connect", ic.Agent, result.RedactionReport)
+				recordBodyRedactionMetrics(ic.Proxy.metrics, "connect", ic.Profile, result.RedactionReport)
 			}
 
 			if !result.Clean {

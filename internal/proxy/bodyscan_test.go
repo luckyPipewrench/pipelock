@@ -1644,6 +1644,47 @@ func TestFetchHandler_HeaderScan_SecretInAuth(t *testing.T) {
 	}
 }
 
+func TestFetchHandler_HeaderDLPMetricUsesProfileLabel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("hello"))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.ScanHeaders = true
+	enforceOff := false
+	cfg.Enforce = &enforceOff
+	cfg.ApplyDefaults()
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	req.Header.Set(AgentHeader, "arbitrary-attacker-chosen-name")
+	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
+	w := httptest.NewRecorder()
+
+	p.handleFetch(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from fetch handler in warn mode, got %d", w.Code)
+	}
+	assertMetricsContain(t, m, `pipelock_header_dlp_hits_total{action="warn",agent="_default"} 1`)
+	assertMetricsNotContain(t, m, `pipelock_header_dlp_hits_total{action="warn",agent="arbitrary-attacker-chosen-name"} 1`)
+}
+
 func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
 	// In warn mode, fetch handler should allow the request but still log.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

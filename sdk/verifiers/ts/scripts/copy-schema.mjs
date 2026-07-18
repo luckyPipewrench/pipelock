@@ -10,3 +10,5 @@ const target = resolve(packageDir, "dist/src/v0.schema.json");
 
 mkdirSync(dirname(target), { recursive: true });
 copyFileSync(source, target);
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0

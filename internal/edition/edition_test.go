@@ -316,6 +316,220 @@ func TestResolveAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestResolveAgentIdentity_NeutralizesSelfDeclaredReservedControlActor(t *testing.T) {
+	t.Parallel()
+
+	knownProfiles := map[string]bool{testAgentA: true}
+
+	tests := []struct {
+		name            string
+		setup           func(r *http.Request) *http.Request
+		defaultIdentity string
+		wantName        string
+		wantProfile     string
+		wantAuth        envelope.ActorAuth
+	}{
+		{
+			name: "reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r
+			},
+			wantName:    "",
+			wantProfile: ProfileDefault,
+			wantAuth:    envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "reserved query",
+			setup: func(r *http.Request) *http.Request {
+				q := r.URL.Query()
+				q.Set("agent", "pipelock")
+				r.URL.RawQuery = q.Encode()
+				return r
+			},
+			wantName:    "",
+			wantProfile: ProfileDefault,
+			wantAuth:    envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "case variant reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "PIPELOCK")
+				return r
+			},
+			wantName:    "",
+			wantProfile: ProfileDefault,
+			wantAuth:    envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "reserved header does not fall through to config default",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+			wantName:        "",
+			wantProfile:     ProfileDefault,
+			wantAuth:        envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "anonymous header does not fall through to config default",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "anonymous")
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+			wantName:        "",
+			wantProfile:     ProfileDefault,
+			wantAuth:        envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "normal self-declared header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "agent-z")
+				return r
+			},
+			wantName:    "agent-z",
+			wantProfile: ProfileDefault,
+			wantAuth:    envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "registered profile header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, testAgentA)
+				return r
+			},
+			wantName:    testAgentA,
+			wantProfile: testAgentA,
+			wantAuth:    envelope.ActorAuthMatched,
+		},
+		{
+			name: "context-bound identity unchanged",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r.WithContext(WithAgentOverride(r.Context(), testAgentA))
+			},
+			wantName:    testAgentA,
+			wantProfile: testAgentA,
+			wantAuth:    envelope.ActorAuthBound,
+		},
+		{
+			name: "config-default identity unchanged",
+			setup: func(r *http.Request) *http.Request {
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+			wantName:        testAgentDeploymentSafe,
+			wantProfile:     ProfileDefault,
+			wantAuth:        envelope.ActorAuthConfigDefault,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+			r = tt.setup(r)
+			id := ResolveAgentIdentity(r, knownProfiles, tt.defaultIdentity, false)
+			if id.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", id.Name, tt.wantName)
+			}
+			if id.Name == "pipelock" || id.Name == "PIPELOCK" {
+				t.Errorf("Name = %q, reserved control actor must not resolve from self-declared input", id.Name)
+			}
+			if id.Profile != tt.wantProfile {
+				t.Errorf("Profile = %q, want %q", id.Profile, tt.wantProfile)
+			}
+			if id.Auth != tt.wantAuth {
+				t.Errorf("Auth = %q, want %q", id.Auth, tt.wantAuth)
+			}
+		})
+	}
+}
+
+func TestRejectedSelfDeclaredReservedControlActor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		setup           func(*http.Request) *http.Request
+		defaultIdentity string
+		bindDefault     bool
+		wantReserved    string
+		wantOK          bool
+	}{
+		{
+			name: "reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "PIPELOCK")
+				return r
+			},
+			wantReserved: "pipelock",
+			wantOK:       true,
+		},
+		{
+			name: "reserved query",
+			setup: func(r *http.Request) *http.Request {
+				q := r.URL.Query()
+				q.Set("agent", "pipelock")
+				r.URL.RawQuery = q.Encode()
+				return r
+			},
+			wantReserved: "pipelock",
+			wantOK:       true,
+		},
+		{
+			name: "normal header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "agent-a")
+				return r
+			},
+		},
+		{
+			name: "context-bound identity ignores reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r.WithContext(WithAgentOverride(r.Context(), testAgentA))
+			},
+		},
+		{
+			name: "bound default ignores reserved header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "pipelock")
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+			bindDefault:     true,
+		},
+		{
+			name: "config default wins over reserved query",
+			setup: func(r *http.Request) *http.Request {
+				q := r.URL.Query()
+				q.Set("agent", "pipelock")
+				r.URL.RawQuery = q.Encode()
+				return r
+			},
+			defaultIdentity: testAgentDeployment,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+			r = tt.setup(r)
+
+			got, ok := RejectedSelfDeclaredReservedControlActor(r, tt.defaultIdentity, tt.bindDefault)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.wantReserved {
+				t.Fatalf("reserved = %q, want %q", got, tt.wantReserved)
+			}
+		})
+	}
+}
+
 func TestResolveAgentIdentity_ActorAuth(t *testing.T) {
 	t.Parallel()
 
@@ -390,6 +604,12 @@ func TestExtractAgentWithDefault(t *testing.T) {
 		{"default sanitized", "", "", "bad agent!@#", false, "bad_agent___"},
 		{"empty default same as anonymous", "", "", "", false, agentAnonymous},
 		{"bind ignores header and query", testAgentFromHeader, testAgentFromQuery, testAgentDeployment, true, testAgentDeploymentSafe},
+		{"reserved header becomes anonymous", "pipelock", "", "", false, agentAnonymous},
+		{"reserved query becomes anonymous", "", "pipelock", "", false, agentAnonymous},
+		{"case variant reserved header becomes anonymous", "PIPELOCK", "", "", false, agentAnonymous},
+		{"reserved header does not fall through to config default", "pipelock", "", testAgentDeployment, false, agentAnonymous},
+		{"anonymous header does not fall through to config default", "anonymous", "", testAgentDeployment, false, agentAnonymous},
+		{"config default reserved-looking value unchanged", "", "", "PIPELOCK", false, "PIPELOCK"},
 	}
 
 	for _, tt := range tests {
@@ -596,5 +816,20 @@ func TestResetHooks(t *testing.T) {
 	defer ed.Close()
 	if _, ok := ed.(*noopEdition); !ok {
 		t.Errorf("NewEditionFunc after reset should return *noopEdition, got %T", ed)
+	}
+}
+
+func TestRejectedSelfDeclaredReservedControlActor_AnonymousAndEmpty(t *testing.T) {
+	t.Parallel()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+	r.Header.Set(AgentHeader, "anonymous")
+	if reserved, ok := RejectedSelfDeclaredReservedControlActor(r, "", false); !ok || reserved != agentAnonymous {
+		t.Errorf("anonymous header: got (%q,%v), want (anonymous,true)", reserved, ok)
+	}
+
+	empty := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+	if reserved, ok := RejectedSelfDeclaredReservedControlActor(empty, "", false); ok || reserved != "" {
+		t.Errorf("empty request: got (%q,%v), want empty/false", reserved, ok)
 	}
 }

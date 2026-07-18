@@ -142,8 +142,18 @@ func TestCommitHeaderSidecar_RejectsLooseDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir loose: %v", err)
 	}
+	if err := os.Chmod(dir, 0o750); err != nil { // #nosec G302 -- deliberately loose fixture.
+		t.Fatalf("chmod loose: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat loose: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Fatalf("loose dir mode = %04o, want 0750", got)
+	}
 	path := filepath.Join(dir, "x.headers")
-	err := commitHeaderSidecar(path, []byte("X: 1\n"))
+	err = commitHeaderSidecar(path, []byte("X: 1\n"))
 	if err == nil || !strings.Contains(err.Error(), "too permissive") {
 		t.Fatalf("commitHeaderSidecar err = %v, want a 'too permissive' rejection", err)
 	}

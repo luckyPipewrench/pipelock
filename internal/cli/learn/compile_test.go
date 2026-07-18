@@ -4,6 +4,11 @@
 package learn
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,7 +16,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/internal/capture"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // captureJSONL returns a minimal recorder envelope JSONL line that passes
@@ -205,6 +217,71 @@ func TestReadCompileInputsCountsAppendedNewline(t *testing.T) {
 	}
 }
 
+func TestRunCompileWritesArtifactsAndAudit(t *testing.T) {
+	t.Setenv("TZ", "")
+	t.Setenv("LC_ALL", "")
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "capture.jsonl")
+	if err := os.WriteFile(input, []byte(compileFixtureJSONL(t)), 0o600); err != nil {
+		t.Fatalf("WriteFile input: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`
+learn:
+  inference:
+    floors:
+      min_sessions: 1
+      min_events: 1
+      min_windows: 1
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	output := filepath.Join(dir, "candidate.yaml")
+	review := filepath.Join(dir, "candidate.review.md")
+	manifest := filepath.Join(dir, "candidate.manifest.json")
+	var stdout, stderr bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	err := runCompile(cmd, compileFlags{
+		agent:         "agent-a",
+		inputGlob:     input,
+		output:        output,
+		review:        review,
+		manifest:      manifest,
+		configPath:    cfgPath,
+		deterministic: true,
+	})
+	if err != nil {
+		t.Fatalf("runCompile: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "compile: 3 events") {
+		t.Fatalf("stdout = %q, want compile summary", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `"event":"learn_compile"`) ||
+		!strings.Contains(stderr.String(), `"signer_key_id":"deterministic-contract-compile"`) {
+		t.Fatalf("stderr audit event missing expected fields:\n%s", stderr.String())
+	}
+	for _, check := range []struct {
+		path string
+		want string
+	}{
+		{path: output, want: "agent-a"},
+		{path: review, want: "Capture Fidelity"},
+		{path: manifest, want: "deterministic-contract-compile"},
+	} {
+		data, err := os.ReadFile(check.path)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", check.path, err)
+		}
+		if !strings.Contains(string(data), check.want) {
+			t.Fatalf("%s missing %q:\n%s", check.path, check.want, string(data))
+		}
+	}
+}
+
 func TestResolveCompileOutputsRejectsOverlappingPaths(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -220,4 +297,269 @@ func TestResolveCompileOutputsRejectsOverlappingPaths(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "overlaps output") {
 		t.Fatalf("resolveCompileOutputs error = %v, want overlap rejection", err)
 	}
+}
+
+func TestResolveCompileOutputsDefaultPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PIPELOCK_HOME", home)
+
+	output, review, manifest, err := resolveCompileOutputs(compileFlags{agent: "agent-a"})
+	if err != nil {
+		t.Fatalf("resolveCompileOutputs: %v", err)
+	}
+	wantBase := filepath.Join(home, "contracts", "candidates")
+	if output != filepath.Join(wantBase, "agent-a.candidate.yaml") {
+		t.Fatalf("output = %q, want default candidate under %q", output, wantBase)
+	}
+	if review != filepath.Join(wantBase, "agent-a.candidate.review.md") {
+		t.Fatalf("review = %q, want default review sibling", review)
+	}
+	if manifest != filepath.Join(wantBase, "agent-a.candidate.manifest.json") {
+		t.Fatalf("manifest = %q, want default manifest sibling", manifest)
+	}
+	if info, err := os.Stat(wantBase); err != nil || !info.IsDir() {
+		t.Fatalf("default candidate dir stat = %v, info=%v", err, info)
+	}
+}
+
+func TestResolveCompileOutputsRejectsManifestReviewOverlap(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	output := filepath.Join(dir, "candidate.yaml")
+	reviewAndManifest := filepath.Join(dir, "same.json")
+
+	_, _, _, err := resolveCompileOutputs(compileFlags{
+		agent:    "agent-a",
+		output:   output,
+		review:   reviewAndManifest,
+		manifest: reviewAndManifest,
+	})
+	if err == nil || !strings.Contains(err.Error(), "overlaps review") {
+		t.Fatalf("resolveCompileOutputs error = %v, want review/manifest overlap rejection", err)
+	}
+}
+
+func TestContractsCandidateDirUsesResolvedHome(t *testing.T) {
+	home := t.TempDir()
+	oldHomeFlag := cliutil.PipelockHome
+	cliutil.PipelockHome = filepath.Join(home, "flag-home")
+	t.Cleanup(func() { cliutil.PipelockHome = oldHomeFlag })
+	t.Setenv("PIPELOCK_HOME", filepath.Join(home, "env-home"))
+
+	got, err := contractsCandidateDir()
+	if err != nil {
+		t.Fatalf("contractsCandidateDir: %v", err)
+	}
+	want := filepath.Join(home, "flag-home", "contracts", "candidates")
+	if got != want {
+		t.Fatalf("contractsCandidateDir = %q, want %q", got, want)
+	}
+}
+
+func TestCompileConfigMapsResolvedInferenceSettings(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Learn.Inference.Floors.MinSessions = 7
+	cfg.Learn.Inference.Floors.MinEvents = 51
+	cfg.Learn.Inference.Floors.MinWindows = 4
+	cfg.Learn.Inference.Normalization.MinEvents = 11
+	cfg.Learn.Inference.Normalization.MinDistinctValues = 6
+	cfg.Learn.Inference.Normalization.EntropyThresholdBits = 4.25
+	cfg.Learn.Inference.Normalization.ReservedSegmentsExtra = []string{"tenant"}
+	cfg.Learn.Inference.Normalization.CardinalityCapPerHost = 222
+	cfg.Learn.Inference.Normalization.TailPromotionBlockPct = 8.5
+	refs := []contract.InputRef{{Path: "/tmp/capture.jsonl", SHA256: "sha256:abc", EventCount: 3}}
+
+	got := compileConfig("agent-a", cfg, refs)
+	if got.Agent != "agent-a" {
+		t.Fatalf("Agent = %q, want agent-a", got.Agent)
+	}
+	if got.Floors.MinSessions != 7 || got.Floors.MinEvents != 51 || got.Floors.MinWindows != 4 {
+		t.Fatalf("Floors = %#v, want configured values", got.Floors)
+	}
+	if got.Normalization.MinEvents != 11 ||
+		got.Normalization.MinDistinctValues != 6 ||
+		got.Normalization.EntropyThresholdBits != 4.25 ||
+		len(got.Normalization.ReservedExtras) != 1 ||
+		got.Normalization.ReservedExtras[0] != "tenant" {
+		t.Fatalf("Normalization = %#v, want configured values", got.Normalization)
+	}
+	if got.Cardinality.CardinalityCapPerHost != 222 || got.Cardinality.TailPromotionBlockPct != 8.5 {
+		t.Fatalf("Cardinality = %#v, want configured values", got.Cardinality)
+	}
+	if len(got.InputRefs) != 1 || got.InputRefs[0] != refs[0] {
+		t.Fatalf("InputRefs = %#v, want %#v", got.InputRefs, refs)
+	}
+	if got.CompileConfigHash == "" {
+		t.Fatal("CompileConfigHash is empty")
+	}
+	normalization, ok := got.Settings["normalization"].(map[string]any)
+	if !ok || normalization["algorithm"] != config.LearnNormalizationAlgorithmV1 {
+		t.Fatalf("normalization settings = %#v, want algorithm %q", got.Settings["normalization"], config.LearnNormalizationAlgorithmV1)
+	}
+}
+
+func TestDecodeOptionalHex(t *testing.T) {
+	t.Parallel()
+	valid := strings.Repeat("0a", 32)
+	got, err := decodeOptionalHex(" " + valid + " ")
+	if err != nil {
+		t.Fatalf("decodeOptionalHex valid: %v", err)
+	}
+	if len(got) != 32 || got[0] != 0x0a || got[31] != 0x0a {
+		t.Fatalf("decoded = %x, want 32 bytes of 0a", got)
+	}
+
+	if got, err := decodeOptionalHex(" \t "); err != nil || got != nil {
+		t.Fatalf("decodeOptionalHex blank = %x, %v; want nil, nil", got, err)
+	}
+	for _, value := range []string{"zz", strings.Repeat("01", 31)} {
+		if _, err := decodeOptionalHex(value); err == nil {
+			t.Fatalf("decodeOptionalHex(%q) error = nil, want validation error", value)
+		}
+	}
+}
+
+func TestResolveCompileSignerDeterministic(t *testing.T) {
+	t.Parallel()
+	signer, err := resolveCompileSigner(compileFlags{agent: "agent-a", deterministic: true})
+	if err != nil {
+		t.Fatalf("resolveCompileSigner deterministic: %v", err)
+	}
+	if signer.KeyID() != "deterministic-contract-compile" {
+		t.Fatalf("KeyID = %q, want deterministic-contract-compile", signer.KeyID())
+	}
+	msg := []byte("contract payload")
+	sig, err := signer.Sign(msg)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	seed := sha256.Sum256([]byte("pipelock deterministic compile signer"))
+	pub := ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey)
+	if !ed25519.Verify(pub, msg, sig) {
+		t.Fatal("deterministic signer signature did not verify")
+	}
+}
+
+func TestResolveCompileSignerLoadsKeystoreAgent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if _, err := signing.NewKeystore(dir).ForceGenerateAgent("compile-alpha"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	signer, err := resolveCompileSigner(compileFlags{
+		agent:           "runtime-agent",
+		compileKeyAgent: "compile-alpha",
+		keystore:        dir,
+	})
+	if err != nil {
+		t.Fatalf("resolveCompileSigner keystore: %v", err)
+	}
+	if signer.KeyID() != "compile-alpha" {
+		t.Fatalf("KeyID = %q, want compile-alpha", signer.KeyID())
+	}
+	pub, err := signing.NewKeystore(dir).LoadPublicKey("compile-alpha")
+	if err != nil {
+		t.Fatalf("LoadPublicKey: %v", err)
+	}
+	msg := []byte("manifest")
+	sig, err := signer.Sign(msg)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if !ed25519.Verify(pub, msg, sig) {
+		t.Fatal("keystore signer signature did not verify")
+	}
+}
+
+func TestResolveCompileSignerDefaultsKeyAgentAndErrors(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if _, err := signing.NewKeystore(dir).ForceGenerateAgent("runtime-agent"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	signer, err := resolveCompileSigner(compileFlags{agent: "runtime-agent", keystore: dir})
+	if err != nil {
+		t.Fatalf("resolveCompileSigner default agent: %v", err)
+	}
+	if signer.KeyID() != "runtime-agent" {
+		t.Fatalf("KeyID = %q, want runtime-agent", signer.KeyID())
+	}
+	if _, err := resolveCompileSigner(compileFlags{agent: "missing-agent", keystore: dir}); err == nil {
+		t.Fatal("resolveCompileSigner missing key error = nil, want error")
+	}
+}
+
+func TestEnsureEnvDefault(t *testing.T) {
+	key := "PIPELOCK_TEST_ENSURE_ENV_DEFAULT"
+	t.Setenv(key, "")
+	ensureEnvDefault(key, "fallback")
+	if got := os.Getenv(key); got != "fallback" {
+		t.Fatalf("env after default = %q, want fallback", got)
+	}
+	t.Setenv(key, "explicit")
+	ensureEnvDefault(key, "fallback")
+	if got := os.Getenv(key); got != "explicit" {
+		t.Fatalf("env after explicit = %q, want explicit", got)
+	}
+}
+
+func compileFixtureJSONL(t *testing.T) string {
+	t.Helper()
+	first := compileRecorderEntry(t, 1, recorder.GenesisHash, "https://api.vendor.example/v1/users")
+	second := compileRecorderEntry(t, 2, first.Hash, "https://api.vendor.example/v1/repos")
+	third := compileRecorderEntry(t, 3, second.Hash, "https://api.vendor.example/v1/users")
+	return compileJSONLines(t, first, second, third)
+}
+
+func compileRecorderEntry(t *testing.T, seq int, prevHash, rawURL string) recorder.Entry {
+	t.Helper()
+	var sequence uint64
+	switch seq {
+	case 1:
+		sequence = 1
+	case 2:
+		sequence = 2
+	case 3:
+		sequence = 3
+	default:
+		t.Fatalf("unexpected fixture sequence %d", seq)
+	}
+	rec := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  sequence,
+		Timestamp: time.Date(2026, 4, 29, 12, 0, seq, 0, time.UTC),
+		SessionID: fmt.Sprintf("session-%d", seq),
+		Type:      capture.EntryTypeCapture,
+		EventKind: "read",
+		Transport: "fetch",
+		Summary:   "captured",
+		Detail: capture.CaptureSummary{
+			CaptureSchemaVersion: capture.CaptureSchemaV1,
+			Surface:              capture.SurfaceURL,
+			ActionClass:          "read",
+			PayloadBytes:         seq * 10,
+			ScannerBytes:         seq * 100,
+			EffectiveAction:      config.ActionAllow,
+			Request: capture.CaptureRequest{
+				Method: "GET",
+				URL:    rawURL,
+			},
+		},
+		PrevHash: prevHash,
+	}
+	rec.Hash = recorder.ComputeHash(rec)
+	return rec
+}
+
+func compileJSONLines(t *testing.T, entries ...recorder.Entry) string {
+	t.Helper()
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, entry := range entries {
+		if err := enc.Encode(entry); err != nil {
+			t.Fatalf("encode entry: %v", err)
+		}
+	}
+	return buf.String()
 }

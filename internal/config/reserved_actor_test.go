@@ -82,3 +82,15 @@ func TestValidateDefaultAgentIdentity_AcceptsOrdinaryIdentity(t *testing.T) {
 		t.Fatalf("validateDefaultAgentIdentity rejected ordinary identity: %v", err)
 	}
 }
+
+func TestReservedControlActorName_Exported(t *testing.T) {
+	if got := ReservedControlActorName("PIPELOCK"); got != "pipelock" {
+		t.Errorf("ReservedControlActorName(PIPELOCK) = %q, want pipelock", got)
+	}
+	if got := ReservedControlActorName("anonymous"); got != "anonymous" {
+		t.Errorf("ReservedControlActorName(anonymous) = %q, want anonymous", got)
+	}
+	if got := ReservedControlActorName("agent-a"); got != "" {
+		t.Errorf("ReservedControlActorName(agent-a) = %q, want empty", got)
+	}
+}

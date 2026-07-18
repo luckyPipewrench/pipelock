@@ -214,7 +214,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
 	// interception; this covers the handshake itself.
-	connectHeaderBlocked, connectHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, headerCtx, host, syntheticURL, start)
+	connectHeaderBlocked, connectHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: headerCtx,
+		hostname: host, target: syntheticURL, metricAgent: agentLabel, start: start,
+	})
 	if connectHeaderHadFinding && !connectHeaderBlocked && cfg.AdaptiveEnforcement.Enabled {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
@@ -1456,7 +1459,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
-	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, actx, r.URL.Hostname(), targetURL, start)
+	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
+		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
+	})
 
 	// Capture observer: record forward header DLP verdict for policy replay.
 	{

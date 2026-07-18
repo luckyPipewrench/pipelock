@@ -222,12 +222,19 @@ func setupWSProxyDefaultWithProxy(t *testing.T, cfgMod func(*config.Config)) (st
 // Compression is disabled to avoid "compressed frames not supported" errors
 // when the proxy relays frames without per-message deflate negotiation.
 func dialWSConn(proxyAddr, backendAddr string) (net.Conn, error) {
+	return dialWSConnWithHeader(proxyAddr, backendAddr, nil)
+}
+
+func dialWSConnWithHeader(proxyAddr, backendAddr string, header http.Header) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialer := ws.Dialer{
 		Extensions: nil, // disable per-message deflate compression
+	}
+	if len(header) > 0 {
+		dialer.Header = ws.HandshakeHeaderHTTP(header)
 	}
 	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {
@@ -579,6 +586,36 @@ func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
 	if !strings.Contains(replyStr, placeholderAWS) {
 		t.Fatalf("echoed reply missing placeholder: %q", replyStr)
 	}
+}
+
+func TestWSProxyRedactionMetricUsesProfileLabel(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(false)
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	header := http.Header{AgentHeader: []string{"arbitrary-attacker-chosen-name"}}
+	conn, err := dialWSConnWithHeader(proxyAddr, backendAddr, header)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	secret := redactionE2ESecret()
+	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	assertMetricsContain(t, p.metrics, `pipelock_body_redactions_total{agent="_default",class="aws-access-key",parser="json",provider="generic-json",transport="websocket"} 1`)
+	assertMetricsNotContain(t, p.metrics, `pipelock_body_redactions_total{agent="arbitrary-attacker-chosen-name",class="aws-access-key",parser="json",provider="generic-json",transport="websocket"} 1`)
 }
 
 func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {

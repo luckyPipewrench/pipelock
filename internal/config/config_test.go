@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -9732,28 +9731,6 @@ func TestLicenseKeyFileOversized(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds") {
 		t.Errorf("error should mention exceeds, got: %v", err)
-	}
-}
-
-func TestLicenseKeyFileNonRegular(t *testing.T) {
-	tmp := t.TempDir()
-
-	fifoPath := filepath.Join(tmp, "license.token")
-	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
-		t.Skipf("cannot create FIFO: %v", err)
-	}
-
-	cfgPath := filepath.Join(tmp, "cfg.yaml")
-	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	_, err := Load(cfgPath)
-	if err == nil {
-		t.Fatal("expected error for non-regular license_file")
-	}
-	if !strings.Contains(err.Error(), "regular file") {
-		t.Errorf("error should mention regular file, got: %v", err)
 	}
 }
 

@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Child-process entry points for sandbox-init mode. These functions run
-// inside re-exec'd child processes and cannot be covered by Go's standard
-// coverage tool (coverage.out is per-process). They are exercised by
-// subprocess integration tests that verify kernel enforcement.
-//
-// Follow-up: add GOCOVERDIR/covdata subprocess coverage merging.
+// inside re-exec'd child processes. They are exercised by subprocess
+// integration tests that verify kernel enforcement. CI uses an instrumented
+// build and GOCOVERDIR to merge their coverage with the parent process.
 
 package sandbox
 
@@ -33,7 +31,7 @@ func RunInit() {
 
 	if workspace == "" || commandStr == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] missing workspace or command env vars\n")
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
 	command := strings.Split(commandStr, "\x1f")
@@ -48,12 +46,22 @@ func RunInit() {
 
 	strict := IsStrictMode()
 
+	var bridgeSignals chan os.Signal
+	if socketPath != "" {
+		// Initialize Go's signal thread before RLIMIT_NPROC is lowered. On a
+		// shared UID that is already above the limit, doing this afterward can
+		// crash the runtime instead of returning a controlled command error.
+		bridgeSignals = make(chan os.Signal, 1)
+		signal.Notify(bridgeSignals, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(bridgeSignals)
+	}
+
 	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
 	// Strict mode: mount private /dev/shm BEFORE Landlock so the
@@ -61,7 +69,7 @@ func RunInit() {
 	if strict {
 		if err := mountPrivateShm(); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] private /dev/shm: %v\n", err)
-			os.Exit(1) // fatal in strict mode
+			exitSandboxProcess(1) // fatal in strict mode
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
@@ -84,11 +92,11 @@ func RunInit() {
 	resolvedPolicy, err := ResolvePolicyPaths(policy)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resolve policy: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 	if err := ValidatePolicy(resolvedPolicy); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: validate policy: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 	policy = resolvedPolicy
 	llStatus, llErr := ApplyLandlock(policy)
@@ -133,7 +141,7 @@ func RunInit() {
 			// Keeping it down otherwise preserves the empty-netns posture.
 			if err := bringUpLoopback(); err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
-				os.Exit(1)
+				exitSandboxProcess(1)
 			}
 		}
 	}
@@ -149,11 +157,11 @@ func RunInit() {
 	// Strict mode: fail-closed if any layer is inactive.
 	if strict && active < totalLayers {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: strict mode requires all %d layers active, got %d\n", totalLayers, active)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
 	if socketPath != "" {
-		runInitWithBridge(command, env, workspace, socketPath)
+		runInitWithBridge(command, env, workspace, socketPath, bridgeSignals)
 		return
 	}
 
@@ -170,20 +178,21 @@ func RunInit() {
 	binary, err := lookPathIn(command[0], env)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
-		os.Exit(127)
+		exitSandboxProcess(127)
 	}
 
 	if err := os.Chdir(workspace); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] chdir %s: %v\n", workspace, err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
+	reportSubprocessCoverageError(flushSubprocessCoverage())
 	err = syscall.Exec(binary, command, env) //nolint:gosec // G204: intentional exec of user-specified command
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] exec failed: %v\n", err)
-	os.Exit(1)
+	exitSandboxProcess(1)
 }
 
-func runInitWithBridge(command, env []string, workspace, socketPath string) {
+func runInitWithBridge(command, env []string, workspace, socketPath string, sigCh <-chan os.Signal) {
 	noNetNS := IsNoNetNS()
 	bridgeAddr := ""
 	if noNetNS {
@@ -192,13 +201,10 @@ func runInitWithBridge(command, env []string, workspace, socketPath string) {
 	bridge, err := NewBridgeProxy(socketPath, bridgeAddr)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sigCh)
 
 	go bridge.Serve(ctx)
 
@@ -219,7 +225,7 @@ func runInitWithBridge(command, env []string, workspace, socketPath string) {
 		cancel()
 		bridge.Close()
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
-		os.Exit(127)
+		exitSandboxProcess(127)
 	}
 
 	childCmd := exec.CommandContext(context.Background(), binary, command[1:]...) //nolint:gosec // G204: user-specified MCP server command; signal lifecycle is handled explicitly below.
@@ -233,7 +239,7 @@ func runInitWithBridge(command, env []string, workspace, socketPath string) {
 		cancel()
 		bridge.Close()
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
-		os.Exit(1)
+		exitSandboxProcess(1)
 	}
 
 	waitCh := make(chan error, 1)
@@ -266,10 +272,10 @@ func exitBridgeChild(err error) {
 			sig := status.Signal()
 			terminateSelfWithSignal(sig)
 		}
-		os.Exit(exitErr.ExitCode())
+		exitSandboxProcess(exitErr.ExitCode())
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
-	os.Exit(1)
+	exitSandboxProcess(1)
 }
 
 func appendBridgeProxyEnv(env []string, addr string) []string {

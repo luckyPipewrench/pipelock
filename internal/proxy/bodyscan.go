@@ -1335,29 +1335,46 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 // whenever a DLP match was detected, even in audit/warn mode. The caller
 // handles the response format (http.Error vs writeJSON) since it differs
 // between forward proxy and fetch handler.
-func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner,
-	logger *audit.Logger, actx audit.LogContext, hostname, target string, start time.Time,
-) (blocked bool, hadFinding bool) {
-	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ScanHeaders {
+// headerDLPParams carries the inputs for evalHeaderDLP. It keeps the parameter
+// count within convention now that a bounded metric-label agent is threaded
+// through the header DLP path.
+type headerDLPParams struct {
+	headers     http.Header
+	cfg         *config.Config
+	sc          *scanner.Scanner
+	logger      *audit.Logger
+	actx        audit.LogContext
+	hostname    string
+	target      string
+	metricAgent string
+	start       time.Time
+}
+
+func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked bool, hadFinding bool) {
+	if !e.cfg.RequestBodyScanning.Enabled || !e.cfg.RequestBodyScanning.ScanHeaders {
 		return false, false
 	}
-	headerResult := scanRequestHeadersForTarget(ctx, headers, cfg, sc, target)
+	metricAgent := e.metricAgent
+	if metricAgent == "" {
+		metricAgent = e.actx.Agent()
+	}
+	headerResult := scanRequestHeadersForTarget(ctx, e.headers, e.cfg, e.sc, e.target)
 	if headerResult == nil {
 		return false, false
 	}
-	action := cfg.RequestBodyScanning.Action
-	headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, cfg.EnforceEnabled())
+	action := e.cfg.RequestBodyScanning.Action
+	headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, e.cfg.EnforceEnabled())
 	if headerHardBlock {
 		action = config.ActionBlock
 	}
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
 	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 
-	logger.LogHeaderDLP(actx, headerResult.HeaderName, action, patternNames, bundleRules)
-	p.metrics.RecordHeaderDLP(action, actx.Agent())
+	e.logger.LogHeaderDLP(e.actx, headerResult.HeaderName, action, patternNames, bundleRules)
+	p.metrics.RecordHeaderDLP(action, metricAgent)
 
-	if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), actx.Agent())
+	if headerHardBlock || (action == config.ActionBlock && e.cfg.EnforceEnabled()) {
+		p.metrics.RecordBlocked(e.hostname, "header_dlp", time.Since(e.start), metricAgent)
 		return true, true
 	}
 	return false, true

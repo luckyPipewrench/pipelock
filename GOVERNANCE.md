@@ -32,6 +32,14 @@ Releases follow [Semantic Versioning](https://semver.org/). Tags pushed to `main
 
 Vulnerabilities are reported through [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories/new) and handled per the timeline in [SECURITY.md](SECURITY.md).
 
+### Repository Access
+
+Accounts with write or administrative repository access, or access to private
+vulnerability reports, must use two-factor authentication. SMS alone does not
+satisfy this policy; acceptable methods are passkeys, hardware security keys,
+TOTP authenticator applications, or GitHub Mobile. Privileged access must be
+removed if the account no longer maintains an acceptable second factor.
+
 ## Continuity
 
 Repository admin access is shared with at least one trusted continuity

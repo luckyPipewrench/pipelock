@@ -247,6 +247,38 @@ func TestReadReleaseMetadataRejectsOversize(t *testing.T) {
 	}
 }
 
+func TestReleaseMetadataReadAndHashBoundaries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "release.json")
+	data := []byte(`{"schema":"pipelock-release-v1"}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write release metadata: %v", err)
+	}
+
+	got, err := readReleaseMetadata(path)
+	if err != nil {
+		t.Fatalf("readReleaseMetadata: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("metadata = %q, want %q", got, data)
+	}
+
+	gotHash, err := sha256FileHex(path)
+	if err != nil {
+		t.Fatalf("sha256FileHex: %v", err)
+	}
+	if want := sha256Hex(data); gotHash != want {
+		t.Fatalf("sha256FileHex = %s, want %s", gotHash, want)
+	}
+
+	if _, err := readReleaseMetadata(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("readReleaseMetadata(dir) error = %v, want regular-file rejection", err)
+	}
+	if _, err := sha256FileHex(filepath.Join(dir, "missing.json")); err == nil {
+		t.Fatal("sha256FileHex missing file succeeded")
+	}
+}
+
 func TestParsePrivateKeyForms(t *testing.T) {
 	seed := bytes.Repeat([]byte{0x55}, ed25519.SeedSize)
 	privFromSeed := ed25519.NewKeyFromSeed(seed)

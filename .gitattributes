@@ -7,3 +7,14 @@
 # Windows checkouts get CRLF and tests fail byte-for-byte against
 # the LF-committed goldens without any real content drift.
 **/testdata/** text eol=lf
+
+# Markdown is content-asserted by TestDocsDeclareLiveStatsAndDefaults, which
+# matches multi-line literals containing "\n". A CRLF working-tree checkout
+# breaks those matches on Windows for the same reason as the goldens above,
+# with no real content drift.
+*.md text eol=lf
+
+# gofumpt and the gofmt-family linters treat a CRLF file as unformatted, so a
+# Windows checkout with core.autocrlf=true (the Git for Windows default) makes
+# `make lint` report every Go file as needing formatting.
+*.go text eol=lf

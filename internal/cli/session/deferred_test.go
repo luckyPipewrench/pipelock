@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +13,42 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 const deferredCLIID = "0193defer00000000000000000001"
+
+type deferredRequest struct {
+	auth   string
+	method string
+	path   string
+}
+
+func captureDeferredRequest(ch chan<- deferredRequest, r *http.Request) {
+	ch <- deferredRequest{
+		auth:   r.Header.Get("Authorization"),
+		method: r.Method,
+		path:   r.URL.EscapedPath(),
+	}
+}
+
+func assertDeferredRequest(t *testing.T, ch <-chan deferredRequest, method, path string) {
+	t.Helper()
+
+	select {
+	case got := <-ch:
+		if got.auth != "Bearer "+testToken {
+			t.Fatalf("Authorization: got %q, want bearer token", got.auth)
+		}
+		if got.method != method || got.path != path {
+			t.Fatalf("request = %s %s, want %s %s", got.method, got.path, method, path)
+		}
+	default:
+		t.Fatalf("request not captured, want %s %s", method, path)
+	}
+}
 
 func TestDeferredCmd_RegistersSubcommands(t *testing.T) {
 	// deferred is registered under `session`.
@@ -72,6 +105,114 @@ func TestClient_DeferredMethods(t *testing.T) {
 	}
 	if strings.Join(paths, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("paths:\ngot:\n%s\nwant:\n%s", strings.Join(paths, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestDeferredListCmd_HumanAndJSON(t *testing.T) {
+	requests := make(chan deferredRequest, 2)
+	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captureDeferredRequest(requests, r)
+		writeJSONResponse(w, http.StatusOK, proxy.DeferredListResponse{
+			Held: []proxy.DeferredHeldView{{
+				DeferID:      deferredCLIID,
+				Surface:      "mcp_stdio",
+				Method:       "tools/call",
+				Target:       "shell.exec",
+				SessionID:    "sess-1",
+				CascadeDepth: 2,
+				Reason:       "tool policy: defer",
+			}},
+			Count: 1,
+		})
+	}))
+	overrideClientFactory(t, flags)
+
+	out, err := runCommand(deferredListCmd(&rootFlags{}))
+	if err != nil {
+		t.Fatalf("execute human: %v; out=%s", err, out)
+	}
+	assertDeferredRequest(t, requests, http.MethodGet, "/api/v1/deferred")
+	for _, want := range []string{"DEFER_ID", deferredCLIID, "shell.exec", "tool policy: defer"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("human output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = runCommand(deferredListCmd(&rootFlags{}), "--json")
+	if err != nil {
+		t.Fatalf("execute json: %v; out=%s", err, out)
+	}
+	assertDeferredRequest(t, requests, http.MethodGet, "/api/v1/deferred")
+	var parsed proxy.DeferredListResponse
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("json output: %v; out=%s", err, out)
+	}
+	if parsed.Count != 1 || parsed.Held[0].DeferID != deferredCLIID {
+		t.Fatalf("json parsed = %+v", parsed)
+	}
+}
+
+func TestDeferredResolveCmd_HumanAndJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  func(*rootFlags) *cobra.Command
+		path string
+		resp proxy.DeferredResolveResult
+	}{
+		{
+			name: "approve",
+			cmd:  deferredApproveCmd,
+			path: "/api/v1/deferred/" + url.PathEscape(deferredCLIID) + "/approve",
+			resp: proxy.DeferredResolveResult{DeferID: deferredCLIID, Action: "approve", FinalDecision: "allow", Resolved: true},
+		},
+		{
+			name: "deny",
+			cmd:  deferredDenyCmd,
+			path: "/api/v1/deferred/" + url.PathEscape(deferredCLIID) + "/deny",
+			resp: proxy.DeferredResolveResult{DeferID: deferredCLIID, Action: "deny", FinalDecision: "block", Resolved: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" human", func(t *testing.T) {
+			requests := make(chan deferredRequest, 1)
+			flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captureDeferredRequest(requests, r)
+				writeJSONResponse(w, http.StatusOK, tt.resp)
+			}))
+			overrideClientFactory(t, flags)
+
+			out, err := runCommand(tt.cmd(&rootFlags{}), deferredCLIID)
+			if err != nil {
+				t.Fatalf("execute: %v; out=%s", err, out)
+			}
+			assertDeferredRequest(t, requests, http.MethodPost, tt.path)
+			if !strings.Contains(out, tt.resp.Action+" "+deferredCLIID+" -> "+tt.resp.FinalDecision) {
+				t.Fatalf("human output = %q", out)
+			}
+		})
+
+		t.Run(tt.name+" json", func(t *testing.T) {
+			requests := make(chan deferredRequest, 1)
+			flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captureDeferredRequest(requests, r)
+				writeJSONResponse(w, http.StatusOK, tt.resp)
+			}))
+			overrideClientFactory(t, flags)
+
+			out, err := runCommand(tt.cmd(&rootFlags{}), deferredCLIID, "--json")
+			if err != nil {
+				t.Fatalf("execute: %v; out=%s", err, out)
+			}
+			assertDeferredRequest(t, requests, http.MethodPost, tt.path)
+			var parsed proxy.DeferredResolveResult
+			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+				t.Fatalf("json output: %v; out=%s", err, out)
+			}
+			if parsed.DeferID != deferredCLIID || parsed.FinalDecision != tt.resp.FinalDecision {
+				t.Fatalf("json parsed = %+v", parsed)
+			}
+		})
 	}
 }
 

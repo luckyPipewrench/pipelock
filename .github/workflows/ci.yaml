@@ -233,10 +233,14 @@ jobs:
   # (#696) regress on real Windows undetected. This is a TARGETED lane, not full
   # parity: the full suite asserts Unix file modes that Go can't report on
   # Windows (it derives FileMode from the read-only attribute, never the ACL),
-  # and internal/config test files use unix-only syscalls. So we run the
-  # OS-split predicate plus the load/capture paths that #695/#696 touch, scoped
-  # with -run. config's perm behavior is proven transitively by the secperm
-  # Windows test (all masks skip when secperm.Enforced is false).
+  # so internal/config still has ~27 permission-model failures here. So we run
+  # the OS-split predicate plus the load/capture paths that #695/#696 touch,
+  # scoped with -run. config's perm behavior is proven transitively by the
+  # secperm Windows test (all masks skip when secperm.Enforced is false).
+  # internal/config's test package previously could not COMPILE on Windows
+  # (syscall.Mkfifo), which `go build ./...` cannot catch because it never
+  # builds _test.go files. The scoped run below compiles that package so the
+  # break cannot return silently.
   test-windows:
     needs: [security-scan]
     runs-on: windows-latest
@@ -271,6 +275,10 @@ jobs:
 
       - name: Baseline no-follow reads work on Windows
         run: go test -count=1 -run "TestWindows" ./internal/proxy/baseline/...
+
+      # Compiling this package is the point: it guards the Mkfifo-class break.
+      - name: internal/config test package builds on Windows
+        run: go test -count=1 -run "TestWindows" ./internal/config/...
 
   lint:
     needs: [security-scan]

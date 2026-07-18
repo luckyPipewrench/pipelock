@@ -81,7 +81,7 @@ The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, sr
 ### Use Pipelock when:
 - You need to **prevent credential exfiltration** from AI agents with API keys
 - You want **content inspection** (DLP, injection detection) on what agents fetch
-- You need **audit logging** of all agent network activity
+- You need **audit logging** for network activity mediated by the proxy
 - You want a **single binary** with no dependencies or kernel modules
 - You're running agents in **CI/CD** and need machine-readable output
 - You want **workspace integrity monitoring** to detect file tampering

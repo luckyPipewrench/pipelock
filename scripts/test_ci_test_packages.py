@@ -1,3 +1,6 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Adversarial tests for release and CI package sharding."""
 
 from __future__ import annotations

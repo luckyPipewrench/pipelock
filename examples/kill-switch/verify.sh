@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Kill switch verification for examples/kill-switch/
 #
 # Starts a local echo server + pipelock, proves fetch works, then activates a

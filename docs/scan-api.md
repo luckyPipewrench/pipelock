@@ -48,7 +48,7 @@ Returns `401` if missing or invalid.
 
 | Kind | What it scans | Required input field |
 |------|--------------|---------------------|
-| `url` | Full 11-layer URL scanner pipeline | `input.url` (valid http/https URL) |
+| `url` | Full ordered URL scanner pipeline | `input.url` (valid http/https URL) |
 | `dlp` | DLP pattern matching on arbitrary text | `input.text` |
 | `prompt_injection` | Prompt injection detection on content | `input.content` |
 | `tool_call` | Tool policy + DLP/injection on a tool invocation | `input.tool_name` (required), `input.arguments` (optional raw JSON) |

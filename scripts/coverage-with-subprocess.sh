@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # coverage-with-subprocess.sh — Collects coverage from both the test process
 # and any child processes (sandbox init, standalone init, etc.) using GOCOVERDIR.
 #

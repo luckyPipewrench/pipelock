@@ -148,7 +148,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Per-domain rate limiting:** sliding window rate limiter prevents bulk requests from one agent overwhelming external services.
 - **Response size limits:** `max_response_mb` caps the size of fetched content, preventing memory exhaustion.
 - **Request timeouts:** configurable per-request timeout prevents hanging connections that block agent pipelines.
-- **Structured logging:** every request is logged with zerolog, enabling rapid diagnosis of failure chains across agents.
+- **Structured logging:** mediated scanner and policy events are logged with zerolog, supporting diagnosis of observed failure chains across agents.
 
 **Gap:** No circuit-breaker pattern or agent-level health checks yet.
 
@@ -161,7 +161,9 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 **Pipelock coverage:**
 
 - **HITL terminal approval:** `action: ask` prompts the human operator with a terminal y/N/s dialog when suspicious content is detected. The human can approve, deny, or strip before the request proceeds.
-- **Audit logging:** every request and scanner detection is logged, giving humans a verifiable record to review.
+- **Audit and receipt evidence:** mediated scanner and policy events are logged.
+  Signed receipts add tamper evidence for recorded enforcement actions, but do
+  not prove that bypassed traffic or every allowed stream frame was captured.
 - **Prometheus metrics:** `/metrics` and `/stats` endpoints surface block rates, scanner hits, and top domains for human oversight dashboards.
 
 **Gap:** No user-facing UI for non-terminal environments. HITL is terminal-only.

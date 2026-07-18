@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Strict v1-receipt schema validation (the EV2-FU-1 verifier contract).
 //!
 //! A signed v1 receipt and every signed object nested inside it

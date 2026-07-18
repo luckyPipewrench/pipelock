@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { statSync } from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";

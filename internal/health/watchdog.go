@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package health provides a wedge-detection watchdog for pipelock.
 //
 // The /health endpoint historically answered 200 as long as the HTTP handler

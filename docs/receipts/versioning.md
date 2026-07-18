@@ -42,9 +42,12 @@ ignored sidecar field lets a downstream consumer trust content the signature nev
 Duplicate object keys (at any depth) and trailing tokens after the receipt are rejected for
 the same parser-differential reasons.
 
-All five reference verifiers — Go (`internal/receipt`), Rust, TypeScript, Python, and the
-in-browser wasm verifier — enforce this identically, and the cross-language conformance gate
-(`sdk/conformance/corpus-gate.sh`) fails if any of them disagree on accept/reject.
+The four independent reference implementations — Go (`internal/receipt`), Rust,
+TypeScript, and Python — enforce this identically. The cross-language
+conformance gate (`sdk/conformance/corpus-gate.sh`) fails if they disagree on
+accept/reject. The in-browser wasm surface compiles the Go implementation, so it
+inherits the Go parser rather than counting as a fifth independent
+implementation.
 
 #### The `ext` forward-compat bag
 
@@ -119,10 +122,11 @@ require a bump:
 Adding a NEW field to a signed object (`action_record` or any nested signed object) is a
 **coordinated schema change**, not a silently-tolerated addition: because verifiers reject
 unknown fields (see "Strict unknown-field contract" above), a new signed field must be added
-to all five reference verifiers' schemas in lockstep, and it enters the canonical signing
-projection. Purely advisory, non-authoritative metadata that must NOT be signed goes in the
-top-level `ext` bag instead and needs no verifier change. Removing or renaming existing
-required fields requires a version bump.
+to all four independent reference implementations in lockstep, and it enters
+the canonical signing projection. The wasm surface follows the Go schema when
+rebuilt. Purely advisory, non-authoritative metadata that must NOT be signed
+goes in the top-level `ext` bag instead and needs no verifier change. Removing
+or renaming existing required fields requires a version bump.
 
 ### AARP assurance envelope
 

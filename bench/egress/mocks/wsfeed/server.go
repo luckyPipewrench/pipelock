@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package wsfeed is a deterministic WebSocket mock used by the egress
 // benchmark. It implements a minimal text-frame responder using raw TCP +
 // hand-rolled WebSocket frame parsing. Hand-rolled to keep the bench

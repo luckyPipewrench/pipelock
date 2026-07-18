@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 mod common;
 
 use pipelock_verifier_rs::audit_packet::{verify_audit_packet, AuditPacketOptions};

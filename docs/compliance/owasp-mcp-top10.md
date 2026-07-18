@@ -6,7 +6,9 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 > **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. Pipelock is a network-layer proxy; some MCP risks require complementary controls at the client, server, or identity layer. This mapping is for informational purposes and does not constitute compliance certification.
 
-**Last updated:** May 2026, reviewed against the v2.5 feature set. See [CHANGELOG.md](../../CHANGELOG.md) for full release history; the appendix at the bottom of this document lists v2.5-specific deltas mapped to MCP categories.
+**Last reviewed:** July 2026 against v3.2.0. This mapping describes current
+behavior; see [CHANGELOG.md](../../CHANGELOG.md) for release history. The
+appendix remains an explicitly historical list of v2.5 deltas.
 
 ---
 
@@ -154,8 +156,8 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **Structured audit logging:** every scan decision (allow, block, warn, ask, strip) is logged as structured JSON with timestamp, agent identity, tool name, scan result, scanner reason, and duration.
-- **Three emission targets:** webhook (async buffered), syslog (UDP), and OTLP (HTTP/protobuf). All fire-and-forget to avoid blocking the proxy.
+- **Structured audit logging:** mediated scanner and policy decisions are logged as structured JSON with the fields available to that transport, such as timestamp, agent identity, tool name, result, reason, and duration.
+- **Three queued emission targets:** webhook, syslog (UDP or TCP, JSON or CEF), and OTLP (HTTP/protobuf). Queue pressure or delivery failures are reported and may drop best-effort events rather than blocking the proxy.
 - **Prometheus metrics:** counters and histograms for all scan categories, exportable to any monitoring stack.
 - **Session profiling:** per-session event history with risk scoring for forensic analysis.
 - **SARIF output:** `pipelock audit` produces SARIF for integration with GitHub Code Scanning and CI/CD workflows.
@@ -192,7 +194,9 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 - **Cross-request exfiltration detection (CEE):** tracks entropy budget across requests to detect slow data exfiltration spread across multiple tool calls within a session.
 - **Per-agent isolation:** separate config profiles, budgets, and session state per agent identity prevent cross-agent data leakage through the proxy layer.
 - **Data budget enforcement:** per-domain byte limits prevent bulk data extraction through allowed endpoints.
-- **DLP on all surfaces:** secrets in tool results, error messages, and nested JSON are caught by DLP pattern matching with full encoding resistance.
+- **DLP on mediated MCP content:** tool arguments, results, error messages, and
+  nested JSON routed through enabled MCP scanning are checked by DLP pattern
+  matching and normalization.
 
 **Configuration:** `cross_request_detection`, `agents`, `dlp`
 
@@ -202,7 +206,13 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 ## Architectural Note
 
-Pipelock operates at the **network transport layer** between the MCP client (agent) and MCP server. This provides visibility into all traffic regardless of the agent framework, programming language, or MCP server implementation. However, some MCP risks that exist purely at the application layer (in-memory state, local variable access, semantic argument validation) are outside the proxy's architectural scope.
+Pipelock operates at the **network transport layer** between the MCP client
+(agent) and MCP server. It provides framework-independent visibility into MCP
+traffic that is actually routed through a Pipelock MCP proxy or listener.
+Direct or in-process MCP traffic that bypasses Pipelock is not visible. Some
+MCP risks that exist purely at the application layer (in-memory state, local
+variable access, semantic argument validation) are also outside the proxy's
+architectural scope.
 
 For multi-layer MCP security, combine network-layer enforcement (Pipelock) with:
 - **Pre-deployment scanning** (Snyk Agent Scan, Aguara) for static tool/skill analysis

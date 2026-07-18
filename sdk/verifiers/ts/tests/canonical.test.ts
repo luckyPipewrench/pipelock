@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";

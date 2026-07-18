@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 # Tripwire: forbid the two flaky-test root causes (fixed wall-clock sleeps and

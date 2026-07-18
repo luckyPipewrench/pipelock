@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
-.PHONY: all build build-verifier test test-wasm-verifier bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check \
+.PHONY: all build build-verifier test test-wasm-verifier bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check source-header-check reproducible-build-check \
 	test-runtime-critical test-replay-harness test-sharded test-sharded-enterprise release-audit runtime-policy-audit debt-check release-check hermes-e2e test-liveproof
 
 all: build
@@ -178,3 +178,9 @@ stats: ## Print canonical stats
 
 docs-check: ## Check public docs for known stale claims and print canonical stats
 	@./scripts/docs-check.sh
+
+source-header-check: ## Verify source files carry the required copyright and license notices
+	@./scripts/check-source-headers.sh
+
+reproducible-build-check: ## Build the OSS binary twice and require identical bytes
+	@./scripts/check-reproducible-build.sh

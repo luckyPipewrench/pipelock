@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Retry a command up to 3 times with linear backoff, to absorb transient
 # network flakes (e.g. a one-off module-proxy blip on `go mod download`)
 # without failing a whole CI matrix leg. Usage: ci-retry.sh <cmd> [args...]

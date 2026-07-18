@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # SecureIQLab Harness — Smoke Test
 #
 # Quick validation that all containers are healthy and pipelock is scanning.

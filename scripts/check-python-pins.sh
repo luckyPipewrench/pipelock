@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # check-python-pins.sh
 #
 # Enforces the full Python dep policy on every tracked requirements*.txt:

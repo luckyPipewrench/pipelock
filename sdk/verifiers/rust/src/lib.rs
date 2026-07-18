@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 pub mod aarp;
 pub mod audit_packet;
 pub mod canonical;

@@ -1,122 +1,272 @@
 # Security Assurance Case
 
-This document describes Pipelock's security model, trust boundaries, threat coverage, and known limitations. It serves as the project's assurance case: a structured argument that security requirements are met.
+**Status:** Living assurance case. Unless a section names a release, its claims
+apply to the repository revision that contains this file. Release support and
+security-fix eligibility remain defined by [SECURITY.md](../SECURITY.md).
 
-## Threat Model
+This assurance case states what Pipelock is intended to protect, which trust
+boundaries must exist for those protections to hold, what evidence the product
+can produce, and what that evidence cannot prove. It is a product security
+argument, not a certification and not a claim that every deployment is secure.
 
-Pipelock protects against AI agents being tricked into harmful actions. The primary threats are:
+The reporting policy, supported release line, and severity framework are in
+[SECURITY.md](../SECURITY.md). Known unmediated paths are maintained separately
+in [current unsupported paths](security/current-unsupported-paths.md).
 
-1. **Credential exfiltration:** Agent leaks API keys, tokens, or secrets through HTTP requests, DNS queries, URL parameters, or MCP tool arguments.
-2. **Prompt injection:** Attacker-controlled text in web pages or tool results redirects the agent's behavior.
-3. **Tool misuse:** Agent executes destructive commands (file deletion, force-push, reverse shells) due to injection or misconfiguration.
-4. **Tool poisoning:** MCP server descriptions contain hidden instructions or change definitions mid-session to manipulate agent behavior.
-5. **Data exfiltration:** Agent sends sensitive workspace data to external endpoints through legitimate-looking requests.
+## Security Objectives
 
-These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and are tested against a full evasion test suite (see [README testing metrics](../README.md#testing)).
+Pipelock is designed to reduce these risks at agent communication boundaries:
+
+1. **Credential and data exfiltration:** secrets or sensitive workspace data
+   leaving through URLs, headers, bodies, WebSocket frames, MCP arguments, or
+   tool results.
+2. **SSRF and destination abuse:** requests reaching metadata services, private
+   networks, blocked destinations, or rebinding targets through a mediated
+   transport.
+3. **Prompt injection and tool poisoning:** attacker-controlled content or MCP
+   descriptions manipulating an agent across a boundary Pipelock inspects.
+4. **Tool misuse:** dangerous MCP calls reaching a server despite configured
+   tool, argument, chain, integrity, provenance, or session policy.
+5. **Unverifiable enforcement:** operators being unable to show which mediated
+   action Pipelock evaluated, what it decided, and which policy context applied.
+6. **Fleet control-plane compromise:** unsigned, stale, wrongly scoped, or
+   unauthorized policy and emergency messages reaching Enterprise followers.
+
+These objectives map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md),
+the [OWASP Agentic AI Threats and Mitigations](owasp-agentic-top15-mapping.md),
+and the [NIST SP 800-53 mapping](compliance/nist-800-53.md).
 
 ## Trust Boundaries
 
-Pipelock is designed to be deployed in a capability-separated architecture:
+### 1. Agent to Pipelock
 
 ```text
-+-----------------------+          +------------------------+          +----------+
-|       Agent           |   --->   |     Pipelock Proxy     |   --->   | Internet |
-| (has secrets/API keys |          | (has network access,   |          |          |
-|  no network access)   |          |  no agent secrets)     |          |          |
-+-----------------------+          +------------------------+          +----------+
++----------------------+      +----------------------+      +------------------+
+| Agent environment    |      | Pipelock boundary    |      | External systems |
+| secrets + workspace  | ---> | network + tool       | ---> | APIs, MCP, A2A   |
+| no direct egress     |      | policy, no secrets   |      | and web content  |
++----------------------+      +----------------------+      +------------------+
+        deployment                 binary-enforced                untrusted
+        enforcement                mediated paths
 ```
 
-**Trust boundary 1: Agent → Proxy.** In an enforced deployment, outbound agent HTTP traffic is routed through the fetch, forward, reverse, WebSocket, sidecar, or sandbox proxy path. The agent cannot reach the network directly because container networking, host containment, firewall rules, NetworkPolicy, or OS-level restrictions enforce that boundary.
+Pipelock enforces decisions only for traffic that reaches a Pipelock proxy,
+wrapper, listener, hook, or containment path. The deployment must prevent the
+agent from opening an unmediated route around that boundary. Host containment,
+separate users or processes, container networking, Kubernetes NetworkPolicy,
+firewall rules, or an equivalent control provide that no-bypass property.
 
-**Trust boundary 2: MCP Client → MCP Server.** The MCP proxy sits between the agent and any MCP server that is launched through `pipelock mcp proxy` or reached through a Pipelock MCP listener. Client requests are checked for DLP leaks and injection. Server responses are checked for prompt injection and poisoned tool descriptions.
+Pipelock reads configured local values for leak detection, but the proxy is not
+intended to hold the agent's provider credentials. A deployment that gives the
+proxy the same broad secret and workspace access as the agent weakens capability
+separation.
 
-**Trust boundary 3: Tool call → Execution.** The tool call policy engine evaluates MCP `tools/call` requests against configurable rules before they reach the server. Destructive operations can be blocked regardless of how the agent was tricked into requesting them.
+### 2. MCP Client to MCP Server
 
-## Security Controls
+`pipelock mcp proxy` and Pipelock MCP listeners mediate the JSON-RPC path.
+Requests can be checked for input injection, DLP, tool policy, tool chains,
+binary integrity, provenance, session binding, contracts, media policy, and
+taint. Responses and tool descriptions can be checked before the client
+consumes them. An MCP server launched or contacted outside these paths is not
+covered merely because Pipelock is installed.
 
-### Defense in Depth
+### 3. Tool Call to Execution
 
-No single control is assumed to be sufficient. The scanner pipeline applies 11 layers:
+MCP `tools/call` policy runs before a mediated request reaches the MCP server.
+It scopes which tools and argument shapes may run. It does not mint a separate
+credential for every action, prove the model's intent, or control a tool invoked
+through an unwrapped local path.
 
-| Layer | Protects Against |
-|-------|-----------------|
-| Scheme enforcement | Non-HTTP protocol abuse |
-| CRLF injection detection | HTTP header injection via encoded CR/LF |
-| Path traversal detection | Directory escape attempts via encoded dot-dot sequences |
-| Domain blocklist/allowlist | Known-bad destinations, scope control |
-| DLP pattern matching | Credential leakage (65 patterns, encoding-aware) |
-| Path entropy analysis | Exfiltration via high-entropy URL segments |
-| Subdomain entropy analysis | DNS-based exfiltration |
-| SSRF protection | Private network access, DNS rebinding |
-| Rate limiting | Slow-drip exfiltration |
-| URL length limits | Oversized exfiltration payloads |
-| Data budgets | Per-domain byte limits |
+### 4. Operator and Configuration to Runtime
 
-Response scanning adds prompt injection detection on fetched content. MCP scanning adds bidirectional inspection of tool calls and results.
+Configuration, trusted keys, signing keys, exemptions, suppression rules, and
+deployment topology are security inputs. A permissive operator can intentionally
+reduce coverage. `pipelock check`, `pipelock doctor`, `pipelock audit score`,
+`pipelock contain verify`, and `pipelock assess` expose different parts of the
+configured-versus-enforceable state; none can prove that an unseen bypass does
+not exist.
 
-### Fail-Closed Design
+### 5. Follower to Enterprise Conductor
 
-All ambiguous states default to blocking:
+Conductor followers enforce locally and do not send agent credentials to the
+control plane. Deployment-provided mTLS identifies followers; signed,
+audience-bound messages carry policy, rollback, and emergency state. The
+Conductor boundary includes its deployment PKI, role tokens, signing-key roster,
+storage, retention policy, and backup process. See the
+[Conductor threat model](security/agent-firewall-conductor-threat-model.md) and
+[production runbook](guides/conductor-production-runbook.md).
 
-- HITL timeout → block
-- Non-terminal input → block
-- JSON parse errors → block (configurable)
-- Context cancellation → block
-- Unknown policy actions → treated as block
+### 6. Evidence Producer to Verifier
 
-### Evasion Resistance
+The process holding an evidence signing key is a trusted producer. A verifier
+must pin the expected public key or a trusted roster. Signature validity proves
+that the key holder signed the verified bytes; it does not prove that the key
+holder was honest, that no record was omitted, or that no unmediated action
+happened.
 
-DLP and injection scanners are tested against encoding chains (base64, hex, multi-layer URL encoding), Unicode confusables (Cyrillic, Greek, Armenian, Cherokee), combining marks, control character insertion, field splitting, and whitespace manipulation. See the test suite for the full evasion catalog.
+## Security Requirements and Evidence
 
-## What Pipelock Does NOT Protect Against
+| Requirement | Product mechanism | Verification and limit |
+|---|---|---|
+| SR-1: Mediate the claimed transport before enforcing it | Fetch, forward, reverse, TLS-intercept, WebSocket, MCP, hook, sandbox, host-containment, and deployment integrations | Transport tests and `doctor`/`contain verify`; direct-egress prevention remains deployment-enforced. |
+| SR-2: Apply non-disableable minimum URL protections | Literal-IP SSRF and core DLP floors run independently of configured policy | Unit, integration, fuzz, and evasion tests; novel encodings and opaque encrypted content remain residual risks. |
+| SR-3: Deny before a blocked mediated action executes | Scanner, request, MCP, contract, kill-switch, and policy gates run before forwarding on their covered paths | Black-box transport and exploit regression tests; observe/off modes intentionally do not enforce. |
+| SR-4: Reject unsafe or ambiguous security state where the feature promises enforcement | Validation, unknown-action rejection, context checks, authenticated listeners, trusted-key pinning, and feature-specific fail-closed paths | Negative tests cover malformed, missing, expired, revoked, and stale inputs; behavior is feature- and mode-specific rather than universally fail-closed. |
+| SR-5: Make recorded mediated decisions tamper-evident | Signed receipts, hash-linked chains, signed checkpoints, and offline verifiers | Verification proves integrity and ordering of supplied records, not completeness outside the observed chain. |
+| SR-6: Keep evidence claims scoped to the identity actually observed | Receipts record mediator-attested actor, principal, delegation, transport, policy, and verdict context | The mediator's signature is not workload non-repudiation; runtime SVID binding is not claimed where only offline appraisal exists. |
+| SR-7: Keep fleet policy and emergency control scoped, authenticated, and recoverable | mTLS follower identity, signed audience-bound messages, monotonic state, rollback, remote kill, key rosters, backup and restore | Conductor tests and operator runbooks; availability and PKI custody remain deployment responsibilities. |
+| SR-8: Make shipped artifacts inspectable and attributable | Reproducible OSS build check, signed releases, provenance, checksums, SBOMs, CodeQL, gosec, dependency and vulnerability scanning | Build provenance covers the released artifact, not the honesty of the running host or operator. |
 
-Honest assessment of limitations:
+## Ordered URL Scanner Pipeline
 
-- **Model-level attacks:** If the model itself is compromised or fine-tuned to be malicious, Pipelock cannot detect this. We operate at the communication boundary, not inside the model.
-- **Novel evasion techniques:** Pattern-based detection catches known techniques. Novel bypasses require scanner updates. We do not claim complete coverage.
-- **Encrypted or steganographic exfiltration:** Data hidden within legitimate-looking content (e.g., encoded in image pixels or timing channels) is beyond pattern-based detection.
-- **Insider threats:** If the agent operator intentionally configures Pipelock to be permissive, the tool respects that configuration.
-- **Attacks that don't cross a boundary:** If an agent and its tools run in the same process with no proxy, Pipelock has nothing to inspect.
-- **Deployment paths that are configured but not consumed:** Pipelock can generate proxy variables, MCP launcher configs, sidecar manifests, and NetworkPolicies, but the agent launcher and cluster CNI must actually consume/enforce them.
+The URL scanner checks maximum length before parsing. After parsing and hostname
+canonicalization, the current order is:
 
-## Compliance Mappings
+1. Scheme restriction to HTTP or HTTPS
+2. CRLF injection
+3. Path traversal
+4. Strict-mode allowlist
+5. Domain blocklist
+6. Core literal-IP SSRF floor, including private and metadata addresses
+7. SigV4 presigned-URL credential carve-out
+8. Core DLP floor
+9. Configured DLP
+10. Path entropy
+11. Subdomain entropy
+12. DNS-based SSRF, private-address, metadata, and rebinding checks
+13. Rate limiting
+14. Data budget
+15. Final context check
 
-Detailed mappings to security frameworks:
+Core and configured DLP run before DNS resolution, so a detected secret can be
+blocked before the proxy performs a destination lookup. Response, body,
+streaming, WebSocket, MCP, A2A, and tool-policy paths add controls appropriate
+to the bytes and semantics each transport exposes.
 
-- [OWASP Top 10 for Agentic Applications](owasp-mapping.md) (coverage of ASI01–ASI10)
-- [OWASP Agentic AI Threats & Mitigations](owasp-agentic-top15-mapping.md) (coverage of T1–T15)
-- [EU AI Act Compliance Mapping](compliance/eu-ai-act-mapping.md) (Articles 9, 12–15, 26 with NIST AI RMF crosswalk)
+## Failure Behavior
 
-## Verification
+"Fail closed" applies to a named enforcement path, not to every Pipelock mode or
+subsystem:
 
-Security claims are verified through four testing layers, static analysis, and supply chain controls.
+- A block verdict on a mediated enforcement path is denied before forwarding.
+- Unknown policy actions, expired context, and security-sensitive validation
+  failures are rejected.
+- HITL timeouts and non-terminal operator input block rather than silently
+  approving the action.
+- Parse-error behavior is configurable on some inspection surfaces and must be
+  reviewed in the deployment configuration.
+- Observe and off modes intentionally allow traffic and must not be represented
+  as enforcement.
+- Receipt emission is best-effort by default. With
+  `flight_recorder.require_receipts`, an allow-path receipt failure blocks before
+  forwarding. Block-path receipts remain best-effort because the action is
+  already denied.
+- A fail-closed evidence or storage setting trades availability for integrity;
+  storage stalls can therefore become a denial-of-service condition.
 
-### Testing Layers
+## Verifiable Evidence
 
-1. **Unit and integration tests:** Full test suite with race detector enabled in CI. See [README testing metrics](../README.md#testing) for current numbers.
-2. **Evasion test suite:** Encoding chains (base64, hex, base32, double-encoding), Unicode confusables (Cyrillic, Greek, Armenian, Cherokee), combining marks, control character insertion, field splitting, and whitespace manipulation tested against all scanner layers.
-3. **Black-box binary tests:** End-to-end tests run against a built binary, exercising the full proxy and scanner pipeline through real HTTP, WebSocket, and MCP requests.
-4. **Private adversarial corpus:** A separate adversarial test suite covers real-world evasion and attack classes against the production binary. This corpus is private for the same reason mature security vendors do not publish every regression: a test suite should improve defense, not double as an attacker playbook.
+Pipelock ships several evidence surfaces with different proof boundaries:
 
-`pipelock doctor` complements the test layers by checking configured-vs-enforceable status for the local deployment. It reports when a protection is enabled in YAML but still needs a readable file, a wrapper proof, TLS visibility, telemetry configuration, or a direct-egress boundary before it can be claimed as enforcing.
+- **ActionReceipt v1:** signed per-action evidence for mediated decisions,
+  including verdict, policy and transport context, actor fields, and hash-chain
+  linkage.
+- **EvidenceReceipt v2:** RFC 8785/JCS-canonicalized typed evidence for contract
+  lifecycle, shadow, drift, and contract-aware proxy decisions.
+- **Flight recorder:** configured evidence storage with chain continuity and
+  signed checkpoints. It records blocks; allow receipts require the configured
+  receipt mode, and clean stream frames may be summarized rather than emitted
+  one by one.
+- **Audit Packet v0:** posture-bundled receipts plus verifier output. Its relying
+  party must pin the expected trust inputs described in the
+  [Audit Packet threat model](security/audit-packet-threat-model.md).
+- **Coverage certificates:** signed summaries over an observed evidence set.
+  They may honestly report `LIMITED`; they do not convert missing mediation into
+  `COMPLETE`.
+- **Anchors:** local or Rekor checkpoints can constrain later deletion or
+  rewriting after an observed anchor. They do not prove whole-session
+  completeness before the first trusted anchor.
 
-The adversarial suite covers:
+Four independent cross-language verifier implementations (Go, TypeScript, Rust,
+and Python) exercise a shared conformance corpus. The browser wasm surface
+reuses the Go implementation and is not counted as an independent fifth
+implementation. Pinned verification is the security claim; unpinned structural
+inspection is explicitly weaker.
 
-- Encoded data exfiltration via DNS subdomains and HTTP parameters
-- Traffic blending with legitimate request profiles
-- Multi-encoding evasion chains (layered encoding, interleaved noise)
-- Scanner layer boundary testing (entropy thresholds, label length limits)
-- Config downgrade and hot-reload state attacks
-- Operator terminal injection (escape sequences, bidirectional overrides)
-- MCP response injection via non-standard result shapes
-- Tool description manipulation and session binding attacks
-- Scan API authentication, rate limiting, and fail-closed behavior
+The complete evidence caveats are cataloged in
+[Evidence Hard Limits](evidence/hard-limits.md). In particular, a key holder can
+omit records or forge records under a compromised key, a modified recorder
+cannot vouch for itself, and receipts cannot prove traffic was unable to bypass
+the mediator.
 
-The suite is updated alongside every release and whenever new evasion classes are discovered. Every confirmed finding becomes a permanent regression test.
+## Key Lifecycle
 
-### Static Analysis and Supply Chain
+Signing and trust material must have an operator-owned lifecycle:
 
-- **Static analysis:** CodeQL (security-and-quality) and golangci-lint with gosec
-- **Dependency monitoring:** Renovate (10-day cooldown for routine updates, security fast-track for vulnerability alerts) plus govulncheck in CI
-- **Signed releases:** Cosign signatures, SLSA provenance attestations, CycloneDX SBOM
-- **Vulnerability disclosure:** Responsible disclosure via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories)
+- **Create:** generate purpose-bound keys with restricted file permissions.
+- **Rotate:** introduce new trust before retiring old trust so historical
+  evidence remains verifiable.
+- **Revoke:** distribute signed revocation or roster state and stop accepting the
+  retired key for new artifacts.
+- **Recover:** use the documented root or high-water recovery path rather than
+  weakening verification.
+- **Inspect:** record fingerprints, purposes, provenance, blast radius, and
+  current status in an operator-visible trust inventory.
+
+The [key rotation runbook](security/key-rotation-runbook.md), dashboard Trust &
+Keys view, receipt-verification guide, and Conductor runbooks cover the shipped
+surfaces. Hardware-backed custody and KMS/HSM integration remain deployment
+choices unless a specific integration says otherwise.
+
+## Known Limitations
+
+- Pipelock does not detect a maliciously trained or compromised model merely
+  because it produced a request.
+- Novel parser differentials, encoding chains, semantic evasions, steganography,
+  timing channels, or encrypted exfiltration may require new controls.
+- CONNECT passthrough exposes destination and connection metadata, not the
+  encrypted request or response body. Payload claims require TLS interception
+  or another content-visible path.
+- Same-process or otherwise unwrapped tools and MCP servers are outside the
+  boundary.
+- Agent identity is often configured or mediator-observed. It is not universally
+  certificate-bound workload identity.
+- Local evidence is not an independent witness when the same operator controls
+  the runtime, signing key, and retained records.
+- Pipelock does not encrypt every audit store at rest. Regulated deployments must
+  provide storage encryption, access control, retention, and backup protection.
+- High availability, RTO, RPO, support response, and legal compliance depend on
+  the deployment and commercial agreement; the repository does not promise
+  them without separate proof.
+
+## Verification Program
+
+Security requirements are exercised through:
+
+1. Unit and integration tests, including race-detector CI shards.
+2. Fuzz targets and public evasion tests for malformed and adversarial input.
+3. Black-box binary tests across real HTTP, WebSocket, MCP, and deployment paths.
+4. A private adversarial corpus for regression classes whose full payload set is
+   not published.
+5. Cross-language receipt and Audit Packet conformance vectors.
+6. Static analysis with CodeQL, golangci-lint, and gosec.
+7. Dependency monitoring, `govulncheck`, signed releases, provenance, SBOMs, and
+   reproducible-build checks.
+
+Every confirmed security finding should become a durable regression test. A
+green test run proves the tested invariant at that revision; it does not erase
+the limitations above.
+
+## Review Cadence
+
+This assurance case should receive a human review at least annually and after a
+material change to transport coverage, containment, identity, evidence formats,
+key lifecycle, or the Enterprise control plane. The reviewer should compare the
+claims with non-test call sites, negative tests, current unsupported paths, and
+the shipped release before recording the review.
+
+### Review Record
+
+| Date | Reviewer | Scope and result |
+|---|---|---|
+| 2026-07-17 | Joshua Waldrep, project lead | Reviewed the security objectives, trust boundaries, requirements, evidence claims, and stated limitations against the shipped implementation and approved the assurance case for publication. |

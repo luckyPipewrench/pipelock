@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::chain::{compute_totals, verify_chain_with_options};
 use crate::recorder::extract_receipts;
 use crate::schema::validate_audit_packet;

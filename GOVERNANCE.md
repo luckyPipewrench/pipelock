@@ -6,7 +6,7 @@ Pipelock is maintained by Joshua Waldrep ([@luckyPipewrench](https://github.com/
 
 ## Decision-Making
 
-This is a single-maintainer project. Joshua Waldrep makes final decisions on:
+This is a single-project-lead project. Joshua Waldrep makes final decisions on:
 
 - Feature direction and roadmap priorities
 - Release timing and versioning
@@ -34,7 +34,11 @@ Vulnerabilities are reported through [GitHub Security Advisories](https://github
 
 ## Continuity
 
-Repository admin access is shared with at least one additional maintainer to ensure the project can continue accepting contributions, triaging issues, and cutting releases if the primary maintainer is unavailable.
+Repository admin access is shared with at least one trusted continuity
+administrator so the project can continue accepting contributions, triaging
+issues, and cutting releases if the project lead is unavailable. Continuity or
+review access does not by itself make that person a Pipelab employee,
+representative, or project decision-maker.
 
 ## Contact
 

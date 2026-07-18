@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Check what happens when the agent can touch the harness files directly."""
 
 from __future__ import annotations

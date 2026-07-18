@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Cross-language receipt-verifier conformance gate.
 #
 # Runs the four reference verifiers (Go, TypeScript, Rust, Python) over every

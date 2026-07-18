@@ -49,12 +49,16 @@ feed that detector.
 ## The primitive: signed action receipts
 
 When `flight_recorder.signing_key_path` is set in the Pipelock
-config, every proxy decision produces a signed action receipt.
-Receipts are Ed25519-signed, JSON-structured, and linked into a
-SHA-256 hash chain so any deletion or reordering is detectable
-after the fact. Without a signing key configured, Pipelock still
-enforces, and the flight recorder can still write other evidence
-entries, but the signed receipt stream is not produced.
+config, enforcement blocks produce signed action receipts. Allow
+receipts are emitted when `flight_recorder.require_receipts: true`;
+clean streaming frames are summarized rather than individually
+receipted. Receipts are Ed25519-signed, JSON-structured, and linked
+into a SHA-256 hash chain so deletion or reordering within an observed
+chain is detectable after the fact. This proves tamper evidence, not
+that every mediated action was recorded. Without a signing key
+configured, Pipelock still enforces, and the flight recorder can still
+write other evidence entries, but the signed receipt stream is not
+produced.
 
 Generate a key with `pipelock keygen <name>`, set
 `flight_recorder.signing_key_path`, and start or restart Pipelock.
@@ -118,11 +122,12 @@ stream in different wrappers.
 
 When a SIEM rule fires or an agent's session looks suspicious, an
 analyst can pull the full receipt stream for that `session_id` and
-reconstruct every decision in order. The hash chain confirms the
-stream has not been edited since it was written. The `policy_hash`
-confirms which policy version was in force. The `signature`
-confirms the record came from Pipelock and not from a tampered
-agent log.
+reconstruct the recorded decisions in order. The hash chain confirms
+the observed stream has not been edited since it was written. It
+cannot prove that a missing action was never attempted. The
+`policy_hash` confirms which policy version was in force. A signature
+verified against a separately pinned key confirms the record came
+from the expected Pipelock signer rather than a tampered agent log.
 
 This is the audit-trail use case. Receipts are designed to be
 presentable to a third party (auditor, incident responder, internal

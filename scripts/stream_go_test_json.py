@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Mirror `go test -json` to a file while printing live package completions."""
 
 from __future__ import annotations

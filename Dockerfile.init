@@ -1,3 +1,6 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Init container for K8s sidecar deployments.
 # Copies the pipelock binary to a shared volume for MCP stdio wrapping.
 #

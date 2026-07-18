@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # MCP tool-policy verification for examples/mcp-tool-policy/
 #
 # Drives pipelock mcp proxy against a benign stdio decoy and proves allow vs

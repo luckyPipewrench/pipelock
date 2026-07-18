@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Quick Pipelock demo for README recording.
 # Shows a 4-step attack escalation: raw key, encoded key, DNS exfil, then clean pass.
 #
@@ -68,6 +71,6 @@ pause
 
 # --- Done ---
 echo ""
-echo -e "${GREEN}Single binary. 11-layer scanner. DLP, DNS exfil, SSRF, and more.${RESET}"
+echo -e "${GREEN}Single binary. Ordered scanner pipeline. DLP, DNS exfil, SSRF, and more.${RESET}"
 echo -e "${GREEN}go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest${RESET}"
 echo ""

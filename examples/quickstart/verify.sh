@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Pipelock quickstart verification: 5 tests proving isolation and scanning work.
 # Runs inside the verify container (pipelock-init image: Alpine + /pipelock binary).
 # Exit 0 = all pass, exit 1 = any fail. CI-friendly.

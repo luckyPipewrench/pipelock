@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package plsentry provides opt-in Sentry error reporting with event minimization.
 // Events are structurally allowlisted and scrubbed before leaving the process.
 package plsentry

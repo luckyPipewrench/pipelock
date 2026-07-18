@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Command mcpstdio is a deterministic MCP stdio server used by the egress
 // benchmark. It implements just enough of the MCP protocol (initialize,
 // tools/list, tools/call) to be wrapped by `pipelock mcp proxy --` and also

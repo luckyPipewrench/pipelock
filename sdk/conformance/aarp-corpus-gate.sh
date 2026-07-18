@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Cross-language AARP assurance-envelope conformance gate.
 #
 # Runs the four reference verifiers (Go, TypeScript, Rust, Python) over the

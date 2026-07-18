@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Drift guard for the vendored conformance corpus.
 #
 # The corpus under testdata/corpus is a VENDORED copy of the master maintained

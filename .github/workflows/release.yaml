@@ -145,6 +145,9 @@ jobs:
       - name: Run runtime policy audit
         run: make runtime-policy-audit
 
+      - name: Verify reproducible OSS build
+        run: make reproducible-build-check
+
       - name: Login to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:

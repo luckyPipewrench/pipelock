@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { readFileSync } from "node:fs";
 import type { AuditPacket, AuditPacketReport, ChainResult, Receipt, Totals } from "./types.js";
 import { computeTotals, verifyChain } from "./chain.js";

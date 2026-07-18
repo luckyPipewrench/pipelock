@@ -48,7 +48,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Fetch proxy as controlled tool:** the agent's only network access is through the proxy. Every request goes through the 11-layer scanner pipeline.
+- **Fetch proxy as controlled tool:** in an enforced deployment, the agent's network access is routed through the proxy. Each mediated fetch traverses the ordered URL scanner pipeline.
 - **MCP proxy:** `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
 - **Tool description scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions, file exfiltration directives, or cross-tool manipulation. Rug-pull detection tracks SHA256 hashes per session and alerts on mid-session changes.
 - **HITL approvals:** suspicious requests can trigger human-in-the-loop terminal approval before proceeding.
@@ -82,7 +82,9 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **DLP scanning:** catches API keys, tokens, and credentials in outbound URLs regardless of why the agent is sending them.
 - **Entropy analysis:** flags high-entropy URL segments that look like encoded secrets, even if they don't match known patterns.
 - **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh, etc.) are blocked.
-- **Audit logging:** every request is logged with zerolog, creating a verifiable trail of all agent network activity.
+- **Audit and receipt evidence:** mediated scanner and policy events are logged
+  with zerolog. Signed receipts provide tamper evidence for recorded actions;
+  they do not prove completeness for traffic that bypasses Pipelock.
 
 **Coverage: Strong.** DLP + entropy + blocklist catches most exfiltration attempts. Audit trail enables post-incident analysis.
 

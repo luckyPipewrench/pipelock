@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package filescan detects invisible-Unicode and bidi-control characters
 // embedded in files. This is the product surface for the supply-chain injection
 // vector where an attacker plants hidden instructions in agent-context files

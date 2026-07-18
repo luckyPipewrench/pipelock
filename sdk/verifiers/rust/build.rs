@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 fn main() {
     // The schema is vendored into the crate root so the crate is self-contained
     // for `cargo publish`. Watch the in-crate copy, not the canonical source

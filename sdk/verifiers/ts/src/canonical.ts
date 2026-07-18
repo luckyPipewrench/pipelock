@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ActionRecord, Receipt, JSONValue } from "./types.js";
 
 type FieldSpec = readonly [name: string, omitempty: boolean, nested?: NestedKind];

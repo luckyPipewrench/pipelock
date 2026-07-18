@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package toolchain is a deterministic LLM-shape mock for benchmarking
 // tool-use sequences. It returns Claude-shaped responses with tool_use blocks
 // so the harness can drive an N-step tool-call chain through pipelock without

@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Command bench-egress is the entry point for pipelock's agent-egress overhead
 // benchmark. It drives traffic across five transports (HTTP, SSE, tool-chain,
 // MCP stdio, WebSocket) directly against in-process mocks and through a

@@ -1,5 +1,6 @@
 //go:build enterprise
 
+// Copyright 2026 Pipelock contributors
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 // Package testinit activates enterprise edition hooks for package-level tests.

@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::canonical::{canonicalize_action_record, canonicalize_jcs_value};
 use crate::types::Receipt;
 use crate::util::{decode_hex, VerifierError};

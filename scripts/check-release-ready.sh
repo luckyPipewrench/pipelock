@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Release-readiness gate. Hard-fails a release whose metadata does not match the
 # tag, BEFORE anything is built. Catches the recurring release mistakes that no
 # human checklist reliably caught:

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Adversarial MCP server for the tool-response-injection example.
 
 This server speaks MCP in two modes:

@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package harness implements the egress-overhead benchmark harness. It drives
 // traffic through five transports (HTTP, SSE, tool-chain, MCP stdio,
 // WebSocket) both directly against in-process mocks and through a running

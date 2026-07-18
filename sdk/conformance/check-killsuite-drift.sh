@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Drift check for the Evidence Theater Kill Suite.
 #
 # The kill suite is GENERATED in this repo by the Go reference verifier (it needs

@@ -41,7 +41,7 @@ Pipelock supports the current major release line. Security fixes are shipped on 
 
 | Version | Supported |
 |---|---:|
-| 2.x | Yes |
+| 3.x | Yes |
 | Earlier release lines | No |
 
 The current shipped release line is documented in [CHANGELOG.md](CHANGELOG.md).

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # bench/egress/run-all.sh - run the agent-egress overhead benchmark.
 #
 # Defaults to quick mode (usually 1-3 minutes). Use --release to run the full suite

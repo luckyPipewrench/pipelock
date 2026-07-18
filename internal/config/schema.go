@@ -1202,8 +1202,9 @@ type CrossRequestFragments struct {
 
 // KillSwitch configures the emergency deny-all kill switch.
 // When active, all requests are rejected except health/metrics endpoints
-// and allowlisted IPs. Three activation sources (config, SIGUSR1, sentinel
-// file) are OR-composed: any one active means the kill switch is engaged.
+// and allowlisted IPs. Six activation sources (config, API, Conductor remote
+// kill, Conductor stale bundle, SIGUSR1, sentinel file) are OR-composed: any
+// one active means the kill switch is engaged.
 type KillSwitch struct {
 	Enabled       bool     `yaml:"enabled"`
 	SentinelFile  string   `yaml:"sentinel_file"`

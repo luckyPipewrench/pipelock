@@ -83,10 +83,10 @@ pipelock verify-receipt "$(ls ./out/*.json | head -1)" --key ./out/signer.pub  #
 ```
 
 <div align="center">
-  <img src="docs/assets/dashboard/evidence-viewer-pinned.png" alt="Pipelock evidence report: the scorecard (Authentic, Untampered, Anchored, Completeness, each with its honest limit) above a signed receipt timeline of every mediated decision, verdict, and hash link" width="860">
+  <img src="docs/assets/dashboard/evidence-viewer-pinned.png" alt="Pipelock evidence report: the scorecard (Authentic, Untampered, Anchored, Completeness, each with its honest limit) above a signed receipt timeline of recorded mediated decisions, verdicts, and hash links" width="860">
 </div>
 
-The scorecard grades each claim on its own and states what it does not prove: whether anything happened outside the boundary Pipelock mediates. Below it, the receipt timeline lists every mediated decision with its verdict and hash link. A receipt that is honest about its own limits beats a green checkmark that hides them.
+The scorecard grades each claim on its own and states what it does not prove: whether anything happened outside the boundary Pipelock mediates. Below it, the receipt timeline lists the recorded mediated decisions with their verdicts and hash links. A receipt that is honest about its own limits beats a green checkmark that hides them.
 
 The evidence viewer is free and needs no license:
 
@@ -285,14 +285,14 @@ Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and
 
 ### Detection And Scanning
 
-- **11-layer URL scanner:** scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching, path entropy analysis, subdomain entropy analysis, SSRF protection with DNS-rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
+- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path and subdomain entropy analysis, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
 - **DLP:** 65 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment secrets, and financial identifiers with checksum validation. BIP-39 seed phrase detection uses dictionary lookup, sliding windows, and SHA-256 checksum validation.
 - **Response scanning:** 32 built-in prompt-injection and state/control poisoning patterns, plus 6-pass normalization for zero-width characters, homoglyphs, leetspeak, optional whitespace, vowel folding, base64, and hex. Actions are `block`, `strip`, `warn`, or `ask`.
 - **Streaming SSE:** `text/event-stream` responses from LLM gateways and MCP HTTP/SSE flow token by token with per-event and rolling cross-event DLP and injection scanning. A detection terminates the stream fail-closed. See [SSE streaming guide](docs/guides/sse-streaming.md).
 - **Request body scanning:** headers and bodies are scanned before they leave the protected path across JSON, form data, raw text, reverse proxy requests, TLS-intercepted CONNECT traffic, and outbound WebSocket client frames.
 - **Request redaction:** optional JSON rewriting replaces matched secret values with typed placeholders such as `<pl:aws-access-key:1>` across HTTP, WebSocket, and MCP `tools/call` arguments. Receipts record the active profile and per-class counts instead of plaintext secrets.
 - **Address protection:** ETH, BTC, SOL, and BNB address validation catches lookalike destination swaps using prefix/suffix fingerprinting and an operator allowlist.
-- **Every block explains itself:** `pipelock explain <url>` (also `explain event <id>` and `explain mcp`) prints the scanner, layer, matching rule, inspected surface, and the exact narrowest config knob to fix a false positive. An un-fixable false positive is why teams rip a scanner out; this is the answer. See [`docs/cli/explain.md`](docs/cli/explain.md).
+- **Explainable findings:** `pipelock explain <url>` (also `explain event <id>` and `explain mcp`) prints the scanner, layer, matching rule, inspected surface, and the narrowest available config knob for a false positive. See [`docs/cli/explain.md`](docs/cli/explain.md).
 - **Canary tokens:** `pipelock canary` generates honeytoken config. A synthetic secret showing up in outbound traffic proves an agent or something in its chain is exfiltrating environment variables. See [canary tokens](docs/guides/canary-tokens.md).
 - **Skill-file scanning:** `pipelock skill-scan` inventories agent skill files, compares them to an operator-owned lock file, and flags source-to-sink combinations such as credential-to-network-sink or shell-to-write with line evidence before anything runs. See [`docs/cli/skill-scan.md`](docs/cli/skill-scan.md).
 
@@ -342,9 +342,15 @@ pipelock contain run -- claude-code
 ### Evidence And Receipts
 
 - **Flight recorder:** hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. `pipelock init` provisions a recorder directory and signing key for stock installs, while the recorder stays inert until a directory and key exist. See [Flight Recorder](docs/guides/flight-recorder.md).
-- **Action receipts:** signed records of each mediated action, verdict, policy hash, transport, and scanner layer. Verify with `pipelock verify-receipt --key <signer.pub>`. Unpinned runs are structural-only and exit non-zero unless `--allow-unpinned` is passed.
+- **Action receipts:** signed records emitted for mediated actions, carrying verdict, policy hash, transport, and scanner layer. Blocks produce receipts; allow-path receipt enforcement requires `flight_recorder.require_receipts`. Verify with `pipelock verify-receipt --key <signer.pub>`. Unpinned runs are structural-only and exit non-zero unless `--allow-unpinned` is passed.
 - **Mediation envelope:** RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, with action type, verdict, actor identity, policy hash, taint context, and receipt correlation ID. See [federation guide](docs/guides/federation.md).
-- **Receipt conformance:** five independent verifier implementations (Go, TypeScript, Rust, Python, wasm) reject the same malformed and forgeable inputs, including duplicate keys, integer overflow, and unpaired surrogates, against one shared [conformance corpus](sdk/conformance/). A parser differential is a skeptic's first move against an offline verifier, so all five fail closed on it. AARP/SVID appraisal remains an offline verifier profile, not runtime identity enforcement.
+- **Receipt conformance:** four independent cross-language verifier implementations
+  (Go, TypeScript, Rust, and Python) run against one shared
+  [conformance corpus](sdk/conformance/), including malformed and forgeable
+  inputs such as duplicate keys, integer overflow, and unpaired surrogates. A
+  browser wasm surface reuses the Go verifier implementation. AARP/SVID
+  appraisal remains an offline verifier profile, not runtime identity
+  enforcement.
 - **Anchors:** `pipelock anchor receipts` records receipt-chain checkpoints to a local backend or Rekor. Rekor anchoring is proof material for later audit; Rekor verification requires pinned log keys and the end-to-end operator-independence path is still being proven.
 - **Posture capsule:** `pipelock posture emit` and `pipelock posture verify` produce and check a signed snapshot of a deployment's enforcement posture, with a CI gate and scoring model, so a reviewer can confirm the boundary was configured the way it claims.
 
@@ -352,7 +358,7 @@ pipelock contain run -- claude-code
 
 - **Operator dashboard:** `pipelock dashboard serve` is a read-only console over signed evidence. Pro unlocks the Overview, Evidence, Exemptions, Agents, Budgets, and Trust & Keys views; Enterprise adds the Fleet, Workbench, and Incident views. See [`docs/cli/dashboard.md`](docs/cli/dashboard.md).
 - **Free evidence viewer:** `pipelock evidence serve` and `pipelock evidence view` render one selected recorder session without a license or cross-agent enumeration. `pipelock evidence verify-cert` verifies Pro-issued coverage certificates offline.
-- **Conductor:** Enterprise fleet control plane for signed policy-bundle distribution, signed evidence sink (`pipelock fleet-sink`), enrollment, remote kill, rollback, dry-run, decision replay, and runtime/apply-state drift preflight over mTLS/SPIFFE. Followers enforce locally and stay fail-closed; Conductor holds no agent secrets. See the [Conductor guide](docs/guides/conductor.md).
+- **Conductor:** Enterprise fleet control plane for signed policy-bundle distribution, signed evidence sink (`pipelock fleet-sink`), enrollment, remote kill, rollback, dry-run, decision replay, and runtime/apply-state drift preflight over mTLS/SPIFFE. Followers enforce locally; the default stale-policy mode engages an independent deny source after its grace window, while the documented `continue_last_known_good` override weakens that posture. Conductor holds no agent secrets. See the [Conductor guide](docs/guides/conductor.md).
 - **Legal hold:** `pipelock dashboard legal-hold add/list/release` manages preservation holds as compliance metadata kept outside the dashboard's HTTP authority, so a compromised dashboard can read holds but never forge or delete them.
 - **Behavioral baseline:** profile-then-lock for MCP tool behavior with `pipelock baseline list/show/ratify/forget` for operator approval and relearning. See [`docs/cli/baseline.md`](docs/cli/baseline.md).
 
@@ -389,13 +395,13 @@ pipelock contain run -- claude-code
 | **Fleet Monitoring** | Per-instance Prometheus metrics plus ready-to-import [Grafana dashboard](configs/grafana-dashboard.json). Free single-instance monitoring, distinct from Conductor. |
 | **Operator Dashboard** (v3.1, Pro/Enterprise) | `pipelock dashboard serve` gives read-only Overview, Evidence, Exemptions, Agents, Budgets, Trust & Keys, Fleet, Workbench, and Incident views with token, OIDC, or mTLS auth, bounded RBAC, raw-view elevation, backup/restore, exemption lifecycle records, and coverage certificates. See [`docs/cli/dashboard.md`](docs/cli/dashboard.md). |
 | **Free Evidence Viewer** (v3.1) | `pipelock evidence serve` serves one selected recorder session as a read-only HTML report without a license and without cross-agent enumeration. `pipelock evidence verify-cert` verifies Pro-issued coverage certificates offline. |
-| **Conductor: fleet control plane** (v2.7, Enterprise) | Signed policy-bundle distribution, signed-evidence audit sink (`pipelock fleet-sink`), enrollment, remote kill, policy rollback, dry-run, decision replay, and runtime/apply-state drift preflight over mTLS/SPIFFE. Gated by the `fleet` license feature, fail-closed. See the [Conductor guide](docs/guides/conductor.md). |
+| **Conductor: fleet control plane** (v2.7, Enterprise) | Signed policy-bundle distribution, signed-evidence audit sink (`pipelock fleet-sink`), enrollment, remote kill, policy rollback, dry-run, decision replay, and runtime/apply-state drift preflight over mTLS/SPIFFE. Gated by the `fleet` license feature; stale-policy behavior is explicit and defaults to strict deny. See the [Conductor guide](docs/guides/conductor.md). |
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, and session smuggling prevention for Google's Agent-to-Agent protocol on forward/MCP paths. |
 | **Behavioral Baseline** | Profile-then-lock for MCP tool behavior with `pipelock baseline list/show/ratify/forget` for operator approval and relearning. See [`docs/cli/baseline.md`](docs/cli/baseline.md). |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. |
 | **Taint Escalation** | Exposure-based policy escalation across MCP and task boundaries until trust is restored. |
 | **Mediation Envelope** | RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, with inbound verification, replay protection, SPIFFE actor format, and an RFC 9421 signing-key directory. See [federation guide](docs/guides/federation.md). |
-| **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) plus first-party Go, TypeScript, Rust, Python, and wasm verifier surfaces. `EvidenceReceipt v2` uses RFC 8785/JCS canonicalization. AARP/SVID appraisal remains offline verifier-side. |
+| **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) across independent Go, TypeScript, Rust, and Python implementations, plus a browser wasm surface backed by Go. `EvidenceReceipt v2` uses RFC 8785/JCS canonicalization. AARP/SVID appraisal remains offline verifier-side. |
 | **Learn-and-Lock** (v2.4) | Per-agent behavioral contracts: observe traffic, compile a signed candidate contract, replay captured observations in shadow, ratify per rule, promote the signed active manifest, and enforce live on URL-bearing transports plus MCP tool calls. See [learn-and-lock guide](docs/guides/learn-and-lock.md). |
 | **Block-Reason Header** (v2.4) | `X-Pipelock-Block-Reason` on HTTP-capable block paths, with the same reason vocabulary on MCP JSON-RPC error metadata. See [block-reason header](docs/guides/block-reason-header.md). |
 | **Wedge-Detection Watchdog** (v2.4) | `health_watchdog` returns `/health` 503 when a subsystem heartbeat goes stale. See [health endpoint guide](docs/guides/health.md). |
@@ -418,7 +424,7 @@ All detection, enforcement, containment, and single-agent evidence is free forev
 
 | Capability | Free | Pro | Enterprise |
 |---|:--:|:--:|:--:|
-| Scanning and detection (11-layer URL, DLP, injection, SSRF, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
+| Scanning and detection (ordered URL pipeline, DLP, injection, SSRF, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
 | MCP and A2A scanning (input, response, tool policy, tool chain, poisoning, integrity, authenticated listeners) | Yes | Yes | Yes |
 | Containment, sandbox, host `contain`, 6-source kill switch | Yes | Yes | Yes |
 | Action receipts, flight recorder, anchors, free evidence viewer, `verify-cert`, standalone verifier | Yes | Yes | Yes |
@@ -443,7 +449,7 @@ Pipelock uses **capability separation**: in an enforced deployment, the agent pr
 Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspection on the forward and MCP paths:
 
 - **Fetch proxy** (`/fetch?url=...`): Fetches the URL, extracts text, scans for injection, returns clean content.
-- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling. Zero code changes. Optional TLS interception for full payload scanning.
+- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling without application code changes. Proxy configuration is still required. Optional TLS interception enables payload scanning.
 - **WebSocket proxy** (`/ws?url=ws://...`): Bidirectional frame scanning with DLP + injection detection.
 - **MCP proxy** (`pipelock mcp proxy`): Wraps stdio or HTTP MCP servers with bidirectional scanning.
 - **A2A inspection**: Inspects Google Agent-to-Agent protocol traffic as it crosses the forward and MCP paths.
@@ -454,18 +460,35 @@ Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspectio
 <summary>Text diagram (for terminals)</summary>
 
 ```
-┌──────────────────────┐         ┌───────────────────────┐
-│  PRIVILEGED ZONE     │         │  FIREWALL ZONE        │
-│                      │         │                       │
-│  AI Agent            │  IPC    │  Pipelock             │
-│  - Has API keys      │────────>│  - No agent secrets   │
-│  - Has credentials   │ fetch / │  - Full internet      │
-│  - Restricted network│ CONNECT │  - Returns text       │
-│                      │ /ws/MCP │  - WS frame scanning  │
-│                      │<────────│  - URL scanning       │
-│                      │ content │  - Audit logging      │
-│                      │         │                       │
-└──────────────────────┘         └───────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ PRIVILEGED ZONE                                          │
+│                                                          │
+│ AI Agent                                                 │
+│ - API keys, credentials, private code and context        │
+│ - Network-isolated by deployment                         │
+└────────────────────────────┬─────────────────────────────┘
+                             │ mediated request
+                             │ fetch / CONNECT / WS / MCP / A2A
+                             ▼
+┌──────────────────────────────────────────────────────────┐
+│ FIREWALL ZONE                                            │
+│                                                          │
+│ Pipelock Agent Firewall                                  │
+│ - Destination: URL, SSRF, and DNS checks                 │
+│ - Data: DLP, secret detection, and budgets               │
+│ - Content: prompt injection and tool poisoning           │
+│ - Policy: allow, block, or redact                        │
+│ - No agent secrets                                       │
+└────────────────────────────┬─────────────────────────────┘
+                             │ approved request
+                             ▼
+┌──────────────────────────────────────────────────────────┐
+│ INTERNET                                                 │
+│                                                          │
+│ Web APIs, websites, MCP servers, tools, and A2A services │
+└──────────────────────────────────────────────────────────┘
+
+Internet -- response --> Pipelock -- scanned content --> AI Agent
 ```
 
 </details>
@@ -623,6 +646,8 @@ Full docs directory: [docs/](docs/)
 | [Community Rules](docs/rules.md) | Install, configure, and create signed rule bundles |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
 | [Security Documents](docs/security/) | Disclosure policy, unsupported paths, key rotation, TLS CA and Audit Packet threat models |
+| [Enterprise Readiness](docs/enterprise-readiness.md) | Shipped enterprise controls, evaluation path, deployment decisions, and explicit boundaries |
+| [Reproducible Builds](docs/reproducible-builds.md) | Byte-for-byte OSS binary check, stable inputs, release integration, and scope |
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments |
 | [Transport Modes](docs/guides/transport-modes.md) | All proxy modes and their scanning capabilities |
 | [OWASP MCP Top 10](docs/compliance/owasp-mcp-top10.md) | OWASP MCP Top 10 coverage |
@@ -676,7 +701,7 @@ internal/
     session/           `pipelock session`, `pipelock adaptive`, and `pipelock baseline` operator CLIs
     setup/             `pipelock init sidecar`: companion-proxy manifest generation (K8s)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
-  scanner/             11-layer URL scanning pipeline + response injection detection
+  scanner/             Ordered URL scanning pipeline + response injection detection
   audit/               Structured JSON logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning, TLS
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains

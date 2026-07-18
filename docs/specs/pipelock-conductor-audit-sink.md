@@ -26,7 +26,7 @@ Pipelock follower instances
   -> local enforcement, local recorder, local receipts
   -> signed audit batches
 Conductor audit sink
-  -> verification, DLP scanning, append-only ingest, indexed search
+  -> verification, DLP scanning, durable ingest, bounded metadata query
 ```
 
 Conductor is not a scanner and must not become an inline dependency for enforcement.
@@ -55,24 +55,25 @@ evidence operations, fleet visibility, and auditor workflows.
 - No bearer-only follower-to-Conductor transport.
 - No single online signing key that can silently compromise the whole fleet.
 
-## Hard MVP Gates
+## Original Design Gates and Current Status
 
-No implementation should start until these are accepted as product/security
-requirements:
+This design began with ten proposed gates. The table distinguishes binary
+enforcement from deployment requirements and unshipped integrations; the
+current [Conductor guide](../guides/conductor.md) is authoritative for operator
+behavior.
 
-1. Bundle signing uses KMS/HSM-backed keys and never stores signing private keys
-   on Conductor disk.
-2. Every signed bundle hash is written to an append-only transparency log.
-3. Catastrophic messages require threshold approval and a separate key purpose.
-4. Enrollment is concrete: one-shot token exchange for per-instance mTLS
-   identity and per-instance signing material.
-5. Bundle signed preimages include `org_id`, `fleet_id`, environment, and
-   audience selectors.
-6. Rollback is a first-class signed operation with its own key purpose.
-7. Remote kill switch state is not ordinary bundle state.
-8. License metadata is excluded from policy bundles.
-9. Audit payloads are treated as hostile input even after signature validation.
-10. Follower-to-Conductor transport is mTLS.
+| Original gate | Current status |
+|---|---|
+| KMS/HSM-backed bundle signing, no signing key on Conductor disk | **Deployment requirement, no built-in KMS/HSM provider.** Conductor verifies signed messages and need not hold publisher private keys; custody and signing integration are operator-provided. |
+| Append-only transparency entry for every bundle | **Not a shipped universal guarantee.** Local signed state and audit evidence ship; external transparency integration remains a roadmap choice. |
+| Threshold approval and separate key purposes for catastrophic messages | **Shipped.** Remote kill, rollback, and trust rotation use purpose-bound threshold verification. |
+| One-shot enrollment into per-instance mTLS and audit identity | **Shipped.** Enrollment tokens are single-use and follower identity is derived from verified mTLS. |
+| Audience-bound signed bundle preimages | **Shipped.** Organization, fleet, environment, instance, and label selectors are validated. |
+| First-class signed rollback | **Shipped.** Rollback authorization is purpose-bound, threshold-signed, scoped, and replay-controlled. |
+| Remote kill separate from ordinary bundle state | **Shipped.** Remote kill and stale-policy denial are independent kill-switch sources. |
+| License metadata excluded from policy bundles | **Shipped.** Forbidden local and license fields are rejected before storage/apply. |
+| Audit payloads remain hostile after signature verification | **Shipped.** Ingest performs schema, scope, signature, continuity, and content-safety checks. |
+| Follower-to-Conductor transport uses mTLS | **Shipped.** Deployment PKI remains an operator responsibility. |
 
 ## Trust Model
 
@@ -938,7 +939,11 @@ must be stronger than ordinary follower deployment:
 - pinned dependencies
 - release attestation verified by deployment tooling
 
-## Implementation Phases
+## Historical Implementation Phases
+
+This is the original implementation sequence, retained as design history rather
+than a current feature checklist. The GA guide and production runbook identify
+what ships now.
 
 ### Phase 0: Spec and Schema
 
@@ -1028,11 +1033,7 @@ Required test coverage:
 
 ## Open Decisions
 
-- Transparency log implementation: external Rekor-style service, embedded
-  append-only log, or both.
 - KMS/HSM provider abstraction and minimum supported provider.
-- Exact trust roster file format.
-- Whether local follower receipt signing key is reused for checkpoints or a
-  separate checkpoint key is required.
+- External transparency or WORM integration for fleet policy and evidence.
 - Whether FIPS support is a documented limitation or a near-term build target.
-- WORM storage backend for first enterprise deployment.
+- Supported high-availability storage and failover topology.

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Real-upstream MCP runtime E2E for `pipelock opencode install`.
 
 Builds the pipelock binary from the worktree (or reuses one passed via

@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Cross-language conformance corpus checks for the Rust verifier. Paths are
 // relative to the crate directory (cargo test CWD), matching the vendored
 // corpus shared by all four reference verifiers.

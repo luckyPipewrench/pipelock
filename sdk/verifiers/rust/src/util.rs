@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use base64::Engine;
 use serde_json::Value;
 use sha2::{Digest, Sha256};

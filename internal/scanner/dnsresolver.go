@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // dnsresolver.go - host-level DNS resolver used by SSRF checks and the
 // proxy dial path. The default resolver is net.DefaultResolver. Operators
 // may configure dns.host_overrides to map specific hostnames to static IPs

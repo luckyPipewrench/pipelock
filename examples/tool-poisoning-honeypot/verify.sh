@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Verification for examples/tool-poisoning-honeypot/
 #
 # Runs the real `pipelock mcp proxy` round-trip against the decoy server and

@@ -308,6 +308,15 @@ jobs:
       - name: Config example startability policy
         run: bash scripts/check-config-examples.sh
 
+      - name: Documentation accuracy and local links
+        run: make docs-check
+
+      - name: Source file headers
+        run: make source-header-check
+
+      - name: Reproducible OSS build
+        run: make reproducible-build-check
+
   helm:
     needs: [security-scan]
     runs-on: ubuntu-latest

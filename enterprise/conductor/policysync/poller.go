@@ -1,5 +1,6 @@
 //go:build enterprise
 
+// Copyright 2026 Pipelock contributors
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 // Package policysync polls a Conductor leader for the latest signed policy

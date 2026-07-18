@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::signing::{
     normalize_evidence_receipt, verify_receipt_with_options, UNPINNED_RECEIPT_BANNER,
 };

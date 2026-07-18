@@ -1,5 +1,6 @@
 //go:build enterprise
 
+// Copyright 2026 Pipelock contributors
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 // Package entcli provides enterprise CLI commands (license, conductor, fleet,

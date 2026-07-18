@@ -14,6 +14,8 @@ builds:
       - enterprise
     flags:
       - -trimpath
+      - -buildvcs=false
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
       - darwin
@@ -24,7 +26,7 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version={{.Version}}
-      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate={{.Date}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate={{.CommitDate}}
       - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GitCommit={{.ShortCommit}}
       - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GoVersion={{.Env.GOVERSION}}
       - -X github.com/luckyPipewrench/pipelock/internal/proxy.Version={{.Version}}
@@ -43,6 +45,8 @@ builds:
       - enterprise
     flags:
       - -trimpath
+      - -buildvcs=false
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:
@@ -66,6 +70,8 @@ builds:
       - CGO_ENABLED=0
     flags:
       - -trimpath
+      - -buildvcs=false
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
       - darwin
@@ -76,7 +82,7 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version={{.Version}}
-      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate={{.Date}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate={{.CommitDate}}
       - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GitCommit={{.ShortCommit}}
       - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GoVersion={{.Env.GOVERSION}}
 

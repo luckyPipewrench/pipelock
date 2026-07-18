@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { AuditPacketReport } from "./types.js";
 import type { ReceiptReport } from "./receipt.js";
 import type { ChainCommandReport } from "./cli.js";

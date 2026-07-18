@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Mock MCP server: responds to tools/list with a poisoned tool description.
 # Used by verify.sh to test pipelock's MCP tool scanning.
 # POSIX sh compatible (runs on Alpine/BusyBox ash).

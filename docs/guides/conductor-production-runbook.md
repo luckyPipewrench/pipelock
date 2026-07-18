@@ -304,7 +304,7 @@ authenticates with its client cert, whose SPIFFE URI SAN is its fleet identity
 (`org`/`fleet`/`instance`/`environment`). Enrollment is **token-gated**: the
 follower registers its audit-batch public key with the Conductor by presenting a
 single-use enrollment token whose scope must match its certificate identity.
-Mint the token first ([step 9](#9-mint-enrollment-tokens)), then deliver it to
+Mint the token first ([step 11](#11-mint-enrollment-tokens)), then deliver it to
 the follower one of two ways:
 
 - **Auto-enroll on startup (recommended).** Point `conductor.enrollment_token_path`
@@ -317,7 +317,7 @@ the follower one of two ways:
   local marker write fails, the next restart may retry the already-consumed
   token and log a warning; enforcement still continues.
 - **One-shot operator command.** Run `pipelock conductor enroll` (see
-  [step 9](#9-mint-enrollment-tokens)) with the token, the follower's audit key,
+  [step 11](#11-mint-enrollment-tokens)) with the token, the follower's audit key,
   and the follower's mTLS material. Use this when the follower is provisioned out
   of band.
 

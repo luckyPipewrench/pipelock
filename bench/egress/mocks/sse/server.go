@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package sse is a deterministic Server-Sent Events mock used by the egress
 // benchmark. It streams a fixed number of chunks at a fixed cadence so that
 // TTFB (time to first byte) and full-stream duration can be measured.

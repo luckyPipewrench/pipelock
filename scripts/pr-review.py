@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """AI-powered PR review for Pipelock.
 
 Triggered by /review comments on PRs. Supports multiple review modes:

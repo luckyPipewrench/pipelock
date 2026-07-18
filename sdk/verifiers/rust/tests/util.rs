@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use pipelock_verifier_rs::util::resolve_artifact_path;
 use std::fs;
 

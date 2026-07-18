@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Canary token verification for examples/canary-tokens/
 #
 # Exercises pipelock canary snippet generation and URL detection without a

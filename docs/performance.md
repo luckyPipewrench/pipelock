@@ -1,6 +1,9 @@
 # Performance
 
-Pipelock adds microseconds of overhead per request. The proxy is I/O bound (waiting for upstream responses), not CPU bound. For the request-side URL scanning hot path, CPU is never the bottleneck. Response scanning and MCP scanning on large payloads can use measurable CPU at high throughput (see tables below).
+Pipelock's request-side URL scanner adds microseconds of overhead in the
+benchmarks below. The proxy is generally I/O bound while waiting for upstream
+responses. Response scanning and MCP scanning on large payloads can use
+measurable CPU at high throughput (see tables below).
 
 All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
 
@@ -8,7 +11,10 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 
 ### URL Scanning (fetch/forward proxy hot path)
 
-11-layer pipeline: scheme, CRLF injection, path traversal, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget.
+Ordered URL pipeline: length and parsing checks, scheme, CRLF injection, path
+traversal, allowlist/blocklist policy, immutable SSRF and DLP floors, configured
+DLP, path and subdomain entropy, DNS SSRF/rebinding, rate limit, data budget,
+and final context checks.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
@@ -31,7 +37,8 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 ### Response Scanning (fetched content injection detection)
 
-Pattern matching against 25 prompt injection patterns (including 6 state/control patterns and 4 CJK-language patterns) on fetched page content.
+Pattern matching against 32 prompt-injection and state/control patterns on
+fetched page content.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|

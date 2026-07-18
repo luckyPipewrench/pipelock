@@ -1,5 +1,6 @@
 //go:build enterprise
 
+// Copyright 2026 Pipelock contributors
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 // Package bootstrap stands up a complete, self-verifying Conductor dev fleet on

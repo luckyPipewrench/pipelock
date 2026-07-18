@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # E2E test for `pipelock cline install` and `pipelock cline remove`.
 #
 # Exercises the full install flow against the installed pipelock binary:

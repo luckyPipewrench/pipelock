@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::types::{AuditPacket, Totals};
 use jsonschema::{Draft, JSONSchema};
 use serde_json::Value;

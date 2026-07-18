@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package scan implements the `pipelock scan` command: it inspects files for
 // invisible-Unicode and bidi-control injection (the supply-chain vector that
 // hides instructions in agent-context files). It complements the network

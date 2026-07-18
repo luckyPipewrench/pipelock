@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Decoy adversarial MCP server for the tool-poisoning-honeypot example.
 
 This server speaks MCP over stdio JSON-RPC, matching Pipelock's stdio MCP

@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "node:crypto";
 import * as ed25519 from "@noble/ed25519";
 import type { ActionRecord, JSONObject, Receipt } from "./types.js";

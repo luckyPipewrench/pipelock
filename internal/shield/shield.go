@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package shield implements inline HTML/JS rewriting that strips
 // fingerprinting, extension probing, telemetry beacons, and agent traps
 // from response bodies before the browser renders them.

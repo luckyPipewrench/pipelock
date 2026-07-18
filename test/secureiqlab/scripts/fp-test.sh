@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # SecureIQLab Harness — False Positive Test Suite
 #
 # Sends 8 categories of benign traffic through pipelock and verifies

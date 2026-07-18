@@ -1,3 +1,6 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Pipelock security plugin for Hermes Agent.
 
 Registers the hooks pipelock cares about (pre_tool_call, transform_tool_result,

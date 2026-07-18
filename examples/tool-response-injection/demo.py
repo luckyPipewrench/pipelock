@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Multi-transport reproduction harness for MCP tool-response prompt injection."""
 
 from __future__ import annotations

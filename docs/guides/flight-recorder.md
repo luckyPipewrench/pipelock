@@ -1,6 +1,14 @@
 # Flight Recorder Guide
 
-The flight recorder writes every enforcement decision pipelock makes to a hash-chained, tamper-evident evidence log. Each entry is cryptographically linked to the one before it, so any deletion or modification breaks the chain. Signed checkpoints let auditors verify the chain was intact at specific points in time without replaying every entry. The recorder is designed for post-incident investigation, compliance evidence, and forensic replay.
+The flight recorder writes configured enforcement evidence to a hash-chained,
+tamper-evident log. Blocks produce receipts; allow receipts require
+`flight_recorder.require_receipts: true`, and clean stream frames are summarized
+rather than individually receipted. Each recorded entry is cryptographically
+linked to the one before it, so deletion or modification within an observed
+chain breaks verification. Signed checkpoints prove the chain state observed at
+specific points; they do not prove that traffic which bypassed Pipelock was
+recorded. The recorder is designed for post-incident investigation, compliance
+evidence, and forensic replay.
 
 **On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` and a signing key are configured, though: without them the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
 

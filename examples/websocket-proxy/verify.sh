@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # WebSocket proxy verification for examples/websocket-proxy/
 #
 # Starts a local echo server and pipelock with websocket_proxy enabled, then

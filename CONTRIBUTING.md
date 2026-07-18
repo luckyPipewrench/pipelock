@@ -48,6 +48,30 @@ go test -race -count=1 ./...     # All tests with race detector
 3. Address reviewer feedback and bot comments. Automated AI review (e.g. CodeRabbit) is **advisory only** — maintainers make all security decisions, and a bot's passing status or summary does not by itself mean a change was security-reviewed.
 4. PRs are squash-merged
 
+### Review Standard
+
+Every change to `main` goes through a pull request and requires approval from a
+human code owner other than the author. The main-branch ruleset dismisses stale
+approvals after a push, requires approval of the latest revision, requires all
+review threads to be resolved, and blocks merging until the required status
+checks pass.
+
+Reviewers check:
+
+- whether the change is useful, scoped, and compatible with documented behavior;
+- correctness at normal, boundary, malformed, concurrent, and failure inputs;
+- fail-open versus fail-closed behavior at security boundaries;
+- tests for changed behavior and regression coverage for fixed defects;
+- documentation and example-config accuracy, including transport-specific limits;
+- secret handling, authorization, path/network trust boundaries, and dependency risk;
+- backward compatibility, operator lifecycle, and recovery behavior where applicable.
+
+A change is acceptable only when the reviewer can explain the behavior, required
+tests and checks pass, security-relevant claims are supported by code or
+reproduction, no unresolved blocking feedback remains, and the latest revision
+has a human approval. Bot review may provide evidence but cannot replace that
+approval.
+
 ## Testing
 
 ### Requirements
@@ -148,7 +172,11 @@ make build    # Build with version metadata
 make test     # Run tests
 make lint     # Lint
 make docker   # Build Docker image
+make reproducible-build-check # Compare two byte-identical OSS builds
 ```
+
+See [Reproducible Builds](docs/reproducible-builds.md) for the fixed inputs,
+release integration, and the exact scope of the reproducibility claim.
 
 ## Project Structure
 
@@ -157,14 +185,14 @@ cmd/pipelock/          CLI entry point
 internal/
   cli/                 20+ Cobra commands (run, check, report, tls, mcp, audit, generate, ...)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
-  scanner/             11-layer URL scanning pipeline + response injection detection
+  scanner/             Ordered URL scanning pipeline + response injection detection
   audit/               Structured JSON audit logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, TLS interception
   certgen/             ECDSA P-256 CA + leaf certificate generation, cache
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
   report/              HTML/JSON audit report generation from JSONL event logs
-  killswitch/          Emergency deny-all (4 sources) + port-isolated API
-  emit/                Event emission (webhook + syslog sinks)
+  killswitch/          Emergency deny-all (6 sources) + port-isolated API
+  emit/                Event emission (webhook + syslog + OTLP sinks)
   metrics/             Prometheus metrics + JSON stats endpoint
   normalize/           Unicode normalization (NFKC, confusables, combining marks)
   hitl/                Human-in-the-loop terminal approval
@@ -186,7 +214,7 @@ docs/                  Guides, OWASP mapping, comparison
 
 See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
-- Scanner pipeline (11 layers)
+- Ordered scanner pipeline and security-control sequence
 - MCP proxy design
 - Config system and hot-reload
 - Package structure and conventions

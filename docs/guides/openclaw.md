@@ -65,7 +65,11 @@ pipelock generate mcporter -i servers.json --in-place --backup
 └─────────────────────────────────────────────────────────┘
 ```
 
-In an enforced deployment, the agent has secrets but no direct network access. Pipelock has no agent secrets but full network access. Deployment controls such as Docker networking, host containment, firewall rules, or K8s NetworkPolicy enforce this boundary. This capability separation prevents a compromised agent from exfiltrating secrets directly.
+In an enforced deployment, the agent has secrets but no direct network access.
+Pipelock has no agent secrets and provides policy-controlled network egress.
+Deployment controls such as Docker networking, host containment, firewall
+rules, or K8s NetworkPolicy enforce this boundary. This capability separation
+prevents a compromised agent from exfiltrating secrets directly.
 
 ## Two Protection Layers
 
@@ -84,7 +88,7 @@ Wraps the OpenClaw gateway connection with bidirectional scanning:
 
 When the agent makes outbound HTTP requests through pipelock's fetch proxy:
 
-- 11-layer URL scanning (CRLF, path traversal, blocklist, DLP, SSRF, rate limiting, entropy checks)
+- Ordered URL scanning (CRLF, path traversal, destination policy, DLP, SSRF, rate limiting, entropy checks)
 - Response injection detection on fetched content
 - Data budget tracking per domain
 
@@ -269,7 +273,7 @@ Mapped to the CVE-2026-25253 attack chain:
 | Data exfiltration via tool args | Input scanning catches secrets in outbound calls | MCP proxy |
 | Prompt injection in tool results | Response scanning detects injection attempts | MCP proxy |
 | Read-then-exfil tool sequences | Chain detection catches multi-step patterns | MCP proxy |
-| Outbound HTTP exfiltration | 11-layer URL scanning, DLP on request URLs | HTTP proxy |
+| Outbound HTTP exfiltration | Ordered URL scanning, DLP on request URLs | HTTP proxy |
 
 Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning the mediated traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
 

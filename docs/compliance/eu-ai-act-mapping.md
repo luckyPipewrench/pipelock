@@ -6,9 +6,10 @@ How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 
-**Last updated:** May 2026 (reviewed against the v2.6 feature set. v2.5 added the host containment lifecycle CLI (`pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh`) implementing a 3-UID kernel-level nftables owner-match separation with kernel-observed posture attestation strengthening Art. 14 Human Oversight (operator-enforced separation of duties between the operator and the agent process), Art. 15 Cybersecurity (kernel-level owner-match egress containment with kernel-observed posture attestation, TOFU binary integrity and explicit workspace ACL lifecycle), and Art. 26 Deployer Obligations (operator-visible install / verify / rollback path); the canonical Audit Packet v0 schema plus first-party Go / TypeScript / Rust / standalone verifier implementations strengthening Art. 12 Record-Keeping and Art. 13 Transparency (language-portable, independent verification of every signed receipt without depending on Pipelock); strict-default SPIFFE actor enforcement on inbound mediation envelopes plus the `pipelock envelope trust` operator CLI strengthening Art. 14 Identification of Deployers and cross-organisational verifiability; activation-time tombstone enforcement preventing re-promotion of withdrawn contracts strengthening Art. 9 Risk Management System (operator-driven withdrawal stays withdrawn); skill-poisoning instruction-recognition coverage strengthening Art. 15 Cybersecurity at the agent-content boundary; rules-bundle keyring separated from license key strengthening Art. 15 cryptographic isolation between commercial keys and detection keys; optional OTel `agent.threat.detection.*` attributes strengthening Art. 12 Record-Keeping for observability-driven audit. Builds on the v2.4 baseline (learn-and-lock contracts for Art. 12 / Art. 14, inbound envelope verification + replay protection for Art. 13, SPIFFE actor format + RFC 9421 directory for Art. 14, `X-Pipelock-Block-Reason` for Art. 13, Gemini provider redaction extending Art. 10), the v2.3.0 baseline (class-preserving redaction across HTTP / WebSocket / MCP, generic SSE streaming with per-event body scanning), and the v2.2.0 baseline (mediation envelope, signed action receipts across all transports, taint-aware policy escalation, posture verify CLI, companion-proxy deployment, session operator CLI).
+**Last reviewed:** July 2026 against v3.2.0. This mapping describes current
+behavior; see [CHANGELOG.md](../../CHANGELOG.md) for release history.
 
-v2.6 review (May 2026):
+Recent control additions reviewed:
 
 - Art. 12: block-reason receipts, scan API tool-call findings, and file_sentry skip visibility improve operator records for mediated decisions and uninspected local files.
 - Art. 13: `request_policy_deny` block reasons and explicit scan-cap failure behavior make denial causes more transparent to operators and agent clients.
@@ -28,7 +29,7 @@ Coverage levels: **Full** = Pipelock feature directly implements the requirement
 | Article | Topic | Coverage |
 |---------|-------|----------|
 | Art. 9 | Risk Management System | Partial (runtime controls only) |
-| Art. 12 | Record-Keeping | Full (logging requirements) |
+| Art. 12 | Record-Keeping | Partial (mediated events; core delivery is best-effort) |
 | Art. 13 | Transparency | Moderate |
 | Art. 14 | Human Oversight | Moderate (terminal-only HITL) |
 | Art. 15 | Accuracy, Robustness, Cybersecurity | Moderate |
@@ -44,12 +45,12 @@ Article 9 requires a continuous, iterative risk management process throughout th
 
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|
-| Identify and analyze known risks (Art. 9(2)(a)) | 11-layer scanner pipeline classifies network-level risks: scheme validation, CRLF injection, path traversal, domain blocklist, DLP (inc. env leak), path entropy, subdomain entropy, SSRF, rate limiting, URL length, data budget | Partial |
+| Identify and analyze known risks (Art. 9(2)(a)) | Ordered scanner pipeline classifies mediated network risks through URL validation, destination policy, DLP, entropy analysis, SSRF/rebinding protection, rate limiting, and data budgets | Partial |
 | Evaluate risks under foreseeable misuse (Art. 9(2)(b)) | Adversarial testing of bypass attempts (encoded secrets, DNS exfiltration, zero-width injection, split-key attacks) | Partial |
 | Post-market monitoring data (Art. 9(2)(c)) | Prometheus metrics (`/metrics`), JSON stats (`/stats`), structured audit logs | Partial |
 | Eliminate risks through design (Art. 9(5)(a)) | Capability separation reduces network-based credential exfiltration risk: agent holds secrets with no network; proxy has network with no agent secrets. Deployment enforces the boundary | Partial |
 | Mitigation and control measures (Art. 9(5)(b)) | Multi-layer scanning, domain blocklist, rate limiting, DLP patterns, HITL approval | Full |
-| Residual risk information to deployers (Art. 9(5)(c)) | Audit logs document every scan decision; `/stats` endpoint surfaces top threats | Partial |
+| Residual risk information to deployers (Art. 9(5)(c)) | Audit events document mediated scanner and policy decisions; `/stats` surfaces observed threats. Completeness still depends on deployment routing and sink delivery | Partial |
 | Prior defined metrics and thresholds (Art. 9(8)) | Configurable thresholds per scanner layer; Prometheus counters for block rates by category | Full |
 | Continuous lifecycle process (Art. 9(2)) | Hot-reload config (fsnotify + SIGHUP) for live policy updates without restart | Partial |
 
@@ -63,12 +64,15 @@ Article 12 requires automatic event logging in high-risk AI systems for risk ide
 
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|
-| Automatic recording of events (Art. 12(1)) | Structured JSON audit logging (zerolog) for every request: URL, domain, agent name, scan result, scanner reason, timestamp, duration | Full |
+| Automatic recording of events (Art. 12(1)) | Structured JSON logging records mediated scanner and policy events with transport-appropriate fields. External emission is best-effort unless the Enterprise durable SIEM path is used | Partial |
 | Identify risk situations (Art. 12(2)(a)) | Categorized threat events: SSRF, DLP match, prompt injection, env leak, entropy anomaly, rate limit, redirect chain | Full |
 | Support post-market monitoring (Art. 12(2)(b)) | Prometheus metrics with counters, histograms, and alerting integration; Grafana dashboard (`configs/grafana-dashboard.json`) | Full |
-| Enable deployer monitoring (Art. 12(2)(c)) | Per-agent profiles with named identity, independent config, and per-agent budgets; agent name in every log entry | Full |
+| Enable deployer monitoring (Art. 12(2)(c)) | Per-agent profiles provide named identity, independent config, and per-agent budgets; mediated events carry resolved agent identity when available | Partial |
 
-**Gap:** None for the logging requirements Pipelock addresses. Full Art. 12 includes biometric system requirements (Art. 12(3)) that don't apply.
+**Gap:** Pipelock cannot prove that traffic bypassing the mediated boundary was
+recorded, and core external emission is best-effort. Full Article 12 also
+includes system-level retention and biometric requirements that are outside
+this component's scope.
 
 ---
 
@@ -82,7 +86,7 @@ Article 13 requires sufficient operational transparency for deployers to underst
 | Limitations documented | Each OWASP mapping doc includes explicit coverage gaps and "out of scope" sections | Full |
 | Logging mechanism description | Audit log format, event types, and fields documented in CLAUDE.md and guides | Full |
 | Human oversight measures described (Art. 14 ref) | HITL documentation in guides and config presets | Partial |
-| Computational/hardware requirements | Single static binary (~18MB), documented in README | Full |
+| Computational/hardware requirements | Single-binary deployment and reproducible performance benchmarks are documented; artifact size varies by platform, build tags, and release flags | Partial |
 
 **Gap:** Full Art. 13 compliance requires system-level documentation that depends on the deployer's AI system, not just the security layer.
 

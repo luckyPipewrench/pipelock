@@ -1,3 +1,6 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Used by GoReleaser — copies the pre-built binary instead of building from source.
 # Alpine-based because the license service needs a writable filesystem for
 # SQLite (entitlement DB) and the append-only audit ledger.

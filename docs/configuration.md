@@ -19,7 +19,10 @@ pipelock audit ./my-project -o pipelock.yaml
 
 Config changes are picked up automatically via file watcher or SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below.
 
-On reload, the scanner and session manager are atomically swapped. Kill switch state (all 4 sources) is preserved. Existing MCP sessions retain the old scanner until the next request.
+On reload, the scanner and session manager are atomically swapped. Runtime
+kill-switch state is preserved, including the API, signal, Conductor remote,
+and Conductor stale-bundle sources. Existing MCP sessions retain the old
+scanner until the next request.
 
 If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged. A reload is also rejected, in any mode, when a rule-bundle resolution error (bad signature, missing lock file, version mismatch, filesystem error) would drop detection rules that are currently live: the previous config is kept so a transient bundle failure cannot silently weaken coverage. An unrelated bundle error that does not remove any live rule does not block the reload. At startup there is no prior config to preserve, so a bundle resolution error is surfaced loudly and the proxy runs on its remaining (core plus compiled) patterns rather than refusing to start.
 
@@ -1275,7 +1278,13 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 ## Kill Switch
 
-Emergency deny-all with four independent activation sources (`enabled`, `sentinel_file`, `api`, `SIGUSR1`). Any one active denies normal traffic (OR-composed) except for configured exemptions (`health_exempt`, `metrics_exempt`, `api_exempt`, `allowlist_ips`). See [Kill Switch](../README.md#kill-switch) for operational details.
+Emergency deny-all with six independent activation sources: `enabled`,
+`sentinel_file`, API, `SIGUSR1`, Conductor remote kill, and Conductor
+stale-bundle detection. Any one active denies normal traffic (OR-composed)
+except for configured exemptions (`health_exempt`, `metrics_exempt`,
+`api_exempt`, `allowlist_ips`). The two Conductor-driven sources are activated
+by the enterprise follower runtime. See [Kill Switch](../README.md#operability)
+for operational details.
 
 > **Heads-up on `enabled`:** the `enabled` field is a source, not a subsystem switch. Setting `enabled: true` immediately activates the kill switch and denies all traffic from startup (all requests return HTTP 503). To configure the API/signal/sentinel sources for future activation without engaging the kill switch at startup, leave `enabled: false`.
 
@@ -2346,7 +2355,7 @@ dashboard_snapshot:
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
 | `require_receipts` | `false` | Require allow-path receipt emission before forwarding traffic. When true, signing/recorder failures block with `receipt_emission_failed`; this includes TLS-intercepted CONNECT inner HTTP requests before their upstream request. Block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
-| `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, every proxy decision produces a signed receipt. Without it, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file> --key <signer.pub>` (pin the signer key — an unpinned run is structural-only and exits non-zero unless you pass `--allow-unpinned`). In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
+| `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, blocks produce signed receipts; allow receipts also require `require_receipts: true`, and clean stream frames are summarized. Without a key, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file> --key <signer.pub>` (pin the signer key — an unpinned run is structural-only and exits non-zero unless you pass `--allow-unpinned`). In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
 | `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
 | `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |
@@ -3025,12 +3034,25 @@ conductor:
 | `max_min_version_major_skew` | `0` | Reserved (see below). |
 | `max_min_version_minor_skew` | `1` | Reserved (see below). |
 | `max_capability_threshold` | `7` | Reserved (see below). |
-| `stale_policy.grace_multiplier` | `1` | Reserved (see below). |
-| `stale_policy.after_grace` | `strict_deny_all` | Reserved (see below). `continue_last_known_good` is accepted with an advisory warning because it weakens the fail-closed default. |
+| `stale_policy.grace_multiplier` | `1` | Number of original bundle-validity windows added after expiry before the after-grace action applies. Must be greater than zero. |
+| `stale_policy.after_grace` | `strict_deny_all` | Runtime action after the grace window. `strict_deny_all` engages the independent `conductor_stale` kill-switch source; `continue_last_known_good` keeps serving the expired last-applied bundle and emits an advisory warning. |
 
 When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all file paths absolute, and no world-writable ancestor directory on any configured path.
 
-**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.8; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. This includes `emergency_stream`, `created_skew_seconds`, `max_min_version_major_skew` (`MaxMinVersionMajorSkew`), `max_min_version_minor_skew` (`MaxMinVersionMinorSkew`), `max_capability_threshold`, and `stale_policy.*` (`StalePolicy`). Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
+**Stale-policy enforcement.** The follower evaluates the active bundle
+immediately at startup and on the runtime check interval. A missing, unreadable,
+or corrupt active bundle engages `conductor_stale` regardless of
+`after_grace`. An expired bundle remains last-known-good through the configured
+grace window. After that window, the default `strict_deny_all` action engages
+the kill switch until a fresh in-grace bundle applies;
+`continue_last_known_good` keeps serving the last applied bundle with a
+weakened-posture warning. These fields are restart-only.
+
+**Reserved fields.** `emergency_stream`, `created_skew_seconds`,
+`max_min_version_major_skew`, `max_min_version_minor_skew`, and
+`max_capability_threshold` are parsed and validated but are not yet consumed by
+the follower runtime. They reserve the config surface for later emergency-stream
+and capability-negotiation work.
 
 See the [Conductor guide](guides/conductor.md) for the full architecture, server-side flags, and licensing.
 

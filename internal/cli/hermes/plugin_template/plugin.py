@@ -1,3 +1,6 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Pipelock plugin implementation.
 
 Each registered hook builds a payload matching Hermes' shell-hook wire schema

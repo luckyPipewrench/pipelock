@@ -1,5 +1,6 @@
 //go:build enterprise
 
+// Copyright 2026 Pipelock contributors
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 // Lives in package cli_test (not cli) so the blank import of

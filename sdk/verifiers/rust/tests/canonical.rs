@@ -1,4 +1,6 @@
 #![recursion_limit = "256"]
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
 
 use pipelock_verifier_rs::canonical::{canonicalize_action_record, canonicalize_receipt};
 use pipelock_verifier_rs::signing::verify_receipt_with_options;

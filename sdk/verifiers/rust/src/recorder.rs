@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::types::Receipt;
 use crate::util::{parse_json_line, reject_duplicate_keys, Result, VerifierError};
 use std::fs;

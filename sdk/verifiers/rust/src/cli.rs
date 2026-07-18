@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::verify_chain_with_options;
 use crate::output::{emit_audit_packet, emit_chain, emit_receipt};

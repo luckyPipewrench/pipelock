@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Benign stdio MCP decoy for examples/mcp-tool-policy/.
 
 Exposes clean tools so Pipelock mcp_tool_policy rules (not poisoning or

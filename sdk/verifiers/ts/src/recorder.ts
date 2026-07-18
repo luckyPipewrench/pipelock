@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt, RecorderEntry } from "./types.js";

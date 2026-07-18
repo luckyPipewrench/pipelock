@@ -1,4 +1,7 @@
 #!/bin/bash -eu
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 
 # Register the go-118-fuzz-build/testing dependency required by
 # compile_native_go_fuzzer. Build-time-only, not in go.mod.

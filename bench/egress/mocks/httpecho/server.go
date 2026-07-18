@@ -1,3 +1,6 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package httpecho is a deterministic HTTP mock server used by the egress
 // benchmark harness. It returns a fixed 1 KiB body so that latency
 // measurements reflect pipelock's overhead rather than backend variance.

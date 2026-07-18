@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # check-config-examples.sh — shipped config snippets must actually START.
 #
 # `pipelock check` is a parse/semantic pass; it does not exercise runtime startup

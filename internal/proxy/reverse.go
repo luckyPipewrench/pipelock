@@ -2009,6 +2009,38 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		recordErrorOutcome(http.StatusForbidden, written, blockedErr.layer)
 		return
 	}
+	var ssrfErr *ssrfDialBlockError
+	if errors.As(err, &ssrfErr) {
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scanner.ScannerSSRF)
+		rp.logger.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
+		actionID, _ := r.Context().Value(ctxKeyReverseActionID).(string)
+		if actionID == "" {
+			actionID = receipt.NewActionID()
+		}
+		agent, _ := r.Context().Value(ctxKeyAgent).(string)
+		opts := receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     scanner.ScannerSSRF,
+			Pattern:   string(ssrfErr.reason),
+			Transport: TransportReverse,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		}
+		if rp.cfgPtr != nil {
+			cfg := rp.cfgPtr.Load()
+			if cfg != nil {
+				opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+			}
+		}
+		_ = rp.emitReceipt(opts)
+		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo(), string(ssrfErr.reason))
+		recordErrorOutcome(http.StatusForbidden, written, string(ssrfErr.reason))
+		return
+	}
 
 	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
 	rp.logger.LogError(actx, err)

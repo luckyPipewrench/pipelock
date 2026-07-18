@@ -16,7 +16,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -181,9 +183,10 @@ func TestProxy_SafeDialerBlocksInternalIP(t *testing.T) {
 	}
 }
 
-func TestSubmitProfile_SafeDialerCoreCIDRBlockFailsClosedAsUpstreamError(t *testing.T) {
+func TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason(t *testing.T) {
 	cfg, upstreamURL := submitProfileTestConfig("http://submit-rebind.test:1")
 	cfg.Internal = nil
+	cfg.FlightRecorder.RequireReceipts = true
 	cfg.DNS.HostOverrides = map[string][]string{
 		"submit-rebind.test": {"10.0.0.1"},
 	}
@@ -196,7 +199,21 @@ func TestSubmitProfile_SafeDialerCoreCIDRBlockFailsClosedAsUpstreamError(t *test
 		t.Fatalf("New proxy: %v", err)
 	}
 
-	handlerProxy := submitProfileReverseProxyWithDialer(t, cfg, upstreamURL, p.SafeDialer())
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger := audit.NewNop()
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
+	handler.SetSafeDialer(p.SafeDialer())
+	dir := t.TempDir()
+	emitter, rec, _ := newCoverageEmitter(t, dir)
+	var emPtr atomic.Pointer[receipt.Emitter]
+	emPtr.Store(emitter)
+	handler.SetReceiptEmitter(&emPtr)
+	handlerProxy := newIPv4Server(t, handler)
+	t.Cleanup(handlerProxy.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(),
 		http.MethodPost, handlerProxy.URL+"/v1/batch", strings.NewReader(`{"clean":true}`))
@@ -207,11 +224,49 @@ func TestSubmitProfile_SafeDialerCoreCIDRBlockFailsClosedAsUpstreamError(t *test
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
-	if got := resp.Header.Get(blockreason.HeaderReason); got != "" {
-		t.Fatalf("%s = %q, want empty generic upstream error", blockreason.HeaderReason, got)
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
+		t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.SSRFPrivateIP)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, dir)
+	admission := findReverseAdmissionAllowReceipt(t, receipts)
+	var blockCount, outcomeCount int
+	var outcome receipt.Receipt
+	for _, rcpt := range receipts {
+		ar := rcpt.ActionRecord
+		if ar.Transport == TransportReverse &&
+			ar.Verdict == config.ActionBlock &&
+			ar.Layer == scanner.ScannerSSRF &&
+			ar.Pattern == string(blockreason.SSRFPrivateIP) {
+			blockCount++
+		}
+		if ar.DecisionPhase == receipt.DecisionPhaseOutcome &&
+			ar.Transport == TransportReverse {
+			outcome = rcpt
+			outcomeCount++
+		}
+	}
+	if blockCount != 1 {
+		t.Fatalf("reverse SSRF block receipt count = %d, want 1", blockCount)
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("reverse outcome receipt count = %d, want 1", outcomeCount)
+	}
+	if outcome.ActionRecord.ActionID != admission.ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %q, want admission action_id %q",
+			outcome.ActionRecord.ActionID, admission.ActionRecord.ActionID)
+	}
+	for _, want := range []string{"status=403", "reason=" + string(blockreason.SSRFPrivateIP)} {
+		if !strings.Contains(outcome.ActionRecord.Pattern, want) {
+			t.Fatalf("reverse outcome pattern = %q, want %s", outcome.ActionRecord.Pattern, want)
+		}
 	}
 }
 

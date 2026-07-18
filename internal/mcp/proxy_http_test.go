@@ -3286,6 +3286,31 @@ func TestMCPListenerHeaderDLP_WhitespaceSplitSensitiveHeader(t *testing.T) {
 	}
 }
 
+func TestMCPListenerHeaderDLP_LastEventIDMandatoryInHeaderModeAll(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	reqBodyCfg := config.Defaults().RequestBodyScanning
+	reqBodyCfg.Enabled = true
+	reqBodyCfg.ScanHeaders = true
+	reqBodyCfg.HeaderMode = config.HeaderModeAll
+	// An operator that ignores Last-Event-ID must not be able to exempt the
+	// credential-bearing SSE resume cursor from DLP scanning.
+	reqBodyCfg.IgnoreHeaders = []string{"Last-Event-ID"}
+
+	headers := http.Header{}
+	headers.Set("Last-Event-ID", "AKIA"+strings.Repeat("A", 4)+strings.Repeat("B", 12))
+
+	result := scanMCPListenerHeadersForDLP(context.Background(), headers, sc, &reqBodyCfg)
+	if result == nil {
+		t.Fatal("expected Last-Event-ID to be scanned despite IgnoreHeaders in HeaderModeAll")
+	}
+	if result.header != "Last-Event-Id" {
+		t.Fatalf("blocked header = %q, want Last-Event-Id", result.header)
+	}
+	if len(result.matches) == 0 || result.matches[0].PatternName != "AWS Access ID" {
+		t.Fatalf("expected AWS Access ID match, got %+v", result.matches)
+	}
+}
+
 func TestHTTPListener_CleanAuthHeader(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

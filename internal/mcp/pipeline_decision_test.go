@@ -577,6 +577,33 @@ func TestEmitMCPDecision_RequiredV2SuccessSatisfiesV1EmitError(t *testing.T) {
 	}
 }
 
+func TestEmitMCPDecision_RequiredV2OnlyAllowSucceeds(t *testing.T) {
+	// Exercise the v2-only path with a nil v1 emitter (the receiptEmitter == nil
+	// branch): a required allow with only the v2 emitter present must succeed and
+	// record exactly one v2 receipt. The v2 receipt carries no decision phase, so
+	// only emission is asserted.
+	h := newMCPDecisionReceiptHarness(t)
+
+	_, err := EmitMCPDecision(nil, h.v2, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:   "mcp-v2-only-allow",
+			Verdict:    config.ActionAllow,
+			Transport:  transportMCPStdio,
+			Target:     "fetch",
+			MCPMethod:  methodToolsCall,
+			ToolName:   "fetch",
+			PolicyHash: mcpTestPolicyHash,
+		},
+		RequireReceipt: true,
+	})
+	if err != nil {
+		t.Fatalf("EmitMCPDecision error = %v, want nil (v2-only allow)", err)
+	}
+	if receipts := mcpV2Receipts(t, h); len(receipts) != 1 {
+		t.Fatalf("v2 receipts = %d, want 1", len(receipts))
+	}
+}
+
 func TestEmitMCPDecision_RequiredNeitherEmitterEmitsFailsClosed(t *testing.T) {
 	_, err := EmitMCPDecision(nil, nil, nil, MCPDecision{
 		Receipt: receipt.EmitOpts{

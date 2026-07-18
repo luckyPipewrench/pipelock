@@ -133,12 +133,16 @@ func EmitMCPDecision(
 	// DecisionPhaseResolution with a final allow verdict) keeps its phase instead
 	// of being overwritten to intent.
 	markIntent := receiptRequired && verdict == config.ActionAllow && d.Receipt.DecisionPhase == ""
+	// The intent phase is a property of the decision itself, so mark it before
+	// either emitter is attempted rather than only on the v1 path. This keeps the
+	// v1 and v2 emitters (which both consume d.Receipt) consistent even when v1 is
+	// absent.
+	if markIntent && d.Receipt.ActionID != "" {
+		d.Receipt.DecisionPhase = receipt.DecisionPhaseIntent
+	}
 	if receiptRequired && d.Receipt.ActionID == "" {
 		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
-		if markIntent {
-			d.Receipt.DecisionPhase = receipt.DecisionPhaseIntent
-		}
 		if durableReceipt {
 			err = receiptEmitter.EmitDurable(d.Receipt)
 		} else {

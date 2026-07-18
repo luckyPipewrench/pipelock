@@ -1254,6 +1254,10 @@ func TestHTTPListener_UnsupportedStreamableMethodBlocked(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 405; body=%s", resp.StatusCode, body)
 	}
+	// RFC 9110: a 405 must advertise the accepted methods.
+	if got := resp.Header.Get("Allow"); got != "POST, GET, DELETE, OPTIONS" {
+		t.Fatalf("Allow = %q, want %q", got, "POST, GET, DELETE, OPTIONS")
+	}
 	if upstreamCalls.Load() != 0 {
 		t.Fatalf("upstream calls = %d, want 0", upstreamCalls.Load())
 	}
@@ -1419,6 +1423,61 @@ func TestHTTPListener_GETCustomSensitiveHeadersStillScansLastEventID(t *testing.
 
 	if upstreamCalls.Load() != 0 {
 		t.Fatalf("upstream was called %d times despite a credential in Last-Event-ID", upstreamCalls.Load())
+	}
+	if !bytes.Contains(body, []byte(`"code":-32001`)) {
+		t.Fatalf("expected Last-Event-ID DLP block (-32001), got: %s", body)
+	}
+	assertStreamableBlockReceipt(t, h, resp, mcpReceiptLayerInput, "mcp:listener-header:Last-Event-Id")
+}
+
+func TestHTTPListener_GETScansLastEventIDInHeaderModeAllDespiteIgnore(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	// An operator ignoring Last-Event-ID in all-header mode must not be able to
+	// exempt the credential-bearing SSE resume cursor from DLP scanning.
+	reqBodyCfg := config.Defaults().RequestBodyScanning
+	reqBodyCfg.Enabled = true
+	reqBodyCfg.ScanHeaders = true
+	reqBodyCfg.HeaderMode = config.HeaderModeAll
+	reqBodyCfg.IgnoreHeaders = []string{"Last-Event-ID"}
+
+	h := newMCPDecisionReceiptHarness(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:          sc,
+		RequestBodyCfg:   &reqBodyCfg,
+		ReceiptEmitter:   h.v1,
+		V2ReceiptEmitter: h.v2,
+		PolicyHash:       mcpTestPolicyHash,
+	})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(listenerLastEventID, "event-"+mcpSyntheticAWSAccessKey())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("upstream was called %d times despite a credential in an ignored Last-Event-ID", upstreamCalls.Load())
 	}
 	if !bytes.Contains(body, []byte(`"code":-32001`)) {
 		t.Fatalf("expected Last-Event-ID DLP block (-32001), got: %s", body)

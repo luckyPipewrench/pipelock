@@ -99,6 +99,12 @@ func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanni
 			}
 			out[canonical] = values
 		}
+		// Last-Event-ID is a credential-bearing SSE resume cursor and is scanned
+		// unconditionally in every other header-selection path; reinsert it here so
+		// IgnoreHeaders cannot exempt it in all-header mode (fail closed).
+		if values := headers.Values(listenerLastEventID); len(values) > 0 {
+			out[http.CanonicalHeaderKey(listenerLastEventID)] = values
+		}
 		return out
 	}
 

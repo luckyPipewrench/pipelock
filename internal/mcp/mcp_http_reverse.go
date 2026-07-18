@@ -334,6 +334,13 @@ func RunHTTPListenerProxy(
 		// forwarded, making the security log describe bytes the upstream never saw.
 		applyOperatorPinnedServiceHeaders(r.Header, opts.UpstreamHeaders)
 		methodNotAllowed := func() {
+			// RFC 9110 requires a 405 to advertise the methods the listener accepts.
+			w.Header().Set("Allow", strings.Join([]string{
+				http.MethodPost,
+				http.MethodGet,
+				http.MethodDelete,
+				http.MethodOptions,
+			}, ", "))
 			info := blockreason.MustNew(blockreason.BadRequest, blockreason.SeverityInfo, blockreason.RetryNone)
 			info.SetHeaders(w.Header())
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

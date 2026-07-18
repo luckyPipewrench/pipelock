@@ -5,6 +5,7 @@ package atomicfile
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -91,6 +92,46 @@ func TestWrite_Success(t *testing.T) {
 	}
 }
 
+func TestWriteFuncStreamsAndPreservesTargetOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(target, []byte("previous\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("render failed")
+	err := WriteFunc(target, 0o600, func(w io.Writer) error {
+		if _, writeErr := io.WriteString(w, "partial\n"); writeErr != nil {
+			return writeErr
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("WriteFunc error = %v, want render failure", err)
+	}
+	data, readErr := os.ReadFile(target) // #nosec G304 -- target is inside t.TempDir.
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "previous\n" {
+		t.Fatalf("failed callback replaced target with %q", data)
+	}
+
+	if err := WriteFunc(target, 0o600, func(w io.Writer) error {
+		_, writeErr := io.WriteString(w, "complete\n")
+		return writeErr
+	}); err != nil {
+		t.Fatalf("WriteFunc success: %v", err)
+	}
+	data, readErr = os.ReadFile(target) // #nosec G304 -- target is inside t.TempDir.
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "complete\n" {
+		t.Fatalf("published content = %q", data)
+	}
+}
+
 func TestWrite_Permissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666 regardless of the mode passed to Write")
@@ -132,7 +173,7 @@ func TestFinalize_WriteError(t *testing.T) {
 	ff.writeErr = injected
 	tmpPath := ff.Name()
 
-	err := finalize(ff, target, []byte("data"), 0o600)
+	err := finalize(ff, target, []byte("data"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -163,7 +204,7 @@ func TestFinalize_ChmodError(t *testing.T) {
 	ff.chmodErr = injected
 	tmpPath := ff.Name()
 
-	err := finalize(ff, target, []byte("data"), 0o600)
+	err := finalize(ff, target, []byte("data"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -194,7 +235,7 @@ func TestFinalize_CloseError(t *testing.T) {
 	ff.closeErr = injected
 	tmpPath := ff.Name()
 
-	err := finalize(ff, target, []byte("data"), 0o600)
+	err := finalize(ff, target, []byte("data"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -225,7 +266,7 @@ func TestFinalize_SyncError(t *testing.T) {
 	ff.syncErr = injected
 	tmpPath := ff.Name()
 
-	err := finalize(ff, target, []byte("data"), 0o600)
+	err := finalize(ff, target, []byte("data"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

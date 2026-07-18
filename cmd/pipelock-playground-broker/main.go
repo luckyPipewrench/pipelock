@@ -777,7 +777,7 @@ func startAdminServer(ctx context.Context, out io.Writer, f *serveFlags, srv *br
 			_, _ = fmt.Fprintf(out, "admin server error: %v\n", err)
 		}
 	}()
-	_, _ = fmt.Fprintf(out, "broker admin serving on %s\n", f.adminListen)
+	_, _ = fmt.Fprintf(out, "broker admin serving on %s\n", ln.Addr().String())
 	return func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

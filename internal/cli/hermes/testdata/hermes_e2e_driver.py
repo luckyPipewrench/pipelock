@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Live-Hermes e2e driver for the pipelock plugin.
 
 Runs INSIDE a venv that has a pinned hermes-agent installed, after

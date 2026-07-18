@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Cross-implementation verifier for v2.4 learn-and-lock golden vectors.
 
 Loads each Go-emitted golden fixture, independently recomputes the JCS

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Signature regression harness for the pipelock Hermes plugin.
 
 Drives every hook the plugin registers exactly the way Hermes' real dispatcher

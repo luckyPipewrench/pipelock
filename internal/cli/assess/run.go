@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	domaudit "github.com/luckyPipewrench/pipelock/internal/audit"
 	cliaudit "github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
@@ -491,22 +492,18 @@ func wrapDiscoverReport(r *discover.Report, _ string) AssessDiscoverReport {
 	return result
 }
 
-// writeEvidenceJSONL writes one JSON object per line to the given path.
-// Each line is marshaled independently. File permissions are 0o600.
+// writeEvidenceJSONL writes one JSON object per line atomically at 0o600.
 func writeEvidenceJSONL(path string, lines []any) error {
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("creating evidence file %s: %w", filepath.Base(path), err)
-	}
-	defer func() { _ = f.Close() }()
-
-	enc := json.NewEncoder(f)
+	var data strings.Builder
+	enc := json.NewEncoder(&data)
 	for _, line := range lines {
 		if err := enc.Encode(line); err != nil {
 			return fmt.Errorf("writing evidence line to %s: %w", filepath.Base(path), err)
 		}
 	}
-
+	if err := atomicfile.Write(filepath.Clean(path), []byte(data.String()), 0o600); err != nil {
+		return fmt.Errorf("creating evidence file %s: %w", filepath.Base(path), err)
+	}
 	return nil
 }
 

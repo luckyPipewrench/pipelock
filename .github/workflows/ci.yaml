@@ -191,8 +191,37 @@ jobs:
           files: ./coverage-${{ matrix.shard }}.out
           fail_ci_if_error: false
 
+  test-subprocess-coverage:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25'
+
+      - name: Verify dependencies
+        run: bash scripts/ci-retry.sh go mod verify
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Collect sandbox subprocess coverage
+        run: bash scripts/coverage-with-subprocess.sh coverage-subprocess.out
+
+      - name: Upload subprocess coverage
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        with:
+          files: ./coverage-subprocess.out
+          fail_ci_if_error: false
+
   test:
-    needs: [test-oss, test-enterprise]
+    needs: [test-oss, test-enterprise, test-subprocess-coverage]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: test (${{ matrix.go-version }})
@@ -205,8 +234,10 @@ jobs:
         run: |
           echo "test-oss result: ${{ needs.test-oss.result }}"
           echo "test-enterprise result: ${{ needs.test-enterprise.result }}"
+          echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
           test "${{ needs.test-oss.result }}" = "success"
           test "${{ needs.test-enterprise.result }}" = "success"
+          test "${{ needs.test-subprocess-coverage.result }}" = "success"
 
   test-macos:
     needs: [security-scan]
@@ -370,6 +401,20 @@ jobs:
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Reject unsafe OpenPGP packages
+        run: |
+          set -euo pipefail
+          dependencies=$(mktemp)
+          trap 'rm -f "$dependencies"' EXIT
+          {
+            go list -deps ./...
+            go list -tags enterprise -deps ./...
+          } > "$dependencies"
+          if grep -Eq '^golang\.org/x/crypto/openpgp(/|$)' "$dependencies"; then
+            echo "unsafe OpenPGP package detected in dependency graph" >&2
+            exit 1
+          fi
 
       - name: Run govulncheck
         run: govulncheck ./...

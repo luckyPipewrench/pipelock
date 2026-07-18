@@ -9,12 +9,6 @@ cd "$repo_root"
 
 missing=0
 while IFS= read -r -d '' path; do
-	case "$path" in
-		testdata/* | */testdata/*)
-			continue
-			;;
-	esac
-
 	if ! grep -q 'Copyright' "$path"; then
 		echo "$path: missing copyright statement" >&2
 		missing=1

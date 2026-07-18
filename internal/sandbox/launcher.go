@@ -81,6 +81,7 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	if cfg.Policy != nil {
 		policy = *cfg.Policy
 	}
+	policy, coverageEnv := prepareSubprocessCoverage(policy, nil)
 	policy, err := ResolvePolicyPaths(policy)
 	if err != nil {
 		return nil, fmt.Errorf("resolve policy paths: %w", err)
@@ -125,6 +126,7 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
 		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
 	}
+	cmd.Env = append(cmd.Env, coverageEnv...)
 	if cfg.BridgeSocketPath != "" {
 		cmd.Env = append(cmd.Env, sandboxSocketEnv+"="+cfg.BridgeSocketPath)
 	}

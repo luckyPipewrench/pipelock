@@ -66,6 +66,10 @@ func NewContractLoaderFromConfig(cfg *config.Config) (*contractruntime.Loader, e
 }
 
 func evaluateMCPUpstreamGate(ctx context.Context, upstreamURL string, opts MCPProxyOpts) (mcpContractGateOutput, error) {
+	return evaluateMCPUpstreamGateForMethod(ctx, upstreamURL, http.MethodPost, opts)
+}
+
+func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method string, opts MCPProxyOpts) (mcpContractGateOutput, error) {
 	loader := opts.contractLoader()
 	if loader == nil || loader.Current() == nil {
 		return mcpContractGateOutput{
@@ -85,10 +89,13 @@ func evaluateMCPUpstreamGate(ctx context.Context, upstreamURL string, opts MCPPr
 	if !scanResult.Allowed {
 		scannerVerdict = config.ActionBlock
 	}
+	if method == "" {
+		method = http.MethodPost
+	}
 	return evaluateMCPHTTPGate(mcpHTTPGateInput{
 		opts:             opts,
 		targetURL:        gateURL,
-		method:           http.MethodPost,
+		method:           method,
 		effectiveAction:  mcpContractURLAction,
 		scannerVerdict:   scannerVerdict,
 		scannerMatched:   !scanResult.Allowed,

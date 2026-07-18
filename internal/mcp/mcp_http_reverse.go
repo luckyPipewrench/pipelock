@@ -12,9 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -237,6 +239,8 @@ func RunHTTPListenerProxy(
 			return http.ErrUseLastResponse
 		},
 	}
+	upstreamStreamClient := *upstreamClient
+	upstreamStreamClient.Timeout = 0
 
 	loopbackListener := listenerIsLoopback(ln)
 	mux := http.NewServeMux()
@@ -310,11 +314,10 @@ func RunHTTPListenerProxy(
 		// can still trigger a rejection or be scanned while a different value is
 		// forwarded, making the security log describe bytes the upstream never saw.
 		applyOperatorPinnedServiceHeaders(r.Header, opts.UpstreamHeaders)
-		if r.Method != http.MethodPost {
+		methodNotAllowed := func() {
 			info := blockreason.MustNew(blockreason.BadRequest, blockreason.SeverityInfo, blockreason.RetryNone)
 			info.SetHeaders(w.Header())
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
 		if !validMCPSessionID(r.Header.Values("Mcp-Session-Id")) {
 			w.Header().Set("Content-Type", "application/json")
@@ -340,7 +343,236 @@ func RunHTTPListenerProxy(
 		// without restarting the long-lived listener.
 		adaptiveCfg := opts.adaptiveCfg()
 		reqScanner := baseOpts.scanner()
-		reqA2ACfg := baseOpts.a2aCfg()
+		if reqScanner == nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: scanner unavailable\n")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			resp, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				Error:   rpcErrorDetail{Code: -32003, Message: "pipelock: scanner unavailable"},
+			})
+			_, _ = w.Write(resp)
+			return
+		}
+		requestBaseOpts := baseOpts
+		requestBaseOpts.Scanner = reqScanner
+		requestBaseOpts.ScannerFn = nil
+		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts) bool {
+			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(rpcID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed")))
+				return true
+			} else if gate.Verdict == config.ActionBlock {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(rpcID, gate, "pipelock: upstream URL blocked by live-lock contract")))
+				return true
+			}
+			return false
+		}
+
+		// GET and DELETE forward client Authorization / A2A headers to the
+		// upstream, so the configured sensitive-header DLP scan that the POST
+		// path runs must also run here. Otherwise an agent could leak a
+		// credential-shaped header to the upstream by choosing GET or DELETE
+		// over POST to dodge header DLP.
+		blockedByForwardedHeaderDLP := func() bool {
+			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
+			if headerResult == nil {
+				return false
+			}
+			pattern := patternUnknown
+			if len(headerResult.matches) > 0 {
+				pattern = headerResult.matches[0].PatternName
+			}
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in %s header: %s\n", headerResult.header, pattern)
+			w.Header().Set("Content-Type", "application/json")
+			resp, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
+			})
+			_, _ = w.Write(resp)
+			return true
+		}
+
+		if r.Method == http.MethodGet {
+			if !acceptAllowsSSE(r.Header.Values("Accept")) {
+				methodNotAllowed()
+				return
+			}
+			if opts.KillSwitch != nil {
+				if d := opts.KillSwitch.IsActiveMCP(nil); d.Active {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write(killswitch.ErrorResponse(nil, d.Message))
+					return
+				}
+			}
+			if blockedByUpstreamContract(nil, requestBaseOpts) {
+				return
+			}
+			if blockedByForwardedHeaderDLP() {
+				return
+			}
+			upReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL, nil)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+			for name, values := range opts.UpstreamHeaders {
+				for _, value := range values {
+					upReq.Header.Add(name, value)
+				}
+			}
+			upReq.Header.Set("Accept", "text/event-stream")
+			forwardIfOperatorUnset(upReq, r, "Authorization")
+			if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+				upReq.Header.Set("Mcp-Session-Id", sid)
+			}
+			forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
+			forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
+			forwardIfOperatorUnset(upReq, r, "A2A-Version")
+
+			upResp, err := upstreamStreamClient.Do(upReq)
+			if err != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+			defer func() { _ = upResp.Body.Close() }()
+
+			if upResp.StatusCode >= 400 {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+			if hasNonIdentityEncoding(upResp.Header.Get("Content-Encoding")) {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", upResp.Header.Get("Content-Encoding"))
+				info, err := blockreason.New(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
+				if err == nil {
+					if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
+						info = withLayer
+					}
+				} else {
+					info = blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
+				}
+				info.SetHeaders(w.Header())
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("compressed response cannot be scanned")))
+				return
+			}
+			if !isSSEContentType(upResp.Header.Get("Content-Type")) {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned non-SSE Content-Type %q\n", upResp.Header.Get("Content-Type"))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+
+			var reqRec session.Recorder
+			if opts.Store != nil {
+				adaptiveHost, _, adaptiveErr := net.SplitHostPort(r.RemoteAddr)
+				if adaptiveErr != nil {
+					adaptiveHost = r.RemoteAddr
+				}
+				reqRec = opts.Store.GetOrCreate(adaptiveHost)
+			}
+			baselineRec := newMCPRequestBaselineRecorder()
+			baselineOpts := requestBaseOpts
+			baselineOpts.BaselineRec = baselineRec
+			defer recordMCPBaselineSample(baselineOpts, nil)
+			reqOpts := requestBaseOpts
+			reqOpts.Rec = reqRec
+			reqOpts.BaselineRec = baselineRec
+			reqOpts.AdaptiveCfg = adaptiveCfg
+			reqOpts.AdaptiveCfgFn = nil
+
+			if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
+				w.Header().Set("Mcp-Session-Id", sid)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			streamWriter := &sseMessageWriter{w: w}
+			if flusher, ok := w.(http.Flusher); ok {
+				streamWriter.flusher = flusher
+			}
+			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), streamWriter, safeLogW, nil, reqOpts)
+			if scanErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+			}
+			if scanErr != nil && !streamWriter.Wrote() {
+				w.Header().Del("Cache-Control")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream SSE response failed validation")))
+				return
+			}
+			if !streamWriter.Wrote() && !foundInjection {
+				w.WriteHeader(http.StatusOK)
+			}
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if opts.KillSwitch != nil {
+				if d := opts.KillSwitch.IsActiveMCP(nil); d.Active {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write(killswitch.ErrorResponse(nil, d.Message))
+					return
+				}
+			}
+			if blockedByUpstreamContract(nil, requestBaseOpts) {
+				return
+			}
+			if blockedByForwardedHeaderDLP() {
+				return
+			}
+			upReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, upstreamURL, nil)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+			for name, values := range opts.UpstreamHeaders {
+				for _, value := range values {
+					upReq.Header.Add(name, value)
+				}
+			}
+			forwardIfOperatorUnset(upReq, r, "Authorization")
+			if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+				upReq.Header.Set("Mcp-Session-Id", sid)
+			}
+			forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
+			forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
+			forwardIfOperatorUnset(upReq, r, "A2A-Version")
+
+			upResp, err := upstreamClient.Do(upReq)
+			if err != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+			defer func() { _ = upResp.Body.Close() }()
+			w.WriteHeader(upResp.StatusCode)
+			return
+		}
+		if r.Method != http.MethodPost {
+			methodNotAllowed()
+			return
+		}
+
+		reqA2ACfg := requestBaseOpts.a2aCfg()
 
 		// Cap request body to prevent memory exhaustion.
 		r.Body = http.MaxBytesReader(w, r.Body, int64(transport.MaxLineSize))
@@ -455,17 +687,17 @@ func RunHTTPListenerProxy(
 			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
 		baselineRec := newMCPRequestBaselineRecorder()
-		baselineOpts := baseOpts
+		baselineOpts := requestBaseOpts
 		baselineOpts.BaselineRec = baselineRec
 		defer recordMCPBaselineSample(baselineOpts, nil)
 
 		warnCtx := scanner.DLPWarnContextFromCtx(r.Context())
 		if warnCtx.Transport == "" {
-			warnCtx.Transport = baseOpts.Transport
+			warnCtx.Transport = requestBaseOpts.Transport
 		}
 		warnCtx.Method = mcpWarnMethod
 		warnCtx.Resource = r.URL.Path
-		if policyHash := baseOpts.receiptPolicyHash(); policyHash != "" {
+		if policyHash := requestBaseOpts.receiptPolicyHash(); policyHash != "" {
 			warnCtx.PolicyHash = policyHash
 		}
 		if warnCtx.ClientIP == "" {
@@ -539,15 +771,15 @@ func RunHTTPListenerProxy(
 				// listener header block previously returned silently with no
 				// receipt. Transport is the wire (mcp_http_listener); A2A
 				// attribution lives in the layer.
-				if emitter := baseOpts.receiptEmitter(); emitter != nil {
-					if _, emitErr := EmitMCPDecision(emitter, baseOpts.v2ReceiptEmitter(), nil, MCPDecision{
-						Receipt: baseOpts.withReceiptPolicyHash(receipt.EmitOpts{
+				if emitter := requestBaseOpts.receiptEmitter(); emitter != nil {
+					if _, emitErr := EmitMCPDecision(emitter, requestBaseOpts.v2ReceiptEmitter(), nil, MCPDecision{
+						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  receipt.NewActionID(),
 							Verdict:   config.ActionBlock,
 							Layer:     mcpReceiptLayerA2A,
 							Pattern:   firstNonEmpty(headerResult.Reason, mcpReceiptA2AHeaderPattern),
 							Severity:  config.SeverityHigh,
-							Transport: baseOpts.Transport,
+							Transport: requestBaseOpts.Transport,
 							// The block is on the A2A-Extensions header, not the
 							// body method, so MCPMethod is left empty and the
 							// target names the header surface. Layer + Pattern
@@ -555,7 +787,7 @@ func RunHTTPListenerProxy(
 							Target: mcpReceiptA2AHeaderTarget,
 						}),
 					}); emitErr != nil {
-						logReceiptEmitFailure(safeLogW, emitErr, baseOpts.requireReceipts(), config.ActionBlock)
+						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -571,7 +803,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		scanOpts := baseOpts
+		scanOpts := requestBaseOpts
 		scanOpts.Rec = reqRec
 		scanOpts.BaselineRec = baselineRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
@@ -592,17 +824,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		if gate, gateErr := evaluateMCPUpstreamGate(r.Context(), upstreamURL, scanOpts); gateErr != nil {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed")))
-			return
-		} else if gate.Verdict == config.ActionBlock {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract")))
+		if blockedByUpstreamContract(frame.ID, scanOpts) {
 			return
 		}
 
@@ -714,7 +936,7 @@ func RunHTTPListenerProxy(
 		}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		reqOpts := baseOpts
+		reqOpts := requestBaseOpts
 		reqOpts.Rec = reqRec
 		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
@@ -886,6 +1108,29 @@ func forwardIfOperatorUnset(upReq, r *http.Request, name string) {
 	}
 }
 
+func acceptAllowsSSE(values []string) bool {
+	for _, value := range values {
+		for part := range strings.SplitSeq(value, ",") {
+			mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+			if err != nil {
+				continue
+			}
+			if !strings.EqualFold(mediaType, "text/event-stream") {
+				continue
+			}
+			q := strings.TrimSpace(params["q"])
+			if q != "" {
+				weight, err := strconv.ParseFloat(q, 64)
+				if err != nil || weight <= 0 {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func applyOperatorPinnedServiceHeaders(request, operator http.Header) {
 	for _, name := range []string{listenerProtocolVersion, "A2A-Extensions", "A2A-Version"} {
 		values := operator.Values(name)
@@ -950,7 +1195,7 @@ func listenerBearerTokenForRequest(opts MCPProxyOpts) (string, error) {
 
 func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
-	headers.Set("Access-Control-Allow-Methods", http.MethodPost)
+	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
 	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
 	headers.Add("Vary", "Origin")
@@ -959,7 +1204,9 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 }
 
 func listenerCORSPreflightAllowed(r *http.Request) bool {
-	if r.Header.Get("Access-Control-Request-Method") != http.MethodPost {
+	switch r.Header.Get("Access-Control-Request-Method") {
+	case http.MethodPost, http.MethodGet, http.MethodDelete:
+	default:
 		return false
 	}
 	allowed := map[string]struct{}{}

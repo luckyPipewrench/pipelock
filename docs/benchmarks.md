@@ -129,6 +129,12 @@ AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux 6.x / Fedora 43
 # Sequential (default)
 make bench
 
+# Advisory scanner/MCP regression guard against bench/scanner-baseline.txt
+make bench-regression
+
+# Regenerate the moving local baseline after an intentional benchmark refresh
+make bench-baseline
+
 # Parallel scaling
 go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,2,4,8,16 ./internal/scanner/
 go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,4,8,16 ./internal/mcp/
@@ -139,6 +145,16 @@ PIPELOCK_BENCH_SCALING=1 go test -v -run=TestConcurrentThroughputScaling ./inter
 # Seed phrase detection
 go test -bench=BenchmarkSeed -benchmem ./internal/seedprotect/
 ```
+
+`make bench-regression` runs the scanner and MCP benchmarks with fixed `-count`
+and `-benchtime`, then compares the fastest (min) `ns/op` per benchmark against
+`bench/scanner-baseline.txt` straight from the raw `go test` output, and fails
+when any benchmark regresses beyond `BENCH_REGRESSION_THRESHOLD_PCT` (default
+`50`). The pass/fail decision does not depend on `benchstat`; if `benchstat` is
+installed it is used only to print a readable summary. Set `BENCH_BASELINE` to
+compare against a different baseline. This guard is an advisory maintainer/pre-tag
+check, not a machine-independent CI gate, so it is intentionally not wired into
+blocking CI.
 
 ## BIP-39 Seed Phrase Detection (`seedprotect.Detect()`)
 

@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
-.PHONY: all build build-verifier test test-wasm-verifier bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check source-header-check reproducible-build-check \
+.PHONY: all build build-verifier test test-wasm-verifier bench bench-baseline bench-regression bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check source-header-check reproducible-build-check \
 	test-runtime-critical test-replay-harness test-sharded test-sharded-enterprise release-audit runtime-policy-audit debt-check release-check hermes-e2e test-liveproof
 
 all: build
@@ -110,6 +110,12 @@ test-liveproof:
 
 bench:
 	go test -bench=. -benchmem -count=3 -run=^$$ ./internal/scanner/ ./internal/mcp/
+
+bench-baseline:
+	bash scripts/check-bench-regression.sh --update-baseline
+
+bench-regression:
+	bash scripts/check-bench-regression.sh
 
 bench-egress:
 	bash bench/egress/run-all.sh

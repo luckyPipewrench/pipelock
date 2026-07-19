@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +28,16 @@ var ErrStreamNotSupported = errors.New("server does not support GET stream")
 // header in place; this guard then fires on any non-identity encoding.
 var ErrCompressedResponse = errors.New("compressed response cannot be scanned")
 
+// ErrNonSSEStreamResponse indicates a successful GET stream response did not
+// advertise a Server-Sent Events body. Treating it as an empty SSE stream would
+// silently skip upstream content instead of failing closed.
+var ErrNonSSEStreamResponse = errors.New("GET stream response is not text/event-stream")
+
+// ErrUpstreamRequestFailed indicates the HTTP request to the upstream failed
+// before a response could be safely processed. It intentionally omits the raw
+// client.Do error because Go may include upstream-controlled response bytes.
+var ErrUpstreamRequestFailed = errors.New("upstream request failed")
+
 // hasNonIdentityEncoding mirrors internal/proxy/bodyscan.hasNonIdentityEncoding.
 // Duplicated here to avoid an import cycle (proxy depends on mcp/transport).
 func hasNonIdentityEncoding(ce string) bool {
@@ -40,6 +51,16 @@ func hasNonIdentityEncoding(ce string) bool {
 		}
 	}
 	return false
+}
+
+func IsSSEContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
+}
+
+func HasSingleSSEContentType(header http.Header) bool {
+	values := header.Values("Content-Type")
+	return len(values) == 1 && IsSSEContentType(values[0])
 }
 
 // HTTPClient sends JSON-RPC 2.0 messages over HTTP POST and returns
@@ -109,9 +130,10 @@ func (c *HTTPClient) SessionID() string {
 //
 // Response handling:
 //   - 202 Accepted: returns an emptyReader (EOF immediately). Used for notifications.
+//   - 200 OK: response body is scanned by the returned reader.
 //   - Content-Type: text/event-stream: wraps body in SSEReader via closingSSEReader.
 //   - Other Content-Types (typically application/json): reads body as a single message.
-//   - 4xx/5xx status codes: returns an error (body is closed).
+//   - Other status codes: returns an error (body is closed).
 //
 // The Mcp-Session-Id header is tracked from responses and sent on subsequent requests.
 func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader, error) {
@@ -148,13 +170,13 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, ErrUpstreamRequestFailed
 	}
 
-	// Track session ID only from success responses. Error responses (4xx/5xx)
-	// or redirects (3xx) should not overwrite a valid session ID - a crafted
-	// Mcp-Session-Id on an error response would corrupt subsequent requests.
-	if resp.StatusCode < 300 {
+	trackSessionID := func() {
 		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 			c.sessionMu.Lock()
 			c.sessionID = sid
@@ -164,26 +186,33 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 
 	// 202 Accepted: notification acknowledged, no body to read.
 	if resp.StatusCode == http.StatusAccepted {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		trackSessionID()
+		_ = resp.Body.Close()
 		return &emptyReader{}, nil
 	}
 
 	// Redirect or other 3xx - since we disabled redirect-following, treat these
 	// as errors to avoid processing unexpected response bodies.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP %d: unexpected redirect (redirects are disabled)", resp.StatusCode)
 	}
 
-	// Error status codes: read limited body for diagnostics, then return error.
+	// Error status codes: do not echo attacker-controlled upstream body bytes
+	// into returned errors; callers commonly log these strings.
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) //nolint:errcheck // best-effort read
-		resp.Body.Close()                                      //nolint:errcheck,gosec // best-effort cleanup
-		if len(body) > 0 {
-			return nil, fmt.Errorf("HTTP %d: %s: %s", resp.StatusCode, resp.Status, bytes.TrimSpace(body))
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+
+	// Only 200 OK and 202 Accepted are valid successful POST responses for
+	// this transport. Treat other 2xx statuses (201/203/204/206/etc.) as
+	// unexpected upstream responses instead of normalizing them to success.
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	trackSessionID()
 
 	// Fail closed on compressed responses before wrapping the body in
 	// SingleMessageReader or SSEReader. Both readers see opaque bytes
@@ -192,13 +221,12 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	// DisableCompression on the transport guarantees the encoding header
 	// survives transparent decompression, so this check is authoritative.
 	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		_ = resp.Body.Close()
 		return nil, ErrCompressedResponse
 	}
 
 	// Route based on Content-Type.
-	ct := resp.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "text/event-stream") {
+	if HasSingleSSEContentType(resp.Header) {
 		return &closingSSEReader{
 			sse:  NewSSEReader(resp.Body),
 			body: resp.Body,
@@ -308,26 +336,29 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP GET: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, ErrUpstreamRequestFailed
 	}
 
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%w (HTTP 405)", ErrStreamNotSupported)
 	}
 	// Redirect or other 3xx - since we disabled redirect-following, treat these
 	// as errors (consistent with SendMessage).
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("GET stream HTTP %d: unexpected redirect (redirects are disabled)", resp.StatusCode)
 	}
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) //nolint:errcheck // best-effort read
-		resp.Body.Close()                                      //nolint:errcheck,gosec // best-effort cleanup
-		if len(body) > 0 {
-			return nil, fmt.Errorf("GET stream HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(body))
-		}
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("GET stream returned HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("GET stream returned HTTP %d", resp.StatusCode)
 	}
 
@@ -336,8 +367,13 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	// gzipped event stream, which is a bypass vector against the streaming
 	// scanners.
 	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		_ = resp.Body.Close()
 		return nil, ErrCompressedResponse
+	}
+
+	if !HasSingleSSEContentType(resp.Header) {
+		_ = resp.Body.Close()
+		return nil, ErrNonSSEStreamResponse
 	}
 
 	return &closingSSEReader{
@@ -355,6 +391,11 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	c.sessionMu.Unlock()
 	if sid == "" {
 		return
+	}
+	clearSession := func() {
+		c.sessionMu.Lock()
+		c.sessionID = ""
+		c.sessionMu.Unlock()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -376,18 +417,21 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	resp, err := c.client.Do(req)
 	if err != nil {
 		if logW != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", ctxErr)
+			} else {
+				_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", ErrUpstreamRequestFailed)
+			}
 		}
+		clearSession()
 		return
 	}
-	resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+	_ = resp.Body.Close()
 
 	// Clear session ID unconditionally - even if the server returned an error,
 	// the session should not be reused (prevents stale Mcp-Session-Id headers
 	// on subsequent requests if reconnection occurs).
-	c.sessionMu.Lock()
-	c.sessionID = ""
-	c.sessionMu.Unlock()
+	clearSession()
 
 	if resp.StatusCode >= 400 && logW != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: session delete: server returned HTTP %d\n", resp.StatusCode)

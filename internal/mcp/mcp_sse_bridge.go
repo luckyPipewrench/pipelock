@@ -10,22 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
-
-// isSSEContentType reports whether contentType announces a Server-Sent
-// Events response. The check is case-insensitive and tolerant of leading
-// whitespace plus the optional charset parameter
-// ("text/event-stream; charset=utf-8") so headers that vary by upstream
-// implementation still route correctly. Mirrors proxy.IsSSEContentType,
-// duplicated here because internal/proxy imports internal/mcp.
-func isSSEContentType(contentType string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
-}
 
 // sseMessageWriter writes each scanned JSON-RPC message as one SSE event.
 // It is used by the HTTP listener when the upstream POST response is

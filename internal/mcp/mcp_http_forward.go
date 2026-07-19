@@ -376,7 +376,9 @@ func RunHTTPProxy(
 			return httpClient.SendMessage(ctx, decision.ForwardMessage)
 		}()
 		if err != nil {
-			// Log full upstream error details to stderr for debugging.
+			// SendMessage returns context cancellation/deadline errors as-is
+			// and sanitizes upstream request failures/status errors so raw
+			// upstream bytes cannot cross this logging boundary.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			// Send sanitized error to client - don't include upstream body content
 			// which could contain prompt injection payloads.

@@ -41,6 +41,7 @@ const (
 	listenerLastEventID        = "Last-Event-ID"
 	listenerProtocolVersion    = "Mcp-Protocol-Version"
 	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version, Last-Event-ID"
+	maxAuditSessionKeyLen      = 128
 )
 
 type mcpListenerBlockDecision struct {
@@ -468,6 +469,38 @@ func RunHTTPListenerProxy(
 		// path runs must also run here. Otherwise an agent could leak a
 		// credential-shaped header to the upstream by choosing GET or DELETE
 		// over POST to dodge header DLP.
+		// recordListenerAdaptiveSignal records one adaptive-enforcement signal
+		// with the listener's shared escalation parameters. Centralizing the
+		// EscalationParams construction keeps the enforcement contract identical
+		// across the POST, GET, and DELETE header-block paths, so adding a
+		// parameter or changing the threshold source cannot be missed on one
+		// path. It is a no-op when adaptive enforcement is disabled.
+		recordListenerAdaptiveSignal := func(reqRec session.Recorder, sig session.SignalType, auditSessionKey string) {
+			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+				return
+			}
+			decide.RecordSignal(reqRec, sig, decide.EscalationParams{
+				Threshold:     adaptiveCfg.EscalationThreshold,
+				Logger:        opts.AuditLogger,
+				Metrics:       opts.Metrics,
+				ConsoleWriter: safeLogW,
+				Session:       auditSessionKey,
+			})
+		}
+		recordGETDeleteHeaderAdaptiveSignal := func(sig session.SignalType) {
+			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+				return
+			}
+			var reqRec session.Recorder
+			if opts.Store != nil {
+				reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
+			}
+			auditSessionKey := sanitizeAuditSessionKey(r.Header.Get("Mcp-Session-Id"))
+			if auditSessionKey == "" {
+				auditSessionKey = hashSessionKey(adaptiveHostFromRemoteAddr(r.RemoteAddr))
+			}
+			recordListenerAdaptiveSignal(reqRec, sig, auditSessionKey)
+		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
 			if headerResult == nil {
@@ -487,6 +520,7 @@ func RunHTTPListenerProxy(
 				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
 				receiptSeverity: config.SeverityHigh,
 			})
+			recordGETDeleteHeaderAdaptiveSignal(session.SignalBlock)
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -517,6 +551,16 @@ func RunHTTPListenerProxy(
 				target:          mcpReceiptA2AHeaderTarget,
 				receiptSeverity: config.SeverityHigh,
 			})
+			switch {
+			case headerResult.IsAdaptiveNeutral():
+				// Score-neutral: infrastructure errors in A2A headers
+				// (e.g., DNS timeout resolving an Extensions URL) are
+				// not evidence of agent misbehavior.
+			case headerResult.IsConfigMismatch():
+				recordGETDeleteHeaderAdaptiveSignal(session.SignalNearMiss)
+			default:
+				recordGETDeleteHeaderAdaptiveSignal(session.SignalBlock)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -581,7 +625,7 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
@@ -591,6 +635,13 @@ func RunHTTPListenerProxy(
 
 			if upResp.StatusCode >= 400 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
+			if upResp.StatusCode != http.StatusOK {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
@@ -608,7 +659,7 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("compressed response cannot be scanned")))
 				return
 			}
-			if !isSSEContentType(upResp.Header.Get("Content-Type")) {
+			if !transport.HasSingleSSEContentType(upResp.Header) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned non-SSE Content-Type %q\n", upResp.Header.Get("Content-Type"))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -697,7 +748,7 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
@@ -706,6 +757,13 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+			}
+			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream DELETE returned unsupported HTTP %d\n", upResp.StatusCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
 			}
 			w.WriteHeader(upResp.StatusCode)
 			return
@@ -797,12 +855,13 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Use Mcp-Session-Id header as chain detection session key so
-		// concurrent clients don't share tool call history. When no
-		// session ID is present, fall back to the client IP (without
-		// port) so all requests from the same agent share chain history
-		// even across separate TCP connections.
-		chainSessionKey := r.Header.Get("Mcp-Session-Id")
+		// Use a sanitized Mcp-Session-Id header as the audit and chain
+		// detection session key so concurrent clients don't share tool call
+		// history. This preserves equality for well-formed IDs. Residual risk:
+		// an attacker who already knows a valid session ID can still
+		// mis-attribute audit records; enforcement is unaffected because
+		// adaptive risk scoring uses the remote address recorder.
+		chainSessionKey := sanitizeAuditSessionKey(r.Header.Get("Mcp-Session-Id"))
 		auditSessionKey := chainSessionKey
 		if chainSessionKey == "" {
 			host := adaptiveHostFromRemoteAddr(r.RemoteAddr)
@@ -849,15 +908,7 @@ func RunHTTPListenerProxy(
 				pattern = headerResult.matches[0].PatternName
 			}
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in %s header: %s\n", headerResult.header, pattern)
-			if adaptiveCfg != nil && adaptiveCfg.Enabled {
-				decide.RecordSignal(reqRec, session.SignalBlock, decide.EscalationParams{
-					Threshold:     adaptiveCfg.EscalationThreshold,
-					Logger:        opts.AuditLogger,
-					Metrics:       opts.Metrics,
-					ConsoleWriter: safeLogW,
-					Session:       auditSessionKey,
-				})
-			}
+			recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
 			w.Header().Set("Content-Type", "application/json")
 			rpcID := frame.ID
 			resp, _ := json.Marshal(rpcError{
@@ -876,24 +927,15 @@ func RunHTTPListenerProxy(
 			headerResult := ScanA2AHeaders(r.Context(), r.Header, reqScanner, reqA2ACfg)
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
-				if adaptiveCfg != nil && adaptiveCfg.Enabled {
-					ep := decide.EscalationParams{
-						Threshold:     adaptiveCfg.EscalationThreshold,
-						Logger:        opts.AuditLogger,
-						Metrics:       opts.Metrics,
-						ConsoleWriter: safeLogW,
-						Session:       auditSessionKey,
-					}
-					switch {
-					case headerResult.IsAdaptiveNeutral():
-						// Score-neutral: infrastructure errors in A2A headers
-						// (e.g., DNS timeout resolving an Extensions URL) are
-						// not evidence of agent misbehavior.
-					case headerResult.IsConfigMismatch():
-						decide.RecordSignal(reqRec, session.SignalNearMiss, ep)
-					default:
-						decide.RecordSignal(reqRec, session.SignalBlock, ep)
-					}
+				switch {
+				case headerResult.IsAdaptiveNeutral():
+					// Score-neutral: infrastructure errors in A2A headers
+					// (e.g., DNS timeout resolving an Extensions URL) are
+					// not evidence of agent misbehavior.
+				case headerResult.IsConfigMismatch():
+					recordListenerAdaptiveSignal(reqRec, session.SignalNearMiss, auditSessionKey)
+				default:
+					recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
 				}
 				// Emit a block receipt so an A2A header block leaves the same
 				// policy-hash-bearing evidence as every other applicable
@@ -981,7 +1023,7 @@ func RunHTTPListenerProxy(
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+			logUpstreamRequestError(safeLogW, r.Context())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
@@ -996,10 +1038,29 @@ func RunHTTPListenerProxy(
 			return
 		}
 
+		// Redirect or other 3xx responses are not valid MCP response
+		// envelopes for this listener. The upstream client is configured not
+		// to follow redirects; forwarding a 3xx body would let an upstream
+		// smuggle arbitrary response content around the normal status contract.
+		if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned HTTP %d redirect\n", upResp.StatusCode)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
+			return
+		}
+
 		// Upstream error: sanitize before forwarding (don't leak body content
 		// that could contain injection payloads).
 		if upResp.StatusCode >= 400 {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
+			return
+		}
+		if upResp.StatusCode != http.StatusOK {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned unexpected HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
@@ -1040,8 +1101,7 @@ func RunHTTPListenerProxy(
 		//
 		// nil tracker: HTTP reverse proxy pairs each request/response via HTTP
 		// semantics, so confused deputy tracking is handled at the transport level.
-		upstreamCT := upResp.Header.Get("Content-Type")
-		upstreamIsSSE := isSSEContentType(upstreamCT)
+		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		var reader transport.MessageReader
 		if upstreamIsSSE {
 			reader = transport.NewSSEReader(upResp.Body)
@@ -1380,6 +1440,42 @@ func validMCPSessionID(values []string) bool {
 		}
 	}
 	return true
+}
+
+func logUpstreamRequestError(logW io.Writer, ctx context.Context) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: upstream error: %v\n", ctxErr)
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: upstream error: %v\n", transport.ErrUpstreamRequestFailed)
+}
+
+func sanitizeAuditSessionKey(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(min(len(raw), maxAuditSessionKeyLen))
+	for i := range len(raw) {
+		c := raw[i]
+		if c < 0x20 || c == 0x7f {
+			continue
+		}
+		if b.Len() == maxAuditSessionKeyLen {
+			break
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func validMCPSessionDeleteStatus(status int) bool {
+	switch status {
+	case http.StatusOK, http.StatusAccepted, http.StatusNoContent:
+		return true
+	default:
+		return false
+	}
 }
 
 func validMCPProtocolVersion(values []string) bool {

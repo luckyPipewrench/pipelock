@@ -4,6 +4,23 @@ Pipelock can intercept CONNECT tunnel traffic by performing a TLS MITM: it termi
 
 Without TLS interception, CONNECT tunnels only get hostname-level scanning (blocklist, SSRF, rate limiting). With it, you get full DLP on request bodies/headers and response injection detection.
 
+## What is enforced when interception is off
+
+An HTTPS request through a CONNECT tunnel is encrypted end to end, so with interception disabled Pipelock sees the CONNECT host and handshake, but cannot read the inner request path, query, body, or response. For HTTPS traffic in that mode:
+
+- **Enforced (from CONNECT metadata or tunnel accounting):** destination allowlist/blocklist, SSRF on the CONNECT host, URL DLP/entropy checks that apply to the CONNECT host, connection rate limits, data budget, CONNECT handshake-header DLP, kill switch, and receipt gates. A `request_policy` or contract rule is enforced only to the extent it matches CONNECT metadata (the synthetic `https://host/`); any rule that matches inner HTTPS method, path, query, headers, or body requires interception.
+- **Not applied to the encrypted HTTPS content:** path/query entropy, body DLP, `request_body_scanning`, and `response_scanning`. These operate on plaintext the proxy never sees for HTTPS, so they silently do not inspect HTTPS request paths, bodies, or responses.
+
+This is expected behavior, not a bypass: tunnel-level controls still apply, but HTTPS content visibility does not exist unless Pipelock terminates TLS. Plaintext HTTP through the forward proxy is unaffected (its full URL and body are visible, so all scanners apply).
+
+When the forward proxy accepts CONNECT tunnels and interception is off, Pipelock prints a startup and hot-reload advisory so the coverage gap is never silent:
+
+```text
+WARNING: tls_interception: TLS interception is disabled while the forward proxy accepts CONNECT tunnels. HTTPS traffic is not decrypted, so content scanning (request_body_scanning, response_scanning, path/query entropy, and body DLP) does not inspect HTTPS request paths, bodies, or responses. Pipelock still enforces controls that evaluate from CONNECT metadata or tunnel accounting (destination allowlist/blocklist, SSRF on the CONNECT host, rate limits, data budget, CONNECT handshake-header DLP, kill switch, and receipt gates); request_policy and contract rules that match inner HTTPS method, path, query, headers, or body require tls_interception. Enable tls_interception (and distribute its CA) to scan HTTPS content, or accept tunnel-level-only visibility for HTTPS content as a deliberate posture.
+```
+
+Enable interception (below) to scan HTTPS content, or accept tunnel-level-only HTTPS content visibility as a deliberate posture.
+
 ## Quick Start
 
 ```bash

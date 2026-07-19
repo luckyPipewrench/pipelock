@@ -123,6 +123,12 @@ func checkConfigAdvisories(cfg *config.Config) []string {
 		advisories = append(advisories, "flight_recorder is enabled but dir is unset; no receipts will be written")
 	}
 
+	// Content scanners don't cover HTTPS when the forward proxy accepts CONNECT
+	// tunnels but TLS interception is off (opaque tunnel, host-level only).
+	if msg, ok := cfg.TLSInterceptionCoverageAdvisory(); ok {
+		advisories = append(advisories, msg)
+	}
+
 	if cfg.Conductor.Enabled {
 		_, err := license.VerifyFleetWithOptions(fleetVerifyInputsFromConfig(cfg))
 		if err != nil {

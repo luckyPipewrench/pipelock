@@ -264,6 +264,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateTLSInterception(); err != nil {
 		return warnings, err
 	}
+	c.validateTLSInterceptionCoverage(&warnings)
 	if err := c.validateToolChainDetection(); err != nil {
 		return warnings, err
 	}
@@ -2316,6 +2317,45 @@ func (c *Config) validateTLSInterception() error {
 		return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600 or 0640", keyPath, keyInfo.Mode().Perm())
 	}
 	return nil
+}
+
+// tlsInterceptionCoverageMessage is the shared advisory text for the HTTPS
+// content-visibility gap. It is honest in both directions: it names what content
+// scanning cannot see for HTTPS, lists only the controls that can be evaluated
+// from CONNECT metadata or tunnel accounting as still-enforced, and states that
+// request_policy and contract rules matching inner HTTPS content require
+// interception (they run on the CONNECT host, not the decrypted request).
+const tlsInterceptionCoverageMessage = "TLS interception is disabled while the forward proxy accepts CONNECT tunnels. " +
+	"HTTPS traffic is not decrypted, so content scanning (request_body_scanning, response_scanning, path/query entropy, and body DLP) " +
+	"does not inspect HTTPS request paths, bodies, or responses. Pipelock still enforces controls that evaluate from CONNECT metadata " +
+	"or tunnel accounting (destination allowlist/blocklist, SSRF on the CONNECT host, rate limits, data budget, CONNECT handshake-header DLP, " +
+	"kill switch, and receipt gates); request_policy and contract rules that match inner HTTPS method, path, query, headers, or body require " +
+	"tls_interception. Enable tls_interception (and distribute its CA) to scan HTTPS content, or accept tunnel-level-only visibility for " +
+	"HTTPS content as a deliberate posture."
+
+// TLSInterceptionCoverageAdvisory returns an operator advisory, and true, when
+// the forward proxy accepts CONNECT tunnels but TLS interception is off. Without
+// interception, HTTPS over CONNECT is an opaque tunnel: Pipelock sees the CONNECT
+// host and handshake, but not the inner HTTPS request path, query, body, or
+// response. Every content-dependent control (request/response body scanning,
+// path/query entropy, body DLP, and any request_policy/contract rule matching
+// inner HTTPS content) is therefore blind, so the advisory fires whenever the
+// forward proxy is on and interception is off, not only for body/response
+// scanners. Shared by the startup/reload warning and the `check`/`doctor`
+// advisory so both surfaces stay in sync.
+func (c *Config) TLSInterceptionCoverageAdvisory() (string, bool) {
+	if !c.ForwardProxy.Enabled || c.TLSInterception.Enabled {
+		return "", false
+	}
+	return tlsInterceptionCoverageMessage, true
+}
+
+// validateTLSInterceptionCoverage surfaces TLSInterceptionCoverageAdvisory as a
+// non-fatal Validate warning. It changes no enforcement behavior.
+func (c *Config) validateTLSInterceptionCoverage(warnings *[]Warning) {
+	if msg, ok := c.TLSInterceptionCoverageAdvisory(); ok {
+		*warnings = append(*warnings, Warning{Field: "tls_interception", Message: msg})
+	}
 }
 
 func (c *Config) validateToolChainDetection() error {

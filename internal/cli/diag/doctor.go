@@ -141,6 +141,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 	report.Checks = []doctorReportCheck{
 		checkDoctorHTTPProxy(cfg),
 		checkDoctorTLSInterception(cfg),
+		checkDoctorTLSInterceptionCoverage(cfg),
 		checkDoctorRequestBodyScanning(cfg),
 		checkDoctorBrowserShield(cfg),
 		checkDoctorMCPWrapperFeatures(cfg),
@@ -385,6 +386,27 @@ func checkDoctorTLSInterception(cfg *config.Config) doctorReportCheck {
 		Enforcing:  true,
 		Detail:     "CA material is readable; clients still need to trust the CA",
 		Next:       "verify agent and browser trust stores use this CA",
+	}
+}
+
+func checkDoctorTLSInterceptionCoverage(cfg *config.Config) doctorReportCheck {
+	msg, ok := cfg.TLSInterceptionCoverageAdvisory()
+	if !ok {
+		return doctorReportCheck{
+			Name:    "tls_interception_coverage",
+			Surface: doctorSurfaceHTTP,
+			Status:  doctorStatusOK,
+			Detail:  "CONNECT HTTPS content visibility matches enabled TLS interception and content scanners",
+		}
+	}
+	return doctorReportCheck{
+		Name:       "tls_interception_coverage",
+		Surface:    doctorSurfaceHTTP,
+		Status:     doctorStatusWarn,
+		Configured: true,
+		Reachable:  true,
+		Detail:     msg,
+		Next:       "enable tls_interception and install the Pipelock CA, or document tunnel-level-only HTTPS content visibility as an intentional posture",
 	}
 }
 

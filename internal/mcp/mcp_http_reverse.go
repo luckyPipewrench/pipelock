@@ -469,6 +469,24 @@ func RunHTTPListenerProxy(
 		// path runs must also run here. Otherwise an agent could leak a
 		// credential-shaped header to the upstream by choosing GET or DELETE
 		// over POST to dodge header DLP.
+		// recordListenerAdaptiveSignal records one adaptive-enforcement signal
+		// with the listener's shared escalation parameters. Centralizing the
+		// EscalationParams construction keeps the enforcement contract identical
+		// across the POST, GET, and DELETE header-block paths, so adding a
+		// parameter or changing the threshold source cannot be missed on one
+		// path. It is a no-op when adaptive enforcement is disabled.
+		recordListenerAdaptiveSignal := func(reqRec session.Recorder, sig session.SignalType, auditSessionKey string) {
+			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+				return
+			}
+			decide.RecordSignal(reqRec, sig, decide.EscalationParams{
+				Threshold:     adaptiveCfg.EscalationThreshold,
+				Logger:        opts.AuditLogger,
+				Metrics:       opts.Metrics,
+				ConsoleWriter: safeLogW,
+				Session:       auditSessionKey,
+			})
+		}
 		recordGETDeleteHeaderAdaptiveSignal := func(sig session.SignalType) {
 			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 				return
@@ -481,13 +499,7 @@ func RunHTTPListenerProxy(
 			if auditSessionKey == "" {
 				auditSessionKey = hashSessionKey(adaptiveHostFromRemoteAddr(r.RemoteAddr))
 			}
-			decide.RecordSignal(reqRec, sig, decide.EscalationParams{
-				Threshold:     adaptiveCfg.EscalationThreshold,
-				Logger:        opts.AuditLogger,
-				Metrics:       opts.Metrics,
-				ConsoleWriter: safeLogW,
-				Session:       auditSessionKey,
-			})
+			recordListenerAdaptiveSignal(reqRec, sig, auditSessionKey)
 		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
@@ -896,15 +908,7 @@ func RunHTTPListenerProxy(
 				pattern = headerResult.matches[0].PatternName
 			}
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in %s header: %s\n", headerResult.header, pattern)
-			if adaptiveCfg != nil && adaptiveCfg.Enabled {
-				decide.RecordSignal(reqRec, session.SignalBlock, decide.EscalationParams{
-					Threshold:     adaptiveCfg.EscalationThreshold,
-					Logger:        opts.AuditLogger,
-					Metrics:       opts.Metrics,
-					ConsoleWriter: safeLogW,
-					Session:       auditSessionKey,
-				})
-			}
+			recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
 			w.Header().Set("Content-Type", "application/json")
 			rpcID := frame.ID
 			resp, _ := json.Marshal(rpcError{
@@ -923,24 +927,15 @@ func RunHTTPListenerProxy(
 			headerResult := ScanA2AHeaders(r.Context(), r.Header, reqScanner, reqA2ACfg)
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
-				if adaptiveCfg != nil && adaptiveCfg.Enabled {
-					ep := decide.EscalationParams{
-						Threshold:     adaptiveCfg.EscalationThreshold,
-						Logger:        opts.AuditLogger,
-						Metrics:       opts.Metrics,
-						ConsoleWriter: safeLogW,
-						Session:       auditSessionKey,
-					}
-					switch {
-					case headerResult.IsAdaptiveNeutral():
-						// Score-neutral: infrastructure errors in A2A headers
-						// (e.g., DNS timeout resolving an Extensions URL) are
-						// not evidence of agent misbehavior.
-					case headerResult.IsConfigMismatch():
-						decide.RecordSignal(reqRec, session.SignalNearMiss, ep)
-					default:
-						decide.RecordSignal(reqRec, session.SignalBlock, ep)
-					}
+				switch {
+				case headerResult.IsAdaptiveNeutral():
+					// Score-neutral: infrastructure errors in A2A headers
+					// (e.g., DNS timeout resolving an Extensions URL) are
+					// not evidence of agent misbehavior.
+				case headerResult.IsConfigMismatch():
+					recordListenerAdaptiveSignal(reqRec, session.SignalNearMiss, auditSessionKey)
+				default:
+					recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
 				}
 				// Emit a block receipt so an A2A header block leaves the same
 				// policy-hash-bearing evidence as every other applicable

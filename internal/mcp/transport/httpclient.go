@@ -48,14 +48,14 @@ func hasNonIdentityEncoding(ce string) bool {
 	return false
 }
 
-func isSSEContentType(contentType string) bool {
+func IsSSEContentType(contentType string) bool {
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
 }
 
-func hasSingleSSEContentType(header http.Header) bool {
+func HasSingleSSEContentType(header http.Header) bool {
 	values := header.Values("Content-Type")
-	return len(values) == 1 && isSSEContentType(values[0])
+	return len(values) == 1 && IsSSEContentType(values[0])
 }
 
 // HTTPClient sends JSON-RPC 2.0 messages over HTTP POST and returns
@@ -218,7 +218,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// Route based on Content-Type.
-	if hasSingleSSEContentType(resp.Header) {
+	if HasSingleSSEContentType(resp.Header) {
 		return &closingSSEReader{
 			sse:  NewSSEReader(resp.Body),
 			body: resp.Body,
@@ -360,7 +360,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		return nil, ErrCompressedResponse
 	}
 
-	if !hasSingleSSEContentType(resp.Header) {
+	if !HasSingleSSEContentType(resp.Header) {
 		_ = resp.Body.Close()
 		return nil, ErrNonSSEStreamResponse
 	}

@@ -1039,8 +1039,8 @@ func TestHTTPClient_IsSSEContentTypeExact(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSSEContentType(tt.contentType); got != tt.want {
-				t.Fatalf("isSSEContentType(%q) = %v, want %v", tt.contentType, got, tt.want)
+			if got := IsSSEContentType(tt.contentType); got != tt.want {
+				t.Fatalf("IsSSEContentType(%q) = %v, want %v", tt.contentType, got, tt.want)
 			}
 		})
 	}
@@ -1051,12 +1051,12 @@ func TestHTTPClient_HasSingleSSEContentTypeRejectsPathologicalHeaders(t *testing
 	for range 4096 {
 		manyValues.Add("Content-Type", "text/event-stream")
 	}
-	if hasSingleSSEContentType(manyValues) {
+	if HasSingleSSEContentType(manyValues) {
 		t.Fatal("expected repeated Content-Type values to fail closed")
 	}
 
 	longInvalid := "text/event-stream" + strings.Repeat("; charset", 4096)
-	if isSSEContentType(longInvalid) {
+	if IsSSEContentType(longInvalid) {
 		t.Fatal("expected long malformed Content-Type to fail closed")
 	}
 }

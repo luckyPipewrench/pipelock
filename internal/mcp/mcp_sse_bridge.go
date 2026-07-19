@@ -9,29 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
-
-// isSSEContentType reports whether contentType announces a Server-Sent
-// Events response. The check is case-insensitive and tolerant of leading
-// whitespace plus the optional charset parameter
-// ("text/event-stream; charset=utf-8") so headers that vary by upstream
-// implementation still route correctly.
-func isSSEContentType(contentType string) bool {
-	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
-	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
-}
-
-func hasSingleSSEContentType(header http.Header) bool {
-	values := header.Values("Content-Type")
-	return len(values) == 1 && isSSEContentType(values[0])
-}
 
 // sseMessageWriter writes each scanned JSON-RPC message as one SSE event.
 // It is used by the HTTP listener when the upstream POST response is

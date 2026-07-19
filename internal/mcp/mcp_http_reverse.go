@@ -646,7 +646,7 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("compressed response cannot be scanned")))
 				return
 			}
-			if !hasSingleSSEContentType(upResp.Header) {
+			if !transport.HasSingleSSEContentType(upResp.Header) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned non-SSE Content-Type %q\n", upResp.Header.Get("Content-Type"))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1097,7 +1097,7 @@ func RunHTTPListenerProxy(
 		//
 		// nil tracker: HTTP reverse proxy pairs each request/response via HTTP
 		// semantics, so confused deputy tracking is handled at the transport level.
-		upstreamIsSSE := hasSingleSSEContentType(upResp.Header)
+		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		var reader transport.MessageReader
 		if upstreamIsSSE {
 			reader = transport.NewSSEReader(upResp.Body)

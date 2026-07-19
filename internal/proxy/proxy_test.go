@@ -4810,6 +4810,45 @@ func TestLoadCertCache_ValidCA(t *testing.T) {
 	}
 }
 
+func TestLoadCertCache_InvalidCacheSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "ca.pem")
+	keyPath := filepath.Join(tmpDir, "ca-key.pem")
+
+	ca, caKey, _, err := certgen.GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := certgen.SaveCAForce(certPath, keyPath, ca, caKey); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	// A non-positive cache size makes certgen.NewCertCache fail; LoadCertCache
+	// must surface that as an error instead of panicking (the constructor used
+	// to panic before it returned an error).
+	cfg.TLSInterception.CertCacheSize = 0
+	if err := p.LoadCertCache(cfg); err == nil {
+		t.Fatal("expected error for non-positive cert cache size")
+	} else if !strings.Contains(err.Error(), "create TLS cert cache") {
+		t.Fatalf("LoadCertCache error = %q, want to contain create TLS cert cache", err)
+	}
+}
+
 func TestLoadCertCache_MissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 

@@ -110,8 +110,9 @@ func TestSandboxCmdDryRunJSON(t *testing.T) {
 	cmd.SilenceUsage = true
 	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", "echo", "ok"})
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	cmd.SetErr(&stderr)
 
 	execErr := cmd.Execute()
 

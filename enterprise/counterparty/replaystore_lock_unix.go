@@ -11,19 +11,32 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // acquireReplayStoreLock takes an exclusive, cross-process advisory lock on the
 // OPEN store file descriptor. Locking the fd (not a path-derived sibling) ties
 // the lock to the same inode the store reads and writes, so path aliases
 // (symlinks, relative paths, hardlinks) contend on the same inode and the lock
-// cannot drift from the I/O target. The returned release closure unlocks.
+// cannot drift from the I/O target. The returned release closure unlocks. Lock
+// acquisition is bounded so verification fails closed instead of hanging
+// indefinitely behind a wedged peer.
 func acquireReplayStoreLock(f *os.File) (func(), error) {
 	fd := int(f.Fd()) // #nosec G115 -- file descriptors fit in int on supported Unix targets
-	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
-		return nil, fmt.Errorf("acquire replay store lock: %w", err)
+	deadline := time.Now().Add(replayStoreLockTimeout)
+	for {
+		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("acquire replay store lock: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("acquire replay store lock: timed out after %s: %w", replayStoreLockTimeout, err)
+		}
+		time.Sleep(replayStoreLockRetryInterval)
 	}
-	return func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }, nil
 }
 
 // verifyStorePathInode fails closed if the configured path no longer resolves to

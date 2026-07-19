@@ -25,6 +25,11 @@ import (
 // from a store I/O error.
 var ErrReplayConflict = errors.New("counterparty record replays a committed nonce or transfer")
 
+var (
+	replayStoreLockTimeout       = 5 * time.Second
+	replayStoreLockRetryInterval = 10 * time.Millisecond
+)
+
 // ReplayEntry is the durable unit of replay state for one accepted record. Two
 // uniqueness constraints are enforced: NonceKey rejects the identical signed
 // record, TransferKey rejects the same two receipts + payload re-signed under a

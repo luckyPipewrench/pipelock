@@ -13,11 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-const replayLockAliasHelperEnv = "PIPELOCK_COUNTERPARTY_LOCK_ALIAS_HELPER"
+const replayLockTimeoutHelperEnv = "PIPELOCK_COUNTERPARTY_LOCK_TIMEOUT_HELPER"
 
 func TestReplayStoreUnixLockFollowsSymlinkAlias(t *testing.T) {
 	dir := t.TempDir()
@@ -39,43 +40,37 @@ func TestReplayStoreUnixLockFollowsSymlinkAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire primary lock: %v", err)
 	}
-	released := false
+	primaryReleased := false
 	defer func() {
-		if !released {
+		if !primaryReleased {
 			release()
 		}
 	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReplayStoreUnixLockAliasHelper$", "--", alias) // #nosec G204 G702 -- test re-execs its own binary with a t.TempDir() alias path
-	cmd.Env = append(os.Environ(), replayLockAliasHelperEnv+"=1")
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReplayStoreUnixLockTimeoutHelper$", "--", alias) // #nosec G204 G702 -- test re-execs its own binary with a t.TempDir() alias path
+	cmd.Env = append(os.Environ(), replayLockTimeoutHelperEnv+"=1")
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper: %v", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case err := <-done:
-		t.Fatalf("alias lock acquired while primary lock was held: err=%v output=%s", err, output.String())
-	case <-time.After(150 * time.Millisecond):
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("timeout helper on alias failed: %v output=%s", err, output.String())
 	}
 
 	release()
-	released = true
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("helper after release: %v output=%s", err, output.String())
-		}
-	case <-time.After(2 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("helper did not acquire alias lock after primary release; output=%s", output.String())
+	primaryReleased = true
+
+	aliasFile, err := os.OpenFile(alias, os.O_RDWR, 0o600) // #nosec G304 -- test path from t.TempDir()
+	if err != nil {
+		t.Fatalf("open alias for free lock: %v", err)
 	}
+	defer func() { _ = aliasFile.Close() }()
+	releaseAlias, err := acquireReplayStoreLock(aliasFile)
+	if err != nil {
+		t.Fatalf("acquire alias lock after primary release: %v", err)
+	}
+	releaseAlias()
 }
 
 // TestFileReplayStoreFailsClosedAfterPathReplacement proves the inode-consistency
@@ -147,27 +142,63 @@ func TestFileReplayStoreFailsClosedAfterPathReplacementDuringCommit(t *testing.T
 	}
 }
 
-func TestReplayStoreUnixLockAliasHelper(t *testing.T) {
-	if os.Getenv(replayLockAliasHelperEnv) == "" {
+func TestReplayStoreUnixLockTimeoutFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "replay.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("seed replay store: %v", err)
+	}
+
+	lockFile, err := os.OpenFile(path, os.O_RDWR, 0o600) // #nosec G304 -- test path from t.TempDir()
+	if err != nil {
+		t.Fatalf("open store for lock: %v", err)
+	}
+	defer func() { _ = lockFile.Close() }()
+	release, err := acquireReplayStoreLock(lockFile)
+	if err != nil {
+		t.Fatalf("acquire primary lock: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReplayStoreUnixLockTimeoutHelper$", "--", path) // #nosec G204 G702 -- test re-execs its own binary with a t.TempDir() path
+	cmd.Env = append(os.Environ(), replayLockTimeoutHelperEnv+"=1")
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("timeout helper failed: %v output=%s", err, output.String())
+	}
+}
+
+func TestReplayStoreUnixLockTimeoutHelper(t *testing.T) {
+	if os.Getenv(replayLockTimeoutHelperEnv) == "" {
 		return
 	}
 	if len(os.Args) == 0 {
 		fmt.Fprintln(os.Stderr, "missing args")
 		os.Exit(2)
 	}
+	replayStoreLockTimeout = 75 * time.Millisecond
+	replayStoreLockRetryInterval = 5 * time.Millisecond
 	path := os.Args[len(os.Args)-1]
 	lockFile, err := os.OpenFile(path, os.O_RDWR, 0o600) // #nosec G304 -- test path from the parent test's t.TempDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "open alias for lock: %v\n", err)
+		fmt.Fprintf(os.Stderr, "open contender for lock: %v\n", err)
 		os.Exit(2)
 	}
 	defer func() { _ = lockFile.Close() }()
 	release, err := acquireReplayStoreLock(lockFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "acquire alias lock: %v\n", err)
+	if err == nil {
+		release()
+		fmt.Fprintln(os.Stderr, "lock unexpectedly acquired")
 		os.Exit(2)
 	}
-	release()
-	_, _ = fmt.Fprintln(os.Stdout, "acquired")
+	if !strings.Contains(err.Error(), "timed out") {
+		fmt.Fprintf(os.Stderr, "acquire lock error = %v, want timeout\n", err)
+		os.Exit(2)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, "timed out")
 	os.Exit(0)
 }

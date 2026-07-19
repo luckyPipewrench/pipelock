@@ -11,12 +11,15 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 const (
-	lockfileExclusiveLock = 0x00000002
-	fileShareDelete       = 0x00000004
+	lockfileExclusiveLock   = 0x00000002
+	lockfileFailImmediately = 0x00000001
+	fileShareDelete         = 0x00000004
+	windowsLockViolation    = syscall.Errno(33)
 )
 
 var (
@@ -28,14 +31,25 @@ var (
 // acquireReplayStoreLock takes an exclusive, cross-process byte-range lock on the
 // OPEN store handle so two processes sharing one store cannot both accept the
 // same entry. Locking the handle (not a path-derived sibling) ties the lock to
-// the same file the store reads and writes.
+// the same file the store reads and writes. Lock acquisition is bounded so
+// verification fails closed instead of hanging indefinitely behind a wedged peer.
 func acquireReplayStoreLock(f *os.File) (func(), error) {
 	handle := syscall.Handle(f.Fd())
 	overlapped := &syscall.Overlapped{}
-	if err := lockFileEx(handle, lockfileExclusiveLock, 0xffffffff, 0xffffffff, overlapped); err != nil {
-		return nil, fmt.Errorf("acquire replay store lock: %w", err)
+	deadline := time.Now().Add(replayStoreLockTimeout)
+	for {
+		err := lockFileEx(handle, lockfileExclusiveLock|lockfileFailImmediately, 0xffffffff, 0xffffffff, overlapped)
+		if err == nil {
+			return func() { _ = unlockFileEx(handle, 0xffffffff, 0xffffffff, overlapped) }, nil
+		}
+		if !errors.Is(err, windowsLockViolation) {
+			return nil, fmt.Errorf("acquire replay store lock: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("acquire replay store lock: timed out after %s: %w", replayStoreLockTimeout, err)
+		}
+		time.Sleep(replayStoreLockRetryInterval)
 	}
-	return func() { _ = unlockFileEx(handle, 0xffffffff, 0xffffffff, overlapped) }, nil
 }
 
 // verifyStorePathInode fails closed if the configured path no longer resolves to

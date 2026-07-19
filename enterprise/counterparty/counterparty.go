@@ -421,25 +421,7 @@ func VerifyCounterparty(req VerifyRequest) VerificationResult {
 
 // UnmarshalRecord strictly parses a counterparty side record.
 func UnmarshalRecord(data []byte) (Record, error) {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return Record{}, fmt.Errorf("unmarshal counterparty receipt: %w", err)
-	}
-	var r Record
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&r); err != nil {
-		if strings.Contains(err.Error(), "unknown field") {
-			return Record{}, fmt.Errorf("unmarshal counterparty receipt: %w: %w", ErrUnknownField, err)
-		}
-		return Record{}, fmt.Errorf("unmarshal counterparty receipt: %w", err)
-	}
-	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return Record{}, fmt.Errorf("unmarshal counterparty receipt: %w: %w", ErrTrailingTokens, err)
-		}
-		return Record{}, fmt.Errorf("unmarshal counterparty receipt: %w", ErrTrailingTokens)
-	}
-	return r, nil
+	return unmarshalStrict[Record](data, "counterparty receipt")
 }
 
 // UnmarshalPayloadCapture strictly parses a raw payload-capture record. Callers
@@ -448,25 +430,29 @@ func UnmarshalRecord(data []byte) (Record, error) {
 // trailing tokens cannot collapse into a pass-shaped struct while the raw
 // artifact stays ambiguous for audit.
 func UnmarshalPayloadCapture(data []byte) (PayloadCapture, error) {
+	return unmarshalStrict[PayloadCapture](data, "payload capture")
+}
+
+func unmarshalStrict[T any](data []byte, label string) (T, error) {
+	var v T
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return PayloadCapture{}, fmt.Errorf("unmarshal payload capture: %w", err)
+		return v, fmt.Errorf("unmarshal %s: %w", label, err)
 	}
-	var c PayloadCapture
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		if strings.Contains(err.Error(), "unknown field") {
-			return PayloadCapture{}, fmt.Errorf("unmarshal payload capture: %w: %w", ErrUnknownField, err)
+			return v, fmt.Errorf("unmarshal %s: %w: %w", label, ErrUnknownField, err)
 		}
-		return PayloadCapture{}, fmt.Errorf("unmarshal payload capture: %w", err)
+		return v, fmt.Errorf("unmarshal %s: %w", label, err)
 	}
 	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		if err != nil {
-			return PayloadCapture{}, fmt.Errorf("unmarshal payload capture: %w: %w", ErrTrailingTokens, err)
+			return v, fmt.Errorf("unmarshal %s: %w: %w", label, ErrTrailingTokens, err)
 		}
-		return PayloadCapture{}, fmt.Errorf("unmarshal payload capture: %w", ErrTrailingTokens)
+		return v, fmt.Errorf("unmarshal %s: %w", label, ErrTrailingTokens)
 	}
-	return c, nil
+	return v, nil
 }
 
 func newReplayEntry(r Record, nonce NonceKey, sender, receiver receipt.Receipt) (ReplayEntry, error) {

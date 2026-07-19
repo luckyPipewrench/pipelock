@@ -4,11 +4,14 @@
 package transport
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,6 +29,48 @@ func drain(t *testing.T, r MessageReader) {
 		if err != nil {
 			return
 		}
+	}
+}
+
+func startRawHTTPResponseServer(t *testing.T, response string) (string, <-chan error) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		br := bufio.NewReader(conn)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, err = io.WriteString(conn, response)
+		errCh <- err
+	}()
+
+	t.Cleanup(func() { _ = ln.Close() })
+	return "http://" + ln.Addr().String(), errCh
+}
+
+func waitRawHTTPResponseServer(t *testing.T, errCh <-chan error) {
+	t.Helper()
+	if err := <-errCh; err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("raw HTTP server: %v", err)
 	}
 }
 
@@ -98,6 +143,57 @@ func TestHTTPClient_SSEResponse(t *testing.T) {
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF after SSE events, got %v", err)
+	}
+}
+
+func TestHTTPClient_SendMessage_MalformedResponseSanitizesRequestError(t *testing.T) {
+	const injected = "INJECTED-FORGED-LOG"
+	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 200 OK\r\n"+injected+"\r\nContent-Length: 0\r\n\r\n")
+
+	c := NewHTTPClient(url, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if err == nil {
+		t.Fatal("expected malformed upstream response error")
+	}
+	if !errors.Is(err, ErrUpstreamRequestFailed) {
+		t.Fatalf("errors.Is(err, ErrUpstreamRequestFailed) = false; err=%v", err)
+	}
+	if strings.Contains(err.Error(), injected) {
+		t.Fatalf("error leaked malformed upstream bytes: %q", err.Error())
+	}
+	waitRawHTTPResponseServer(t, errCh)
+}
+
+func TestHTTPClient_OpenGETStream_MalformedResponseSanitizesRequestError(t *testing.T) {
+	const injected = "INJECTED-FORGED-GET-LOG"
+	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 200 OK\r\n"+injected+"\r\nContent-Type: text/event-stream\r\n\r\n")
+
+	c := NewHTTPClient(url, nil)
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected malformed upstream response error")
+	}
+	if !errors.Is(err, ErrUpstreamRequestFailed) {
+		t.Fatalf("errors.Is(err, ErrUpstreamRequestFailed) = false; err=%v", err)
+	}
+	if strings.Contains(err.Error(), injected) {
+		t.Fatalf("error leaked malformed upstream bytes: %q", err.Error())
+	}
+	waitRawHTTPResponseServer(t, errCh)
+}
+
+func TestHTTPClient_ClientDoCancellationPreserved(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := NewHTTPClient("http://127.0.0.1:1", nil)
+	_, err := c.SendMessage(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendMessage error = %v, want context.Canceled", err)
+	}
+	_, err = c.OpenGETStream(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("OpenGETStream error = %v, want context.Canceled", err)
 	}
 }
 
@@ -182,7 +278,7 @@ func TestHTTPClient_ErrorStatus(t *testing.T) {
 	}
 }
 
-func TestHTTPClient_ErrorStatusIncludesBody(t *testing.T) {
+func TestHTTPClient_ErrorStatusOmitsBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -195,8 +291,11 @@ func TestHTTPClient_ErrorStatusIncludesBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 400 response")
 	}
-	if !strings.Contains(err.Error(), "session expired") {
-		t.Errorf("error should include body, got: %v", err)
+	if strings.Contains(err.Error(), "session expired") || strings.Contains(err.Error(), "error") {
+		t.Errorf("error should omit upstream body, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("error should include status code, got: %v", err)
 	}
 }
 
@@ -406,7 +505,7 @@ func TestHTTPClient_OpenGETStream_405(t *testing.T) {
 	}
 }
 
-func TestHTTPClient_OpenGETStream_ErrorWithBody(t *testing.T) {
+func TestHTTPClient_OpenGETStream_ErrorOmitsBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("invalid session"))
@@ -418,8 +517,11 @@ func TestHTTPClient_OpenGETStream_ErrorWithBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 400 response")
 	}
-	if !strings.Contains(err.Error(), "invalid session") {
-		t.Errorf("error should include body, got: %v", err)
+	if strings.Contains(err.Error(), "invalid session") {
+		t.Errorf("error should omit upstream body, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("error should include status code, got: %v", err)
 	}
 }
 
@@ -616,6 +718,27 @@ func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "session delete") {
 		t.Errorf("expected connection error log, got: %s", logBuf.String())
 	}
+}
+
+func TestHTTPClient_DeleteSession_MalformedResponseLogsSentinel(t *testing.T) {
+	const injected = "INJECTED-DELETE-FORGED-LOG"
+	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 204 No Content\r\n"+injected+"\r\n\r\n")
+
+	c := NewHTTPClient(url, nil)
+	c.sessionID = "sess-malformed-delete"
+
+	var logBuf strings.Builder
+	c.DeleteSession(&logBuf)
+	if !strings.Contains(logBuf.String(), ErrUpstreamRequestFailed.Error()) {
+		t.Fatalf("delete log = %q, want sentinel", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), injected) {
+		t.Fatalf("delete log leaked malformed upstream bytes: %q", logBuf.String())
+	}
+	if c.SessionID() != "" {
+		t.Fatalf("session ID = %q, want cleared after failed DELETE attempt", c.SessionID())
+	}
+	waitRawHTTPResponseServer(t, errCh)
 }
 
 func TestHTTPClient_DeleteSession_ConnectionError_NilLog(t *testing.T) {
@@ -928,6 +1051,178 @@ func TestHTTPClient_ErrorStatusEmptyBody(t *testing.T) {
 	}
 }
 
+func TestHTTPClient_ErrorStatusDoesNotEchoUpstreamBody(t *testing.T) {
+	const attackerBody = "upstream secret\r\nforged-log-line"
+	for _, method := range []string{http.MethodPost, http.MethodGet} {
+		t.Run(method, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != method {
+					t.Fatalf("method = %s, want %s", r.Method, method)
+				}
+				http.Error(w, attackerBody, http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+
+			c := NewHTTPClient(srv.URL, nil)
+			var err error
+			if method == http.MethodPost {
+				_, err = c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+			} else {
+				_, err = c.OpenGETStream(context.Background())
+			}
+			if err == nil {
+				t.Fatal("expected error for upstream 500")
+			}
+			if strings.Contains(err.Error(), attackerBody) ||
+				strings.Contains(err.Error(), "upstream secret") ||
+				strings.Contains(err.Error(), "forged-log-line") {
+				t.Fatalf("error echoed upstream body: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "500") {
+				t.Fatalf("error = %q, want status code", err.Error())
+			}
+		})
+	}
+}
+
+func writeSwitchingProtocolsResponse(t *testing.T, w http.ResponseWriter, contentType, body string) {
+	t.Helper()
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatal("response writer does not support hijacking")
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nContent-Type: "+contentType+"\r\nConnection: Upgrade\r\nUpgrade: mcp-test\r\n\r\n"+body)
+}
+
+func TestHTTPClient_SendMessage_Unexpected2xxStatusFailsClosed(t *testing.T) {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusNoContent, http.StatusPartialContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if status == http.StatusSwitchingProtocols {
+					writeSwitchingProtocolsResponse(t, w, "application/json", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"unexpected 2xx body must not leak"}]}}`)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"unexpected 2xx body must not leak"}]}}`))
+			}))
+			defer srv.Close()
+
+			c := NewHTTPClient(srv.URL, nil)
+			reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+			if err == nil {
+				if reader != nil {
+					msg, readErr := reader.ReadMessage()
+					t.Fatalf("SendMessage returned reader for unexpected HTTP %d; first message=%q readErr=%v", status, msg, readErr)
+				}
+				t.Fatalf("expected fail-closed error for unexpected HTTP %d", status)
+			}
+			if strings.Contains(err.Error(), "unexpected 2xx body must not leak") {
+				t.Fatalf("error echoed upstream body: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), strconv.Itoa(status)) {
+				t.Fatalf("error = %q, want status code %d", err.Error(), status)
+			}
+		})
+	}
+}
+
+func TestHTTPClient_IsSSEContentTypeExact(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{name: "bare", contentType: "text/event-stream", want: true},
+		{name: "charset", contentType: "text/event-stream; charset=utf-8", want: true},
+		{name: "uppercase", contentType: "TEXT/EVENT-STREAM", want: true},
+		{name: "leading whitespace", contentType: " text/event-stream", want: true},
+		{name: "trailing whitespace", contentType: "text/event-stream ", want: true},
+		{name: "missing", contentType: "", want: false},
+		{name: "json", contentType: "application/json", want: false},
+		{name: "suffix lookalike", contentType: "text/event-streamx", want: false},
+		{name: "trailing junk", contentType: "text/event-stream junk", want: false},
+		{name: "long suffix lookalike", contentType: "text/event-stream" + strings.Repeat("x", 8192), want: false},
+		{name: "invalid parameter", contentType: "text/event-stream; charset", want: false},
+		{name: "comma joined", contentType: "text/event-stream, application/json", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSSEContentType(tt.contentType); got != tt.want {
+				t.Fatalf("IsSSEContentType(%q) = %v, want %v", tt.contentType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHTTPClient_HasSingleSSEContentTypeRejectsPathologicalHeaders(t *testing.T) {
+	manyValues := make(http.Header)
+	for range 4096 {
+		manyValues.Add("Content-Type", "text/event-stream")
+	}
+	if HasSingleSSEContentType(manyValues) {
+		t.Fatal("expected repeated Content-Type values to fail closed")
+	}
+
+	longInvalid := "text/event-stream" + strings.Repeat("; charset", 4096)
+	if IsSSEContentType(longInvalid) {
+		t.Fatal("expected long malformed Content-Type to fail closed")
+	}
+}
+
+func TestHTTPClient_SendMessage_ErrorStatusDoesNotEchoReasonPhrase(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		br := bufio.NewReader(conn)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, err = io.WriteString(conn, "HTTP/1.1 500 upstream secret forged-log-line\r\nContent-Length: 0\r\n\r\n")
+		errCh <- err
+	}()
+
+	c := NewHTTPClient("http://"+ln.Addr().String(), nil)
+	_, err = c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if err == nil {
+		t.Fatal("expected error for upstream 500")
+	}
+	if strings.Contains(err.Error(), "upstream secret") || strings.Contains(err.Error(), "forged-log-line") {
+		t.Fatalf("error echoed upstream reason phrase: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error = %q, want status code", err.Error())
+	}
+
+	if serveErr := <-errCh; serveErr != nil {
+		t.Fatalf("raw HTTP server: %v", serveErr)
+	}
+}
+
 func TestHTTPClient_SingleMessageReader_Overflow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -976,6 +1271,83 @@ func TestHTTPClient_SendMessage_CompressedResponseBlocked(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestHTTPClient_OpenGETStream_NonSSEContentTypeFailsClosed(t *testing.T) {
+	for _, contentType := range []string{"application/json", "text/event-streamx"} {
+		t.Run(contentType, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %s, want GET", r.Method)
+				}
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n"))
+			}))
+			defer srv.Close()
+
+			c := NewHTTPClient(srv.URL, nil)
+			reader, err := c.OpenGETStream(context.Background())
+			if err == nil {
+				if reader != nil {
+					_, readErr := reader.ReadMessage()
+					t.Fatalf("OpenGETStream returned reader instead of fail-closed error; first read err=%v", readErr)
+				}
+				t.Fatal("expected fail-closed error for non-SSE GET stream")
+			}
+			if !errors.Is(err, ErrNonSSEStreamResponse) {
+				t.Fatalf("expected ErrNonSSEStreamResponse, got %v", err)
+			}
+		})
+	}
+}
+
+func TestHTTPClient_OpenGETStream_MultipleContentTypesFailClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		w.Header().Add("Content-Type", "text/event-stream")
+		w.Header().Add("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/message"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		if reader != nil {
+			_, readErr := reader.ReadMessage()
+			t.Fatalf("OpenGETStream returned reader instead of fail-closed error; first read err=%v", readErr)
+		}
+		t.Fatal("expected fail-closed error for multiple Content-Type values")
+	}
+	if !errors.Is(err, ErrNonSSEStreamResponse) {
+		t.Fatalf("expected ErrNonSSEStreamResponse, got %v", err)
+	}
+}
+
+func TestHTTPClient_OpenGETStream_NonOKSuccessStatusFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		if reader != nil {
+			_, readErr := reader.ReadMessage()
+			t.Fatalf("OpenGETStream returned reader instead of fail-closed error; first read err=%v", readErr)
+		}
+		t.Fatal("expected fail-closed error for non-200 GET stream status")
+	}
+	if !strings.Contains(err.Error(), "204") {
+		t.Fatalf("error = %q, want status code", err.Error())
 	}
 }
 

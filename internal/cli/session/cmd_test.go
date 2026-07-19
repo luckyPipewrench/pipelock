@@ -10,7 +10,7 @@ import (
 
 func TestCmd_RegistersAllSubcommands(t *testing.T) {
 	cmd := Cmd()
-	want := []string{"list", "inspect", "explain", "release", "terminate", "recover"}
+	want := []string{"list", "inspect", "risk", "explain", "release", "terminate", "recover"}
 	for _, name := range want {
 		_, _, err := cmd.Find([]string{name})
 		if err != nil {

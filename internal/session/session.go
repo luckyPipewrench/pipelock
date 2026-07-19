@@ -20,6 +20,8 @@ type SignalType int
 const (
 	SignalBlock                      SignalType = iota // +3 - hard block from any scanner/transport
 	SignalNearMiss                                     // +1 - warn-level finding from any scanner/transport
+	SignalBlockLowSeverity                             // +1 - opt-in low/noisy hard block contribution
+	SignalBlockMediumSeverity                          // +2 - opt-in medium hard block contribution
 	SignalDomainAnomaly                                // +2 - domain burst detection
 	SignalEntropyBudget                                // +2 - CEE entropy exceeded
 	SignalFragmentDLP                                  // +3 - CEE fragment reassembly found secret
@@ -35,6 +37,8 @@ const (
 var SignalPoints = map[SignalType]float64{
 	SignalBlock:                      3.0,
 	SignalNearMiss:                   1.0,
+	SignalBlockLowSeverity:           1.0,
+	SignalBlockMediumSeverity:        2.0,
 	SignalDomainAnomaly:              2.0,
 	SignalEntropyBudget:              2.0,
 	SignalFragmentDLP:                3.0,
@@ -69,6 +73,24 @@ type Recorder interface {
 	RecordClean(decayRate float64)
 	EscalationLevel() int
 	ThreatScore() float64
+}
+
+// Recoverer is an optional extension for recorders that can de-escalate
+// autonomously after time has passed.
+type Recoverer interface {
+	TryAutoRecover(levelDuration time.Duration, blockAllCheck func(int) bool) (bool, int, int)
+}
+
+// CleanRecoverer is an optional extension for recorders that can de-escalate
+// after a configured run of clean requests.
+type CleanRecoverer interface {
+	RecordCleanWithRecovery(decayRate float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int)
+}
+
+// RecoveryEventRecorder is implemented by recorders that can attach recovery
+// transitions to their operator-visible session event timeline.
+type RecoveryEventRecorder interface {
+	RecordAdaptiveRecoveryEvent(scope, reason string, from, to int)
 }
 
 // Store manages session lifecycle.

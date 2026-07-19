@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -34,38 +35,82 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// recoverer is an optional interface for sessions that support autonomous
-// time-based de-escalation. Implemented by proxy.SessionState but not part
-// of session.Recorder to avoid interface churn on mocks and tests.
-type recoverer interface {
-	TryAutoRecover(blockAllCheck func(int) bool) (bool, int, int)
+const (
+	adaptiveRecoveryTimer = "time_based_recovery"
+	adaptiveRecoveryClean = "clean_request_recovery"
+	adaptiveBlockedReason = "pipelock: blocked by adaptive enforcement"
+)
+
+type adaptiveRecoveryContext struct {
+	sessionKey string
+	scope      string
+	reason     string
+	logger     *audit.Logger
+	metrics    *metrics.Metrics
 }
 
 // tryRecoverSession attempts autonomous de-escalation on the session recorder.
-// No-op if rec does not implement recoverer or adaptive enforcement is disabled.
-func tryRecoverSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) {
+// No-op if rec does not implement session.Recoverer or adaptive enforcement is disabled.
+func tryRecoverSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, ctx adaptiveRecoveryContext) {
 	if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 		return
 	}
-	r, ok := rec.(recoverer)
+	r, ok := rec.(session.Recoverer)
 	if !ok {
 		return
 	}
 	blockAllCheck := func(level int) bool {
 		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
 	}
-	if changed, from, to := r.TryAutoRecover(blockAllCheck); changed {
-		fromLabel := session.EscalationLabel(from)
-		toLabel := session.EscalationLabel(to)
-		if m != nil {
-			m.RecordSessionAutoDeescalation(fromLabel, toLabel)
-			if from > 0 {
-				m.SetAdaptiveSessionLevel(fromLabel, -1)
-			}
-			if to > 0 {
-				m.SetAdaptiveSessionLevel(toLabel, 1)
-			}
+	levelDuration := time.Duration(adaptiveCfg.LevelDurationSeconds) * time.Second
+	if levelDuration <= 0 {
+		levelDuration = 5 * time.Minute
+	}
+	if changed, from, to := r.TryAutoRecover(levelDuration, blockAllCheck); changed {
+		ctx.reason = firstNonEmpty(ctx.reason, adaptiveRecoveryTimer)
+		emitAdaptiveRecovery(rec, from, to, ctx)
+	}
+}
+
+func recordCleanSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, eligibleForCleanRecovery bool, ctx adaptiveRecoveryContext) {
+	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled {
+		return
+	}
+	if !eligibleForCleanRecovery {
+		rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+		return
+	}
+	if r, ok := rec.(session.CleanRecoverer); ok {
+		blockAllCheck := func(level int) bool {
+			return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
 		}
+		changed, from, to := r.RecordCleanWithRecovery(adaptiveCfg.DecayPerCleanRequest, adaptiveCfg.CleanRequestsToDeescalate, blockAllCheck)
+		if changed {
+			ctx.reason = firstNonEmpty(ctx.reason, adaptiveRecoveryClean)
+			emitAdaptiveRecovery(rec, from, to, ctx)
+		}
+		return
+	}
+	rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+}
+
+func emitAdaptiveRecovery(rec session.Recorder, from, to int, ctx adaptiveRecoveryContext) {
+	fromLabel := session.EscalationLabel(from)
+	toLabel := session.EscalationLabel(to)
+	if ctx.metrics != nil {
+		ctx.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+		if from > 0 {
+			ctx.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+		}
+		if to > 0 {
+			ctx.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+		}
+	}
+	if ctx.logger != nil {
+		ctx.logger.LogAdaptiveRecovery(ctx.sessionKey, ctx.scope, fromLabel, toLabel, ctx.reason, "", "")
+	}
+	if eventRec, ok := rec.(session.RecoveryEventRecorder); ok {
+		eventRec.RecordAdaptiveRecoveryEvent(ctx.scope, ctx.reason, from, to)
 	}
 }
 
@@ -275,7 +320,12 @@ func ForwardScannedInput(
 		// Runs before any per-message action so both clean and non-clean
 		// messages benefit from recovery.
 		if rec != nil {
-			tryRecoverSession(rec, adaptiveCfg, m)
+			tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{
+				sessionKey: "default",
+				reason:     adaptiveRecoveryTimer,
+				logger:     auditLogger,
+				metrics:    m,
+			})
 		}
 
 		// Reject JSON-RPC batch requests unconditionally. MCP does not
@@ -755,7 +805,7 @@ func ForwardScannedInput(
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (session deny)", lineNum),
 					ErrorCode:      -32001,
-					ErrorMessage:   fmt.Sprintf("pipelock: session escalation level %s", session.EscalationLabel(rec.EscalationLevel())),
+					ErrorMessage:   adaptiveBlockedReason,
 				}
 				continue
 			}
@@ -876,9 +926,12 @@ func ForwardScannedInput(
 				return
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
-			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
-			}
+			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+				sessionKey: "default",
+				reason:     adaptiveRecoveryClean,
+				logger:     auditLogger,
+				metrics:    m,
+			})
 			continue
 		}
 
@@ -1360,9 +1413,12 @@ func ForwardScannedInput(
 		case len(reasons) > 0:
 			recordAdaptiveSignal(session.SignalNearMiss)
 		default:
-			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
-			}
+			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+				sessionKey: "default",
+				reason:     adaptiveRecoveryClean,
+				logger:     auditLogger,
+				metrics:    m,
+			})
 		}
 
 		// Action receipt: emit for tools/call decisions only.

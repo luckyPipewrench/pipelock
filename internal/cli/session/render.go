@@ -67,6 +67,14 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	fmt.Fprintf(buf, "  escalation:       %s (%d)\n", defaultDash(d.EscalationLevel), d.EscalationLevelInt)
 	fmt.Fprintf(buf, "  threat_score:     %.2f\n", d.ThreatScore)
 	fmt.Fprintf(buf, "  block_all:        %t\n", d.BlockAll)
+	if d.AutoRecoverAt.IsZero() {
+		fmt.Fprintln(buf, "  auto_recover_at:  -")
+	} else {
+		fmt.Fprintf(buf, "  auto_recover_at:  %s\n", d.AutoRecoverAt.UTC().Format(time.RFC3339))
+	}
+	if d.RecoverHint != "" {
+		fmt.Fprintf(buf, "  recover_hint:     %s\n", d.RecoverHint)
+	}
 	fmt.Fprintf(buf, "  taint_level:      %s\n", defaultDash(d.TaintLevel))
 	fmt.Fprintf(buf, "  contaminated:     %t\n", d.Contaminated)
 	if d.CurrentTaskID != "" {

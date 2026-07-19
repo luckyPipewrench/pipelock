@@ -423,6 +423,8 @@ func Defaults() *Config {
 			CleanupIntervalSeconds: 60,
 		},
 		AdaptiveEnforcement: AdaptiveEnforcement{
+			LevelDurationSeconds:      300,
+			DeescalationCheckSeconds:  30,
 			CooperativeToolDownweight: true,
 		},
 		TLSInterception: TLSInterception{

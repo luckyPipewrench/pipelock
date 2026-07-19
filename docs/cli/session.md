@@ -17,6 +17,7 @@ you have not set that token, the CLI will refuse to connect. See
 |---|---|
 | `pipelock session list [--tier hard] [--json]` | Enumerate sessions, optionally filtered by airlock tier |
 | `pipelock session inspect <key> [--json]` | Full detail snapshot: tier, entry time, in-flight, recent events |
+| `pipelock session risk [<key>] [--json]` | Compact adaptive risk view: score, level, block-all state, and auto-recover ETA |
 | `pipelock session explain <key> [--json]` | Why the session is where it is: trigger, evidence, next auto-recovery time |
 | `pipelock session release <key> [--to none\|soft]` | Move an airlocked session down to a lower tier |
 | `pipelock session terminate <key>` | Destructive: reset enforcement state, cut in-flight connections, clear CEE state |
@@ -56,7 +57,10 @@ pipelock session explain "agent|10.0.0.1"
 # 3. Confirm the threat is resolved before releasing.
 pipelock session inspect "agent|10.0.0.1"
 
-# 4. Release the session back to normal.
+# 4. Check adaptive risk and the auto-recover ETA.
+pipelock session risk "agent|10.0.0.1"
+
+# 5. Release the session back to normal.
 pipelock session release "agent|10.0.0.1" --to none
 
 # Or, if the session cannot be trusted, terminate it.
@@ -106,8 +110,25 @@ pipelock session inspect <key> [--json]
 ```
 
 Returns the full `SessionDetail` structure for the session, including
-the tier entry time, the in-flight request count, and the most recent
-20 notable events (blocks, anomalies, and airlock transitions).
+the tier entry time, adaptive escalation level, threat score,
+auto-recover ETA, the in-flight request count, and the most recent 20
+notable events (blocks, anomalies, and airlock transitions).
+
+## session risk
+
+```sh
+pipelock session risk [<key>] [--json]
+```
+
+Shows the compact adaptive-enforcement state for one session: threat
+score, escalation level, block-all state, auto-recover ETA, and the
+operator recovery hint. When `<key>` is omitted, the command calls the
+`adaptive whoami` endpoint and reports the risk state for the caller's
+own identity session.
+
+The auto-recover ETA is the earliest time the session becomes eligible
+to drop one level. The background sweep applies it, so the actual
+de-escalation can lag by up to `deescalation_check_seconds`.
 
 ## session explain
 

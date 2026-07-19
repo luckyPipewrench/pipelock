@@ -5,6 +5,9 @@ package proxy
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,9 +158,9 @@ func TestAdaptiveScope_RecoveredLaneCanEscalateAgain(t *testing.T) {
 	}
 
 	sess.mu.Lock()
-	sess.scopes[scope].lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.scopes[scope].lastEscalation = time.Now().Add(-defaultMaxLevelDuration - time.Second)
 	sess.mu.Unlock()
-	changes := sess.TryAutoRecoverScopes(func(level int) bool {
+	changes := sess.TryAutoRecoverScopes(defaultMaxLevelDuration, func(level int) bool {
 		return level >= 1
 	})
 	if len(changes) != 1 {
@@ -363,10 +366,10 @@ func TestAdaptiveScope_HelperFallbackBranches(t *testing.T) {
 	sess := scopedSession(t, p)
 	scope := adaptiveScopeForHost(adaptiveScopePollHost)
 
-	recordCleanForAdaptiveScope(nil, scope, 1.0)
+	recordCleanForAdaptiveScope(nil, scope, &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{})
 
 	generic := &interceptMockRecorder{}
-	recordCleanForAdaptiveScope(generic, scope, 1.0)
+	recordCleanForAdaptiveScope(generic, scope, &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{})
 	if !generic.cleanCalled {
 		t.Fatal("generic recorder clean fallback was not called")
 	}
@@ -475,5 +478,246 @@ func TestAdaptiveScope_TryDeescalateScopedAirlocks(t *testing.T) {
 	}
 	if changes[0].scope != scope || changes[0].from != config.AirlockTierHard || changes[0].to != config.AirlockTierSoft {
 		t.Fatalf("unexpected scoped airlock change: %+v", changes[0])
+	}
+}
+
+func TestAdaptiveScope_CleanRecoveryDoesNotCoolDifferentScope(t *testing.T) {
+	sess := &SessionState{}
+	hotScope := adaptiveScopeForHost(adaptiveScopePollHost)
+	cleanScope := adaptiveScopeForHost(adaptiveScopeSendHost)
+	blockAllCheck := func(level int) bool { return level >= 3 }
+
+	sess.RecordScopedSignal(hotScope, session.SignalBlock, 5)
+	sess.RecordScopedSignal(hotScope, session.SignalBlock, 5)
+	if got := sess.EffectiveEscalationLevel(hotScope); got != 1 {
+		t.Fatalf("hot scope level = %d, want elevated", got)
+	}
+
+	for range 10 {
+		if changed, _, _ := sess.RecordScopedCleanWithRecovery(cleanScope, 0, 1, blockAllCheck); changed {
+			t.Fatal("clean traffic to an unrelated scope must not de-escalate the hot scope")
+		}
+	}
+	if got := sess.EffectiveEscalationLevel(hotScope); got != 1 {
+		t.Fatalf("hot scope level after unrelated clean traffic = %d, want elevated", got)
+	}
+}
+
+func TestRecordCleanForAdaptiveScope_IneligibleCleanDoesNotRecover(t *testing.T) {
+	scope := adaptiveScopeForHost(adaptiveScopePollHost)
+	cfg := config.AdaptiveEnforcement{
+		Enabled:                   true,
+		DecayPerCleanRequest:      0.5,
+		CleanRequestsToDeescalate: 1,
+	}
+	sess := &SessionState{}
+	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg, decide.EscalationParams{Threshold: 3})
+	if got := sess.EffectiveEscalationLevel(scope); got != 1 {
+		t.Fatalf("level after setup = %d, want elevated", got)
+	}
+	beforeScore := sess.ScopedThreatScore(scope)
+
+	for _, reason := range []string{"unscannable_passthrough", "budget_truncated", "opaque_connect"} {
+		t.Run(reason, func(t *testing.T) {
+			recordCleanForAdaptiveScope(sess, scope, &cfg, false, adaptiveRecoveryContext{reason: reason})
+			if got := sess.EffectiveEscalationLevel(scope); got != 1 {
+				t.Fatalf("ineligible %s clean de-escalated to level %d, want elevated", reason, got)
+			}
+		})
+	}
+	if got := sess.ScopedThreatScore(scope); got >= beforeScore {
+		t.Fatalf("ineligible clean should still decay score: before %.1f after %.1f", beforeScore, got)
+	}
+
+	recordCleanForAdaptiveScope(sess, scope, &cfg, true, adaptiveRecoveryContext{reason: adaptiveRecoveryClean})
+	if got := sess.EffectiveEscalationLevel(scope); got != 0 {
+		t.Fatalf("eligible fully scanned clean level = %d, want normal", got)
+	}
+}
+
+func TestRecordCleanForAdaptiveScope_CleanRecoveryObservable(t *testing.T) {
+	scope := adaptiveScopeForHost(adaptiveScopePollHost)
+	sessionKey := "agent|10.0.0.1"
+	cfg := config.AdaptiveEnforcement{
+		Enabled:                   true,
+		DecayPerCleanRequest:      0.5,
+		CleanRequestsToDeescalate: 1,
+	}
+	sess := &SessionState{key: sessionKey}
+	m := metrics.New()
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatalf("audit logger: %v", err)
+	}
+
+	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg, decide.EscalationParams{
+		Threshold: 3,
+		Metrics:   m,
+		Session:   sessionKey,
+	})
+
+	recordCleanForAdaptiveScope(sess, scope, &cfg, true, adaptiveRecoveryContext{
+		sessionKey: sessionKey,
+		scope:      scope,
+		reason:     adaptiveRecoveryClean,
+		clientIP:   "10.0.0.1",
+		requestID:  "req-clean",
+		logger:     logger,
+		metrics:    m,
+	})
+
+	if got := sess.EffectiveEscalationLevel(scope); got != 0 {
+		t.Fatalf("level after clean recovery = %d, want normal", got)
+	}
+	wantCounter := `pipelock_session_auto_deescalation_total{from="elevated",to="normal"} 1`
+	if !scrapeMetric(t, m, wantCounter) {
+		t.Fatalf("missing clean recovery metric %q", wantCounter)
+	}
+	events := sess.RecentEvents()
+	if len(events) != 1 {
+		t.Fatalf("recent events = %d, want 1", len(events))
+	}
+	if events[0].Kind != "adaptive_deescalate" || events[0].Type != adaptiveRecoveryClean || events[0].Target != scope || events[0].Detail != "elevated->normal" {
+		t.Fatalf("unexpected recovery event: %+v", events[0])
+	}
+	logger.Close()
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	for _, want := range []string{`"event":"adaptive_recovery"`, `"reason":"clean_request_recovery"`, `"session":"` + sessionKey + `"`, `"scope":"` + scope + `"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("audit log missing %s: %s", want, data)
+		}
+	}
+}
+
+type cleanRecoveryRecorder struct {
+	recordCleanCalls int
+	recoverCalls     int
+}
+
+func (r *cleanRecoveryRecorder) RecordSignal(_ session.SignalType, _ float64) (bool, string, string) {
+	return false, "", ""
+}
+
+func (r *cleanRecoveryRecorder) RecordClean(_ float64) {
+	r.recordCleanCalls++
+}
+
+func (r *cleanRecoveryRecorder) EscalationLevel() int {
+	return 1
+}
+
+func (r *cleanRecoveryRecorder) ThreatScore() float64 {
+	return 1
+}
+
+func (r *cleanRecoveryRecorder) RecordCleanWithRecovery(_ float64, _ int, _ func(int) bool) (bool, int, int) {
+	r.recoverCalls++
+	return true, 1, 0
+}
+
+type plainCleanRecorder struct {
+	recordCleanCalls int
+}
+
+func (r *plainCleanRecorder) RecordSignal(_ session.SignalType, _ float64) (bool, string, string) {
+	return false, "", ""
+}
+
+func (r *plainCleanRecorder) RecordClean(_ float64) {
+	r.recordCleanCalls++
+}
+
+func (r *plainCleanRecorder) EscalationLevel() int {
+	return 0
+}
+
+func (r *plainCleanRecorder) ThreatScore() float64 {
+	return 0
+}
+
+func TestRecordCleanForAdaptiveScope_NonSessionRecorderBranches(t *testing.T) {
+	cfg := config.AdaptiveEnforcement{
+		Enabled:                   true,
+		DecayPerCleanRequest:      0.5,
+		CleanRequestsToDeescalate: 1,
+	}
+
+	t.Run("ineligible_decays_only", func(t *testing.T) {
+		rec := &cleanRecoveryRecorder{}
+		recordCleanForAdaptiveScope(rec, "", &cfg, false, adaptiveRecoveryContext{})
+		if rec.recordCleanCalls != 1 {
+			t.Fatalf("RecordClean calls = %d, want 1", rec.recordCleanCalls)
+		}
+		if rec.recoverCalls != 0 {
+			t.Fatalf("RecordCleanWithRecovery calls = %d, want 0", rec.recoverCalls)
+		}
+	})
+
+	t.Run("eligible_clean_recoverer_emits_metric", func(t *testing.T) {
+		rec := &cleanRecoveryRecorder{}
+		m := metrics.New()
+		recordCleanForAdaptiveScope(rec, "", &cfg, true, adaptiveRecoveryContext{
+			reason:  adaptiveRecoveryClean,
+			metrics: m,
+		})
+		if rec.recoverCalls != 1 {
+			t.Fatalf("RecordCleanWithRecovery calls = %d, want 1", rec.recoverCalls)
+		}
+		wantCounter := `pipelock_session_auto_deescalation_total{from="elevated",to="normal"} 1`
+		if !scrapeMetric(t, m, wantCounter) {
+			t.Fatalf("missing clean recovery metric %q", wantCounter)
+		}
+	})
+
+	t.Run("eligible_plain_recorder_decays", func(t *testing.T) {
+		rec := &plainCleanRecorder{}
+		recordCleanForAdaptiveScope(rec, "", &cfg, true, adaptiveRecoveryContext{})
+		if rec.recordCleanCalls != 1 {
+			t.Fatalf("RecordClean calls = %d, want 1", rec.recordCleanCalls)
+		}
+	})
+}
+
+func TestAdaptiveBlockSignal_SeverityWeightingIsOptInAndFailClosed(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  *config.AdaptiveEnforcement
+		res  scanner.Result
+		want session.SignalType
+	}{
+		{
+			name: "disabled uses old hard block signal",
+			cfg:  &config.AdaptiveEnforcement{SeverityWeightedSignals: false},
+			res:  scanner.Result{Allowed: false, Scanner: scanner.ScannerEntropy},
+			want: session.SignalBlock,
+		},
+		{
+			name: "known noisy entropy can be downweighted when enabled",
+			cfg:  &config.AdaptiveEnforcement{SeverityWeightedSignals: true},
+			res:  scanner.Result{Allowed: false, Scanner: scanner.ScannerEntropy},
+			want: session.SignalBlockLowSeverity,
+		},
+		{
+			name: "unknown scanner fails closed to old hard block",
+			cfg:  &config.AdaptiveEnforcement{SeverityWeightedSignals: true},
+			res:  scanner.Result{Allowed: false, Scanner: "future_scanner"},
+			want: session.SignalBlock,
+		},
+		{
+			name: "critical dlp stays old hard block",
+			cfg:  &config.AdaptiveEnforcement{SeverityWeightedSignals: true},
+			res:  scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP},
+			want: session.SignalBlock,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := adaptiveBlockSignal(tt.res, tt.cfg); got != tt.want {
+				t.Fatalf("adaptiveBlockSignal() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

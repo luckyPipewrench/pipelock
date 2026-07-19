@@ -226,7 +226,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		// On-entry de-escalation for long-lived response streams.
-		tryRecoverSession(rec, adaptiveCfg, m)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{
+			sessionKey: firstNonEmpty(opts.ServerName, "default"),
+			reason:     adaptiveRecoveryTimer,
+			logger:     opts.AuditLogger,
+			metrics:    m,
+		})
 
 		// Operator-triggered local reset: when the adaptive reset file appears
 		// (owner-only, owned by the proxy user) clear this session's adaptive
@@ -553,8 +558,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Clean message: decay threat score. Skip decay when tool-poisoning
 			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
-			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled && !toolPoisonDetected {
-				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+			if !toolPoisonDetected {
+				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+					sessionKey: firstNonEmpty(opts.ServerName, "default"),
+					reason:     adaptiveRecoveryClean,
+					logger:     opts.AuditLogger,
+					metrics:    m,
+				})
 			}
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
@@ -908,13 +918,13 @@ func blockMediaPolicyResponse(id json.RawMessage, reason string) []byte {
 // denial. Uses error code -32001 (implementation-defined) with a session-deny
 // message. Distinct from blockResponse to distinguish session-level blocks
 // from per-message injection blocks in logs and client error handling.
-func blockSessionDenyResponse(id json.RawMessage, levelLabel string) []byte {
+func blockSessionDenyResponse(id json.RawMessage, _ string) []byte {
 	resp := rpcError{
 		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32001,
-			Message: "pipelock: session escalation level " + levelLabel,
+			Message: adaptiveBlockedReason,
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct

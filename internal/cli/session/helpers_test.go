@@ -109,6 +109,8 @@ func makeDetail() proxy.SessionDetail {
 		AirlockEnteredAt:   now,
 		InFlight:           3,
 		EscalationLevelInt: 3,
+		AutoRecoverAt:      now.Add(5 * time.Minute),
+		RecoverHint:        "wait for auto-recovery",
 		RecentEvents: []proxy.SessionEvent{
 			{At: now, Kind: "block", Target: "evil.example.com", Detail: "dlp secret", Severity: "critical", Score: 0.9},
 		},

@@ -23,9 +23,11 @@ import (
 
 // SessionResult is the outcome of session profiling and adaptive signal recording.
 type SessionResult struct {
-	Blocked bool   // session-level block (anomaly in block mode)
-	Detail  string // human-readable reason
-	Level   int    // current escalation level for downstream UpgradeAction()
+	Blocked       bool      // session-level block (anomaly in block mode)
+	Detail        string    // human-readable reason
+	Level         int       // current escalation level for downstream UpgradeAction()
+	AutoRecoverAt time.Time // estimated adaptive level recovery time, when available
+	RecoverHint   string    // operator-facing recovery hint
 }
 
 // Anomaly represents a behavioral anomaly detected in a session.
@@ -89,6 +91,7 @@ type AdaptiveScopeSnapshot struct {
 	EscalationLevel    string    `json:"escalation_level"`
 	EscalationLevelInt int       `json:"escalation_level_int"`
 	BlockAll           bool      `json:"block_all"`
+	AutoRecoverAt      time.Time `json:"auto_recover_at,omitempty"`
 	AirlockTier        string    `json:"airlock_tier"`
 	AirlockEnteredAt   time.Time `json:"airlock_entered_at,omitempty"`
 }
@@ -98,6 +101,7 @@ type adaptiveScopeState struct {
 	escalationLevel  int
 	currentThreshold float64
 	lastEscalation   time.Time
+	cleanRequests    int
 	atBlockAll       bool
 	airlock          AirlockState
 }
@@ -119,7 +123,8 @@ type SessionState struct {
 	escalationLevel            int // 0=normal, 1=first escalation, etc.
 	currentThreshold           float64
 	lastEscalation             time.Time // when the current level was reached
-	atBlockAll                 bool      // true when current level has block_all=true
+	cleanRequests              int
+	atBlockAll                 bool // true when current level has block_all=true
 	globalSignalsAuthoritative bool
 	scopes                     map[string]*adaptiveScopeState
 
@@ -306,17 +311,37 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 	return pruned, countUniqueDomains(pruned)
 }
 
-// maxLevelDuration is the maximum time a session stays at an escalation level
+// defaultMaxLevelDuration is the maximum time a session stays at an escalation level
 // before automatically de-escalating by one level. This prevents death spirals
 // where false positives (e.g. entropy on CONNECT hostnames) permanently lock
 // a session at critical. The session must accumulate new real signals to
 // re-escalate.
-const maxLevelDuration = 5 * time.Minute
+const defaultMaxLevelDuration = 5 * time.Minute
 
-// deescalationCheckInterval is how often the background sweep checks all
+// defaultDeescalationCheckInterval is how often the background sweep checks all
 // sessions for time-based de-escalation. Runs independently of traffic so
 // idle sessions recover even when no requests arrive.
-const deescalationCheckInterval = 30 * time.Second
+const defaultDeescalationCheckInterval = 30 * time.Second
+
+func adaptiveLevelDuration(cfg *config.AdaptiveEnforcement) time.Duration {
+	if cfg == nil || cfg.LevelDurationSeconds <= 0 {
+		return defaultMaxLevelDuration
+	}
+	return time.Duration(cfg.LevelDurationSeconds) * time.Second
+}
+
+func adaptiveDeescalationCheckInterval(cfg *config.AdaptiveEnforcement) time.Duration {
+	if cfg == nil || cfg.DeescalationCheckSeconds <= 0 {
+		return defaultDeescalationCheckInterval
+	}
+	return time.Duration(cfg.DeescalationCheckSeconds) * time.Second
+}
+
+func adaptiveBlockAllCheck(cfg *config.AdaptiveEnforcement) func(int) bool {
+	return func(level int) bool {
+		return decide.UpgradeAction("", level, cfg) == config.ActionBlock
+	}
+}
 
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
@@ -332,6 +357,7 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 		&s.escalationLevel,
 		&s.currentThreshold,
 		&s.lastEscalation,
+		&s.cleanRequests,
 		sig,
 		threshold,
 	)
@@ -362,6 +388,7 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 			&s.escalationLevel,
 			&s.currentThreshold,
 			&s.lastEscalation,
+			&s.cleanRequests,
 			sig,
 			threshold,
 		)
@@ -371,6 +398,7 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 		&st.escalationLevel,
 		&st.currentThreshold,
 		&st.lastEscalation,
+		&st.cleanRequests,
 		sig,
 		threshold,
 	)
@@ -379,14 +407,16 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 		&s.escalationLevel,
 		&s.currentThreshold,
 		&s.lastEscalation,
+		&s.cleanRequests,
 		sig,
 		threshold,
 	)
 	return escalated, from, to
 }
 
-func recordAdaptiveSignalFields(score *float64, level *int, threshold *float64, lastEscalation *time.Time, sig session.SignalType, initialThreshold float64) (bool, string, string) {
+func recordAdaptiveSignalFields(score *float64, level *int, threshold *float64, lastEscalation *time.Time, cleanRequests *int, sig session.SignalType, initialThreshold float64) (bool, string, string) {
 	*score += session.SignalPoints[sig]
+	*cleanRequests = 0
 	if *threshold == 0 && initialThreshold > 0 {
 		*threshold = initialThreshold
 	}
@@ -408,6 +438,25 @@ func (s *SessionState) RecordClean(decayRate float64) {
 	decayAdaptiveScore(&s.threatScore, decayRate)
 }
 
+// RecordCleanWithRecovery decays the global threat score and, when configured,
+// de-escalates one level after a consecutive run of clean requests. A signal
+// always resets the clean counter through recordAdaptiveSignalFields, so this
+// path cannot be advanced by alternating clean and blocked requests.
+func (s *SessionState) RecordCleanWithRecovery(decayRate float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	decayAdaptiveScore(&s.threatScore, decayRate)
+	if cleanToDrop <= 0 || s.escalationLevel <= 0 {
+		return false, 0, 0
+	}
+	s.cleanRequests++
+	if s.cleanRequests < cleanToDrop {
+		return false, 0, 0
+	}
+	return deescalateAdaptiveFields(&s.threatScore, &s.escalationLevel, &s.currentThreshold, &s.lastEscalation, &s.cleanRequests, &s.atBlockAll, blockAllCheck, time.Now())
+}
+
 // RecordScopedClean decays both the scoped and aggregate scores for a clean
 // request in that destination lane.
 func (s *SessionState) RecordScopedClean(scope string, decayRate float64) {
@@ -426,6 +475,29 @@ func (s *SessionState) RecordScopedClean(scope string, decayRate float64) {
 		decayAdaptiveScore(&st.threatScore, decayRate)
 	}
 	decayAdaptiveScore(&s.threatScore, decayRate)
+}
+
+// RecordScopedCleanWithRecovery applies clean-request recovery to the same
+// adaptive lane that accrued the threat. Clean traffic to a different
+// destination must not reduce a hot destination lane.
+func (s *SessionState) RecordScopedCleanWithRecovery(scope string, decayRate float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int) {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return s.RecordCleanWithRecovery(decayRate, cleanToDrop, blockAllCheck)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.scopes[scope]; st != nil {
+		decayAdaptiveScore(&st.threatScore, decayRate)
+		if cleanToDrop > 0 && st.escalationLevel > 0 {
+			st.cleanRequests++
+			if st.cleanRequests >= cleanToDrop {
+				return deescalateAdaptiveFields(&st.threatScore, &st.escalationLevel, &st.currentThreshold, &st.lastEscalation, &st.cleanRequests, &st.atBlockAll, blockAllCheck, time.Now())
+			}
+		}
+	}
+	decayAdaptiveScore(&s.threatScore, decayRate)
+	return false, 0, 0
 }
 
 func decayAdaptiveScore(score *float64, decayRate float64) {
@@ -518,47 +590,43 @@ func (s *SessionState) ScopedThreatScore(scope string) float64 {
 func (s *SessionState) ScopedSnapshots() []AdaptiveScopeSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return scopedSnapshotsLocked(s.scopes)
+	return scopedSnapshotsLocked(s.scopes, defaultMaxLevelDuration)
 }
 
 // TryAutoRecover checks whether the session has been at its current
-// escalation level for longer than maxLevelDuration and drops one level
+// escalation level for longer than levelDuration and drops one level
 // if so. It takes a blockAllCheck callback that recomputes atBlockAll
 // from live config so custom configs with block_all at lower escalation
 // levels work correctly. This is the sole time-based recovery path.
 //
 // Returns (changed, fromLevel, toLevel). The caller is responsible for
 // emitting metrics/logs when changed is true.
-func (s *SessionState) TryAutoRecover(blockAllCheck func(int) bool) (bool, int, int) {
+func (s *SessionState) TryAutoRecover(levelDuration time.Duration, blockAllCheck func(int) bool) (bool, int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if levelDuration <= 0 {
+		levelDuration = defaultMaxLevelDuration
+	}
 	if s.escalationLevel <= 0 || s.lastEscalation.IsZero() {
 		return false, 0, 0
 	}
-	if time.Since(s.lastEscalation) <= maxLevelDuration {
+	if time.Since(s.lastEscalation) <= levelDuration {
 		return false, 0, 0
 	}
 
-	from := s.escalationLevel
-	s.escalationLevel--
-	s.lastEscalation = time.Now()
-
-	if s.currentThreshold > 0 {
-		s.currentThreshold /= 2
-	}
-	s.threatScore = s.currentThreshold / 2
-	s.atBlockAll = blockAllCheck(s.escalationLevel)
-
-	return true, from, s.escalationLevel
+	return deescalateAdaptiveFields(&s.threatScore, &s.escalationLevel, &s.currentThreshold, &s.lastEscalation, &s.cleanRequests, &s.atBlockAll, blockAllCheck, time.Now())
 }
 
 // TryAutoRecoverScopes applies the same time-based recovery as TryAutoRecover
 // to each scoped adaptive lane.
-func (s *SessionState) TryAutoRecoverScopes(blockAllCheck func(int) bool) []scopedLevelTransition {
+func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAllCheck func(int) bool) []scopedLevelTransition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if levelDuration <= 0 {
+		levelDuration = defaultMaxLevelDuration
+	}
 	if len(s.scopes) == 0 {
 		return nil
 	}
@@ -568,20 +636,35 @@ func (s *SessionState) TryAutoRecoverScopes(blockAllCheck func(int) bool) []scop
 		if st.escalationLevel <= 0 || st.lastEscalation.IsZero() {
 			continue
 		}
-		if now.Sub(st.lastEscalation) <= maxLevelDuration {
+		if now.Sub(st.lastEscalation) <= levelDuration {
 			continue
 		}
-		from := st.escalationLevel
-		st.escalationLevel--
-		st.lastEscalation = now
-		if st.currentThreshold > 0 {
-			st.currentThreshold /= 2
+		changed, from, to := deescalateAdaptiveFields(&st.threatScore, &st.escalationLevel, &st.currentThreshold, &st.lastEscalation, &st.cleanRequests, &st.atBlockAll, blockAllCheck, now)
+		if changed {
+			changes = append(changes, scopedLevelTransition{scope: scope, from: from, to: to})
 		}
-		st.threatScore = st.currentThreshold / 2
-		st.atBlockAll = blockAllCheck(st.escalationLevel)
-		changes = append(changes, scopedLevelTransition{scope: scope, from: from, to: st.escalationLevel})
 	}
 	return changes
+}
+
+func deescalateAdaptiveFields(score *float64, level *int, threshold *float64, lastEscalation *time.Time, cleanRequests *int, atBlockAll *bool, blockAllCheck func(int) bool, now time.Time) (bool, int, int) {
+	if *level <= 0 {
+		return false, 0, 0
+	}
+	from := *level
+	*level--
+	*lastEscalation = now
+	*cleanRequests = 0
+	if *threshold > 0 {
+		*threshold /= 2
+	}
+	*score = *threshold / 2
+	if blockAllCheck != nil {
+		*atBlockAll = blockAllCheck(*level)
+	} else {
+		*atBlockAll = false
+	}
+	return true, from, *level
 }
 
 // TryDeescalateScopedAirlocks applies airlock timers to scoped destination
@@ -621,6 +704,40 @@ func (s *SessionState) EscalationLevel() int {
 	return s.escalationLevel
 }
 
+// AdaptiveAutoRecoverAt returns the next time-based recovery point for the
+// session-wide adaptive lane. A zero time means there is no active level to
+// recover.
+func (s *SessionState) AdaptiveAutoRecoverAt(levelDuration time.Duration) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return adaptiveAutoRecoverAtLocked(s.escalationLevel, s.lastEscalation, levelDuration)
+}
+
+// ScopedAdaptiveAutoRecoverAt returns the next time-based recovery point for
+// a scoped adaptive lane. Empty scope uses the session-wide lane.
+func (s *SessionState) ScopedAdaptiveAutoRecoverAt(scope string, levelDuration time.Duration) time.Time {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return s.AdaptiveAutoRecoverAt(levelDuration)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.scopes[scope]; st != nil {
+		return adaptiveAutoRecoverAtLocked(st.escalationLevel, st.lastEscalation, levelDuration)
+	}
+	return time.Time{}
+}
+
+func adaptiveAutoRecoverAtLocked(level int, lastEscalation time.Time, levelDuration time.Duration) time.Time {
+	if levelDuration <= 0 {
+		levelDuration = defaultMaxLevelDuration
+	}
+	if level <= 0 || lastEscalation.IsZero() {
+		return time.Time{}
+	}
+	return lastEscalation.Add(levelDuration)
+}
+
 // RecordEvent appends evt to the session's recent-event ring buffer.
 // Events older than maxRecentEvents are dropped in FIFO order so an
 // attacker cannot grow SessionState memory by driving retries.
@@ -638,6 +755,18 @@ func (s *SessionState) RecordEvent(evt SessionEvent) {
 		s.recentEvents = s.recentEvents[:maxRecentEvents-1]
 	}
 	s.recentEvents = append(s.recentEvents, evt)
+}
+
+// RecordAdaptiveRecoveryEvent attaches an adaptive recovery transition to the
+// session timeline for transport-neutral callers such as the MCP proxy.
+func (s *SessionState) RecordAdaptiveRecoveryEvent(scope, reason string, from, to int) {
+	s.RecordEvent(SessionEvent{
+		Kind:     "adaptive_deescalate",
+		Target:   scope,
+		Type:     reason,
+		Detail:   session.EscalationLabel(from) + "->" + session.EscalationLabel(to),
+		Severity: "info",
+	})
 }
 
 // RecentEvents returns a copy of the session's recent-event ring buffer
@@ -980,6 +1109,7 @@ type sessionAdminSnapshot struct {
 	AirlockEnteredAt     time.Time
 	InFlight             int64
 	EscalationLevelInt   int
+	AutoRecoverAt        time.Time
 	AirlockTrigger       string
 	AirlockTriggerSource string
 	RecentEvents         []SessionEvent
@@ -2050,6 +2180,7 @@ func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, 
 	sess.airlock.mu.Unlock()
 
 	levelInt := sess.escalationLevel
+	levelDuration := adaptiveLevelDuration(sm.adaptiveCfgPtr.Load())
 	snap := sessionAdminSnapshot{
 		SessionSnapshot: SessionSnapshot{
 			Key:              key,
@@ -2069,17 +2200,18 @@ func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, 
 		AirlockEnteredAt:     airlockEnteredAt,
 		InFlight:             inFlight,
 		EscalationLevelInt:   levelInt,
+		AutoRecoverAt:        adaptiveAutoRecoverAtLocked(levelInt, sess.lastEscalation, levelDuration),
 		AirlockTrigger:       airlockTrigger,
 		AirlockTriggerSource: airlockTriggerSource,
 	}
 	snap.RecentEvents = make([]SessionEvent, len(sess.recentEvents))
 	copy(snap.RecentEvents, sess.recentEvents)
-	snap.AdaptiveScopes = scopedSnapshotsLocked(sess.scopes)
+	snap.AdaptiveScopes = scopedSnapshotsLocked(sess.scopes, levelDuration)
 
 	return snap, true
 }
 
-func scopedSnapshotsLocked(scopes map[string]*adaptiveScopeState) []AdaptiveScopeSnapshot {
+func scopedSnapshotsLocked(scopes map[string]*adaptiveScopeState, levelDuration time.Duration) []AdaptiveScopeSnapshot {
 	if len(scopes) == 0 {
 		return []AdaptiveScopeSnapshot{}
 	}
@@ -2098,6 +2230,7 @@ func scopedSnapshotsLocked(scopes map[string]*adaptiveScopeState) []AdaptiveScop
 			EscalationLevel:    session.EscalationLabel(st.escalationLevel),
 			EscalationLevelInt: st.escalationLevel,
 			BlockAll:           st.atBlockAll,
+			AutoRecoverAt:      adaptiveAutoRecoverAtLocked(st.escalationLevel, st.lastEscalation, levelDuration),
 			AirlockTier:        tier,
 			AirlockEnteredAt:   enteredAt,
 		})
@@ -2145,14 +2278,15 @@ func (sm *SessionManager) startMaintenance() {
 }
 
 // maintenanceLoop owns both periodic jobs so an active session manager uses
-// one goroutine rather than two. The cleanup timer remains config-driven while
-// de-escalation keeps its fixed security interval and runs without traffic.
+// one goroutine rather than two. Both timers re-read live config between
+// firings so hot reloads change recovery cadence without a restart.
 func (sm *SessionManager) maintenanceLoop() {
 	cleanupInterval := time.Duration(sm.cfgPtr.Load().CleanupIntervalSeconds) * time.Second
 	cleanupTimer := time.NewTimer(cleanupInterval)
-	deescalationTicker := time.NewTicker(deescalationCheckInterval)
+	deescalationInterval := adaptiveDeescalationCheckInterval(sm.adaptiveCfgPtr.Load())
+	deescalationTimer := time.NewTimer(deescalationInterval)
 	defer cleanupTimer.Stop()
-	defer deescalationTicker.Stop()
+	defer deescalationTimer.Stop()
 
 	for {
 		select {
@@ -2162,8 +2296,10 @@ func (sm *SessionManager) maintenanceLoop() {
 			sm.cleanup()
 			cleanupInterval = time.Duration(sm.cfgPtr.Load().CleanupIntervalSeconds) * time.Second
 			cleanupTimer.Reset(cleanupInterval)
-		case <-deescalationTicker.C:
+		case <-deescalationTimer.C:
 			sm.sweepDeescalation()
+			deescalationInterval = adaptiveDeescalationCheckInterval(sm.adaptiveCfgPtr.Load())
+			deescalationTimer.Reset(deescalationInterval)
 		}
 	}
 }
@@ -2246,9 +2382,8 @@ func (sm *SessionManager) sweepDeescalation() {
 		return
 	}
 
-	blockAllCheck := func(level int) bool {
-		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
-	}
+	blockAllCheck := adaptiveBlockAllCheck(adaptiveCfg)
+	levelDuration := adaptiveLevelDuration(adaptiveCfg)
 
 	sm.mu.RLock()
 	sessions := make([]*SessionState, 0, len(sm.sessions))
@@ -2258,46 +2393,31 @@ func (sm *SessionManager) sweepDeescalation() {
 	sm.mu.RUnlock()
 
 	for _, sess := range sessions {
-		changed, from, to := sess.TryAutoRecover(blockAllCheck)
-		if changed && sm.metrics != nil {
-			fromLabel := session.EscalationLabel(from)
-			toLabel := session.EscalationLabel(to)
-			// Only emit gauge updates if the session is still live in the map.
-			// Cleanup may have evicted and already decremented its gauge.
+		changed, from, to := sess.TryAutoRecover(levelDuration, blockAllCheck)
+		if changed {
 			sm.mu.RLock()
 			_, stillLive := sm.sessions[sess.key]
 			sm.mu.RUnlock()
 			if stillLive {
-				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-				if from > 0 {
-					sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-				}
-				if to > 0 {
-					sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
-				}
+				emitAdaptiveRecovery(sess, from, to, adaptiveRecoveryContext{
+					sessionKey: sess.key,
+					reason:     adaptiveRecoveryTimer,
+					logger:     sm.logger,
+					metrics:    sm.metrics,
+				})
 			}
 		}
-		for _, scoped := range sess.TryAutoRecoverScopes(blockAllCheck) {
-			fromLabel := session.EscalationLabel(scoped.from)
-			toLabel := session.EscalationLabel(scoped.to)
+		for _, scoped := range sess.TryAutoRecoverScopes(levelDuration, blockAllCheck) {
 			sm.mu.RLock()
 			_, stillLive := sm.sessions[sess.key]
 			sm.mu.RUnlock()
-			if stillLive && sm.metrics != nil {
-				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-				if scoped.from > 0 {
-					sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-				}
-				if scoped.to > 0 {
-					sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
-				}
-			}
 			if stillLive {
-				sess.RecordEvent(SessionEvent{
-					Kind:     "adaptive_deescalate",
-					Target:   scoped.scope,
-					Detail:   fromLabel + "->" + toLabel,
-					Severity: "info",
+				emitAdaptiveRecovery(sess, scoped.from, scoped.to, adaptiveRecoveryContext{
+					sessionKey: sess.key,
+					scope:      scoped.scope,
+					reason:     adaptiveRecoveryTimer,
+					logger:     sm.logger,
+					metrics:    sm.metrics,
 				})
 			}
 		}
@@ -2341,7 +2461,7 @@ func (sm *SessionManager) sweepDeescalation() {
 // metrics if recovery fires. Returns (changed, fromLabel, toLabel) for callers
 // that need to log the transition. No-op when adaptive enforcement is disabled,
 // the session is nil, or the session is not a *SessionState.
-func trySessionRecovery(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) (bool, string, string) {
+func trySessionRecovery(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, ctx adaptiveRecoveryContext) (bool, string, string) {
 	if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 		return false, "", ""
 	}
@@ -2349,24 +2469,15 @@ func trySessionRecovery(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforc
 	if !ok || ss == nil {
 		return false, "", ""
 	}
-	blockAllCheck := func(level int) bool {
-		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
-	}
-	changed, from, to := ss.TryAutoRecover(blockAllCheck)
+	blockAllCheck := adaptiveBlockAllCheck(adaptiveCfg)
+	changed, from, to := ss.TryAutoRecover(adaptiveLevelDuration(adaptiveCfg), blockAllCheck)
 	if !changed {
 		return false, "", ""
 	}
 	fromLabel := session.EscalationLabel(from)
 	toLabel := session.EscalationLabel(to)
-	if m != nil {
-		m.RecordSessionAutoDeescalation(fromLabel, toLabel)
-		if from > 0 {
-			m.SetAdaptiveSessionLevel(fromLabel, -1)
-		}
-		if to > 0 {
-			m.SetAdaptiveSessionLevel(toLabel, 1)
-		}
-	}
+	ctx.reason = firstNonEmptyString(ctx.reason, adaptiveRecoveryTimer)
+	emitAdaptiveRecovery(ss, from, to, ctx)
 	return true, fromLabel, toLabel
 }
 

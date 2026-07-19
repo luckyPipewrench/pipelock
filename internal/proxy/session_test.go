@@ -993,14 +993,14 @@ func TestSessionState_TimeBasedDeescalation(t *testing.T) {
 		t.Fatalf("expected level 1, got %d", sess.EscalationLevel())
 	}
 
-	// Simulate time passing beyond maxLevelDuration.
+	// Simulate time passing beyond defaultMaxLevelDuration.
 	sess.mu.Lock()
-	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.lastEscalation = time.Now().Add(-defaultMaxLevelDuration - time.Second)
 	sess.mu.Unlock()
 
 	// TryAutoRecover is now the sole time-based recovery path.
 	blockAllCheck := func(level int) bool { return level >= 3 }
-	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+	changed, _, _ := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 
 	if !changed {
 		t.Fatal("expected TryAutoRecover to de-escalate after max dwell time")
@@ -1033,11 +1033,11 @@ func TestSessionState_CriticalDeescalation(t *testing.T) {
 	// Simulate time passing -- de-escalate one level via TryAutoRecover.
 	sess.mu.Lock()
 	levelBefore := sess.escalationLevel
-	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.lastEscalation = time.Now().Add(-defaultMaxLevelDuration - time.Second)
 	sess.mu.Unlock()
 
 	blockAllCheck := func(lvl int) bool { return lvl >= 3 }
-	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+	changed, _, _ := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 
 	if !changed {
 		t.Fatal("expected TryAutoRecover to de-escalate after max dwell time")
@@ -1064,9 +1064,9 @@ func TestSessionState_RecordClean_NoImplicitDeescalation(t *testing.T) {
 		t.Fatalf("expected critical (level 3+), got %d", sess.EscalationLevel())
 	}
 
-	// Simulate time passing beyond maxLevelDuration.
+	// Simulate time passing beyond defaultMaxLevelDuration.
 	sess.mu.Lock()
-	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.lastEscalation = time.Now().Add(-defaultMaxLevelDuration - time.Second)
 	sess.mu.Unlock()
 
 	// RecordClean must NOT de-escalate. Time-based recovery is handled
@@ -1301,13 +1301,13 @@ func TestSessionState_TryAutoRecover_Expired(t *testing.T) {
 
 	sess := sm.GetOrCreate("recover-expired")
 
-	// Place session at level 3, last escalation 6 min ago (beyond 5 min maxLevelDuration).
+	// Place session at level 3, last escalation 6 min ago (beyond 5 min defaultMaxLevelDuration).
 	escalateToLevel(sess, 3, time.Now().Add(-6*time.Minute))
 
 	// blockAllCheck returns true for level >= 3, false otherwise.
 	blockAllCheck := func(level int) bool { return level >= 3 }
 
-	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+	changed, from, to := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 
 	if !changed {
 		t.Fatal("expected changed=true for expired escalation")
@@ -1334,12 +1334,12 @@ func TestSessionState_TryAutoRecover_NotExpired(t *testing.T) {
 
 	sess := sm.GetOrCreate("recover-not-expired")
 
-	// Place session at level 3, last escalation only 3 min ago (within 5 min maxLevelDuration).
+	// Place session at level 3, last escalation only 3 min ago (within 5 min defaultMaxLevelDuration).
 	escalateToLevel(sess, 3, time.Now().Add(-3*time.Minute))
 
 	blockAllCheck := func(level int) bool { return level >= 3 }
 
-	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+	changed, _, _ := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 
 	if changed {
 		t.Fatal("expected changed=false for non-expired escalation")
@@ -1363,7 +1363,7 @@ func TestSessionState_TryAutoRecover_CustomBlockAllAtLowerLevel(t *testing.T) {
 	// Even after dropping from 2 to 1, the session is still blocked.
 	blockAllCheck := func(level int) bool { return level >= 1 }
 
-	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+	changed, from, to := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 
 	if !changed {
 		t.Fatal("expected changed=true for expired escalation")
@@ -1390,7 +1390,7 @@ func TestSessionState_TryAutoRecover_AtLevelZero(t *testing.T) {
 	// Level 0 session cannot de-escalate further.
 	blockAllCheck := func(level int) bool { return level >= 3 }
 
-	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+	changed, _, _ := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 
 	if changed {
 		t.Fatal("expected changed=false at level 0")
@@ -1420,7 +1420,7 @@ func TestSessionState_OnEntryRecovery(t *testing.T) {
 	blockAllCheck := func(level int) bool { return level >= 3 }
 
 	// Simulate what recordSessionActivity does: TryAutoRecover then RecordRequest.
-	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+	changed, _, _ := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 	if !changed {
 		t.Fatal("expected on-entry recovery to fire")
 	}
@@ -1532,7 +1532,7 @@ func TestSessionState_FullRecoveryCycle(t *testing.T) {
 		t.Fatal("expected block_all at critical")
 	}
 
-	// 3. Simulate 6 minutes passing (beyond 5 min maxLevelDuration).
+	// 3. Simulate 6 minutes passing (beyond 5 min defaultMaxLevelDuration).
 	sess.mu.Lock()
 	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
 	sess.mu.Unlock()
@@ -1724,7 +1724,7 @@ func TestSessionState_OnEntryRecovery_EmitsMetrics(t *testing.T) {
 	blockAllCheck := func(level int) bool {
 		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
 	}
-	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+	changed, from, to := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 	if !changed {
 		t.Fatal("expected recovery")
 	}
@@ -1775,7 +1775,7 @@ func TestSessionState_TypeAssertRecovery(t *testing.T) {
 	}
 
 	blockAllCheck := func(level int) bool { return level >= 3 }
-	changed, from, to := ss.TryAutoRecover(blockAllCheck)
+	changed, from, to := ss.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 	if !changed {
 		t.Fatal("expected recovery via type assertion")
 	}
@@ -1933,7 +1933,7 @@ func TestSessionState_TryAutoRecover_ConfigDerivedCheck(t *testing.T) {
 		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
 	}
 
-	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+	changed, from, to := sess.TryAutoRecover(defaultMaxLevelDuration, blockAllCheck)
 	if !changed {
 		t.Fatal("expected recovery")
 	}
@@ -2069,7 +2069,7 @@ func TestTrySessionRecovery_Success(t *testing.T) {
 		},
 	}
 
-	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, m)
+	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, adaptiveRecoveryContext{metrics: m})
 	if !changed {
 		t.Fatal("expected recovery")
 	}
@@ -2090,7 +2090,7 @@ func TestTrySessionRecovery_NilAdaptive(t *testing.T) {
 	defer sm.Close()
 	sess := sm.GetOrCreate(testClient)
 
-	changed, _, _ := trySessionRecovery(sess, nil, nil)
+	changed, _, _ := trySessionRecovery(sess, nil, adaptiveRecoveryContext{})
 	if changed {
 		t.Error("should be no-op with nil adaptive config")
 	}
@@ -2103,7 +2103,7 @@ func TestTrySessionRecovery_DisabledAdaptive(t *testing.T) {
 	sess := sm.GetOrCreate(testClient)
 
 	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: false}
-	changed, _, _ := trySessionRecovery(sess, adaptiveCfg, nil)
+	changed, _, _ := trySessionRecovery(sess, adaptiveCfg, adaptiveRecoveryContext{})
 	if changed {
 		t.Error("should be no-op with disabled adaptive")
 	}
@@ -2113,7 +2113,7 @@ func TestTrySessionRecovery_NonSessionState(t *testing.T) {
 	// Pass a session.Recorder that is NOT *SessionState.
 	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: true}
 	var rec session.Recorder // nil interface
-	changed, _, _ := trySessionRecovery(rec, adaptiveCfg, nil)
+	changed, _, _ := trySessionRecovery(rec, adaptiveCfg, adaptiveRecoveryContext{})
 	if changed {
 		t.Error("should be no-op with nil recorder")
 	}
@@ -2140,9 +2140,9 @@ func TestTrySessionRecovery_NotExpired(t *testing.T) {
 		},
 	}
 
-	changed, _, _ := trySessionRecovery(sess, adaptiveCfg, nil)
+	changed, _, _ := trySessionRecovery(sess, adaptiveCfg, adaptiveRecoveryContext{})
 	if changed {
-		t.Error("should not recover before maxLevelDuration")
+		t.Error("should not recover before defaultMaxLevelDuration")
 	}
 }
 
@@ -2165,7 +2165,7 @@ func TestTrySessionRecovery_ToZeroSkipsGauge(t *testing.T) {
 		Levels:  config.EscalationLevels{},
 	}
 
-	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, m)
+	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, adaptiveRecoveryContext{metrics: m})
 	if !changed {
 		t.Fatal("expected recovery")
 	}
@@ -2215,7 +2215,7 @@ func TestTrySessionRecovery_NilMetrics(t *testing.T) {
 	}
 
 	// Must not panic with nil metrics.
-	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, nil)
+	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, adaptiveRecoveryContext{})
 	if !changed {
 		t.Fatal("expected recovery even with nil metrics")
 	}
@@ -3133,4 +3133,146 @@ func TestSessionManager_CheckBaseline_BlockAction(t *testing.T) {
 	if result.Action != config.ActionBlock {
 		t.Errorf("expected Action=%q, got %q", config.ActionBlock, result.Action)
 	}
+}
+
+func TestSessionState_RecordCleanWithRecovery_SafetyInvariants(t *testing.T) {
+	blockAllCheck := func(level int) bool { return level >= 3 }
+	for _, tt := range []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "disabled preserves current level",
+			run: func(t *testing.T) {
+				t.Helper()
+				sess := &SessionState{escalationLevel: 1, currentThreshold: 10, threatScore: 6}
+				changed, _, _ := sess.RecordCleanWithRecovery(0.5, 0, blockAllCheck)
+				if changed || sess.EscalationLevel() != 1 {
+					t.Fatalf("disabled clean recovery changed=%t level=%d, want unchanged elevated", changed, sess.EscalationLevel())
+				}
+			},
+		},
+		{
+			name: "signal resets clean streak",
+			run: func(t *testing.T) {
+				t.Helper()
+				sess := &SessionState{escalationLevel: 1, currentThreshold: 8, threatScore: 5}
+				if changed, _, _ := sess.RecordCleanWithRecovery(0, 2, blockAllCheck); changed {
+					t.Fatal("first clean request must not de-escalate")
+				}
+				sess.RecordSignal(session.SignalBlock, 5)
+				if changed, _, _ := sess.RecordCleanWithRecovery(0, 2, blockAllCheck); changed {
+					t.Fatal("clean request immediately after a signal must not de-escalate")
+				}
+				if got := sess.EscalationLevel(); got != 2 {
+					t.Fatalf("level after interleaved clean+block+clean = %d, want high", got)
+				}
+			},
+		},
+		{
+			name: "two clean requests drop one level",
+			run: func(t *testing.T) {
+				t.Helper()
+				sess := &SessionState{escalationLevel: 2, currentThreshold: 20, threatScore: 12, atBlockAll: true}
+				if changed, _, _ := sess.RecordCleanWithRecovery(0, 2, blockAllCheck); changed {
+					t.Fatal("first clean request must not de-escalate")
+				}
+				changed, from, to := sess.RecordCleanWithRecovery(0, 2, blockAllCheck)
+				if !changed || from != 2 || to != 1 {
+					t.Fatalf("clean recovery changed=%t from=%d to=%d, want high->elevated", changed, from, to)
+				}
+				if sess.BlockAll() {
+					t.Fatal("block_all latch must be recomputed after clean recovery")
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestSessionState_CriticalBlockEscalatesAtOldRate(t *testing.T) {
+	sess := &SessionState{}
+	for i := 0; i < 7; i++ {
+		sess.RecordSignal(session.SignalBlock, 5)
+	}
+	if got := sess.EscalationLevel(); got != 3 {
+		t.Fatalf("seven hard blocks level = %d, want critical at old 5/10/20 thresholds", got)
+	}
+	if got := sess.ThreatScore(); got != 21 {
+		t.Fatalf("seven hard blocks score = %.1f, want 21.0", got)
+	}
+}
+
+func TestSessionState_AdaptiveRecoveryHelperBranches(t *testing.T) {
+	t.Run("time_recovery_edges", func(t *testing.T) {
+		sess := &SessionState{}
+		if changed, _, _ := sess.TryAutoRecover(0, nil); changed {
+			t.Fatal("empty session should not recover")
+		}
+		sess.escalationLevel = 1
+		sess.lastEscalation = time.Now()
+		if changed, _, _ := sess.TryAutoRecover(time.Hour, nil); changed {
+			t.Fatal("fresh escalation should not recover")
+		}
+		sess.currentThreshold = 10
+		sess.threatScore = 8
+		sess.lastEscalation = time.Now().Add(-time.Hour)
+		changed, from, to := sess.TryAutoRecover(time.Millisecond, nil)
+		if !changed || from != 1 || to != 0 {
+			t.Fatalf("recovery changed=%t from=%d to=%d, want elevated->normal", changed, from, to)
+		}
+		if sess.BlockAll() {
+			t.Fatal("nil blockAllCheck should clear block_all")
+		}
+	})
+
+	t.Run("scoped_recovery_edges", func(t *testing.T) {
+		old := time.Now().Add(-time.Hour)
+		sess := &SessionState{
+			escalationLevel:  1,
+			currentThreshold: 10,
+			lastEscalation:   old,
+			scopes: map[string]*adaptiveScopeState{
+				"hot.example": {
+					threatScore:      6,
+					escalationLevel:  1,
+					currentThreshold: 10,
+					lastEscalation:   old,
+				},
+				"fresh.example": {
+					threatScore:      6,
+					escalationLevel:  1,
+					currentThreshold: 10,
+					lastEscalation:   time.Now(),
+				},
+				"normal.example": {},
+			},
+		}
+		if got := sess.ScopedAdaptiveAutoRecoverAt("", time.Second); got.IsZero() {
+			t.Fatal("empty scope should use session-wide auto recover time")
+		}
+		if got := sess.ScopedAdaptiveAutoRecoverAt("missing.example", time.Second); !got.IsZero() {
+			t.Fatalf("missing scope auto recover = %v, want zero", got)
+		}
+		changes := sess.TryAutoRecoverScopes(time.Millisecond, nil)
+		if len(changes) != 1 {
+			t.Fatalf("scoped recoveries = %d, want 1", len(changes))
+		}
+		if changes[0].scope != "hot.example" || changes[0].from != 1 || changes[0].to != 0 {
+			t.Fatalf("unexpected scoped recovery: %+v", changes[0])
+		}
+	})
+
+	t.Run("records_operator_event", func(t *testing.T) {
+		sess := &SessionState{}
+		sess.RecordAdaptiveRecoveryEvent("api.vendor.example", adaptiveRecoveryClean, 2, 1)
+		events := sess.RecentEvents()
+		if len(events) != 1 {
+			t.Fatalf("events = %d, want 1", len(events))
+		}
+		if events[0].Kind != "adaptive_deescalate" || events[0].Detail != "high->elevated" {
+			t.Fatalf("unexpected recovery event: %+v", events[0])
+		}
+	})
 }

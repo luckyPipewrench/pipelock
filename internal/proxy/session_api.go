@@ -839,6 +839,8 @@ type SessionDetail struct {
 	AirlockEnteredAt   time.Time               `json:"airlock_entered_at"`
 	InFlight           int64                   `json:"in_flight"`
 	EscalationLevelInt int                     `json:"escalation_level_int"`
+	AutoRecoverAt      time.Time               `json:"auto_recover_at,omitempty"`
+	RecoverHint        string                  `json:"recover_hint,omitempty"`
 	AdaptiveScopes     []AdaptiveScopeSnapshot `json:"adaptive_scopes"`
 	RecentEvents       []SessionEvent          `json:"recent_events"`
 }
@@ -1215,8 +1217,12 @@ func (h *SessionAPIHandler) HandleInspect(w http.ResponseWriter, r *http.Request
 		AirlockEnteredAt:   adminSnap.AirlockEnteredAt,
 		InFlight:           adminSnap.InFlight,
 		EscalationLevelInt: adminSnap.EscalationLevelInt,
+		AutoRecoverAt:      adminSnap.AutoRecoverAt,
 		AdaptiveScopes:     adminSnap.AdaptiveScopes,
 		RecentEvents:       adminSnap.RecentEvents,
+	}
+	if detail.EscalationLevelInt > 0 {
+		detail.RecoverHint = adaptiveRecoverHint
 	}
 	if detail.AdaptiveScopes == nil {
 		detail.AdaptiveScopes = []AdaptiveScopeSnapshot{}

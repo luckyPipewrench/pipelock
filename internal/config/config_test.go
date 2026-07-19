@@ -14997,3 +14997,140 @@ func TestLoad_StdinDash(t *testing.T) {
 		t.Fatalf("Load('-') mode = %q, want %q", cfg.Mode, ModeBalanced)
 	}
 }
+
+func TestAdaptiveEnforcementRecoveryKnobs_DefaultExplicitAndReload(t *testing.T) {
+	t.Run("omitted defaults preserve current behavior", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("session_profiling:\n  enabled: true\nadaptive_enforcement:\n  enabled: true\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AdaptiveEnforcement.LevelDurationSeconds != 300 {
+			t.Fatalf("level_duration_seconds = %d, want 300", cfg.AdaptiveEnforcement.LevelDurationSeconds)
+		}
+		if cfg.AdaptiveEnforcement.DeescalationCheckSeconds != 30 {
+			t.Fatalf("deescalation_check_seconds = %d, want 30", cfg.AdaptiveEnforcement.DeescalationCheckSeconds)
+		}
+		if cfg.AdaptiveEnforcement.CleanRequestsToDeescalate != 0 {
+			t.Fatalf("clean_requests_to_deescalate = %d, want disabled", cfg.AdaptiveEnforcement.CleanRequestsToDeescalate)
+		}
+		if cfg.AdaptiveEnforcement.SeverityWeightedSignals {
+			t.Fatal("severity_weighted_signals must default off")
+		}
+	})
+
+	t.Run("explicit values load", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte(`session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  level_duration_seconds: 120
+  deescalation_check_seconds: 5
+  clean_requests_to_deescalate: 4
+  severity_weighted_signals: true
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AdaptiveEnforcement.LevelDurationSeconds != 120 ||
+			cfg.AdaptiveEnforcement.DeescalationCheckSeconds != 5 ||
+			cfg.AdaptiveEnforcement.CleanRequestsToDeescalate != 4 ||
+			!cfg.AdaptiveEnforcement.SeverityWeightedSignals {
+			t.Fatalf("unexpected adaptive knobs: %+v", cfg.AdaptiveEnforcement)
+		}
+	})
+
+	t.Run("reload without and with change", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+		initial := []byte(`session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  level_duration_seconds: 120
+  deescalation_check_seconds: 5
+  clean_requests_to_deescalate: 4
+  severity_weighted_signals: true
+`)
+		if err := os.WriteFile(cfgPath, initial, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		first, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unchanged, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.AdaptiveEnforcement.LevelDurationSeconds != first.AdaptiveEnforcement.LevelDurationSeconds ||
+			unchanged.AdaptiveEnforcement.DeescalationCheckSeconds != first.AdaptiveEnforcement.DeescalationCheckSeconds ||
+			unchanged.AdaptiveEnforcement.CleanRequestsToDeescalate != first.AdaptiveEnforcement.CleanRequestsToDeescalate ||
+			unchanged.AdaptiveEnforcement.SeverityWeightedSignals != first.AdaptiveEnforcement.SeverityWeightedSignals {
+			t.Fatalf("reload without change drifted: got %+v want %+v", unchanged.AdaptiveEnforcement, first.AdaptiveEnforcement)
+		}
+		changedBytes := []byte(`session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  level_duration_seconds: 240
+  deescalation_check_seconds: 10
+  clean_requests_to_deescalate: 0
+  severity_weighted_signals: false
+`)
+		if err := os.WriteFile(cfgPath, changedBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed.AdaptiveEnforcement.LevelDurationSeconds != 240 ||
+			changed.AdaptiveEnforcement.DeescalationCheckSeconds != 10 ||
+			changed.AdaptiveEnforcement.CleanRequestsToDeescalate != 0 ||
+			changed.AdaptiveEnforcement.SeverityWeightedSignals {
+			t.Fatalf("reload with change did not apply: %+v", changed.AdaptiveEnforcement)
+		}
+	})
+}
+
+func TestValidateAdaptiveEnforcementRecoveryKnobs(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name: "level duration not positive",
+			mutate: func(c *Config) {
+				c.AdaptiveEnforcement.LevelDurationSeconds = 0
+			},
+			want: "level_duration_seconds",
+		},
+		{
+			name: "deescalation check not positive",
+			mutate: func(c *Config) {
+				c.AdaptiveEnforcement.DeescalationCheckSeconds = 0
+			},
+			want: "deescalation_check_seconds",
+		},
+		{
+			name: "clean request count negative",
+			mutate: func(c *Config) {
+				c.AdaptiveEnforcement.CleanRequestsToDeescalate = -1
+			},
+			want: "clean_requests_to_deescalate",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.SessionProfiling.Enabled = true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 5
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}

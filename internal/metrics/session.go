@@ -49,7 +49,7 @@ func (m *Metrics) registerSessionMetrics(reg *prometheus.Registry) {
 
 	m.sessionAutoDeescalations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pipelock_session_auto_deescalation_total",
-		Help: "Number of autonomous time-based session de-escalations.",
+		Help: "Number of autonomous session de-escalations.",
 	}, []string{"from", "to"})
 
 	m.chainDetections = prometheus.NewCounterVec(prometheus.CounterOpts{

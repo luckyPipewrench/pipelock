@@ -1084,9 +1084,13 @@ type SessionProfiling struct {
 // the session's enforcement level escalates (audit->warn or warn->block).
 type AdaptiveEnforcement struct {
 	Enabled                   bool             `yaml:"enabled"`
-	EscalationThreshold       float64          `yaml:"escalation_threshold"`        // points before escalation
-	DecayPerCleanRequest      float64          `yaml:"decay_per_clean_request"`     // score reduction per clean request
-	CooperativeToolDownweight bool             `yaml:"cooperative_tool_downweight"` // downweight burst anomalies from known cooperative tool UAs
+	EscalationThreshold       float64          `yaml:"escalation_threshold"`         // points before escalation
+	DecayPerCleanRequest      float64          `yaml:"decay_per_clean_request"`      // score reduction per clean request
+	LevelDurationSeconds      int              `yaml:"level_duration_seconds"`       // seconds before time-based level de-escalation
+	DeescalationCheckSeconds  int              `yaml:"deescalation_check_seconds"`   // background sweep interval for time-based de-escalation
+	CleanRequestsToDeescalate int              `yaml:"clean_requests_to_deescalate"` // consecutive clean requests before one level drop; 0 disables
+	SeverityWeightedSignals   bool             `yaml:"severity_weighted_signals"`    // opt-in lower scoring for low/noisy block signals
+	CooperativeToolDownweight bool             `yaml:"cooperative_tool_downweight"`  // downweight burst anomalies from known cooperative tool UAs
 	Levels                    EscalationLevels `yaml:"levels"`
 	ExemptDomains             []string         `yaml:"exempt_domains"` // DLP findings on these hosts skip escalation scoring and action upgrades
 }

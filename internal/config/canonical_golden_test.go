@@ -296,7 +296,10 @@ const (
 	// Re-bumped for request_body_scanning.disable_patterns and pattern_actions:
 	// these per-pattern body/header DLP tuning knobs change enforcement and
 	// must flow into signed policy hashes, even when empty in defaults.
-	goldenHashDefaults = "c56bf20543cddac23d0828721a078181af0a845c50c83c983bd7210b8dd2810a"
+	// Re-bumped for adaptive-enforcement recovery and severity-weighting knobs:
+	// level timers, clean-request de-escalation, and severity-weighted signal
+	// handling change adaptive policy semantics when configured.
+	goldenHashDefaults = "0a9467e8859bb7e8ffaab62c008b4deec7a29f2746bbdae6499afd2f49ac44d8"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -436,7 +439,9 @@ const (
 	// shifts in lockstep.
 	// Re-bumped for the Markdown Link Credential Exfiltration verb-to-noun
 	// separator. See goldenHashDefaults note above.
-	goldenHashRichConfig = "cfc38baedc12555b6faeb3c308a86e39da1dee9e59c6cb6ab860adfd1df10cf6"
+	// Re-bumped for adaptive-enforcement recovery and severity-weighting knobs:
+	// see goldenHashDefaults note above.
+	goldenHashRichConfig = "0c48938a2c85558d11a8d9bb73db1bb1f68a4b3d161cc0ff8c400cc10ae49868"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

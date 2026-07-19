@@ -436,7 +436,7 @@ func TestProtocolLifecycleSessionResetAndMetrics(t *testing.T) {
 		scopes := scopedSnapshotsLocked(map[string]*adaptiveScopeState{
 			"destination:z.vendor.example": {},
 			"destination:a.vendor.example": {},
-		})
+		}, defaultMaxLevelDuration)
 		if len(scopes) != 2 || scopes[0].Scope != "destination:a.vendor.example" || scopes[0].AirlockTier != config.AirlockTierNone {
 			t.Fatalf("scoped snapshots = %+v", scopes)
 		}

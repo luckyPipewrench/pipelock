@@ -417,6 +417,12 @@ func (c *Config) ApplyDefaults() {
 		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
 			c.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 		}
+		if c.AdaptiveEnforcement.LevelDurationSeconds <= 0 {
+			c.AdaptiveEnforcement.LevelDurationSeconds = 300
+		}
+		if c.AdaptiveEnforcement.DeescalationCheckSeconds <= 0 {
+			c.AdaptiveEnforcement.DeescalationCheckSeconds = 30
+		}
 
 		// Level defaults: only fill nil fields (explicit values including "" and false are operator intent).
 		// Elevated: warn actions upgrade to block.

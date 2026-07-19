@@ -1346,7 +1346,7 @@ func newInterceptHandler(
 				}))
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
+					adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
 		}
@@ -1356,12 +1356,14 @@ func newInterceptHandler(
 		if ic.Proxy != nil {
 			interceptMetrics = ic.Proxy.metrics
 		}
-		if changed, fromLabel, toLabel := trySessionRecovery(ic.Recorder, &ic.Config.AdaptiveEnforcement, interceptMetrics); changed {
-			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
-			if ic.Logger != nil {
-				ic.Logger.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, ic.ClientIP, ic.RequestID, ic.Recorder.ThreatScore())
-			}
-		}
+		_, _, _ = trySessionRecovery(ic.Recorder, &ic.Config.AdaptiveEnforcement, adaptiveRecoveryContext{
+			sessionKey: sessionKeyFor(ic.Agent, ic.ClientIP),
+			reason:     adaptiveRecoveryTimer,
+			clientIP:   ic.ClientIP,
+			requestID:  ic.RequestID,
+			logger:     ic.Logger,
+			metrics:    interceptMetrics,
+		})
 
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
@@ -1387,7 +1389,7 @@ func newInterceptHandler(
 			}))
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-				"blocked: session escalation level "+session.EscalationLabel(level),
+				adaptiveBlockedReason,
 				http.StatusForbidden)
 			return
 		}

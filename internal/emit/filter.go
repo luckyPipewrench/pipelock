@@ -223,6 +223,7 @@ func eventTypeAction(eventType string) string {
 		EventTunnelOpen,
 		EventWSOpen,
 		EventWSClose,
+		EventAdaptiveRecovery,
 		EventAirlockDeescalate,
 		EventSessionAdmin,
 		EventShieldRewrite,

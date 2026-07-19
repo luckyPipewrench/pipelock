@@ -1316,6 +1316,31 @@ func TestLogAdaptiveEscalation_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestLogAdaptiveRecovery_JSONAndEmitter(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAdaptiveRecovery("agent|10.0.0.1", "api.vendor.example", "high", "elevated", "clean_request_recovery", testClientIP, "req-recover")
+
+	ev := sink.onlyEvent(t)
+	if ev.Type != string(EventAdaptiveRecovery) {
+		t.Fatalf("event type = %q, want adaptive recovery", ev.Type)
+	}
+	for key, want := range map[string]any{
+		"session":    "agent|10.0.0.1",
+		"scope":      "api.vendor.example",
+		"from":       "high",
+		"to":         "elevated",
+		"reason":     "clean_request_recovery",
+		"client_ip":  testClientIP,
+		"request_id": "req-recover",
+	} {
+		if got := ev.Fields[key]; got != want {
+			t.Fatalf("emitted field %s = %v, want %v", key, got, want)
+		}
+	}
+}
+
 func TestLogMCPUnknownTool_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
@@ -2099,6 +2124,7 @@ func TestAuditEmitLookupEventsHaveExplicitSeverity(t *testing.T) {
 		EventWSBlocked:           emit.EventWSBlocked,
 		EventWSScan:              emit.EventWSScan,
 		EventSessionAnomaly:      emit.EventSessionAnomaly,
+		EventAdaptiveRecovery:    emit.EventAdaptiveRecovery,
 		EventMCPUnknownTool:      emit.EventMCPUnknownTool,
 		EventSNIMismatch:         emit.EventSNIMismatch,
 		EventKillSwitchDeny:      emit.EventKillSwitchDeny,

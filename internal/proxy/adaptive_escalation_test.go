@@ -144,8 +144,8 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for block_all session deny, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "session escalation level") {
-		t.Errorf("expected session escalation message, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
 	}
 }
 
@@ -186,8 +186,8 @@ func TestForwardHTTP_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for escalated warn->block, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "escalated") {
-		t.Errorf("expected 'escalated' in block reason, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block reason, got %q", w.Body.String())
 	}
 }
 
@@ -481,8 +481,8 @@ func TestWebSocket_Adaptive_BlockAllOnClean(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for WebSocket block_all, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "session escalation level") {
-		t.Errorf("expected session escalation message, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
 	}
 }
 
@@ -519,8 +519,8 @@ func TestWebSocket_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for escalated WS warn->block, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "escalated") {
-		t.Errorf("expected 'escalated' in block reason, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block reason, got %q", w.Body.String())
 	}
 }
 
@@ -583,8 +583,8 @@ func TestInterceptTunnel_Adaptive_BlockAllOnClean(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for intercept block_all, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "session escalation level") {
-		t.Errorf("expected session escalation in body, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
 	}
 }
 
@@ -708,8 +708,14 @@ func TestFetch_Adaptive_BlockAll(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected Blocked=true")
 	}
-	if !strings.Contains(resp.BlockReason, "session escalation level") {
-		t.Errorf("expected session escalation in reason, got %q", resp.BlockReason)
+	if resp.BlockReason != adaptiveBlockedReason {
+		t.Errorf("block reason = %q, want %q", resp.BlockReason, adaptiveBlockedReason)
+	}
+	body := w.Body.String()
+	for _, forbidden := range []string{"adaptive_level", "auto_recover_at", "recover_hint", "elevated", "high", "critical"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("agent-facing fetch response leaked %q: %s", forbidden, body)
+		}
 	}
 }
 
@@ -1033,8 +1039,8 @@ func TestFetch_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for fetch warn->block escalation, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "escalated") {
-		t.Errorf("expected 'escalated' in block reason, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block reason, got %q", w.Body.String())
 	}
 }
 
@@ -2215,8 +2221,8 @@ func TestForwardHTTP_CEE_BlockAllRecheck(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 from post-CEE block_all recheck, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "session escalation level") {
-		t.Errorf("expected 'session escalation level' in body, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
 	}
 }
 
@@ -2299,8 +2305,8 @@ func TestInterceptTunnel_CEE_BlockAllRecheck(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 from intercept post-CEE block_all, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "session escalation level") {
-		t.Errorf("expected 'session escalation level' in body, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
+		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
 	}
 }
 

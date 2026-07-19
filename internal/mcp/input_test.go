@@ -3820,26 +3820,52 @@ func TestForwardScannedInput_CEEBlocksInWarnMode(t *testing.T) {
 // (adaptive_test.go) only implements session.Recorder, so it exercises the
 // type-assertion-fails early return. This type exercises the success path.
 type mockRecoverer struct {
-	level       int
-	score       float64
-	recoverFunc func(blockAllCheck func(int) bool) (bool, int, int)
+	level            int
+	score            float64
+	recordCleanCalls int
+	recoveryEvents   []struct {
+		scope  string
+		reason string
+		from   int
+		to     int
+	}
+	cleanRecoverFunc func(decayRate float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int)
+	recoverFunc      func(blockAllCheck func(int) bool) (bool, int, int)
 }
 
 func (m *mockRecoverer) RecordSignal(_ session.SignalType, _ float64) (bool, string, string) {
 	return false, "", ""
 }
 
-func (m *mockRecoverer) RecordClean(_ float64) {}
+func (m *mockRecoverer) RecordClean(_ float64) {
+	m.recordCleanCalls++
+}
 
 func (m *mockRecoverer) EscalationLevel() int { return m.level }
 
 func (m *mockRecoverer) ThreatScore() float64 { return m.score }
 
-func (m *mockRecoverer) TryAutoRecover(blockAllCheck func(int) bool) (bool, int, int) {
+func (m *mockRecoverer) TryAutoRecover(_ time.Duration, blockAllCheck func(int) bool) (bool, int, int) {
 	if m.recoverFunc != nil {
 		return m.recoverFunc(blockAllCheck)
 	}
 	return false, 0, 0
+}
+
+func (m *mockRecoverer) RecordCleanWithRecovery(decayRate float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int) {
+	if m.cleanRecoverFunc != nil {
+		return m.cleanRecoverFunc(decayRate, cleanToDrop, blockAllCheck)
+	}
+	return false, 0, 0
+}
+
+func (m *mockRecoverer) RecordAdaptiveRecoveryEvent(scope, reason string, from, to int) {
+	m.recoveryEvents = append(m.recoveryEvents, struct {
+		scope  string
+		reason string
+		from   int
+		to     int
+	}{scope: scope, reason: reason, from: from, to: to})
 }
 
 func TestTryRecoverSession(t *testing.T) {
@@ -3857,7 +3883,7 @@ func TestTryRecoverSession(t *testing.T) {
 			},
 		}
 
-		tryRecoverSession(rec, adaptiveCfg, m)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{metrics: m})
 
 		// Verify de-escalation counter was incremented.
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
@@ -3894,7 +3920,7 @@ func TestTryRecoverSession(t *testing.T) {
 			},
 		}
 
-		tryRecoverSession(rec, adaptiveCfg, m)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{metrics: m})
 
 		// Metrics endpoint should not contain de-escalation counters.
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
@@ -3912,7 +3938,7 @@ func TestTryRecoverSession(t *testing.T) {
 	t.Run("nil_adaptive_config", func(t *testing.T) {
 		rec := &mockRecoverer{}
 		// Must not panic with nil config and nil metrics.
-		tryRecoverSession(rec, nil, nil)
+		tryRecoverSession(rec, nil, adaptiveRecoveryContext{})
 	})
 
 	t.Run("disabled_adaptive", func(t *testing.T) {
@@ -3921,7 +3947,7 @@ func TestTryRecoverSession(t *testing.T) {
 		}
 		rec := &mockRecoverer{}
 		// Must not panic with disabled config and nil metrics.
-		tryRecoverSession(rec, adaptiveCfg, nil)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{})
 	})
 
 	t.Run("non_recoverer_recorder", func(t *testing.T) {
@@ -3932,7 +3958,7 @@ func TestTryRecoverSession(t *testing.T) {
 			Enabled: true,
 		}
 		rec := &mockRecorder{}
-		tryRecoverSession(rec, adaptiveCfg, nil)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{})
 	})
 
 	t.Run("recovery_with_nil_metrics", func(t *testing.T) {
@@ -3949,7 +3975,7 @@ func TestTryRecoverSession(t *testing.T) {
 		}
 
 		// Must not panic when metrics is nil.
-		tryRecoverSession(rec, adaptiveCfg, nil)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{})
 	})
 
 	t.Run("blockAllCheck_callback_receives_config", func(t *testing.T) {
@@ -3976,12 +4002,90 @@ func TestTryRecoverSession(t *testing.T) {
 			},
 		}
 
-		tryRecoverSession(rec, adaptiveCfg, m)
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{metrics: m})
 
 		if !callbackResult {
 			t.Error("blockAllCheck(3) should return true when critical.block_all is true")
 		}
 	})
+}
+
+func TestRecordCleanSession_IneligibleCleanDoesNotRecover(t *testing.T) {
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:                   true,
+		DecayPerCleanRequest:      0.5,
+		CleanRequestsToDeescalate: 1,
+	}
+	cleanRecoveryCalls := 0
+	rec := &mockRecoverer{
+		level: 1,
+		cleanRecoverFunc: func(_ float64, _ int, _ func(int) bool) (bool, int, int) {
+			cleanRecoveryCalls++
+			return true, 1, 0
+		},
+	}
+
+	recordCleanSession(rec, adaptiveCfg, false, adaptiveRecoveryContext{})
+
+	if rec.recordCleanCalls != 1 {
+		t.Fatalf("RecordClean calls = %d, want 1", rec.recordCleanCalls)
+	}
+	if cleanRecoveryCalls != 0 {
+		t.Fatalf("RecordCleanWithRecovery calls = %d, want 0 for ineligible clean traffic", cleanRecoveryCalls)
+	}
+}
+
+func TestRecordCleanSession_EligibleCleanRecoveryObservable(t *testing.T) {
+	blockAll := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:                   true,
+		DecayPerCleanRequest:      0.5,
+		CleanRequestsToDeescalate: 1,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAll},
+		},
+	}
+	m := metrics.New()
+	rec := &mockRecoverer{
+		level: 2,
+		cleanRecoverFunc: func(_ float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int) {
+			if cleanToDrop != 1 {
+				t.Fatalf("cleanToDrop = %d, want 1", cleanToDrop)
+			}
+			if !blockAllCheck(3) {
+				t.Fatal("critical level should resolve to block_all in default adaptive config")
+			}
+			return true, 2, 1
+		},
+	}
+
+	recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+		sessionKey: "mcp-session",
+		scope:      "tools/call",
+		reason:     adaptiveRecoveryClean,
+		logger:     audit.NewNop(),
+		metrics:    m,
+	})
+
+	if len(rec.recoveryEvents) != 1 {
+		t.Fatalf("recovery events = %d, want 1", len(rec.recoveryEvents))
+	}
+	if got := rec.recoveryEvents[0]; got.scope != "tools/call" || got.reason != adaptiveRecoveryClean || got.from != 2 || got.to != 1 {
+		t.Fatalf("unexpected recovery event: %+v", got)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	for _, want := range []string{
+		`pipelock_session_auto_deescalation_total{from="high",to="elevated"} 1`,
+		`pipelock_adaptive_sessions_current{level="high"} -1`,
+		`pipelock_adaptive_sessions_current{level="elevated"} 1`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
+	}
 }
 
 // --- Pairwise split-secret and JSON unescape regression tests ---

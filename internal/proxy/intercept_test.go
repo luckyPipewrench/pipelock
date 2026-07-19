@@ -3277,8 +3277,8 @@ func TestInterceptTunnel_BlockAllDeniesCleanRequest(t *testing.T) {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "session escalation level") {
-		t.Errorf("body = %q, want to contain 'session escalation level'", body)
+	if !strings.Contains(string(body), adaptiveBlockedReason) {
+		t.Errorf("body = %q, want generic adaptive block message", body)
 	}
 }
 

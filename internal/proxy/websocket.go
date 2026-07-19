@@ -357,7 +357,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedError(w, blockInfo(result.Scanner),
-				"WebSocket blocked: "+result.Reason+" (escalated)", status)
+				"WebSocket "+adaptiveBlockedReason, status)
 			return
 		}
 		log.LogAnomaly(actx, result.Scanner,
@@ -401,7 +401,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, ""),
-			"WebSocket blocked: session escalation level "+session.EscalationLabel(sr.Level),
+			"WebSocket "+adaptiveBlockedReason,
 			http.StatusForbidden)
 		return
 	}
@@ -554,7 +554,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, ""),
-				"WebSocket blocked: session escalation level "+session.EscalationLabel(headerSR.Level),
+				"WebSocket "+adaptiveBlockedReason,
 				http.StatusForbidden)
 			return
 		}
@@ -883,7 +883,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// (no URL scan hit, no header DLP hit). This prevents same-handshake
 	// raise+decay when a header carries a secret but the URL is clean.
 	if wsRec != nil && cfg.AdaptiveEnforcement.Enabled && !wsHasFinding {
-		recordCleanForAdaptiveScope(wsRec, wsScope, cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(wsRec, wsScope, &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 
 	relay := &wsRelay{
@@ -1834,10 +1834,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		// On-entry de-escalation for long-lived WebSocket connections.
-		if changed, fromLabel, toLabel := trySessionRecovery(r.rec, &r.cfg.AdaptiveEnforcement, r.proxy.metrics); changed {
-			sessionKey := sessionKeyFor(r.agent, r.clientIP)
-			log.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
-		}
+		_, _, _ = trySessionRecovery(r.rec, &r.cfg.AdaptiveEnforcement, adaptiveRecoveryContext{
+			sessionKey: sessionKeyFor(r.agent, r.clientIP),
+			reason:     adaptiveRecoveryTimer,
+			clientIP:   r.clientIP,
+			requestID:  r.requestID,
+			logger:     log,
+			metrics:    r.proxy.metrics,
+		})
 
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately. This prevents
@@ -1858,8 +1862,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
 		}
@@ -2139,8 +2143,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						Agent:     r.agent,
 					})
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 				blocked = true
 				return
 			}
@@ -2202,10 +2206,14 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		// On-entry de-escalation for long-lived WebSocket connections.
-		if changed, fromLabel, toLabel := trySessionRecovery(r.rec, &r.cfg.AdaptiveEnforcement, r.proxy.metrics); changed {
-			sessionKey := sessionKeyFor(r.agent, r.clientIP)
-			log.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
-		}
+		_, _, _ = trySessionRecovery(r.rec, &r.cfg.AdaptiveEnforcement, adaptiveRecoveryContext{
+			sessionKey: sessionKeyFor(r.agent, r.clientIP),
+			reason:     adaptiveRecoveryTimer,
+			clientIP:   r.clientIP,
+			requestID:  r.requestID,
+			logger:     log,
+			metrics:    r.proxy.metrics,
+		})
 
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately.
@@ -2225,8 +2233,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
 		}

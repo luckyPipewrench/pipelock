@@ -62,6 +62,7 @@ Examples:
   pipelock session list
   pipelock session list --tier hard --json
   pipelock session inspect "agent|10.0.0.1"
+  pipelock session risk "agent|10.0.0.1"
   pipelock session explain "agent|10.0.0.1"
   pipelock session release "agent|10.0.0.1" --to none
   pipelock session terminate "agent|10.0.0.1"
@@ -71,6 +72,7 @@ Examples:
 	cmd.AddCommand(
 		listCmd(flags),
 		inspectCmd(flags),
+		riskCmd(flags),
 		explainCmd(flags),
 		releaseCmd(flags),
 		terminateCmd(flags),

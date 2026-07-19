@@ -332,7 +332,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			writeBlockedError(w, blockInfo(result.Scanner),
-				"CONNECT blocked: "+result.Reason+" (escalated)", status)
+				"CONNECT "+adaptiveBlockedReason, status)
 			return
 		}
 		p.logger.LogAnomaly(targetCtx, result.Scanner,
@@ -354,7 +354,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-			"CONNECT blocked: session escalation level "+session.EscalationLabel(sr.Level),
+			"CONNECT "+adaptiveBlockedReason,
 			http.StatusForbidden)
 		return
 	}
@@ -422,7 +422,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordTunnelBlocked(agentLabel)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"CONNECT blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
+					"CONNECT "+adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
 		}
@@ -489,7 +489,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if connectRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		recordCleanForAdaptiveScope(connectRec, adaptiveScopeForHost(host), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(connectRec, adaptiveScopeForHost(host), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 
 	// WebSocket redirect hint: if the target host matches the redirect list
@@ -996,7 +996,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfo(result.Scanner),
-				"blocked: "+result.Reason+" (escalated)", status)
+				adaptiveBlockedReason, status)
 			return
 		}
 		p.logger.LogAnomaly(actx, result.Scanner,
@@ -1018,7 +1018,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-			"blocked: session escalation level "+session.EscalationLabel(sr.Level), http.StatusForbidden)
+			adaptiveBlockedReason, http.StatusForbidden)
 		return
 	}
 
@@ -1553,7 +1553,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: forwardSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
+					adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
 		}
@@ -1625,7 +1625,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-				"blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
+				adaptiveBlockedReason, http.StatusForbidden)
 			return
 		}
 	}
@@ -2071,7 +2071,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeBytes = 0
 			outcomeReason = "complete"
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-				recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+				forwardScope := adaptiveScopeForHost(r.URL.Hostname())
+				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt, adaptiveRecoveryContext{
+					sessionKey: sessionKeyFor(agent, clientIP),
+					scope:      forwardScope,
+					reason:     adaptiveRecoveryClean,
+					clientIP:   clientIP,
+					requestID:  requestID,
+					logger:     p.logger,
+					metrics:    p.metrics,
+				})
 			}
 		}
 		return
@@ -2134,7 +2143,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeBytes = written
 		outcomeReason = "complete"
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}
 		return
 	}
@@ -2258,7 +2267,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						outcomeBytes = written
 						outcomeReason = "unscannable_passthrough"
 						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 						}
 						return
 					}
@@ -2616,7 +2625,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "budget_truncated"
 		}
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+			forwardScope := adaptiveScopeForHost(r.URL.Hostname())
+			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt, adaptiveRecoveryContext{
+				sessionKey: sessionKeyFor(agent, clientIP),
+				scope:      forwardScope,
+				reason:     adaptiveRecoveryClean,
+				clientIP:   clientIP,
+				requestID:  requestID,
+				logger:     p.logger,
+				metrics:    p.metrics,
+			})
 		}
 		return
 	}
@@ -2656,7 +2674,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "budget_truncated"
 	}
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 }
 

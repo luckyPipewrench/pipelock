@@ -467,7 +467,16 @@ type FetchResponse struct {
 	Blocked     bool   `json:"blocked"`
 	BlockReason string `json:"block_reason,omitempty"`
 	Hint        string `json:"hint,omitempty"`
+	Layer       string `json:"layer,omitempty"`
 }
+
+const (
+	adaptiveEnforcementLayer = "adaptive_enforcement"
+	adaptiveRecoverHint      = "wait for auto-recovery or inspect/reset the identity session with the session operator commands"
+	adaptiveBlockedReason    = "blocked by adaptive enforcement"
+	adaptiveRecoveryTimer    = "time_based_recovery"
+	adaptiveRecoveryClean    = "clean_request_recovery"
+)
 
 // New creates a new fetch proxy from config.
 func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics, opts ...Option) (*Proxy, error) {
@@ -2467,11 +2476,14 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	sess := sm.GetOrCreate(key)
 
 	// On-entry de-escalation: recover sessions stuck at block_all.
-	if changed, fromLabel, toLabel := trySessionRecovery(sess, &cfg.AdaptiveEnforcement, p.metrics); changed {
-		if log != nil {
-			log.LogAdaptiveEscalation(key, fromLabel, toLabel, clientIP, requestID, sess.ThreatScore())
-		}
-	}
+	_, _, _ = trySessionRecovery(sess, &cfg.AdaptiveEnforcement, adaptiveRecoveryContext{
+		sessionKey: key,
+		reason:     adaptiveRecoveryTimer,
+		clientIP:   clientIP,
+		requestID:  requestID,
+		logger:     log,
+		metrics:    p.metrics,
+	})
 
 	anomalies := sess.RecordRequest(hostname, &cfg.SessionProfiling)
 
@@ -2548,7 +2560,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
-			if recordScopedAdaptiveSignal(sess, scope, session.SignalBlock, ep) {
+			if recordScopedAdaptiveSignal(sess, scope, adaptiveBlockSignal(result, &adaptiveCfg), ep) {
 				escalated = true
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
@@ -2562,7 +2574,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			// Skip RecordClean when the caller defers it to the end of the
 			// request lifecycle (fetch), so that later scanning stages (header
 			// DLP, CEE, response) can still raise a finding before decay fires.
-			sess.RecordScopedClean(scope, adaptiveCfg.DecayPerCleanRequest)
+			recordCleanForAdaptiveScope(sess, scope, &adaptiveCfg, false, adaptiveRecoveryContext{})
 		}
 	}
 
@@ -2581,6 +2593,11 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	}
 
 	level := sess.EffectiveEscalationLevel(scope)
+	autoRecoverAt := sess.ScopedAdaptiveAutoRecoverAt(scope, adaptiveLevelDuration(&cfg.AdaptiveEnforcement))
+	recoverHint := ""
+	if level > 0 {
+		recoverHint = adaptiveRecoverHint
+	}
 
 	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
 	// every request that happens to observe a session at a trigger level.
@@ -2632,7 +2649,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		})
 
 		if cfg.SessionProfiling.AnomalyAction == config.ActionBlock && cfg.EnforceEnabled() {
-			return SessionResult{Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level}
+			return SessionResult{Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		}
 	}
 
@@ -2650,7 +2667,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		})
 	}
 
-	return SessionResult{Level: level}
+	return SessionResult{Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 }
 
 func baselineAgentKeyForSessionKey(key string) string {
@@ -2703,15 +2720,94 @@ func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig sessio
 	decide.RecordSignal(rec, sig, ep)
 }
 
-func recordCleanForAdaptiveScope(rec session.Recorder, scope string, decayRate float64) {
-	if rec == nil {
+func adaptiveBlockSignal(result scanner.Result, adaptiveCfg *config.AdaptiveEnforcement) session.SignalType {
+	if adaptiveCfg == nil || !adaptiveCfg.SeverityWeightedSignals {
+		return session.SignalBlock
+	}
+	switch result.Scanner {
+	case scanner.ScannerEntropy, scanner.ScannerSubdomainEntropy:
+		return session.SignalBlockLowSeverity
+	default:
+		return session.SignalBlock
+	}
+}
+
+type adaptiveRecoveryContext struct {
+	sessionKey string
+	scope      string
+	reason     string
+	clientIP   string
+	requestID  string
+	logger     *audit.Logger
+	metrics    *metrics.Metrics
+}
+
+func recordCleanForAdaptiveScope(rec session.Recorder, scope string, adaptiveCfg *config.AdaptiveEnforcement, eligibleForCleanRecovery bool, ctx adaptiveRecoveryContext) {
+	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled {
 		return
 	}
+	scope = normalizeAdaptiveScope(scope)
+	blockAllCheck := adaptiveBlockAllCheck(adaptiveCfg)
 	if sess, ok := rec.(*SessionState); ok {
-		sess.RecordScopedClean(scope, decayRate)
+		if !eligibleForCleanRecovery {
+			sess.RecordScopedClean(scope, adaptiveCfg.DecayPerCleanRequest)
+			return
+		}
+		changed, from, to := sess.RecordScopedCleanWithRecovery(scope, adaptiveCfg.DecayPerCleanRequest, adaptiveCfg.CleanRequestsToDeescalate, blockAllCheck)
+		if changed {
+			ctx.scope = firstNonEmptyString(ctx.scope, scope)
+			emitAdaptiveRecovery(sess, from, to, ctx)
+		}
 		return
 	}
-	rec.RecordClean(decayRate)
+	if !eligibleForCleanRecovery {
+		rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+		return
+	}
+	if r, ok := rec.(session.CleanRecoverer); ok {
+		changed, from, to := r.RecordCleanWithRecovery(adaptiveCfg.DecayPerCleanRequest, adaptiveCfg.CleanRequestsToDeescalate, blockAllCheck)
+		if changed {
+			emitAdaptiveRecovery(nil, from, to, ctx)
+		}
+		return
+	}
+	rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+}
+
+func emitAdaptiveRecovery(sess *SessionState, from, to int, ctx adaptiveRecoveryContext) {
+	fromLabel := session.EscalationLabel(from)
+	toLabel := session.EscalationLabel(to)
+	reason := firstNonEmptyString(ctx.reason, adaptiveRecoveryTimer)
+	if ctx.metrics != nil {
+		ctx.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+		if from > 0 {
+			ctx.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+		}
+		if to > 0 {
+			ctx.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+		}
+	}
+	if ctx.logger != nil {
+		ctx.logger.LogAdaptiveRecovery(ctx.sessionKey, ctx.scope, fromLabel, toLabel, reason, ctx.clientIP, ctx.requestID)
+	}
+	if sess != nil {
+		sess.RecordEvent(SessionEvent{
+			Kind:     "adaptive_deescalate",
+			Target:   ctx.scope,
+			Type:     reason,
+			Detail:   fromLabel + "->" + toLabel,
+			Severity: "info",
+		})
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func airlockTierForScope(sess *SessionState, scope string) string {
@@ -3711,13 +3807,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
-			log.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
+			adaptiveDetail := fmt.Sprintf("%s (escalated by %s level=%s auto_recover_at=%s hint=%s)", result.Reason, adaptiveEnforcementLayer, session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
+			log.LogBlockedDetail(actx, adaptiveEnforcementLayer, adaptiveDetail, auditDetailFromResult(result))
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			emitFetchReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),
 				Verdict:             config.ActionBlock,
-				Layer:               result.Scanner,
-				Pattern:             result.Reason + " (escalated)",
+				Layer:               adaptiveEnforcementLayer,
+				Pattern:             adaptiveDetail,
 				Transport:           "fetch",
 				Method:              http.MethodGet,
 				Target:              displayURL,
@@ -3742,12 +3839,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				escalatedEchoURL = audit.RedactContentBearingURL(displayURL)
 			}
 			writeBlockedJSON(w,
-				blockInfo(result.Scanner),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
 				escalatedStatus, FetchResponse{
 					URL:         escalatedEchoURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: result.Reason + " (escalated)",
+					BlockReason: adaptiveBlockedReason,
+					Layer:       adaptiveEnforcementLayer,
 				})
 			return
 		}
@@ -3792,11 +3890,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		sessionKey := sessionKeyFor(agent, clientIP)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		adaptiveDetail := fmt.Sprintf("session escalation level %s; auto_recover_at=%s; hint=%s", session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
+		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,
-			Layer:               "session_deny",
-			Pattern:             "session escalation level " + session.EscalationLabel(sr.Level),
+			Layer:               adaptiveEnforcementLayer,
+			Pattern:             adaptiveDetail,
 			Transport:           "fetch",
 			Method:              http.MethodGet,
 			Target:              displayURL,
@@ -3813,12 +3913,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.EscalationLevel, ""),
+			blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: "session escalation level " + session.EscalationLabel(sr.Level),
+				BlockReason: adaptiveBlockedReason,
+				Layer:       adaptiveEnforcementLayer,
 			})
 		return
 	}
@@ -3940,7 +4041,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: "session escalation level " + session.EscalationLabel(fetchLevel),
+				BlockReason: adaptiveBlockedReason,
 			})
 		return
 	}
@@ -4099,7 +4200,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         displayURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: "session escalation level " + session.EscalationLabel(level),
+					BlockReason: adaptiveBlockedReason,
 				})
 			return
 		}
@@ -4737,7 +4838,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
 	// This ensures warn/near-miss findings do not inadvertently decay score.
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		recordCleanForAdaptiveScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		fetchScope := adaptiveScopeForHost(parsed.Hostname())
+		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
+			sessionKey: sessionKeyFor(agent, clientIP),
+			scope:      fetchScope,
+			reason:     adaptiveRecoveryClean,
+			clientIP:   clientIP,
+			requestID:  requestID,
+			logger:     log,
+			metrics:    p.metrics,
+		})
 	}
 
 	// Record response size for per-domain data budget tracking

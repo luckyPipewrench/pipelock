@@ -1931,6 +1931,15 @@ func (c *Config) validateAdaptiveEnforcement(warnings *[]Warning) error {
 		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
 			return fmt.Errorf("adaptive_enforcement.decay_per_clean_request must be positive")
 		}
+		if c.AdaptiveEnforcement.LevelDurationSeconds <= 0 {
+			return fmt.Errorf("adaptive_enforcement.level_duration_seconds must be positive")
+		}
+		if c.AdaptiveEnforcement.DeescalationCheckSeconds <= 0 {
+			return fmt.Errorf("adaptive_enforcement.deescalation_check_seconds must be positive")
+		}
+		if c.AdaptiveEnforcement.CleanRequestsToDeescalate < 0 {
+			return fmt.Errorf("adaptive_enforcement.clean_requests_to_deescalate must be non-negative")
+		}
 		// Validate escalation level actions.
 		if err := validateEscalationActions("elevated", &c.AdaptiveEnforcement.Levels.Elevated); err != nil {
 			return err

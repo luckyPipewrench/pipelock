@@ -1027,7 +1027,7 @@ func TestRecordSignal_NoEscalation(t *testing.T) {
 func TestBlockSessionDenyResponse(t *testing.T) {
 	const (
 		wantCode    = -32001
-		wantMessage = "pipelock: session escalation level critical"
+		wantMessage = adaptiveBlockedReason
 		wantVersion = "2.0"
 	)
 

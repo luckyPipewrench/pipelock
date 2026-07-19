@@ -5276,8 +5276,8 @@ func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected blocked=true from adaptive escalation")
 	}
-	if !strings.Contains(resp.BlockReason, "escalated") {
-		t.Errorf("expected block reason to contain 'escalated', got: %s", resp.BlockReason)
+	if resp.BlockReason != adaptiveBlockedReason {
+		t.Errorf("block reason = %q, want %q", resp.BlockReason, adaptiveBlockedReason)
 	}
 }
 
@@ -5410,8 +5410,8 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected blocked=true from block_all enforcement")
 	}
-	if !strings.Contains(resp.BlockReason, "critical") {
-		t.Errorf("expected block reason to contain 'critical', got: %s", resp.BlockReason)
+	if resp.BlockReason != adaptiveBlockedReason {
+		t.Errorf("block reason = %q, want %q", resp.BlockReason, adaptiveBlockedReason)
 	}
 
 	// Verify that a non-escalated session at the same time passes clean traffic.

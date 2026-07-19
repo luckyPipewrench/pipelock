@@ -204,8 +204,17 @@ The `--adaptive-reset-file <path>` flag provides that path for local subprocess
 servers, including `--sandbox` mode. It is rejected with `--upstream` or
 `--listen`: those remote transports also run on invocation sessions with no
 per-session adaptive-reset surface today, so the flag is refused rather than
-silently accepted — clear an escalation there by restarting the proxy. Launch
-the proxy with it:
+silently accepted — clear an escalation there by restarting the proxy.
+
+Adaptive level recovery also runs automatically. Operators can tune the
+time-based path with `adaptive_enforcement.level_duration_seconds` and
+`adaptive_enforcement.deescalation_check_seconds`. For single interactive
+agents that are prone to benign false positives, `clean_requests_to_deescalate`
+can be set above zero to drop one level after that many consecutive clean
+requests; any adaptive signal resets that streak, so mixed clean/blocked traffic
+does not advance recovery.
+
+Launch the proxy with the reset-file path:
 
 ```bash
 pipelock mcp proxy --config pipelock.yaml \

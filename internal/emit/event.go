@@ -103,6 +103,10 @@ const EventAnomaly = "anomaly"
 // escalations (e.g. warn → block transitions on accumulated signal).
 const EventAdaptiveEscalation = "adaptive_escalation"
 
+// EventAdaptiveRecovery is the event-type key for adaptive enforcement
+// de-escalations after timer-based or clean-request recovery.
+const EventAdaptiveRecovery = "adaptive_recovery"
+
 // Event type constants used as keys in EventSeverity. Pulled into named
 // constants so the test suite and OTLP emitter can reference them by name.
 const (
@@ -194,6 +198,7 @@ var EventSeverity = map[string]Severity{
 	EventWSOpen:            SeverityInfo,
 	EventWSClose:           SeverityInfo,
 	EventAgentListener:     SeverityInfo,
+	EventAdaptiveRecovery:  SeverityInfo,
 	EventAirlockDeescalate: SeverityInfo,
 	EventSessionAdmin:      SeverityInfo,
 	EventShieldRewrite:     SeverityInfo,

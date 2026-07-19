@@ -1212,6 +1212,10 @@ adaptive_enforcement:
   enabled: true
   escalation_threshold: 5.0
   decay_per_clean_request: 0.5
+  level_duration_seconds: 300
+  deescalation_check_seconds: 30
+  clean_requests_to_deescalate: 0
+  severity_weighted_signals: false
   cooperative_tool_downweight: true
   levels:
     elevated:
@@ -1230,8 +1234,19 @@ adaptive_enforcement:
 | `enabled` | `false` | Enable adaptive enforcement |
 | `escalation_threshold` | `5.0` | Score before first escalation. Lower values escalate faster. |
 | `decay_per_clean_request` | `0.5` | Score reduction per clean request. Lower values slow trust recovery. |
+| `level_duration_seconds` | `300` | Time at one adaptive level before time-based recovery drops one level. |
+| `deescalation_check_seconds` | `30` | Background sweep interval for idle-session time-based recovery. |
+| `clean_requests_to_deescalate` | `0` | Consecutive clean requests required to drop one adaptive level. `0` disables this opt-in recovery path. Any block or near-miss resets the clean streak, so an attacker cannot interleave clean traffic to stay under enforcement. A session that runs fully clean for this many requests does earn back one level, so set it conservatively: lower values recover faster but give a patient, fully-clean attacker an easier path back down. |
+| `severity_weighted_signals` | `false` | Opt-in lower score contribution for known noisy low-severity block lanes such as entropy. Unknown, DLP, SSRF, prompt-injection, and other high-risk blocks keep the current hard-block contribution. |
 | `cooperative_tool_downweight` | `true` | Downweight domain-burst and IP-domain-burst adaptive signals from known cooperative tool user agents such as `yt-dlp`, package managers, `curl`, and `git`. |
 | `levels` | *(see below)* | Per-level enforcement upgrades |
+
+By default, attack containment is unchanged: a hard block contributes the same
+score as before, adaptive levels recover only by time, and the 5-minute level
+duration plus 30-second sweep cadence are preserved. The clean-request recovery
+path is opt-in because it is intended for single interactive-agent
+false-positive recovery; it never advances on mixed traffic because every
+adaptive signal resets the consecutive-clean counter.
 
 ### Escalation Levels
 

@@ -16,6 +16,8 @@ import (
 var allSignals = []session.SignalType{
 	session.SignalBlock,
 	session.SignalNearMiss,
+	session.SignalBlockLowSeverity,
+	session.SignalBlockMediumSeverity,
 	session.SignalDomainAnomaly,
 	session.SignalEntropyBudget,
 	session.SignalFragmentDLP,

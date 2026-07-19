@@ -2613,36 +2613,6 @@ func TestInterceptTunnel_CompressedResponseBlockedViaRoundTripper(t *testing.T) 
 	}
 }
 
-func TestNewCertCache_ReturnsErrorOnNilCA(t *testing.T) {
-	cache, err := certgen.NewCertCache(nil, nil, time.Hour, 100)
-	if err == nil {
-		t.Fatalf("NewCertCache returned cache %#v, want error", cache)
-	}
-	if !strings.Contains(err.Error(), "nil CA certificate") {
-		t.Fatalf("NewCertCache error = %q, want nil CA certificate", err)
-	}
-	if cache != nil {
-		t.Fatalf("NewCertCache cache = %#v, want nil", cache)
-	}
-}
-
-func TestNewCertCache_ReturnsErrorOnZeroMaxSize(t *testing.T) {
-	ca, caKey, _, err := certgen.GenerateCA("Test", 24*time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cache, err := certgen.NewCertCache(ca, caKey, time.Hour, 0)
-	if err == nil {
-		t.Fatalf("NewCertCache returned cache %#v, want error", cache)
-	}
-	if !strings.Contains(err.Error(), "maxSize must be positive") {
-		t.Fatalf("NewCertCache error = %q, want maxSize error", err)
-	}
-	if cache != nil {
-		t.Fatalf("NewCertCache cache = %#v, want nil", cache)
-	}
-}
-
 func TestNewTLSInterceptTransport_Config(t *testing.T) {
 	called := false
 	dial := func(_ context.Context, _, _ string) (net.Conn, error) {

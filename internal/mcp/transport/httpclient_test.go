@@ -32,6 +32,48 @@ func drain(t *testing.T, r MessageReader) {
 	}
 }
 
+func startRawHTTPResponseServer(t *testing.T, response string) (string, <-chan error) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		br := bufio.NewReader(conn)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, err = io.WriteString(conn, response)
+		errCh <- err
+	}()
+
+	t.Cleanup(func() { _ = ln.Close() })
+	return "http://" + ln.Addr().String(), errCh
+}
+
+func waitRawHTTPResponseServer(t *testing.T, errCh <-chan error) {
+	t.Helper()
+	if err := <-errCh; err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("raw HTTP server: %v", err)
+	}
+}
+
 func TestHTTPClient_JSONResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify request headers.
@@ -101,6 +143,57 @@ func TestHTTPClient_SSEResponse(t *testing.T) {
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF after SSE events, got %v", err)
+	}
+}
+
+func TestHTTPClient_SendMessage_MalformedResponseSanitizesRequestError(t *testing.T) {
+	const injected = "INJECTED-FORGED-LOG"
+	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 200 OK\r\n"+injected+"\r\nContent-Length: 0\r\n\r\n")
+
+	c := NewHTTPClient(url, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if err == nil {
+		t.Fatal("expected malformed upstream response error")
+	}
+	if !errors.Is(err, ErrUpstreamRequestFailed) {
+		t.Fatalf("errors.Is(err, ErrUpstreamRequestFailed) = false; err=%v", err)
+	}
+	if strings.Contains(err.Error(), injected) {
+		t.Fatalf("error leaked malformed upstream bytes: %q", err.Error())
+	}
+	waitRawHTTPResponseServer(t, errCh)
+}
+
+func TestHTTPClient_OpenGETStream_MalformedResponseSanitizesRequestError(t *testing.T) {
+	const injected = "INJECTED-FORGED-GET-LOG"
+	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 200 OK\r\n"+injected+"\r\nContent-Type: text/event-stream\r\n\r\n")
+
+	c := NewHTTPClient(url, nil)
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected malformed upstream response error")
+	}
+	if !errors.Is(err, ErrUpstreamRequestFailed) {
+		t.Fatalf("errors.Is(err, ErrUpstreamRequestFailed) = false; err=%v", err)
+	}
+	if strings.Contains(err.Error(), injected) {
+		t.Fatalf("error leaked malformed upstream bytes: %q", err.Error())
+	}
+	waitRawHTTPResponseServer(t, errCh)
+}
+
+func TestHTTPClient_ClientDoCancellationPreserved(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := NewHTTPClient("http://127.0.0.1:1", nil)
+	_, err := c.SendMessage(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendMessage error = %v, want context.Canceled", err)
+	}
+	_, err = c.OpenGETStream(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("OpenGETStream error = %v, want context.Canceled", err)
 	}
 }
 
@@ -625,6 +718,27 @@ func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "session delete") {
 		t.Errorf("expected connection error log, got: %s", logBuf.String())
 	}
+}
+
+func TestHTTPClient_DeleteSession_MalformedResponseLogsSentinel(t *testing.T) {
+	const injected = "INJECTED-DELETE-FORGED-LOG"
+	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 204 No Content\r\n"+injected+"\r\n\r\n")
+
+	c := NewHTTPClient(url, nil)
+	c.sessionID = "sess-malformed-delete"
+
+	var logBuf strings.Builder
+	c.DeleteSession(&logBuf)
+	if !strings.Contains(logBuf.String(), ErrUpstreamRequestFailed.Error()) {
+		t.Fatalf("delete log = %q, want sentinel", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), injected) {
+		t.Fatalf("delete log leaked malformed upstream bytes: %q", logBuf.String())
+	}
+	if c.SessionID() != "" {
+		t.Fatalf("session ID = %q, want cleared after failed DELETE attempt", c.SessionID())
+	}
+	waitRawHTTPResponseServer(t, errCh)
 }
 
 func TestHTTPClient_DeleteSession_ConnectionError_NilLog(t *testing.T) {

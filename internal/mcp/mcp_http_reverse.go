@@ -41,6 +41,7 @@ const (
 	listenerLastEventID        = "Last-Event-ID"
 	listenerProtocolVersion    = "Mcp-Protocol-Version"
 	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version, Last-Event-ID"
+	maxAuditSessionKeyLen      = 128
 )
 
 type mcpListenerBlockDecision struct {
@@ -476,7 +477,7 @@ func RunHTTPListenerProxy(
 			if opts.Store != nil {
 				reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
 			}
-			auditSessionKey := r.Header.Get("Mcp-Session-Id")
+			auditSessionKey := sanitizeAuditSessionKey(r.Header.Get("Mcp-Session-Id"))
 			if auditSessionKey == "" {
 				auditSessionKey = hashSessionKey(adaptiveHostFromRemoteAddr(r.RemoteAddr))
 			}
@@ -612,7 +613,7 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
@@ -735,7 +736,7 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
@@ -744,6 +745,13 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+			}
+			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream DELETE returned unsupported HTTP %d\n", upResp.StatusCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
 			}
 			w.WriteHeader(upResp.StatusCode)
 			return
@@ -835,12 +843,13 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Use Mcp-Session-Id header as chain detection session key so
-		// concurrent clients don't share tool call history. When no
-		// session ID is present, fall back to the client IP (without
-		// port) so all requests from the same agent share chain history
-		// even across separate TCP connections.
-		chainSessionKey := r.Header.Get("Mcp-Session-Id")
+		// Use a sanitized Mcp-Session-Id header as the audit and chain
+		// detection session key so concurrent clients don't share tool call
+		// history. This preserves equality for well-formed IDs. Residual risk:
+		// an attacker who already knows a valid session ID can still
+		// mis-attribute audit records; enforcement is unaffected because
+		// adaptive risk scoring uses the remote address recorder.
+		chainSessionKey := sanitizeAuditSessionKey(r.Header.Get("Mcp-Session-Id"))
 		auditSessionKey := chainSessionKey
 		if chainSessionKey == "" {
 			host := adaptiveHostFromRemoteAddr(r.RemoteAddr)
@@ -1019,7 +1028,7 @@ func RunHTTPListenerProxy(
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+			logUpstreamRequestError(safeLogW, r.Context())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
@@ -1436,6 +1445,42 @@ func validMCPSessionID(values []string) bool {
 		}
 	}
 	return true
+}
+
+func logUpstreamRequestError(logW io.Writer, ctx context.Context) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: upstream error: %v\n", ctxErr)
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: upstream error: %v\n", transport.ErrUpstreamRequestFailed)
+}
+
+func sanitizeAuditSessionKey(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(min(len(raw), maxAuditSessionKeyLen))
+	for i := range len(raw) {
+		c := raw[i]
+		if c < 0x20 || c == 0x7f {
+			continue
+		}
+		if b.Len() == maxAuditSessionKeyLen {
+			break
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func validMCPSessionDeleteStatus(status int) bool {
+	switch status {
+	case http.StatusOK, http.StatusAccepted, http.StatusNoContent:
+		return true
+	default:
+		return false
+	}
 }
 
 func validMCPProtocolVersion(values []string) bool {

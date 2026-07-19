@@ -6,16 +6,20 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
@@ -111,6 +115,42 @@ func writeSwitchingProtocolsResponse(t *testing.T, w http.ResponseWriter, conten
 	}
 	defer func() { _ = conn.Close() }()
 	_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nContent-Type: "+contentType+"\r\nConnection: Upgrade\r\nUpgrade: mcp-test\r\n\r\n"+body)
+}
+
+func newStreamableAuditLogger(t *testing.T) (*audit.Logger, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	t.Cleanup(logger.Close)
+	return logger, path
+}
+
+func readStreamableAuditSessions(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile(audit): %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	sessions := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("Unmarshal(audit): %v; line=%s", err, line)
+		}
+		sessionValue, ok := entry["session"].(string)
+		if !ok {
+			t.Fatalf("audit session missing or non-string in %s", line)
+		}
+		sessions = append(sessions, sessionValue)
+	}
+	return sessions
 }
 
 func TestHTTPListener_GETStreamForwardsScannedSSE(t *testing.T) {
@@ -766,29 +806,32 @@ func TestHTTPListener_POSTFailsClosedOnUnexpected2xxStatus(t *testing.T) {
 }
 
 func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *testing.T) {
-	for _, status := range []int{
-		http.StatusOK,
-		http.StatusAccepted,
-		http.StatusNoContent,
-		http.StatusPartialContent,
-		http.StatusFound,
-		http.StatusForbidden,
-		http.StatusInternalServerError,
-		http.StatusSwitchingProtocols,
+	for _, tc := range []struct {
+		status     int
+		wantStatus int
+	}{
+		{status: http.StatusOK, wantStatus: http.StatusOK},
+		{status: http.StatusAccepted, wantStatus: http.StatusAccepted},
+		{status: http.StatusNoContent, wantStatus: http.StatusNoContent},
+		{status: http.StatusPartialContent, wantStatus: http.StatusBadGateway},
+		{status: http.StatusFound, wantStatus: http.StatusBadGateway},
+		{status: http.StatusForbidden, wantStatus: http.StatusBadGateway},
+		{status: http.StatusInternalServerError, wantStatus: http.StatusBadGateway},
+		{status: http.StatusSwitchingProtocols, wantStatus: http.StatusBadGateway},
 	} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			const upstreamBody = "DELETE upstream body must not leak"
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodDelete {
 					t.Fatalf("method = %s, want DELETE", r.Method)
 				}
-				if status == http.StatusSwitchingProtocols {
+				if tc.status == http.StatusSwitchingProtocols {
 					writeSwitchingProtocolsResponse(t, w, "text/plain", upstreamBody)
 					return
 				}
 				w.Header().Set("Location", "http://evil.example.test/delete")
 				w.Header().Set("Content-Type", "text/plain")
-				w.WriteHeader(status)
+				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(upstreamBody))
 			}))
 			defer upstream.Close()
@@ -808,16 +851,102 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 				t.Fatalf("ReadAll: %v", err)
 			}
 
-			if resp.StatusCode != status {
-				t.Fatalf("status = %d, want forwarded status %d; body=%s", resp.StatusCode, status, body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
 			}
-			if len(body) != 0 {
+			if tc.wantStatus == tc.status && len(body) != 0 {
 				t.Fatalf("DELETE body = %q, want empty", body)
+			}
+			if bytes.Contains(body, []byte(upstreamBody)) {
+				t.Fatalf("DELETE upstream body leaked: %s", body)
 			}
 			if got := resp.Header.Get("Location"); got != "" {
 				t.Fatalf("Location header leaked from upstream: %q", got)
 			}
 		})
+	}
+}
+
+func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
+	const dlpToken = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	rawSessionID := strings.Repeat("S", maxAuditSessionKeyLen+40)
+	wantSessionID := rawSessionID[:maxAuditSessionKeyLen]
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			rec := &mockRecorder{escalateOnNext: true}
+			store := &mockStore{rec: rec}
+			auditLogger, auditPath := newStreamableAuditLogger(t)
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner:     testScannerForHTTP(t),
+				InputCfg:    newHTTPInputCfg(config.ActionBlock),
+				Store:       store,
+				AdaptiveCfg: adaptiveCfgEnabled(),
+				AuditLogger: auditLogger,
+			})
+
+			var body io.Reader
+			if method == http.MethodPost {
+				body = strings.NewReader(jsonToolsList)
+			}
+			req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", body)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Mcp-Session-Id", rawSessionID)
+			req.Header.Set("Authorization", "Bearer "+dlpToken)
+			if method == http.MethodGet {
+				req.Header.Set("Accept", "text/event-stream")
+			}
+			if method == http.MethodPost {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			_, _ = io.Copy(io.Discard, resp.Body)
+
+			sessions := readStreamableAuditSessions(t, auditPath)
+			if len(sessions) != 1 {
+				t.Fatalf("audit sessions = %v, want one event", sessions)
+			}
+			if sessions[0] != wantSessionID {
+				t.Fatalf("audit session len=%d value=%q, want len=%d value=%q", len(sessions[0]), sessions[0], len(wantSessionID), wantSessionID)
+			}
+			if upstreamCalls.Load() != 0 {
+				t.Fatalf("upstream calls = %d, want 0 after listener-header DLP block", upstreamCalls.Load())
+			}
+		})
+	}
+}
+
+func TestSanitizeAuditSessionKeyStripsControlsCapsAndPreservesEquality(t *testing.T) {
+	raw := "clean" + string([]byte{0x00, '\t', '\n', '\r', 0x1f, 0x7f}) + strings.Repeat("A", maxAuditSessionKeyLen+16)
+	got := sanitizeAuditSessionKey(raw)
+	if strings.ContainsAny(got, "\x00\t\n\r\x1f\x7f") {
+		t.Fatalf("sanitized session still contains control bytes: %q", got)
+	}
+	if len(got) != maxAuditSessionKeyLen {
+		t.Fatalf("sanitized session len = %d, want %d", len(got), maxAuditSessionKeyLen)
+	}
+
+	const legit = "legit-session-123"
+	gotA := sanitizeAuditSessionKey(legit)
+	gotB := sanitizeAuditSessionKey(legit)
+	if gotA != gotB {
+		t.Fatal("same legit session ID did not preserve equality")
+	}
+	if gotA != legit {
+		t.Fatalf("legit session changed: got %q, want %q", gotA, legit)
 	}
 }
 
@@ -1258,9 +1387,12 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		statusCode int
+		wantStatus int
 	}{
-		{name: "accepted", statusCode: http.StatusAccepted},
-		{name: "unsupported", statusCode: http.StatusMethodNotAllowed},
+		{name: "ok", statusCode: http.StatusOK, wantStatus: http.StatusOK},
+		{name: "accepted", statusCode: http.StatusAccepted, wantStatus: http.StatusAccepted},
+		{name: "no_content", statusCode: http.StatusNoContent, wantStatus: http.StatusNoContent},
+		{name: "unsupported", statusCode: http.StatusMethodNotAllowed, wantStatus: http.StatusBadGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "session-delete"
@@ -1291,8 +1423,8 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 				t.Fatalf("ReadAll: %v", err)
 			}
 
-			if resp.StatusCode != tc.statusCode {
-				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.statusCode, body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
 			}
 			obs := receiveStreamableUpstreamObservation(t, upstreamObs)
 			if obs.method != http.MethodDelete {
@@ -1301,14 +1433,17 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 			if obs.session != sessionID {
 				t.Fatalf("upstream session = %q, want %q", obs.session, sessionID)
 			}
-			if len(bytes.TrimSpace(body)) != 0 {
+			if tc.wantStatus == tc.statusCode && len(bytes.TrimSpace(body)) != 0 {
 				t.Fatalf("DELETE response body = %q, want empty", body)
+			}
+			if bytes.Contains(body, []byte("upstream body must not leak")) {
+				t.Fatalf("DELETE upstream body leaked: %s", body)
 			}
 		})
 	}
 }
 
-func TestHTTPListener_DELETEMirrorsUpstreamServerErrorStatus(t *testing.T) {
+func TestHTTPListener_DELETEConvertsUpstreamServerErrorStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "upstream body must not leak", http.StatusInternalServerError)
 	}))
@@ -1329,14 +1464,14 @@ func TestHTTPListener_DELETEMirrorsUpstreamServerErrorStatus(t *testing.T) {
 		t.Fatalf("ReadAll: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body=%s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", resp.StatusCode, body)
 	}
 	if bytes.Contains(body, []byte("upstream body must not leak")) {
 		t.Fatalf("DELETE upstream error body leaked: %s", body)
 	}
-	if len(bytes.TrimSpace(body)) != 0 {
-		t.Fatalf("DELETE response body = %q, want empty", body)
+	if len(bytes.TrimSpace(body)) == 0 {
+		t.Fatal("DELETE rejected-status response body is empty, want sanitized error body")
 	}
 }
 

@@ -33,6 +33,11 @@ var ErrCompressedResponse = errors.New("compressed response cannot be scanned")
 // silently skip upstream content instead of failing closed.
 var ErrNonSSEStreamResponse = errors.New("GET stream response is not text/event-stream")
 
+// ErrUpstreamRequestFailed indicates the HTTP request to the upstream failed
+// before a response could be safely processed. It intentionally omits the raw
+// client.Do error because Go may include upstream-controlled response bytes.
+var ErrUpstreamRequestFailed = errors.New("upstream request failed")
+
 // hasNonIdentityEncoding mirrors internal/proxy/bodyscan.hasNonIdentityEncoding.
 // Duplicated here to avoid an import cycle (proxy depends on mcp/transport).
 func hasNonIdentityEncoding(ce string) bool {
@@ -165,7 +170,10 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, ErrUpstreamRequestFailed
 	}
 
 	trackSessionID := func() {
@@ -328,7 +336,10 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP GET: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, ErrUpstreamRequestFailed
 	}
 
 	if resp.StatusCode == http.StatusMethodNotAllowed {
@@ -381,6 +392,11 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	if sid == "" {
 		return
 	}
+	clearSession := func() {
+		c.sessionMu.Lock()
+		c.sessionID = ""
+		c.sessionMu.Unlock()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -401,8 +417,13 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	resp, err := c.client.Do(req)
 	if err != nil {
 		if logW != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", ctxErr)
+			} else {
+				_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", ErrUpstreamRequestFailed)
+			}
 		}
+		clearSession()
 		return
 	}
 	_ = resp.Body.Close()
@@ -410,9 +431,7 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	// Clear session ID unconditionally - even if the server returned an error,
 	// the session should not be reused (prevents stale Mcp-Session-Id headers
 	// on subsequent requests if reconnection occurs).
-	c.sessionMu.Lock()
-	c.sessionID = ""
-	c.sessionMu.Unlock()
+	clearSession()
 
 	if resp.StatusCode >= 400 && logW != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: session delete: server returned HTTP %d\n", resp.StatusCode)

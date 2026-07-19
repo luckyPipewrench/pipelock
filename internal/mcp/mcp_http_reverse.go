@@ -468,6 +468,26 @@ func RunHTTPListenerProxy(
 		// path runs must also run here. Otherwise an agent could leak a
 		// credential-shaped header to the upstream by choosing GET or DELETE
 		// over POST to dodge header DLP.
+		recordGETDeleteHeaderAdaptiveSignal := func(sig session.SignalType) {
+			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+				return
+			}
+			var reqRec session.Recorder
+			if opts.Store != nil {
+				reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
+			}
+			auditSessionKey := r.Header.Get("Mcp-Session-Id")
+			if auditSessionKey == "" {
+				auditSessionKey = hashSessionKey(adaptiveHostFromRemoteAddr(r.RemoteAddr))
+			}
+			decide.RecordSignal(reqRec, sig, decide.EscalationParams{
+				Threshold:     adaptiveCfg.EscalationThreshold,
+				Logger:        opts.AuditLogger,
+				Metrics:       opts.Metrics,
+				ConsoleWriter: safeLogW,
+				Session:       auditSessionKey,
+			})
+		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
 			if headerResult == nil {
@@ -487,6 +507,7 @@ func RunHTTPListenerProxy(
 				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
 				receiptSeverity: config.SeverityHigh,
 			})
+			recordGETDeleteHeaderAdaptiveSignal(session.SignalBlock)
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -517,6 +538,16 @@ func RunHTTPListenerProxy(
 				target:          mcpReceiptA2AHeaderTarget,
 				receiptSeverity: config.SeverityHigh,
 			})
+			switch {
+			case headerResult.IsAdaptiveNeutral():
+				// Score-neutral: infrastructure errors in A2A headers
+				// (e.g., DNS timeout resolving an Extensions URL) are
+				// not evidence of agent misbehavior.
+			case headerResult.IsConfigMismatch():
+				recordGETDeleteHeaderAdaptiveSignal(session.SignalNearMiss)
+			default:
+				recordGETDeleteHeaderAdaptiveSignal(session.SignalBlock)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -596,6 +627,13 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
+			if upResp.StatusCode != http.StatusOK {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned HTTP %d\n", upResp.StatusCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
+				return
+			}
 			if contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ","); hasNonIdentityEncoding(contentEncoding) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
 				info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
@@ -608,7 +646,7 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("compressed response cannot be scanned")))
 				return
 			}
-			if !isSSEContentType(upResp.Header.Get("Content-Type")) {
+			if !hasSingleSSEContentType(upResp.Header) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned non-SSE Content-Type %q\n", upResp.Header.Get("Content-Type"))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -996,10 +1034,29 @@ func RunHTTPListenerProxy(
 			return
 		}
 
+		// Redirect or other 3xx responses are not valid MCP response
+		// envelopes for this listener. The upstream client is configured not
+		// to follow redirects; forwarding a 3xx body would let an upstream
+		// smuggle arbitrary response content around the normal status contract.
+		if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned HTTP %d redirect\n", upResp.StatusCode)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
+			return
+		}
+
 		// Upstream error: sanitize before forwarding (don't leak body content
 		// that could contain injection payloads).
 		if upResp.StatusCode >= 400 {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
+			return
+		}
+		if upResp.StatusCode != http.StatusOK {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned unexpected HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
@@ -1040,8 +1097,7 @@ func RunHTTPListenerProxy(
 		//
 		// nil tracker: HTTP reverse proxy pairs each request/response via HTTP
 		// semantics, so confused deputy tracking is handled at the transport level.
-		upstreamCT := upResp.Header.Get("Content-Type")
-		upstreamIsSSE := isSSEContentType(upstreamCT)
+		upstreamIsSSE := hasSingleSSEContentType(upResp.Header)
 		var reader transport.MessageReader
 		if upstreamIsSSE {
 			reader = transport.NewSSEReader(upResp.Body)

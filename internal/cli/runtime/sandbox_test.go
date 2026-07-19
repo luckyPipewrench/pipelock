@@ -109,9 +109,12 @@ func TestSandboxCmdDryRunJSON(t *testing.T) {
 	cmd := SandboxCmd()
 	cmd.SilenceUsage = true
 	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", "echo", "ok"})
-	var out bytes.Buffer
+	var out, stderr bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	// Keep stderr separate: on a runner without user namespaces the sandbox
+	// reports "degraded" and the command prints an error to stderr. Mixing it
+	// into out corrupts the JSON and flakes the unmarshal below.
+	cmd.SetErr(&stderr)
 
 	execErr := cmd.Execute()
 

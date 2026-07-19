@@ -1,3 +1,21 @@
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # CI uploads five coverage reports on successful runs: the four Go 1.25
+    # enterprise shards plus the merged sandbox subprocess profile. Without
+    # this, Codecov posts statuses and updates badges after the first partial
+    # upload, then revises the result as later shards arrive.
+    after_n_builds: 5
+    wait_for_ci: true
+
+parsers:
+  go:
+    # Go profiles are statement-based. A physical line can contain both covered
+    # and uncovered statements; counting Codecov partials as hits keeps the
+    # badge aligned with Go's own coverage model instead of treating those
+    # lines as fully missed.
+    partials_as_hits: true
+
 coverage:
   status:
     project:
@@ -43,7 +61,7 @@ ignore:
   # live-proxy flows. They are validated through integration/demo tests and
   # published audit-packet verification rather than treated as core library
   # unit-coverage denominator for the OpenSSF badge.
-  - "cmd/pipelock-playground-*"
+  - "cmd/pipelock-playground-*/**"
   - "internal/playground/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
   # Remaining sandbox paths require kernel capabilities unavailable on GitHub's

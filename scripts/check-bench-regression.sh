@@ -124,7 +124,14 @@ fi
 # current, straight from the raw `go test -bench` output. Min-of-N is the most
 # noise-resistant single statistic (the least-contended run) and needs no
 # benchstat. A benchmark must appear in BOTH files to be compared.
-set +e
+#
+# awk exit contract (distinct sentinels so an awk fatal error is never mistaken
+# for a valid outcome): 0 = comparison done (regressions, if any, are in
+# "$failures"); 3 = no overlapping benchmarks to compare. awk fatally exits 2 on
+# its own errors, so 2 must NOT be a business sentinel — any exit other than 0/3
+# is treated as a hard failure, never as a clean run. `|| awk_status=$?` captures
+# the code without disabling errexit globally.
+awk_status=0
 awk -v threshold="$threshold" '
 	function nsop(   i, v) {
 		for (i = 1; i <= NF; i++) {
@@ -153,17 +160,22 @@ awk -v threshold="$threshold" '
 				if (pct > threshold + 0) printf "%s +%.2f%%\n", name, pct
 			}
 		}
-		if (!seen) exit 2
+		if (!seen) exit 3
 	}
-' "$BENCH_BASELINE" "$current" >"$failures"
-awk_status=$?
-set -e
+' "$BENCH_BASELINE" "$current" >"$failures" || awk_status=$?
 
-if [[ "$awk_status" -eq 2 ]]; then
-	echo "bench-regression: no benchmark names overlap between baseline and current run; cannot compare" >&2
-	echo "bench-regression: ensure BENCH_PATTERN/BENCH_PACKAGES match the baseline, or regenerate with: make bench-baseline" >&2
-	exit 2
-fi
+case "$awk_status" in
+	0) ;;
+	3)
+		echo "bench-regression: no benchmark names overlap between baseline and current run; cannot compare" >&2
+		echo "bench-regression: ensure BENCH_PATTERN/BENCH_PACKAGES match the baseline, or regenerate with: make bench-baseline" >&2
+		exit 2
+		;;
+	*)
+		echo "bench-regression: benchmark comparison failed unexpectedly (awk exit $awk_status)" >&2
+		exit 2
+		;;
+esac
 
 if [[ -s "$failures" ]]; then
 	echo "bench-regression: detected ns/op regressions above +${threshold}%:" >&2

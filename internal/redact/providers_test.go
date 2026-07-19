@@ -187,14 +187,16 @@ func TestProviderRegistry_RejectsInvalidProviderSpecs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		spec ProviderSpec
-		want string
+		name         string
+		providerName string // registry key; defaults to "provider" when empty
+		spec         ProviderSpec
+		want         string
 	}{
 		{
-			name: "invalid provider name",
-			spec: ProviderSpec{HostPatterns: []string{"api.provider.example"}, Parser: ParserJSON},
-			want: "must match [a-z0-9][a-z0-9_-]*",
+			name:         "invalid provider name",
+			providerName: "Bad Provider",
+			spec:         ProviderSpec{HostPatterns: []string{"api.provider.example"}, Parser: ParserJSON},
+			want:         "must match [a-z0-9][a-z0-9_-]*",
 		},
 		{
 			name: "missing hosts",
@@ -221,9 +223,9 @@ func TestProviderRegistry_RejectsInvalidProviderSpecs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			providerName := "provider"
-			if tt.name == "invalid provider name" {
-				providerName = "Bad Provider"
+			providerName := tt.providerName
+			if providerName == "" {
+				providerName = "provider"
 			}
 			_, err := NewProviderRegistry(map[string]ProviderSpec{providerName: tt.spec})
 			if err == nil {

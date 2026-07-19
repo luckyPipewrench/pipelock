@@ -315,13 +315,15 @@ type CertCache struct {
 }
 
 // NewCertCache creates a certificate cache that generates leaf certs on demand.
-// Panics if ca or caKey is nil, or maxSize <= 0 (programming errors after config validation).
-func NewCertCache(ca *x509.Certificate, caKey crypto.PrivateKey, ttl time.Duration, maxSize int) *CertCache {
-	if ca == nil || caKey == nil {
-		panic("certgen: NewCertCache called with nil CA certificate or key")
+func NewCertCache(ca *x509.Certificate, caKey crypto.PrivateKey, ttl time.Duration, maxSize int) (*CertCache, error) {
+	if ca == nil {
+		return nil, errors.New("certgen: nil CA certificate")
+	}
+	if caKey == nil {
+		return nil, errors.New("certgen: nil CA private key")
 	}
 	if maxSize <= 0 {
-		panic("certgen: NewCertCache called with non-positive maxSize")
+		return nil, fmt.Errorf("certgen: cert cache maxSize must be positive, got %d", maxSize)
 	}
 	return &CertCache{
 		certs:   make(map[string]*cachedCert),
@@ -329,7 +331,7 @@ func NewCertCache(ca *x509.Certificate, caKey crypto.PrivateKey, ttl time.Durati
 		ca:      ca,
 		caKey:   caKey,
 		ttl:     ttl,
-	}
+	}, nil
 }
 
 // Get returns a cached cert or generates a new one.

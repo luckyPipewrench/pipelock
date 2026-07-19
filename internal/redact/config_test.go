@@ -404,6 +404,30 @@ func TestConfig_LimitsSpecToLimitsPassthrough(t *testing.T) {
 	}
 }
 
+func TestConfig_BuildProviderRegistry(t *testing.T) {
+	t.Parallel()
+
+	c := Config{
+		Providers: map[string]ProviderSpec{
+			"custom_provider": {
+				HostPatterns: []string{"api.provider.example"},
+				Parser:       ParserJSON,
+			},
+		},
+	}
+	registry, err := c.BuildProviderRegistry()
+	if err != nil {
+		t.Fatalf("BuildProviderRegistry: %v", err)
+	}
+	provider, parser := registry.Match(RequestMetadata{Host: "api.provider.example", Path: "/v1/messages"})
+	if provider != "custom_provider" {
+		t.Fatalf("provider = %q, want custom_provider", provider)
+	}
+	if parser != ParserJSON {
+		t.Fatalf("parser = %q, want %q", parser, ParserJSON)
+	}
+}
+
 func TestConfig_DefaultsInert(t *testing.T) {
 	t.Parallel()
 	d := DefaultConfig()

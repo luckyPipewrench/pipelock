@@ -1867,7 +1867,10 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 		return fmt.Errorf("load TLS CA: %w (run 'pipelock tls init' to generate)", err)
 	}
 	ttl, _ := time.ParseDuration(cfg.TLSInterception.CertTTL) // already validated
-	cache := certgen.NewCertCache(ca, caKey, ttl, cfg.TLSInterception.CertCacheSize)
+	cache, err := certgen.NewCertCache(ca, caKey, ttl, cfg.TLSInterception.CertCacheSize)
+	if err != nil {
+		return fmt.Errorf("create TLS cert cache: %w", err)
+	}
 	p.certCachePtr.Store(cache)
 	return nil
 }

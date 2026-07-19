@@ -5,6 +5,7 @@ package certgen
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -33,6 +34,15 @@ const (
 	testCertPath    = "/tmp/ca.pem"
 	testValidityDay = 24 * time.Hour
 )
+
+func mustNewCertCache(t *testing.T, ca *x509.Certificate, caKey crypto.PrivateKey, ttl time.Duration, maxSize int) *CertCache {
+	t.Helper()
+	cache, err := NewCertCache(ca, caKey, ttl, maxSize)
+	if err != nil {
+		t.Fatalf("NewCertCache: %v", err)
+	}
+	return cache
+}
 
 func TestGenerateCA(t *testing.T) {
 	cert, key, pemBytes, err := GenerateCA("Test Org", 24*time.Hour)
@@ -130,7 +140,7 @@ func TestCertCache_GetGeneratesOnMiss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 100)
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 100)
 	cert, err := cache.Get("example.com")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -148,7 +158,7 @@ func TestCertCache_GetReturnsCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 100)
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 100)
 	cert1, _ := cache.Get("example.com")
 	cert2, _ := cache.Get("example.com")
 	// Same pointer means cache hit.
@@ -162,7 +172,7 @@ func TestCertCache_EvictsWhenFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 3) // cap at 3
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 3) // cap at 3
 	for i := range 5 {
 		_, err := cache.Get(fmt.Sprintf("host%d.example.com", i))
 		if err != nil {
@@ -179,7 +189,7 @@ func TestCertCache_RegeneratesExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, 2*time.Second, 100)
+	cache := mustNewCertCache(t, ca, caKey, 2*time.Second, 100)
 	cert1, _ := cache.Get("example.com")
 
 	// Manually expire the cached entry.
@@ -198,7 +208,7 @@ func TestCertCache_ConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 1000)
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 1000)
 	var wg sync.WaitGroup
 	for i := range 100 {
 		wg.Add(1)
@@ -341,7 +351,7 @@ func TestLoadCA_RejectsNonCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 100)
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 100)
 	// Get a leaf cert (not a CA).
 	leafCert, err := cache.Get("example.com")
 	if err != nil {
@@ -592,39 +602,197 @@ func TestWriteCAFiles_ReadOnlyDir(t *testing.T) {
 	}
 }
 
-func TestNewCertCache_PanicsOnNilCA(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil CA")
-		}
-	}()
-	NewCertCache(nil, nil, time.Hour, 100)
-}
-
-func TestNewCertCache_PanicsOnZeroMaxSize(t *testing.T) {
+func TestNewCertCache_RejectsInvalidInputs(t *testing.T) {
 	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for zero maxSize")
-		}
-	}()
-	NewCertCache(ca, caKey, time.Hour, 0)
+
+	tests := []struct {
+		name    string
+		ca      *x509.Certificate
+		caKey   crypto.PrivateKey
+		maxSize int
+		want    string
+	}{
+		{
+			name:    "nil ca",
+			caKey:   caKey,
+			maxSize: 100,
+			want:    "nil CA certificate",
+		},
+		{
+			name:    "nil ca key",
+			ca:      ca,
+			maxSize: 100,
+			want:    "nil CA private key",
+		},
+		{
+			name:    "zero max size",
+			ca:      ca,
+			caKey:   caKey,
+			maxSize: 0,
+			want:    "maxSize must be positive, got 0",
+		},
+		{
+			name:    "negative max size",
+			ca:      ca,
+			caKey:   caKey,
+			maxSize: -1,
+			want:    "maxSize must be positive, got -1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache, err := NewCertCache(tt.ca, tt.caKey, time.Hour, tt.maxSize)
+			if err == nil {
+				t.Fatalf("NewCertCache returned cache %#v, want error", cache)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("NewCertCache error = %q, want to contain %q", err, tt.want)
+			}
+			if cache != nil {
+				t.Fatalf("NewCertCache cache = %#v, want nil", cache)
+			}
+		})
+	}
 }
 
-func TestNewCertCache_PanicsOnNegativeMaxSize(t *testing.T) {
+func TestNewCertCache_Succeeds(t *testing.T) {
 	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for negative maxSize")
-		}
-	}()
-	NewCertCache(ca, caKey, time.Hour, -1)
+	cache, err := NewCertCache(ca, caKey, time.Hour, 1)
+	if err != nil {
+		t.Fatalf("NewCertCache: %v", err)
+	}
+	if cache == nil {
+		t.Fatal("NewCertCache returned nil cache")
+	}
+	if cache.Size() != 0 {
+		t.Fatalf("new cache size = %d, want 0", cache.Size())
+	}
+}
+
+func TestCertCache_GetGeneratesIPAndHostnameSANs(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 10)
+
+	tests := []struct {
+		name    string
+		host    string
+		wantDNS string
+		wantIP  net.IP
+	}{
+		{
+			name:    "hostname",
+			host:    "api.vendor.example",
+			wantDNS: "api.vendor.example",
+		},
+		{
+			name:   "ipv4",
+			host:   "192.0.2.10",
+			wantIP: net.ParseIP("192.0.2.10"),
+		},
+		{
+			name:   "ipv6",
+			host:   "2001:db8::10",
+			wantIP: net.ParseIP("2001:db8::10"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			leaf, err := cache.Get(tt.host)
+			if err != nil {
+				t.Fatalf("Get(%q): %v", tt.host, err)
+			}
+			parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+			if err != nil {
+				t.Fatalf("ParseCertificate: %v", err)
+			}
+			if tt.wantDNS != "" {
+				if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != tt.wantDNS {
+					t.Fatalf("DNSNames = %v, want [%s]", parsed.DNSNames, tt.wantDNS)
+				}
+				if len(parsed.IPAddresses) != 0 {
+					t.Fatalf("IPAddresses = %v, want none", parsed.IPAddresses)
+				}
+			}
+			if tt.wantIP != nil {
+				if len(parsed.IPAddresses) != 1 || !parsed.IPAddresses[0].Equal(tt.wantIP) {
+					t.Fatalf("IPAddresses = %v, want [%s]", parsed.IPAddresses, tt.wantIP)
+				}
+				if len(parsed.DNSNames) != 0 {
+					t.Fatalf("DNSNames = %v, want none", parsed.DNSNames)
+				}
+			}
+		})
+	}
+}
+
+func TestCertCache_GetReplacesExpiredEntry(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 2)
+
+	cert1, err := cache.Get("expiring.vendor.example")
+	if err != nil {
+		t.Fatalf("Get first: %v", err)
+	}
+	cache.mu.Lock()
+	cache.certs["expiring.vendor.example"].expiresAt = time.Now().Add(-time.Second)
+	cache.mu.Unlock()
+
+	cert2, err := cache.Get("expiring.vendor.example")
+	if err != nil {
+		t.Fatalf("Get second: %v", err)
+	}
+	if cert1 == cert2 {
+		t.Fatal("expired cache entry returned same certificate pointer, want regenerated certificate")
+	}
+	if cache.Size() != 1 {
+		t.Fatalf("cache size = %d, want 1", cache.Size())
+	}
+}
+
+func TestCertCache_GetEvictsAtCapacity(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 1)
+
+	if _, err := cache.Get("first.vendor.example"); err != nil {
+		t.Fatalf("Get first: %v", err)
+	}
+	cache.mu.Lock()
+	cache.certs["first.vendor.example"].expiresAt = time.Now().Add(10 * time.Minute)
+	cache.mu.Unlock()
+
+	if _, err := cache.Get("second.vendor.example"); err != nil {
+		t.Fatalf("Get second: %v", err)
+	}
+	if cache.Size() != 1 {
+		t.Fatalf("cache size = %d, want 1", cache.Size())
+	}
+	cache.mu.RLock()
+	_, hasFirst := cache.certs["first.vendor.example"]
+	_, hasSecond := cache.certs["second.vendor.example"]
+	cache.mu.RUnlock()
+	if hasFirst {
+		t.Fatal("first entry still cached, want evicted at capacity")
+	}
+	if !hasSecond {
+		t.Fatal("second entry missing after capacity eviction")
+	}
 }
 
 func TestSaveCA_RefusesOverwrite_KeyExists(t *testing.T) {
@@ -934,7 +1102,7 @@ func TestCertCache_GetReturnsErrorOnBadCA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cache := NewCertCache(ca, edKey, time.Hour, 100)
+	cache := mustNewCertCache(t, ca, edKey, time.Hour, 100)
 	_, err = cache.Get(testHost)
 	if err == nil {
 		t.Error("expected error when CA key is wrong type for signing")
@@ -946,7 +1114,7 @@ func TestCertCache_EvictsExpiredFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 2) // cap at 2
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 2) // cap at 2
 
 	// Insert two entries.
 	if _, err := cache.Get("a.example.com"); err != nil {
@@ -990,7 +1158,7 @@ func TestCertCache_EvictsOldestWhenNoneExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 2) // cap at 2
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 2) // cap at 2
 
 	// Insert two entries with controlled expiration times.
 	if _, err := cache.Get("first.example.com"); err != nil {
@@ -1029,7 +1197,7 @@ func TestCertCache_DoubleCheckAfterWriteLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := NewCertCache(ca, caKey, time.Hour, 100)
+	cache := mustNewCertCache(t, ca, caKey, time.Hour, 100)
 
 	// To exercise the double-check path (line 275-276), we need a scenario where
 	// the entry exists and is valid when the write lock is acquired but was

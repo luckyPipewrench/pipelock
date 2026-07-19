@@ -53,7 +53,10 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := certgen.NewCertCache(ca, caKey, time.Hour, 100)
+	cache, err := certgen.NewCertCache(ca, caKey, time.Hour, 100)
+	if err != nil {
+		t.Fatalf("NewCertCache: %v", err)
+	}
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 
@@ -2610,26 +2613,34 @@ func TestInterceptTunnel_CompressedResponseBlockedViaRoundTripper(t *testing.T) 
 	}
 }
 
-func TestNewCertCache_PanicsOnNilCA(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil CA")
-		}
-	}()
-	certgen.NewCertCache(nil, nil, time.Hour, 100)
+func TestNewCertCache_ReturnsErrorOnNilCA(t *testing.T) {
+	cache, err := certgen.NewCertCache(nil, nil, time.Hour, 100)
+	if err == nil {
+		t.Fatalf("NewCertCache returned cache %#v, want error", cache)
+	}
+	if !strings.Contains(err.Error(), "nil CA certificate") {
+		t.Fatalf("NewCertCache error = %q, want nil CA certificate", err)
+	}
+	if cache != nil {
+		t.Fatalf("NewCertCache cache = %#v, want nil", cache)
+	}
 }
 
-func TestNewCertCache_PanicsOnZeroMaxSize(t *testing.T) {
+func TestNewCertCache_ReturnsErrorOnZeroMaxSize(t *testing.T) {
 	ca, caKey, _, err := certgen.GenerateCA("Test", 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for zero maxSize")
-		}
-	}()
-	certgen.NewCertCache(ca, caKey, time.Hour, 0)
+	cache, err := certgen.NewCertCache(ca, caKey, time.Hour, 0)
+	if err == nil {
+		t.Fatalf("NewCertCache returned cache %#v, want error", cache)
+	}
+	if !strings.Contains(err.Error(), "maxSize must be positive") {
+		t.Fatalf("NewCertCache error = %q, want maxSize error", err)
+	}
+	if cache != nil {
+		t.Fatalf("NewCertCache cache = %#v, want nil", cache)
+	}
 }
 
 func TestNewTLSInterceptTransport_Config(t *testing.T) {

@@ -1949,7 +1949,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// fail-closed below still applies regardless of scanning state, because
 	// pipelock must never forward inspection-resistant bytes through a
 	// security boundary.
-	if IsSSEContentType(resp.Header.Get("Content-Type")) {
+	fwdRespIsSSE := HasSingleSSEContentType(resp.Header)
+	if fwdRespIsSSE {
 		if sc.ResponseScanningEnabled() && fwdRespExempt {
 			p.logger.LogResponseScanExempt(actx, fwdRespHost)
 			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
@@ -2166,7 +2167,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// reorder the blocks. MediaPolicy/BrowserShield have no work to do on
 	// text/event-stream payloads - both target images/audio/video/HTML
 	// content types.
-	if !IsSSEContentType(resp.Header.Get("Content-Type")) &&
+	if !fwdRespIsSSE &&
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {

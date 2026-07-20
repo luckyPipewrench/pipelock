@@ -37,14 +37,70 @@ func TestIsSSEContentType(t *testing.T) {
 		{"with charset", "text/event-stream; charset=utf-8", true},
 		{"uppercase", "Text/Event-Stream", true},
 		{"leading space", "  text/event-stream", true},
+		{"trailing space", "text/event-stream  ", true},
 		{"json", "application/json", false},
 		{"empty", "", false},
-		{"prefix-only mismatch", "text/event-stream-extra", true /* prefix match is intentional; httputil.ReverseProxy uses HasPrefix too */},
+		{"prefix-only mismatch", "text/event-stream-extra", false},
+		{"structured suffix mismatch", "text/event-stream+json", false},
+		{"trailing junk", "text/event-stream junk", false},
+		{"invalid parameter", "text/event-stream; charset", false},
+		{"comma joined duplicate", "text/event-stream, application/json", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsSSEContentType(tc.ct); got != tc.want {
 				t.Errorf("IsSSEContentType(%q) = %v, want %v", tc.ct, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasSingleSSEContentType(t *testing.T) {
+	cases := []struct {
+		name   string
+		header http.Header
+		want   bool
+	}{
+		{
+			name:   "single exact",
+			header: http.Header{"Content-Type": []string{"text/event-stream"}},
+			want:   true,
+		},
+		{
+			name:   "single with parameter",
+			header: http.Header{"Content-Type": []string{"text/event-stream; charset=utf-8"}},
+			want:   true,
+		},
+		{
+			name:   "single lookalike",
+			header: http.Header{"Content-Type": []string{"text/event-stream-extra"}},
+			want:   false,
+		},
+		{
+			name:   "missing",
+			header: http.Header{},
+			want:   false,
+		},
+		{
+			name:   "duplicate exact values",
+			header: http.Header{"Content-Type": []string{"text/event-stream", "text/event-stream"}},
+			want:   false,
+		},
+		{
+			name:   "duplicate sse then json",
+			header: http.Header{"Content-Type": []string{"text/event-stream", "application/json"}},
+			want:   false,
+		},
+		{
+			name:   "duplicate json then sse",
+			header: http.Header{"Content-Type": []string{"application/json", "text/event-stream"}},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasSingleSSEContentType(tc.header); got != tc.want {
+				t.Errorf("HasSingleSSEContentType(%v) = %v, want %v", tc.header, got, tc.want)
 			}
 		})
 	}

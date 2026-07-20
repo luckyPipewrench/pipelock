@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -21,12 +22,20 @@ import (
 // fail-closed block receipt rather than forward the response.
 var ErrSSEResponseCompressed = errors.New("compressed sse response cannot be scanned")
 
-// IsSSEContentType reports whether the response Content-Type header
-// indicates a Server-Sent Events stream. Match is prefix-based so the
-// optional charset parameter ("text/event-stream; charset=utf-8") still
-// counts.
+// IsSSEContentType reports whether a single response Content-Type value
+// indicates a Server-Sent Events stream. Parameters are allowed, but the
+// media type itself must be exactly text/event-stream.
 func IsSSEContentType(contentType string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
+}
+
+// HasSingleSSEContentType mirrors MCP transport hardening: multiple
+// Content-Type values fail closed for SSE classification because there is no
+// unambiguous single media type to route into the streaming scanner.
+func HasSingleSSEContentType(header http.Header) bool {
+	values := header.Values("Content-Type")
+	return len(values) == 1 && IsSSEContentType(values[0])
 }
 
 // IsSSECompressed mirrors hasNonIdentityEncoding for the SSE path so call

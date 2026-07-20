@@ -1413,16 +1413,27 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 	}
 }
 
+// LogAdaptiveRecoveryOptions contains the fields for an adaptive recovery event.
+type LogAdaptiveRecoveryOptions struct {
+	SessionKey string
+	Scope      string
+	From       string
+	To         string
+	Reason     string
+	ClientIP   string
+	RequestID  string
+}
+
 // LogAdaptiveRecovery logs an adaptive enforcement de-escalation.
-func (l *Logger) LogAdaptiveRecovery(sessionKey, scope, from, to, reason, clientIP, requestID string) {
+func (l *Logger) LogAdaptiveRecovery(opts LogAdaptiveRecoveryOptions) {
 	e := newLogEntry(l.zl.Info(), EventAdaptiveRecovery).
-		str("session", sessionKey).
-		optStr("scope", scope).
-		str("from", from).
-		str("to", to).
-		str("reason", reason).
-		optStr("client_ip", clientIP).
-		optStr("request_id", requestID)
+		str("session", opts.SessionKey).
+		optStr("scope", opts.Scope).
+		str("from", opts.From).
+		str("to", opts.To).
+		str("reason", opts.Reason).
+		optStr("client_ip", opts.ClientIP).
+		optStr("request_id", opts.RequestID)
 	e.msg("adaptive enforcement recovered")
 
 	if l.emitter != nil {

@@ -2494,6 +2494,12 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 
 	if baselineResult := sm.CheckBaselineFailClosed(baselineAgentKeyForSessionKey(key), sess); baselineResult != nil {
 		detail := baselineDecisionDetail(baselineResult)
+		level := sess.EffectiveEscalationLevel(scope)
+		autoRecoverAt := sess.ScopedAdaptiveAutoRecoverAt(scope, adaptiveLevelDuration(&cfg.AdaptiveEnforcement))
+		recoverHint := ""
+		if level > 0 {
+			recoverHint = adaptiveRecoverHint
+		}
 		if log != nil {
 			log.LogSessionAnomaly(key, "baseline_deviation", detail, clientIP, requestID, 3.0)
 		}
@@ -2512,11 +2518,11 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		case config.ActionWarn:
 			// Observe and allow.
 		case config.ActionAsk:
-			return SessionResult{Blocked: true, Detail: detail, Level: sess.EffectiveEscalationLevel(scope)}
+			return SessionResult{Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		case config.ActionBlock:
-			return SessionResult{Blocked: true, Detail: detail, Level: sess.EffectiveEscalationLevel(scope)}
+			return SessionResult{Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		default:
-			return SessionResult{Blocked: true, Detail: detail, Level: sess.EffectiveEscalationLevel(scope)}
+			return SessionResult{Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		}
 	}
 
@@ -2788,7 +2794,15 @@ func emitAdaptiveRecovery(sess *SessionState, from, to int, ctx adaptiveRecovery
 		}
 	}
 	if ctx.logger != nil {
-		ctx.logger.LogAdaptiveRecovery(ctx.sessionKey, ctx.scope, fromLabel, toLabel, reason, ctx.clientIP, ctx.requestID)
+		ctx.logger.LogAdaptiveRecovery(audit.LogAdaptiveRecoveryOptions{
+			SessionKey: ctx.sessionKey,
+			Scope:      ctx.scope,
+			From:       fromLabel,
+			To:         toLabel,
+			Reason:     reason,
+			ClientIP:   ctx.clientIP,
+			RequestID:  ctx.requestID,
+		})
 	}
 	if sess != nil {
 		sess.RecordEvent(SessionEvent{
@@ -4036,12 +4050,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.EscalationLevel, ""),
+			blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: adaptiveBlockedReason,
+				Layer:       adaptiveEnforcementLayer,
 			})
 		return
 	}
@@ -4195,12 +4210,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.EscalationLevel, ""),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
 				http.StatusForbidden, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
 					Blocked:     true,
 					BlockReason: adaptiveBlockedReason,
+					Layer:       adaptiveEnforcementLayer,
 				})
 			return
 		}

@@ -107,7 +107,13 @@ func emitAdaptiveRecovery(rec session.Recorder, from, to int, ctx adaptiveRecove
 		}
 	}
 	if ctx.logger != nil {
-		ctx.logger.LogAdaptiveRecovery(ctx.sessionKey, ctx.scope, fromLabel, toLabel, ctx.reason, "", "")
+		ctx.logger.LogAdaptiveRecovery(audit.LogAdaptiveRecoveryOptions{
+			SessionKey: ctx.sessionKey,
+			Scope:      ctx.scope,
+			From:       fromLabel,
+			To:         toLabel,
+			Reason:     ctx.reason,
+		})
 	}
 	if eventRec, ok := rec.(session.RecoveryEventRecorder); ok {
 		eventRec.RecordAdaptiveRecoveryEvent(ctx.scope, ctx.reason, from, to)

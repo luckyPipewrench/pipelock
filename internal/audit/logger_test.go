@@ -1320,7 +1320,15 @@ func TestLogAdaptiveRecovery_JSONAndEmitter(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogAdaptiveRecovery("agent|10.0.0.1", "api.vendor.example", "high", "elevated", "clean_request_recovery", testClientIP, "req-recover")
+	logger.LogAdaptiveRecovery(LogAdaptiveRecoveryOptions{
+		SessionKey: "agent|10.0.0.1",
+		Scope:      "api.vendor.example",
+		From:       "high",
+		To:         "elevated",
+		Reason:     "clean_request_recovery",
+		ClientIP:   testClientIP,
+		RequestID:  "req-recover",
+	})
 
 	ev := sink.onlyEvent(t)
 	if ev.Type != string(EventAdaptiveRecovery) {

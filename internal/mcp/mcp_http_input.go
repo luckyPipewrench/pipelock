@@ -673,6 +673,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 			sessionKey: auditSessionKey,
 			reason:     adaptiveRecoveryClean,
+			requestID:  canonicalID(verdict.ID),
 			logger:     auditLogger,
 			metrics:    m,
 		}, opts.warnContext()))

@@ -562,6 +562,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 					sessionKey: firstNonEmpty(opts.ServerName, "default"),
 					reason:     adaptiveRecoveryClean,
+					requestID:  canonicalID(verdict.ID),
 					logger:     opts.AuditLogger,
 					metrics:    m,
 				}, opts.warnContext()))

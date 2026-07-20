@@ -4063,14 +4063,14 @@ func TestRecordCleanSession_EligibleCleanRecoveryObservable(t *testing.T) {
 		},
 	}
 	warnCtx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
-		ClientIP:  "203.0.113.5",
-		RequestID: "req-recover",
+		ClientIP: "203.0.113.5",
 	})
 
 	recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 		sessionKey: "mcp-session",
 		scope:      "tools/call",
 		reason:     adaptiveRecoveryClean,
+		requestID:  "req-recover",
 		logger:     logger,
 		metrics:    m,
 	}, warnCtx))

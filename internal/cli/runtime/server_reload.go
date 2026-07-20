@@ -338,10 +338,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
 		}
-		var cleanDrops []bundleCoverageDrop
-		if len(reloadBundleResult.Errors) == 0 {
-			cleanDrops = cleanBundleCoverageDrops(oldCfg, newCfg, s.currentMCPToolExtraPoison(), reloadBundleResult.ToolPoison)
-		}
+		cleanDrops := cleanDropsWithoutBundleErrors(
+			cleanBundleCoverageDrops(oldCfg, newCfg, s.currentMCPToolExtraPoison(), reloadBundleResult.ToolPoison),
+			reloadBundleResult,
+		)
 		if len(cleanDrops) > 0 {
 			for _, drop := range cleanDrops {
 				outcome := ruleBundleOutcomeDegraded
@@ -352,7 +352,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 				}
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: rule bundle %s cleanly removed %d live pattern(s) (%s)\n",
 					drop.Name, drop.Total(), drop.Reason())
-				s.logger.LogRuleBundleDegraded(drop.Name, "coverage_drop", drop.Reason(), ruleBundlePhaseReload, outcome, severity, newCfg.Rules.AllowDegraded, drop.Total())
+				s.logger.LogRuleBundleDegraded(audit.RuleBundleDegradedEvent{
+					Bundle:          drop.Name,
+					FailureClass:    "coverage_drop",
+					Reason:          drop.Reason(),
+					Phase:           ruleBundlePhaseReload,
+					Outcome:         outcome,
+					Severity:        severity,
+					AllowDegraded:   newCfg.Rules.AllowDegraded,
+					DroppedPatterns: drop.Total(),
+				})
 			}
 			if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
 				rejectErr := fmt.Errorf("rejected: strict mode rule bundle coverage drop: %s", bundleCoverageDropSummary(cleanDrops))
@@ -453,6 +462,26 @@ func strictRuleBundleDegradationDisallowed(oldCfg, newCfg *config.Config) bool {
 		return false
 	}
 	return newCfg.Mode == config.ModeStrict || (oldCfg != nil && oldCfg.Mode == config.ModeStrict)
+}
+
+func cleanDropsWithoutBundleErrors(drops []bundleCoverageDrop, result *rules.LoadResult) []bundleCoverageDrop {
+	if len(drops) == 0 || result == nil || len(result.Errors) == 0 {
+		return drops
+	}
+	errorBundles := make(map[string]struct{}, len(result.Errors))
+	for _, e := range result.Errors {
+		if e.Name != "" {
+			errorBundles[e.Name] = struct{}{}
+		}
+	}
+	clean := drops[:0]
+	for _, drop := range drops {
+		if _, errored := errorBundles[drop.Name]; errored {
+			continue
+		}
+		clean = append(clean, drop)
+	}
+	return clean
 }
 
 func boolPtrEqual(a, b *bool) bool {
@@ -731,7 +760,7 @@ type bundlePatternIdentity struct {
 }
 
 func dlpPatternEnforcementIdentity(p config.DLPPattern) string {
-	return p.Severity + "\x00" + p.Validator + "\x00" + p.Action
+	return p.Severity + "\x00" + p.Validator + "\x00" + p.Action + "\x00" + strings.Join(p.ExemptDomains, "\x00")
 }
 
 func bundlePatternDropNames(drops []bundlePatternDropDetail) []string {

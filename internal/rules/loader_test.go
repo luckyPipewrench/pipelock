@@ -1003,6 +1003,9 @@ func TestLoadBundles_IntegrityFailure(t *testing.T) {
 	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
 		t.Fatalf("SHA mismatch class = %q, want %q", got, BundleErrorClassIntegrity)
 	}
+	if len(result.IntegrityErrors()) != 1 {
+		t.Fatalf("IntegrityErrors len = %d, want 1", len(result.IntegrityErrors()))
+	}
 }
 
 func TestLoadBundles_ExpiredV2BundleIsIntegrity(t *testing.T) {
@@ -1033,6 +1036,9 @@ func TestLoadBundles_ExpiredV2BundleIsIntegrity(t *testing.T) {
 	}
 	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
 		t.Fatalf("expired bundle class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if len(result.IntegrityErrors()) != 1 {
+		t.Fatalf("IntegrityErrors len = %d, want 1", len(result.IntegrityErrors()))
 	}
 }
 

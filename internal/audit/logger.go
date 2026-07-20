@@ -1173,24 +1173,37 @@ func (l *Logger) LogConfigReload(status, detail, configHash string) {
 	}
 }
 
+// RuleBundleDegradedEvent bundles the fields emitted for rule-bundle coverage
+// degradation or rejection events.
+type RuleBundleDegradedEvent struct {
+	Bundle          string
+	FailureClass    string
+	Reason          string
+	Phase           string
+	Outcome         string
+	Severity        string
+	AllowDegraded   bool
+	DroppedPatterns int
+}
+
 // LogRuleBundleDegraded logs a rule-bundle coverage degradation or rejection.
-func (l *Logger) LogRuleBundleDegraded(bundle, failureClass, reason, phase, outcome, severity string, allowDegraded bool, droppedPatterns int) {
+func (l *Logger) LogRuleBundleDegraded(ev RuleBundleDegradedEvent) {
 	level := l.zl.Warn()
 	emitSeverity := emit.SeverityWarn
-	if severity == severityCritical || severity == "error" {
+	if ev.Severity == severityCritical || ev.Severity == "error" {
 		level = l.zl.Error()
 		emitSeverity = emit.SeverityCritical
 	}
 	e := newLogEntry(level, EventRuleBundleDegraded).
-		str("bundle", bundle).
-		str("failure_class", failureClass).
-		str("reason", reason).
-		str("phase", phase).
-		str("outcome", outcome)
-	e.event = e.event.Bool("allow_degraded", allowDegraded)
-	e.fields["allow_degraded"] = allowDegraded
-	if droppedPatterns > 0 {
-		e.intField("dropped_patterns", droppedPatterns)
+		str("bundle", ev.Bundle).
+		str("failure_class", ev.FailureClass).
+		str("reason", ev.Reason).
+		str("phase", ev.Phase).
+		str("outcome", ev.Outcome)
+	e.event = e.event.Bool("allow_degraded", ev.AllowDegraded)
+	e.fields["allow_degraded"] = ev.AllowDegraded
+	if ev.DroppedPatterns > 0 {
+		e.intField("dropped_patterns", ev.DroppedPatterns)
 	}
 	e.msg("rule bundle coverage degraded")
 

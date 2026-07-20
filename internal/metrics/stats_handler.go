@@ -46,8 +46,8 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 				RequiredBlocks: topRequiredReceiptBlocks(m.requiredReceiptBlocks),
 			},
 			RuleBundles: RuleBundleStats{
-				DegradedCount: len(m.ruleBundleDegraded),
-				DegradedNames: append([]string(nil), m.ruleBundleDegraded...),
+				DegradedCount: len(m.degradedRuleBundles),
+				DegradedNames: append([]string(nil), m.degradedRuleBundles...),
 			},
 		}
 		ceeFunc := m.CEEStatsFunc

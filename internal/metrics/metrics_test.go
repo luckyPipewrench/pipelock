@@ -139,6 +139,9 @@ func TestStatsHandler(t *testing.T) {
 }
 
 func TestRuleBundleDegradedMetricsAndStats(t *testing.T) {
+	var nilMetrics *Metrics
+	nilMetrics.SetRuleBundlesDegraded([]string{"ignored"})
+
 	m := New()
 	m.SetRuleBundlesDegraded([]string{"z-bundle", "a-bundle"})
 

@@ -190,6 +190,74 @@ rules: []
 	}
 }
 
+func installServerTestUnavailableFeatureBundle(t *testing.T, xdgDataHome string) {
+	t.Helper()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate unavailable bundle signing key: %v", err)
+	}
+	oldKeyring := rules.KeyringHex
+	rules.KeyringHex = strings.Join(nonEmptyStrings(oldKeyring, hex.EncodeToString(pub)), ",")
+	t.Cleanup(func() {
+		rules.KeyringHex = oldKeyring
+	})
+
+	bundleDir := filepath.Join(xdgDataHome, "pipelock", "rules", "needs-future-engine")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir unavailable bundle dir: %v", err)
+	}
+	bundleYAML := `format_version: 2
+name: needs-future-engine
+version: "2026.07.0"
+author: Test Author
+description: Test availability-failing bundle
+license: Apache-2.0
+tier: community
+monotonic_version: 1
+published_at: "2026-04-01T00:00:00Z"
+expires_at: "2027-04-01T00:00:00Z"
+key_id: ` + rules.KeyFingerprint(pub) + `
+required_features:
+  - dlp
+  - quantum_crypto
+rules:
+  - id: dlp-future-secret
+    type: dlp
+    status: stable
+    name: Future Secret
+    description: Requires a future engine feature
+    severity: critical
+    confidence: high
+    pattern:
+      regex: 'future-secret-[0-9]+'
+`
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, []byte(bundleYAML), 0o600); err != nil {
+		t.Fatalf("write unavailable bundle.yaml: %v", err)
+	}
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("sign unavailable bundle.yaml: %v", err)
+	}
+	sigPath := bundlePath + signing.SigExtension
+	if err := signing.SaveSignature(sig, sigPath); err != nil {
+		t.Fatalf("save unavailable bundle signature: %v", err)
+	}
+	if err := os.Chmod(sigPath, 0o600); err != nil {
+		t.Fatalf("chmod unavailable bundle signature: %v", err)
+	}
+	sum := sha256.Sum256([]byte(bundleYAML))
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
+		InstalledVersion:  "2026.07.0",
+		Source:            "test",
+		BundleSHA256:      hex.EncodeToString(sum[:]),
+		SignerFingerprint: rules.KeyFingerprint(pub),
+	}); err != nil {
+		t.Fatalf("write unavailable bundle.lock: %v", err)
+	}
+}
+
 func installServerTestDLPBundle(t *testing.T, xdgDataHome, validator string) string {
 	t.Helper()
 
@@ -1852,6 +1920,55 @@ func TestServer_Reload_StrictAllowDegradedAcceptsCleanBundleRemoval(t *testing.T
 	}
 }
 
+func TestServer_Reload_StrictRejectsCleanToolPoisonDropWithUnrelatedBundleError(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	bundleDir := installServerTestToolPoisonBundle(t, xdgDataHome)
+	installServerTestUnavailableFeatureBundle(t, xdgDataHome)
+
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	oldPoison := s.currentMCPToolExtraPoison()
+	if len(oldPoison) != 1 || oldPoison[0].Name != "community-tool-poison:tool-poison-shell" {
+		t.Fatalf("live tool-poison patterns = %+v, want installed bundle pattern", oldPoison)
+	}
+	if err := os.RemoveAll(bundleDir); err != nil {
+		t.Fatalf("remove clean tool-poison bundle: %v", err)
+	}
+	buf.reset()
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	reloaded.KillSwitch.APIToken = "should-not-activate-with-unrelated-bundle-error"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("strict reload should reject clean tool-poison drop even with an unrelated bundle error")
+	}
+	if !strings.Contains(err.Error(), "strict mode rule bundle coverage drop") ||
+		!strings.Contains(err.Error(), "community-tool-poison") {
+		t.Fatalf("error = %q, want strict clean tool-poison coverage-drop rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected mixed bundle reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected mixed bundle reload")
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken == "should-not-activate-with-unrelated-bundle-error" {
+		t.Fatal("rejected mixed bundle reload activated unrelated config edit")
+	}
+	if got := s.currentMCPToolExtraPoison(); len(got) != 1 || got[0].Name != oldPoison[0].Name {
+		t.Fatalf("tool-poison patterns after rejection = %+v, want preserved bundle pattern", got)
+	}
+	if !buf.contains("needs-future-engine") || !buf.contains("cleanly removed") {
+		t.Fatalf("stderr missing unrelated bundle error and clean removal warning:\n%s", buf.String())
+	}
+}
+
 func TestServer_Reload_StrictBundleResolutionErrorStillUsesStrictDowngradeGate(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
@@ -2190,6 +2307,40 @@ func TestServer_Reload_StrictWithRuleBundleRejectsResponsePatternRemoval(t *test
 	}
 	if !buf.contains("response_scanning.patterns") {
 		t.Fatalf("stderr missing response pattern downgrade warning:\n%s", buf.String())
+	}
+}
+
+func TestFilterAllowedRuleBundleCoverageWarningsKeepsLocalDLPWeakening(t *testing.T) {
+	oldCfg := config.Defaults()
+	oldCfg.DLP.Patterns = []config.DLPPattern{
+		{
+			Name:     "bundle-secret",
+			Regex:    "bundle-secret-[0-9]+",
+			Severity: config.SeverityCritical,
+			Bundle:   "community-dlp",
+		},
+		{
+			Name:     "local-secret",
+			Regex:    "local-secret-[0-9]+",
+			Severity: config.SeverityCritical,
+		},
+	}
+	newCfg := oldCfg.Clone()
+	newCfg.DLP.Patterns = []config.DLPPattern{
+		{
+			Name:     "local-secret",
+			Regex:    "local-secret-[0-9]+",
+			Severity: config.SeverityLow,
+		},
+	}
+	warnings := []config.ReloadWarning{
+		{Field: "dlp.patterns", Message: "DLP patterns changed from 2 to 1"},
+		{Field: "sentry", Message: "DLP patterns changed under Sentry coverage"},
+	}
+
+	filtered := filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg, warnings)
+	if len(filtered) != len(warnings) {
+		t.Fatalf("filtered warnings = %+v, want local DLP weakening warnings preserved", filtered)
 	}
 }
 

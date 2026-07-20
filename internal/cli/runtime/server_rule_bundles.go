@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
@@ -39,7 +40,15 @@ func (s *Server) reportStartupRuleBundleResult(cfg *config.Config, result *rules
 			severity = config.SeverityCritical
 		}
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: SECURITY WARNING: rule bundle %s degraded (%s): %s\n", e.Name, class, e.Reason)
-		s.logger.LogRuleBundleDegraded(e.Name, string(class), e.Reason, ruleBundlePhaseStartup, outcome, severity, cfg.Rules.AllowDegraded, 0)
+		s.logger.LogRuleBundleDegraded(audit.RuleBundleDegradedEvent{
+			Bundle:        e.Name,
+			FailureClass:  string(class),
+			Reason:        e.Reason,
+			Phase:         ruleBundlePhaseStartup,
+			Outcome:       outcome,
+			Severity:      severity,
+			AllowDegraded: cfg.Rules.AllowDegraded,
+		})
 	}
 	for _, w := range result.Warnings {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: %s\n", w)
@@ -70,7 +79,15 @@ func reportReloadRuleBundleResult(stderr io.Writer, logger ruleBundleAuditLogger
 	for _, e := range result.Errors {
 		class := e.ClassOrDefault()
 		_, _ = fmt.Fprintf(stderr, "WARNING: config reload: rule bundle %s degraded (%s): %s\n", e.Name, class, e.Reason)
-		logger.LogRuleBundleDegraded(e.Name, string(class), e.Reason, ruleBundlePhaseReload, ruleBundleOutcomeDegraded, config.SeverityWarn, cfg.Rules.AllowDegraded, 0)
+		logger.LogRuleBundleDegraded(audit.RuleBundleDegradedEvent{
+			Bundle:        e.Name,
+			FailureClass:  string(class),
+			Reason:        e.Reason,
+			Phase:         ruleBundlePhaseReload,
+			Outcome:       ruleBundleOutcomeDegraded,
+			Severity:      config.SeverityWarn,
+			AllowDegraded: cfg.Rules.AllowDegraded,
+		})
 	}
 	for _, w := range result.Warnings {
 		_, _ = fmt.Fprintf(stderr, "WARNING: config reload: %s\n", w)
@@ -82,7 +99,7 @@ func reportReloadRuleBundleResult(stderr io.Writer, logger ruleBundleAuditLogger
 }
 
 type ruleBundleAuditLogger interface {
-	LogRuleBundleDegraded(bundle, failureClass, reason, phase, outcome, severity string, allowDegraded bool, droppedPatterns int)
+	LogRuleBundleDegraded(audit.RuleBundleDegradedEvent)
 }
 
 func applyDegradedRuleBundleState(cfg *config.Config, names []string) {
@@ -222,36 +239,49 @@ func filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg *config.Config, warn
 }
 
 func removedOrWeakenedDLPIsBundleOnly(old, updated []config.DLPPattern) bool {
-	return removedOrWeakenedIsBundleOnly(old, updated,
-		func(p config.DLPPattern) string { return p.Name },
-		func(p config.DLPPattern) string { return p.Regex },
-		func(p config.DLPPattern) string { return p.Bundle })
+	updatedByName := make(map[string]config.DLPPattern, len(updated))
+	for _, p := range updated {
+		updatedByName[p.Name] = p
+	}
+	var bundleOnlyChange, nonBundleChange bool
+	for _, p := range old {
+		updatedPattern, ok := updatedByName[p.Name]
+		if ok && dlpPatternCoverageIdentity(updatedPattern) == dlpPatternCoverageIdentity(p) {
+			continue
+		}
+		if p.Bundle == "" {
+			nonBundleChange = true
+			continue
+		}
+		bundleOnlyChange = true
+	}
+	return bundleOnlyChange && !nonBundleChange
 }
 
 func removedOrWeakenedResponseIsBundleOnly(old, updated []config.ResponseScanPattern) bool {
-	return removedOrWeakenedIsBundleOnly(old, updated,
-		func(p config.ResponseScanPattern) string { return p.Name },
-		func(p config.ResponseScanPattern) string { return p.Regex },
-		func(p config.ResponseScanPattern) string { return p.Bundle })
+	updatedByName := make(map[string]config.ResponseScanPattern, len(updated))
+	for _, p := range updated {
+		updatedByName[p.Name] = p
+	}
+	var bundleOnlyChange, nonBundleChange bool
+	for _, p := range old {
+		updatedPattern, ok := updatedByName[p.Name]
+		if ok && responsePatternCoverageIdentity(updatedPattern) == responsePatternCoverageIdentity(p) {
+			continue
+		}
+		if p.Bundle == "" {
+			nonBundleChange = true
+			continue
+		}
+		bundleOnlyChange = true
+	}
+	return bundleOnlyChange && !nonBundleChange
 }
 
-func removedOrWeakenedIsBundleOnly[T any](old, updated []T, nameOf, regexOf, bundleOf func(T) string) bool {
-	updatedByName := make(map[string]string, len(updated))
-	for _, p := range updated {
-		updatedByName[nameOf(p)] = regexOf(p)
-	}
-	var removedBundle, removedNonBundle bool
-	for _, p := range old {
-		name := nameOf(p)
-		updatedRegex, ok := updatedByName[name]
-		if ok && updatedRegex == regexOf(p) {
-			continue
-		}
-		if bundleOf(p) == "" {
-			removedNonBundle = true
-			continue
-		}
-		removedBundle = true
-	}
-	return removedBundle && !removedNonBundle
+func dlpPatternCoverageIdentity(p config.DLPPattern) string {
+	return p.Regex + "\x00" + dlpPatternEnforcementIdentity(p) + "\x00" + p.Bundle
+}
+
+func responsePatternCoverageIdentity(p config.ResponseScanPattern) string {
+	return p.Regex + "\x00" + p.Bundle
 }

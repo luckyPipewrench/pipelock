@@ -1830,6 +1830,31 @@ func assertEmitterFields(t *testing.T, ev emit.Event, wantType EventType, wantSe
 	}
 }
 
+func TestEmit_RuleBundleDegradedEventUsesConfiguredFields(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	logger.LogRuleBundleDegraded(RuleBundleDegradedEvent{
+		Bundle:          "community-rules",
+		FailureClass:    "coverage_drop",
+		Reason:          "clean bundle removal dropped live patterns: dlp=2",
+		Phase:           "reload",
+		Outcome:         "rejected",
+		Severity:        severityCritical,
+		AllowDegraded:   true,
+		DroppedPatterns: 2,
+	})
+
+	ev := sink.onlyEvent(t)
+	assertEmitterFields(t, ev, EventRuleBundleDegraded, emit.SeverityCritical, map[string]any{
+		"bundle":           "community-rules",
+		"failure_class":    "coverage_drop",
+		"reason":           "clean bundle removal dropped live patterns: dlp=2",
+		"phase":            "reload",
+		"outcome":          "rejected",
+		"allow_degraded":   true,
+		"dropped_patterns": 2,
+	})
+}
+
 func TestEmit_OperationalLifecycleEvents(t *testing.T) {
 	tests := []struct {
 		name     string

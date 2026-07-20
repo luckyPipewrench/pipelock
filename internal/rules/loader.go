@@ -477,7 +477,7 @@ func readBundleFile(path string) ([]byte, error) {
 	}
 
 	if info.Size() > MaxBundleFileSize {
-		return nil, fmt.Errorf("%w: size %d exceeds maximum %d bytes", errBundleFileTooLarge, info.Size(), MaxBundleFileSize)
+		return nil, fmt.Errorf("size %d exceeds maximum %d bytes: %w", info.Size(), MaxBundleFileSize, errBundleFileTooLarge)
 	}
 
 	data, err := os.ReadFile(filepath.Clean(path))

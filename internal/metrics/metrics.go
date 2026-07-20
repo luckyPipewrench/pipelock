@@ -182,7 +182,7 @@ type Metrics struct {
 	sessionAnomalyCount    int64
 	sessionEscalationCount int64
 	agentStats             map[string]*agentCounters
-	ruleBundleDegraded     []string
+	degradedRuleBundles    []string
 
 	// Cross-request exfiltration stats callback (for JSON /stats endpoint).
 	// Called on each /stats request to get live CEE state.

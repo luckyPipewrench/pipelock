@@ -31,7 +31,7 @@ func (m *Metrics) SetRuleBundlesDegraded(names []string) {
 	copied := append([]string(nil), names...)
 	sort.Strings(copied)
 	m.mu.Lock()
-	m.ruleBundleDegraded = copied
+	m.degradedRuleBundles = copied
 	m.mu.Unlock()
 	if m.ruleBundlesDegraded != nil {
 		m.ruleBundlesDegraded.Set(float64(len(copied)))

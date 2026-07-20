@@ -199,8 +199,10 @@ type Rules struct {
 	RulesDir            string       `yaml:"rules_dir"`
 	MinConfidence       string       `yaml:"min_confidence"`
 	IncludeExperimental bool         `yaml:"include_experimental"`
+	AllowDegraded       bool         `yaml:"allow_degraded" json:"-"`
 	Disabled            []string     `yaml:"disabled"`
 	TrustedKeys         []TrustedKey `yaml:"trusted_keys"`
+	DegradedBundles     []string     `yaml:"-" json:"-"`
 }
 
 // TrustedKey is a named Ed25519 public key for verifying third-party bundles.

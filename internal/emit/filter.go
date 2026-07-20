@@ -210,7 +210,8 @@ func eventTypeAction(eventType string) string {
 		EventAdaptiveUpgrade,
 		EventAnomaly,
 		EventTextStego,
-		EventLicenseExpiry:
+		EventLicenseExpiry,
+		EventRuleBundleDegraded:
 		return conventionActionWarn
 	case EventRedirect, EventToolRedirect:
 		return EventRedirect

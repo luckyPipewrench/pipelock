@@ -157,6 +157,9 @@ type Metrics struct {
 	evidenceHealthFunc          func() (EvidenceHealthStats, bool)
 	evidenceCollector           *evidenceCollector
 
+	// Rule bundle loading state (rule_bundles.go).
+	ruleBundlesDegraded prometheus.Gauge
+
 	// Enterprise durable SIEM forwarder (siem_forwarder.go).
 	siemForwarderQueued      prometheus.Gauge
 	siemForwarderDelivered   prometheus.Counter
@@ -179,6 +182,7 @@ type Metrics struct {
 	sessionAnomalyCount    int64
 	sessionEscalationCount int64
 	agentStats             map[string]*agentCounters
+	ruleBundleDegraded     []string
 
 	// Cross-request exfiltration stats callback (for JSON /stats endpoint).
 	// Called on each /stats request to get live CEE state.
@@ -235,6 +239,7 @@ func New() *Metrics {
 	m.registerEnvelopeMetrics(reg)
 	m.registerReceiptMetrics(reg)
 	m.registerEvidenceMetrics(reg)
+	m.registerRuleBundleMetrics(reg)
 	m.registerSIEMForwarderMetrics(reg)
 
 	// Built-in Go runtime + process collectors. These expose

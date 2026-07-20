@@ -133,6 +133,52 @@ func TestStatsHandler(t *testing.T) {
 	if len(stats.Receipts.RequiredBlocks) != 0 {
 		t.Errorf("expected no required receipt blocks, got %v", stats.Receipts.RequiredBlocks)
 	}
+	if stats.RuleBundles.DegradedCount != 0 {
+		t.Errorf("expected no degraded rule bundles, got %v", stats.RuleBundles)
+	}
+}
+
+func TestRuleBundleDegradedMetricsAndStats(t *testing.T) {
+	m := New()
+	m.SetRuleBundlesDegraded([]string{"z-bundle", "a-bundle"})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if stats.RuleBundles.DegradedCount != 2 {
+		t.Fatalf("degraded count = %d, want 2", stats.RuleBundles.DegradedCount)
+	}
+	if got := strings.Join(stats.RuleBundles.DegradedNames, ","); got != "a-bundle,z-bundle" {
+		t.Fatalf("degraded names = %q, want sorted names", got)
+	}
+
+	metricsReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(metricsRec, metricsReq)
+	if !strings.Contains(metricsRec.Body.String(), "pipelock_rule_bundles_degraded 2") {
+		t.Fatalf("metrics missing degraded gauge:\n%s", metricsRec.Body.String())
+	}
+
+	m.SetRuleBundlesDegraded(nil)
+	clearRec := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(clearRec, req)
+	var cleared statsResponse
+	if err := json.NewDecoder(clearRec.Body).Decode(&cleared); err != nil {
+		t.Fatalf("decode cleared stats: %v", err)
+	}
+	if cleared.RuleBundles.DegradedCount != 0 || len(cleared.RuleBundles.DegradedNames) != 0 {
+		t.Fatalf("cleared degraded stats = %+v, want empty", cleared.RuleBundles)
+	}
+	clearMetricsRec := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(clearMetricsRec, metricsReq)
+	if !strings.Contains(clearMetricsRec.Body.String(), "pipelock_rule_bundles_degraded 0") {
+		t.Fatalf("metrics gauge did not clear:\n%s", clearMetricsRec.Body.String())
+	}
 }
 
 func TestStatsHandler_BlockRate(t *testing.T) {

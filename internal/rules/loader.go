@@ -4,6 +4,7 @@
 package rules
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -25,6 +26,8 @@ var confidenceRank = map[string]int{
 
 // reservedBundlePrefix is the namespace reserved for official bundles.
 const reservedBundlePrefix = "pipelock-"
+
+var errBundleFileTooLarge = errors.New("bundle file exceeds maximum size")
 
 // LoadOptions controls bundle loading behavior.
 type LoadOptions struct {
@@ -61,7 +64,7 @@ type LoadResult struct {
 	ToolPoison       []CompiledToolPoisonRule
 	Errors           []BundleError
 	Loaded           []LoadedBundle
-	Degraded         bool           // standard pack failed to load - core-only mode
+	Degraded         bool           // one or more installed bundles failed to load
 	Warnings         []string       // non-fatal warnings (expired bundles, etc.)
 	StandardDLP      StandardSource // where DLP standard tier came from
 	StandardResponse StandardSource // where response standard tier came from
@@ -81,8 +84,23 @@ type CompiledToolPoisonRule struct {
 type BundleError struct {
 	Name     string
 	Reason   string
+	Class    BundleErrorClass
 	Official bool // true if bundle was signed by an official key (not just name-based)
 }
+
+// BundleErrorClass separates possible tampering from operational availability
+// failures so strict startup can fail closed only on installed bundle integrity
+// loss.
+type BundleErrorClass string
+
+const (
+	// BundleErrorClassAvailability covers missing optional stores and transient
+	// filesystem/read problems where failing startup would create avoidable DoS.
+	BundleErrorClassAvailability BundleErrorClass = "availability"
+	// BundleErrorClassIntegrity covers installed-bundle provenance, hash,
+	// lockfile, freshness, and content failures that can indicate tampering.
+	BundleErrorClassIntegrity BundleErrorClass = "integrity"
+)
 
 // LoadedBundle describes a successfully loaded bundle (for diagnostics).
 type LoadedBundle struct {
@@ -99,10 +117,68 @@ type LoadedBundle struct {
 	Expired          bool // bundle is past expires_at but loaded in stale mode
 }
 
+// IntegrityErrors returns load failures that indicate installed-bundle
+// provenance or freshness integrity loss.
+func (r *LoadResult) IntegrityErrors() []BundleError {
+	if r == nil {
+		return nil
+	}
+	return r.errorsByClass(BundleErrorClassIntegrity)
+}
+
+// AvailabilityErrors returns load failures caused by missing optional stores or
+// operational filesystem/compatibility availability.
+func (r *LoadResult) AvailabilityErrors() []BundleError {
+	if r == nil {
+		return nil
+	}
+	return r.errorsByClass(BundleErrorClassAvailability)
+}
+
+func (r *LoadResult) errorsByClass(class BundleErrorClass) []BundleError {
+	var out []BundleError
+	for _, err := range r.Errors {
+		if err.ClassOrDefault() == class {
+			out = append(out, err)
+		}
+	}
+	return out
+}
+
+// ClassOrDefault returns the recorded class, treating older zero-value
+// BundleError instances as availability failures to preserve compatibility.
+func (e BundleError) ClassOrDefault() BundleErrorClass {
+	if e.Class == "" {
+		return BundleErrorClassAvailability
+	}
+	return e.Class
+}
+
+// DegradedBundleNames returns a stable, de-duplicated list of bundles or state
+// resources that failed during this load.
+func (r *LoadResult) DegradedBundleNames() []string {
+	if r == nil || len(r.Errors) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(r.Errors))
+	for _, err := range r.Errors {
+		if err.Name == "" {
+			continue
+		}
+		seen[err.Name] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // LoadBundles reads all bundles from rulesDir, verifies integrity,
 // filters by options, and returns merged patterns. For v2+ bundles,
 // freshness checks (rollback prevention, expiry) are enforced.
-// If the standard pack fails to load, Degraded is set to true.
+// If any installed bundle fails to load, Degraded is set to true.
 func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	result := &LoadResult{}
 
@@ -119,6 +195,7 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		result.Errors = append(result.Errors, BundleError{
 			Name:   rulesDir,
 			Reason: fmt.Sprintf("reading rules directory: %v", err),
+			Class:  BundleErrorClassAvailability,
 		})
 		return result
 	}
@@ -150,6 +227,7 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 			result.Errors = append(result.Errors, BundleError{
 				Name:   ".freshness.json",
 				Reason: err.Error(),
+				Class:  BundleErrorClassIntegrity,
 			})
 			result.Degraded = true
 			return nil
@@ -177,17 +255,18 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		return nil
 	})
 	if lockErr != nil {
-		result.Errors = append(result.Errors, BundleError{Name: ".freshness.json", Reason: fmt.Sprintf("freshness lock: %v", lockErr)})
+		result.Errors = append(result.Errors, BundleError{Name: ".freshness.json", Reason: fmt.Sprintf("freshness lock: %v", lockErr), Class: BundleErrorClassAvailability})
 		result.Degraded = true
 	}
 
-	// Detect standard pack degradation: if any official bundle failed
-	// to load, set Degraded flag. Uses verified signature status, not
-	// directory name, to prevent attacker-controlled names from triggering
-	// degraded mode.
+	if len(result.Errors) > 0 {
+		result.Degraded = true
+	}
+
+	// Keep the legacy standard-pack warning, but key it only off verified
+	// official status so attacker-controlled names cannot trigger it.
 	for _, be := range result.Errors {
 		if be.Official {
-			result.Degraded = true
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("DEGRADED: standard pack %q failed to load: %s — running core-only", be.Name, be.Reason))
 			break
@@ -215,33 +294,33 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	// Read and size-check bundle.yaml.
 	data, err := readBundleFile(bundlePath)
 	if err != nil {
-		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: classifyBundleFileReadError(err)})
 		return
 	}
 
 	// Read lock file.
 	lock, err := ReadLockFile(lockPath)
 	if err != nil {
-		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("reading lock file: %v", err)})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("reading lock file: %v", err), Class: BundleErrorClassIntegrity})
 		return
 	}
 
 	// Verify integrity against the exact bytes we just read (no TOCTOU).
 	if err := VerifyIntegrityBytes(data, bundleDir, lock.Unsigned, lock.SignerFingerprint, lock.BundleSHA256, opts.TrustedKeys); err != nil {
-		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("integrity check: %v", err)})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("integrity check: %v", err), Class: BundleErrorClassIntegrity})
 		return
 	}
 
 	// Parse and validate bundle YAML.
 	bundle, err := ParseBundle(data)
 	if err != nil {
-		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("parse error: %v", err)})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("parse error: %v", err), Class: BundleErrorClassIntegrity})
 		return
 	}
 
 	// Check min_pipelock version requirement.
 	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion); err != nil {
-		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
 		return
 	}
 
@@ -253,6 +332,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 			Name:   dirName,
 			Reason: fmt.Sprintf("bundle name %q uses reserved prefix %q but signer is not official", bundle.Name, reservedBundlePrefix),
+			Class:  BundleErrorClassIntegrity,
 		})
 		return
 	}
@@ -265,6 +345,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 				Name:     dirName,
 				Official: official,
+				Class:    BundleErrorClassIntegrity,
 				Reason:   "format_version 2 bundles must be signed (unsigned v2 bundles are rejected)",
 			})
 			return
@@ -272,20 +353,24 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 
 		// Tier-key binding: verify the signing key matches the declared tier.
 		if err := CheckTierKeyBinding(bundle, lock.SignerFingerprint, opts.TierKeyMapping); err != nil {
-			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error(), Class: BundleErrorClassIntegrity})
 			return
 		}
 
 		// Required features: reject bundles needing engine features we don't support.
 		if err := CheckRequiredFeatures(bundle.RequiredFeatures); err != nil {
-			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error(), Class: BundleErrorClassAvailability})
 			return
 		}
 
 		// Freshness: rollback prevention and expiry.
 		fr := CheckFreshness(bundle, ctx.FreshnessState, ctx.Now, opts.AllowStale)
 		if !fr.OK {
-			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: fr.Message})
+			class := BundleErrorClassAvailability
+			if fr.Rollback || fr.Expired {
+				class = BundleErrorClassIntegrity
+			}
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: fr.Message, Class: class})
 			return
 		}
 		if fr.Expired {
@@ -392,7 +477,7 @@ func readBundleFile(path string) ([]byte, error) {
 	}
 
 	if info.Size() > MaxBundleFileSize {
-		return nil, fmt.Errorf("bundle file size %d exceeds maximum %d bytes", info.Size(), MaxBundleFileSize)
+		return nil, fmt.Errorf("%w: size %d exceeds maximum %d bytes", errBundleFileTooLarge, info.Size(), MaxBundleFileSize)
 	}
 
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -401,6 +486,13 @@ func readBundleFile(path string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func classifyBundleFileReadError(err error) BundleErrorClass {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, errBundleFileTooLarge) {
+		return BundleErrorClassIntegrity
+	}
+	return BundleErrorClassAvailability
 }
 
 // isDisabled checks whether a namespaced rule ID matches any entry in the

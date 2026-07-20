@@ -9,8 +9,11 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -128,6 +131,13 @@ func installServerTestToolPoisonBundle(t *testing.T, xdgDataHome string) string 
 	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
 		t.Fatalf("mkdir tool-poison bundle dir: %v", err)
 	}
+	writeServerTestToolPoisonBundle(t, bundleDir, "test-tool-poison")
+	return bundleDir
+}
+
+func writeServerTestToolPoisonBundle(t *testing.T, bundleDir, regex string) {
+	t.Helper()
+
 	bundleYAML := `format_version: 1
 name: community-tool-poison
 version: "2026.07.0"
@@ -143,7 +153,7 @@ rules:
     severity: critical
     confidence: high
     pattern:
-      regex: 'test-tool-poison'
+      regex: '` + regex + `'
       scan_field: description
 `
 	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
@@ -159,7 +169,6 @@ rules:
 	}); err != nil {
 		t.Fatalf("write tool-poison bundle.lock: %v", err)
 	}
-	return bundleDir
 }
 
 func installServerTestBrokenBundle(t *testing.T, xdgDataHome string) {
@@ -179,6 +188,124 @@ rules: []
 `), 0o600); err != nil {
 		t.Fatalf("write broken bundle.yaml: %v", err)
 	}
+}
+
+func installServerTestDLPBundle(t *testing.T, xdgDataHome, validator string) string {
+	t.Helper()
+
+	bundleDir := filepath.Join(xdgDataHome, "pipelock", "rules", "community-dlp")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir DLP bundle dir: %v", err)
+	}
+	writeServerTestDLPBundle(t, bundleDir, validator)
+	return bundleDir
+}
+
+func writeServerTestDLPBundle(t *testing.T, bundleDir, validator string) {
+	t.Helper()
+
+	var validatorLine string
+	if validator != "" {
+		validatorLine = "      validator: " + validator + "\n"
+	}
+	bundleYAML := `format_version: 1
+name: community-dlp
+version: "2026.07.0"
+author: Test Author
+description: Test DLP bundle
+license: Apache-2.0
+rules:
+  - id: dlp-secret
+    type: dlp
+    status: stable
+    name: Test Bundle Secret
+    description: Detects test bundle secrets
+    severity: critical
+    confidence: high
+    pattern:
+      regex: 'test-secret-[0-9]+'
+` + validatorLine
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, []byte(bundleYAML), 0o600); err != nil {
+		t.Fatalf("write DLP bundle.yaml: %v", err)
+	}
+	sum := sha256.Sum256([]byte(bundleYAML))
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
+		InstalledVersion: "2026.07.0",
+		Source:           "test",
+		BundleSHA256:     hex.EncodeToString(sum[:]),
+		Unsigned:         true,
+	}); err != nil {
+		t.Fatalf("write DLP bundle.lock: %v", err)
+	}
+}
+
+type serverTestWebhookEvent struct {
+	Severity string         `json:"severity"`
+	Type     string         `json:"type"`
+	Fields   map[string]any `json:"fields"`
+}
+
+func newServerTestWebhook(t *testing.T) (string, <-chan serverTestWebhookEvent) {
+	t.Helper()
+	events := make(chan serverTestWebhookEvent, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("webhook method = %s, want POST", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var event serverTestWebhookEvent
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("decode webhook event: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		events <- event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, events
+}
+
+func waitForRuleBundleWebhookEvent(t *testing.T, events <-chan serverTestWebhookEvent) serverTestWebhookEvent {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-events:
+			if event.Type == "rule_bundle_degraded" {
+				return event
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for rule_bundle_degraded webhook event")
+		}
+	}
+}
+
+func writeServerTestConfigWithWebhook(t *testing.T, webhookURL, mode string, allowDegraded bool) string {
+	t.Helper()
+	var allowLine string
+	if allowDegraded {
+		allowLine = "  allow_degraded: true\n"
+	}
+	return writeServerTestConfig(t, strings.Join([]string{
+		"version: 1",
+		"mode: " + mode,
+		"api_allowlist:",
+		"  - api.vendor.example",
+		"rules:",
+		"  min_confidence: medium",
+		strings.TrimSuffix(allowLine, "\n"),
+		"emit:",
+		"  webhook:",
+		"    url: " + strconv.Quote(webhookURL),
+		"    min_severity: warn",
+		"    timeout_seconds: 5",
+		"    queue_size: 16",
+		"",
+	}, "\n"))
 }
 
 func nonEmptyStrings(values ...string) []string {
@@ -813,6 +940,138 @@ func TestNewServer_ResolveRuntimeRuns(t *testing.T) {
 	}
 }
 
+func TestNewServer_StrictStartupRejectsTamperedBundleSignature(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	sigPath := filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.yaml"+signing.SigExtension)
+	if err := os.WriteFile(sigPath, []byte("not-a-valid-signature"), 0o600); err != nil {
+		t.Fatalf("tamper signature: %v", err)
+	}
+
+	buf := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		Mode:                              config.ModeStrict,
+		ModeChanged:                       true,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
+	})
+	if s != nil {
+		t.Cleanup(func() { s.cleanup() })
+	}
+	if err == nil {
+		t.Fatal("strict startup with tampered bundle signature should fail closed")
+	}
+	if !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") ||
+		!strings.Contains(err.Error(), rules.StandardBundleName) {
+		t.Fatalf("error = %v, want strict integrity failure naming bundle", err)
+	}
+	if !buf.contains("SECURITY WARNING: rule bundle " + rules.StandardBundleName + " degraded (integrity)") {
+		t.Fatalf("stderr missing integrity degradation warning:\n%s", buf.String())
+	}
+}
+
+func TestNewServer_StrictStartupRejectsMissingBundleLockfile(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+	if err := os.Remove(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.lock")); err != nil {
+		t.Fatalf("remove lockfile: %v", err)
+	}
+
+	buf := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		Mode:                              config.ModeStrict,
+		ModeChanged:                       true,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
+	})
+	if s != nil {
+		t.Cleanup(func() { s.cleanup() })
+	}
+	if err == nil {
+		t.Fatal("strict startup with missing bundle lockfile should fail closed")
+	}
+	if !strings.Contains(err.Error(), "class integrity") || !strings.Contains(err.Error(), rules.StandardBundleName) {
+		t.Fatalf("error = %v, want integrity class naming bundle", err)
+	}
+}
+
+func TestNewServer_StrictStartupRejectsMissingBundleManifest(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+	if err := os.Remove(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.yaml")); err != nil {
+		t.Fatalf("remove bundle.yaml: %v", err)
+	}
+
+	buf := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		Mode:                              config.ModeStrict,
+		ModeChanged:                       true,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
+	})
+	if s != nil {
+		t.Cleanup(func() { s.cleanup() })
+	}
+	if err == nil {
+		t.Fatal("strict startup with missing installed bundle manifest should fail closed")
+	}
+	if !strings.Contains(err.Error(), "class integrity") || !strings.Contains(err.Error(), rules.StandardBundleName) {
+		t.Fatalf("error = %v, want integrity class naming bundle", err)
+	}
+	if !buf.contains("SECURITY WARNING: rule bundle " + rules.StandardBundleName + " degraded (integrity)") {
+		t.Fatalf("stderr missing integrity degradation warning:\n%s", buf.String())
+	}
+}
+
+func TestNewServer_StrictAllowDegradedBootsAndEmitsRuleBundleAudit(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+	if err := os.Remove(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName, "bundle.lock")); err != nil {
+		t.Fatalf("remove lockfile: %v", err)
+	}
+	webhookURL, events := newServerTestWebhook(t)
+	cfgPath := writeServerTestConfigWithWebhook(t, webhookURL, config.ModeStrict, true)
+
+	buf := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        cfgPath,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer with allow_degraded should boot degraded: %v", err)
+	}
+	t.Cleanup(func() { s.cleanup() })
+
+	event := waitForRuleBundleWebhookEvent(t, events)
+	if event.Severity != config.SeverityWarn {
+		t.Fatalf("webhook severity = %q, want %q", event.Severity, config.SeverityWarn)
+	}
+	if event.Fields["bundle"] != rules.StandardBundleName || event.Fields["failure_class"] != string(rules.BundleErrorClassIntegrity) {
+		t.Fatalf("webhook fields = %+v, want bundle integrity event", event.Fields)
+	}
+	if got := s.cfg.Rules.DegradedBundles; !reflect.DeepEqual(got, []string{rules.StandardBundleName}) {
+		t.Fatalf("degraded bundles = %+v, want standard bundle", got)
+	}
+	rec := httptest.NewRecorder()
+	s.metrics.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "pipelock_rule_bundles_degraded 1") {
+		t.Fatalf("metrics missing degraded bundle gauge:\n%s", rec.Body.String())
+	}
+	if !buf.contains("rules.allow_degraded=true") {
+		t.Fatalf("stderr missing allow_degraded warning:\n%s", buf.String())
+	}
+}
+
 // TestServer_StartShutdown verifies that Start blocks, Shutdown releases
 // it, and Start returns nil on clean shutdown. Uses an ephemeral listen
 // address so nothing conflicts with a developer's already-running
@@ -1433,6 +1692,166 @@ func TestServer_Reload_CleanBundleResolutionStillApplies(t *testing.T) {
 	requireBundlePatternSelected(t, live.DLP.Patterns, live.ResponseScanning.Patterns)
 }
 
+func TestServer_Reload_StrictCleanBundleRemovalRejectsAndKeepsRunningConfig(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	requireBundlePatternSelected(t, oldLive.DLP.Patterns, oldLive.ResponseScanning.Patterns)
+
+	if err := os.RemoveAll(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName)); err != nil {
+		t.Fatalf("remove standard bundle: %v", err)
+	}
+	buf.reset()
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	reloaded.KillSwitch.APIToken = "should-not-activate-after-clean-removal"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("strict reload after clean bundle removal should reject")
+	}
+	if !strings.Contains(err.Error(), "strict mode rule bundle coverage drop") ||
+		!strings.Contains(err.Error(), rules.StandardBundleName) {
+		t.Fatalf("error = %v, want strict bundle coverage-drop rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected clean bundle removal")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected clean bundle removal")
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken == "should-not-activate-after-clean-removal" {
+		t.Fatal("rejected clean bundle removal activated unrelated config edit")
+	}
+	requireBundlePatternSelected(t, s.proxy.CurrentConfig().DLP.Patterns, s.proxy.CurrentConfig().ResponseScanning.Patterns)
+	if !buf.contains("cleanly removed") || !buf.contains(rules.StandardBundleName) {
+		t.Fatalf("stderr missing clean removal warning:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_BalancedToStrictCleanBundleRemovalRejects(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, _ := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	requireBundlePatternSelected(t, oldLive.DLP.Patterns, oldLive.ResponseScanning.Patterns)
+
+	if err := os.RemoveAll(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName)); err != nil {
+		t.Fatalf("remove standard bundle: %v", err)
+	}
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	reloaded.KillSwitch.APIToken = "should-not-activate-balanced-to-strict"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("balanced-to-strict reload after clean bundle removal should reject")
+	}
+	if !strings.Contains(err.Error(), "strict mode rule bundle coverage drop") {
+		t.Fatalf("error = %v, want strict bundle coverage-drop rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected balanced-to-strict clean bundle removal")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected balanced-to-strict clean bundle removal")
+	}
+}
+
+func TestServer_Reload_BalancedCleanBundleRemovalAllowsAndEmitsAudit(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+	webhookURL, events := newServerTestWebhook(t)
+	cfgPath := writeServerTestConfigWithWebhook(t, webhookURL, config.ModeBalanced, false)
+
+	buf := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        cfgPath,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { s.cleanup() })
+	requireBundlePatternSelected(t, s.proxy.CurrentConfig().DLP.Patterns, s.proxy.CurrentConfig().ResponseScanning.Patterns)
+
+	if err := os.RemoveAll(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName)); err != nil {
+		t.Fatalf("remove standard bundle: %v", err)
+	}
+	buf.reset()
+	reloaded := config.Defaults()
+	reloaded.KillSwitch.APIToken = "clean-removal-allowed"
+	if err := s.Reload(reloaded); err != nil {
+		t.Fatalf("balanced clean bundle removal should apply: %v", err)
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "clean-removal-allowed" {
+		t.Fatalf("api token = %q, want reload to apply", live.KillSwitch.APIToken)
+	}
+	for _, p := range s.proxy.CurrentConfig().DLP.Patterns {
+		if p.Bundle == rules.StandardBundleName {
+			t.Fatalf("standard bundle DLP pattern still live after clean removal: %+v", p)
+		}
+	}
+	if got := s.proxy.CurrentConfig().Rules.DegradedBundles; !reflect.DeepEqual(got, []string{rules.StandardBundleName}) {
+		t.Fatalf("degraded bundles = %+v, want standard bundle", got)
+	}
+	event := waitForRuleBundleWebhookEvent(t, events)
+	if event.Fields["bundle"] != rules.StandardBundleName || event.Fields["failure_class"] != "coverage_drop" {
+		t.Fatalf("webhook fields = %+v, want coverage_drop for standard bundle", event.Fields)
+	}
+	if got, ok := event.Fields["dropped_patterns"].(float64); !ok || got != 2 {
+		t.Fatalf("dropped_patterns = %v (%T), want 2", event.Fields["dropped_patterns"], event.Fields["dropped_patterns"])
+	}
+	if !buf.contains("cleanly removed 2 live pattern") {
+		t.Fatalf("stderr missing clean removal count:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_StrictAllowDegradedAcceptsCleanBundleRemoval(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestStandardBundle(t, xdgDataHome, true)
+
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	if err := os.RemoveAll(filepath.Join(xdgDataHome, "pipelock", "rules", rules.StandardBundleName)); err != nil {
+		t.Fatalf("remove standard bundle: %v", err)
+	}
+	buf.reset()
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	reloaded.Rules.AllowDegraded = true
+	reloaded.KillSwitch.APIToken = "strict-clean-removal-override"
+	if err := s.Reload(reloaded); err != nil {
+		t.Fatalf("strict allow_degraded clean bundle removal should apply: %v\nstderr:\n%s", err, buf.String())
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "strict-clean-removal-override" {
+		t.Fatalf("api token = %q, want reload to apply", live.KillSwitch.APIToken)
+	}
+	if got := s.proxy.CurrentConfig().Rules.DegradedBundles; !reflect.DeepEqual(got, []string{rules.StandardBundleName}) {
+		t.Fatalf("degraded bundles = %+v, want standard bundle", got)
+	}
+	if !buf.contains("rules.allow_degraded=true") {
+		t.Fatalf("stderr missing allow_degraded reload warning:\n%s", buf.String())
+	}
+}
+
 func TestServer_Reload_StrictBundleResolutionErrorStillUsesStrictDowngradeGate(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
@@ -1527,6 +1946,84 @@ func TestServer_Reload_BundleResolutionErrorRejectsToolPoisonCoverageDrop(t *tes
 	}
 	if got := s.currentMCPToolExtraPoison(); len(got) != 1 || got[0].Name != "community-tool-poison:tool-poison-shell" {
 		t.Fatalf("live tool-poison patterns after rejection = %+v, want preserved bundle pattern", got)
+	}
+}
+
+func TestServer_Reload_StrictRejectsCleanToolPoisonIdentityDrop(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	bundleDir := installServerTestToolPoisonBundle(t, xdgDataHome)
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	oldPoison := s.currentMCPToolExtraPoison()
+	if len(oldPoison) != 1 || oldPoison[0].Name != "community-tool-poison:tool-poison-shell" {
+		t.Fatalf("live tool-poison patterns = %+v, want installed bundle pattern", oldPoison)
+	}
+	writeServerTestToolPoisonBundle(t, bundleDir, "replacement-tool-poison")
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	reloaded.KillSwitch.APIToken = "tool-poison-clean-replacement"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("strict reload with clean tool-poison identity drop should reject")
+	}
+	if !strings.Contains(err.Error(), "strict mode rule bundle coverage drop") ||
+		!strings.Contains(err.Error(), "community-tool-poison") {
+		t.Fatalf("error = %q, want clean tool-poison coverage-drop rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected clean tool-poison replacement")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected clean tool-poison replacement")
+	}
+	if got := s.currentMCPToolExtraPoison(); len(got) != 1 || got[0].Re.String() != oldPoison[0].Re.String() {
+		t.Fatalf("tool-poison patterns after rejection = %+v, want old regex %q", got, oldPoison[0].Re.String())
+	}
+}
+
+func TestServer_Reload_StrictRejectsCleanDLPValidatorDrop(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	bundleDir := installServerTestDLPBundle(t, xdgDataHome, "")
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	p, ok := dlpByName(oldLive.DLP.Patterns, "community-dlp:dlp-secret")
+	if !ok || p.Bundle != "community-dlp" || p.Validator != "" {
+		t.Fatalf("live DLP pattern = %+v ok=%v, want bundle pattern without validator", p, ok)
+	}
+	writeServerTestDLPBundle(t, bundleDir, config.ValidatorLuhn)
+
+	reloaded := config.Defaults()
+	reloaded.Mode = config.ModeStrict
+	reloaded.KillSwitch.APIToken = "dlp-validator-clean-replacement"
+	err := s.Reload(reloaded)
+	if err == nil {
+		t.Fatal("strict reload with clean DLP validator drop should reject")
+	}
+	if !strings.Contains(err.Error(), "strict mode rule bundle coverage drop") ||
+		!strings.Contains(err.Error(), "community-dlp") {
+		t.Fatalf("error = %q, want clean DLP coverage-drop rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("live config pointer changed after rejected clean DLP validator replacement")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected clean DLP validator replacement")
+	}
+	if p, ok := dlpByName(s.proxy.CurrentConfig().DLP.Patterns, "community-dlp:dlp-secret"); !ok || p.Validator != "" {
+		t.Fatalf("DLP pattern after rejection = %+v ok=%v, want old no-validator pattern", p, ok)
 	}
 }
 

@@ -106,10 +106,26 @@ rules:
   rules_dir: ~/.local/share/pipelock/rules  # default ($XDG_DATA_HOME/pipelock/rules)
   min_confidence: medium                    # skip experimental rules (low confidence)
   include_experimental: false               # default: only stable rules are active
+  allow_degraded: false                     # strict mode refuses installed-bundle integrity failures
   # trusted_keys:                           # additional trusted public keys (beyond embedded keyring)
   #   - name: "vendor-security"
   #     public_key: "64-char-hex-encoded-ed25519-public-key"
 ```
+
+## Degraded Bundle State
+
+Pipelock separates rule-bundle load failures into two operator classes:
+
+- **Integrity failures:** bad signatures, missing or mismatched `bundle.lock`, bundle hash mismatch, malformed installed bundle content, signer/tier mismatch, and freshness rollback state tampering.
+- **Availability failures:** missing optional rules directory, bundle file read/stat failures, freshness lock failures, or a bundle that requires a newer engine feature.
+
+In `mode: strict`, an integrity failure for an installed bundle refuses startup unless `rules.allow_degraded: true` is explicitly set. The error names the bundle and class so the operator can verify or reinstall the bundle before retrying. Availability failures keep the process available but mark the bundle state degraded.
+
+In non-strict modes, Pipelock starts with the remaining rules but emits a structured `rule_bundle_degraded` audit event and a startup warning. `/stats` reports degraded bundle count and names under `rule_bundles`; `/metrics` exposes `pipelock_rule_bundles_degraded`.
+
+On hot reload, a clean deletion of a previously live bundle is treated as a coverage drop. Strict mode rejects that reload and keeps the running config unless `rules.allow_degraded: true` is set on the candidate config. Non-strict modes allow the reload but emit a warning and audit event naming the bundle and pattern count dropped.
+
+`rules.allow_degraded` is an emergency override, not a normal operating mode. Use it only after confirming the bundle store is intentionally unavailable or after choosing to continue while restoring bundle integrity.
 
 ## Trust Model
 

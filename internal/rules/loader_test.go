@@ -957,6 +957,12 @@ func TestLoadBundles_MissingLockFile(t *testing.T) {
 	if len(result.Errors) != 1 {
 		t.Fatalf("expected 1 error for missing lock file, got %d: %v", len(result.Errors), result.Errors)
 	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("missing lock class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if len(result.IntegrityErrors()) != 1 {
+		t.Fatalf("IntegrityErrors len = %d, want 1", len(result.IntegrityErrors()))
+	}
 }
 
 func TestLoadBundles_IntegrityFailure(t *testing.T) {
@@ -993,6 +999,72 @@ func TestLoadBundles_IntegrityFailure(t *testing.T) {
 
 	if len(result.Errors) != 1 {
 		t.Fatalf("expected 1 error for integrity failure, got %d", len(result.Errors))
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("SHA mismatch class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+}
+
+func TestLoadBundles_ExpiredV2BundleIsIntegrity(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "expired")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := testBundleV2("expired", TierCommunity, 1, []Rule{
+		testDLPRule("dlp-001", confidenceHigh, StatusStable),
+	})
+	b.KeyID = KeyFingerprint(pub)
+	b.ExpiresAt = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	writeSignedBundle(t, bundleDir, b, pub, priv)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 error for expired bundle, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("expired bundle class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+}
+
+func TestLoadBundles_MissingInstalledBundleManifestIsIntegrity(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "missing-manifest")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockFile(filepath.Join(bundleDir, lockFilename), &LockFile{
+		InstalledVersion: "2026.07.0",
+		Source:           "test",
+		BundleSHA256:     strings.Repeat("0", 64),
+		Unsigned:         true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 integrity error, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("missing installed bundle manifest class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if len(result.IntegrityErrors()) != 1 {
+		t.Fatalf("IntegrityErrors len = %d, want 1", len(result.IntegrityErrors()))
 	}
 }
 

@@ -143,6 +143,7 @@ const (
 	EventAirlockDeescalate   = "airlock_deescalate"
 	EventSessionAdmin        = "session_admin"
 	EventShieldRewrite       = "shield_rewrite"
+	EventRuleBundleDegraded  = "rule_bundle_degraded"
 )
 
 // instanceIDFallback is the default instance identifier when hostname lookup fails.
@@ -188,6 +189,7 @@ var EventSeverity = map[string]Severity{
 	EventMediaExposure:      SeverityWarn, // media reached agent; provenance signal for taint system
 	EventTextStego:          SeverityWarn, // suspicious combining-mark density; exposure signal
 	EventLicenseExpiry:      SeverityWarn, // overridden by caller with threshold-specific severity
+	EventRuleBundleDegraded: SeverityWarn, // overridden by caller for startup/reload rejection
 
 	// Info: normal operations
 	EventStartup:           SeverityInfo,

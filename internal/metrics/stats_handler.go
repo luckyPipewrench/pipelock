@@ -45,6 +45,10 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 				EmitFailures:   topN(m.receiptEmitFailureCounts),
 				RequiredBlocks: topRequiredReceiptBlocks(m.requiredReceiptBlocks),
 			},
+			RuleBundles: RuleBundleStats{
+				DegradedCount: len(m.ruleBundleDegraded),
+				DegradedNames: append([]string(nil), m.ruleBundleDegraded...),
+			},
 		}
 		ceeFunc := m.CEEStatsFunc
 		evidenceFunc := m.evidenceHealthFunc
@@ -87,6 +91,7 @@ type statsResponse struct {
 	TopScanners       []rankedEntry            `json:"top_scanners"`
 	Sessions          sessionStats             `json:"sessions"`
 	Receipts          receiptStats             `json:"receipts"`
+	RuleBundles       RuleBundleStats          `json:"rule_bundles"`
 	CEE               CEEStats                 `json:"cross_request_detection"`
 	EvidenceHealth    *EvidenceHealthStats     `json:"evidence_health"`
 	Agents            map[string]agentStatsOut `json:"agents,omitempty"`

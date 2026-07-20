@@ -366,19 +366,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		},
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
 	}, opts.Stderr, "listener")
-	for _, e := range bundleResult.Errors {
-		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
-	}
-	for _, w := range bundleResult.Warnings {
-		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: %s\n", w)
-	}
-	if bundleResult.Degraded {
-		// Startup has no previous live bundle-resolved config to preserve, so a
-		// corrupt installed bundle is surfaced loudly but does not hard-fail the
-		// proxy. Hard-failing here would let one bad optional bundle deny service
-		// for the whole control. Hot reload has a separate activation-boundary
-		// gate that rejects bundle errors only when they would drop live coverage.
-		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
+	if err := s.reportStartupRuleBundleResult(cfg, bundleResult); err != nil {
+		s.cleanup()
+		return nil, err
 	}
 	if hasMCPListen {
 		if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPListener, cfg); err != nil {

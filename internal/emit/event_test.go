@@ -95,6 +95,7 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		{EventMediaExposure, SeverityWarn},
 		{EventTextStego, SeverityWarn},
 		{EventLicenseExpiry, SeverityWarn},
+		{EventRuleBundleDegraded, SeverityWarn},
 
 		// Info
 		{EventStartup, SeverityInfo},
@@ -154,6 +155,7 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		EventMediaExposure:       true,
 		EventTextStego:           true,
 		EventLicenseExpiry:       true,
+		EventRuleBundleDegraded:  true,
 		EventStartup:             true,
 		EventShutdown:            true,
 		EventAllowed:             true,

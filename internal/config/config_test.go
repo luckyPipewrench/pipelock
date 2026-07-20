@@ -12592,6 +12592,86 @@ func TestLoad_RulesIncludeExperimental_BooleanStates(t *testing.T) {
 	}
 }
 
+func TestLoad_RulesAllowDegraded_BooleanStates(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantVal bool
+	}{
+		{
+			name:    "omitted (no rules section)",
+			yaml:    "mode: balanced\n",
+			wantVal: false,
+		},
+		{
+			name:    "rules section but field omitted",
+			yaml:    "mode: balanced\nrules:\n  min_confidence: medium\n",
+			wantVal: false,
+		},
+		{
+			name:    "explicit null",
+			yaml:    "mode: balanced\nrules:\n  allow_degraded: null\n",
+			wantVal: false,
+		},
+		{
+			name:    "explicit false",
+			yaml:    "mode: balanced\nrules:\n  allow_degraded: false\n",
+			wantVal: false,
+		},
+		{
+			name:    "explicit true",
+			yaml:    "mode: balanced\nrules:\n  allow_degraded: true\n",
+			wantVal: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("unexpected Load error: %v", err)
+			}
+			if cfg.Rules.AllowDegraded != tt.wantVal {
+				t.Errorf("AllowDegraded = %v, want %v", cfg.Rules.AllowDegraded, tt.wantVal)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("mode: balanced\nrules:\n  allow_degraded: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(path)
+	if err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+	if first.Rules.AllowDegraded {
+		t.Fatal("first load with explicit false should preserve false")
+	}
+	unchanged, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload without change: %v", err)
+	}
+	if unchanged.Rules.AllowDegraded != first.Rules.AllowDegraded {
+		t.Fatalf("reload without change AllowDegraded = %v, want %v", unchanged.Rules.AllowDegraded, first.Rules.AllowDegraded)
+	}
+	if err := os.WriteFile(path, []byte("mode: balanced\nrules:\n  allow_degraded: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload with change: %v", err)
+	}
+	if !changed.Rules.AllowDegraded {
+		t.Fatal("reload with change should observe allow_degraded=true")
+	}
+}
+
 func TestValidate_RulesDisabledFormat_Tightened(t *testing.T) {
 	tests := []struct {
 		name    string

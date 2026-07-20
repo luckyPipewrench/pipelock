@@ -327,15 +327,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		},
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
 	}, s.opts.Stderr, reloadRuntimeModeLabel(s.runtimeMode))
-	for _, e := range reloadBundleResult.Errors {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: bundle %s: %s\n", e.Name, e.Reason)
-	}
-	for _, w := range reloadBundleResult.Warnings {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s\n", w)
-	}
-	if reloadBundleResult.Degraded {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: DEGRADED — standard pack failed after reload, running core patterns only\n")
-	}
+	reportReloadRuleBundleResult(s.opts.Stderr, s.logger, newCfg, reloadBundleResult)
 	if oldCfg != nil {
 		// Compare resolved-vs-resolved configs so bundle merges and
 		// MCP listener auto-enable do not look like policy downgrades
@@ -346,7 +338,36 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
 		}
+		var cleanDrops []bundleCoverageDrop
+		if len(reloadBundleResult.Errors) == 0 {
+			cleanDrops = cleanBundleCoverageDrops(oldCfg, newCfg, s.currentMCPToolExtraPoison(), reloadBundleResult.ToolPoison)
+		}
+		if len(cleanDrops) > 0 {
+			for _, drop := range cleanDrops {
+				outcome := ruleBundleOutcomeDegraded
+				severity := config.SeverityWarn
+				if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
+					outcome = ruleBundleOutcomeRejected
+					severity = config.SeverityCritical
+				}
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: rule bundle %s cleanly removed %d live pattern(s) (%s)\n",
+					drop.Name, drop.Total(), drop.Reason())
+				s.logger.LogRuleBundleDegraded(drop.Name, "coverage_drop", drop.Reason(), ruleBundlePhaseReload, outcome, severity, newCfg.Rules.AllowDegraded, drop.Total())
+			}
+			if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
+				rejectErr := fmt.Errorf("rejected: strict mode rule bundle coverage drop: %s", bundleCoverageDropSummary(cleanDrops))
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
+				s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+				return rejectErr
+			}
+			if newCfg.Rules.AllowDegraded {
+				_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: rules.allow_degraded=true; accepting degraded rule-bundle coverage after explicit operator opt-in")
+			}
+		}
 		warnings := config.ValidateReload(oldCfg, newCfg)
+		if newCfg.Rules.AllowDegraded && len(cleanDrops) > 0 {
+			warnings = filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg, warnings)
+		}
 		for _, w := range warnings {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s - %s\n", w.Field, w.Message)
 		}
@@ -370,6 +391,14 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
 		}
+		if len(cleanDrops) > 0 {
+			applyDegradedRuleBundleState(newCfg, appendBundleDropNames(reloadBundleResult.DegradedBundleNames(), cleanDrops))
+		} else {
+			applyDegradedRuleBundleState(newCfg, reloadBundleResult.DegradedBundleNames())
+		}
+	}
+	if oldCfg == nil {
+		applyDegradedRuleBundleState(newCfg, reloadBundleResult.DegradedBundleNames())
 	}
 	newSc, err := scanner.New(newCfg)
 	if err != nil {
@@ -386,6 +415,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())
+	publishDegradedRuleBundleMetrics(s.metrics, newCfg)
 	if reloadErr := s.proxy.LoadCertCache(newCfg); reloadErr != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
 			fmt.Errorf("TLS cert cache reload failed: %w", reloadErr))
@@ -416,6 +446,13 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil
+}
+
+func strictRuleBundleDegradationDisallowed(oldCfg, newCfg *config.Config) bool {
+	if newCfg == nil || newCfg.Rules.AllowDegraded {
+		return false
+	}
+	return newCfg.Mode == config.ModeStrict || (oldCfg != nil && oldCfg.Mode == config.ModeStrict)
 }
 
 func boolPtrEqual(a, b *bool) bool {
@@ -583,48 +620,86 @@ func bundleResolutionRejectReason(
 }
 
 func removedBundleDLPPatterns(old, updated []config.DLPPattern) []string {
-	return removedBundleNamedRegexPatterns(old, updated,
+	return bundlePatternDropNames(removedBundleNamedRegexPatternDrops(old, updated,
 		func(p config.DLPPattern) string { return p.Name },
 		func(p config.DLPPattern) string { return p.Regex },
-		func(p config.DLPPattern) string { return p.Bundle })
+		func(p config.DLPPattern) string { return p.Bundle },
+		dlpPatternEnforcementIdentity))
 }
 
 func removedBundleResponsePatterns(old, updated []config.ResponseScanPattern) []string {
-	return removedBundleNamedRegexPatterns(old, updated,
+	return bundlePatternDropNames(removedBundleNamedRegexPatternDrops(old, updated,
 		func(p config.ResponseScanPattern) string { return p.Name },
 		func(p config.ResponseScanPattern) string { return p.Regex },
-		func(p config.ResponseScanPattern) string { return p.Bundle })
+		func(p config.ResponseScanPattern) string { return p.Bundle },
+		func(config.ResponseScanPattern) string { return "" }))
 }
 
-func removedBundleNamedRegexPatterns[T any](
+type bundlePatternDropDetail struct {
+	Name   string
+	Bundle string
+	Reason string
+}
+
+func removedBundleDLPPatternDrops(old, updated []config.DLPPattern) []bundlePatternDropDetail {
+	return removedBundleNamedRegexPatternDrops(old, updated,
+		func(p config.DLPPattern) string { return p.Name },
+		func(p config.DLPPattern) string { return p.Regex },
+		func(p config.DLPPattern) string { return p.Bundle },
+		dlpPatternEnforcementIdentity)
+}
+
+func removedBundleResponsePatternDrops(old, updated []config.ResponseScanPattern) []bundlePatternDropDetail {
+	return removedBundleNamedRegexPatternDrops(old, updated,
+		func(p config.ResponseScanPattern) string { return p.Name },
+		func(p config.ResponseScanPattern) string { return p.Regex },
+		func(p config.ResponseScanPattern) string { return p.Bundle },
+		func(config.ResponseScanPattern) string { return "" })
+}
+
+func removedBundleNamedRegexPatternDrops[T any](
 	old, updated []T,
 	nameOf func(T) string,
 	regexOf func(T) string,
 	bundleOf func(T) string,
-) []string {
-	updatedByName := make(map[string]string, len(updated))
+	enforcementIdentityOf func(T) string,
+) []bundlePatternDropDetail {
+	updatedByName := make(map[string]bundlePatternIdentity, len(updated))
 	for _, p := range updated {
-		updatedByName[nameOf(p)] = regexOf(p)
+		updatedByName[nameOf(p)] = bundlePatternIdentity{
+			Regex:               regexOf(p),
+			Bundle:              bundleOf(p),
+			EnforcementIdentity: enforcementIdentityOf(p),
+		}
 	}
 
-	var removed []string
+	var removed []bundlePatternDropDetail
 	for _, p := range old {
-		if bundleOf(p) == "" {
+		bundle := bundleOf(p)
+		if bundle == "" {
 			continue
 		}
 		name := nameOf(p)
-		newRegex, ok := updatedByName[name]
+		newIdentity, ok := updatedByName[name]
 		switch {
 		case !ok:
-			removed = append(removed, name)
-		case newRegex != regexOf(p):
-			removed = append(removed, name+" (regex changed)")
+			removed = append(removed, bundlePatternDropDetail{Name: name, Bundle: bundle})
+		case newIdentity.Bundle != bundle:
+			removed = append(removed, bundlePatternDropDetail{Name: name, Bundle: bundle, Reason: "bundle changed"})
+		case newIdentity.Regex != regexOf(p):
+			removed = append(removed, bundlePatternDropDetail{Name: name, Bundle: bundle, Reason: "regex changed"})
+		case newIdentity.EnforcementIdentity != enforcementIdentityOf(p):
+			removed = append(removed, bundlePatternDropDetail{Name: name, Bundle: bundle, Reason: "enforcement fields changed"})
 		}
 	}
 	return removed
 }
 
 func removedBundleToolPoisonPatterns(old, updated []*tools.ExtraPoisonPattern) []string {
+	return bundlePatternDropNames(removedBundleToolPoisonPatternDrops(old, updated))
+}
+
+func removedBundleToolPoisonPatternDrops(old, updated []*tools.ExtraPoisonPattern) []bundlePatternDropDetail {
 	updatedByName := make(map[string]string, len(updated))
 	for _, p := range updated {
 		if p == nil {
@@ -633,7 +708,7 @@ func removedBundleToolPoisonPatterns(old, updated []*tools.ExtraPoisonPattern) [
 		updatedByName[p.Name] = toolPoisonPatternIdentity(p)
 	}
 
-	var removed []string
+	var removed []bundlePatternDropDetail
 	for _, p := range old {
 		if p == nil || p.Bundle == "" {
 			continue
@@ -641,12 +716,37 @@ func removedBundleToolPoisonPatterns(old, updated []*tools.ExtraPoisonPattern) [
 		identity, ok := updatedByName[p.Name]
 		switch {
 		case !ok:
-			removed = append(removed, p.Name)
+			removed = append(removed, bundlePatternDropDetail{Name: p.Name, Bundle: p.Bundle})
 		case identity != toolPoisonPatternIdentity(p):
-			removed = append(removed, p.Name+" (regex or scan_field changed)")
+			removed = append(removed, bundlePatternDropDetail{Name: p.Name, Bundle: p.Bundle, Reason: "regex, scan_field, or bundle changed"})
 		}
 	}
 	return removed
+}
+
+type bundlePatternIdentity struct {
+	Regex               string
+	Bundle              string
+	EnforcementIdentity string
+}
+
+func dlpPatternEnforcementIdentity(p config.DLPPattern) string {
+	return p.Severity + "\x00" + p.Validator + "\x00" + p.Action
+}
+
+func bundlePatternDropNames(drops []bundlePatternDropDetail) []string {
+	if len(drops) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(drops))
+	for _, drop := range drops {
+		if drop.Reason != "" {
+			names = append(names, drop.Name+" ("+drop.Reason+")")
+			continue
+		}
+		names = append(names, drop.Name)
+	}
+	return names
 }
 
 func toolPoisonPatternIdentity(p *tools.ExtraPoisonPattern) string {
@@ -657,7 +757,7 @@ func toolPoisonPatternIdentity(p *tools.ExtraPoisonPattern) string {
 	if p.Re != nil {
 		regex = p.Re.String()
 	}
-	return regex + "\x00" + p.ScanField
+	return regex + "\x00" + p.ScanField + "\x00" + p.Bundle
 }
 
 func hasRejectableDowngradeWarning(warnings []config.ReloadWarning) bool {

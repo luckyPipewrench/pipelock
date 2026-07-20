@@ -24,7 +24,7 @@ kill-switch state is preserved, including the API, signal, Conductor remote,
 and Conductor stale-bundle sources. Existing MCP sessions retain the old
 scanner until the next request.
 
-If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged. A reload is also rejected, in any mode, when a rule-bundle resolution error (bad signature, missing lock file, version mismatch, filesystem error) would drop detection rules that are currently live: the previous config is kept so a transient bundle failure cannot silently weaken coverage. An unrelated bundle error that does not remove any live rule does not block the reload. At startup there is no prior config to preserve, so a bundle resolution error is surfaced loudly and the proxy runs on its remaining (core plus compiled) patterns rather than refusing to start.
+If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged. A reload is also rejected, in any mode, when a rule-bundle resolution error (bad signature, missing lock file, version mismatch, filesystem error) would drop detection rules that are currently live: the previous config is kept so a transient bundle failure cannot silently weaken coverage. A clean bundle deletion has no loader error, so it is handled separately: strict mode rejects the reload and keeps the running config unless `rules.allow_degraded: true` is set, while non-strict modes allow it and emit a `rule_bundle_degraded` audit event naming the bundle and dropped pattern count. An unrelated bundle error that does not remove any live rule does not block the reload. At startup, strict mode refuses installed-bundle integrity failures unless `rules.allow_degraded: true` is set; non-strict modes and availability failures start degraded with structured audit events and degraded state on `/stats` and `pipelock_rule_bundles_degraded`.
 
 **Reload exceptions:** the Sentry crash-report sanitizer captures the DLP pattern list at startup and does **not** update on reload. If you add DLP patterns used to scrub Sentry events, restart pipelock to propagate them. A warning is logged on any reload that changes `dlp.patterns` while Sentry is enabled: `DLP patterns changed; Sentry scrubber uses init-time patterns until restart`.
 
@@ -2185,6 +2185,7 @@ rules:
   rules_dir: ~/.local/share/pipelock/rules  # default ($XDG_DATA_HOME/pipelock/rules)
   min_confidence: medium          # skip low-confidence (experimental) rules
   include_experimental: false     # only load stable rules by default
+  allow_degraded: false           # emergency strict-mode degraded startup/reload override
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
     - name: "vendor-security"
       public_key: "64-char-hex-encoded-ed25519-public-key"
@@ -2195,9 +2196,10 @@ rules:
 | `rules_dir` | `~/.local/share/pipelock/rules` | Directory for installed bundles (`$XDG_DATA_HOME/pipelock/rules`) |
 | `min_confidence` | `""` (all) | Skip rules below this confidence level |
 | `include_experimental` | `false` | Include experimental rules from bundles |
+| `allow_degraded` | `false` | Explicit emergency override that lets strict mode start or reload with degraded rule-bundle integrity/coverage after emitting warnings and audit events |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 
-**Hot reload:** rule directory changes are not detected via hot-reload. Restart pipelock after installing or updating bundles.
+**Hot reload:** rule directory changes are re-resolved when config reload runs. A clean uninstall that removes live bundle patterns is rejected in strict mode unless `allow_degraded` is set; non-strict modes allow it and emit degraded-state telemetry. Installing or updating bundles still normally uses the `pipelock rules` commands and a config reload or restart to re-resolve the runtime policy.
 
 ## Sandbox
 

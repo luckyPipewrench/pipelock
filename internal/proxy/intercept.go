@@ -1608,7 +1608,7 @@ func newInterceptHandler(
 		// scanning state, because pipelock must never forward
 		// inspection-resistant bytes through a security boundary.
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
-		if IsSSEContentType(resp.Header.Get("Content-Type")) {
+		if HasSingleSSEContentType(resp.Header) {
 			if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
 				ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)

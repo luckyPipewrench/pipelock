@@ -1620,7 +1620,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// UX for any LLM SSE response (OpenAI, Anthropic, OpenAI-compatible gateways).
 	// httputil.ReverseProxy auto-flushes text/event-stream per write, so
 	// the pipe writer's per-event Write reaches the client immediately.
-	if IsSSEContentType(resp.Header.Get("Content-Type")) {
+	if HasSingleSSEContentType(resp.Header) {
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		sseLayer := LayerSSEStream
 		sseOpts := SSEDispatchOptions{

@@ -494,8 +494,8 @@ adaptive_enforcement:
   decay_per_clean_request: 0.5
   level_duration_seconds: 300
   deescalation_check_seconds: 30
-  clean_requests_to_deescalate: 0
-  severity_weighted_signals: false
+  clean_requests_to_deescalate: 5
+  severity_weighted_signals: true
   levels:
     elevated:
       upgrade_warn: block       # warn→block when session is elevated

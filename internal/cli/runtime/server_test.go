@@ -1937,6 +1937,8 @@ func TestReportStartupRuleBundleResultAggregatesStrictIntegrityFailures(t *testi
 			{Name: "bundle-a", Reason: "hash mismatch", Class: rules.BundleErrorClassIntegrity},
 			{Name: "bundle-b", Reason: "expired", Class: rules.BundleErrorClassIntegrity},
 			{Name: "bundle-c", Reason: "requires future feature", Class: rules.BundleErrorClassAvailability},
+			// Zero-value classes preserve older availability semantics.
+			{Name: "bundle-legacy", Reason: "legacy zero-value class"},
 		},
 		Degraded: true,
 	}
@@ -1951,13 +1953,15 @@ func TestReportStartupRuleBundleResultAggregatesStrictIntegrityFailures(t *testi
 			t.Fatalf("error = %q, want %q", msg, want)
 		}
 	}
-	if strings.Contains(msg, "bundle-c") {
-		t.Fatalf("error = %q, should not include availability-only failure", msg)
+	for _, wantNot := range []string{"bundle-c", "bundle-legacy"} {
+		if strings.Contains(msg, wantNot) {
+			t.Fatalf("error = %q, should not include availability-only failure %q", msg, wantNot)
+		}
 	}
-	if got := cfg.Rules.DegradedBundles; !reflect.DeepEqual(got, []string{"bundle-a", "bundle-b", "bundle-c"}) {
+	if got := cfg.Rules.DegradedBundles; !reflect.DeepEqual(got, []string{"bundle-a", "bundle-b", "bundle-c", "bundle-legacy"}) {
 		t.Fatalf("degraded bundles = %+v, want all degraded names", got)
 	}
-	for _, want := range []string{"bundle bundle-a degraded", "bundle bundle-b degraded", "bundle bundle-c degraded"} {
+	for _, want := range []string{"bundle bundle-a degraded", "bundle bundle-b degraded", "bundle bundle-c degraded", "bundle bundle-legacy degraded"} {
 		if !buf.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
 		}

@@ -126,18 +126,6 @@ func awaitReloadCycleResult(reloaded <-chan struct{}, buf *cliTestBuffer, errCh 
 	}
 }
 
-// requireCLIOutputAfterReload blocks until one config reload cycle completes,
-// then asserts want was emitted. The reload warning is always written before the
-// cycle-complete signal fires, so the assertion is deterministic — no polling
-// against a wall-clock deadline.
-func requireCLIOutputAfterReload(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc, want string) {
-	t.Helper()
-	if err := requireCLIOutputAfterReloadResult(reloaded, buf, errCh, want); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-}
-
 func requireCLIOutputAfterReloadResult(reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, want string) error {
 	if err := awaitReloadCycleResult(reloaded, buf, errCh); err != nil {
 		return err
@@ -2351,7 +2339,10 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "license key inputs changed")
+		if err := requireCLIOutputAfterReloadResult(reloaded, stderr, errCh, "license key inputs changed"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -2427,7 +2418,10 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "mode downgraded from balanced to audit")
+		if err := requireCLIOutputAfterReloadResult(reloaded, stderr, errCh, "mode downgraded from balanced to audit"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -2508,7 +2502,10 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "license key inputs changed")
+		if err := requireCLIOutputAfterReloadResult(reloaded, stderr, errCh, "license key inputs changed"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {

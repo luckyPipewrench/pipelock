@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -4046,6 +4047,9 @@ func TestRecordCleanSession_EligibleCleanRecoveryObservable(t *testing.T) {
 		},
 	}
 	m := metrics.New()
+	sink := &recordingEmitSinkHTTP{}
+	logger := audit.NewNop()
+	logger.SetEmitter(emit.NewEmitter("test", sink))
 	rec := &mockRecoverer{
 		level: 2,
 		cleanRecoverFunc: func(_ float64, cleanToDrop int, blockAllCheck func(int) bool) (bool, int, int) {
@@ -4058,20 +4062,35 @@ func TestRecordCleanSession_EligibleCleanRecoveryObservable(t *testing.T) {
 			return true, 2, 1
 		},
 	}
+	warnCtx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+		ClientIP:  "203.0.113.5",
+		RequestID: "req-recover",
+	})
 
-	recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+	recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 		sessionKey: "mcp-session",
 		scope:      "tools/call",
 		reason:     adaptiveRecoveryClean,
-		logger:     audit.NewNop(),
+		logger:     logger,
 		metrics:    m,
-	})
+	}, warnCtx))
 
 	if len(rec.recoveryEvents) != 1 {
 		t.Fatalf("recovery events = %d, want 1", len(rec.recoveryEvents))
 	}
 	if got := rec.recoveryEvents[0]; got.scope != "tools/call" || got.reason != adaptiveRecoveryClean || got.from != 2 || got.to != 1 {
 		t.Fatalf("unexpected recovery event: %+v", got)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(sink.events))
+	}
+	for key, want := range map[string]any{
+		"client_ip":  "203.0.113.5",
+		"request_id": "req-recover",
+	} {
+		if got := sink.events[0].Fields[key]; got != want {
+			t.Fatalf("audit field %s = %v, want %v", key, got, want)
+		}
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()

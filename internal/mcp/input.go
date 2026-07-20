@@ -45,8 +45,17 @@ type adaptiveRecoveryContext struct {
 	sessionKey string
 	scope      string
 	reason     string
+	clientIP   string
+	requestID  string
 	logger     *audit.Logger
 	metrics    *metrics.Metrics
+}
+
+func adaptiveRecoveryContextWithWarnContext(ctx adaptiveRecoveryContext, warnCtx context.Context) adaptiveRecoveryContext {
+	wc := scanner.DLPWarnContextFromCtx(warnCtx)
+	ctx.clientIP = firstNonEmpty(ctx.clientIP, wc.ClientIP)
+	ctx.requestID = firstNonEmpty(ctx.requestID, wc.RequestID)
+	return ctx
 }
 
 // tryRecoverSession attempts autonomous de-escalation on the session recorder.
@@ -113,6 +122,8 @@ func emitAdaptiveRecovery(rec session.Recorder, from, to int, ctx adaptiveRecove
 			From:       fromLabel,
 			To:         toLabel,
 			Reason:     ctx.reason,
+			ClientIP:   ctx.clientIP,
+			RequestID:  ctx.requestID,
 		})
 	}
 	if eventRec, ok := rec.(session.RecoveryEventRecorder); ok {
@@ -326,12 +337,12 @@ func ForwardScannedInput(
 		// Runs before any per-message action so both clean and non-clean
 		// messages benefit from recovery.
 		if rec != nil {
-			tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{
+			tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 				sessionKey: "default",
 				reason:     adaptiveRecoveryTimer,
 				logger:     auditLogger,
 				metrics:    m,
-			})
+			}, opts.warnContext()))
 		}
 
 		// Reject JSON-RPC batch requests unconditionally. MCP does not
@@ -932,12 +943,13 @@ func ForwardScannedInput(
 				return
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
-			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 				sessionKey: "default",
 				reason:     adaptiveRecoveryClean,
+				requestID:  canonicalID(verdict.ID),
 				logger:     auditLogger,
 				metrics:    m,
-			})
+			}, stdioInputCtx))
 			continue
 		}
 
@@ -1419,12 +1431,13 @@ func ForwardScannedInput(
 		case len(reasons) > 0:
 			recordAdaptiveSignal(session.SignalNearMiss)
 		default:
-			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 				sessionKey: "default",
 				reason:     adaptiveRecoveryClean,
+				requestID:  canonicalID(verdict.ID),
 				logger:     auditLogger,
 				metrics:    m,
-			})
+			}, stdioInputCtx))
 		}
 
 		// Action receipt: emit for tools/call decisions only.

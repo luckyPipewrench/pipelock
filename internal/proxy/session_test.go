@@ -3255,6 +3255,18 @@ func TestSessionState_AdaptiveRecoveryHelperBranches(t *testing.T) {
 		if got := sess.ScopedAdaptiveAutoRecoverAt("missing.example", time.Second); !got.IsZero() {
 			t.Fatalf("missing scope auto recover = %v, want zero", got)
 		}
+		sess.globalSignalsAuthoritative = true
+		wantGlobalETA := sess.lastEscalation.Add(time.Second)
+		if got := sess.ScopedAdaptiveAutoRecoverAt("missing.example", time.Second); !got.Equal(wantGlobalETA) {
+			t.Fatalf("authoritative global fallback auto recover = %v, want %v", got, wantGlobalETA)
+		}
+		sess.escalationLevel = 2
+		wantGlobalETA = sess.lastEscalation.Add(time.Second)
+		if got := sess.ScopedAdaptiveAutoRecoverAt("fresh.example", time.Second); !got.Equal(wantGlobalETA) {
+			t.Fatalf("lower scoped level should use global fallback auto recover = %v, want %v", got, wantGlobalETA)
+		}
+		sess.escalationLevel = 1
+		sess.globalSignalsAuthoritative = false
 		changes := sess.TryAutoRecoverScopes(time.Millisecond, nil)
 		if len(changes) != 1 {
 			t.Fatalf("scoped recoveries = %d, want 1", len(changes))

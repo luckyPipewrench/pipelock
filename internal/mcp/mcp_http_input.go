@@ -244,12 +244,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Runs before any per-message action so both clean and non-clean
 	// messages benefit from recovery.
 	if rec != nil {
-		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 			sessionKey: auditSessionKey,
 			reason:     adaptiveRecoveryTimer,
 			logger:     auditLogger,
 			metrics:    m,
-		})
+		}, opts.warnContext()))
 	}
 
 	// Reject JSON-RPC batch requests unconditionally. MCP does not use
@@ -670,12 +670,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptVerdict = config.ActionAllow
 			receiptContractGate = &contractGate
 		}
-		recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+		recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 			sessionKey: auditSessionKey,
 			reason:     adaptiveRecoveryClean,
 			logger:     auditLogger,
 			metrics:    m,
-		})
+		}, opts.warnContext()))
 		return result
 	}
 

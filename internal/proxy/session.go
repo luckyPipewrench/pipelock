@@ -722,10 +722,18 @@ func (s *SessionState) ScopedAdaptiveAutoRecoverAt(scope string, levelDuration t
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st := s.scopes[scope]; st != nil {
-		return adaptiveAutoRecoverAtLocked(st.escalationLevel, st.lastEscalation, levelDuration)
+	globalETA := time.Time{}
+	if s.globalSignalsAuthoritative {
+		globalETA = adaptiveAutoRecoverAtLocked(s.escalationLevel, s.lastEscalation, levelDuration)
 	}
-	return time.Time{}
+	if st := s.scopes[scope]; st != nil {
+		scopedETA := adaptiveAutoRecoverAtLocked(st.escalationLevel, st.lastEscalation, levelDuration)
+		if s.globalSignalsAuthoritative && s.escalationLevel > st.escalationLevel {
+			return globalETA
+		}
+		return scopedETA
+	}
+	return globalETA
 }
 
 func adaptiveAutoRecoverAtLocked(level int, lastEscalation time.Time, levelDuration time.Duration) time.Time {

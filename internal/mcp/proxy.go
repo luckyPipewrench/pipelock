@@ -226,12 +226,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		// On-entry de-escalation for long-lived response streams.
-		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContext{
+		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 			sessionKey: firstNonEmpty(opts.ServerName, "default"),
 			reason:     adaptiveRecoveryTimer,
 			logger:     opts.AuditLogger,
 			metrics:    m,
-		})
+		}, opts.warnContext()))
 
 		// Operator-triggered local reset: when the adaptive reset file appears
 		// (owner-only, owned by the proxy user) clear this session's adaptive
@@ -559,12 +559,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
 			if !toolPoisonDetected {
-				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContext{
+				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 					sessionKey: firstNonEmpty(opts.ServerName, "default"),
 					reason:     adaptiveRecoveryClean,
 					logger:     opts.AuditLogger,
 					metrics:    m,
-				})
+				}, opts.warnContext()))
 			}
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)

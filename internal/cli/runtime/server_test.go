@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -1063,8 +1064,9 @@ func TestNewServer_StrictStartupRejectsMissingBundleLockfile(t *testing.T) {
 	if err == nil {
 		t.Fatal("strict startup with missing bundle lockfile should fail closed")
 	}
-	if !strings.Contains(err.Error(), "class integrity") || !strings.Contains(err.Error(), rules.StandardBundleName) {
-		t.Fatalf("error = %v, want integrity class naming bundle", err)
+	if !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") ||
+		!strings.Contains(err.Error(), rules.StandardBundleName+": reading lock file") {
+		t.Fatalf("error = %v, want strict integrity failure naming missing lockfile", err)
 	}
 }
 
@@ -1090,8 +1092,9 @@ func TestNewServer_StrictStartupRejectsMissingBundleManifest(t *testing.T) {
 	if err == nil {
 		t.Fatal("strict startup with missing installed bundle manifest should fail closed")
 	}
-	if !strings.Contains(err.Error(), "class integrity") || !strings.Contains(err.Error(), rules.StandardBundleName) {
-		t.Fatalf("error = %v, want integrity class naming bundle", err)
+	if !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") ||
+		!strings.Contains(err.Error(), rules.StandardBundleName+": stat bundle file") {
+		t.Fatalf("error = %v, want strict integrity failure naming missing manifest", err)
 	}
 	if !buf.contains("SECURITY WARNING: rule bundle " + rules.StandardBundleName + " degraded (integrity)") {
 		t.Fatalf("stderr missing integrity degradation warning:\n%s", buf.String())
@@ -1920,6 +1923,147 @@ func TestServer_Reload_StrictAllowDegradedAcceptsCleanBundleRemoval(t *testing.T
 	}
 }
 
+func TestReportStartupRuleBundleResultAggregatesStrictIntegrityFailures(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	buf := &syncBuffer{}
+	s := &Server{
+		opts:    ServerOpts{Stderr: buf},
+		logger:  audit.NewNop(),
+		metrics: metrics.New(),
+	}
+	result := &rules.LoadResult{
+		Errors: []rules.BundleError{
+			{Name: "bundle-a", Reason: "hash mismatch", Class: rules.BundleErrorClassIntegrity},
+			{Name: "bundle-b", Reason: "expired", Class: rules.BundleErrorClassIntegrity},
+			{Name: "bundle-c", Reason: "requires future feature", Class: rules.BundleErrorClassAvailability},
+		},
+		Degraded: true,
+	}
+
+	err := s.reportStartupRuleBundleResult(cfg, result)
+	if err == nil {
+		t.Fatal("strict startup should reject integrity failures")
+	}
+	msg := err.Error()
+	for _, want := range []string{"bundle-a: hash mismatch", "bundle-b: expired"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error = %q, want %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "bundle-c") {
+		t.Fatalf("error = %q, should not include availability-only failure", msg)
+	}
+	if got := cfg.Rules.DegradedBundles; !reflect.DeepEqual(got, []string{"bundle-a", "bundle-b", "bundle-c"}) {
+		t.Fatalf("degraded bundles = %+v, want all degraded names", got)
+	}
+	for _, want := range []string{"bundle bundle-a degraded", "bundle bundle-b degraded", "bundle bundle-c degraded"} {
+		if !buf.contains(want) {
+			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+func TestReportStartupRuleBundleResultNilWarningsAndAllowDegraded(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	cfg.Rules.AllowDegraded = true
+	buf := &syncBuffer{}
+	s := &Server{
+		opts:    ServerOpts{Stderr: buf},
+		logger:  audit.NewNop(),
+		metrics: metrics.New(),
+	}
+	if err := s.reportStartupRuleBundleResult(cfg, nil); err != nil {
+		t.Fatalf("nil startup bundle result error = %v, want nil", err)
+	}
+
+	err := s.reportStartupRuleBundleResult(cfg, &rules.LoadResult{
+		Errors: []rules.BundleError{
+			{Name: "integrity-bundle", Reason: "hash mismatch", Class: rules.BundleErrorClassIntegrity},
+		},
+		Warnings: []string{"expired soon"},
+		Degraded: true,
+	})
+	if err != nil {
+		t.Fatalf("allow-degraded strict startup error = %v, want nil", err)
+	}
+	for _, want := range []string{
+		"pipelock: expired soon",
+		"strict mode is booting with degraded rule-bundle integrity",
+	} {
+		if !buf.contains(want) {
+			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+func TestReportReloadRuleBundleResultNilWarningsAndDegraded(t *testing.T) {
+	cfg := config.Defaults()
+	buf := &syncBuffer{}
+	reportReloadRuleBundleResult(buf, audit.NewNop(), cfg, nil)
+	if got := buf.String(); got != "" {
+		t.Fatalf("nil reload bundle result wrote %q, want empty", got)
+	}
+
+	reportReloadRuleBundleResult(buf, audit.NewNop(), cfg, &rules.LoadResult{
+		Errors: []rules.BundleError{
+			{Name: "community-rules", Reason: "bundle expired", Class: rules.BundleErrorClassAvailability},
+		},
+		Warnings: []string{"signature expires soon"},
+		Degraded: true,
+	})
+	for _, want := range []string{
+		"WARNING: config reload: rule bundle community-rules degraded (availability): bundle expired",
+		"WARNING: config reload: signature expires soon",
+		"WARNING: config reload: DEGRADED — 1 rule bundle(s) unavailable: community-rules",
+	} {
+		if !buf.contains(want) {
+			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+func TestRuleBundleStateHelpersNilAndDropSummaries(t *testing.T) {
+	applyDegradedRuleBundleState(nil, []string{"ignored"})
+	publishDegradedRuleBundleMetrics(nil, config.Defaults())
+	publishDegradedRuleBundleMetrics(metrics.New(), nil)
+
+	cfg := config.Defaults()
+	applyDegradedRuleBundleState(cfg, []string{"z-bundle", "a-bundle"})
+	if got := strings.Join(cfg.Rules.DegradedBundles, ","); got != "a-bundle,z-bundle" {
+		t.Fatalf("degraded bundles = %q, want sorted names", got)
+	}
+
+	oldCfg := config.Defaults()
+	oldCfg.DLP.Patterns = []config.DLPPattern{
+		{Name: "dlp-z", Regex: "secret-z", Severity: config.SeverityHigh, Bundle: "z-bundle"},
+	}
+	newCfg := oldCfg.Clone()
+	newCfg.DLP.Patterns = nil
+	oldCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{Name: "response-a", Regex: "old", Bundle: "a-bundle"},
+	}
+	newCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{Name: "response-a", Regex: "new", Bundle: "a-bundle"},
+	}
+	drops := cleanBundleCoverageDrops(oldCfg, newCfg, []*mcptools.ExtraPoisonPattern{
+		{Name: "tool-m", Bundle: "m-bundle", ScanField: "description"},
+	}, nil)
+	if got := bundleCoverageDropSummary(drops); got != "a-bundle dropped 1 pattern(s), m-bundle dropped 1 pattern(s), z-bundle dropped 1 pattern(s)" {
+		t.Fatalf("drop summary = %q, want sorted per-bundle summary", got)
+	}
+	if got := strings.Join(appendBundleDropNames([]string{"z-bundle", ""}, []bundleCoverageDrop{
+		{Name: ""},
+		{Name: "a-bundle"},
+	}), ","); got != "a-bundle,z-bundle" {
+		t.Fatalf("appended drop names = %q, want sorted de-duped non-empty names", got)
+	}
+	if got := cleanBundleCoverageDrops(nil, newCfg, nil, nil); got != nil {
+		t.Fatalf("nil old config drops = %+v, want nil", got)
+	}
+}
+
 func TestServer_Reload_StrictRejectsCleanToolPoisonDropWithUnrelatedBundleError(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
@@ -2341,6 +2485,31 @@ func TestFilterAllowedRuleBundleCoverageWarningsKeepsLocalDLPWeakening(t *testin
 	filtered := filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg, warnings)
 	if len(filtered) != len(warnings) {
 		t.Fatalf("filtered warnings = %+v, want local DLP weakening warnings preserved", filtered)
+	}
+}
+
+func TestFilterAllowedRuleBundleCoverageWarningsKeepsLocalResponseWeakening(t *testing.T) {
+	oldCfg := config.Defaults()
+	newCfg := oldCfg.Clone()
+	warnings := []config.ReloadWarning(nil)
+	if got := filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg, warnings); got != nil {
+		t.Fatalf("nil warnings filtered to %+v, want nil", got)
+	}
+
+	oldCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{Name: "bundle-response", Regex: "bundle-response", Bundle: "community-response"},
+		{Name: "local-response", Regex: "local-response"},
+	}
+	newCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{Name: "local-response", Regex: "weakened-local-response"},
+	}
+	warnings = []config.ReloadWarning{
+		{Field: "response_scanning.patterns", Message: "response patterns changed from 2 to 1"},
+	}
+
+	filtered := filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg, warnings)
+	if len(filtered) != len(warnings) {
+		t.Fatalf("filtered warnings = %+v, want local response weakening warning preserved", filtered)
 	}
 }
 

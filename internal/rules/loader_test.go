@@ -88,6 +88,52 @@ func TestLoadBundles_PropagatesDLPValidator(t *testing.T) {
 	}
 }
 
+func TestLoadResultErrorHelpers(t *testing.T) {
+	var nilResult *LoadResult
+	if got := nilResult.IntegrityErrors(); got != nil {
+		t.Fatalf("nil IntegrityErrors = %+v, want nil", got)
+	}
+	if got := nilResult.AvailabilityErrors(); got != nil {
+		t.Fatalf("nil AvailabilityErrors = %+v, want nil", got)
+	}
+	if got := nilResult.DegradedBundleNames(); got != nil {
+		t.Fatalf("nil DegradedBundleNames = %+v, want nil", got)
+	}
+	if got := (BundleError{}).ClassOrDefault(); got != BundleErrorClassAvailability {
+		t.Fatalf("zero class default = %q, want %q", got, BundleErrorClassAvailability)
+	}
+
+	result := &LoadResult{
+		Errors: []BundleError{
+			{Name: "z-bundle", Class: BundleErrorClassIntegrity, Reason: "hash mismatch"},
+			{Name: "", Class: BundleErrorClassIntegrity, Reason: "nameless state error"},
+			{Name: "a-bundle", Class: BundleErrorClassAvailability, Reason: "requires future feature"},
+			{Name: "z-bundle", Class: BundleErrorClassIntegrity, Reason: "duplicate"},
+		},
+	}
+	if got := len(result.IntegrityErrors()); got != 3 {
+		t.Fatalf("IntegrityErrors len = %d, want 3", got)
+	}
+	if got := len(result.AvailabilityErrors()); got != 1 {
+		t.Fatalf("AvailabilityErrors len = %d, want 1", got)
+	}
+	if got := strings.Join(result.DegradedBundleNames(), ","); got != "a-bundle,z-bundle" {
+		t.Fatalf("DegradedBundleNames = %q, want sorted de-duped names", got)
+	}
+}
+
+func TestClassifyBundleFileReadError(t *testing.T) {
+	if got := classifyBundleFileReadError(os.ErrNotExist); got != BundleErrorClassIntegrity {
+		t.Fatalf("missing bundle file class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if got := classifyBundleFileReadError(errBundleFileTooLarge); got != BundleErrorClassIntegrity {
+		t.Fatalf("oversized bundle file class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if got := classifyBundleFileReadError(os.ErrPermission); got != BundleErrorClassAvailability {
+		t.Fatalf("permission error class = %q, want %q", got, BundleErrorClassAvailability)
+	}
+}
+
 // testInjectionRule creates a valid injection rule.
 func testInjectionRule(id, confidence string) Rule {
 	return Rule{
@@ -852,6 +898,44 @@ func TestLoadBundles_PipelockPrefixOfficialSigner(t *testing.T) {
 	}
 	if len(result.DLP) != 1 {
 		t.Fatalf("expected 1 DLP rule, got %d", len(result.DLP))
+	}
+}
+
+func TestLoadBundles_V2TierKeyBindingFailureIsIntegrity(t *testing.T) {
+	// Non-parallel: mutates keyring globals.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setupKeyring(t, pub)
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "tier-mismatch")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundleV2("tier-mismatch", TierCommunity, 1, []Rule{
+		testDLPRule("dlp-tier-001", confidenceHigh, StatusStable),
+	})
+	b.KeyID = KeyFingerprint(pub)
+	writeSignedBundle(t, bundleDir, b, pub, priv)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+		TierKeyMapping: map[string]string{
+			TierCommunity: "sha256:different-key",
+		},
+	})
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 tier-key error, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("tier-key error class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if len(result.IntegrityErrors()) != 1 {
+		t.Fatalf("IntegrityErrors len = %d, want 1", len(result.IntegrityErrors()))
 	}
 }
 

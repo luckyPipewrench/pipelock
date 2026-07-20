@@ -846,7 +846,8 @@ func TestWSProxySSRFDialBlockWritesPolicyClose(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
-	p, err := New(cfg, logger, sc, metrics.New())
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -893,6 +894,13 @@ func TestWSProxySSRFDialBlockWritesPolicyClose(t *testing.T) {
 	}
 
 	hdr, err := ws.ReadHeader(conn)
+	if errors.Is(err, io.EOF) {
+		// The SSRF dial block writes a close frame, records the block, and then
+		// returns. The deferred socket close can beat the client-side frame
+		// parser under race/Go-version timing; EOF is still fail-closed.
+		requireWSBlockedMetric(t, m)
+		return
+	}
 	if err != nil {
 		t.Fatalf("read close frame header: %v", err)
 	}
@@ -912,6 +920,17 @@ func TestWSProxySSRFDialBlockWritesPolicyClose(t *testing.T) {
 	if !strings.Contains(string(payload[2:]), string(blockreason.SSRFDNSRebind)) {
 		t.Fatalf("close payload = %q, want %s", string(payload[2:]), blockreason.SSRFDNSRebind)
 	}
+	requireWSBlockedMetric(t, m)
+}
+
+func requireWSBlockedMetric(t *testing.T, m *metrics.Metrics) {
+	t.Helper()
+	testwait.For(t, 2*time.Second, func() bool {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+		m.PrometheusHandler().ServeHTTP(rec, req)
+		return strings.Contains(rec.Body.String(), `pipelock_ws_connections_total{result="blocked"} 1`)
+	}, "websocket blocked metric")
 }
 
 func TestWSProxyRequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {

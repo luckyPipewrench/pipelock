@@ -63,11 +63,13 @@ func (s *Server) reportStartupRuleBundleResult(cfg *config.Config, result *rules
 	if cfg.Mode != config.ModeStrict || cfg.Rules.AllowDegraded {
 		return nil
 	}
-	for _, e := range result.Errors {
-		if e.ClassOrDefault() == rules.BundleErrorClassIntegrity {
-			return fmt.Errorf("rule bundle integrity failure in strict mode: bundle %s failed with class %s: %s (verify or reinstall the bundle, or set rules.allow_degraded: true only as an emergency override)",
-				e.Name, e.ClassOrDefault(), e.Reason)
+	if integrityErrs := result.IntegrityErrors(); len(integrityErrs) > 0 {
+		details := make([]string, 0, len(integrityErrs))
+		for _, e := range integrityErrs {
+			details = append(details, fmt.Sprintf("%s: %s", e.Name, e.Reason))
 		}
+		return fmt.Errorf("rule bundle integrity failure in strict mode: %s (verify or reinstall the bundle(s), or set rules.allow_degraded: true only as an emergency override)",
+			strings.Join(details, "; "))
 	}
 	return nil
 }

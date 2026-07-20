@@ -287,6 +287,9 @@ func parseReplayEntryLine(path string, raw []byte) (ReplayEntry, error) {
 		}
 		return ReplayEntry{}, fmt.Errorf("replay store %s has trailing tokens", path)
 	}
+	if entry.TransferTimestamp.IsZero() {
+		entry.TransferTimestamp = entry.Timestamp
+	}
 	if err := validateReplayEntry(entry); err != nil {
 		return ReplayEntry{}, fmt.Errorf("replay store %s has an invalid entry: %w", path, err)
 	}
@@ -454,9 +457,6 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 		}
 	}
 	if removed == 0 && !retentionChanged {
-		s.mu.Lock()
-		s.readOffset = newSize
-		s.mu.Unlock()
 		return removed, nil
 	}
 	if err := tmp.Sync(); err != nil {

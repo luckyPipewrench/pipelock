@@ -369,6 +369,21 @@ func TestFileReplayStoreCompactSkipsReplacementWhenNothingChanges(t *testing.T) 
 	if err := store.CommitIfNew(entry); !errors.Is(err, ErrReplayConflict) {
 		t.Fatalf("survivor after no-op Compact = %v, want ErrReplayConflict", err)
 	}
+	newEntry := sampleEntryAt("nonce-new", replayHashB, cutoff.Add(time.Second))
+	if err := store.CommitIfNew(newEntry); err != nil {
+		t.Fatalf("CommitIfNew new entry after no-op Compact: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := OpenFileReplayStore(path)
+	if err != nil {
+		t.Fatalf("reopen after no-op Compact and append: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if err := reopened.CommitIfNew(newEntry); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("new entry after reopen CommitIfNew = %v, want ErrReplayConflict", err)
+	}
 }
 
 func TestFileReplayStoreCorruptLineFailsClosed(t *testing.T) {
@@ -402,6 +417,38 @@ func TestFileReplayStoreTrailingTokensFailClosed(t *testing.T) {
 	}
 	if _, err := OpenFileReplayStore(path); err == nil {
 		t.Fatal("OpenFileReplayStore accepted trailing tokens after an entry, want fail closed")
+	}
+}
+
+func TestFileReplayStoreBackfillsLegacyTransferTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "replay.jsonl")
+	entry := sampleEntry("nonce-legacy", replayHashA)
+	legacy := struct {
+		NonceKey    NonceKey    `json:"nonce_key"`
+		TransferKey TransferKey `json:"transfer_key"`
+		RecordHash  string      `json:"record_hash"`
+		Timestamp   time.Time   `json:"ts"`
+	}{
+		NonceKey:    entry.NonceKey,
+		TransferKey: entry.TransferKey,
+		RecordHash:  entry.RecordHash,
+		Timestamp:   entry.Timestamp,
+	}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy entry: %v", err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatalf("seed legacy replay store: %v", err)
+	}
+
+	store, err := OpenFileReplayStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileReplayStore legacy entry: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CommitIfNew(entry); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("legacy entry CommitIfNew = %v, want ErrReplayConflict", err)
 	}
 }
 
@@ -466,6 +513,9 @@ func TestFileReplayStoreCloseWaitsForActiveOperation(t *testing.T) {
 func TestFileReplayStoreCompactTempCreateFailureFailsClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod read-only directory semantics are platform-specific on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based permission denial is ineffective when running as root")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "replay.jsonl")

@@ -444,6 +444,9 @@ func TestReplayStoreCompactionDoesNotReopenFreshReSignedTransfer(t *testing.T) {
 	if res.Passed {
 		t.Fatal("VerifyCounterparty() accepted a same-transfer replay after compaction with a fresh side-record timestamp")
 	}
+	if res.FailureCode != FailureStale {
+		t.Fatalf("failure code = %s err=%s, want %s", res.FailureCode, res.Error, FailureStale)
+	}
 }
 
 // TestVerifyCounterpartyRejectsReSignedTransferWithMutableReceiptEnvelope proves

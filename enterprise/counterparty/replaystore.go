@@ -152,6 +152,7 @@ func (s *MemReplayStore) Compact(before time.Time) (int, error) {
 // makes the store unhealthy and every CommitIfNew fails closed rather than
 // silently dropping replay history.
 type FileReplayStore struct {
+	opMu       sync.Mutex
 	mu         sync.Mutex
 	path       string
 	file       *os.File
@@ -292,6 +293,8 @@ func (s *FileReplayStore) CommitIfNew(entry ReplayEntry) error {
 	if err := validateReplayEntry(entry); err != nil {
 		return err
 	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.healthy {
@@ -333,10 +336,13 @@ func (s *FileReplayStore) CommitIfNew(entry ReplayEntry) error {
 // retention horizon. See CompactableReplayStore for the caller's freshness
 // contract.
 func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	fail := func(err error) (int, error) {
 		s.healthy = false
+		s.mu.Unlock()
 		return removed, err
 	}
 	if !s.healthy {
@@ -359,10 +365,20 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 	if err := s.reindexLocked(); err != nil {
 		return fail(err)
 	}
-	dir := filepath.Dir(s.path)
+	path := s.path
+	activeFile := s.file
+	dir := filepath.Dir(path)
+	s.mu.Unlock()
+
+	failUnlocked := func(err error) (int, error) {
+		s.mu.Lock()
+		s.healthy = false
+		s.mu.Unlock()
+		return removed, err
+	}
 	tmp, err := os.CreateTemp(filepath.Clean(dir), filepath.Base(s.path)+".compact-*")
 	if err != nil {
-		return fail(fmt.Errorf("create compacted replay store: %w", err))
+		return failUnlocked(fmt.Errorf("create compacted replay store: %w", err))
 	}
 	tmpPath := tmp.Name()
 	renamed := false
@@ -375,22 +391,22 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
-		return fail(fmt.Errorf("seek replay store for compact: %w", err))
+	if _, err := activeFile.Seek(0, io.SeekStart); err != nil {
+		return failUnlocked(fmt.Errorf("seek replay store for compact: %w", err))
 	}
 	newNonces := make(map[NonceKey]time.Time)
 	newTransfers := make(map[TransferKey]time.Time)
 	newSize := int64(0)
-	reader := bufio.NewReader(s.file)
+	reader := bufio.NewReader(activeFile)
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			if line[len(line)-1] != '\n' {
-				return fail(fmt.Errorf("replay store %s has an incomplete trailing line", s.path))
+				return failUnlocked(fmt.Errorf("replay store %s has an incomplete trailing line", path))
 			}
-			entry, parseErr := parseReplayEntryLine(s.path, line[:len(line)-1])
+			entry, parseErr := parseReplayEntryLine(path, line[:len(line)-1])
 			if parseErr != nil {
-				return fail(parseErr)
+				return failUnlocked(parseErr)
 			}
 			keepNonce := !entry.Timestamp.Before(before)
 			keepTransfer := !entry.TransferTimestamp.Before(before)
@@ -399,15 +415,15 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 			} else {
 				encoded, marshalErr := json.Marshal(entry)
 				if marshalErr != nil {
-					return fail(fmt.Errorf("marshal replay entry: %w", marshalErr))
+					return failUnlocked(fmt.Errorf("marshal replay entry: %w", marshalErr))
 				}
 				encoded = append(encoded, '\n')
 				n, writeErr := tmp.Write(encoded)
 				if writeErr != nil {
-					return fail(fmt.Errorf("write compacted replay store: %w", writeErr))
+					return failUnlocked(fmt.Errorf("write compacted replay store: %w", writeErr))
 				}
 				if n != len(encoded) {
-					return fail(fmt.Errorf("write compacted replay store: %w", io.ErrShortWrite))
+					return failUnlocked(fmt.Errorf("write compacted replay store: %w", io.ErrShortWrite))
 				}
 				if keepNonce {
 					newNonces[entry.NonceKey] = entry.Timestamp
@@ -422,33 +438,35 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 			break
 		}
 		if readErr != nil {
-			return fail(fmt.Errorf("read replay store for compact: %w", readErr))
+			return failUnlocked(fmt.Errorf("read replay store for compact: %w", readErr))
 		}
 	}
 	if err := tmp.Sync(); err != nil {
-		return fail(fmt.Errorf("fsync compacted replay store: %w", err))
+		return failUnlocked(fmt.Errorf("fsync compacted replay store: %w", err))
 	}
 	if err := tmp.Close(); err != nil {
-		return fail(fmt.Errorf("close compacted replay store: %w", err))
+		return failUnlocked(fmt.Errorf("close compacted replay store: %w", err))
 	}
-	if err := os.Rename(tmpPath, filepath.Clean(s.path)); err != nil {
-		return fail(fmt.Errorf("rename compacted replay store: %w", err))
+	if err := os.Rename(tmpPath, filepath.Clean(path)); err != nil {
+		return failUnlocked(fmt.Errorf("rename compacted replay store: %w", err))
 	}
 	renamed = true
 	fsyncDir(dir)
-	newFile, err := os.OpenFile(filepath.Clean(s.path), os.O_RDWR|os.O_APPEND, 0o600) // #nosec G304 -- operator-configured store path
+	newFile, err := os.OpenFile(filepath.Clean(path), os.O_RDWR|os.O_APPEND, 0o600) // #nosec G304 -- operator-configured store path
 	if err != nil {
-		return fail(fmt.Errorf("reopen compacted replay store: %w", err))
+		return failUnlocked(fmt.Errorf("reopen compacted replay store: %w", err))
 	}
-	if err := verifyStorePathInode(newFile, s.path); err != nil {
+	if err := verifyStorePathInode(newFile, path); err != nil {
 		_ = newFile.Close()
-		return fail(err)
+		return failUnlocked(err)
 	}
+	s.mu.Lock()
 	oldFile := s.file
 	s.file = newFile
 	s.nonces = newNonces
 	s.transfers = newTransfers
 	s.readOffset = newSize
+	s.mu.Unlock()
 	release()
 	locked = false
 	_ = oldFile.Close()

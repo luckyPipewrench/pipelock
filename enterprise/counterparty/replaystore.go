@@ -33,12 +33,20 @@ var (
 // ReplayEntry is the durable unit of replay state for one accepted record. Two
 // uniqueness constraints are enforced: NonceKey rejects the identical signed
 // record, TransferKey rejects the same two receipts + payload re-signed under a
-// fresh nonce (coverage-count inflation).
+// fresh nonce (coverage-count inflation). Timestamp is the signed side-record
+// timestamp used to retain the nonce key. TransferTimestamp is the older signed
+// receipt timestamp used to retain the transfer key; unlike the side-record
+// timestamp, it cannot be refreshed by re-signing the same transfer. The pruned
+// flags persist partial compaction so a retained JSONL entry does not restore a
+// key whose retention horizon has already expired after restart.
 type ReplayEntry struct {
-	NonceKey    NonceKey    `json:"nonce_key"`
-	TransferKey TransferKey `json:"transfer_key"`
-	RecordHash  string      `json:"record_hash"`
-	Timestamp   time.Time   `json:"ts"`
+	NonceKey          NonceKey    `json:"nonce_key"`
+	TransferKey       TransferKey `json:"transfer_key"`
+	RecordHash        string      `json:"record_hash"`
+	Timestamp         time.Time   `json:"ts"`
+	TransferTimestamp time.Time   `json:"transfer_ts"`
+	NoncePruned       bool        `json:"nonce_pruned,omitempty"`
+	TransferPruned    bool        `json:"transfer_pruned,omitempty"`
 }
 
 // ReplayStore records accepted counterparty records and rejects replays. The
@@ -54,19 +62,45 @@ type ReplayStore interface {
 	CommitIfNew(entry ReplayEntry) error
 }
 
+// CompactableReplayStore is the optional replay-store maintenance interface.
+// VerifyCounterparty intentionally depends only on ReplayStore; compaction is a
+// caller-driven operation with a security-critical retention contract.
+type CompactableReplayStore interface {
+	ReplayStore
+
+	// Compact removes entries only after both replay keys represented by that
+	// entry are strictly before before and returns the number removed. Nonce
+	// retention is based on ReplayEntry.Timestamp; transfer retention is based
+	// on ReplayEntry.TransferTimestamp.
+	//
+	// SECURITY CONTRACT: callers MUST pass a horizon that is no newer than the
+	// verifier freshness cutoff for every verifier using this store
+	// (before <= Now - MaxAge). Passing a newer horizon re-opens replay for the
+	// pruned time window; the store cannot validate MaxAge because MaxAge is a
+	// verify-time parameter.
+	Compact(before time.Time) (removed int, err error)
+}
+
 // MemReplayStore is a thread-safe in-memory replay set. It provides no
 // durability across process restarts; use FileReplayStore for that.
 type MemReplayStore struct {
 	mu        sync.Mutex
-	nonces    map[NonceKey]struct{}
-	transfers map[TransferKey]struct{}
+	nonces    map[NonceKey]time.Time
+	transfers map[TransferKey]time.Time
+	entries   map[replayEntryKey]ReplayEntry
+}
+
+type replayEntryKey struct {
+	nonce    NonceKey
+	transfer TransferKey
 }
 
 // NewMemReplayStore returns an empty in-memory replay store.
 func NewMemReplayStore() *MemReplayStore {
 	return &MemReplayStore{
-		nonces:    make(map[NonceKey]struct{}),
-		transfers: make(map[TransferKey]struct{}),
+		nonces:    make(map[NonceKey]time.Time),
+		transfers: make(map[TransferKey]time.Time),
+		entries:   make(map[replayEntryKey]ReplayEntry),
 	}
 }
 
@@ -83,9 +117,37 @@ func (s *MemReplayStore) CommitIfNew(entry ReplayEntry) error {
 	if _, ok := s.transfers[entry.TransferKey]; ok {
 		return fmt.Errorf("%w: transfer already committed", ErrReplayConflict)
 	}
-	s.nonces[entry.NonceKey] = struct{}{}
-	s.transfers[entry.TransferKey] = struct{}{}
+	s.nonces[entry.NonceKey] = entry.Timestamp
+	s.transfers[entry.TransferKey] = entry.TransferTimestamp
+	s.entries[replayEntryKey{nonce: entry.NonceKey, transfer: entry.TransferKey}] = entry
 	return nil
+}
+
+// Compact implements CompactableReplayStore; see CompactableReplayStore for the
+// caller's freshness contract.
+func (s *MemReplayStore) Compact(before time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	newNonces := make(map[NonceKey]time.Time)
+	newTransfers := make(map[TransferKey]time.Time)
+	removed := 0
+	for key, entry := range s.entries {
+		keepNonce := !entry.Timestamp.Before(before)
+		keepTransfer := !entry.TransferTimestamp.Before(before)
+		if keepNonce {
+			newNonces[key.nonce] = entry.Timestamp
+		}
+		if keepTransfer {
+			newTransfers[key.transfer] = entry.TransferTimestamp
+		}
+		if !keepNonce && !keepTransfer {
+			delete(s.entries, key)
+			removed++
+		}
+	}
+	s.nonces = newNonces
+	s.transfers = newTransfers
+	return removed, nil
 }
 
 // FileReplayStore is a durable, append-only replay store backed by a JSONL file.
@@ -94,11 +156,12 @@ func (s *MemReplayStore) CommitIfNew(entry ReplayEntry) error {
 // makes the store unhealthy and every CommitIfNew fails closed rather than
 // silently dropping replay history.
 type FileReplayStore struct {
+	opMu       sync.Mutex
 	mu         sync.Mutex
 	path       string
 	file       *os.File
-	nonces     map[NonceKey]struct{}
-	transfers  map[TransferKey]struct{}
+	nonces     map[NonceKey]time.Time
+	transfers  map[TransferKey]time.Time
 	readOffset int64
 	healthy    bool
 }
@@ -139,8 +202,8 @@ func OpenFileReplayStore(path string) (*FileReplayStore, error) {
 	s := &FileReplayStore{
 		path:      path,
 		file:      f,
-		nonces:    make(map[NonceKey]struct{}),
-		transfers: make(map[TransferKey]struct{}),
+		nonces:    make(map[NonceKey]time.Time),
+		transfers: make(map[TransferKey]time.Time),
 	}
 	release, err := acquireReplayStoreLock(s.file)
 	if err != nil {
@@ -195,27 +258,42 @@ func (s *FileReplayStore) reindexLocked() error {
 }
 
 func (s *FileReplayStore) indexLine(raw []byte) error {
+	entry, err := parseReplayEntryLine(s.path, raw)
+	if err != nil {
+		return err
+	}
+	if entry.retainsNonce() {
+		s.nonces[entry.NonceKey] = entry.Timestamp
+	}
+	if entry.retainsTransfer() {
+		s.transfers[entry.TransferKey] = entry.TransferTimestamp
+	}
+	return nil
+}
+
+func parseReplayEntryLine(path string, raw []byte) (ReplayEntry, error) {
 	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
-		return fmt.Errorf("replay store %s is corrupt: %w", s.path, err)
+		return ReplayEntry{}, fmt.Errorf("replay store %s is corrupt: %w", path, err)
 	}
 	var entry ReplayEntry
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&entry); err != nil {
-		return fmt.Errorf("replay store %s is corrupt: %w", s.path, err)
+		return ReplayEntry{}, fmt.Errorf("replay store %s is corrupt: %w", path, err)
 	}
 	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		if err != nil {
-			return fmt.Errorf("replay store %s has trailing tokens: %w", s.path, err)
+			return ReplayEntry{}, fmt.Errorf("replay store %s has trailing tokens: %w", path, err)
 		}
-		return fmt.Errorf("replay store %s has trailing tokens", s.path)
+		return ReplayEntry{}, fmt.Errorf("replay store %s has trailing tokens", path)
+	}
+	if entry.TransferTimestamp.IsZero() {
+		entry.TransferTimestamp = entry.Timestamp
 	}
 	if err := validateReplayEntry(entry); err != nil {
-		return fmt.Errorf("replay store %s has an invalid entry: %w", s.path, err)
+		return ReplayEntry{}, fmt.Errorf("replay store %s has an invalid entry: %w", path, err)
 	}
-	s.nonces[entry.NonceKey] = struct{}{}
-	s.transfers[entry.TransferKey] = struct{}{}
-	return nil
+	return entry, nil
 }
 
 // CommitIfNew implements ReplayStore with durable, fsync'd, cross-process-safe
@@ -226,6 +304,8 @@ func (s *FileReplayStore) CommitIfNew(entry ReplayEntry) error {
 	if err := validateReplayEntry(entry); err != nil {
 		return err
 	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.healthy {
@@ -256,10 +336,187 @@ func (s *FileReplayStore) CommitIfNew(entry ReplayEntry) error {
 		s.healthy = false
 		return err
 	}
-	s.nonces[entry.NonceKey] = struct{}{}
-	s.transfers[entry.TransferKey] = struct{}{}
+	s.nonces[entry.NonceKey] = entry.Timestamp
+	s.transfers[entry.TransferKey] = entry.TransferTimestamp
 	s.readOffset += int64(encodedLen)
 	return nil
+}
+
+// Compact implements CompactableReplayStore. It rewrites the durable JSONL file
+// atomically and keeps any entry whose nonce or transfer key is still inside its
+// retention horizon. See CompactableReplayStore for the caller's freshness
+// contract.
+func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	s.mu.Lock()
+	fail := func(err error) (int, error) {
+		s.healthy = false
+		s.mu.Unlock()
+		return removed, err
+	}
+	if !s.healthy {
+		return fail(errors.New("replay store is unhealthy"))
+	}
+	release, err := acquireReplayStoreLock(s.file)
+	if err != nil {
+		return fail(fmt.Errorf("lock replay store: %w", err))
+	}
+	locked := true
+	defer func() {
+		if locked {
+			release()
+		}
+	}()
+
+	if err := verifyStorePathInode(s.file, s.path); err != nil {
+		return fail(err)
+	}
+	if err := s.reindexLocked(); err != nil {
+		return fail(err)
+	}
+	path := s.path
+	activeFile := s.file
+	dir := filepath.Dir(path)
+	s.mu.Unlock()
+
+	failUnlocked := func(err error) (int, error) {
+		s.mu.Lock()
+		s.healthy = false
+		s.mu.Unlock()
+		return removed, err
+	}
+	tmp, err := os.CreateTemp(filepath.Clean(dir), filepath.Base(s.path)+".compact-*")
+	if err != nil {
+		return failUnlocked(fmt.Errorf("create compacted replay store: %w", err))
+	}
+	tmpPath := tmp.Name()
+	renamed := false
+	// Remove the temp file unless it was renamed into place. A double Close on
+	// the already-closed temp is harmless; the guard keeps every error branch a
+	// single return.
+	defer func() {
+		if !renamed {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := activeFile.Seek(0, io.SeekStart); err != nil {
+		return failUnlocked(fmt.Errorf("seek replay store for compact: %w", err))
+	}
+	newNonces := make(map[NonceKey]time.Time)
+	newTransfers := make(map[TransferKey]time.Time)
+	newSize := int64(0)
+	retentionChanged := false
+	reader := bufio.NewReader(activeFile)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if line[len(line)-1] != '\n' {
+				return failUnlocked(fmt.Errorf("replay store %s has an incomplete trailing line", path))
+			}
+			entry, parseErr := parseReplayEntryLine(path, line[:len(line)-1])
+			if parseErr != nil {
+				return failUnlocked(parseErr)
+			}
+			keepNonce := entry.retainsNonce() && !entry.Timestamp.Before(before)
+			keepTransfer := entry.retainsTransfer() && !entry.TransferTimestamp.Before(before)
+			if !keepNonce && !keepTransfer {
+				removed++
+			} else {
+				retentionChanged = retentionChanged || entry.NoncePruned != !keepNonce || entry.TransferPruned != !keepTransfer
+				entry.NoncePruned = !keepNonce
+				entry.TransferPruned = !keepTransfer
+				encoded, marshalErr := json.Marshal(entry)
+				if marshalErr != nil {
+					return failUnlocked(fmt.Errorf("marshal replay entry: %w", marshalErr))
+				}
+				encoded = append(encoded, '\n')
+				n, writeErr := tmp.Write(encoded)
+				if writeErr != nil {
+					return failUnlocked(fmt.Errorf("write compacted replay store: %w", writeErr))
+				}
+				if n != len(encoded) {
+					return failUnlocked(fmt.Errorf("write compacted replay store: %w", io.ErrShortWrite))
+				}
+				if keepNonce {
+					newNonces[entry.NonceKey] = entry.Timestamp
+				}
+				if keepTransfer {
+					newTransfers[entry.TransferKey] = entry.TransferTimestamp
+				}
+				newSize += int64(len(encoded))
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return failUnlocked(fmt.Errorf("read replay store for compact: %w", readErr))
+		}
+	}
+	if removed == 0 && !retentionChanged {
+		return removed, nil
+	}
+	if err := tmp.Sync(); err != nil {
+		return failUnlocked(fmt.Errorf("fsync compacted replay store: %w", err))
+	}
+	if err := tmp.Close(); err != nil {
+		return failUnlocked(fmt.Errorf("close compacted replay store: %w", err))
+	}
+	if err := os.Rename(tmpPath, filepath.Clean(path)); err != nil {
+		return failUnlocked(fmt.Errorf("rename compacted replay store: %w", err))
+	}
+	renamed = true
+	fsyncDir(dir)
+	newFile, err := os.OpenFile(filepath.Clean(path), os.O_RDWR|os.O_APPEND, 0o600) // #nosec G304 -- operator-configured store path
+	if err != nil {
+		return failUnlocked(fmt.Errorf("reopen compacted replay store: %w", err))
+	}
+	newRelease, err := acquireReplayStoreLock(newFile)
+	if err != nil {
+		_ = newFile.Close()
+		return failUnlocked(fmt.Errorf("lock compacted replay store: %w", err))
+	}
+	newLocked := true
+	defer func() {
+		if newLocked {
+			newRelease()
+		}
+	}()
+	if err := verifyStorePathInode(newFile, path); err != nil {
+		newRelease()
+		newLocked = false
+		_ = newFile.Close()
+		return failUnlocked(err)
+	}
+	info, err := newFile.Stat()
+	if err != nil {
+		newRelease()
+		newLocked = false
+		_ = newFile.Close()
+		return failUnlocked(fmt.Errorf("stat compacted replay store: %w", err))
+	}
+	if info.Size() != newSize {
+		newRelease()
+		newLocked = false
+		_ = newFile.Close()
+		return failUnlocked(fmt.Errorf("compacted replay store changed during replacement: got %d bytes, want %d", info.Size(), newSize))
+	}
+	s.mu.Lock()
+	oldFile := s.file
+	s.file = newFile
+	s.nonces = newNonces
+	s.transfers = newTransfers
+	s.readOffset = newSize
+	s.mu.Unlock()
+	release()
+	locked = false
+	newRelease()
+	newLocked = false
+	_ = oldFile.Close()
+	return removed, nil
 }
 
 func (s *FileReplayStore) appendEntryLocked(entry ReplayEntry) (int, error) {
@@ -336,11 +593,27 @@ func validateReplayEntry(entry ReplayEntry) error {
 	if entry.Timestamp.IsZero() {
 		return fmt.Errorf("%w: replay timestamp is required", ErrMalformedBinding)
 	}
+	if entry.TransferTimestamp.IsZero() {
+		return fmt.Errorf("%w: replay transfer timestamp is required", ErrMalformedBinding)
+	}
+	if !entry.retainsNonce() && !entry.retainsTransfer() {
+		return fmt.Errorf("%w: replay entry retains no keys", ErrMalformedBinding)
+	}
 	return nil
+}
+
+func (entry ReplayEntry) retainsNonce() bool {
+	return !entry.NoncePruned
+}
+
+func (entry ReplayEntry) retainsTransfer() bool {
+	return !entry.TransferPruned
 }
 
 // Close releases the underlying file.
 func (s *FileReplayStore) Close() error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.healthy = false

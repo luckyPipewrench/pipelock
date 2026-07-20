@@ -388,11 +388,14 @@ func VerifyCounterparty(req VerifyRequest) VerificationResult {
 		return fail(FailureIdentityMismatch, err)
 	}
 
-	if r.Binding.Timestamp.Before(req.Now.Add(-req.MaxAge)) {
-		return fail(FailureStale, fmt.Errorf("record ts %s is older than max age %s before %s", r.Binding.Timestamp.UTC(), req.MaxAge, req.Now.UTC()))
+	if code, err := verifyFreshTimestamp("record ts", r.Binding.Timestamp, req.Now, req.MaxAge, req.MaxFutureSkew); err != nil {
+		return fail(code, err)
 	}
-	if r.Binding.Timestamp.After(req.Now.Add(req.MaxFutureSkew)) {
-		return fail(FailureFuture, fmt.Errorf("record ts %s is beyond max future skew %s after %s", r.Binding.Timestamp.UTC(), req.MaxFutureSkew, req.Now.UTC()))
+	if code, err := verifyFreshTimestamp("sender receipt timestamp", req.Sender.Receipt.ActionRecord.Timestamp, req.Now, req.MaxAge, req.MaxFutureSkew); err != nil {
+		return fail(code, err)
+	}
+	if code, err := verifyFreshTimestamp("receiver receipt timestamp", req.Receiver.Receipt.ActionRecord.Timestamp, req.Now, req.MaxAge, req.MaxFutureSkew); err != nil {
+		return fail(code, err)
 	}
 
 	nonce := NonceKey{
@@ -479,9 +482,27 @@ func newReplayEntry(r Record, nonce NonceKey, sender, receiver receipt.Receipt) 
 			SenderActionHash:   senderActionHash,
 			ReceiverActionHash: receiverActionHash,
 		},
-		RecordHash: hashPrefix + hex.EncodeToString(sum[:]),
-		Timestamp:  r.Binding.Timestamp,
+		RecordHash:        hashPrefix + hex.EncodeToString(sum[:]),
+		Timestamp:         r.Binding.Timestamp,
+		TransferTimestamp: earlierTime(sender.ActionRecord.Timestamp, receiver.ActionRecord.Timestamp),
 	}, nil
+}
+
+func verifyFreshTimestamp(name string, ts, now time.Time, maxAge, maxFutureSkew time.Duration) (FailureCode, error) {
+	if ts.Before(now.Add(-maxAge)) {
+		return FailureStale, fmt.Errorf("%s %s is older than max age %s before %s", name, ts.UTC(), maxAge, now.UTC())
+	}
+	if ts.After(now.Add(maxFutureSkew)) {
+		return FailureFuture, fmt.Errorf("%s %s is beyond max future skew %s after %s", name, ts.UTC(), maxFutureSkew, now.UTC())
+	}
+	return FailureNone, nil
+}
+
+func earlierTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func signedActionHash(r receipt.Receipt) (string, error) {

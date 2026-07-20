@@ -415,6 +415,40 @@ func TestVerifyCounterpartyRejectsReSignedTransfer(t *testing.T) {
 	}
 }
 
+func TestReplayStoreCompactionDoesNotReopenFreshReSignedTransfer(t *testing.T) {
+	fx := newFixture(t)
+	store := NewMemReplayStore()
+	req := fx.request()
+	req.ReplayStore = store
+	if res := VerifyCounterparty(req); !res.Passed {
+		t.Fatalf("first VerifyCounterparty() failed: %s", res.Error)
+	}
+
+	later := fx.record.Binding.Timestamp.Add(25 * time.Hour)
+	removed, err := store.Compact(later.Add(-req.MaxAge))
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("Compact removed %d entries, want 1", removed)
+	}
+
+	replay := fx.request()
+	replay.ReplayStore = store
+	replay.Now = later
+	replay.Record = fx.resign(func(b *Binding) {
+		b.Nonce = "nonce-002"
+		b.Timestamp = later
+	})
+	res := VerifyCounterparty(replay)
+	if res.Passed {
+		t.Fatal("VerifyCounterparty() accepted a same-transfer replay after compaction with a fresh side-record timestamp")
+	}
+	if res.FailureCode != FailureStale {
+		t.Fatalf("failure code = %s err=%s, want %s", res.FailureCode, res.Error, FailureStale)
+	}
+}
+
 // TestVerifyCounterpartyRejectsReSignedTransferWithMutableReceiptEnvelope proves
 // TransferKey is based on signed receipt content rather than mutable envelope
 // bytes. The receipt signature hex string can be re-cased without changing the
@@ -799,10 +833,11 @@ func TestCounterpartyCoSignRequiresFleetFeatureFailClosed(t *testing.T) {
 func TestMemReplayStoreConcurrentCommitExactlyOnce(t *testing.T) {
 	store := NewMemReplayStore()
 	entry := ReplayEntry{
-		NonceKey:    NonceKey{SideRecordKeyID: "k", SenderIdentity: "a", ReceiverIdentity: "b", Nonce: "n"},
-		TransferKey: TransferKey{SenderIdentity: "a", ReceiverIdentity: "b", PayloadHash: replayHashA, SenderReceiptID: "s", ReceiverReceiptID: "r", SenderActionHash: replayHashC, ReceiverActionHash: replayHashD},
-		RecordHash:  replayHashE,
-		Timestamp:   time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC),
+		NonceKey:          NonceKey{SideRecordKeyID: "k", SenderIdentity: "a", ReceiverIdentity: "b", Nonce: "n"},
+		TransferKey:       TransferKey{SenderIdentity: "a", ReceiverIdentity: "b", PayloadHash: replayHashA, SenderReceiptID: "s", ReceiverReceiptID: "r", SenderActionHash: replayHashC, ReceiverActionHash: replayHashD},
+		RecordHash:        replayHashE,
+		Timestamp:         time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC),
+		TransferTimestamp: time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC),
 	}
 	const workers = 32
 	var wg sync.WaitGroup

@@ -405,6 +405,7 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 	newNonces := make(map[NonceKey]time.Time)
 	newTransfers := make(map[TransferKey]time.Time)
 	newSize := int64(0)
+	retentionChanged := false
 	reader := bufio.NewReader(activeFile)
 	for {
 		line, readErr := reader.ReadBytes('\n')
@@ -421,6 +422,7 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 			if !keepNonce && !keepTransfer {
 				removed++
 			} else {
+				retentionChanged = retentionChanged || entry.NoncePruned != !keepNonce || entry.TransferPruned != !keepTransfer
 				entry.NoncePruned = !keepNonce
 				entry.TransferPruned = !keepTransfer
 				encoded, marshalErr := json.Marshal(entry)
@@ -450,6 +452,12 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 		if readErr != nil {
 			return failUnlocked(fmt.Errorf("read replay store for compact: %w", readErr))
 		}
+	}
+	if removed == 0 && !retentionChanged {
+		s.mu.Lock()
+		s.readOffset = newSize
+		s.mu.Unlock()
+		return removed, nil
 	}
 	if err := tmp.Sync(); err != nil {
 		return failUnlocked(fmt.Errorf("fsync compacted replay store: %w", err))

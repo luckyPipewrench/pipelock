@@ -342,6 +342,35 @@ func TestFileReplayStoreCompactPersistsPartiallyPrunedKeysAcrossReopen(t *testin
 	}
 }
 
+func TestFileReplayStoreCompactSkipsReplacementWhenNothingChanges(t *testing.T) {
+	cutoff := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "replay.jsonl")
+	store, err := OpenFileReplayStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileReplayStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	entry := sampleEntryAt("nonce-recent", replayHashA, cutoff.Add(time.Nanosecond))
+	if err := store.CommitIfNew(entry); err != nil {
+		t.Fatalf("CommitIfNew: %v", err)
+	}
+	activeFile := store.file
+	removed, err := store.Compact(cutoff)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("Compact removed %d entries, want 0", removed)
+	}
+	if store.file != activeFile {
+		t.Fatal("Compact replaced the store file for a no-op compaction")
+	}
+	if err := store.CommitIfNew(entry); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("survivor after no-op Compact = %v, want ErrReplayConflict", err)
+	}
+}
+
 func TestFileReplayStoreCorruptLineFailsClosed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "replay.jsonl")
 	if err := os.WriteFile(path, []byte("{not valid json\n"), 0o600); err != nil {

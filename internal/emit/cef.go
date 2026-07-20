@@ -16,6 +16,7 @@ import (
 const (
 	FormatJSON = emitformat.JSON
 	FormatCEF  = emitformat.CEF
+	FormatOCSF = emitformat.OCSF
 
 	cefVersion       = "0"
 	cefDeviceVendor  = "Pipelock"

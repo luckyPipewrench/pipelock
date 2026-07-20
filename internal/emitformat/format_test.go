@@ -13,6 +13,7 @@ func TestSupported(t *testing.T) {
 	}{
 		{name: "json", format: JSON, want: true},
 		{name: "cef", format: CEF, want: true},
+		{name: "ocsf", format: OCSF, want: true},
 		{name: "empty", format: "", want: false},
 		{name: "unsupported", format: "xml", want: false},
 	}

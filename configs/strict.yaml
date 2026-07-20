@@ -531,6 +531,7 @@ mcp_session_binding:
 #     min_severity: warn
 #     facility: local0
 #     tag: pipelock
+#     format: json             # json, cef, or ocsf
 
 logging:
   format: json

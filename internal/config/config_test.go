@@ -7823,6 +7823,50 @@ func TestLoad_EmitSyslogFormatDefaultsToJSON(t *testing.T) {
 	}
 }
 
+func TestLoad_EmitSyslogFormatAcceptsOCSF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	content := "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n    format: ocsf\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("LoadForRules: %v", err)
+	}
+	if cfg.Emit.Syslog.Format != EmitFormatOCSF {
+		t.Fatalf("emit.syslog.format = %q, want %q", cfg.Emit.Syslog.Format, EmitFormatOCSF)
+	}
+}
+
+func TestLoad_EmitSyslogFormatReloadWithChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	write := func(format string) {
+		t.Helper()
+		content := "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n    format: " + format + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	write("json")
+	first, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("first LoadForRules: %v", err)
+	}
+	if first.Emit.Syslog.Format != EmitFormatJSON {
+		t.Fatalf("initial emit.syslog.format = %q, want %q", first.Emit.Syslog.Format, EmitFormatJSON)
+	}
+
+	write("ocsf")
+	second, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("second LoadForRules: %v", err)
+	}
+	if second.Emit.Syslog.Format != EmitFormatOCSF {
+		t.Fatalf("reloaded emit.syslog.format = %q, want %q", second.Emit.Syslog.Format, EmitFormatOCSF)
+	}
+}
+
 func TestDefaults_KillSwitchAPIExempt(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
@@ -7869,7 +7913,7 @@ func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 
 func TestValidate_EmitSyslogValidConfig(t *testing.T) {
 	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
-		for _, format := range []string{EmitFormatJSON, EmitFormatCEF} {
+		for _, format := range []string{EmitFormatJSON, EmitFormatCEF, EmitFormatOCSF} {
 			name := sev + "/" + format
 			t.Run(name, func(t *testing.T) {
 				cfg := Defaults()

@@ -2624,10 +2624,10 @@ func (c *Config) validateEmit() error {
 			}
 		}
 		switch c.Emit.Syslog.Format {
-		case EmitFormatJSON, EmitFormatCEF:
+		case EmitFormatJSON, EmitFormatCEF, EmitFormatOCSF:
 			// valid
 		default:
-			return fmt.Errorf("invalid emit.syslog.format %q: must be json or cef", c.Emit.Syslog.Format)
+			return fmt.Errorf("invalid emit.syslog.format %q: must be json, cef, or ocsf", c.Emit.Syslog.Format)
 		}
 	}
 

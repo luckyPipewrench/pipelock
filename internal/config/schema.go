@@ -77,6 +77,7 @@ const (
 const (
 	EmitFormatJSON = emitformat.JSON
 	EmitFormatCEF  = emitformat.CEF
+	EmitFormatOCSF = emitformat.OCSF
 )
 
 // DLP validator names for post-match checksum verification.
@@ -1348,7 +1349,7 @@ type SyslogConfig struct {
 	MinSeverity string `yaml:"min_severity"`    // info, warn, critical
 	Facility    string `yaml:"facility"`        // e.g. "local0" (default)
 	Tag         string `yaml:"tag"`             // e.g. "pipelock" (default)
-	Format      string `yaml:"format" json:"-"` // json (default) or cef
+	Format      string `yaml:"format" json:"-"` // json (default), cef, or ocsf
 }
 
 // MCPWSListener configures the MCP WebSocket listener for inbound connections.

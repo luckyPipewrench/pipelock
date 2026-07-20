@@ -543,6 +543,7 @@ mcp_session_binding:
 #     min_severity: warn
 #     facility: local0
 #     tag: pipelock
+#     format: json             # json, cef, or ocsf
 #   # Enterprise durable HTTP forwarding. Exact-host allowlist; no wildcards.
 #   forwarder:
 #     url: "https://api.vendor.example/events"

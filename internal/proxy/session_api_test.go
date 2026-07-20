@@ -251,6 +251,35 @@ func TestSessionAPI_HandleReset_Success(t *testing.T) {
 	}
 }
 
+func TestSessionAPI_HandleInspect_AdaptiveRecoveryHint(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sess := sm.GetOrCreate("agent-a|10.0.0.1")
+	sess.RecordSignal(session.SignalBlock, 1.0)
+
+	handler := newTestSessionAPIHandler(t, sm)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions/agent-a%7C10.0.0.1", nil)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+
+	handler.HandleInspect(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var detail SessionDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if detail.RecoverHint != adaptiveRecoverHint {
+		t.Fatalf("recover_hint = %q, want %q", detail.RecoverHint, adaptiveRecoverHint)
+	}
+	if detail.AutoRecoverAt.IsZero() {
+		t.Fatal("auto_recover_at should be populated for escalated sessions")
+	}
+}
+
 func TestSessionAPI_HandleTask_Success(t *testing.T) {
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()

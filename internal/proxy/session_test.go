@@ -3264,6 +3264,51 @@ func TestSessionState_AdaptiveRecoveryHelperBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("scoped_empty_scope_uses_global_clean_recovery", func(t *testing.T) {
+		sess := &SessionState{escalationLevel: 1, currentThreshold: 10, threatScore: 8}
+		changed, from, to := sess.RecordScopedCleanWithRecovery("", 0, 1, nil)
+		if !changed || from != 1 || to != 0 {
+			t.Fatalf("empty scoped recovery changed=%t from=%d to=%d, want elevated->normal", changed, from, to)
+		}
+	})
+
+	t.Run("scoped_recovery_default_duration_and_noop_deescalation", func(t *testing.T) {
+		old := time.Now().Add(-defaultMaxLevelDuration - time.Second)
+		sess := &SessionState{
+			scopes: map[string]*adaptiveScopeState{
+				"hot.example": {
+					threatScore:      6,
+					escalationLevel:  1,
+					currentThreshold: 10,
+					lastEscalation:   old,
+				},
+			},
+		}
+		changes := sess.TryAutoRecoverScopes(0, nil)
+		if len(changes) != 1 {
+			t.Fatalf("scoped recoveries = %d, want 1", len(changes))
+		}
+
+		score := 4.0
+		level := 0
+		threshold := 10.0
+		lastEscalation := old
+		cleanRequests := 1
+		atBlockAll := true
+		if changed, _, _ := deescalateAdaptiveFields(&score, &level, &threshold, &lastEscalation, &cleanRequests, &atBlockAll, nil, time.Now()); changed {
+			t.Fatal("level zero must not de-escalate")
+		}
+	})
+
+	t.Run("auto_recover_at_default_duration", func(t *testing.T) {
+		last := time.Now()
+		sess := &SessionState{escalationLevel: 1, lastEscalation: last}
+		got := sess.AdaptiveAutoRecoverAt(0)
+		if !got.Equal(last.Add(defaultMaxLevelDuration)) {
+			t.Fatalf("auto recover at = %v, want %v", got, last.Add(defaultMaxLevelDuration))
+		}
+	})
+
 	t.Run("records_operator_event", func(t *testing.T) {
 		sess := &SessionState{}
 		sess.RecordAdaptiveRecoveryEvent("api.vendor.example", adaptiveRecoveryClean, 2, 1)
@@ -3273,6 +3318,12 @@ func TestSessionState_AdaptiveRecoveryHelperBranches(t *testing.T) {
 		}
 		if events[0].Kind != "adaptive_deescalate" || events[0].Detail != "high->elevated" {
 			t.Fatalf("unexpected recovery event: %+v", events[0])
+		}
+	})
+
+	t.Run("first_non_empty_empty_fallback", func(t *testing.T) {
+		if got := firstNonEmptyString("", ""); got != "" {
+			t.Fatalf("fallback = %q, want empty", got)
 		}
 	})
 }

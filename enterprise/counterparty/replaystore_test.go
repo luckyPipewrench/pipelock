@@ -305,6 +305,43 @@ func TestFileReplayStoreCompactDurableAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestFileReplayStoreCompactPersistsPartiallyPrunedKeysAcrossReopen(t *testing.T) {
+	cutoff := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "replay.jsonl")
+	store, err := OpenFileReplayStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileReplayStore: %v", err)
+	}
+
+	original := sampleEntryAt("nonce-old", replayHashA, cutoff.Add(-time.Nanosecond))
+	original.TransferTimestamp = cutoff.Add(time.Nanosecond)
+	if err := store.CommitIfNew(original); err != nil {
+		t.Fatalf("CommitIfNew original: %v", err)
+	}
+	if _, err := store.Compact(cutoff); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenFileReplayStore(path)
+	if err != nil {
+		t.Fatalf("reopen OpenFileReplayStore: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	reusedPrunedNonce := sampleEntryAt("nonce-old", replayHashB, cutoff.Add(time.Second))
+	if err := reopened.CommitIfNew(reusedPrunedNonce); err != nil {
+		t.Fatalf("reused pruned nonce after reopen CommitIfNew = %v, want nil", err)
+	}
+	reSignedFreshTransfer := sampleEntryAt("nonce-new", replayHashA, cutoff.Add(time.Second))
+	reSignedFreshTransfer.TransferTimestamp = original.TransferTimestamp
+	if err := reopened.CommitIfNew(reSignedFreshTransfer); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("fresh transfer after reopen CommitIfNew = %v, want ErrReplayConflict", err)
+	}
+}
+
 func TestFileReplayStoreCorruptLineFailsClosed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "replay.jsonl")
 	if err := os.WriteFile(path, []byte("{not valid json\n"), 0o600); err != nil {
@@ -366,6 +403,34 @@ func TestFileReplayStoreCompactAfterCloseFailsClosed(t *testing.T) {
 	_, err = store.Compact(time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC))
 	if err == nil || errors.Is(err, ErrReplayConflict) {
 		t.Fatalf("Compact after Close error = %v, want a non-conflict fail-closed error", err)
+	}
+}
+
+func TestFileReplayStoreCloseWaitsForActiveOperation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "replay.jsonl")
+	store, err := OpenFileReplayStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileReplayStore: %v", err)
+	}
+
+	store.opMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- store.Close()
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Close returned while operation lock was held: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	store.opMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after operation lock was released")
 	}
 }
 

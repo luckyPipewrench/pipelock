@@ -36,13 +36,17 @@ var (
 // fresh nonce (coverage-count inflation). Timestamp is the signed side-record
 // timestamp used to retain the nonce key. TransferTimestamp is the older signed
 // receipt timestamp used to retain the transfer key; unlike the side-record
-// timestamp, it cannot be refreshed by re-signing the same transfer.
+// timestamp, it cannot be refreshed by re-signing the same transfer. The pruned
+// flags persist partial compaction so a retained JSONL entry does not restore a
+// key whose retention horizon has already expired after restart.
 type ReplayEntry struct {
 	NonceKey          NonceKey    `json:"nonce_key"`
 	TransferKey       TransferKey `json:"transfer_key"`
 	RecordHash        string      `json:"record_hash"`
 	Timestamp         time.Time   `json:"ts"`
 	TransferTimestamp time.Time   `json:"transfer_ts"`
+	NoncePruned       bool        `json:"nonce_pruned,omitempty"`
+	TransferPruned    bool        `json:"transfer_pruned,omitempty"`
 }
 
 // ReplayStore records accepted counterparty records and rejects replays. The
@@ -258,8 +262,12 @@ func (s *FileReplayStore) indexLine(raw []byte) error {
 	if err != nil {
 		return err
 	}
-	s.nonces[entry.NonceKey] = entry.Timestamp
-	s.transfers[entry.TransferKey] = entry.TransferTimestamp
+	if entry.retainsNonce() {
+		s.nonces[entry.NonceKey] = entry.Timestamp
+	}
+	if entry.retainsTransfer() {
+		s.transfers[entry.TransferKey] = entry.TransferTimestamp
+	}
 	return nil
 }
 
@@ -408,11 +416,13 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 			if parseErr != nil {
 				return failUnlocked(parseErr)
 			}
-			keepNonce := !entry.Timestamp.Before(before)
-			keepTransfer := !entry.TransferTimestamp.Before(before)
+			keepNonce := entry.retainsNonce() && !entry.Timestamp.Before(before)
+			keepTransfer := entry.retainsTransfer() && !entry.TransferTimestamp.Before(before)
 			if !keepNonce && !keepTransfer {
 				removed++
 			} else {
+				entry.NoncePruned = !keepNonce
+				entry.TransferPruned = !keepTransfer
 				encoded, marshalErr := json.Marshal(entry)
 				if marshalErr != nil {
 					return failUnlocked(fmt.Errorf("marshal replay entry: %w", marshalErr))
@@ -456,9 +466,35 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 	if err != nil {
 		return failUnlocked(fmt.Errorf("reopen compacted replay store: %w", err))
 	}
+	newRelease, err := acquireReplayStoreLock(newFile)
+	if err != nil {
+		_ = newFile.Close()
+		return failUnlocked(fmt.Errorf("lock compacted replay store: %w", err))
+	}
+	newLocked := true
+	defer func() {
+		if newLocked {
+			newRelease()
+		}
+	}()
 	if err := verifyStorePathInode(newFile, path); err != nil {
+		newRelease()
+		newLocked = false
 		_ = newFile.Close()
 		return failUnlocked(err)
+	}
+	info, err := newFile.Stat()
+	if err != nil {
+		newRelease()
+		newLocked = false
+		_ = newFile.Close()
+		return failUnlocked(fmt.Errorf("stat compacted replay store: %w", err))
+	}
+	if info.Size() != newSize {
+		newRelease()
+		newLocked = false
+		_ = newFile.Close()
+		return failUnlocked(fmt.Errorf("compacted replay store changed during replacement: got %d bytes, want %d", info.Size(), newSize))
 	}
 	s.mu.Lock()
 	oldFile := s.file
@@ -469,6 +505,8 @@ func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 	s.mu.Unlock()
 	release()
 	locked = false
+	newRelease()
+	newLocked = false
 	_ = oldFile.Close()
 	return removed, nil
 }
@@ -550,11 +588,24 @@ func validateReplayEntry(entry ReplayEntry) error {
 	if entry.TransferTimestamp.IsZero() {
 		return fmt.Errorf("%w: replay transfer timestamp is required", ErrMalformedBinding)
 	}
+	if !entry.retainsNonce() && !entry.retainsTransfer() {
+		return fmt.Errorf("%w: replay entry retains no keys", ErrMalformedBinding)
+	}
 	return nil
+}
+
+func (entry ReplayEntry) retainsNonce() bool {
+	return !entry.NoncePruned
+}
+
+func (entry ReplayEntry) retainsTransfer() bool {
+	return !entry.TransferPruned
 }
 
 // Close releases the underlying file.
 func (s *FileReplayStore) Close() error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.healthy = false

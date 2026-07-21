@@ -3214,9 +3214,23 @@ func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (ne
 // at connection time, closing the DNS-rebinding gap the cloned default dialer
 // left open.
 func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return mcp.NewMetadataSafeDialContext(func() *scanner.Scanner {
+	inner := mcp.NewMetadataSafeDialContext(func() *scanner.Scanner {
 		return p.scannerPtr.Load()
 	})
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := inner(ctx, network, addr)
+		if err != nil {
+			// Translate the MCP dialer's typed metadata refusal into the proxy's
+			// own ssrfDialBlockError so the reverse errorHandler surfaces
+			// ssrf_metadata in the block-reason header and receipt, identical to
+			// the submit-profile dial path, instead of a generic 502.
+			var mdErr *mcp.MetadataDialBlockError
+			if errors.As(err, &mdErr) {
+				return nil, newSSRFDialBlockError(ctx, mdErr.Host, mdErr.IP, ssrfDialBlockDetail(mdErr.Host, mdErr.IP))
+			}
+		}
+		return conn, err
+	}
 }
 
 // isShieldExempt checks whether a hostname is in the browser shield exempt list.

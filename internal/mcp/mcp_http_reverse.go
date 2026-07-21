@@ -430,6 +430,33 @@ func RunHTTPListenerProxy(
 			}
 			info.SetHeaders(w.Header())
 		}
+		// handleMetadataDialError recognizes a dial-time metadata refusal
+		// (MetadataDialBlockError from the metadata-safe dialer) and renders it
+		// through the shared block-decision path so it emits a receipt and stamps
+		// the ssrf_metadata block-reason header (403), matching every other
+		// listener block instead of a bare 502. Returns true when it handled the
+		// error, so every listener method (POST, SSE, DELETE) shares identical
+		// metadata-block behavior. Non-metadata dial errors return false and fall
+		// through to the caller's generic handling.
+		handleMetadataDialError := func(dialErr error, id json.RawMessage) bool {
+			var mdErr *MetadataDialBlockError
+			if !errors.As(dialErr, &mdErr) {
+				return false
+			}
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          blockreason.SSRFMetadata,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryNone,
+				layer:           scanner.ScannerSSRF,
+				pattern:         scanner.ScannerSSRFMetadata,
+				target:          upstreamURL,
+				receiptSeverity: config.SeverityHigh,
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("upstream resolves to a cloud metadata endpoint")))
+			return true
+		}
 		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
@@ -629,6 +656,9 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
+				if handleMetadataDialError(err, nil) {
+					return
+				}
 				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -752,6 +782,9 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
+				if handleMetadataDialError(err, nil) {
+					return
+				}
 				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1027,6 +1060,9 @@ func RunHTTPListenerProxy(
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
+			if handleMetadataDialError(err, frame.ID) {
+				return
+			}
 			logUpstreamRequestError(safeLogW, r.Context())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)

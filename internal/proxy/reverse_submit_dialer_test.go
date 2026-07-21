@@ -81,6 +81,7 @@ func TestReverseProxy_MetadataSafeDialerBlocksMetadataButAllowsLoopback(t *testi
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	t.Run("metadata blocked", func(t *testing.T) {
 		upstreamURL, err := url.Parse("http://169.254.169.254")
@@ -104,9 +105,13 @@ func TestReverseProxy_MetadataSafeDialerBlocksMetadataButAllowsLoopback(t *testi
 		if err != nil {
 			t.Fatalf("reverse proxy request: %v", err)
 		}
+		reason := resp.Header.Get("X-Pipelock-Block-Reason")
 		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusBadGateway {
-			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+		}
+		if reason != "ssrf_metadata" {
+			t.Fatalf("X-Pipelock-Block-Reason = %q, want ssrf_metadata", reason)
 		}
 	})
 

@@ -85,8 +85,26 @@ func lookupMCPDialHost(ctx context.Context, sc *scanner.Scanner, host string) ([
 	return defaultMCPDialLookupHost(ctx, host)
 }
 
+// MetadataDialBlockError is returned by the metadata-safe dial guard when a
+// configured MCP upstream (or a generic reverse-proxy upstream) resolves to a
+// cloud instance-metadata endpoint at connection time. It is a typed error so
+// the HTTP-serving transports can classify the refusal and surface the
+// ssrf_metadata block reason in the response header and receipts, rather than
+// letting it fall through as a plain 502. Mirrors the proxy's
+// ssrfDialBlockError pattern across the package boundary.
+type MetadataDialBlockError struct {
+	Host string
+	IP   net.IP
+}
+
+func (e *MetadataDialBlockError) Error() string {
+	return fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s (ssrf_metadata)", e.Host, e.IP)
+}
+
 func mcpMetadataDialBlock(host string, ip net.IP) error {
-	return fmt.Errorf("SSRF blocked: %s resolves to cloud metadata endpoint %s (ssrf_metadata)", host, ip)
+	// Copy the IP so the returned error does not alias the caller's slice,
+	// which is reused across the resolved-address loop.
+	return &MetadataDialBlockError{Host: host, IP: append(net.IP(nil), ip...)}
 }
 
 func normalizeMCPDialIP(ip net.IP) net.IP {

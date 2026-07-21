@@ -28,6 +28,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 	"gopkg.in/yaml.v3"
 
+	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -220,6 +221,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	if err := c.validateMCPToolScanning(); err != nil {
+		return warnings, err
+	}
+	if err := c.validateMCPDataClassLabels(); err != nil {
 		return warnings, err
 	}
 	if err := c.validateMCPToolPolicy(); err != nil {
@@ -1232,6 +1236,21 @@ func (c *Config) validateMCPToolScanning() error {
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
 		}
+	}
+	return nil
+}
+
+func (c *Config) validateMCPDataClassLabels() error {
+	// Fail closed on enable until derivation is wired. This is a reserved
+	// config surface with no runtime effect yet: nothing derives or attaches
+	// data-class labels. Accepting enabled: true would let an operator believe
+	// MCP receipt labeling is active when no labels are produced. Reject it so
+	// the knob cannot advertise protection it does not provide.
+	if c.MCPDataClassLabels.Enabled {
+		return fmt.Errorf("mcp_data_class_labels.enabled is not supported yet: data-class label derivation is not wired; leave it unset until a release enables it")
+	}
+	if c.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
+		return fmt.Errorf("invalid mcp_data_class_labels.unknown_class %q: must be secret", c.MCPDataClassLabels.UnknownClass)
 	}
 	return nil
 }
@@ -2624,10 +2643,10 @@ func (c *Config) validateEmit() error {
 			}
 		}
 		switch c.Emit.Syslog.Format {
-		case EmitFormatJSON, EmitFormatCEF:
+		case EmitFormatJSON, EmitFormatCEF, EmitFormatOCSF:
 			// valid
 		default:
-			return fmt.Errorf("invalid emit.syslog.format %q: must be json or cef", c.Emit.Syslog.Format)
+			return fmt.Errorf("invalid emit.syslog.format %q: must be json, cef, or ocsf", c.Emit.Syslog.Format)
 		}
 	}
 

@@ -205,7 +205,8 @@ fetch_url() {
 wait_for_blocked_event() {
   local deadline=$(( $(date +%s) + 8 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if curl -sf "http://${WEBHOOK_ADDR}/events" | python3 -c '
+    events_json="$(curl -sf "http://${WEBHOOK_ADDR}/events" 2>/dev/null || true)"
+    if [ -n "$events_json" ] && python3 -c '
 import json,sys
 events=json.load(sys.stdin)
 for e in events:
@@ -216,7 +217,7 @@ for e in events:
             print("ok")
             raise SystemExit(0)
 raise SystemExit(1)
-' >/dev/null 2>&1; then
+' <<<"$events_json" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -289,7 +290,8 @@ else
   exit 1
 fi
 sleep 0.3
-BLOCKED_AFTER_CLEAN="$(curl -sf "http://${WEBHOOK_ADDR}/events" | python3 -c 'import json,sys; print(sum(1 for e in json.load(sys.stdin) if e.get("type")=="blocked"))')"
+CLEAN_EVENTS_JSON="$(curl -sf "http://${WEBHOOK_ADDR}/events" 2>/dev/null || echo '[]')"
+BLOCKED_AFTER_CLEAN="$(python3 -c 'import json,sys; print(sum(1 for e in json.load(sys.stdin) if e.get("type")=="blocked"))' <<<"${CLEAN_EVENTS_JSON:-[]}" 2>/dev/null || echo 0)"
 if [ "$BLOCKED_AFTER_CLEAN" = "0" ]; then
   pass "no blocked webhook events after clean fetch"
 else

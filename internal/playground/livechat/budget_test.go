@@ -290,7 +290,7 @@ func TestServer_DailyTurnBudget_KillSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new health request: %v", err)
 	}
-	healthResp, err := http.DefaultClient.Do(req)
+	healthResp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("health: %v", err)
 	}

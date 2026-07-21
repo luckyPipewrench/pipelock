@@ -388,6 +388,10 @@ mcp_tool_scanning:
   action: warn
   detect_drift: true
 
+mcp_data_class_labels:
+  enabled: false
+  unknown_class: secret  # foundation only; no runtime effect until derivation wiring lands
+
 mcp_tool_policy:
   enabled: true
   action: warn

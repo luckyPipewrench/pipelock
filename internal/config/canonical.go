@@ -194,6 +194,11 @@ func (c *Config) policySemanticView() Config {
 	// view because those do affect detection.
 	view.MCPToolPolicy.QuarantineDir = ""
 
+	// MCPDataClassLabels is a foundation-only config surface until the
+	// derivation path populates receipt fields. Exclude it from the semantic
+	// policy hash while it has no runtime decision effect.
+	view.MCPDataClassLabels = MCPDataClassLabels{}
+
 	// HealthWatchdog is excluded from the canonical hash via the `json:"-"`
 	// tag on the Config field - operational liveness, not policy. Whether
 	// the watchdog is enabled or what tick interval it uses does not change

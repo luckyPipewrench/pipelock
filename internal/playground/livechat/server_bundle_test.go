@@ -96,7 +96,7 @@ func TestServer_Bundle_DownloadsVerifiableArchive(t *testing.T) {
 	// streamed: the verifiable live-demo run requires both an allow receipt and a
 	// body-DLP block receipt, so sealing only succeeds once both have landed.
 	streamReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream+"?token="+cr.Token, nil)
-	streamResp, err := http.DefaultClient.Do(streamReq)
+	streamResp, err := ts.Client().Do(streamReq)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -309,7 +309,7 @@ func sealReadySession(t *testing.T, ts *httptest.Server) string {
 	}
 
 	streamReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream+"?token="+cr.Token, nil)
-	streamResp, err := http.DefaultClient.Do(streamReq)
+	streamResp, err := ts.Client().Do(streamReq)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -365,7 +365,11 @@ func getRaw(t *testing.T, url string) *http.Response {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// Dedicated client with keep-alives disabled: this helper has no server in
+	// scope, and using the shared default transport lets a parallel test's
+	// server teardown close an idle connection mid-request.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}

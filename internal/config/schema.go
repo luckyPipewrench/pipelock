@@ -77,6 +77,7 @@ const (
 const (
 	EmitFormatJSON = emitformat.JSON
 	EmitFormatCEF  = emitformat.CEF
+	EmitFormatOCSF = emitformat.OCSF
 )
 
 // DLP validator names for post-match checksum verification.
@@ -392,6 +393,7 @@ type Config struct {
 	ResponseScanning         ResponseScanning        `yaml:"response_scanning"`
 	MCPInputScanning         MCPInputScanning        `yaml:"mcp_input_scanning"`
 	MCPToolScanning          MCPToolScanning         `yaml:"mcp_tool_scanning"`
+	MCPDataClassLabels       MCPDataClassLabels      `yaml:"mcp_data_class_labels" json:"-"`
 	MCPToolPolicy            MCPToolPolicy           `yaml:"mcp_tool_policy"`
 	Defer                    DeferConfig             `yaml:"defer"`
 	GitProtection            GitProtection           `yaml:"git_protection"`
@@ -625,6 +627,17 @@ type MCPToolScanning struct {
 	Enabled     bool   `yaml:"enabled"`
 	Action      string `yaml:"action"`       // warn, block
 	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
+}
+
+// MCPDataClassLabels reserves the config surface for DLP-derived MCP receipt
+// data-class labels. This foundation intentionally does not wire derivation or
+// populate receipt fields; enabling this section has no runtime effect until
+// that follow-up lands. Later derivation must synthesize labels from scanner
+// findings only, never parse them from agent payloads. Unknown, truncated, or
+// uncertain output is classified as "secret" fail-closed.
+type MCPDataClassLabels struct {
+	Enabled      bool   `yaml:"enabled"`
+	UnknownClass string `yaml:"unknown_class"` // reserved fail-closed label; must be "secret" in this foundation slice
 }
 
 // MCPResponseServerTrust assigns a response trust class to one named MCP
@@ -1348,7 +1361,7 @@ type SyslogConfig struct {
 	MinSeverity string `yaml:"min_severity"`    // info, warn, critical
 	Facility    string `yaml:"facility"`        // e.g. "local0" (default)
 	Tag         string `yaml:"tag"`             // e.g. "pipelock" (default)
-	Format      string `yaml:"format" json:"-"` // json (default) or cef
+	Format      string `yaml:"format" json:"-"` // json (default), cef, or ocsf
 }
 
 // MCPWSListener configures the MCP WebSocket listener for inbound connections.

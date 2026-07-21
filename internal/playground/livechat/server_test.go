@@ -59,7 +59,11 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	// Dedicated client with keep-alives disabled: this helper has no server in
+	// scope, and the shared default transport lets a parallel test's server
+	// teardown close an idle connection mid-request.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
@@ -111,7 +115,7 @@ func TestServer_Session_MethodAndCodeChecks(t *testing.T) {
 
 	// GET not allowed.
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteSession, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +241,7 @@ func TestServer_Stream_AuthChecks(t *testing.T) {
 
 	// Only GET/OPTIONS may reach the stream path.
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+RouteStream, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +252,7 @@ func TestServer_Stream_AuthChecks(t *testing.T) {
 
 	// No token.
 	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +264,7 @@ func TestServer_Stream_AuthChecks(t *testing.T) {
 	// Valid token, no session -> 404.
 	tok, _, _ := g.Redeem("good", "ghost")
 	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream+"?token="+tok, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +278,7 @@ func TestServer_Health(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t, ServerConfig{})
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteHealth, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +341,7 @@ func TestServer_FullFlow_StreamsSignedDecisions(t *testing.T) {
 
 	// Open the SSE stream.
 	streamReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream+"?token="+cr.Token, nil)
-	streamResp, err := http.DefaultClient.Do(streamReq)
+	streamResp, err := ts.Client().Do(streamReq)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -346,7 +350,7 @@ func TestServer_FullFlow_StreamsSignedDecisions(t *testing.T) {
 		t.Fatalf("stream status = %d, want 200", streamResp.StatusCode)
 	}
 	secondReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream+"?token="+cr.Token, nil)
-	secondResp, err := http.DefaultClient.Do(secondReq)
+	secondResp, err := ts.Client().Do(secondReq)
 	if err != nil {
 		t.Fatalf("second stream: %v", err)
 	}

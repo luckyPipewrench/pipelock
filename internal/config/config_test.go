@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"gopkg.in/yaml.v3"
@@ -5025,6 +5026,74 @@ func TestValidateReload_MCPToolScanningDisabled(t *testing.T) {
 	}
 }
 
+// --- MCPDataClassLabels Tests ---
+
+func TestMCPDataClassLabelsDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	if cfg.MCPDataClassLabels.Enabled {
+		t.Fatal("mcp_data_class_labels.enabled default = true, want false until derivation is wired")
+	}
+	if cfg.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
+		t.Fatalf("unknown_class = %q, want %q", cfg.MCPDataClassLabels.UnknownClass, datalabel.DataClassSecret)
+	}
+}
+
+func TestLoad_MCPDataClassLabelsEnabledRejectedUntilWired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	write := func(t *testing.T, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	// Disabled states load and resolve to the reserved fail-closed defaults.
+	for _, tt := range []struct{ name, body string }{
+		{"omitted", "mode: balanced\n"},
+		{"yaml null blank", "mode: balanced\nmcp_data_class_labels:\n  enabled:\n"},
+		{"explicit false", "mode: balanced\nmcp_data_class_labels:\n  enabled: false\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			write(t, tt.body)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.MCPDataClassLabels.Enabled {
+				t.Fatal("enabled should resolve to false")
+			}
+			if cfg.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
+				t.Fatalf("unknown_class = %q, want %q", cfg.MCPDataClassLabels.UnknownClass, datalabel.DataClassSecret)
+			}
+		})
+	}
+
+	// enabled: true is rejected. The feature has no runtime effect yet, so the
+	// knob fails closed at load rather than advertising protection it cannot
+	// provide. reload-with/without-change states do not apply while the field
+	// cannot be enabled.
+	t.Run("explicit true rejected", func(t *testing.T) {
+		write(t, "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n")
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("Load() should reject mcp_data_class_labels.enabled: true")
+		}
+		if !strings.Contains(err.Error(), "not supported yet") {
+			t.Fatalf("error = %v, want it to mention 'not supported yet'", err)
+		}
+	})
+}
+
+func TestValidate_MCPDataClassLabelsRejectsBadUnknownClass(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPDataClassLabels.UnknownClass = string(datalabel.DataClassBenign)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mcp_data_class_labels.unknown_class") {
+		t.Fatalf("Validate() error = %v, want mcp_data_class_labels.unknown_class rejection", err)
+	}
+}
+
 // --- MCP Tool Policy Tests ---
 
 func TestApplyDefaults_MCPToolPolicyActionDefaultsWhenEnabled(t *testing.T) {
@@ -7823,6 +7892,50 @@ func TestLoad_EmitSyslogFormatDefaultsToJSON(t *testing.T) {
 	}
 }
 
+func TestLoad_EmitSyslogFormatAcceptsOCSF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	content := "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n    format: ocsf\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("LoadForRules: %v", err)
+	}
+	if cfg.Emit.Syslog.Format != EmitFormatOCSF {
+		t.Fatalf("emit.syslog.format = %q, want %q", cfg.Emit.Syslog.Format, EmitFormatOCSF)
+	}
+}
+
+func TestLoad_EmitSyslogFormatReloadWithChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	write := func(format string) {
+		t.Helper()
+		content := "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n    format: " + format + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	write("json")
+	first, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("first LoadForRules: %v", err)
+	}
+	if first.Emit.Syslog.Format != EmitFormatJSON {
+		t.Fatalf("initial emit.syslog.format = %q, want %q", first.Emit.Syslog.Format, EmitFormatJSON)
+	}
+
+	write("ocsf")
+	second, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("second LoadForRules: %v", err)
+	}
+	if second.Emit.Syslog.Format != EmitFormatOCSF {
+		t.Fatalf("reloaded emit.syslog.format = %q, want %q", second.Emit.Syslog.Format, EmitFormatOCSF)
+	}
+}
+
 func TestDefaults_KillSwitchAPIExempt(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
@@ -7869,7 +7982,7 @@ func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 
 func TestValidate_EmitSyslogValidConfig(t *testing.T) {
 	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
-		for _, format := range []string{EmitFormatJSON, EmitFormatCEF} {
+		for _, format := range []string{EmitFormatJSON, EmitFormatCEF, EmitFormatOCSF} {
 			name := sev + "/" + format
 			t.Run(name, func(t *testing.T) {
 				cfg := Defaults()

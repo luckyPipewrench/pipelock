@@ -148,6 +148,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// MCP data-class labels disabled
+	if old.MCPDataClassLabels.Enabled && !updated.MCPDataClassLabels.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_data_class_labels.enabled",
+			Message: "MCP data-class receipt labels disabled",
+		})
+	}
+
 	// MCP tool policy disabled
 	if old.MCPToolPolicy.Enabled && !updated.MCPToolPolicy.Enabled {
 		warnings = append(warnings, ReloadWarning{

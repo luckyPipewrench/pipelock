@@ -37,6 +37,8 @@ Added  # (B) audit-provenance date on ReverseProxy trusted_upstream, format-vali
 StalePolicy  # RESERVED conductor follower knob; DecideStale exists with 0 callers (verified 2026-06-10); documented reserved
 MaxMinVersionMajorSkew  # RESERVED conductor follower knob; documented reserved
 MaxMinVersionMinorSkew  # RESERVED conductor follower knob; documented reserved
+MCPDataClassLabels  # RESERVED foundation; follow-up slice wires scanner-derived labels into MCP receipts
+UnknownClass  # RESERVED foundation; hard-validated fail-closed label for unknown/truncated/uncertain derivation
 
 # --- INERT-BASELINE (2026-06-10 audit; wire or remove, tracked in ops state.md) ---
 OnSeverity  # INERT airlock severity trigger; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical

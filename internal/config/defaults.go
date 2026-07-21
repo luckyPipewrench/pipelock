@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
@@ -325,6 +326,10 @@ func Defaults() *Config {
 		},
 		MCPToolScanning: MCPToolScanning{
 			Enabled: false,
+		},
+		MCPDataClassLabels: MCPDataClassLabels{
+			Enabled:      false,
+			UnknownClass: string(datalabel.DataClassSecret),
 		},
 		MCPToolPolicy: MCPToolPolicy{
 			Enabled:       false,

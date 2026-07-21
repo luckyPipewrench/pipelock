@@ -372,18 +372,20 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Internal == nil {
 		c.Internal = []string{
-			"0.0.0.0/8",      // "this" network - services listening on all interfaces
-			"127.0.0.0/8",    // loopback
-			"10.0.0.0/8",     // RFC 1918 private
-			"172.16.0.0/12",  // RFC 1918 private
-			"192.168.0.0/16", // RFC 1918 private
-			"169.254.0.0/16", // link-local
-			"100.64.0.0/10",  // CGN / shared address space (Tailscale, CGNAT)
-			"::1/128",        // IPv6 loopback
-			"fc00::/7",       // IPv6 unique local
-			"fe80::/10",      // IPv6 link-local
-			"224.0.0.0/4",    // IPv4 multicast
-			"ff00::/8",       // IPv6 multicast
+			"0.0.0.0/8",        // "this" network - services listening on all interfaces
+			"127.0.0.0/8",      // loopback
+			"10.0.0.0/8",       // RFC 1918 private
+			"172.16.0.0/12",    // RFC 1918 private
+			"192.168.0.0/16",   // RFC 1918 private
+			"169.254.0.0/16",   // link-local
+			"168.63.129.16/32", // Azure WireServer metadata
+			"100.64.0.0/10",    // CGN / shared address space (Tailscale, CGNAT)
+			"224.0.0.0/4",      // IPv4 multicast
+			"::/128",           // IPv6 unspecified
+			"::1/128",          // IPv6 loopback
+			"fc00::/7",         // IPv6 unique local
+			"fe80::/10",        // IPv6 link-local
+			"ff00::/8",         // IPv6 multicast
 		}
 	}
 

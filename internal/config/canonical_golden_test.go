@@ -299,7 +299,8 @@ const (
 	// Re-bumped for adaptive-enforcement recovery and severity-weighting knobs:
 	// level timers, clean-request de-escalation, and severity-weighted signal
 	// handling change adaptive policy semantics when configured.
-	goldenHashDefaults = "0a9467e8859bb7e8ffaab62c008b4deec7a29f2746bbdae6499afd2f49ac44d8"
+	// Re-bumped because Defaults().Internal now exposes the enforced Azure WireServer and IPv6 unspecified SSRF floor.
+	goldenHashDefaults = "d8a99f8fd46d99b832e287d0647c3b74ea3d3a681983ce9beb5ff80065f5f731"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

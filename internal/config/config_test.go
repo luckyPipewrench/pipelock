@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -106,6 +107,28 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.BindDefaultAgentIdentity {
 		t.Error("expected bind_default_agent_identity to default false")
+	}
+}
+
+func TestDefaultsIncludeNonOverridableSSRFFloor(t *testing.T) {
+	t.Parallel()
+	internal := make(map[string]struct{}, len(Defaults().Internal))
+	for _, cidr := range Defaults().Internal {
+		internal[cidr] = struct{}{}
+	}
+	for _, cidr := range []string{"168.63.129.16/32", "::/128"} {
+		if _, ok := internal[cidr]; !ok {
+			t.Errorf("Defaults().Internal missing enforced SSRF floor CIDR %q", cidr)
+		}
+	}
+}
+
+func TestApplyDefaultsInternalMatchesDefaults(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+	if !reflect.DeepEqual(cfg.Internal, Defaults().Internal) {
+		t.Fatalf("ApplyDefaults Internal = %v, want Defaults Internal = %v", cfg.Internal, Defaults().Internal)
 	}
 }
 

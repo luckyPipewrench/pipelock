@@ -85,6 +85,16 @@ Examples:
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
 			}
+			if len(endorsementPaths) > 0 {
+				switch {
+				case fleetReport:
+					return fmt.Errorf("--rotation-endorsement cannot be combined with --fleet-report")
+				case cleanReport != "":
+					return fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report")
+				case chainDir == "" && !strings.HasSuffix(args[0], ".jsonl"):
+					return fmt.Errorf("--rotation-endorsement requires --chain or a JSONL receipt file")
+				}
+			}
 			verifyOpts := verifyReceiptOptions{
 				AllowUnpinned: allowUnpinned,
 				SessionID:     sessionID,
@@ -105,9 +115,6 @@ Examples:
 				verifyOpts.RotationEndorsements = append(verifyOpts.RotationEndorsements, endorsement)
 			}
 			if fleetReport {
-				if len(endorsementPaths) > 0 {
-					return fmt.Errorf("--rotation-endorsement cannot be combined with --fleet-report")
-				}
 				if chainDir != "" {
 					return fmt.Errorf("--fleet-report cannot be combined with --chain")
 				}
@@ -119,9 +126,6 @@ Examples:
 			if chainDir != "" {
 				if cleanReport == "" {
 					return verifyChainFromSessionDirDetailed(out, chainDir, sessionID, trustedKeys, verifyOpts)
-				}
-				if len(endorsementPaths) > 0 {
-					return fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report")
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromSessionDir(chainDir, sessionID)
 				if extractErr != nil {
@@ -136,9 +140,6 @@ Examples:
 			// JSONL files: extract receipts and verify the full chain.
 			if strings.HasSuffix(path, ".jsonl") {
 				if cleanReport != "" {
-					if len(endorsementPaths) > 0 {
-						return fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report")
-					}
 					receipts, extractErr := receipt.ExtractReceipts(path)
 					if extractErr != nil {
 						return fmt.Errorf("extracting receipts: %w", extractErr)
@@ -150,9 +151,6 @@ Examples:
 
 			if cleanReport != "" {
 				return fmt.Errorf("--clean-report requires --chain or a JSONL receipt file")
-			}
-			if len(endorsementPaths) > 0 {
-				return fmt.Errorf("--rotation-endorsement requires --chain or a JSONL receipt file")
 			}
 			// Single receipt JSON file: a lone receipt has no chain to walk,
 			// so it verifies against the first supplied key (or its own).

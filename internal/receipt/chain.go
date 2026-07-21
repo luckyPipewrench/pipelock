@@ -510,6 +510,9 @@ func (v *chainVerifier) startRotatedSegment(r Receipt, marker *KeyTransition) (C
 	if marker.PriorSignerKey != v.curKey {
 		return v.brokenAt(r, "key_transition prior_signer_key does not match prior segment key"), false
 	}
+	if r.SignerKey == v.curKey {
+		return v.brokenAt(r, "key_transition does not change signer key"), false
+	}
 	if v.curSeg != nil && marker.PriorChainSeq != v.curSeg.FinalSeq {
 		return v.brokenAt(r, "key_transition prior_chain_seq does not match prior segment final seq"), false
 	}

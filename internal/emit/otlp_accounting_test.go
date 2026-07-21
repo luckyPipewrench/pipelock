@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -109,7 +110,7 @@ func TestOTLPSink_AccountingSnapshotEdgeCases(t *testing.T) {
 	}
 
 	sink := newManualOTLPSink()
-	sink.recordDropped("drop_error", Event{Type: "drop-error"}, errOTLPAccountingTest)
+	sink.recordDropped("drop_error", errOTLPAccountingTest)
 	stats := sink.Stats()
 	if stats.Dropped != 1 || stats.LastError != errOTLPAccountingTest.Error() {
 		t.Fatalf("stats = %+v, want dropped error recorded", stats)
@@ -307,9 +308,12 @@ func TestOTLPSink_DegradedAdvisoryAndRecovery(t *testing.T) {
 	if err := sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "first-fails", Timestamp: time.Now()}); err != nil {
 		t.Fatalf("first Emit: %v", err)
 	}
-	waitOTLPStats(t, sink, func(stats OTLPStats) bool {
+	degradedStats := waitOTLPStats(t, sink, func(stats OTLPStats) bool {
 		return stats.Failed == 1 && stats.Degraded
 	}, "OTLP degraded after async failure")
+	if degradedStats.LastError == "" {
+		t.Fatalf("LastError empty while degraded, stats = %+v", degradedStats)
+	}
 
 	err = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "second-recovers", Timestamp: time.Now()})
 	if !errors.Is(err, ErrOTLPDegraded) {
@@ -320,6 +324,9 @@ func TestOTLPSink_DegradedAdvisoryAndRecovery(t *testing.T) {
 	}, "OTLP successful send clears degraded state")
 	if stats.Dropped != 0 || stats.Abandoned != 0 {
 		t.Fatalf("stats = %+v, want no dropped/abandoned events", stats)
+	}
+	if stats.LastError != "" {
+		t.Fatalf("LastError = %q after recovery, want cleared", stats.LastError)
 	}
 }
 
@@ -548,7 +555,10 @@ func TestOTLPSink_LogDiagnosticStructuredJSON(t *testing.T) {
 		readDone <- data
 	}()
 
-	sink.recordDropped("queue_full", Event{Type: "diagnostic-event"}, nil)
+	// recordFailure runs on the background goroutine (not the Emit hot path), so
+	// it is the diagnostic that still writes structured JSON to stderr. The
+	// queue-full drop path deliberately no longer logs synchronously.
+	sink.recordFailure("send_error", Event{Type: "diagnostic-event"}, errOTLPAccountingTest)
 
 	var data []byte
 	select {
@@ -561,11 +571,44 @@ func TestOTLPSink_LogDiagnosticStructuredJSON(t *testing.T) {
 	if err := json.Unmarshal(line, &fields); err != nil {
 		t.Fatalf("diagnostic is not JSON: %v\n%s", err, line)
 	}
-	if fields["component"] != "emit.otlp" || fields["event"] != "event_dropped" || fields["reason"] != "queue_full" {
+	if fields["component"] != "emit.otlp" || fields["event"] != "delivery_failed" || fields["reason"] != "send_error" {
 		t.Fatalf("diagnostic fields = %v", fields)
 	}
-	if fmt.Sprint(fields["dropped"]) != "1" {
-		t.Fatalf("diagnostic dropped = %v, want 1", fields["dropped"])
+	if fmt.Sprint(fields["failed"]) != "1" {
+		t.Fatalf("diagnostic failed = %v, want 1", fields["failed"])
+	}
+}
+
+// TestOTLPSink_QueueFullDropDoesNotWriteStderr proves the Emit hot-path drop
+// accounting is non-blocking: it updates counters but must not perform a
+// synchronous stderr write, which could block the request path when the sink is
+// under backpressure and stderr is stalled.
+func TestOTLPSink_QueueFullDropDoesNotWriteStderr(t *testing.T) {
+	readStderr, writeStderr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = writeStderr
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = readStderr.Close()
+	})
+
+	sink := newManualOTLPSink()
+	sink.recordDropped("queue_full", nil)
+
+	// Close the write end so a read returns promptly at EOF instead of blocking.
+	os.Stderr = oldStderr
+	_ = writeStderr.Close()
+	data, _ := io.ReadAll(readStderr)
+	if len(bytes.TrimSpace(data)) != 0 {
+		t.Fatalf("queue-full drop wrote to stderr on the hot path: %q", data)
+	}
+
+	stats := sink.Stats()
+	if stats.Dropped != 1 || !stats.Degraded || stats.LastError != "queue_full" {
+		t.Fatalf("stats = %+v, want dropped=1 degraded LastError=queue_full", stats)
 	}
 }
 

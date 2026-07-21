@@ -74,6 +74,9 @@ type OTLPStats struct {
 	Dropped   uint64
 	Abandoned uint64
 	Degraded  bool
+	// LastError is the most recent failure, drop, or abandonment reason while
+	// the sink is degraded. It is cleared on the next successful delivery, so a
+	// non-degraded snapshot reports an empty LastError.
 	LastError string
 	QueueLen  int
 	QueueCap  int
@@ -194,8 +197,12 @@ func (s *OTLPSink) AgentThreatDetectionEnabled() bool {
 
 // Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
-// Returns ErrOTLPQueueFull if the queue is at capacity, ErrOTLPDegraded if a
-// prior async delivery failed, or an error if the sink is closed.
+//
+// Return-value contract: a nil error and ErrOTLPDegraded both mean the event
+// WAS accepted for delivery; ErrOTLPDegraded is an advisory that a prior async
+// delivery failed, not a rejection, so callers must not retry or fail closed on
+// it (distinguish with errors.Is). ErrOTLPQueueFull and the sink-closed error
+// mean the event was NOT accepted. Degraded state is also observable via Stats().
 // The closed flag is checked under closeMu so no enqueue can succeed
 // after Close() sets the flag.
 func (s *OTLPSink) Emit(_ context.Context, event Event) error {
@@ -221,7 +228,7 @@ func (s *OTLPSink) Emit(_ context.Context, event Event) error {
 		return nil
 	default:
 		s.closeMu.Unlock()
-		s.recordDropped("queue_full", event, nil)
+		s.recordDropped("queue_full", nil)
 		return ErrOTLPQueueFull
 	}
 }
@@ -311,6 +318,12 @@ func (s *OTLPSink) send(event Event) {
 	}
 	s.delivered.Add(1)
 	s.degraded.Store(false)
+	// A successful delivery clears the degraded state, so clear the paired
+	// LastError too; otherwise Stats() would report Degraded=false with a stale
+	// error from an earlier failure.
+	s.lastErrMu.Lock()
+	s.lastErr = ""
+	s.lastErrMu.Unlock()
 }
 
 // isRetryableStatus returns true for OTLP-spec-defined retryable status codes.
@@ -438,7 +451,14 @@ func (s *OTLPSink) recordFailure(reason string, event Event, err error) {
 	s.logDiagnostic("delivery_failed", reason, event, lastErr, 0)
 }
 
-func (s *OTLPSink) recordDropped(reason string, event Event, err error) {
+// recordDropped accounts for an event dropped on the Emit hot path (queue full).
+// It only updates atomic counters and lastErr and MUST NOT write a diagnostic
+// synchronously: Emit runs on the request/enforcement path, and a queue-full
+// drop means the system is already under telemetry backpressure, so a synchronous
+// stderr write (which can block on a stalled pipe/journald) could turn that
+// backpressure into request-path blocking. The drop is observable via
+// Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
+func (s *OTLPSink) recordDropped(reason string, err error) {
 	s.dropped.Add(1)
 	s.degraded.Store(true)
 	lastErr := reason
@@ -448,7 +468,6 @@ func (s *OTLPSink) recordDropped(reason string, event Event, err error) {
 	s.lastErrMu.Lock()
 	s.lastErr = lastErr
 	s.lastErrMu.Unlock()
-	s.logDiagnostic("event_dropped", reason, event, lastErr, 0)
 }
 
 func (s *OTLPSink) recordAbandoned(reason string, event Event, count int) {

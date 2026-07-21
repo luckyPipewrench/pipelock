@@ -47,12 +47,36 @@ fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+capture_failed=0
+
 run_and_tee() {
   local stdout_file="$1"
   local stderr_file="$2"
   shift 2
 
-  "$@" > >(tee "$stdout_file") 2> >(tee "$stderr_file" >&2)
+  local stdout_fifo="${stdout_file}.fifo"
+  local stderr_fifo="${stderr_file}.fifo"
+  mkfifo "$stdout_fifo" "$stderr_fifo"
+
+  tee "$stdout_file" <"$stdout_fifo" &
+  local stdout_tee_pid=$!
+  tee "$stderr_file" <"$stderr_fifo" >&2 &
+  local stderr_tee_pid=$!
+
+  "$@" >"$stdout_fifo" 2>"$stderr_fifo"
+  local command_status=$?
+
+  local stdout_tee_status=0
+  local stderr_tee_status=0
+  wait "$stdout_tee_pid" || stdout_tee_status=$?
+  wait "$stderr_tee_pid" || stderr_tee_status=$?
+  rm -f -- "$stdout_fifo" "$stderr_fifo"
+
+  if [ "$stdout_tee_status" -ne 0 ] || [ "$stderr_tee_status" -ne 0 ]; then
+    echo "ci-test-with-retry: failed to capture complete test output" >&2
+    capture_failed=1
+  fi
+  return "$command_status"
 }
 
 has_data_race() {
@@ -71,6 +95,49 @@ has_non_timeout_panic() {
     }
     END { exit !found }
   ' "$output_file"
+}
+
+has_go_test_timeout() {
+  local output_file="$1"
+
+  python3 - "$output_file" <<'PY'
+import json
+import re
+import sys
+
+duration = r"(?P<duration>(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+)"
+timeout_re = re.compile(rf"^panic: test timed out after {duration}$")
+timeout_packages = set()
+failed_packages = set()
+saw_test_failure = False
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        package = event.get("Package")
+        if not isinstance(package, str) or not package:
+            continue
+        if event.get("Action") == "fail":
+            if event.get("Test"):
+                saw_test_failure = True
+            else:
+                failed_packages.add(package)
+            continue
+        if event.get("Action") != "output":
+            continue
+        output = event.get("Output")
+        test = event.get("Test")
+        if isinstance(output, str) and isinstance(test, str) and test:
+            match = timeout_re.fullmatch(output.rstrip("\r\n"))
+            if match and any(char in "123456789" for char in match.group("duration")):
+                timeout_packages.add(package)
+
+verified = bool(failed_packages) and failed_packages <= timeout_packages and not saw_test_failure
+raise SystemExit(0 if verified else 1)
+PY
 }
 
 refuse_forbidden_output() {
@@ -103,6 +170,10 @@ run_and_tee "$first_stdout" "$first_stderr" "$@" "${package_args[@]}"
 first_status=$?
 set -e
 
+if [ "$capture_failed" -ne 0 ]; then
+  exit 1
+fi
+
 if [ "$first_status" -eq 0 ]; then
   exit 0
 fi
@@ -111,6 +182,11 @@ combined_first="$tmpdir/first.combined"
 cat "$first_stdout" "$first_stderr" >"$combined_first"
 
 if refuse_forbidden_output "$combined_first" "first pass"; then
+  exit "$first_status"
+fi
+
+if ! has_go_test_timeout "$first_stdout"; then
+  echo "ci-test-with-retry: refusing retry because first pass was not a verified go test timeout" >&2
   exit "$first_status"
 fi
 
@@ -173,9 +249,14 @@ if [ -n "$coverage_profile" ]; then
 fi
 
 set +e
+capture_failed=0
 run_and_tee "$retry_stdout" "$retry_stderr" "$@" "${retry_packages[@]}"
 retry_status=$?
 set -e
+
+if [ "$capture_failed" -ne 0 ]; then
+  exit 1
+fi
 
 combined_retry="$tmpdir/retry.combined"
 cat "$retry_stdout" "$retry_stderr" >"$combined_retry"

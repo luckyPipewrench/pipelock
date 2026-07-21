@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -348,7 +349,13 @@ func ocsfTruncateString(s string) string {
 	if len(s) <= ocsfMaxStringBytes {
 		return s
 	}
-	return s[:ocsfMaxStringBytes] + "...[truncated]"
+	// Back the cut off to a rune boundary so a multi-byte character is not
+	// split into an invalid sequence that renders as U+FFFD in the finding.
+	cut := ocsfMaxStringBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...[truncated]"
 }
 
 // enter records a reference-typed value on the current path. It returns a

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestFormatOCSFEventDetectionFinding(t *testing.T) {
@@ -466,5 +467,28 @@ func TestFormatOCSFEventTruncatesOversizedStringField(t *testing.T) {
 	}
 	if !strings.HasSuffix(blob, "...[truncated]") {
 		t.Fatalf("truncated field missing marker: %q", blob[len(blob)-20:])
+	}
+}
+
+func TestOCSFTruncateStringRuneSafe(t *testing.T) {
+	// A string whose byte cap lands mid-rune must not emit a split (U+FFFD) rune.
+	s := strings.Repeat("A", ocsfMaxStringBytes-1) + strings.Repeat("€", 8)
+	line := FormatOCSFEvent(Event{
+		Severity:  SeverityWarn,
+		Type:      EventBlocked,
+		Timestamp: time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		Fields:    map[string]any{"blob": s},
+	}, "dev")
+	got := parseOCSFEvent(t, line)
+	fields := assertMap(t, assertMap(t, assertMap(t, got, "unmapped"), "pipelock"), "fields")
+	blob := stringValue(t, fields, "blob")
+	if !utf8.ValidString(blob) {
+		t.Fatalf("truncated field is not valid UTF-8")
+	}
+	if strings.ContainsRune(blob, '�') {
+		t.Fatalf("truncated field split a rune (contains U+FFFD)")
+	}
+	if !strings.HasSuffix(blob, "...[truncated]") {
+		t.Fatalf("missing truncation marker: %q", blob[max(0, len(blob)-20):])
 	}
 }

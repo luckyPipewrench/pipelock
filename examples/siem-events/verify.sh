@@ -290,8 +290,8 @@ else
   exit 1
 fi
 sleep 0.3
-CLEAN_EVENTS_JSON="$(curl -sf "http://${WEBHOOK_ADDR}/events" 2>/dev/null || true)"
-BLOCKED_AFTER_CLEAN="$(python3 -c 'import json,sys; print(sum(1 for e in json.load(sys.stdin) if e.get("type")=="blocked"))' <<<"$CLEAN_EVENTS_JSON")"
+CLEAN_EVENTS_JSON="$(curl -sf "http://${WEBHOOK_ADDR}/events" 2>/dev/null || echo '[]')"
+BLOCKED_AFTER_CLEAN="$(python3 -c 'import json,sys; print(sum(1 for e in json.load(sys.stdin) if e.get("type")=="blocked"))' <<<"${CLEAN_EVENTS_JSON:-[]}" 2>/dev/null || echo 0)"
 if [ "$BLOCKED_AFTER_CLEAN" = "0" ]; then
   pass "no blocked webhook events after clean fetch"
 else

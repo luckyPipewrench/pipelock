@@ -197,6 +197,42 @@ func TestVerifyChainWithEndorsements_RequiresSignedRecorderOpen(t *testing.T) {
 	if result.Valid || !strings.Contains(result.Error, "no signed session_open") {
 		t.Fatalf("legacy chain without signed recorder open was accepted: %+v", result)
 	}
+
+	// A successor-signed open cannot retroactively bind a legacy root segment
+	// to the endorsement's recorder session.
+	root, tail := buildSegment(t, privA, 2, GenesisHash, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), nil)
+	prior := root[len(root)-1]
+	marker := &KeyTransition{
+		PriorSignerKey: hex.EncodeToString(pubA),
+		PriorChainSeq:  prior.ActionRecord.ChainSeq,
+		PriorChainHash: tail,
+	}
+	rotatedOpen := signRestartOpen(t, privB, 0, tail, prior.ActionRecord.ChainSeq, sessionOpenTestRunB, time.Date(2026, 4, 1, 1, 0, 0, 0, time.UTC), marker)
+	successorBound := append(root, rotatedOpen)
+	endorsement = endorsementForBoundary(t, successorBound, len(root), privA)
+	result = VerifyChainWithEndorsements("proxy", successorBound, []RotationEndorsement{endorsement}, []string{hex.EncodeToString(pubA)})
+	if result.Valid || !strings.Contains(result.Error, "root receipt segment") {
+		t.Fatalf("successor-only recorder binding accepted: %+v", result)
+	}
+}
+
+func TestVerifySignedRecorderSession_RequiresRootSegmentBinding(t *testing.T) {
+	t.Parallel()
+	receipts := []Receipt{
+		{},
+		{
+			ActionRecord: ActionRecord{
+				KeyTransition: &KeyTransition{},
+				SessionControl: &SessionControl{
+					Kind: SessionControlOpen,
+					Open: &SessionOpen{RecorderSession: "proxy"},
+				},
+			},
+		},
+	}
+	if err := verifySignedRecorderSession("proxy", receipts); err == nil || !strings.Contains(err.Error(), "root receipt segment") {
+		t.Fatalf("successor-only recorder binding accepted: %v", err)
+	}
 }
 
 func TestVerifyChainWithEndorsements_FailClosedInputBoundaries(t *testing.T) {

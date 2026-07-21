@@ -308,19 +308,28 @@ func VerifyChainWithEndorsements(sessionID string, receipts []Receipt, endorseme
 }
 
 func verifySignedRecorderSession(expected string, receipts []Receipt) error {
-	openFound := false
-	for _, receipt := range receipts {
+	firstBoundary := len(receipts)
+	for i := 1; i < len(receipts); i++ {
+		if receipts[i].ActionRecord.KeyTransition != nil {
+			firstBoundary = i
+			break
+		}
+	}
+	rootOpenFound := false
+	for i, receipt := range receipts {
 		if open := sessionOpen(receipt.ActionRecord.SessionControl); open != nil {
-			openFound = true
 			if open.RecorderSession != expected {
 				return fmt.Errorf("signed recorder session %q does not match endorsement session %q", open.RecorderSession, expected)
 			}
+			if i < firstBoundary {
+				rootOpenFound = true
+			}
 		}
 	}
-	if openFound {
+	if rootOpenFound {
 		return nil
 	}
-	return errors.New("receipt chain has no signed session_open recorder binding")
+	return errors.New("root receipt segment has no signed session_open recorder binding")
 }
 
 func endorsementFailure(base ChainResult, key string, err error) ChainResult {

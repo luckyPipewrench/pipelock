@@ -240,36 +240,43 @@ func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *test
 	if err != nil {
 		t.Fatalf("QuerySession: %v", err)
 	}
-	entries := query.Entries
-	if len(entries) == 0 {
+	if len(query.Entries) == 0 {
 		t.Fatal("fixture has no recorder entries")
 	}
-	for i := range entries {
+	writeEntries := func(name string, mutate func(int, *recorder.Entry)) string {
+		t.Helper()
+		entries := append([]recorder.Entry(nil), query.Entries...)
+		for i := range entries {
+			mutate(i, &entries[i])
+			if i == 0 {
+				entries[i].PrevHash = recorder.GenesisHash
+			} else {
+				entries[i].PrevHash = entries[i-1].Hash
+			}
+			entries[i].Hash = recorder.ComputeHash(entries[i])
+		}
+		path := filepath.Join(t.TempDir(), name)
+		file, openErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- test-controlled temp path.
+		if openErr != nil {
+			t.Fatalf("OpenFile: %v", openErr)
+		}
+		enc := json.NewEncoder(file)
+		for _, entry := range entries {
+			if encodeErr := enc.Encode(entry); encodeErr != nil {
+				_ = file.Close()
+				t.Fatalf("Encode entry: %v", encodeErr)
+			}
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
+		}
+		return path
+	}
+	foreignPath := writeEntries("mixed.jsonl", func(i int, entry *recorder.Entry) {
 		if i > 0 {
-			entries[i].SessionID = "other"
+			entry.SessionID = "other"
 		}
-		if i == 0 {
-			entries[i].PrevHash = recorder.GenesisHash
-		} else {
-			entries[i].PrevHash = entries[i-1].Hash
-		}
-		entries[i].Hash = recorder.ComputeHash(entries[i])
-	}
-	foreignPath := filepath.Join(t.TempDir(), "foreign.jsonl")
-	file, err := os.OpenFile(foreignPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- test-controlled temp path.
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	enc := json.NewEncoder(file)
-	for _, entry := range entries {
-		if err := enc.Encode(entry); err != nil {
-			_ = file.Close()
-			t.Fatalf("Encode entry: %v", err)
-		}
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	})
 
 	var buf bytes.Buffer
 	cmd := VerifyReceiptCmd()
@@ -278,6 +285,18 @@ func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *test
 	cmd.SetArgs([]string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "mixes recorder sessions") {
 		t.Fatalf("foreign-session JSONL accepted: err=%v output=%s", err, buf.String())
+	}
+
+	foreignPath = writeEntries("foreign.jsonl", func(_ int, entry *recorder.Entry) {
+		entry.SessionID = "other"
+	})
+	buf.Reset()
+	cmd = VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), `endorsed receipt session "proxy" does not match evidence session "other"`) {
+		t.Fatalf("consistent foreign-session JSONL accepted: err=%v output=%s", err, buf.String())
 	}
 }
 

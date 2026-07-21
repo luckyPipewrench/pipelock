@@ -26,8 +26,22 @@ const (
 	decideStructuralOperatorKnob = "The action could not be evaluated safely (unknown event, malformed tool input, or uninspectable input). There is no allow-path knob for the structural failure; correct the action shape and retry."
 
 	ssrfOperatorKnob = "If the destination is a trusted internal service, add the hostname to top-level `trusted_domains` (hostname-based) or the resolved range to `ssrf.ip_allowlist` (IP-based). " +
+		"Cloud-metadata, link-local, and multicast addresses are a non-overridable deny — neither knob exempts them (config validation rejects such entries). " +
 		"This verdict depends on DNS resolution at runtime; explain reports it without resolving."
 	ssrfOperatorBroader = "Disabling SSRF entirely (`internal: []`) removes private-range protection for ALL destinations — never do this to fix one host."
+
+	// Cloud metadata endpoints are a credential-theft target and a
+	// non-overridable SSRF deny: ssrf.ip_allowlist and trusted_domains cannot
+	// exempt them (both config validation and the scanner refuse). There is no
+	// allow-path knob by design.
+	ssrfMetadataOperatorKnob = "Cloud instance-metadata endpoints are a non-overridable SSRF deny: `ssrf.ip_allowlist` and `trusted_domains` cannot exempt them (config validation rejects such entries and the scanner ignores them). " +
+		"There is no allow knob — if an agent legitimately needs instance data, expose it through a dedicated internal service on a different address rather than allowing metadata access."
+
+	// Link-local, multicast, and unspecified addresses share the metadata
+	// deny's non-overridable status but are not metadata, so they get their own
+	// wording rather than talking about "instance-metadata endpoints".
+	ssrfNonOverridableOperatorKnob = "This is a non-overridable SSRF deny (link-local, multicast, or unspecified address): `ssrf.ip_allowlist` and `trusted_domains` cannot exempt it (config validation rejects such entries and the scanner ignores them). " +
+		"There is no allow knob — reach the intended service by its ordinary routable or private address instead."
 
 	injectionTraversalOperatorKnob = "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source."
 	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry."
@@ -113,12 +127,12 @@ var remediationGuidance = map[string]RemediationGuidance{
 		AgentReason:     protectedAddressAgentReason,
 	},
 	ScannerSSRFMetadata: {
-		OperatorKnob:    ssrfOperatorKnob,
-		OperatorBroader: ssrfOperatorBroader,
-		AgentReason:     protectedAddressAgentReason,
+		OperatorKnob: ssrfMetadataOperatorKnob,
+		Immutable:    true,
+		AgentReason:  protectedAddressAgentReason,
 	},
 	ScannerCoreSSRF: {
-		OperatorKnob: "Core SSRF blocks private/loopback/link-local IP literals as an immutable floor. `ssrf.ip_allowlist` is the only override and is honored even by the core check; there is no way to disable the floor wholesale.",
+		OperatorKnob: "Core SSRF blocks private/loopback/link-local IP literals as an immutable floor. `ssrf.ip_allowlist` can exempt a specific private or loopback address, but cloud-metadata, link-local, and multicast addresses are non-overridable — no allowlist entry exempts them. There is no way to disable the floor wholesale.",
 		Immutable:    true,
 		AgentReason:  protectedAddressAgentReason,
 	},
@@ -215,6 +229,30 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 			OperatorBroader: queryEntropyOperatorBroader,
 			AgentReason:     highEntropyAgentReason,
 		}, true
+	}
+	// The dial-time SSRF guard logs metadata blocks under the generic
+	// ScannerSSRF label (the metadata classification lives in the reason
+	// string), and non-metadata link-local/multicast blocks use the same generic
+	// label with "non-overridable" in the reason. A label-only lookup would hand
+	// back the ssrfOperatorKnob that names ssrf.ip_allowlist/trusted_domains -
+	// knobs that cannot exempt these targets. Route those reason-specific SSRF
+	// blocks to the non-overridable guidance regardless of which SSRF label
+	// carried them.
+	if label == ScannerSSRF || label == ScannerSSRFMetadata || label == ScannerCoreSSRF {
+		if strings.Contains(reason, "metadata") {
+			return RemediationGuidance{
+				OperatorKnob: ssrfMetadataOperatorKnob,
+				Immutable:    true,
+				AgentReason:  protectedAddressAgentReason,
+			}, true
+		}
+		if strings.Contains(reason, "non-overridable") {
+			return RemediationGuidance{
+				OperatorKnob: ssrfNonOverridableOperatorKnob,
+				Immutable:    true,
+				AgentReason:  protectedAddressAgentReason,
+			}, true
+		}
 	}
 	return GuidanceFor(label)
 }

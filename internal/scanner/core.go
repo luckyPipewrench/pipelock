@@ -141,21 +141,25 @@ func coreResponsePatternDefs() []coreResponsePattern {
 	}
 }
 
-// coreInternalCIDRDefs returns the private/reserved IPv4 ranges that the core
-// SSRF scanner always blocks. These ranges are checked regardless of the
-// user's config.Internal setting.
+// coreInternalCIDRDefs returns the private/reserved ranges and metadata
+// endpoints that the core SSRF scanner always blocks. These ranges are checked
+// regardless of the user's config.Internal setting.
 func coreInternalCIDRDefs() []string {
 	return []string{
-		"0.0.0.0/8",      // "this" network (RFC 1122)
-		"127.0.0.0/8",    // loopback (RFC 1122)
-		"10.0.0.0/8",     // private class A (RFC 1918)
-		"172.16.0.0/12",  // private class B (RFC 1918)
-		"192.168.0.0/16", // private class C (RFC 1918)
-		"169.254.0.0/16", // link-local / cloud metadata (RFC 3927)
-		"100.64.0.0/10",  // carrier-grade NAT (RFC 6598)
-		"::1/128",        // IPv6 loopback
-		"fc00::/7",       // IPv6 unique local
-		"fe80::/10",      // IPv6 link-local
+		"0.0.0.0/8",        // "this" network (RFC 1122)
+		"127.0.0.0/8",      // loopback (RFC 1122)
+		"10.0.0.0/8",       // private class A (RFC 1918)
+		"172.16.0.0/12",    // private class B (RFC 1918)
+		"192.168.0.0/16",   // private class C (RFC 1918)
+		"169.254.0.0/16",   // link-local / cloud metadata (RFC 3927)
+		"168.63.129.16/32", // Azure WireServer metadata
+		"100.64.0.0/10",    // carrier-grade NAT (RFC 6598)
+		"224.0.0.0/4",      // IPv4 multicast
+		"::/128",           // IPv6 unspecified
+		"::1/128",          // IPv6 loopback
+		"fc00::/7",         // IPv6 unique local
+		"fe80::/10",        // IPv6 link-local
+		"ff00::/8",         // IPv6 multicast
 	}
 }
 

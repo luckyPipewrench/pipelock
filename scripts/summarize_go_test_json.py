@@ -138,6 +138,10 @@ def print_summary(
                 print(line, file=out)
 
 
+def has_failed_packages(results: dict[str, PackageResult]) -> bool:
+    return any(result.action == "fail" for result in results.values())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Summarize package timings from go test -json output."
@@ -149,7 +153,10 @@ def main() -> int:
     if args.top < 1:
         parser.error("--top must be at least 1")
 
-    print_summary(parse_events(sys.stdin.readlines()), label=args.label, top=args.top)
+    results = parse_events(sys.stdin.readlines())
+    print_summary(results, label=args.label, top=args.top)
+    if has_failed_packages(results):
+        return 1
     return 0
 
 

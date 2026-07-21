@@ -2815,8 +2815,71 @@ func (c *Config) validateSSRF() error {
 		if !ip.Equal(ipNet.IP) {
 			return fmt.Errorf("ssrf.ip_allowlist CIDR %q has host bits set (did you mean %q?)", cidr, ipNet.String())
 		}
+		// Reject entries that overlap a non-overridable SSRF class (cloud
+		// metadata, link-local, multicast, unspecified). These are a credential-
+		// theft / infrastructure boundary that the allowlist must never open;
+		// the scanner enforces this at runtime too (IsIPAllowlisted refuses to
+		// exempt them), but rejecting at load gives the operator a loud, early
+		// error instead of a silently-inert entry.
+		if bad := overlappingNonOverridableSSRFRange(ipNet); bad != "" {
+			return fmt.Errorf("ssrf.ip_allowlist CIDR %q overlaps the non-overridable %s range and cannot be allowlisted (metadata, link-local, and multicast addresses are never exemptable)", cidr, bad)
+		}
 	}
 	return nil
+}
+
+// nonOverridableSSRFRanges are the address classes ssrf.ip_allowlist must never
+// exempt: cloud instance-metadata endpoints, link-local (which contains the
+// IPv4 metadata address), multicast, and the unspecified address. Loopback and
+// ordinary private ranges are intentionally absent — exempting a specific
+// loopback or internal service IP is the allowlist's whole purpose. Mirrors
+// scanner.IsNonOverridableSSRFTarget; keep the two in sync.
+var nonOverridableSSRFRanges = func() []*net.IPNet {
+	cidrs := []string{
+		"169.254.0.0/16",    // IPv4 link-local (contains 169.254.169.254 IMDS)
+		"168.63.129.16/32",  // Azure WireServer metadata
+		"fd00:ec2::254/128", // AWS IMDSv6
+		"fe80::/10",         // IPv6 link-local
+		"224.0.0.0/4",       // IPv4 multicast
+		"ff00::/8",          // IPv6 multicast
+		"0.0.0.0/32",        // IPv4 unspecified
+		"::/128",            // IPv6 unspecified
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			// These are compile-time constants; a parse failure is a programming
+			// bug. Fail loudly at init rather than silently shrinking this
+			// security-critical floor (mirrors scanner.initCoreScanner).
+			panic(fmt.Sprintf("BUG: non-overridable SSRF CIDR %q failed to parse: %v", c, err))
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}()
+
+// overlappingNonOverridableSSRFRange returns the string form of the first
+// non-overridable range that overlaps allow, or "" if none. Two CIDRs overlap
+// when either contains the other's network address.
+func overlappingNonOverridableSSRFRange(allow *net.IPNet) string {
+	// Normalize an IPv4-mapped IPv6 network (e.g. ::ffff:169.254.0.0/112) to its
+	// 4-byte IPv4 form. The bidirectional Contains check below already catches
+	// these via To4 coercion on the reverse clause, but net.IPNet.Contains does
+	// NOT coerce the target up when the network is 16-byte, so normalizing keeps
+	// the overlap detection robust and independent of that asymmetry rather than
+	// relying on it on a security-validation path.
+	if v4 := allow.IP.To4(); v4 != nil && len(allow.IP) == net.IPv6len {
+		if ones, bits := allow.Mask.Size(); bits == 128 && ones >= 96 {
+			allow = &net.IPNet{IP: v4, Mask: net.CIDRMask(ones-96, 32)}
+		}
+	}
+	for _, n := range nonOverridableSSRFRanges {
+		if allow.Contains(n.IP) || n.Contains(allow.IP) {
+			return n.String()
+		}
+	}
+	return ""
 }
 
 func (c *Config) validateDNS() error {

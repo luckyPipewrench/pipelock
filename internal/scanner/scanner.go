@@ -653,13 +653,46 @@ func (s *Scanner) HostResolver() Resolver {
 
 // IsIPAllowlisted checks if an IP is in the SSRF IP allowlist (ssrf.ip_allowlist).
 // Used by checkSSRF and the dial-level SSRF check to exempt specific IP ranges.
+//
+// Cloud-metadata, link-local, multicast, and unspecified addresses are a
+// non-overridable SSRF deny: no ssrf.ip_allowlist entry can exempt them, even
+// if a range that covers one is somehow configured. This is the runtime floor
+// behind the config-load rejection in validateSSRF; both exist so a metadata
+// endpoint (credential-theft target) can never be allowlisted into reach. This
+// is the single chokepoint consulted by every allowlist site (core literal
+// floor, resolved SSRF, and the proxy dial guard), so hardening it here covers
+// all of them at once.
 func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
+	if IsNonOverridableSSRFTarget(ip) {
+		return false
+	}
 	for _, cidr := range s.ipAllowlistCIDRs {
 		if cidr.Contains(ip) {
 			return true
 		}
 	}
 	return false
+}
+
+// IsNonOverridableSSRFTarget reports whether an IP belongs to a class that
+// ssrf.ip_allowlist must never be able to exempt: cloud instance-metadata
+// endpoints, link-local ranges (which contain the IPv4 metadata IP), multicast,
+// and the unspecified address. Loopback and ordinary private (RFC1918 /
+// unique-local) ranges are deliberately NOT in this set — exempting a specific
+// loopback or internal service IP is the allowlist's intended use.
+func IsNonOverridableSSRFTarget(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return IsCloudMetadataIP(ip) ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
 }
 
 // IsInAPIAllowlist checks if a hostname matches any entry in api_allowlist.
@@ -1192,17 +1225,19 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		}
 	}
 
-	// Trusted domains bypass the internal-IP CIDR check. All other scanners
-	// (DLP, blocklist, entropy) still apply - only the RFC1918 resolution
-	// check is skipped. This lets operators allowlist internal services
-	// (e.g., local inference servers) without disabling SSRF protection globally.
-	if s.IsTrustedDomain(hostname) {
-		return Result{Allowed: true}
+	// Parse each resolved IP once (zone-ID strip + IPv4-mapped normalization),
+	// then reuse the parsed set for both the non-overridable floor pass and the
+	// CIDR pass below so the two passes cannot drift. Unparseable entries are
+	// dropped (they cannot be dialed).
+	type resolvedIP struct {
+		ip        net.IP
+		displayIP string
 	}
-
+	parsed := make([]resolvedIP, 0, len(ips))
 	for _, ipStr := range ips {
 		// Strip IPv6 zone ID (e.g. "::1%eth0" → "::1"). Zone IDs cause
 		// net.ParseIP to return nil, silently skipping the CIDR check.
+		displayIP := ipStr
 		if idx := strings.Index(ipStr, "%"); idx != -1 {
 			ipStr = ipStr[:idx]
 		}
@@ -1214,24 +1249,50 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
 		}
+		parsed = append(parsed, resolvedIP{ip: ip, displayIP: displayIP})
+	}
 
-		// Check against internal CIDRs (core + config)
+	// Non-overridable floor: cloud-metadata, link-local, multicast, and
+	// unspecified targets can never be exempted, so this pass runs BEFORE the
+	// trusted-domain allow below and wins over it.
+	for _, r := range parsed {
+		if IsNonOverridableSSRFTarget(r.ip) {
+			scannerLabel := ScannerSSRF
+			blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, r.displayIP)
+			if isCloudMetadataIP(r.ip) {
+				scannerLabel = ScannerSSRFMetadata
+				blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, r.displayIP)
+			}
+			return Result{
+				Allowed: false,
+				Reason:  blockReason,
+				Scanner: scannerLabel,
+				Score:   1.0,
+			}
+		}
+	}
+
+	// Trusted domains bypass the ordinary internal-IP CIDR check. All other
+	// scanners (DLP, blocklist, entropy) still apply, and the non-overridable
+	// floor above always wins.
+	if s.IsTrustedDomain(hostname) {
+		return Result{Allowed: true}
+	}
+
+	for _, r := range parsed {
+		// Check against internal CIDRs (core + config). Cloud-metadata IPs never
+		// reach here: they are non-overridable and already returned above, so
+		// this pass only ever emits the generic internal-IP classification.
 		for _, cidr := range allCIDRs {
-			if cidr.Contains(ip) {
+			if cidr.Contains(r.ip) {
 				// IP allowlist exemption: operator explicitly trusts this range.
-				if s.IsIPAllowlisted(ip) {
+				if s.IsIPAllowlisted(r.ip) {
 					continue
 				}
-				scannerLabel := ScannerSSRF
-				blockReason := fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, ipStr)
-				if isCloudMetadataIP(ip) {
-					scannerLabel = ScannerSSRFMetadata
-					blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, ipStr)
-				}
-				r := Result{
+				result := Result{
 					Allowed: false,
-					Reason:  blockReason,
-					Scanner: scannerLabel,
+					Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, r.displayIP),
+					Scanner: ScannerSSRF,
 					Score:   1.0,
 				}
 				// If the domain is in api_allowlist, this is a config
@@ -1241,13 +1302,12 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 				// (ssrf.ip_allowlist for an IP literal, trusted_domains for a
 				// hostname) from `pipelock explain` and the audit hint.
 				if s.IsInAPIAllowlist(hostname) {
-					r.Hint = HintForScanner(scannerLabel)
-					r.Class = ClassConfigMismatch
+					result.Hint = HintForScanner(ScannerSSRF)
+					result.Class = ClassConfigMismatch
 				}
-				return r
+				return result
 			}
 		}
-
 	}
 
 	return Result{Allowed: true, SSRFResolvedIPs: append([]string(nil), ips...)}

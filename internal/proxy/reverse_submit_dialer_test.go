@@ -271,6 +271,50 @@ func TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason(t *testing.T) 
 	}
 }
 
+func TestSubmitProfile_SafeDialerBlocksNonOverridableMetadata(t *testing.T) {
+	cfg, upstreamURL := submitProfileTestConfig("http://submit-metadata.test:1")
+	cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables DNS SSRF; core CIDRs are merged.
+	cfg.TrustedDomains = []string{"submit-metadata.test"}
+	cfg.DNS.HostOverrides = map[string][]string{
+		"submit-metadata.test": {"169.254.169.254"},
+	}
+
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("New proxy: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+	handler.SetSafeDialer(p.SafeDialer())
+	handlerProxy := newIPv4Server(t, handler)
+	t.Cleanup(handlerProxy.Close)
+
+	req, _ := http.NewRequestWithContext(context.Background(),
+		http.MethodPost, handlerProxy.URL+"/v1/batch", strings.NewReader(`{"clean":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post through reverse proxy: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFMetadata) {
+		t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.SSRFMetadata)
+	}
+}
+
 // TestReverseProxyTransport_IgnoresAmbientProxyEnv locks the transport-parity
 // invariant: the reverse-proxy base transport must not honor an ambient
 // HTTP_PROXY/HTTPS_PROXY. The base is cloned from http.DefaultTransport for

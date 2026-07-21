@@ -4,8 +4,12 @@
 package emit
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -364,4 +368,72 @@ func TestEmitter_FieldsPassedThrough(t *testing.T) {
 	}
 
 	_ = em.Close()
+}
+
+// captureEmitterStderr runs fn with os.Stderr redirected to a pipe and returns
+// whatever fn wrote to stderr. It reads on a goroutine so a large write cannot
+// deadlock on the pipe buffer.
+func captureEmitterStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	done := make(chan []byte, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(bufio.NewReader(r))
+		done <- buf.Bytes()
+	}()
+	fn()
+	os.Stderr = old
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return string(out)
+}
+
+// TestEmitter_ExpectedSinkStatusNoStderr proves the fan-out does not write a
+// synchronous stderr diagnostic when a sink reports a routine, already-accounted
+// status (queue-full drop or degraded advisory) — those fire on the Emit hot
+// path and are observable via Stats(). An UNEXPECTED sink error still prints.
+func TestEmitter_ExpectedSinkStatusNoStderr(t *testing.T) {
+	expected := []error{
+		ErrQueueFull, ErrSyslogQueueFull, ErrOTLPQueueFull,
+		ErrWebhookDegraded, ErrSyslogDegraded, ErrOTLPDegraded,
+	}
+	for _, se := range expected {
+		se := se
+		t.Run(se.Error(), func(t *testing.T) {
+			em := NewEmitter(testStr, &mockSink{err: se})
+			out := captureEmitterStderr(t, func() {
+				em.Emit(context.Background(), testEventBlocked, map[string]any{"k": "v"})
+			})
+			if out != "" {
+				t.Fatalf("expected sink status %v wrote hot-path stderr: %q", se, out)
+			}
+		})
+	}
+
+	t.Run("unexpected error still prints", func(t *testing.T) {
+		em := NewEmitter(testStr, &mockSink{err: errors.New("unexpected boom")})
+		out := captureEmitterStderr(t, func() {
+			em.Emit(context.Background(), testEventBlocked, map[string]any{"k": "v"})
+		})
+		if !strings.Contains(out, "unexpected boom") {
+			t.Fatalf("unexpected sink error was not surfaced to stderr: %q", out)
+		}
+	})
+
+	t.Run("joined status and unexpected error still prints", func(t *testing.T) {
+		em := NewEmitter(testStr, &mockSink{err: errors.Join(ErrQueueFull, errors.New("unexpected joined boom"))})
+		out := captureEmitterStderr(t, func() {
+			em.Emit(context.Background(), testEventBlocked, map[string]any{"k": "v"})
+		})
+		if !strings.Contains(out, "unexpected joined boom") {
+			t.Fatalf("unexpected error joined with sink status was suppressed: %q", out)
+		}
+	})
 }

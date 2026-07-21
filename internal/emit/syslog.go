@@ -316,7 +316,7 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 		return nil
 	default:
 		s.closeMu.Unlock()
-		s.recordDropped("queue_full", msg, nil)
+		s.recordDropped("queue_full", nil)
 		return ErrSyslogQueueFull
 	}
 }
@@ -409,6 +409,10 @@ func makeSyslogMessage(event Event, format, deviceVersion string) (syslogMessage
 }
 
 func (s *SyslogSink) send(msg syslogMessage) {
+	failedSnapshot := s.failed.Load()
+	droppedSnapshot := s.dropped.Load()
+	abandonedSnapshot := s.abandoned.Load()
+
 	var writeErr error
 
 	switch msg.severity {
@@ -424,7 +428,17 @@ func (s *SyslogSink) send(msg syslogMessage) {
 		return
 	}
 	s.delivered.Add(1)
-	s.degraded.Store(false)
+	s.lastErrMu.Lock()
+	// Clear paired health only if no newer failure, drop, or abandonment was
+	// recorded while this write was in flight. The lock makes Degraded and
+	// LastError one observable transition for Stats().
+	if s.failed.Load() == failedSnapshot &&
+		s.dropped.Load() == droppedSnapshot &&
+		s.abandoned.Load() == abandonedSnapshot {
+		s.degraded.Store(false)
+		s.lastErr = ""
+	}
+	s.lastErrMu.Unlock()
 }
 
 // Close closes the syslog writer. Safe to call on a nil or already-closed writer.
@@ -476,13 +490,14 @@ func (s *SyslogSink) Stats() SyslogStats {
 	}
 	s.lastErrMu.Lock()
 	lastErr := s.lastErr
+	degraded := s.degraded.Load()
 	s.lastErrMu.Unlock()
 	stats := SyslogStats{
 		Delivered: s.delivered.Load(),
 		Failed:    s.failed.Load(),
 		Dropped:   s.dropped.Load(),
 		Abandoned: s.abandoned.Load(),
-		Degraded:  s.degraded.Load(),
+		Degraded:  degraded,
 		LastError: lastErr,
 	}
 	if s.queue != nil {
@@ -494,26 +509,32 @@ func (s *SyslogSink) Stats() SyslogStats {
 
 func (s *SyslogSink) recordFailure(reason string, msg syslogMessage, err error) {
 	s.failed.Add(1)
+	s.lastErrMu.Lock()
 	s.degraded.Store(true)
 	if err != nil {
-		s.lastErrMu.Lock()
 		s.lastErr = err.Error()
-		s.lastErrMu.Unlock()
 	}
+	s.lastErrMu.Unlock()
 	s.logDiagnostic("delivery_failed", reason, msg, err, 0)
 }
 
-func (s *SyslogSink) recordDropped(reason string, msg syslogMessage, err error) {
+// recordDropped accounts for an event dropped on the Emit hot path (queue full).
+// It only updates atomic counters and lastErr and MUST NOT write a diagnostic
+// synchronously: Emit runs on the request/enforcement path, and a queue-full
+// drop means the system is already under telemetry backpressure, so a synchronous
+// stderr write (which can block on a stalled pipe/journald) could turn that
+// backpressure into request-path blocking. The drop is observable via
+// Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
+func (s *SyslogSink) recordDropped(reason string, err error) {
 	s.dropped.Add(1)
-	s.degraded.Store(true)
 	lastErr := reason
 	if err != nil {
 		lastErr = err.Error()
 	}
 	s.lastErrMu.Lock()
+	s.degraded.Store(true)
 	s.lastErr = lastErr
 	s.lastErrMu.Unlock()
-	s.logDiagnostic("event_dropped", reason, msg, err, 0)
 }
 
 func (s *SyslogSink) recordAbandoned(reason string, msg syslogMessage, count int) {
@@ -521,8 +542,8 @@ func (s *SyslogSink) recordAbandoned(reason string, msg syslogMessage, count int
 		count = 1
 	}
 	s.abandoned.Add(uint64(count))
-	s.degraded.Store(true)
 	s.lastErrMu.Lock()
+	s.degraded.Store(true)
 	s.lastErr = reason
 	s.lastErrMu.Unlock()
 	s.logDiagnostic("events_abandoned", reason, msg, nil, count)

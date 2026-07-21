@@ -6,10 +6,13 @@
 package emit
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/syslog"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -166,17 +169,33 @@ func TestSyslogSink_EmitQueueFullIsBounded(t *testing.T) {
 	if err := sink.Emit(context.Background(), event); err != nil {
 		t.Fatalf("second Emit: %v", err)
 	}
-	if err := sink.Emit(context.Background(), event); !errors.Is(err, ErrSyslogQueueFull) {
-		t.Fatalf("third Emit error = %v, want ErrSyslogQueueFull", err)
+	readStderr, writeStderr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
 	}
+	oldStderr := os.Stderr
+	os.Stderr = writeStderr
+	dropErr := sink.Emit(context.Background(), event)
+	os.Stderr = oldStderr
+	_ = writeStderr.Close()
+	data, _ := io.ReadAll(readStderr)
+	_ = readStderr.Close()
 	stats := sink.Stats()
+
+	writer.release()
+	closeErr := sink.Close()
+
+	if !errors.Is(dropErr, ErrSyslogQueueFull) {
+		t.Fatalf("third Emit error = %v, want ErrSyslogQueueFull", dropErr)
+	}
+	if len(bytes.TrimSpace(data)) != 0 {
+		t.Fatalf("queue-full drop wrote to stderr on the Emit hot path: %q", data)
+	}
 	if stats.Dropped != 1 || !stats.Degraded || stats.LastError != "queue_full" {
 		t.Fatalf("stats = %+v, want queue_full drop", stats)
 	}
-
-	writer.release()
-	if err := sink.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
 	}
 }
 
@@ -460,6 +479,9 @@ func TestSyslogSink_EmitSignalsPriorDegradedState(t *testing.T) {
 	writer := newBlockingSyslogWriter()
 	sink := newSyslogSink(writer, &syslogConfig{queueLen: 2})
 	sink.degraded.Store(true)
+	sink.lastErrMu.Lock()
+	sink.lastErr = "prior delivery failure"
+	sink.lastErrMu.Unlock()
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:  SeverityWarn,
@@ -475,8 +497,82 @@ func TestSyslogSink_EmitSignalsPriorDegradedState(t *testing.T) {
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if stats := sink.Stats(); stats.Delivered != 1 || stats.Degraded {
-		t.Fatalf("stats = %+v, want successful send to clear degraded state", stats)
+	if stats := sink.Stats(); stats.Delivered != 1 || stats.Degraded || stats.LastError != "" {
+		t.Fatalf("stats = %+v, want successful send to clear degraded state and LastError", stats)
+	}
+}
+
+func TestSyslogSink_SuccessHealthTransitionIsAtomic(t *testing.T) {
+	writer := &countingSyslogWriter{}
+	sink := &SyslogSink{writer: writer, queue: make(chan syslogMessage, 1)}
+	sink.degraded.Store(true)
+	sink.lastErr = "prior failure"
+
+	// Hold the LastError lock while the write completes. Degraded must remain
+	// true until the successful recovery can clear both health fields together.
+	sink.lastErrMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		sink.send(syslogMessage{severity: SeverityWarn, eventType: testEventBlocked})
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for writer.count.Load() != 1 {
+		select {
+		case <-deadline:
+			sink.lastErrMu.Unlock()
+			t.Fatal("timeout waiting for syslog write")
+		default:
+		}
+	}
+	if !sink.degraded.Load() {
+		sink.lastErrMu.Unlock()
+		t.Fatal("Degraded cleared before LastError could be cleared")
+	}
+	sink.lastErrMu.Unlock()
+	<-done
+
+	if stats := sink.Stats(); stats.Degraded || stats.LastError != "" {
+		t.Fatalf("stats = %+v, want atomic successful recovery", stats)
+	}
+}
+
+func TestSyslogSink_SuccessDoesNotEraseConcurrentDropDegraded(t *testing.T) {
+	var sink *SyslogSink
+	writer := &callbackSyslogWriter{writeFn: func() {
+		sink.recordDropped("queue_full", nil)
+	}}
+	sink = &SyslogSink{writer: writer, queue: make(chan syslogMessage, 1)}
+
+	sink.send(syslogMessage{severity: SeverityWarn, eventType: testEventBlocked})
+
+	stats := sink.Stats()
+	if stats.Delivered != 1 || stats.Dropped != 1 {
+		t.Fatalf("stats = %+v, want one delivery and one concurrent drop", stats)
+	}
+	if !stats.Degraded || stats.LastError != "queue_full" {
+		t.Fatalf("stats = %+v, concurrent drop health was erased by success", stats)
+	}
+}
+
+func TestSyslogSink_RepeatedDegradeRecoverCycles(t *testing.T) {
+	sink := &SyslogSink{
+		writer: &countingSyslogWriter{},
+		queue:  make(chan syslogMessage, 1),
+	}
+
+	for cycle := 1; cycle <= 3; cycle++ {
+		sink.recordDropped("queue_full", nil)
+		if stats := sink.Stats(); !stats.Degraded || stats.LastError != "queue_full" {
+			t.Fatalf("cycle %d degraded stats = %+v", cycle, stats)
+		}
+
+		sink.send(syslogMessage{severity: SeverityWarn, eventType: testEventBlocked})
+		stats := sink.Stats()
+		if stats.Degraded || stats.LastError != "" || stats.Delivered != uint64(cycle) || stats.Dropped != uint64(cycle) {
+			t.Fatalf("cycle %d recovered stats = %+v", cycle, stats)
+		}
 	}
 }
 
@@ -966,6 +1062,29 @@ func waitSinkClosed(t *testing.T, sink *SyslogSink) {
 type countingSyslogWriter struct {
 	count  atomic.Int64
 	closed atomic.Bool
+}
+
+type callbackSyslogWriter struct {
+	writeFn func()
+}
+
+func (w *callbackSyslogWriter) Crit(string) error {
+	w.writeFn()
+	return nil
+}
+
+func (w *callbackSyslogWriter) Warning(string) error {
+	w.writeFn()
+	return nil
+}
+
+func (w *callbackSyslogWriter) Info(string) error {
+	w.writeFn()
+	return nil
+}
+
+func (*callbackSyslogWriter) Close() error {
+	return nil
 }
 
 func (w *countingSyslogWriter) Crit(msg string) error {

@@ -26,3 +26,49 @@ func TestSupported(t *testing.T) {
 		})
 	}
 }
+
+func TestSupportedFormats(t *testing.T) {
+	got := SupportedFormats()
+	want := []string{JSON, CEF, OCSF}
+	if len(got) != len(want) {
+		t.Fatalf("SupportedFormats() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SupportedFormats() = %v, want %v", got, want)
+		}
+	}
+
+	got[0] = "mutated"
+	if !Supported(JSON) {
+		t.Fatal("mutating returned SupportedFormats slice changed Supported(JSON)")
+	}
+}
+
+func TestAllowedSet(t *testing.T) {
+	if got := AllowedSet(); got != "json, cef or ocsf" {
+		t.Fatalf("AllowedSet() = %q, want %q", got, "json, cef or ocsf")
+	}
+}
+
+func TestAllowedSetSmallLists(t *testing.T) {
+	orig := supportedFormats
+	t.Cleanup(func() { supportedFormats = orig })
+
+	tests := []struct {
+		name    string
+		formats []string
+		want    string
+	}{
+		{name: "empty", formats: nil, want: ""},
+		{name: "single", formats: []string{JSON}, want: JSON},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			supportedFormats = tt.formats
+			if got := AllowedSet(); got != tt.want {
+				t.Fatalf("AllowedSet() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

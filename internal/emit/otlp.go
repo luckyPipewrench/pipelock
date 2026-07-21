@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,16 +42,45 @@ const (
 	otlpSeverityTextError = "ERROR"
 
 	// Retry backoff schedule for 429/5xx responses and network errors.
-	otlpMaxRetries   = 3
-	otlpRetryBase    = 1 * time.Second
-	otlpRetryFactor  = 2
+	otlpMaxRetries  = 3
+	otlpRetryFactor = 2
+)
+
+var (
 	otlpDrainTimeout = 10 * time.Second
+	otlpRetryBase    = 1 * time.Second
+)
+
+var (
+	otlpMarshalExportLogsRequest = marshalExportLogsRequest
+	otlpGzipCompress             = gzipCompress
+	otlpMarshalDiagnostic        = json.Marshal
 )
 
 // ErrOTLPQueueFull is returned when the OTLP event queue is at capacity.
 var ErrOTLPQueueFull = errors.New("emit: otlp queue full, event dropped")
 
+// ErrOTLPDegraded is returned after a prior async delivery failure.
+// The event may still be accepted for queueing; this error signals that the
+// sink is not currently proving successful delivery.
+var ErrOTLPDegraded = errors.New("emit: otlp sink degraded")
+
 const errOTLPClosed = "emit: otlp sink closed"
+
+// OTLPStats reports delivery health for an OTLPSink.
+type OTLPStats struct {
+	Delivered uint64
+	Failed    uint64
+	Dropped   uint64
+	Abandoned uint64
+	Degraded  bool
+	// LastError is the most recent failure, drop, or abandonment reason while
+	// the sink is degraded. It is cleared on the next successful delivery, so a
+	// non-degraded snapshot reports an empty LastError.
+	LastError string
+	QueueLen  int
+	QueueCap  int
+}
 
 // OTLPSink sends audit events as OTLP log records over HTTP/protobuf.
 // Events are queued and sent asynchronously by a single background goroutine.
@@ -68,6 +98,14 @@ type OTLPSink struct {
 	closeMu   sync.Mutex
 	closeWG   sync.WaitGroup
 	closeOnce sync.Once
+
+	delivered atomic.Uint64
+	failed    atomic.Uint64
+	dropped   atomic.Uint64
+	abandoned atomic.Uint64
+	degraded  atomic.Bool
+	lastErrMu sync.Mutex
+	lastErr   string
 
 	// agentThreatDetection toggles the unstable OTel
 	// `agent.threat.detection.*` attribute set on scanner-decision
@@ -159,9 +197,18 @@ func (s *OTLPSink) AgentThreatDetectionEnabled() bool {
 
 // Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
+//
+// Return-value contract: a nil error and ErrOTLPDegraded both mean the event
+// WAS accepted for delivery; ErrOTLPDegraded is an advisory that a prior async
+// delivery failed, not a rejection, so callers must not retry or fail closed on
+// it (distinguish with errors.Is). ErrOTLPQueueFull and the sink-closed error
+// mean the event was NOT accepted. Degraded state is also observable via Stats().
 // The closed flag is checked under closeMu so no enqueue can succeed
 // after Close() sets the flag.
 func (s *OTLPSink) Emit(_ context.Context, event Event) error {
+	if s == nil || s.client == nil || s.queue == nil {
+		return errors.New("emit: otlp sink not initialized")
+	}
 	if event.Severity < s.minSev {
 		return nil
 	}
@@ -171,12 +218,17 @@ func (s *OTLPSink) Emit(_ context.Context, event Event) error {
 		s.closeMu.Unlock()
 		return errors.New(errOTLPClosed)
 	}
+	degraded := s.degraded.Load()
 	select {
 	case s.queue <- event:
 		s.closeMu.Unlock()
+		if degraded {
+			return ErrOTLPDegraded
+		}
 		return nil
 	default:
 		s.closeMu.Unlock()
+		s.recordDropped("queue_full", nil)
 		return ErrOTLPQueueFull
 	}
 }
@@ -197,16 +249,11 @@ func (s *OTLPSink) Close() error {
 // run is the background goroutine that sends queued events.
 func (s *OTLPSink) run() {
 	defer s.closeWG.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "emit: otlp goroutine panic: %v\n", r)
-		}
-	}()
 
 	for {
 		select {
 		case event := <-s.queue:
-			s.send(event)
+			s.safeSend(event)
 		case <-s.done:
 			s.drain()
 			return
@@ -216,17 +263,28 @@ func (s *OTLPSink) run() {
 
 // drain sends remaining queued events with a deadline.
 func (s *OTLPSink) drain() {
-	deadline := time.After(otlpDrainTimeout)
+	deadline := time.Now().Add(otlpDrainTimeout)
 	for {
 		select {
 		case event := <-s.queue:
-			s.send(event)
-		case <-deadline:
-			return
+			if time.Now().After(deadline) {
+				s.recordAbandoned("drain_timeout", event, len(s.queue)+1)
+				return
+			}
+			s.safeSend(event)
 		default:
 			return
 		}
 	}
+}
+
+func (s *OTLPSink) safeSend(event Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.recordFailure("panic", event, fmt.Errorf("%v", r))
+		}
+	}()
+	s.send(event)
 }
 
 // send marshals and POSTs a single event as an OTLP ExportLogsServiceRequest.
@@ -235,21 +293,37 @@ func (s *OTLPSink) send(event Event) {
 
 	// Build ExportLogsServiceRequest without importing collector/logs/v1
 	// (which pulls in gRPC). The wire format is just field 1 = ResourceLogs.
-	body, err := marshalExportLogsRequest(s.resource, record)
+	body, err := otlpMarshalExportLogsRequest(s.resource, record)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "emit: otlp marshal error: %v\n", err)
+		s.recordFailure("marshal_error", event, err)
 		return
 	}
 
 	if s.useGzip {
-		body, err = gzipCompress(body)
+		body, err = otlpGzipCompress(body)
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "emit: otlp gzip error: %v\n", err)
+			s.recordFailure("gzip_error", event, err)
 			return
 		}
 	}
 
-	s.sendWithRetry(body)
+	result := s.sendWithRetry(body)
+	if result.abandoned {
+		s.recordAbandoned(result.reason, event, 1)
+		return
+	}
+	if result.err != nil {
+		s.recordFailure(result.reason, event, result.err)
+		return
+	}
+	s.delivered.Add(1)
+	s.degraded.Store(false)
+	// A successful delivery clears the degraded state, so clear the paired
+	// LastError too; otherwise Stats() would report Degraded=false with a stale
+	// error from an earlier failure.
+	s.lastErrMu.Lock()
+	s.lastErr = ""
+	s.lastErrMu.Unlock()
 }
 
 // isRetryableStatus returns true for OTLP-spec-defined retryable status codes.
@@ -262,17 +336,24 @@ func isRetryableStatus(code int) bool {
 		code == http.StatusGatewayTimeout
 }
 
+type otlpSendResult struct {
+	reason    string
+	err       error
+	abandoned bool
+}
+
 // sendWithRetry POSTs the body with bounded retry on retryable errors.
 // Retries on 429/502/503/504 and network errors per OTLP spec.
+// Transient failed attempts are not counted when a later retry succeeds; only
+// the final export outcome updates delivery accounting.
 // The done channel is checked between retries so Close() is not blocked
 // by a stalled collector during drain.
-func (s *OTLPSink) sendWithRetry(body []byte) {
+func (s *OTLPSink) sendWithRetry(body []byte) otlpSendResult {
 	backoff := otlpRetryBase
 	for attempt := range otlpMaxRetries {
 		httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.endpoint, bytes.NewReader(body))
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "emit: otlp request error: %v\n", err)
-			return
+			return otlpSendResult{reason: "request_error", err: err}
 		}
 
 		// Apply custom headers first, then set transport headers.
@@ -290,34 +371,38 @@ func (s *OTLPSink) sendWithRetry(body []byte) {
 		if doErr != nil {
 			if attempt < otlpMaxRetries-1 {
 				if !s.backoffOrDone(backoff) {
-					return // sink closing, abort retry
+					return otlpSendResult{reason: "close_during_retry", abandoned: true}
 				}
 				backoff *= otlpRetryFactor
 				continue
 			}
-			_, _ = fmt.Fprintf(os.Stderr, "emit: otlp send error (final): %v\n", doErr)
-			return
+			return otlpSendResult{reason: "send_error", err: doErr}
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return
+			return otlpSendResult{}
 		}
 		if isRetryableStatus(resp.StatusCode) {
 			if attempt < otlpMaxRetries-1 {
 				if !s.backoffOrDone(backoff) {
-					return
+					return otlpSendResult{reason: "close_during_retry", abandoned: true}
 				}
 				backoff *= otlpRetryFactor
 				continue
 			}
-			_, _ = fmt.Fprintf(os.Stderr, "emit: otlp HTTP %d after %d retries\n", resp.StatusCode, otlpMaxRetries)
-			return
+			return otlpSendResult{
+				reason: "http_status",
+				err:    fmt.Errorf("otlp HTTP %d after %d attempts", resp.StatusCode, otlpMaxRetries),
+			}
 		}
-		_, _ = fmt.Fprintf(os.Stderr, "emit: otlp HTTP %d (not retryable)\n", resp.StatusCode)
-		return
+		return otlpSendResult{
+			reason: "http_status",
+			err:    fmt.Errorf("otlp HTTP %d (not retryable)", resp.StatusCode),
+		}
 	}
+	return otlpSendResult{reason: "send_error", err: errors.New("otlp retry loop exited without an attempt")}
 }
 
 // backoffOrDone sleeps for the backoff duration or returns false if the
@@ -329,6 +414,118 @@ func (s *OTLPSink) backoffOrDone(d time.Duration) bool {
 	case <-s.done:
 		return false
 	}
+}
+
+// Stats returns a consistent snapshot of OTLP sink delivery health.
+func (s *OTLPSink) Stats() OTLPStats {
+	if s == nil {
+		return OTLPStats{}
+	}
+	s.lastErrMu.Lock()
+	lastErr := s.lastErr
+	s.lastErrMu.Unlock()
+	stats := OTLPStats{
+		Delivered: s.delivered.Load(),
+		Failed:    s.failed.Load(),
+		Dropped:   s.dropped.Load(),
+		Abandoned: s.abandoned.Load(),
+		Degraded:  s.degraded.Load(),
+		LastError: lastErr,
+	}
+	if s.queue != nil {
+		stats.QueueLen = len(s.queue)
+		stats.QueueCap = cap(s.queue)
+	}
+	return stats
+}
+
+func (s *OTLPSink) recordFailure(reason string, event Event, err error) {
+	lastErr := safeOTLPErrorString(err)
+	s.failed.Add(1)
+	s.degraded.Store(true)
+	if lastErr != "" {
+		s.lastErrMu.Lock()
+		s.lastErr = lastErr
+		s.lastErrMu.Unlock()
+	}
+	s.logDiagnostic("delivery_failed", reason, event, lastErr, 0)
+}
+
+// recordDropped accounts for an event dropped on the Emit hot path (queue full).
+// It only updates atomic counters and lastErr and MUST NOT write a diagnostic
+// synchronously: Emit runs on the request/enforcement path, and a queue-full
+// drop means the system is already under telemetry backpressure, so a synchronous
+// stderr write (which can block on a stalled pipe/journald) could turn that
+// backpressure into request-path blocking. The drop is observable via
+// Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
+func (s *OTLPSink) recordDropped(reason string, err error) {
+	s.dropped.Add(1)
+	s.degraded.Store(true)
+	lastErr := reason
+	if err != nil {
+		lastErr = safeOTLPErrorString(err)
+	}
+	s.lastErrMu.Lock()
+	s.lastErr = lastErr
+	s.lastErrMu.Unlock()
+}
+
+func (s *OTLPSink) recordAbandoned(reason string, event Event, count int) {
+	if count < 1 {
+		count = 1
+	}
+	s.abandoned.Add(uint64(count))
+	s.degraded.Store(true)
+	s.lastErrMu.Lock()
+	s.lastErr = reason
+	s.lastErrMu.Unlock()
+	s.logDiagnostic("events_abandoned", reason, event, "", count)
+}
+
+func (s *OTLPSink) logDiagnostic(eventName, reason string, event Event, errText string, count int) {
+	defer func() {
+		_ = recover()
+	}()
+
+	fields := map[string]any{
+		"component":  "emit.otlp",
+		"event":      eventName,
+		"reason":     reason,
+		"event_type": event.Type,
+		"delivered":  s.delivered.Load(),
+		"failed":     s.failed.Load(),
+		"dropped":    s.dropped.Load(),
+		"abandoned":  s.abandoned.Load(),
+		"queue_len":  len(s.queue),
+		"queue_cap":  cap(s.queue),
+	}
+	if errText != "" {
+		fields["error"] = errText
+	}
+	if count > 0 {
+		fields["count"] = count
+	}
+	encoded, marshalErr := otlpMarshalDiagnostic(fields)
+	if marshalErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "emit: otlp diagnostic marshal error: %v\n", marshalErr)
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, string(encoded))
+}
+
+// safeOTLPErrorString returns err.Error() without letting a hostile error
+// implementation panic the caller (the delivery goroutine records failures with
+// arbitrary error values). Returns "" for a nil error.
+func safeOTLPErrorString(err error) (msg string) {
+	if err == nil {
+		return ""
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			msg = fmt.Sprintf("error string panic: %v", r)
+		}
+	}()
+	return err.Error()
 }
 
 // eventToLogRecord converts an emit.Event to an OTLP LogRecord.

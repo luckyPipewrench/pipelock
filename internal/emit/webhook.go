@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +26,23 @@ const (
 
 // ErrQueueFull is returned when the event queue is at capacity.
 var ErrQueueFull = errors.New("emit: webhook queue full, event dropped")
+
+// ErrWebhookDegraded is returned after a prior async delivery failure.
+// The event may still be accepted for queueing; this error signals that the
+// sink is not currently proving successful delivery.
+var ErrWebhookDegraded = errors.New("emit: webhook sink degraded")
+
+// WebhookStats reports delivery health for a WebhookSink.
+type WebhookStats struct {
+	Delivered uint64
+	Failed    uint64
+	Dropped   uint64
+	Abandoned uint64
+	Degraded  bool
+	LastError string
+	QueueLen  int
+	QueueCap  int
+}
 
 // webhookPayload is the JSON structure sent to the webhook endpoint.
 type webhookPayload struct {
@@ -43,8 +62,18 @@ type WebhookSink struct {
 	client    *http.Client
 	queue     chan Event
 	done      chan struct{}
+	closeMu   sync.Mutex
+	closed    bool
 	closeWG   sync.WaitGroup
 	closeOnce sync.Once
+
+	delivered atomic.Uint64
+	failed    atomic.Uint64
+	dropped   atomic.Uint64
+	abandoned atomic.Uint64
+	degraded  atomic.Bool
+	lastErrMu sync.Mutex
+	lastErr   string
 }
 
 // WebhookOption configures a WebhookSink.
@@ -103,24 +132,29 @@ func NewWebhookSink(url string, opts ...WebhookOption) *WebhookSink {
 
 // Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
-// Returns ErrQueueFull if the queue is at capacity, or an error if the sink is closed.
+// Returns ErrQueueFull if the queue is at capacity, ErrWebhookDegraded if
+// a prior async delivery failed, or an error if the sink is closed.
 func (w *WebhookSink) Emit(_ context.Context, event Event) error {
 	if event.Severity < w.minSev {
 		return nil
 	}
 
-	select {
-	case <-w.done:
+	degraded := w.degraded.Load()
+	w.closeMu.Lock()
+	if w.closed {
+		w.closeMu.Unlock()
 		return errors.New("emit: webhook sink closed")
-	default:
 	}
-
 	select {
 	case w.queue <- event:
+		w.closeMu.Unlock()
+		if degraded {
+			return ErrWebhookDegraded
+		}
 		return nil
-	case <-w.done:
-		return errors.New("emit: webhook sink closed")
 	default:
+		w.closeMu.Unlock()
+		w.recordDropped("queue_full", event, nil)
 		return ErrQueueFull
 	}
 }
@@ -130,6 +164,9 @@ func (w *WebhookSink) Emit(_ context.Context, event Event) error {
 // Close is safe to call multiple times.
 func (w *WebhookSink) Close() error {
 	w.closeOnce.Do(func() {
+		w.closeMu.Lock()
+		w.closed = true
+		w.closeMu.Unlock()
 		close(w.done)
 	})
 	w.closeWG.Wait()
@@ -141,14 +178,14 @@ func (w *WebhookSink) run() {
 	defer w.closeWG.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "emit: webhook goroutine panic: %v\n", r)
+			w.recordFailure("panic", Event{Type: "unknown"}, fmt.Errorf("%v", r))
 		}
 	}()
 
 	for {
 		select {
 		case event := <-w.queue:
-			w.send(event)
+			w.safeSend(event)
 		case <-w.done:
 			w.drain()
 			return
@@ -162,8 +199,9 @@ func (w *WebhookSink) drain() {
 	for {
 		select {
 		case event := <-w.queue:
-			w.send(event)
+			w.safeSend(event)
 		case <-deadline:
+			w.recordAbandoned("drain_timeout", len(w.queue))
 			return
 		default:
 			return
@@ -171,8 +209,24 @@ func (w *WebhookSink) drain() {
 	}
 }
 
+func (w *WebhookSink) safeSend(event Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.recordFailure("panic", event, fmt.Errorf("%v", r))
+		}
+	}()
+	w.send(event)
+}
+
 // send POSTs a single event as JSON to the webhook URL.
 func (w *WebhookSink) send(event Event) {
+	// Snapshot the failure/drop count before the send so a successful delivery
+	// only clears the degraded flag if no failure or drop was recorded while
+	// this send was in flight. Without this, a concurrent queue-full drop (which
+	// sets degraded=true) could be silently erased by this send's success,
+	// leaving Dropped>0 while Degraded reported false.
+	failSnapshot := w.failed.Load() + w.dropped.Load()
+
 	payload := webhookPayload{
 		Severity:  event.Severity.String(),
 		Type:      event.Type,
@@ -183,13 +237,13 @@ func (w *WebhookSink) send(event Event) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook marshal error: %v\n", err)
+		w.recordFailure("marshal_error", event, err)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook request error: %v\n", err)
+		w.recordFailure("request_error", event, err)
 		return
 	}
 
@@ -200,11 +254,126 @@ func (w *WebhookSink) send(event Event) {
 
 	resp, err := w.client.Do(req)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook send error: %v\n", err)
+		w.recordFailure("send_error", event, err)
 		return
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook returned HTTP %d for event %s\n", resp.StatusCode, event.Type)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		w.recordFailure("http_status", event, fmt.Errorf("HTTP %d", resp.StatusCode))
+		return
 	}
+	w.delivered.Add(1)
+	// Only clear degraded if no failure/drop landed while this send was in
+	// flight; otherwise a concurrent drop's degraded signal would be lost.
+	if w.failed.Load()+w.dropped.Load() == failSnapshot {
+		w.degraded.Store(false)
+	}
+}
+
+// Stats returns a consistent snapshot of webhook sink delivery health.
+func (w *WebhookSink) Stats() WebhookStats {
+	if w == nil {
+		return WebhookStats{}
+	}
+	w.lastErrMu.Lock()
+	lastErr := w.lastErr
+	w.lastErrMu.Unlock()
+	stats := WebhookStats{
+		Delivered: w.delivered.Load(),
+		Failed:    w.failed.Load(),
+		Dropped:   w.dropped.Load(),
+		Abandoned: w.abandoned.Load(),
+		Degraded:  w.degraded.Load(),
+		LastError: lastErr,
+	}
+	if w.queue != nil {
+		stats.QueueLen = len(w.queue)
+		stats.QueueCap = cap(w.queue)
+	}
+	return stats
+}
+
+// sanitizeWebhookErr returns an error message safe to store and log. net/http
+// returns a *url.Error whose Error() embeds the full request URL, which for a
+// webhook endpoint can carry a secret path or query token; strip the URL and
+// keep only the operation and underlying cause so LastError and stderr
+// diagnostics never leak it.
+func sanitizeWebhookErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			return fmt.Sprintf("%s: %v", urlErr.Op, sanitizeWebhookErr(urlErr.Err))
+		}
+		return urlErr.Op
+	}
+	return err.Error()
+}
+
+func (w *WebhookSink) recordFailure(reason string, event Event, err error) {
+	w.failed.Add(1)
+	w.degraded.Store(true)
+	if err != nil {
+		w.lastErrMu.Lock()
+		w.lastErr = sanitizeWebhookErr(err)
+		w.lastErrMu.Unlock()
+	}
+	w.logDiagnostic("delivery_failed", reason, event, err, 0)
+}
+
+func (w *WebhookSink) recordDropped(reason string, event Event, err error) {
+	w.dropped.Add(1)
+	w.degraded.Store(true)
+	lastErr := reason
+	if err != nil {
+		lastErr = sanitizeWebhookErr(err)
+	}
+	w.lastErrMu.Lock()
+	w.lastErr = lastErr
+	w.lastErrMu.Unlock()
+	w.logDiagnostic("event_dropped", reason, event, err, 0)
+}
+
+func (w *WebhookSink) recordAbandoned(reason string, count int) {
+	if count < 1 {
+		return
+	}
+	w.abandoned.Add(uint64(count))
+	w.degraded.Store(true)
+	w.lastErrMu.Lock()
+	w.lastErr = reason
+	w.lastErrMu.Unlock()
+	w.logDiagnostic("events_abandoned", reason, Event{Type: "unknown"}, nil, count)
+}
+
+func (w *WebhookSink) logDiagnostic(eventName, reason string, event Event, err error, count int) {
+	defer func() {
+		_ = recover()
+	}()
+	fields := map[string]any{
+		"component":  "emit.webhook",
+		"event":      eventName,
+		"reason":     reason,
+		"event_type": event.Type,
+		"delivered":  w.delivered.Load(),
+		"failed":     w.failed.Load(),
+		"dropped":    w.dropped.Load(),
+		"abandoned":  w.abandoned.Load(),
+		"queue_len":  len(w.queue),
+		"queue_cap":  cap(w.queue),
+	}
+	if err != nil {
+		fields["error"] = sanitizeWebhookErr(err)
+	}
+	if count > 0 {
+		fields["count"] = count
+	}
+	encoded, marshalErr := json.Marshal(fields)
+	if marshalErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook diagnostic marshal error: %v\n", marshalErr)
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, string(encoded))
 }

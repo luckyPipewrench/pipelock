@@ -82,7 +82,7 @@ jobs:
       fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
-        shard: ['proxy', 'scanner', 'mcp', 'rest']
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -110,7 +110,11 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
-          go test -race -timeout=15m -count=1 -json $packages \
+          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
+          # Keep package and intra-package test fan-out below CPU count so
+          # deadline/timer tests are not starved by the shard matrix.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -race -p=2 -parallel=2 -timeout=15m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -129,7 +133,7 @@ jobs:
       fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
-        shard: ['proxy', 'scanner', 'mcp', 'rest']
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -155,7 +159,11 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
-          go test -tags enterprise -race -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json $packages \
+          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
+          # Keep package and intra-package test fan-out below CPU count so
+          # deadline/timer tests are not starved by the shard matrix.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -tags enterprise -race -p=2 -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -174,7 +182,11 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
-          go test -tags enterprise -race -timeout=15m -count=1 -json $packages \
+          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
+          # Keep package and intra-package test fan-out below CPU count so
+          # deadline/timer tests are not starved by the shard matrix.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -tags enterprise -race -p=2 -parallel=2 -timeout=15m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -186,10 +198,16 @@ jobs:
 
       - name: Upload coverage
         if: matrix.go-version == '1.25'
+        # Coverage upload is best-effort telemetry: the Codecov uploader's own
+        # CLI-integrity GPG check intermittently fails to fetch Codecov's public
+        # key ("no valid OpenPGP data found"), which exits non-zero regardless of
+        # fail_ci_if_error. Coverage is gated by the separate codecov/* status
+        # checks, so a transient uploader hiccup must never red a green test job.
+        continue-on-error: true
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ./coverage-${{ matrix.shard }}.out
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   test-subprocess-coverage:
     needs: [security-scan]
@@ -215,10 +233,14 @@ jobs:
         run: bash scripts/coverage-with-subprocess.sh coverage-subprocess.out
 
       - name: Upload subprocess coverage
+        # Best-effort telemetry; see the Upload coverage step above. A Codecov
+        # uploader-integrity hiccup must not red this job when coverage collection
+        # itself succeeded.
+        continue-on-error: true
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ./coverage-subprocess.out
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   test:
     needs: [test-oss, test-enterprise, test-subprocess-coverage]

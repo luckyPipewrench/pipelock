@@ -16,6 +16,8 @@ HEAVY_SHARDS = {
     "scanner": "internal/scanner",
     "mcp": "internal/mcp",
 }
+REST_SHARDS = ("rest-0", "rest-1", "rest-2")
+SHARDS = (*HEAVY_SHARDS.keys(), *REST_SHARDS)
 
 
 def list_packages(tags: str) -> list[str]:
@@ -43,8 +45,12 @@ def package_in_tree(package: str, root: str) -> bool:
 
 def select_packages(packages: list[str], shard: str) -> list[str]:
     heavy_roots = tuple(HEAVY_SHARDS.values())
-    if shard == "rest":
-        return [pkg for pkg in packages if not any(package_in_tree(pkg, root) for root in heavy_roots)]
+    if shard in REST_SHARDS:
+        rest_packages = sorted(
+            pkg for pkg in packages if not any(package_in_tree(pkg, root) for root in heavy_roots)
+        )
+        shard_index = REST_SHARDS.index(shard)
+        return [pkg for index, pkg in enumerate(rest_packages) if index % len(REST_SHARDS) == shard_index]
 
     wanted = HEAVY_SHARDS[shard]
     selected = [pkg for pkg in packages if package_in_tree(pkg, wanted)]
@@ -58,7 +64,7 @@ def main() -> int:
     parser.add_argument(
         "--shard",
         required=True,
-        choices=[*HEAVY_SHARDS.keys(), "rest"],
+        choices=SHARDS,
         help="package shard to print",
     )
     parser.add_argument("--tags", default="", help="go build tags for go list")

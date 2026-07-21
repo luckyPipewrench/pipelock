@@ -270,3 +270,8 @@ logging:
 #     - "192.168.0.0/16"
 #     ... (see configs/balanced.yaml for the full list)
 internal: []
+
+# Narrowest SSRF exception: allow one trusted internal IP, not the whole range.
+# ssrf:
+#   ip_allowlist:
+#     - "10.0.0.42/32"

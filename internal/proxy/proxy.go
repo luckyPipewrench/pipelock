@@ -3227,6 +3227,18 @@ func isShieldExempt(hostname string, exempts []string) bool {
 // returns a safe IP during scanning but a private IP at connection time.
 // Used by both the HTTP client transport and CONNECT tunnel dialing.
 // Trusted domains (from config.trusted_domains) bypass the internal-IP check.
+// blockIfNonOverridableSSRFTarget returns a dial-block error when ip falls in a
+// class that can never be exempted (cloud metadata, link-local, multicast,
+// unspecified), regardless of trusted_domains or ssrf.ip_allowlist. Shared by
+// the IP-literal and DNS-resolved dial branches so the security-critical floor
+// check cannot diverge between them.
+func blockIfNonOverridableSSRFTarget(ctx context.Context, host string, ip net.IP) error {
+	if scanner.IsNonOverridableSSRFTarget(ip) {
+		return newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
+	}
+	return nil
+}
+
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	currentSc, _ := ctx.Value(ctxKeyAgentScanner).(*scanner.Scanner)
 	if currentSc == nil {
@@ -3246,6 +3258,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		// consistent with the DNS resolution path below.
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
+		}
+		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
+			return nil, err
 		}
 		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) {
 			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
@@ -3274,6 +3289,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
+		}
+		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
+			return nil, err
 		}
 		if currentSc.IsInternalIP(ip) {
 			if isTrusted || currentSc.IsIPAllowlisted(ip) {

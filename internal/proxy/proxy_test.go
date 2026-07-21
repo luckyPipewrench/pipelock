@@ -1743,6 +1743,58 @@ func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
 	}
 }
 
+func TestFetchEndpoint_RedirectToNonOverridableSSRFBlocked(t *testing.T) {
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://trusted-metadata.test/latest/meta-data/", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	_, originPort, err := net.SplitHostPort(origin.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("origin addr: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables DNS SSRF; core CIDRs are merged.
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	cfg.TrustedDomains = []string{"trusted-metadata.test"}
+	cfg.DNS.HostOverrides = map[string][]string{
+		"origin.test":           {"127.0.0.1"},
+		"trusted-metadata.test": {"169.254.169.254"},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://origin.test:"+originPort+"/start", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Fatal("expected Blocked=true for redirect SSRF block")
+	}
+	if !strings.Contains(resp.BlockReason, "cloud metadata endpoint 169.254.169.254") {
+		t.Fatalf("block_reason = %q, want metadata SSRF block", resp.BlockReason)
+	}
+}
+
 func TestFetchEndpoint_RedirectToDLPMatch(t *testing.T) {
 	// Backend redirects to a URL containing a DLP pattern (AWS key)
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

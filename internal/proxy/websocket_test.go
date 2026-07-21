@@ -923,6 +923,41 @@ func TestWSProxySSRFDialBlockWritesPolicyClose(t *testing.T) {
 	requireWSBlockedMetric(t, m)
 }
 
+func TestWSDialUpstreamTrustedDomainCannotBypassNonOverridableSSRF(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables DNS SSRF; core CIDRs are merged.
+	cfg.TrustedDomains = []string{"trusted-metadata.test"}
+	cfg.DNS.HostOverrides = map[string][]string{
+		"trusted-metadata.test": {"169.254.169.254"},
+	}
+
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	conn, err := p.wsDialUpstream(ctx, "ws://trusted-metadata.test/latest/meta-data/", nil, cfg)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected WebSocket metadata SSRF block, got nil")
+	}
+	var ssrfErr *ssrfDialBlockError
+	if !errors.As(err, &ssrfErr) {
+		t.Fatalf("error = %v, want ssrfDialBlockError", err)
+	}
+	if ssrfErr.reason != blockreason.SSRFMetadata {
+		t.Fatalf("reason = %s, want %s; error=%v", ssrfErr.reason, blockreason.SSRFMetadata, err)
+	}
+}
+
 func requireWSBlockedMetric(t *testing.T, m *metrics.Metrics) {
 	t.Helper()
 	testwait.For(t, 2*time.Second, func() bool {

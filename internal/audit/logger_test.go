@@ -375,6 +375,50 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	}
 }
 
+// A content-matching scanner (e.g. dlp) firing in audit mode surfaces as an
+// anomaly warn, not a block. The URL/target/resource must be redacted the same
+// way LogBlockedDetail redacts them, or the secret that triggered the match is
+// echoed verbatim into every operator sink.
+func TestLogAnomaly_ContentScannerRedactsURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Split literal so the dogfood self-scan does not flag the fixture; the
+	// constant is folded to the same value at compile time.
+	const secret = "sk-live-" + "0123456789abcdef0123456789abcdef"
+	logger.LogAnomaly(LogContext{
+		method:    testMethodGet,
+		url:       "https://api.vendor.example/v1/chat?api_key=" + secret,
+		target:    "https://api.vendor.example/v1/chat?api_key=" + secret,
+		resource:  secret,
+		clientIP:  testClientIP,
+		requestID: "req-redact",
+	}, "dlp", "credential in query", 0.9)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("anomaly log leaked the content-scanner secret: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted url, got %v", entry["url"])
+	}
+	if entry["target"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["resource"] != "[redacted]" {
+		t.Errorf("expected redacted resource, got %v", entry["resource"])
+	}
+}
+
 func TestLogResponseScanExempt_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

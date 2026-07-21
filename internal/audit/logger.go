@@ -719,11 +719,18 @@ func (l *Logger) LogError(ctx LogContext, err error) {
 func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float64) {
 	technique := TechniqueForScanner(scanner)
 
+	// If the anomaly came from a content-matching scanner, the URL/target
+	// likely contains the very bytes that triggered the match (a credential
+	// in a query param, a seed phrase in a path). Redact to scheme+host so an
+	// audit-mode warn does not echo the secret into operator sinks, matching
+	// LogBlockedDetail. Non-content scanners keep the full URL.
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
+
 	e := newLogEntry(l.zl.Warn(), EventAnomaly).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
-		optStr("resource", ctx.resource).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		optStr("agent", ctx.agent).

@@ -2596,6 +2596,45 @@ func TestValidate_SSRFIPAllowlist_CatchAll_Rejected(t *testing.T) {
 	}
 }
 
+func TestValidate_SSRFIPAllowlist_NonOverridable_Rejected(t *testing.T) {
+	tests := []struct {
+		name string
+		cidr string
+	}{
+		{"IPv4 metadata /32", "169.254.169.254/32"},
+		{"IPv4-mapped metadata /128", "::ffff:169.254.169.254/128"},
+		{"IPv4-mapped metadata via superset /104", "::ffff:169.0.0.0/104"},
+		{"Azure WireServer /32", "168.63.129.16/32"},
+		{"IPv4-mapped Azure WireServer /128", "::ffff:168.63.129.16/128"},
+		{"IPv4 link-local /16", "169.254.0.0/16"},
+		{"IPv4-mapped link-local /112", "::ffff:169.254.0.0/112"},
+		{"IPv6 link-local /10", "fe80::/10"},
+		{"IPv6 metadata /128", "fd00:ec2::254/128"},
+		{"IPv4 multicast /4", "224.0.0.0/4"},
+		{"IPv4-mapped multicast /100", "::ffff:224.0.0.0/100"},
+		{"IPv6 multicast /8", "ff00::/8"},
+		{"IPv4 unspecified /32", "0.0.0.0/32"},
+		{"IPv4-mapped unspecified /128", "::ffff:0.0.0.0/128"},
+		{"IPv6 unspecified /128", "::/128"},
+		{"IPv6 interface-local multicast /16", "ff01::/16"},
+		{"overlaps IPv4 metadata", "169.254.169.0/24"},
+		{"overlaps IPv6 metadata", "fd00:ec2::/112"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.SSRF.IPAllowlist = []string{tt.cidr}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for non-overridable CIDR %q", tt.cidr)
+			}
+			if !strings.Contains(err.Error(), "non-overridable") {
+				t.Errorf("expected non-overridable error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidate_SSRFIPAllowlist_HostBits_Rejected(t *testing.T) {
 	tests := []struct {
 		name string

@@ -845,6 +845,42 @@ func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
 	}
 }
 
+func TestScan_TrustedDomains_DoNotBypassNonOverridableSSRF(t *testing.T) {
+	tests := []struct {
+		name        string
+		resolvedIP  string
+		wantScanner string
+	}{
+		{"ipv4 metadata", "169.254.169.254", ScannerSSRFMetadata},
+		{"azure metadata", "168.63.129.16", ScannerSSRFMetadata},
+		{"ipv6 metadata uppercase", "FD00:EC2:0:0:0:0:0:254", ScannerSSRFMetadata},
+		{"ipv4 link-local", "169.254.1.10", ScannerSSRF},
+		{"ipv6 link-local with zone", "fe80::1%eth0", ScannerSSRF},
+		{"ipv4 multicast", "224.0.0.1", ScannerSSRF},
+		{"ipv6 interface-local multicast", "ff01::1", ScannerSSRF},
+		{"ipv6 unspecified", "::", ScannerSSRF},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables DNS SSRF; core CIDRs are merged.
+			cfg.SSRF.IPAllowlist = []string{"169.254.0.0/16", "168.63.129.16/32", "fd00:ec2::254/128", "224.0.0.0/4", "ff00::/8", "::/128"}
+			cfg.TrustedDomains = []string{"trusted-metadata.test"}
+			cfg.DNS.HostOverrides = map[string][]string{"trusted-metadata.test": {tt.resolvedIP}}
+			s := MustNew(cfg)
+			defer s.Close()
+
+			result := s.Scan(context.Background(), "http://trusted-metadata.test/latest/meta-data/")
+			if result.Allowed {
+				t.Fatalf("trusted domain resolving to %s was allowed; non-overridable SSRF target must block", tt.resolvedIP)
+			}
+			if result.Scanner != tt.wantScanner {
+				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, tt.wantScanner, result.Reason)
+			}
+		})
+	}
+}
+
 func TestScan_TrustedDomains_NonTrustedStillBlocked(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}

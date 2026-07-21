@@ -226,6 +226,76 @@ func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 	}
 }
 
+func TestFetchEndpoint_PerAgentTrustedDomainCannotBypassNonOverridableSSRF(t *testing.T) {
+	const metadataAgent = "metadata-agent"
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables DNS SSRF; core CIDRs are merged.
+	cfg.DNS.HostOverrides = map[string][]string{
+		"trusted-metadata.test": {"169.254.169.254"},
+	}
+	cfg.Agents = map[string]config.AgentProfile{
+		metadataAgent: {
+			TrustedDomains: []string{"trusted-metadata.test"},
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	tests := []struct {
+		name  string
+		setup func(*http.Request) *http.Request
+	}{
+		{
+			name: "agent header",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, metadataAgent)
+				return r
+			},
+		},
+		{
+			name: "per-listener bound agent",
+			setup: func(r *http.Request) *http.Request {
+				return r.WithContext(edition.WithAgentOverride(r.Context(), metadataAgent))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://trusted-metadata.test/latest/meta-data/", nil)
+			req = tt.setup(req)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusForbidden, w.Body.String())
+			}
+			var resp FetchResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON response: %v", err)
+			}
+			if !resp.Blocked {
+				t.Fatal("expected blocked=true for per-agent metadata SSRF block")
+			}
+			if !strings.Contains(resp.BlockReason, "cloud metadata endpoint 169.254.169.254") {
+				t.Fatalf("block_reason = %q, want metadata SSRF block", resp.BlockReason)
+			}
+		})
+	}
+}
+
 // TestFetchEndpoint_PerAgentScanner_AgentInResponse verifies the agent name
 // appears in the fetch response JSON when per-agent resolution is active.
 func TestFetchEndpoint_PerAgentScanner_AgentInResponse(t *testing.T) {

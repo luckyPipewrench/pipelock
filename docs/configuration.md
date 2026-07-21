@@ -1707,7 +1707,18 @@ is allowed by the SSRF IP check, while `https://api.vendor.example/`
 resolving to `10.0.0.43` is still blocked. If the trust boundary is the
 hostname rather than a fixed address, use top-level `trusted_domains` instead;
 that is narrower by name but broader across whatever IPs DNS returns for that
-trusted hostname.
+trusted hostname — so only use it for hostnames whose DNS you control, since a
+compromised or rebinding record could otherwise point a trusted name at an
+arbitrary internal IP.
+
+**Cloud-metadata, link-local, and multicast addresses cannot be allowlisted.**
+`ssrf.ip_allowlist` only exempts ordinary private and loopback addresses.
+Entries that overlap cloud instance-metadata endpoints (for example
+`169.254.169.254`), link-local ranges (`169.254.0.0/16`, `fe80::/10`),
+multicast, or the unspecified address are rejected at config load, and the
+scanner refuses to exempt them at runtime even if configured. These addresses
+are a credential-theft and infrastructure boundary; there is no knob to open
+them.
 
 | Field | Default | Description |
 |-------|---------|-------------|

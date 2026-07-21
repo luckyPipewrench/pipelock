@@ -729,6 +729,7 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 		optStr("agent", ctx.agent).
 		optStr("scanner", scanner).
 		optStr("mitre_technique", technique).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
 		str("reason", reason).
 		scoreField(score)
 	e.msg("anomaly detected")

@@ -82,7 +82,7 @@ jobs:
       fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
-        shard: ['proxy', 'scanner', 'mcp', 'rest']
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -110,7 +110,11 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
-          go test -race -timeout=15m -count=1 -json $packages \
+          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
+          # Keep package and intra-package test fan-out below CPU count so
+          # deadline/timer tests are not starved by the shard matrix.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -race -p=2 -parallel=2 -timeout=15m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -129,7 +133,7 @@ jobs:
       fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
-        shard: ['proxy', 'scanner', 'mcp', 'rest']
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -155,7 +159,11 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
-          go test -tags enterprise -race -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json $packages \
+          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
+          # Keep package and intra-package test fan-out below CPU count so
+          # deadline/timer tests are not starved by the shard matrix.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -tags enterprise -race -p=2 -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -174,7 +182,11 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
-          go test -tags enterprise -race -timeout=15m -count=1 -json $packages \
+          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
+          # Keep package and intra-package test fan-out below CPU count so
+          # deadline/timer tests are not starved by the shard matrix.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -tags enterprise -race -p=2 -parallel=2 -timeout=15m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json

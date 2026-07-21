@@ -198,6 +198,86 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 	})
 }
 
+func TestOperatorHintForResultResolvesDialTimeSSRFReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		label  string
+		reason string
+	}{
+		{
+			name:   "dial private ip",
+			label:  ScannerSSRF,
+			reason: "ssrf_private_ip: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.42",
+		},
+		{
+			name:   "dial dns rebind",
+			label:  ScannerSSRF,
+			reason: "ssrf_dns_rebind: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.43",
+		},
+		{
+			name:   "url scan audit mode",
+			label:  ScannerSSRF,
+			reason: "destination resolves to a private IP",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hint := OperatorHintForResult(tt.label, tt.reason)
+			if !strings.Contains(hint, "trusted_domains") {
+				t.Fatalf("hint = %q, want trusted_domains", hint)
+			}
+			if !strings.Contains(hint, "ssrf.ip_allowlist") {
+				t.Fatalf("hint = %q, want ssrf.ip_allowlist", hint)
+			}
+		})
+	}
+}
+
+// A non-overridable SSRF block must NEVER hand back ssrf.ip_allowlist as the
+// remediation, regardless of which SSRF label carried it. The dial-time guard
+// can use the generic ScannerSSRF label with the non-overridable classification
+// only in the reason string, so reason-based routing must still hold.
+func TestOperatorHintForNonOverridableSSRFReasonNeverSuggestsAllowlist(t *testing.T) {
+	reasons := []struct {
+		name       string
+		label      string
+		reason     string
+		isMetadata bool // want metadata-specific wording vs generic non-overridable
+	}{
+		{"dial generic label", ScannerSSRF, "ssrf_metadata: SSRF blocked: api.vendor.example resolves to cloud metadata endpoint 169.254.169.254", true},
+		{"metadata label", ScannerSSRFMetadata, "SSRF blocked: api.vendor.example resolves to cloud metadata endpoint 169.254.169.254", true},
+		{"core ssrf metadata", ScannerCoreSSRF, "core SSRF: 169.254.169.254 resolves to cloud metadata endpoint", true},
+		{"non metadata non-overridable", ScannerSSRF, "SSRF blocked: api.vendor.example resolves to non-overridable internal IP 224.0.0.1", false},
+	}
+	for _, tt := range reasons {
+		t.Run(tt.name, func(t *testing.T) {
+			hint := OperatorHintForResult(tt.label, tt.reason)
+			// The hint may NAME ssrf.ip_allowlist/trusted_domains to say they do
+			// NOT work, but must never present either as the fix, and must state
+			// the deny is non-overridable with no allow knob.
+			if !strings.Contains(hint, "non-overridable") {
+				t.Fatalf("hint should state it is non-overridable, got %q", hint)
+			}
+			if !strings.Contains(hint, "cannot exempt") {
+				t.Fatalf("hint should state the knobs cannot exempt the target, got %q", hint)
+			}
+			if !strings.Contains(hint, "no allow knob") {
+				t.Fatalf("hint should state there is no allow knob, got %q", hint)
+			}
+			// A non-metadata non-overridable target must not be described as an
+			// instance-metadata endpoint (distinct guidance per target class).
+			mentionsMetadata := strings.Contains(hint, "instance-metadata")
+			if tt.isMetadata && !mentionsMetadata {
+				t.Fatalf("metadata block should use metadata-specific wording, got %q", hint)
+			}
+			if !tt.isMetadata && mentionsMetadata {
+				t.Fatalf("non-metadata non-overridable block must not claim it is an instance-metadata endpoint, got %q", hint)
+			}
+		})
+	}
+}
+
 func TestDecideLabelGuidanceNamesOperatorKnobsOnlyToOperator(t *testing.T) {
 	tests := []struct {
 		label       string

@@ -1333,3 +1333,113 @@ func assertResponsePattern(t *testing.T, matches []ResponseMatch, pattern string
 	}
 	t.Fatalf("expected response pattern %q, got: %v", pattern, names)
 }
+
+// TestCoreSSRF_MetadataNotAllowlistOverridable is the regression for the
+// metadata-allowlist bypass: allowlisting a cloud-metadata (or link-local /
+// multicast) address must NOT exempt it. The core literal floor and
+// IsIPAllowlisted both need coverage because callers can construct scanners
+// directly in tests without config validation.
+func TestCoreSSRF_MetadataNotAllowlistOverridable(t *testing.T) {
+	// Core literal floor: metadata, link-local, multicast, and unspecified
+	// literals stay blocked even when a covering range is allowlisted.
+	scanCases := []struct {
+		name, allow, url string
+	}{
+		{"ipv4 metadata exact", "169.254.169.254/32", "http://169.254.169.254/latest/meta-data/"},
+		{"ipv4 metadata via link-local range", "169.254.0.0/16", "http://169.254.169.254/latest/meta-data/"},
+		{"azure metadata exact", "168.63.129.16/32", "http://168.63.129.16/metadata/instance"},
+		{"ipv4 mapped metadata", "::ffff:169.254.169.254/128", "http://[::ffff:169.254.169.254]/latest/meta-data/"},
+		{"hex metadata endpoint", "169.254.0.0/16", "http://0xA9FEA9FE/latest/meta-data/"},
+		{"decimal metadata endpoint", "169.254.0.0/16", "http://2852039166/latest/meta-data/"},
+		{"octal azure metadata endpoint", "168.63.129.16/32", "http://0250.077.0201.020/metadata/instance"},
+		{"uppercase ipv6 metadata", "fd00:ec2::254/128", "http://[FD00:EC2:0:0:0:0:0:254]/latest/meta-data/"},
+		{"zone-suffixed ipv6 link-local", "fe80::/10", "http://[fe80::1%25eth0]/"},
+		{"ipv4 multicast", "224.0.0.0/4", "http://224.0.0.1/"},
+		{"ipv6 interface-local multicast", "ff00::/8", "http://[ff01::1]/"},
+		{"ipv6 unspecified", "::/128", "http://[::]/"},
+	}
+	for _, tt := range scanCases {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil // exercise the core literal floor
+			cfg.SSRF.IPAllowlist = []string{tt.allow}
+			s := MustNew(cfg)
+			defer s.Close()
+			r := s.Scan(context.Background(), tt.url)
+			if r.Allowed {
+				t.Fatalf("metadata %q allowlisted via %q was ALLOWED; must stay blocked", tt.url, tt.allow)
+			}
+		})
+	}
+
+	// IsIPAllowlisted refuses every non-overridable class even with a covering
+	// allowlist range configured. The resolved scanner and dial guard also have
+	// pre-trust checks for the hostname-based trusted_domains path.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"169.254.0.0/16", "168.63.129.16/32", "fd00:ec2::254/128", "224.0.0.0/4", "ff00::/8", "::/128"}
+	s := MustNew(cfg)
+	defer s.Close()
+	for _, ipStr := range []string{"169.254.169.254", "168.63.129.16", "fd00:ec2::254", "169.254.0.1", "224.0.0.1", "ff01::1", "::"} {
+		if s.IsIPAllowlisted(net.ParseIP(ipStr)) {
+			t.Fatalf("IsIPAllowlisted(%s) = true; non-overridable IP must never be exempted", ipStr)
+		}
+	}
+}
+
+// TestCoreSSRF_LegitAllowlistStillWorks proves the hardening did not break the
+// allowlist's intended use: a specific loopback or private address stays
+// exemptable.
+func TestCoreSSRF_LegitAllowlistStillWorks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "10.0.0.5/32"}
+	s := MustNew(cfg)
+	defer s.Close()
+	for _, ipStr := range []string{"127.0.0.1", "10.0.0.5"} {
+		if !s.IsIPAllowlisted(net.ParseIP(ipStr)) {
+			t.Fatalf("IsIPAllowlisted(%s) = false, want true (legit allowlist entry)", ipStr)
+		}
+	}
+}
+
+func TestNonOverridableSSRFConfigValidationMatchesRuntime(t *testing.T) {
+	tests := []struct {
+		name        string
+		ip          string
+		cidr        string
+		wantRuntime bool
+		wantValid   bool
+	}{
+		{"ipv4 metadata", "169.254.169.254", "169.254.169.254/32", true, false},
+		{"azure metadata", "168.63.129.16", "168.63.129.16/32", true, false},
+		{"ipv4 mapped metadata", "::ffff:169.254.169.254", "::ffff:169.254.169.254/128", true, false},
+		{"aws ipv6 metadata", "fd00:ec2::254", "fd00:ec2::254/128", true, false},
+		{"ipv4 link-local", "169.254.1.10", "169.254.1.10/32", true, false},
+		{"ipv6 link-local", "fe80::1", "fe80::1/128", true, false},
+		{"ipv4 multicast", "224.0.0.1", "224.0.0.1/32", true, false},
+		{"ipv6 interface-local multicast", "ff01::1", "ff01::1/128", true, false},
+		{"ipv4 unspecified", "0.0.0.0", "0.0.0.0/32", true, false},
+		{"ipv6 unspecified", "::", "::/128", true, false},
+		{"loopback remains overridable", "127.0.0.1", "127.0.0.1/32", false, true},
+		{"ipv6 loopback remains overridable", "::1", "::1/128", false, true},
+		{"rfc1918 remains overridable", "10.0.0.5", "10.0.0.5/32", false, true},
+		{"cgnat remains overridable", "100.64.0.1", "100.64.0.1/32", false, true},
+		{"ula remains overridable", "fc00::1", "fc00::1/128", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsNonOverridableSSRFTarget(net.ParseIP(tt.ip)); got != tt.wantRuntime {
+				t.Fatalf("IsNonOverridableSSRFTarget(%s) = %v, want %v", tt.ip, got, tt.wantRuntime)
+			}
+
+			cfg := config.Defaults()
+			cfg.SSRF.IPAllowlist = []string{tt.cidr}
+			err := cfg.Validate()
+			if gotValid := err == nil; gotValid != tt.wantValid {
+				t.Fatalf("Validate with ssrf.ip_allowlist=%s valid=%v, want %v (err=%v)", tt.cidr, gotValid, tt.wantValid, err)
+			}
+		})
+	}
+}

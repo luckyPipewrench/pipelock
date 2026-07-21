@@ -5402,6 +5402,152 @@ func TestSSRFSafeDialContext_TrustedDomainBypassesSSRF(t *testing.T) {
 	_ = conn.Close()
 }
 
+func TestSSRFSafeDialContext_TrustedDomainCannotBypassNonOverridableSSRF(t *testing.T) {
+	tests := []struct {
+		name       string
+		resolvedIP string
+		wantReason blockreason.Reason
+	}{
+		{"ipv4 metadata", "169.254.169.254", blockreason.SSRFMetadata},
+		{"azure metadata", "168.63.129.16", blockreason.SSRFMetadata},
+		{"ipv4 link-local", "169.254.1.10", blockreason.SSRFPrivateIP},
+		{"ipv6 metadata uppercase", "FD00:EC2:0:0:0:0:0:254", blockreason.SSRFMetadata},
+		{"ipv6 link-local", "fe80::1", blockreason.SSRFPrivateIP},
+		{"ipv4 multicast", "224.0.0.1", blockreason.SSRFPrivateIP},
+		{"ipv6 interface-local multicast", "ff01::1", blockreason.SSRFPrivateIP},
+		{"ipv6 unspecified", "::", blockreason.SSRFPrivateIP},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables dial-time SSRF; core CIDRs are merged.
+			cfg.SSRF.IPAllowlist = []string{"169.254.0.0/16", "168.63.129.16/32", "fd00:ec2::254/128", "224.0.0.0/4", "ff00::/8", "::/128"}
+			cfg.TrustedDomains = []string{"trusted-metadata.test"}
+			cfg.DNS.HostOverrides = map[string][]string{"trusted-metadata.test": {tt.resolvedIP}}
+
+			logger := audit.NewNop()
+			sc := scanner.MustNew(cfg)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			defer p.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			conn, err := p.ssrfSafeDialContext(ctx, "tcp", "trusted-metadata.test:80")
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if err == nil {
+				t.Fatal("expected non-overridable SSRF block, got nil")
+			}
+			var ssrfErr *ssrfDialBlockError
+			if !errors.As(err, &ssrfErr) {
+				t.Fatalf("error = %v, want ssrfDialBlockError", err)
+			}
+			if ssrfErr.reason != tt.wantReason {
+				t.Fatalf("reason = %s, want %s; error=%v", ssrfErr.reason, tt.wantReason, err)
+			}
+		})
+	}
+}
+
+func TestSSRFSafeDialContext_IPAllowlistCannotBypassNonOverridableDirectIP(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		allowlist  string
+		wantReason blockreason.Reason
+	}{
+		{"ipv4 metadata", "169.254.169.254:80", "169.254.169.254/32", blockreason.SSRFMetadata},
+		{"azure metadata", "168.63.129.16:80", "168.63.129.16/32", blockreason.SSRFMetadata},
+		{"ipv4 mapped metadata", "[::ffff:a9fe:a9fe]:80", "::ffff:169.254.169.254/128", blockreason.SSRFMetadata},
+		{"ipv4 link-local", "169.254.1.10:80", "169.254.0.0/16", blockreason.SSRFPrivateIP},
+		{"ipv4 multicast", "224.0.0.1:80", "224.0.0.0/4", blockreason.SSRFPrivateIP},
+		{"ipv6 unspecified", "[::]:80", "::/128", blockreason.SSRFPrivateIP},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil // exercise the dial guard's core floor.
+			cfg.SSRF.IPAllowlist = []string{tt.allowlist}
+
+			logger := audit.NewNop()
+			sc := scanner.MustNew(cfg)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			defer p.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			conn, err := p.ssrfSafeDialContext(ctx, "tcp", tt.target)
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if err == nil {
+				t.Fatal("expected non-overridable SSRF block, got nil")
+			}
+			var ssrfErr *ssrfDialBlockError
+			if !errors.As(err, &ssrfErr) {
+				t.Fatalf("error = %v, want ssrfDialBlockError", err)
+			}
+			if ssrfErr.reason != tt.wantReason {
+				t.Fatalf("reason = %s, want %s; error=%v", ssrfErr.reason, tt.wantReason, err)
+			}
+		})
+	}
+}
+
+func TestSSRFSafeDialContext_EncodedTrustedHostnameCannotBypassNonOverridableSSRF(t *testing.T) {
+	tests := []struct {
+		name       string
+		host       string
+		resolvedIP string
+		wantReason blockreason.Reason
+	}{
+		{"octal azure metadata", "0250.077.0201.020", "168.63.129.16", blockreason.SSRFMetadata},
+		{"trailing dot metadata host", "trusted-metadata.test.", "169.254.169.254", blockreason.SSRFMetadata},
+		{"uppercase hex metadata host", "0XA9FEA9FE", "169.254.169.254", blockreason.SSRFMetadata},
+		{"mixed dotted metadata host", "0xA9.0376.0251.254", "169.254.169.254", blockreason.SSRFMetadata},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = []string{"203.0.113.0/24"} // non-nil enables dial-time DNS SSRF; core CIDRs are merged.
+			cfg.TrustedDomains = []string{tt.host}
+			cfg.DNS.HostOverrides = map[string][]string{tt.host: {tt.resolvedIP}}
+
+			logger := audit.NewNop()
+			sc := scanner.MustNew(cfg)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			defer p.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			conn, err := p.ssrfSafeDialContext(ctx, "tcp", net.JoinHostPort(tt.host, "80"))
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if err == nil {
+				t.Fatal("expected non-overridable SSRF block, got nil")
+			}
+			var ssrfErr *ssrfDialBlockError
+			if !errors.As(err, &ssrfErr) {
+				t.Fatalf("error = %v, want ssrfDialBlockError", err)
+			}
+			if ssrfErr.reason != tt.wantReason {
+				t.Fatalf("reason = %s, want %s; error=%v", ssrfErr.reason, tt.wantReason, err)
+			}
+		})
+	}
+}
+
 // TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted verifies that
 // a hostname not in trusted_domains is still blocked when it resolves to internal IP.
 func TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted(t *testing.T) {

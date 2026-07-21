@@ -14,7 +14,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 )
+
+const testConfigSyslogAddr = "udp://syslog.example.com:514"
 
 func TestParseSyslogAddress(t *testing.T) {
 	tests := []struct {
@@ -750,6 +755,46 @@ func TestMakeSyslogMessage_InvalidFormat(t *testing.T) {
 	}
 }
 
+func TestSyslogFormatValidationParity(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    string
+		supported bool
+	}{
+		{name: "json", format: FormatJSON, supported: true},
+		{name: "cef", format: FormatCEF, supported: true},
+		{name: "bogus", format: "xml", supported: false},
+	}
+
+	// Every format emitformat declares supported must be accepted by ALL
+	// consuming surfaces; a format added to emitformat but missed by one
+	// surface is exactly the drift this test exists to catch.
+	for _, supported := range emitformat.SupportedFormats() {
+		tests = append(tests, struct {
+			name      string
+			format    string
+			supported bool
+		}{name: "listed/" + supported, format: supported, supported: true})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := emitformat.Supported(tt.format); got != tt.supported {
+				t.Fatalf("emitformat.Supported(%q) = %v, want %v", tt.format, got, tt.supported)
+			}
+			if got := validateSyslogFormat(tt.format) == nil; got != tt.supported {
+				t.Fatalf("validateSyslogFormat(%q) success = %v, want %v", tt.format, got, tt.supported)
+			}
+			if got := makeSyslogMessageAcceptsFormat(tt.format); got != tt.supported {
+				t.Fatalf("makeSyslogMessage(%q) success = %v, want %v", tt.format, got, tt.supported)
+			}
+			if got := configValidateAcceptsSyslogFormat(tt.format); got != tt.supported {
+				t.Fatalf("config Validate syslog format %q success = %v, want %v", tt.format, got, tt.supported)
+			}
+		})
+	}
+}
+
 func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	writer := &countingSyslogWriter{}
 	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
@@ -796,6 +841,24 @@ func TestSyslogOptions(t *testing.T) {
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
+}
+
+func makeSyslogMessageAcceptsFormat(format string) bool {
+	_, err := makeSyslogMessage(Event{
+		Severity:  SeverityWarn,
+		Type:      EventHeaderDLP,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	}, format, "1.2.3")
+	return err == nil
+}
+
+func configValidateAcceptsSyslogFormat(format string) bool {
+	cfg := config.Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = testConfigSyslogAddr
+	cfg.Emit.Syslog.Format = format
+	return cfg.Validate() == nil
 }
 
 func searchSubstring(s, substr string) bool {

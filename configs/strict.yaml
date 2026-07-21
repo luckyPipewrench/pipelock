@@ -564,6 +564,11 @@ internal:
   - "224.0.0.0/4"
   - "ff00::/8"
 
+# Narrowest SSRF exception: allow one trusted internal IP, not the whole range.
+# ssrf:
+#   ip_allowlist:
+#     - "10.0.0.42/32"
+
 # Domains exempt from SSRF internal-IP checks. Wildcards supported.
 # All other scanners (DLP, blocklist, entropy) still apply.
 # trusted_domains:

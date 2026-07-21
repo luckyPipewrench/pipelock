@@ -108,6 +108,16 @@ func GenerateLeaf(ca *x509.Certificate, caKey crypto.PrivateKey, host string, tt
 // (DNS/IP/URI) must be present; a leaf with no SAN is not usable by modern TLS
 // verifiers and is rejected rather than silently issued.
 func GenerateLeafCert(ca *x509.Certificate, caKey crypto.PrivateKey, opts LeafOptions) (*tls.Certificate, error) {
+	// Fail closed on a missing CA: x509.CreateCertificate dereferences the
+	// parent certificate and signing key, so a nil CA/key would panic mid-mint
+	// rather than return an error. These are public entry points (conductor
+	// mTLS material, TLS-interception leaves), so guard the same way NewCertCache does.
+	if ca == nil {
+		return nil, errors.New("certgen: nil CA certificate")
+	}
+	if caKey == nil {
+		return nil, errors.New("certgen: nil CA private key")
+	}
 	if opts.TTL <= 0 {
 		return nil, errors.New("leaf certificate TTL must be positive")
 	}

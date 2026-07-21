@@ -1,0 +1,28 @@
+# Receipt emit + verify example config.
+# verify.sh rewrites listen, flight_recorder.dir, and signing_key_path into a
+# temp WORK directory with a runtime-generated key (never commit keys).
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  monitoring:
+    max_url_length: 4096
+
+flight_recorder:
+  enabled: true
+  dir: ./evidence
+  signing_key_path: ./signing.key
+  redact: true
+  sign_checkpoints: true
+
+# Offline: no DNS SSRF. Core literal-IP SSRF floor remains.
+internal: []
+
+# Allow loopback for local harness plumbing; metadata IP stays blocked by core SSRF.
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"
+    - "::1/128"

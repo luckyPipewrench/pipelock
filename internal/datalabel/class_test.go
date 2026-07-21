@@ -89,11 +89,15 @@ func TestDataClassValid(t *testing.T) {
 		DataClassIdentity,
 		DataClassPII,
 	} {
-		if !class.Valid() {
-			t.Fatalf("%q should be valid", class)
+		t.Run(string(class), func(t *testing.T) {
+			if !class.Valid() {
+				t.Fatalf("%q should be valid", class)
+			}
+		})
+	}
+	t.Run("unknown label rejected", func(t *testing.T) {
+		if DataClass("public").Valid() {
+			t.Fatal("contract privacy data class must not be valid for MCP labels")
 		}
-	}
-	if DataClass("public").Valid() {
-		t.Fatal("contract privacy data class must not be valid for MCP labels")
-	}
+	})
 }

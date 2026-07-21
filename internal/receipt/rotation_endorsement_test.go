@@ -199,6 +199,54 @@ func TestVerifyChainWithEndorsements_RequiresSignedRecorderOpen(t *testing.T) {
 	}
 }
 
+func TestVerifyChainWithEndorsements_FailClosedInputBoundaries(t *testing.T) {
+	t.Parallel()
+	pubA, privA := generateTestKey(t)
+	_, privB := generateTestKey(t)
+	chain, boundaries := buildSessionBoundRotatedChain(t, privA, privB)
+	endorsement := endorsementForBoundary(t, chain, boundaries[0], privA)
+	root := []string{hex.EncodeToString(pubA)}
+
+	t.Run("blank session", func(t *testing.T) {
+		result := VerifyChainWithEndorsements(" ", chain, []RotationEndorsement{endorsement}, root)
+		if result.Valid || !strings.Contains(result.Error, "requires a recorder session ID") {
+			t.Fatalf("blank session accepted: %+v", result)
+		}
+	})
+	t.Run("endorsement on empty chain", func(t *testing.T) {
+		result := VerifyChainWithEndorsements("proxy", nil, []RotationEndorsement{endorsement}, root)
+		if result.Valid || !strings.Contains(result.Error, "empty receipt chain") {
+			t.Fatalf("endorsement on empty chain accepted: %+v", result)
+		}
+	})
+	t.Run("empty chain without endorsement", func(t *testing.T) {
+		result := VerifyChainWithEndorsements("proxy", nil, nil, root)
+		if !result.Valid || !result.IntegrityVerified {
+			t.Fatalf("empty chain result = %+v", result)
+		}
+	})
+	t.Run("invalid trusted root", func(t *testing.T) {
+		result := VerifyChainWithEndorsements("proxy", chain, []RotationEndorsement{endorsement}, []string{" "})
+		if result.Valid || !strings.Contains(result.Error, "trusted key set") {
+			t.Fatalf("invalid root accepted: %+v", result)
+		}
+	})
+	t.Run("broken base chain", func(t *testing.T) {
+		broken := append([]Receipt(nil), chain...)
+		broken[0].Signature = signaturePrefix + strings.Repeat("0", ed25519.SignatureSize*2)
+		result := VerifyChainWithEndorsements("proxy", broken, []RotationEndorsement{endorsement}, root)
+		if result.Valid || result.FailureKind != ChainFailureIntegrity {
+			t.Fatalf("broken base chain accepted: %+v", result)
+		}
+	})
+	t.Run("duplicate matching endorsement", func(t *testing.T) {
+		result := VerifyChainWithEndorsements("proxy", chain, []RotationEndorsement{endorsement, endorsement}, root)
+		if result.Valid || !strings.Contains(result.Error, "multiple rotation endorsements") {
+			t.Fatalf("duplicate endorsement accepted: %+v", result)
+		}
+	})
+}
+
 func TestVerifyChainWithEndorsements_RejectsTruncationLaundering(t *testing.T) {
 	t.Parallel()
 	pubA, privA := generateTestKey(t)

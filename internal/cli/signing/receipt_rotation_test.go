@@ -281,6 +281,59 @@ func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *test
 	}
 }
 
+func TestVerifyReceiptCmd_RotationEndorsementFlagConflicts(t *testing.T) {
+	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	keyA := hex.EncodeToString(pubA)
+	files, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("find evidence JSONL: files=%v err=%v", files, err)
+	}
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "missing endorsement file",
+			args:    []string{"--chain", dir, "--key", keyA, "--rotation-endorsement", filepath.Join(dir, "missing.json")},
+			wantErr: "loading --rotation-endorsement",
+		},
+		{
+			name:    "fleet report",
+			args:    []string{"ignored.json", "--fleet-report", "--key", keyA, "--rotation-endorsement", endorsementPath},
+			wantErr: "cannot be combined with --fleet-report",
+		},
+		{
+			name:    "chain clean report",
+			args:    []string{"--chain", dir, "--key", keyA, "--clean-report", filepath.Join(dir, "clean.json"), "--rotation-endorsement", endorsementPath},
+			wantErr: "cannot be combined with --clean-report",
+		},
+		{
+			name:    "jsonl clean report",
+			args:    []string{files[0], "--key", keyA, "--clean-report", filepath.Join(dir, "clean.json"), "--rotation-endorsement", endorsementPath},
+			wantErr: "cannot be combined with --clean-report",
+		},
+		{
+			name:    "single receipt",
+			args:    []string{"ignored.json", "--key", keyA, "--rotation-endorsement", endorsementPath},
+			wantErr: "requires --chain or a JSONL receipt file",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cmd := VerifyReceiptCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err=%v, want %q; output=%s", err, tc.wantErr, buf.String())
+			}
+		})
+	}
+}
+
 func TestTranscriptRootCmd_RotatedChainNeedsBothKeys(t *testing.T) {
 	dir, pubA, pubB := buildRotatedChainJSONL(t, 2, 3)
 	keyA := hex.EncodeToString(pubA)

@@ -5040,52 +5040,29 @@ func TestMCPDataClassLabelsDefaults(t *testing.T) {
 	}
 }
 
-func TestLoad_MCPDataClassLabelsEnabledSixStates(t *testing.T) {
+func TestLoad_MCPDataClassLabelsEnabledRejectedUntilWired(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pipelock.yaml")
-	loadBody := func(name, body string) *Config {
+	write := func(t *testing.T, body string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatalf("%s: write config: %v", name, err)
+			t.Fatalf("write config: %v", err)
 		}
-		cfg, err := Load(path)
-		if err != nil {
-			t.Fatalf("%s: Load() error = %v", name, err)
-		}
-		return cfg
 	}
 
-	tests := []struct {
-		name string
-		body string
-		want bool
-	}{
-		{
-			name: "omitted",
-			body: "mode: balanced\n",
-			want: false,
-		},
-		{
-			name: "yaml null blank",
-			body: "mode: balanced\nmcp_data_class_labels:\n  enabled:\n",
-			want: false,
-		},
-		{
-			name: "explicit false",
-			body: "mode: balanced\nmcp_data_class_labels:\n  enabled: false\n",
-			want: false,
-		},
-		{
-			name: "explicit true",
-			body: "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n",
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
+	// Disabled states load and resolve to the reserved fail-closed defaults.
+	for _, tt := range []struct{ name, body string }{
+		{"omitted", "mode: balanced\n"},
+		{"yaml null blank", "mode: balanced\nmcp_data_class_labels:\n  enabled:\n"},
+		{"explicit false", "mode: balanced\nmcp_data_class_labels:\n  enabled: false\n"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := loadBody(tt.name, tt.body)
-			if cfg.MCPDataClassLabels.Enabled != tt.want {
-				t.Fatalf("enabled = %v, want %v", cfg.MCPDataClassLabels.Enabled, tt.want)
+			write(t, tt.body)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.MCPDataClassLabels.Enabled {
+				t.Fatal("enabled should resolve to false")
 			}
 			if cfg.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
 				t.Fatalf("unknown_class = %q, want %q", cfg.MCPDataClassLabels.UnknownClass, datalabel.DataClassSecret)
@@ -5093,16 +5070,20 @@ func TestLoad_MCPDataClassLabelsEnabledSixStates(t *testing.T) {
 		})
 	}
 
-	old := loadBody("reload old true", "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n")
-	updated := loadBody("reload new false", "mode: balanced\nmcp_data_class_labels:\n  enabled: false\n")
-	if !hasReloadWarning(ValidateReload(old, updated), "mcp_data_class_labels.enabled") {
-		t.Fatal("reload-with-change should warn when mcp_data_class_labels.enabled is disabled")
-	}
-
-	unchanged := loadBody("reload unchanged true", "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n")
-	if hasReloadWarning(ValidateReload(old, unchanged), "mcp_data_class_labels.enabled") {
-		t.Fatal("reload-without-change should not warn for unchanged mcp_data_class_labels.enabled")
-	}
+	// enabled: true is rejected. The feature has no runtime effect yet, so the
+	// knob fails closed at load rather than advertising protection it cannot
+	// provide. reload-with/without-change states do not apply while the field
+	// cannot be enabled.
+	t.Run("explicit true rejected", func(t *testing.T) {
+		write(t, "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n")
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("Load() should reject mcp_data_class_labels.enabled: true")
+		}
+		if !strings.Contains(err.Error(), "not supported yet") {
+			t.Fatalf("error = %v, want it to mention 'not supported yet'", err)
+		}
+	})
 }
 
 func TestValidate_MCPDataClassLabelsRejectsBadUnknownClass(t *testing.T) {

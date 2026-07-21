@@ -3206,6 +3206,19 @@ func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (ne
 	return p.ssrfSafeDialContext
 }
 
+// MetadataSafeDialer exposes a narrower dial-time guard for operator-selected
+// upstreams that may legitimately live on loopback or private networks but must
+// still never reach cloud instance-metadata endpoints. Generic reverse-proxy
+// mode (Profile == "") uses this so an operator-chosen private/loopback
+// upstream stays reachable while the un-exemptable metadata floor still applies
+// at connection time, closing the DNS-rebinding gap the cloned default dialer
+// left open.
+func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return mcp.NewMetadataSafeDialContext(func() *scanner.Scanner {
+		return p.scannerPtr.Load()
+	})
+}
+
 // isShieldExempt checks whether a hostname is in the browser shield exempt list.
 // Uses scanner.MatchDomain so wildcard patterns ("*.example.com") work the same
 // way they do for the SSRF trusted-domain list, the response-scan exempt list,

@@ -1093,12 +1093,14 @@ func parseAlternativeIP(hostname string) net.IP {
 // metadataIPv4s lists the well-known cloud-provider instance-metadata IPv4
 // endpoints that are operationally distinct from generic private-network
 // blocks. AWS / Azure / GCP IMDS all share 169.254.169.254. Azure also exposes
-// the WireServer at 168.63.129.16. Hits on these addresses are reported with
+// the WireServer at 168.63.129.16, and Alibaba Cloud ECS serves metadata at
+// 100.100.100.200. Hits on these addresses are reported with
 // ScannerSSRFMetadata so the block-reason header carries the dedicated
 // `ssrf_metadata` code (vs. the generic `ssrf_private_ip`).
 var metadataIPv4s = map[string]struct{}{
 	"169.254.169.254": {}, // AWS / Azure / GCP IMDS
 	"168.63.129.16":   {}, // Azure WireServer
+	"100.100.100.200": {}, // Alibaba Cloud ECS metadata
 }
 
 // metadataIPv6 lists the canonical IPv6 instance-metadata endpoints.

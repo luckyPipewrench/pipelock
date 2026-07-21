@@ -1413,6 +1413,7 @@ func TestNonOverridableSSRFConfigValidationMatchesRuntime(t *testing.T) {
 	}{
 		{"ipv4 metadata", "169.254.169.254", "169.254.169.254/32", true, false},
 		{"azure metadata", "168.63.129.16", "168.63.129.16/32", true, false},
+		{"alibaba metadata", "100.100.100.200", "100.100.100.200/32", true, false},
 		{"ipv4 mapped metadata", "::ffff:169.254.169.254", "::ffff:169.254.169.254/128", true, false},
 		{"aws ipv6 metadata", "fd00:ec2::254", "fd00:ec2::254/128", true, false},
 		{"ipv4 link-local", "169.254.1.10", "169.254.1.10/32", true, false},

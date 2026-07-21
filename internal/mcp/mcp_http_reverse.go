@@ -69,10 +69,13 @@ type mcpListenerBlockDecision struct {
 //     SSRF posture at the call site. Matches the parity of the forward,
 //     reverse, and TLS-intercept transports, which all dial the configured
 //     upstream directly with a nil Proxy.
-func newReverseUpstreamTransport() *http.Transport {
+func newReverseUpstreamTransport(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableCompression = true
 	t.Proxy = nil
+	if dialContext != nil {
+		t.DialContext = dialContext
+	}
 	return t
 }
 
@@ -231,6 +234,7 @@ func RunHTTPListenerProxy(
 		TaintTrustedSourceFn:     opts.TaintTrustedSourceFn,
 		EnvelopeEmitter:          opts.envelopeEmitter(),
 		EnvelopeEmitterFn:        opts.EnvelopeEmitterFn,
+		DialContext:              opts.DialContext,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -249,12 +253,12 @@ func RunHTTPListenerProxy(
 	// internal/mcp/transport/httpclient.go:45.
 	upstreamClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: newReverseUpstreamTransport(),
+		Transport: newReverseUpstreamTransport(opts.DialContext),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	upstreamStreamTransport := newReverseUpstreamTransport()
+	upstreamStreamTransport := newReverseUpstreamTransport(opts.DialContext)
 	upstreamStreamTransport.ResponseHeaderTimeout = 30 * time.Second
 	upstreamStreamClient := &http.Client{
 		Timeout:       0,

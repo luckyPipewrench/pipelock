@@ -106,6 +106,7 @@ emit:
     min_severity: "warn"
     facility: "local0"                # local0-local7, auth, daemon, etc.
     tag: "pipelock"
+    format: "json"                    # json, cef, or ocsf
 ```
 
 ### Durable HTTP forwarding (Enterprise)
@@ -193,8 +194,9 @@ The durable wire envelope is versioned:
 }
 ```
 
-The existing syslog sink remains the CEF option (`format: cef`) for receivers
-that require CEF, but it is best-effort and does not use the durable cursor.
+The existing syslog sink supports JSON, CEF (`format: cef`), and OCSF
+(`format: ocsf`) for receivers that require one of those wire formats, but it
+is best-effort and does not use the durable cursor.
 
 Operator lifecycle:
 
@@ -296,6 +298,7 @@ emit:
     facility: "local0"
     tag: "pipelock"
     min_severity: "warn"
+    format: "json"                    # json, cef, or ocsf
 ```
 
 On the receiver, filter by program name:

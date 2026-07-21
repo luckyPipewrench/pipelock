@@ -711,6 +711,31 @@ func TestMakeSyslogMessage_CEF(t *testing.T) {
 	}
 }
 
+func TestMakeSyslogMessage_OCSF(t *testing.T) {
+	msg, err := makeSyslogMessage(Event{
+		Severity:   SeverityWarn,
+		Type:       EventHeaderDLP,
+		Timestamp:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		InstanceID: testInstanceName,
+		Fields: map[string]any{
+			"action":    conventionActionBlock,
+			"agent":     "agent-a",
+			fieldReason: "header token",
+		},
+	}, FormatOCSF, "1.2.3")
+	if err != nil {
+		t.Fatalf("makeSyslogMessage OCSF: %v", err)
+	}
+	got := parseOCSFEvent(t, msg.message)
+	assertNumber(t, got, "class_uid", 2004)
+	assertNumber(t, got, "category_uid", 2)
+	assertNumber(t, got, "type_uid", 200401)
+	assertString(t, got, "message", "header_dlp: header token")
+	assertString(t, got, "action", conventionActionBlock)
+	product := assertMap(t, assertMap(t, got, "metadata"), "product")
+	assertString(t, product, "version", "1.2.3")
+}
+
 func TestMakeSyslogMessage_InvalidFormat(t *testing.T) {
 	_, err := makeSyslogMessage(Event{
 		Severity:  SeverityWarn,

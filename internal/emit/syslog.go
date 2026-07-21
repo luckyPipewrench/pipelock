@@ -187,7 +187,7 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 }
 
 func validateSyslogFormat(format string) error {
-	if format == "" || format == FormatJSON || format == FormatCEF {
+	if format == "" || format == FormatJSON || format == FormatCEF || format == FormatOCSF {
 		return nil
 	}
 	return fmt.Errorf("emit: unsupported syslog format %q", format)
@@ -364,6 +364,14 @@ func makeSyslogMessage(event Event, format, deviceVersion string) (syslogMessage
 	}
 	if format == FormatCEF {
 		msg := FormatCEFEvent(event, deviceVersion)
+		return syslogMessage{
+			severity:  event.Severity,
+			eventType: event.Type,
+			message:   msg,
+		}, nil
+	}
+	if format == FormatOCSF {
+		msg := FormatOCSFEvent(event, deviceVersion)
 		return syslogMessage{
 			severity:  event.Severity,
 			eventType: event.Type,

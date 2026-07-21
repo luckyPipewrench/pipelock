@@ -1420,6 +1420,7 @@ emit:
     min_severity: warn
     facility: local0
     tag: pipelock
+    format: json
   otlp:
     endpoint: "http://otel-collector:4318"
     min_severity: warn
@@ -1442,6 +1443,7 @@ emit:
 | `syslog.min_severity` | `"warn"` | info, warn, or critical |
 | `syslog.facility` | `"local0"` | Syslog facility |
 | `syslog.tag` | `"pipelock"` | Syslog tag |
+| `syslog.format` | `"json"` | Syslog wire format: json, cef, or ocsf |
 | `otlp.endpoint` | `""` | OTLP collector base URL (e.g., `http://collector:4318`). `/v1/logs` appended automatically. |
 | `otlp.min_severity` | `"warn"` | info, warn, or critical |
 | `otlp.headers` | `{}` | Custom HTTP headers (authentication, tenant routing) |

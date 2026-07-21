@@ -7,8 +7,9 @@ package emitformat
 const (
 	JSON = "json"
 	CEF  = "cef"
+	OCSF = "ocsf"
 )
 
 func Supported(format string) bool {
-	return format == JSON || format == CEF
+	return format == JSON || format == CEF || format == OCSF
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
@@ -152,6 +153,28 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 					tc.name, base, got)
 			}
 		})
+	}
+}
+
+func TestCanonicalPolicyHash_MCPDataClassLabelsFoundationInert(t *testing.T) {
+	t.Parallel()
+
+	base := canonicalHashOf(t, nil)
+
+	enabled := canonicalHashOf(t, func(c *Config) {
+		c.MCPDataClassLabels.Enabled = true
+		c.MCPDataClassLabels.UnknownClass = string(datalabel.DataClassSecret)
+	})
+	if enabled != base {
+		t.Fatalf("CanonicalPolicyHash() changed when inert mcp_data_class_labels.enabled was set: got %s want %s", enabled, base)
+	}
+
+	nonDefaultRawValue := canonicalHashOf(t, func(c *Config) {
+		c.MCPDataClassLabels.Enabled = true
+		c.MCPDataClassLabels.UnknownClass = string(datalabel.DataClassPII)
+	})
+	if nonDefaultRawValue != base {
+		t.Fatalf("CanonicalPolicyHash() changed when inert mcp_data_class_labels.unknown_class was set: got %s want %s", nonDefaultRawValue, base)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"gopkg.in/yaml.v3"
@@ -5022,6 +5023,93 @@ func TestValidateReload_MCPToolScanningDisabled(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected warning for MCP tool scanning disabled")
+	}
+}
+
+// --- MCPDataClassLabels Tests ---
+
+func TestMCPDataClassLabelsDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	if cfg.MCPDataClassLabels.Enabled {
+		t.Fatal("mcp_data_class_labels.enabled default = true, want false until derivation is wired")
+	}
+	if cfg.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
+		t.Fatalf("unknown_class = %q, want %q", cfg.MCPDataClassLabels.UnknownClass, datalabel.DataClassSecret)
+	}
+}
+
+func TestLoad_MCPDataClassLabelsEnabledSixStates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	loadBody := func(name, body string) *Config {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("%s: write config: %v", name, err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("%s: Load() error = %v", name, err)
+		}
+		return cfg
+	}
+
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "omitted",
+			body: "mode: balanced\n",
+			want: false,
+		},
+		{
+			name: "yaml null blank",
+			body: "mode: balanced\nmcp_data_class_labels:\n  enabled:\n",
+			want: false,
+		},
+		{
+			name: "explicit false",
+			body: "mode: balanced\nmcp_data_class_labels:\n  enabled: false\n",
+			want: false,
+		},
+		{
+			name: "explicit true",
+			body: "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n",
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadBody(tt.name, tt.body)
+			if cfg.MCPDataClassLabels.Enabled != tt.want {
+				t.Fatalf("enabled = %v, want %v", cfg.MCPDataClassLabels.Enabled, tt.want)
+			}
+			if cfg.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
+				t.Fatalf("unknown_class = %q, want %q", cfg.MCPDataClassLabels.UnknownClass, datalabel.DataClassSecret)
+			}
+		})
+	}
+
+	old := loadBody("reload old true", "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n")
+	updated := loadBody("reload new false", "mode: balanced\nmcp_data_class_labels:\n  enabled: false\n")
+	if !hasReloadWarning(ValidateReload(old, updated), "mcp_data_class_labels.enabled") {
+		t.Fatal("reload-with-change should warn when mcp_data_class_labels.enabled is disabled")
+	}
+
+	unchanged := loadBody("reload unchanged true", "mode: balanced\nmcp_data_class_labels:\n  enabled: true\n")
+	if hasReloadWarning(ValidateReload(old, unchanged), "mcp_data_class_labels.enabled") {
+		t.Fatal("reload-without-change should not warn for unchanged mcp_data_class_labels.enabled")
+	}
+}
+
+func TestValidate_MCPDataClassLabelsRejectsBadUnknownClass(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPDataClassLabels.UnknownClass = string(datalabel.DataClassBenign)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mcp_data_class_labels.unknown_class") {
+		t.Fatalf("Validate() error = %v, want mcp_data_class_labels.unknown_class rejection", err)
 	}
 }
 

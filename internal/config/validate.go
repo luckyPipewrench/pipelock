@@ -28,6 +28,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 	"gopkg.in/yaml.v3"
 
+	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -220,6 +221,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	if err := c.validateMCPToolScanning(); err != nil {
+		return warnings, err
+	}
+	if err := c.validateMCPDataClassLabels(); err != nil {
 		return warnings, err
 	}
 	if err := c.validateMCPToolPolicy(); err != nil {
@@ -1232,6 +1236,13 @@ func (c *Config) validateMCPToolScanning() error {
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
 		}
+	}
+	return nil
+}
+
+func (c *Config) validateMCPDataClassLabels() error {
+	if c.MCPDataClassLabels.UnknownClass != string(datalabel.DataClassSecret) {
+		return fmt.Errorf("invalid mcp_data_class_labels.unknown_class %q: must be secret", c.MCPDataClassLabels.UnknownClass)
 	}
 	return nil
 }

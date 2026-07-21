@@ -540,6 +540,7 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 	appendDisabled("tls_interception.enabled", oldCfg.TLSInterception.Enabled, newCfg.TLSInterception.Enabled)
 	appendDisabled("mcp_input_scanning.enabled", oldCfg.MCPInputScanning.Enabled, newCfg.MCPInputScanning.Enabled)
 	appendDisabled("mcp_tool_scanning.enabled", oldCfg.MCPToolScanning.Enabled, newCfg.MCPToolScanning.Enabled)
+	appendDisabled("mcp_data_class_labels.enabled", oldCfg.MCPDataClassLabels.Enabled, newCfg.MCPDataClassLabels.Enabled)
 	appendDisabled("mcp_tool_policy.enabled", oldCfg.MCPToolPolicy.Enabled, newCfg.MCPToolPolicy.Enabled)
 	appendDisabled("session_profiling.enabled", oldCfg.SessionProfiling.Enabled, newCfg.SessionProfiling.Enabled)
 	appendDisabled("adaptive_enforcement.enabled", oldCfg.AdaptiveEnforcement.Enabled, newCfg.AdaptiveEnforcement.Enabled)

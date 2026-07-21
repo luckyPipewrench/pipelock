@@ -1,0 +1,26 @@
+# Hot-reload example config (permissive baseline).
+# verify.sh copies this into a temp file, rewrites fetch_proxy.listen, then
+# atomically removes ssrf.ip_allowlist to prove policy flips without restart.
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  monitoring:
+    max_url_length: 4096
+
+# Offline: no DNS SSRF. Core literal-IP SSRF floor remains.
+internal: []
+
+# Permissive phase: local echo /fetch is reachable via loopback allowlist.
+# After reload, verify.sh drops this section so 127.0.0.1 is blocked by core SSRF.
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"
+    - "::1/128"
+
+kill_switch:
+  enabled: false
+  health_exempt: true

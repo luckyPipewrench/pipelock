@@ -29,6 +29,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/datalabel"
+	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -2642,11 +2643,8 @@ func (c *Config) validateEmit() error {
 				return fmt.Errorf("invalid emit.syslog.facility %q", c.Emit.Syslog.Facility)
 			}
 		}
-		switch c.Emit.Syslog.Format {
-		case EmitFormatJSON, EmitFormatCEF, EmitFormatOCSF:
-			// valid
-		default:
-			return fmt.Errorf("invalid emit.syslog.format %q: must be json, cef, or ocsf", c.Emit.Syslog.Format)
+		if !emitformat.Supported(c.Emit.Syslog.Format) {
+			return fmt.Errorf("invalid emit.syslog.format %q: must be %s", c.Emit.Syslog.Format, emitformat.AllowedSet())
 		}
 	}
 

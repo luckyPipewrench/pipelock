@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/datalabel"
+	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"gopkg.in/yaml.v3"
@@ -8042,8 +8043,15 @@ func TestValidate_EmitSyslogInvalidFormat(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.Emit.Syslog.Address = testSyslogAddr
 	cfg.Emit.Syslog.Format = "xml"
-	if err := cfg.Validate(); err == nil {
+	err := cfg.Validate()
+	if err == nil {
 		t.Fatal("expected error for invalid syslog format")
+	}
+	// Build the expected allowed-format list from the shared source of truth so
+	// this assertion does not break when a new syslog format is added.
+	expected := fmt.Sprintf(`invalid emit.syslog.format "xml": must be %s`, emitformat.AllowedSet())
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

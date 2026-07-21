@@ -19,6 +19,7 @@ func signSegmentReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevH
 		ActionID:      NewActionID(),
 		ActionType:    ActionRead,
 		Timestamp:     ts,
+		SessionID:     "proxy",
 		Target:        chainTestTarget,
 		Verdict:       testVerdict,
 		Transport:     chainTestTransport,

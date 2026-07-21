@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -214,6 +215,13 @@ func TestWebhookSink_QueueFull(t *testing.T) {
 	if !queueFullSeen {
 		t.Error("expected ErrQueueFull after filling queue")
 	}
+	stats := sink.Stats()
+	if stats.Dropped != 1 || !stats.Degraded || stats.LastError != "queue_full" {
+		t.Fatalf("stats = %+v, want queue_full drop", stats)
+	}
+	if stats.QueueCap != 2 {
+		t.Fatalf("QueueCap = %d, want 2", stats.QueueCap)
+	}
 
 	// Unblock the server so Close can drain without hanging.
 	close(blocker)
@@ -250,6 +258,9 @@ func TestWebhookSink_CloseDrainsPending(t *testing.T) {
 	if got != 5 {
 		t.Errorf("expected 5 events delivered, got %d", got)
 	}
+	if stats := sink.Stats(); stats.Delivered != 5 || stats.Failed != 0 || stats.Degraded {
+		t.Fatalf("stats = %+v, want 5 delivered and healthy", stats)
+	}
 }
 
 func TestWebhookSink_ServerErrorDoesNotBlock(t *testing.T) {
@@ -281,6 +292,10 @@ func TestWebhookSink_ServerErrorDoesNotBlock(t *testing.T) {
 	got := count.Load()
 	if got != 3 {
 		t.Errorf("expected 3 requests attempted, got %d", got)
+	}
+	stats := sink.Stats()
+	if stats.Failed != 3 || !stats.Degraded || stats.LastError != "HTTP 500" {
+		t.Fatalf("stats = %+v, want 3 failed HTTP status deliveries", stats)
 	}
 }
 
@@ -442,22 +457,32 @@ func TestWebhookSink_SendMarshalError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
 	}
+	// Wait for the async marshal failure to be accounted so the follow-up
+	// Emit deterministically observes the degraded state.
+	waitWebhookStats(t, sink, func(stats WebhookStats) bool {
+		return stats.Failed == 1 && stats.Degraded
+	})
 
-	// Follow up with a valid event to prove the goroutine survived.
+	// Follow up with a valid event to prove the goroutine survived. The
+	// degraded advisory is expected; the event is still enqueued.
 	err = sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: testStr,
 	})
-	if err != nil {
-		t.Fatalf("Emit returned error: %v", err)
+	if !errors.Is(err, ErrWebhookDegraded) {
+		t.Fatalf("Emit after failure = %v, want ErrWebhookDegraded", err)
 	}
 
 	_ = sink.Close()
 
 	if got := count.Load(); got != 1 {
 		t.Errorf("expected 1 successful request (bad event skipped), got %d", got)
+	}
+	stats := sink.Stats()
+	if stats.Delivered != 1 || stats.Failed != 1 || stats.Degraded || stats.LastError == "" {
+		t.Fatalf("stats = %+v, want one marshal failure and recovered delivery", stats)
 	}
 }
 
@@ -478,6 +503,10 @@ func TestWebhookSink_SendInvalidURL(t *testing.T) {
 
 	// Close should not hang even with errors.
 	_ = sink.Close()
+	stats := sink.Stats()
+	if stats.Failed != 1 || !stats.Degraded || stats.LastError == "" {
+		t.Fatalf("stats = %+v, want request-build failure accounting", stats)
+	}
 }
 
 func TestWebhookSink_SendConnectionRefused(t *testing.T) {
@@ -500,6 +529,10 @@ func TestWebhookSink_SendConnectionRefused(t *testing.T) {
 
 	// Close should drain without hanging despite connection errors.
 	_ = sink.Close()
+	stats := sink.Stats()
+	if stats.Failed != 1 || !stats.Degraded || stats.LastError == "" {
+		t.Fatalf("stats = %+v, want send failure accounting", stats)
+	}
 }
 
 func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
@@ -543,5 +576,243 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 	err := sink.Emit(context.Background(), event)
 	if err == nil {
 		t.Error("expected error when emitting to closed sink")
+	}
+}
+
+func TestWebhookSink_EmitSignalsPriorDegradedStateThenRecovers(t *testing.T) {
+	requests := make(chan int, 2)
+	var count atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := int(count.Add(1))
+		requests <- n
+		if n == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	sink := NewWebhookSink(srv.URL, WithQueueSize(2))
+	defer func() { _ = sink.Close() }()
+
+	event := Event{
+		Severity:   SeverityWarn,
+		Type:       testEventBlocked,
+		Timestamp:  time.Now(),
+		InstanceID: testStr,
+	}
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("first Emit: %v", err)
+	}
+	waitWebhookStats(t, sink, func(stats WebhookStats) bool {
+		return stats.Failed == 1 && stats.Degraded
+	})
+
+	if err := sink.Emit(context.Background(), event); !errors.Is(err, ErrWebhookDegraded) {
+		t.Fatalf("second Emit error = %v, want ErrWebhookDegraded", err)
+	}
+	waitWebhookStats(t, sink, func(stats WebhookStats) bool {
+		return stats.Delivered == 1 && stats.Failed == 1 && !stats.Degraded
+	})
+
+	for i := 1; i <= 2; i++ {
+		select {
+		case got := <-requests:
+			if got != i {
+				t.Fatalf("request order = %d, want %d", got, i)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for request %d", i)
+		}
+	}
+}
+
+func TestWebhookSink_StatsNilAndAbandoned(t *testing.T) {
+	var nilSink *WebhookSink
+	if got := nilSink.Stats(); got != (WebhookStats{}) {
+		t.Fatalf("nil Stats() = %+v, want zero value", got)
+	}
+
+	sink := &WebhookSink{queue: make(chan Event, 2)}
+	sink.recordAbandoned("drain_timeout", 2)
+	stats := sink.Stats()
+	if stats.Abandoned != 2 || !stats.Degraded || stats.LastError != "drain_timeout" || stats.QueueCap != 2 {
+		t.Fatalf("stats = %+v, want abandoned degraded snapshot", stats)
+	}
+}
+
+func TestWebhookSink_SafeSendAccountsPanic(t *testing.T) {
+	sink := &WebhookSink{
+		url:   "https://api.vendor.example/hook",
+		queue: make(chan Event, 1),
+	}
+	sink.safeSend(Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+	})
+	stats := sink.Stats()
+	if stats.Failed != 1 || !stats.Degraded || stats.LastError == "" {
+		t.Fatalf("stats = %+v, want panic failure accounting", stats)
+	}
+}
+
+func waitWebhookStats(t *testing.T, sink *WebhookSink, accept func(WebhookStats) bool) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		stats := sink.Stats()
+		if accept(stats) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for webhook stats, last stats = %+v", stats)
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestWebhookSink_ConcurrentEmitCloseAccountsEveryAcceptedEvent(t *testing.T) {
+	// Accounting invariant under concurrent Emit/Close: an event accepted by
+	// Emit (nil or ErrWebhookDegraded) must never be silently lost. After
+	// Close returns, every accepted event is delivered, failed, or abandoned.
+	// The closeMu admission guard (mirroring the syslog sink) is what makes
+	// this hold; the historical lost-event interleaving is too narrow to
+	// reproduce deterministically, so this asserts the invariant, not the
+	// specific race.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	const emitters = 8
+	const perEmitter = 50
+
+	sink := NewWebhookSink(srv.URL, WithQueueSize(emitters*perEmitter))
+
+	var accepted atomic.Uint64
+	start := make(chan struct{})
+	admitted := make(chan struct{})
+	var admitOnce sync.Once
+	var wg sync.WaitGroup
+	for range emitters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range perEmitter {
+				err := sink.Emit(context.Background(), Event{
+					Severity:   SeverityWarn,
+					Type:       testEventBlocked,
+					Timestamp:  time.Now(),
+					InstanceID: testStr,
+				})
+				if err == nil || errors.Is(err, ErrWebhookDegraded) {
+					accepted.Add(1)
+					admitOnce.Do(func() { close(admitted) })
+				}
+			}
+		}()
+	}
+	close(start)
+	// Guarantee overlap: wait until at least one event has actually been
+	// admitted before racing Close, so the test cannot pass vacuously with
+	// accepted==accounted==0.
+	select {
+	case <-admitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event was admitted before timeout")
+	}
+	// Race Close against the emitters so admission overlaps shutdown.
+	closeErr := sink.Close()
+	wg.Wait()
+	// Close is idempotent; a second call after all emitters finished makes
+	// sure the worker fully drained before we snapshot stats.
+	_ = sink.Close()
+	if closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
+	}
+
+	stats := sink.Stats()
+	if accepted.Load() == 0 {
+		t.Fatalf("no events were accepted; test would be vacuous (stats = %+v)", stats)
+	}
+	accounted := stats.Delivered + stats.Failed + stats.Abandoned
+	if accounted != accepted.Load() {
+		t.Fatalf("accepted %d events but accounted for %d (stats = %+v): accepted events were silently lost",
+			accepted.Load(), accounted, stats)
+	}
+}
+
+func TestWebhookSink_ErrorStringsRedactWebhookURL(t *testing.T) {
+	// A send failure to an unreachable URL carrying a secret query token must
+	// not leak that token into Stats().LastError or the stderr diagnostics.
+	const canary = "supersecret-canary-token"
+	sink := NewWebhookSink("http://127.0.0.1:0/hook?token=" + canary)
+	defer func() { _ = sink.Close() }()
+
+	err := sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       testEventBlocked,
+		Timestamp:  time.Now(),
+		InstanceID: testStr,
+	})
+	if err != nil && !errors.Is(err, ErrWebhookDegraded) {
+		t.Fatalf("Emit: %v", err)
+	}
+	waitWebhookStats(t, sink, func(s WebhookStats) bool { return s.Failed >= 1 })
+	if got := sink.Stats().LastError; strings.Contains(got, canary) {
+		t.Fatalf("LastError leaked the webhook URL token: %q", got)
+	}
+}
+
+func TestWebhookSink_SuccessDoesNotEraseConcurrentDropDegraded(t *testing.T) {
+	// A successful send must not clear the degraded flag when a drop is
+	// recorded while that send is in flight. Drive the real send path: the
+	// server records a queue-full drop (which sets degraded and advances the
+	// drop counter) before returning 204, so send's post-success snapshot
+	// guard observes the counter moved and must leave degraded set. This
+	// exercises the production failSnapshot guard rather than re-implementing
+	// it inline.
+	var sink *WebhookSink
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sink.recordDropped("queue_full", Event{Type: testEventBlocked}, nil)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	sink = NewWebhookSink(srv.URL)
+	defer func() { _ = sink.Close() }()
+
+	sink.send(Event{Type: testEventBlocked, Timestamp: time.Now()})
+
+	stats := sink.Stats()
+	if stats.Delivered != 1 {
+		t.Fatalf("delivered = %d, want 1", stats.Delivered)
+	}
+	if stats.Dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", stats.Dropped)
+	}
+	if !stats.Degraded {
+		t.Fatal("degraded was erased despite a concurrent drop during the send")
+	}
+}
+
+func TestWebhookSink_RecordDroppedWithErrorAndAbandonedZeroCount(t *testing.T) {
+	sink := &WebhookSink{queue: make(chan Event, 1)}
+
+	sink.recordDropped("test_reason", Event{Type: testEventBlocked}, errors.New("boom"))
+	if stats := sink.Stats(); stats.Dropped != 1 || stats.LastError != "boom" {
+		t.Fatalf("stats after dropped-with-error = %+v, want Dropped=1 LastError=boom", stats)
+	}
+
+	// A zero or negative abandon count must be a no-op.
+	sink.recordAbandoned("drain_timeout", 0)
+	if stats := sink.Stats(); stats.Abandoned != 0 {
+		t.Fatalf("stats after zero-count abandon = %+v, want Abandoned=0", stats)
 	}
 }

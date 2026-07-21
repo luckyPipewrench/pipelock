@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 )
 
 const (
@@ -187,7 +189,7 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 }
 
 func validateSyslogFormat(format string) error {
-	if format == "" || format == FormatJSON || format == FormatCEF || format == FormatOCSF {
+	if format == "" || emitformat.Supported(format) {
 		return nil
 	}
 	return fmt.Errorf("emit: unsupported syslog format %q", format)
@@ -378,6 +380,10 @@ func makeSyslogMessage(event Event, format, deviceVersion string) (syslogMessage
 			message:   msg,
 		}, nil
 	}
+	// Deliberately stricter than emitformat.Supported: every format needs an
+	// explicit render branch above; an allowlisted-but-unrendered format must
+	// error loudly here (accounted as a delivery failure), never fall through
+	// to JSON rendering.
 	if format != FormatJSON {
 		return syslogMessage{}, fmt.Errorf("emit: unsupported syslog format %q", format)
 	}

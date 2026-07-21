@@ -5,10 +5,13 @@ package receipt
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -392,5 +395,74 @@ func TestRotationEndorsementStrictDecodeAndDomainSeparation(t *testing.T) {
 	endorsement.Endorsement = chain[0].Signature
 	if err := VerifyRotationEndorsement(endorsement); err == nil {
 		t.Fatal("receipt signature accepted as rotation endorsement")
+	}
+}
+
+func TestRotationEndorsementRejectsMalformedFields(t *testing.T) {
+	t.Parallel()
+	_, privA := generateTestKey(t)
+	pubB, _ := generateTestKey(t)
+	valid, err := SignRotationEndorsement(RotationEndorsement{
+		SessionID:     "proxy",
+		PriorFinalSeq: 7,
+		PriorTailHash: strings.Repeat("a", sha256.Size*2),
+		NewSignerKey:  hex.EncodeToString(pubB),
+		RotatedAt:     time.Date(2026, 4, 1, 1, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+	}, privA)
+	if err != nil {
+		t.Fatalf("SignRotationEndorsement: %v", err)
+	}
+
+	cases := map[string]struct {
+		mutate  func(*RotationEndorsement)
+		wantErr string
+	}{
+		"version":          {func(e *RotationEndorsement) { e.Version++ }, "unsupported"},
+		"session":          {func(e *RotationEndorsement) { e.SessionID = " " }, "session_id"},
+		"prior key":        {func(e *RotationEndorsement) { e.PriorSignerKey = "00" }, "prior_signer_key"},
+		"successor key":    {func(e *RotationEndorsement) { e.NewSignerKey = "00" }, "new_signer_key"},
+		"same key":         {func(e *RotationEndorsement) { e.NewSignerKey = e.PriorSignerKey }, "must differ"},
+		"tail hash":        {func(e *RotationEndorsement) { e.PriorTailHash = "00" }, "prior_tail_hash"},
+		"rotation time":    {func(e *RotationEndorsement) { e.RotatedAt = "2026-04-01T02:00:00+01:00" }, "canonical UTC"},
+		"empty signature":  {func(e *RotationEndorsement) { e.Endorsement = "" }, "signature is empty"},
+		"signature prefix": {func(e *RotationEndorsement) { e.Endorsement = strings.TrimPrefix(e.Endorsement, signaturePrefix) }, "signature format"},
+		"signature hex":    {func(e *RotationEndorsement) { e.Endorsement = signaturePrefix + "zz" }, "invalid endorsement signature"},
+		"signature value": {func(e *RotationEndorsement) {
+			e.Endorsement = signaturePrefix + strings.Repeat("0", ed25519.SignatureSize*2)
+		}, "verification failed"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			candidate := valid
+			tc.mutate(&candidate)
+			if err := VerifyRotationEndorsement(candidate); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	if _, err := SignRotationEndorsement(valid, ed25519.PrivateKey("short")); err == nil || !strings.Contains(err.Error(), "private key size") {
+		t.Fatalf("invalid private key error = %v", err)
+	}
+	unsigned := valid
+	unsigned.SessionID = ""
+	if _, err := SignRotationEndorsement(unsigned, privA); err == nil || !strings.Contains(err.Error(), "session_id") {
+		t.Fatalf("invalid field signing error = %v", err)
+	}
+}
+
+func TestLoadRotationEndorsementFileBoundaries(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := LoadRotationEndorsementFile(missing); err == nil || !strings.Contains(err.Error(), "read rotation endorsement") {
+		t.Fatalf("missing file error = %v", err)
+	}
+	over := filepath.Join(t.TempDir(), "oversized.json")
+	if err := os.WriteFile(over, []byte(strings.Repeat("x", maxRotationEndorsementBytes+1)), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := LoadRotationEndorsementFile(over); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized file error = %v", err)
 	}
 }

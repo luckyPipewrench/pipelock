@@ -124,6 +124,7 @@ func FormatOCSFEvent(event Event, deviceVersion string) string {
 	}
 	action := eventAction(event)
 	decisionType := eventDecisionType(event)
+	eventURL := ocsfURLFromEvent(event)
 
 	record := ocsfDetectionFinding{
 		ActivityID:   ocsfActivityIDCreate,
@@ -155,8 +156,8 @@ func FormatOCSFEvent(event Event, deviceVersion string) string {
 		Action:       action,
 		Actor:        ocsfActorFromEvent(event),
 		SrcEndpoint:  ocsfEndpointFromValue(ocsfStringField(event.Fields, "client_ip")),
-		DstEndpoint:  ocsfDstEndpointFromEvent(event),
-		URL:          ocsfURLFromEvent(event),
+		DstEndpoint:  ocsfDstEndpointFromEvent(event, eventURL),
+		URL:          eventURL,
 		HTTPRequest:  ocsfHTTPRequestFromEvent(event),
 		StatusDetail: ocsfStringField(event.Fields, fieldReason, "error"),
 		Unmapped: map[string]any{
@@ -277,8 +278,8 @@ func ocsfHTTPRequestFromEvent(event Event) *ocsfHTTPRequest {
 	return &req
 }
 
-func ocsfDstEndpointFromEvent(event Event) *ocsfNetworkEndpoint {
-	if eventURL := ocsfURLFromEvent(event); eventURL != nil && eventURL.Hostname != "" {
+func ocsfDstEndpointFromEvent(event Event, eventURL *ocsfURL) *ocsfNetworkEndpoint {
+	if eventURL != nil && eventURL.Hostname != "" {
 		return &ocsfNetworkEndpoint{Hostname: eventURL.Hostname, Port: eventURL.Port}
 	}
 	return ocsfEndpointFromValue(ocsfStringField(event.Fields, "target", "resource"))
@@ -321,19 +322,80 @@ func ocsfFindingUID(event Event) string {
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
-func ocsfJSONValue(value any) any {
-	return ocsfJSONValueDepth(value, 0)
+// Serialization bounds for event fields carried into the OCSF finding. These
+// cap the work a malformed or hostile event field can impose on the audit
+// path: a depth limit alone does not stop breadth or shared-reference
+// amplification, so a total-node budget, per-string byte cap, and
+// current-path cycle/shared-reference detection are all enforced.
+const (
+	ocsfMaxDepth       = 16
+	ocsfMaxNodes       = 10000
+	ocsfMaxStringBytes = 8192
+)
+
+// ocsfBudget bounds a single field-serialization walk. nodes counts total
+// values visited; seen tracks reference-typed values on the CURRENT path so a
+// cycle collapses to "[cycle]" without also discarding a legitimately shared
+// sibling (breadth is bounded by the node budget instead).
+type ocsfBudget struct {
+	nodes int
+	seen  map[uintptr]bool
 }
 
+func newOCSFBudget() *ocsfBudget { return &ocsfBudget{seen: make(map[uintptr]bool)} }
+
+func ocsfTruncateString(s string) string {
+	if len(s) <= ocsfMaxStringBytes {
+		return s
+	}
+	return s[:ocsfMaxStringBytes] + "...[truncated]"
+}
+
+// enter records a reference-typed value on the current path. It returns a
+// release func to pop it (nil for non-reference or empty values) and reports
+// whether the value is already on the path (a cycle).
+func (b *ocsfBudget) enter(rv reflect.Value) (func(), bool) {
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice:
+		if rv.Len() == 0 {
+			return nil, false
+		}
+		ptr := rv.Pointer()
+		if b.seen[ptr] {
+			return nil, true
+		}
+		b.seen[ptr] = true
+		return func() { delete(b.seen, ptr) }, false
+	default:
+		return nil, false
+	}
+}
+
+func ocsfJSONValue(value any) any {
+	return ocsfJSONValueBudgeted(value, 0, newOCSFBudget())
+}
+
+// ocsfJSONValueDepth is retained for callers that only need the depth guard;
+// it starts a fresh budget.
 func ocsfJSONValueDepth(value any, depth int) any {
-	if depth > 16 {
+	return ocsfJSONValueBudgeted(value, depth, newOCSFBudget())
+}
+
+func ocsfJSONValueBudgeted(value any, depth int, b *ocsfBudget) any {
+	if depth > ocsfMaxDepth {
+		return "[truncated]"
+	}
+	b.nodes++
+	if b.nodes > ocsfMaxNodes {
 		return "[truncated]"
 	}
 
 	switch v := value.(type) {
 	case nil:
 		return nil
-	case string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+	case string:
+		return ocsfTruncateString(v)
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return v
 	case float32:
 		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
@@ -346,27 +408,17 @@ func ocsfJSONValueDepth(value any, depth int) any {
 		}
 		return v
 	case fmt.Stringer:
-		return v.String()
+		return ocsfTruncateString(v.String())
 	case []string:
 		out := make([]string, len(v))
-		copy(out, v)
-		return out
-	case []any:
-		out := make([]any, 0, len(v))
-		for _, item := range v {
-			out = append(out, ocsfJSONValueDepth(item, depth+1))
-		}
-		return out
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[key] = ocsfJSONValueDepth(item, depth+1)
+		for i, s := range v {
+			out[i] = ocsfTruncateString(s)
 		}
 		return out
 	case map[string]string:
 		out := make(map[string]any, len(v))
 		for key, item := range v {
-			out[key] = item
+			out[key] = ocsfTruncateString(item)
 		}
 		return out
 	}
@@ -374,22 +426,42 @@ func ocsfJSONValueDepth(value any, depth int) any {
 	rv := reflect.ValueOf(value)
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
+		release, cyclic := b.enter(rv)
+		if cyclic {
+			return "[cycle]"
+		}
+		if release != nil {
+			defer release()
+		}
 		out := make([]any, 0, rv.Len())
 		for i := 0; i < rv.Len(); i++ {
-			out = append(out, ocsfJSONValueDepth(rv.Index(i).Interface(), depth+1))
+			out = append(out, ocsfJSONValueBudgeted(rv.Index(i).Interface(), depth+1, b))
+			if b.nodes > ocsfMaxNodes {
+				break
+			}
 		}
 		return out
 	case reflect.Map:
 		if rv.Type().Key().Kind() != reflect.String {
 			return "[unsupported]"
 		}
+		release, cyclic := b.enter(rv)
+		if cyclic {
+			return "[cycle]"
+		}
+		if release != nil {
+			defer release()
+		}
 		out := make(map[string]any, rv.Len())
 		iter := rv.MapRange()
 		for iter.Next() {
-			out[iter.Key().String()] = ocsfJSONValueDepth(iter.Value().Interface(), depth+1)
+			out[iter.Key().String()] = ocsfJSONValueBudgeted(iter.Value().Interface(), depth+1, b)
+			if b.nodes > ocsfMaxNodes {
+				break
+			}
 		}
 		return out
 	default:
-		return fmt.Sprint(value)
+		return ocsfTruncateString(fmt.Sprint(value))
 	}
 }

@@ -412,3 +412,59 @@ func TestFormatOCSFEventHostnameTargetAndUnparseableURL(t *testing.T) {
 	}, "dev"))
 	assertString(t, assertMap(t, got2, "url"), "url_string", "http://bad\x7fhost/path")
 }
+
+func TestFormatOCSFEventBoundsHostileFields(t *testing.T) {
+	// Deeply nested fields are truncated at the depth bound so a malformed or
+	// hostile event cannot drive unbounded recursion on the audit path.
+	deep := any("leaf")
+	for i := 0; i < 40; i++ {
+		deep = map[string]any{"next": deep}
+	}
+	line := FormatOCSFEvent(Event{
+		Severity:  SeverityWarn,
+		Type:      EventBlocked,
+		Timestamp: time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		Fields:    map[string]any{"deep": deep},
+	}, "dev")
+	got := parseOCSFEvent(t, line) // valid JSON => the walk stayed bounded
+	assertNumber(t, got, "class_uid", ocsfClassUIDDetectionFinding)
+	if !strings.Contains(line, "[truncated]") {
+		t.Fatalf("deeply nested field was not truncated: %s", line)
+	}
+
+	// A wide shared-reference structure is bounded by the node budget rather
+	// than expanding to branching^depth nodes.
+	shared := map[string]any{"k": "v"}
+	tree := any(shared)
+	for i := 0; i < 20; i++ {
+		tree = map[string]any{"a": tree, "b": tree, "c": tree}
+	}
+	wideLine := FormatOCSFEvent(Event{
+		Severity:  SeverityWarn,
+		Type:      EventBlocked,
+		Timestamp: time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		Fields:    map[string]any{"tree": tree},
+	}, "dev")
+	if _ = parseOCSFEvent(t, wideLine); !strings.Contains(wideLine, "[truncated]") {
+		t.Fatalf("wide structure was not bounded by the node budget")
+	}
+}
+
+func TestFormatOCSFEventTruncatesOversizedStringField(t *testing.T) {
+	huge := strings.Repeat("A", ocsfMaxStringBytes+500)
+	line := FormatOCSFEvent(Event{
+		Severity:  SeverityWarn,
+		Type:      EventBlocked,
+		Timestamp: time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		Fields:    map[string]any{"blob": huge},
+	}, "dev")
+	got := parseOCSFEvent(t, line)
+	fields := assertMap(t, assertMap(t, assertMap(t, got, "unmapped"), "pipelock"), "fields")
+	blob := stringValue(t, fields, "blob")
+	if len(blob) >= len(huge) {
+		t.Fatalf("oversized field not truncated: got %d bytes", len(blob))
+	}
+	if !strings.HasSuffix(blob, "...[truncated]") {
+		t.Fatalf("truncated field missing marker: %q", blob[len(blob)-20:])
+	}
+}

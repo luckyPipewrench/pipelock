@@ -15,7 +15,7 @@ func TestServer_Message_MethodNotAllowed(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t, ServerConfig{})
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteMessage, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestServer_Stream_RateLimitedBeforeTokenValidation(t *testing.T) {
 	ts := newTestServer(t, ServerConfig{IPRate: RateConfig{RefillPerSec: 1, Burst: 1}})
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestServer_Stream_RateLimitedBeforeTokenValidation(t *testing.T) {
 	}
 
 	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestServer_CORSAndForwardedFor(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+RouteSession, strings.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestServer_CORSPreflight(t *testing.T) {
 
 	for _, route := range []string{RouteMessage, RouteHealth} {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodOptions, ts.URL+route, nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := ts.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +129,7 @@ func TestServer_Session_BadJSON(t *testing.T) {
 	ts := newTestServer(t, ServerConfig{})
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+RouteSession, strings.NewReader("{not json"))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestServer_Session_RejectsTrailingJSON(t *testing.T) {
 	ts := newTestServer(t, ServerConfig{})
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+RouteSession, strings.NewReader(`{"code":"good"} {}`))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

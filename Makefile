@@ -46,24 +46,24 @@ test-runtime-critical:
 	go test -race -count=1 -timeout 15m ./internal/config ./internal/cli ./internal/mcp ./internal/proxy
 
 # Test shards mirror CI (scripts/ci_test_packages.py): the three heavy packages
-# (proxy, scanner, mcp) plus "rest" (every other package). Their union is the
-# same package set as `make test`. Use these to reproduce one CI shard locally,
-# or to run the full suite in scoped chunks instead of the single monolithic
+# (proxy, scanner, mcp) plus three balanced rest shards. Their union is the same
+# package set as `make test`. Use these to reproduce one CI shard locally, or to
+# run the full suite in scoped chunks instead of the single monolithic
 # `go test ./...` invocation that becomes a long pole if reused in one CI step.
 # `make test` stays the canonical full local run.
-TEST_SHARDS := proxy scanner mcp rest
+TEST_SHARDS := proxy scanner mcp rest-0 rest-1 rest-2
 .PHONY: FORCE
 FORCE:
 
 # Run one CI-equivalent OSS shard, e.g. `make test-shard-proxy`.
 test-shard-%: FORCE
 	packages=$$(python3 scripts/ci_test_packages.py --shard $*) || exit $$?; \
-	go test -race -count=1 -timeout=15m $$packages
+	go test -race -p=2 -parallel=2 -count=1 -timeout=15m $$packages
 
 # Run one CI-equivalent enterprise shard, e.g. `make test-shard-enterprise-mcp`.
 test-shard-enterprise-%: FORCE
 	packages=$$(python3 scripts/ci_test_packages.py --tags enterprise --shard $*) || exit $$?; \
-	go test -tags enterprise -race -count=1 -timeout=15m $$packages
+	go test -tags enterprise -race -p=2 -parallel=2 -count=1 -timeout=15m $$packages
 
 # Run every OSS shard sequentially: same coverage as `make test`, sharded and
 # labelled (serial to respect the local single-race-at-a-time constraint).
@@ -71,7 +71,7 @@ test-sharded:
 	@for shard in $(TEST_SHARDS); do \
 		echo "=== OSS test shard: $$shard ==="; \
 		packages=$$(python3 scripts/ci_test_packages.py --shard $$shard) || exit $$?; \
-		go test -race -count=1 -timeout=15m $$packages || exit $$?; \
+		go test -race -p=2 -parallel=2 -count=1 -timeout=15m $$packages || exit $$?; \
 	done
 
 # Run every enterprise shard sequentially (mirrors the CI test-enterprise matrix).
@@ -79,7 +79,7 @@ test-sharded-enterprise:
 	@for shard in $(TEST_SHARDS); do \
 		echo "=== enterprise test shard: $$shard ==="; \
 		packages=$$(python3 scripts/ci_test_packages.py --tags enterprise --shard $$shard) || exit $$?; \
-		go test -tags enterprise -race -count=1 -timeout=15m $$packages || exit $$?; \
+		go test -tags enterprise -race -p=2 -parallel=2 -count=1 -timeout=15m $$packages || exit $$?; \
 	done
 
 # test-replay-harness exercises the synthetic replay regression suite:

@@ -187,6 +187,59 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
 
         self.assertEqual(results["example.com/pkg"].action, "pass")
 
+    def test_main_returns_nonzero_when_final_package_action_fails(self):
+        lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "Action": "fail",
+                        "Package": "example.com/pkg",
+                        "Elapsed": 1,
+                    }
+                ),
+                "",
+            ]
+        )
+
+        with (
+            mock.patch.object(sys, "argv", ["summarize_go_test_json.py"]),
+            mock.patch.object(sys, "stdin", io.StringIO(lines)),
+            mock.patch.object(sys, "stdout", io.StringIO()),
+        ):
+            status = summarize_go_test_json.main()
+
+        self.assertEqual(status, 1)
+
+    def test_main_allows_retry_stream_when_final_package_action_passes(self):
+        lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "Action": "fail",
+                        "Package": "example.com/pkg",
+                        "Elapsed": 1,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "Action": "pass",
+                        "Package": "example.com/pkg",
+                        "Elapsed": 1,
+                    }
+                ),
+                "",
+            ]
+        )
+
+        with (
+            mock.patch.object(sys, "argv", ["summarize_go_test_json.py"]),
+            mock.patch.object(sys, "stdin", io.StringIO(lines)),
+            mock.patch.object(sys, "stdout", io.StringIO()),
+        ):
+            status = summarize_go_test_json.main()
+
+        self.assertEqual(status, 0)
+
     def test_format_duration_handles_subsecond_and_minute_rollover(self):
         self.assertEqual(summarize_go_test_json.format_duration(0.25), "0.2s")
         self.assertEqual(summarize_go_test_json.format_duration(61.2), "1m01.2s")

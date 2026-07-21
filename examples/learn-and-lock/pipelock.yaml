@@ -1,0 +1,59 @@
+# Learn-and-lock (behavioral baseline) example config.
+# verify.sh rewrites behavioral_baseline.profile_dir to a temp WORK dir.
+#
+# This is MCP behavioral baseline (observe → learn → lock), not the v2.4
+# contract pipeline in docs/guides/learn-and-lock.md, and not static
+# mcp_tool_policy denylist rules (see examples/mcp-tool-policy/).
+
+version: 1
+mode: balanced
+
+internal: []
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.1/32"
+
+dlp:
+  scan_env: false
+  include_defaults: false
+
+# Keep competing MCP layers off so allow/deny proves baseline only.
+response_scanning:
+  enabled: false
+  action: warn
+
+mcp_input_scanning:
+  enabled: false
+  action: warn
+
+mcp_tool_scanning:
+  enabled: false
+  action: warn
+  detect_drift: false
+
+mcp_tool_policy:
+  enabled: false
+
+mcp_session_binding:
+  enabled: false
+
+session_profiling:
+  enabled: true
+
+behavioral_baseline:
+  enabled: true
+  # Placeholder; verify.sh rewrites to an absolute temp path.
+  profile_dir: /tmp/pipelock-learn-lock-profiles
+  # Stdio MCP records one baseline sample per proxy process exit. Use 1 so a
+  # single learn invocation can auto-ratify; higher windows need a long-lived
+  # process or the HTTP MCP listener (samples are not persisted mid-Observe).
+  learning_window: 1
+  deviation_action: block
+  # CI lock step: stdio MCP proxy has no baseline admin API.
+  auto_ratify: true
+  sensitivity_sigma: 2.0
+  lock_dimensions:
+    - unique_tools
+  seasonality_mode: none
+  poison_resistance: true

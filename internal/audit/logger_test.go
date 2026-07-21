@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -29,6 +30,7 @@ const (
 	testConfigHash = "testhash"
 	testVersion    = "0.1.0-dev"
 	testAgentName  = "claude-code"
+	testDoWTarget  = "expensive_tool"
 	testMethodGet  = "GET"
 	mitreT1048     = "T1048"
 	mitreT1053     = "T1053"
@@ -1609,6 +1611,10 @@ func TestLogWSBlocked_JSONFormat(t *testing.T) {
 	if entry["reason"] != "secret detected" {
 		t.Errorf("expected reason='secret detected', got %v", entry["reason"])
 	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "dlp.patterns[].exempt_domains") {
+		t.Fatalf("remediation_hint = %q, want DLP operator knob", hint)
+	}
 }
 
 func TestLogWSBlocked_Filtered(t *testing.T) {
@@ -2554,6 +2560,53 @@ func TestEmit_LogAnomaly(t *testing.T) {
 	}
 }
 
+func TestEmit_LogDenialOfWalletRemediationHint(t *testing.T) {
+	tests := []struct {
+		name      string
+		log       func(*Logger)
+		wantEvent EventType
+	}{
+		{
+			name: "blocked",
+			log: func(logger *Logger) {
+				logger.LogBlocked(LogContext{method: "MCP", target: testDoWTarget}, scannerpkg.ScannerDenialOfWallet, "tool call limit exceeded: 11/10")
+			},
+			wantEvent: EventBlocked,
+		},
+		{
+			name: "anomaly",
+			log: func(logger *Logger) {
+				logger.LogAnomaly(LogContext{method: "MCP", target: testDoWTarget}, scannerpkg.ScannerDenialOfWallet, "tool call limit exceeded: 11/10", 0)
+			},
+			wantEvent: EventAnomaly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+
+			tt.log(logger)
+
+			ev, ok := sink.lastEvent()
+			if !ok {
+				t.Fatal("expected emitted event")
+			}
+			if ev.Type != string(tt.wantEvent) {
+				t.Fatalf("type = %q, want %s", ev.Type, tt.wantEvent)
+			}
+			if ev.Fields["scanner"] != scannerpkg.ScannerDenialOfWallet {
+				t.Fatalf("fields[scanner] = %v, want %s", ev.Fields["scanner"], scannerpkg.ScannerDenialOfWallet)
+			}
+			hint, _ := ev.Fields["remediation_hint"].(string)
+			if !strings.Contains(hint, "agents._default.budget.max_tool_calls_per_session") {
+				t.Fatalf("fields[remediation_hint] = %q, want exact tool-call budget knob", hint)
+			}
+		})
+	}
+}
+
 func TestEmit_LogResponseScanExempt(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
@@ -2726,6 +2779,10 @@ func TestEmit_LogWSBlocked(t *testing.T) {
 	}
 	if ev.Fields["mitre_technique"] != mitreT1048 {
 		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
+	}
+	hint, _ := ev.Fields["remediation_hint"].(string)
+	if !strings.Contains(hint, "dlp.patterns[].exempt_domains") {
+		t.Fatalf("fields[remediation_hint] = %q, want DLP operator knob", hint)
 	}
 }
 
@@ -2974,6 +3031,10 @@ func TestLogBodyDLP_JSONFormat(t *testing.T) {
 	}
 	if entry["mitre_technique"] != mitreT1048 {
 		t.Errorf("expected mitre_technique=T1048, got %v", entry["mitre_technique"])
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "suppress:") {
+		t.Fatalf("remediation_hint = %q, want body-DLP suppress guidance", hint)
 	}
 }
 
@@ -3251,6 +3312,13 @@ func TestEmit_LogBodyDLP(t *testing.T) {
 	}
 	if ev.Fields["match_count"] != 1 {
 		t.Errorf("fields[match_count] = %v, want 1", ev.Fields["match_count"])
+	}
+	if ev.Fields["action"] != actionBlock {
+		t.Errorf("fields[action] = %v, want block", ev.Fields["action"])
+	}
+	hint, _ := ev.Fields["remediation_hint"].(string)
+	if !strings.Contains(hint, "suppress:") {
+		t.Fatalf("fields[remediation_hint] = %q, want body-DLP suppress guidance", hint)
 	}
 }
 

@@ -692,7 +692,7 @@ func ForwardScannedInput(
 			continue
 		case blockingGateDoW:
 			if auditLogger != nil {
-				auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason)
+				auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), scanner.ScannerDenialOfWallet, eval.DoWReason)
 			}
 			if m != nil {
 				m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -774,7 +774,7 @@ func ForwardScannedInput(
 		}
 		if !eval.DoWAllowed && eval.DoWAction != "" {
 			if auditLogger != nil {
-				auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason, 0)
+				auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
 			}
 			recordAdaptiveSignal(session.SignalNearMiss)
 		}

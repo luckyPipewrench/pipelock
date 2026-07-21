@@ -5749,6 +5749,64 @@ func TestScanHTTPInput_DoWWarn(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) {
+	tests := []struct {
+		name      string
+		action    string
+		wantEvent string
+	}{
+		{name: "blocked", action: config.ActionBlock, wantEvent: string(audit.EventBlocked)},
+		{name: "anomaly", action: config.ActionWarn, wantEvent: string(audit.EventAnomaly)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+			auditLogger, err := audit.New("json", "file", auditPath, false, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			reason := "tool call limit exceeded: 11/10"
+			opts := MCPProxyOpts{
+				Scanner:     testScannerForHTTP(t),
+				AuditLogger: auditLogger,
+				DoWCheck: func(_, _ string) (bool, string, string, string) {
+					return false, tt.action, reason, "tool_call_limit"
+				},
+			}
+			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + testDoWToolName + `","arguments":{"q":"hello"}}}`)
+			blocked := scanHTTPInput(msg, io.Discard, "", "", opts)
+			if tt.action == config.ActionBlock && blocked == nil {
+				t.Fatal("expected DoW block")
+			}
+			if tt.action == config.ActionWarn && blocked != nil {
+				t.Fatalf("warn action returned block: %+v", blocked)
+			}
+			auditLogger.Close()
+
+			data, err := os.ReadFile(filepath.Clean(auditPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("decode audit event: %v; data=%q", err, data)
+			}
+			if entry["event"] != tt.wantEvent {
+				t.Fatalf("event = %v, want %s", entry["event"], tt.wantEvent)
+			}
+			if entry["scanner"] != scanner.ScannerDenialOfWallet {
+				t.Fatalf("scanner = %v, want %s", entry["scanner"], scanner.ScannerDenialOfWallet)
+			}
+			hint, _ := entry["remediation_hint"].(string)
+			if !strings.Contains(hint, "agents._default.budget.max_tool_calls_per_session") {
+				t.Fatalf("remediation_hint = %q, want exact tool-call budget knob", hint)
+			}
+		})
+	}
+}
+
 func TestScanHTTPInput_DoWBlockNotification(t *testing.T) {
 	sc := testScannerForHTTP(t)
 

@@ -1345,6 +1345,7 @@ func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, 
 		str("reason", reason).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerName, reason)).
 		optStr("mitre_technique", technique)
 
 	// includeBlocked gates local audit log only - external emission always fires.
@@ -1604,6 +1605,7 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		optStr("agent", ctx.agent).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerBodyDLP, "")).
 		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)

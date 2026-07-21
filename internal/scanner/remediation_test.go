@@ -198,6 +198,47 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 	})
 }
 
+func TestOperatorHintForResultResolvesDialTimeSSRFReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		label  string
+		reason string
+	}{
+		{
+			name:   "dial private ip",
+			label:  ScannerSSRF,
+			reason: "ssrf_private_ip: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.42",
+		},
+		{
+			name:   "dial metadata ip",
+			label:  ScannerSSRF,
+			reason: "ssrf_metadata: SSRF blocked: api.vendor.example resolves to cloud metadata endpoint 169.254.169.254",
+		},
+		{
+			name:   "dial dns rebind",
+			label:  ScannerSSRF,
+			reason: "ssrf_dns_rebind: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.43",
+		},
+		{
+			name:   "url scan audit mode",
+			label:  ScannerSSRF,
+			reason: "destination resolves to a private IP",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hint := OperatorHintForResult(tt.label, tt.reason)
+			if !strings.Contains(hint, "trusted_domains") {
+				t.Fatalf("hint = %q, want trusted_domains", hint)
+			}
+			if !strings.Contains(hint, "ssrf.ip_allowlist") {
+				t.Fatalf("hint = %q, want ssrf.ip_allowlist", hint)
+			}
+		})
+	}
+}
+
 func TestDecideLabelGuidanceNamesOperatorKnobsOnlyToOperator(t *testing.T) {
 	tests := []struct {
 		label       string

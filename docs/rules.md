@@ -84,9 +84,9 @@ Valid feature names are 1-64 lowercase alphanumeric characters with underscores.
 
 ## Core SSRF Literal
 
-The immutable core scanner includes unconditional private-IP literal enforcement — it blocks literal RFC 1918 ranges, loopback, link-local, and cloud metadata addresses regardless of bundle tier, config, or explicit allowlist. This is a separate layer from the standard SSRF scanner and cannot be disabled.
+The immutable core scanner includes private-IP literal enforcement — it blocks literal RFC 1918 ranges, loopback, link-local, and cloud metadata addresses regardless of bundle tier or scanner configuration. This is a separate layer from the standard SSRF scanner and cannot be disabled wholesale. The only override it honors is `ssrf.ip_allowlist`, which exempts explicitly listed CIDR ranges.
 
-If you need to reach a private IP for legitimate internal use, do not disable pipelock — use the forward proxy's domain allowlist (for hostname-based internal services) or scope pipelock to a narrower set of agents.
+If you need to reach a private IP for legitimate internal use, do not disable pipelock — add the narrowest possible range (ideally a single `/32`) to `ssrf.ip_allowlist`, use `trusted_domains` for hostname-based internal services, or scope pipelock to a narrower set of agents.
 
 ## How Rules Are Loaded
 

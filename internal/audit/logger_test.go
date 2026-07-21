@@ -3014,6 +3014,147 @@ func TestLogBlockedEntropyRemediationHintUsesReason(t *testing.T) {
 	}
 }
 
+func TestLogAnomalyRemediationHintJSONFormat(t *testing.T) {
+	tests := []struct {
+		name       string
+		scanner    string
+		reason     string
+		wantHint   []string
+		wantAbsent bool
+	}{
+		{
+			name:     "audit mode ssrf anomaly includes narrow knob",
+			scanner:  "ssrf",
+			reason:   "destination resolves to a private IP",
+			wantHint: []string{"trusted_domains", "ssrf.ip_allowlist"},
+		},
+		{
+			name:     "audit mode query entropy uses reason-specific knob",
+			scanner:  "entropy",
+			reason:   `high entropy query param "sig"`,
+			wantHint: []string{"query_entropy_param_exclusions"},
+		},
+		{
+			name:       "scanner without registered hint omits field",
+			scanner:    "unregistered_scanner",
+			reason:     "suspicious but not remediable by scanner table",
+			wantAbsent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "test.log")
+
+			logger, err := New("json", "file", path, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger.LogAnomaly(LogContext{method: testMethodGet, url: "https://api.vendor.example/data", clientIP: testClientIP, requestID: "req-anomaly-hint"}, tt.scanner, tt.reason, 0.85)
+			logger.Close()
+
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("expected valid JSON: %v", err)
+			}
+			if entry["event"] != string(EventAnomaly) {
+				t.Fatalf("event = %v, want anomaly", entry["event"])
+			}
+			if entry["scanner"] != tt.scanner {
+				t.Fatalf("scanner = %v, want %s", entry["scanner"], tt.scanner)
+			}
+			if entry["reason"] != tt.reason {
+				t.Fatalf("reason = %v, want %s", entry["reason"], tt.reason)
+			}
+
+			hint, ok := entry["remediation_hint"].(string)
+			if tt.wantAbsent {
+				if ok {
+					t.Fatalf("remediation_hint present = %q, want omitted", hint)
+				}
+				return
+			}
+			if !ok || hint == "" {
+				t.Fatal("remediation_hint missing or empty")
+			}
+			for _, want := range tt.wantHint {
+				if !strings.Contains(hint, want) {
+					t.Fatalf("remediation_hint = %q, want substring %q", hint, want)
+				}
+			}
+		})
+	}
+}
+
+func TestLogBlockedDialTimeSSRFReasonIncludesRemediationHint(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+	}{
+		{
+			name:   "connect private ip",
+			reason: "ssrf_private_ip: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.42",
+		},
+		{
+			name:   "absolute uri private ip",
+			reason: "ssrf_private_ip: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.42",
+		},
+		{
+			name:   "websocket metadata ip",
+			reason: "ssrf_metadata: SSRF blocked: api.vendor.example resolves to cloud metadata endpoint 169.254.169.254",
+		},
+		{
+			name:   "reverse proxy dns rebind",
+			reason: "ssrf_dns_rebind: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.43",
+		},
+		{
+			name:   "fetch private ip",
+			reason: "ssrf_private_ip: SSRF blocked: api.vendor.example resolves to internal IP 10.0.0.42",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "test.log")
+
+			logger, err := New("json", "file", path, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger.LogBlocked(LogContext{method: testMethodGet, url: "https://api.vendor.example/data", clientIP: testClientIP, requestID: "req-dial-hint"}, "ssrf", tt.reason)
+			logger.Close()
+
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("expected valid JSON: %v", err)
+			}
+			if entry["event"] != string(EventBlocked) {
+				t.Fatalf("event = %v, want blocked", entry["event"])
+			}
+			if entry["reason"] != tt.reason {
+				t.Fatalf("reason = %v, want %s", entry["reason"], tt.reason)
+			}
+			hint, ok := entry["remediation_hint"].(string)
+			if !ok || hint == "" {
+				t.Fatal("remediation_hint missing or empty")
+			}
+			if !strings.Contains(hint, "ssrf.ip_allowlist") {
+				t.Fatalf("remediation_hint = %q, want ssrf.ip_allowlist", hint)
+			}
+		})
+	}
+}
+
 func TestLogHeaderDLP_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

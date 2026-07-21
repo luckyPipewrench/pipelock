@@ -256,13 +256,9 @@ func VerifyChainWithEndorsements(sessionID string, receipts []Receipt, endorseme
 	priorTailIndex := -1
 	for segmentIndex := 1; segmentIndex < len(base.Segments); segmentIndex++ {
 		segment := base.Segments[segmentIndex]
-		for i := priorTailIndex + 1; i < len(receipts); i++ {
-			if receipts[i].SignerKey == segment.SignerKey {
-				priorTailIndex = i - 1
-				break
-			}
-		}
-		if priorTailIndex < 0 {
+		var found bool
+		priorTailIndex, found = findRotationPriorTail(receipts, priorTailIndex+1, segment.SignerKey)
+		if !found {
 			return endorsementFailure(base, segment.SignerKey, errors.New("cannot locate rotation boundary"))
 		}
 		prior := receipts[priorTailIndex]
@@ -305,6 +301,15 @@ func VerifyChainWithEndorsements(sessionID string, receipts []Receipt, endorseme
 		return endorsementFailure(base, "", errors.New("unused rotation endorsement does not match a required boundary"))
 	}
 	return base
+}
+
+func findRotationPriorTail(receipts []Receipt, start int, signerKey string) (int, bool) {
+	for i := start; i < len(receipts); i++ {
+		if receipts[i].SignerKey == signerKey {
+			return i - 1, true
+		}
+	}
+	return 0, false
 }
 
 func verifySignedRecorderSession(expected string, receipts []Receipt) error {

@@ -111,6 +111,17 @@ func TestVerifyChainWithEndorsements_MultiHopDelegation(t *testing.T) {
 	}
 }
 
+func TestFindRotationPriorTailFailsClosedWhenLaterSegmentIsMissing(t *testing.T) {
+	t.Parallel()
+	receipts := []Receipt{{SignerKey: "key-a"}, {SignerKey: "key-b"}}
+	if index, found := findRotationPriorTail(receipts, 1, "key-b"); !found || index != 0 {
+		t.Fatalf("first boundary = (%d, %t), want (0, true)", index, found)
+	}
+	if _, found := findRotationPriorTail(receipts, 2, "key-c"); found {
+		t.Fatal("missing later segment retained a previous boundary")
+	}
+}
+
 func TestVerifyChainWithEndorsements_RepeatedKeysAndRedundantRootEndorsement(t *testing.T) {
 	t.Parallel()
 	pubA, privA := generateTestKey(t)

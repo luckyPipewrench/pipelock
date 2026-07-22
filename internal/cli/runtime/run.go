@@ -328,6 +328,9 @@ func applyEmitFilter(sinks []emit.Sink, cfg config.EmitFilter) []emit.Sink {
 	return wrapped
 }
 
+// activateEmitSinks activates each sink, preferring an Activate() error result
+// over the legacy void Start(), and returns the joined activation errors so the
+// caller can fail closed when a configured audit sink cannot start.
 func activateEmitSinks(sinks []emit.Sink) error {
 	var activationErrors []error
 	for i, sink := range sinks {
@@ -344,6 +347,9 @@ func activateEmitSinks(sinks []emit.Sink) error {
 	return errors.Join(activationErrors...)
 }
 
+// activationConflictKeys returns the durable-state paths a sink guards (spool,
+// cursor, lock), or nil, so a reload can close an outgoing sink before
+// activating a replacement that would share the same state.
 func activationConflictKeys(sink emit.Sink) []string {
 	if keyed, ok := sink.(interface{ ActivationConflictKeys() []string }); ok {
 		return keyed.ActivationConflictKeys()
@@ -351,6 +357,9 @@ func activationConflictKeys(sink emit.Sink) []string {
 	return nil
 }
 
+// activationKeysConflict reports whether two durable-state keys refer to the
+// same resource, by canonical path (case-insensitively on Windows) or, for
+// existing files, by inode via os.SameFile (catching hard links and symlinks).
 func activationKeysConflict(left, right string) bool {
 	if left == right || (goruntime.GOOS == "windows" && strings.EqualFold(left, right)) {
 		return true

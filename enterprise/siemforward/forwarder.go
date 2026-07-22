@@ -349,6 +349,9 @@ func (f *Forwarder) ActivationConflictKeys() []string {
 	}
 }
 
+// absoluteCleanPath returns path as an absolute, symlink-resolved, cleaned
+// path (resolving the existing parent when the file does not yet exist), so two
+// spellings of the same durable resource compare equal in conflict detection.
 func absoluteCleanPath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -405,6 +408,9 @@ func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
 
+// canonicalHost normalizes a forwarder host to its comparison form: an IP
+// literal (including alternate encodings) becomes its canonical net.IP string,
+// otherwise the host is lowercased with any trailing dot stripped.
 func canonicalHost(host string) string {
 	if ip := scanner.ParseIPLiteral(host); ip != nil {
 		return ip.String()
@@ -429,6 +435,10 @@ type resolvedHostPolicy struct {
 	namedLocalhost bool
 }
 
+// validateResolvedHost verifies host is safe to dial under policy: it rejects
+// non-overridable SSRF targets and, unless allowPrivate, internal IPs, and for a
+// name-based localhost plaintext exemption (namedLocalhost) requires every
+// resolved answer to be loopback so DNS cannot retarget it off-box.
 func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host string, internal func(net.IP) bool, policy resolvedHostPolicy) error {
 	if ip := scanner.ParseIPLiteral(host); ip != nil {
 		if scanner.IsNonOverridableSSRFTarget(ip) {

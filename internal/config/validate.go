@@ -2723,6 +2723,9 @@ func forwarderHostIsLoopback(host string) bool {
 	return false
 }
 
+// canonicalForwarderHost normalizes a forwarder host for allowlist comparison,
+// mirroring the scanner's IP-literal canonicalization on the config side so
+// validation and runtime agree on what a given host resolves to.
 func canonicalForwarderHost(host string) string {
 	if ip := parseForwarderIPLiteral(host); ip != nil {
 		return ip.String()

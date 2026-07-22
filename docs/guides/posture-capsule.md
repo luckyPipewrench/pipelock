@@ -191,7 +191,7 @@ Minimal example:
   "schema_version":"1",
   "signature":"c1b8b9c4f4d2...",
   "signer_key_id":"9f6b9d7c...",
-  "tool_version":"0.1.0-dev"
+  "tool_version":"0.0.0-dev.unknown"
 }
 ```
 

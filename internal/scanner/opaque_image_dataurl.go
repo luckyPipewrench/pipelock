@@ -120,6 +120,12 @@ func stripVerifiedImageDataURLs(text string, retainDecoded bool) (excised, decod
 	)
 }
 
+// stripVerifiedImageDataURLsMatching scans text for data:image base64 URLs and
+// removes (or replaces) only those whose header satisfies headerAllowed and
+// whose decoded bytes satisfy decodedAllowed. It returns the stripped text and,
+// when retainDecoded is set, the concatenation of the decoded image bytes. The
+// header/decoded predicates let callers apply a stricter policy (the
+// query-entropy carve-out) than the response/text-DLP excision.
 func stripVerifiedImageDataURLsMatching(
 	text string,
 	retainDecoded bool,
@@ -234,11 +240,19 @@ func isPNGOrJPEGBase64DataImageHeader(header string) bool {
 	return false
 }
 
+// isExactPNGOrJPEGBase64DataImageHeader reports whether header is exactly
+// "data:image/png;base64" or "data:image/jpeg;base64" (case-insensitive) with
+// no MIME parameters, so a secret smuggled as an extra header parameter cannot
+// ride inside the header.
 func isExactPNGOrJPEGBase64DataImageHeader(header string) bool {
 	return asciiEqualFold(header, "data:image/png;base64") ||
 		asciiEqualFold(header, "data:image/jpeg;base64")
 }
 
+// isDecodableQueryImage reports whether data is an image acceptable for the
+// query-entropy carve-out: a strict true-color PNG whose every byte is
+// accounted for. JPEG and indexed PNG fail closed because their decoders ignore
+// metadata segments that could smuggle high-entropy data.
 func isDecodableQueryImage(header string, data []byte) bool {
 	switch {
 	case asciiEqualFold(header, "data:image/png;base64"):
@@ -308,6 +322,9 @@ func isStrictQueryPNG(data []byte) bool {
 	return false
 }
 
+// isFullyConsumedZlibStream reports whether compressed is a single zlib stream
+// that decodes within maxDecoded bytes and leaves no trailing input, so no
+// hidden data can ride after the image's one consumed stream.
 func isFullyConsumedZlibStream(compressed []byte, maxDecoded int64) bool {
 	input := bytes.NewReader(compressed)
 	decoded, err := zlib.NewReader(input)
@@ -319,6 +336,9 @@ func isFullyConsumedZlibStream(compressed []byte, maxDecoded int64) bool {
 	return copyErr == nil && closeErr == nil && n <= maxDecoded && input.Len() == 0
 }
 
+// appendPNGChunk appends one PNG chunk (4-byte big-endian length, 4-byte type,
+// data, 4-byte CRC-32 of type+data) to dst and returns the extended slice. It is
+// used to rebuild a canonical PNG from the chunks the strict verifier accepted.
 func appendPNGChunk(dst []byte, chunkType string, chunkData []byte) []byte {
 	if len(chunkData) > 0xffffffff {
 		return dst // chunk length must fit the PNG uint32 length field
@@ -335,6 +355,9 @@ func appendPNGChunk(dst []byte, chunkType string, chunkData []byte) []byte {
 	return append(dst, encoded[:]...)
 }
 
+// queryImageDimensionsAllowed reports whether a width x height image is within
+// the pixel bound accepted by the query-entropy image carve-out (guards against
+// a tiny header advertising an enormous decode).
 func queryImageDimensionsAllowed(width, height int) bool {
 	return width > 0 && height > 0 && width <= maxQueryEntropyImagePixels/height
 }

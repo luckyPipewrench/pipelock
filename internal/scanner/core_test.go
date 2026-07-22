@@ -306,6 +306,68 @@ func TestCore_SSRFLiteral_ConfigMismatch_APIAllowlisted(t *testing.T) {
 	}
 }
 
+func TestCore_SSRFLiteral_ConfigMismatch_CanonicalIPNeverAllows(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, apiAllowlist, hostname string
+	}{
+		{
+			name:         "mapped IPv4 matches canonical IPv4",
+			apiAllowlist: "127.0.0.1",
+			hostname:     "::ffff:127.0.0.1",
+		},
+		{
+			name:         "zone-suffixed expanded IPv6 preserves configured spelling match",
+			apiAllowlist: "fd00:0:0:0:0:0:0:1",
+			hostname:     "fd00:0:0:0:0:0:0:1%eth0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = nil
+			cfg.APIAllowlist = []string{tt.apiAllowlist}
+			s := MustNew(cfg)
+			defer s.Close()
+
+			// Classification is metadata on the denial: recognizing an equivalent
+			// api_allowlist spelling must never turn the core SSRF block into allow.
+			result := s.checkCoreSSRFLiteral(tt.hostname)
+			if result.Allowed {
+				t.Fatalf("api_allowlist classification allowed blocked literal %q", tt.hostname)
+			}
+			if result.Scanner != ScannerCoreSSRF {
+				t.Fatalf("scanner = %q, want %q", result.Scanner, ScannerCoreSSRF)
+			}
+			if result.Class != ClassConfigMismatch {
+				t.Fatalf("class = %q, want equivalent-IP config mismatch", result.Class)
+			}
+		})
+	}
+}
+
+func TestCore_SSRFLiteral_ZoneCannotSpoofAPIAllowlistClassification(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = nil
+	cfg.APIAllowlist = []string{"*.vendor.example"}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://[fd00::1%25x.vendor.example]/")
+	if result.Allowed {
+		t.Fatal("zone-suffixed ULA was allowed")
+	}
+	if result.Scanner != ScannerCoreSSRF {
+		t.Fatalf("scanner = %q, want %q", result.Scanner, ScannerCoreSSRF)
+	}
+	if result.Class != ClassThreat {
+		t.Fatalf("attacker-controlled zone spoofed api_allowlist classification: class = %v, want threat", result.Class)
+	}
+}
+
 func TestCore_SSRFLiteral_SkipsWhenSSRFActive(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
@@ -1399,6 +1461,49 @@ func TestCoreSSRF_LegitAllowlistStillWorks(t *testing.T) {
 	for _, ipStr := range []string{"127.0.0.1", "10.0.0.5"} {
 		if !s.IsIPAllowlisted(net.ParseIP(ipStr)) {
 			t.Fatalf("IsIPAllowlisted(%s) = false, want true (legit allowlist entry)", ipStr)
+		}
+	}
+}
+
+// TestCoreSSRF_ParseIPLiteralCanonicalization proves the core literal floor now
+// funnels through the shared ParseIPLiteral canonicalizer: a trailing root dot
+// is stripped (a former hostname-treatment bypass is closed) and a zone id on an
+// IPv4 literal is stripped fail-closed (the address before the '%' is checked,
+// not treated as an unresolved hostname).
+func TestCoreSSRF_ParseIPLiteralCanonicalization(t *testing.T) {
+	blockedCases := []struct {
+		name, url string
+	}{
+		{"trailing dot private literal", "http://10.0.0.1./"},
+		{"trailing dot metadata literal", "http://169.254.169.254./latest/meta-data/"},
+		{"ipv4 zone-suffixed private literal", "http://10.0.0.1%25x/"},
+		{"multiple zone separators use first", "http://10.0.0.1%25x%25y/"},
+		{"trailing dot encoded metadata", "http://2852039166./latest/meta-data/"},
+	}
+	for _, tt := range blockedCases {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil // exercise the core literal floor
+			s := MustNew(cfg)
+			defer s.Close()
+			if r := s.Scan(context.Background(), tt.url); r.Allowed {
+				t.Fatalf("%q was ALLOWED; canonicalization must strip the trailing dot / zone and block the internal literal", tt.url)
+			}
+		})
+	}
+
+	// A genuine hostname (no IP literal after canonicalization) is still treated
+	// as a hostname (allowed by the literal floor; DNS-time SSRF handles it).
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	for _, rawURL := range []string{
+		"http://api.vendor.example/",
+		"http://api.vendor.example./",
+	} {
+		if r := s.Scan(context.Background(), rawURL); !r.Allowed {
+			t.Fatalf("ordinary hostname %q was blocked by the literal floor: %s", rawURL, r.Reason)
 		}
 	}
 }

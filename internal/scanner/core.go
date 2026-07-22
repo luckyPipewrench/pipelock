@@ -661,29 +661,15 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 		return Result{Allowed: true}
 	}
 
-	// Normalize hostname for IP parsing:
-	// - Strip IPv6 zone ID (e.g. "::1%eth0" → "::1") which causes
-	//   net.ParseIP to return nil.
-	// - url.URL.Hostname() already strips brackets from "[::1]".
-	clean := hostname
-	if idx := strings.Index(clean, "%"); idx != -1 {
-		clean = clean[:idx]
-	}
-
-	// Try standard dotted-decimal / IPv6 first.
-	ip := net.ParseIP(clean)
-
-	// Try alternative IP notations (hex, octal, decimal integer).
-	if ip == nil {
-		ip = parseAlternativeIP(clean)
-	}
-
+	// url.URL.Hostname() already strips brackets from "[::1]". ParseIPLiteral is
+	// the scanner's canonical IP-literal parser: it strips a trailing root dot
+	// and any zone id (e.g. "::1%eth0" -> "::1"), decodes alternative IPv4 forms
+	// (hex/octal/decimal), and normalizes IPv4-mapped IPv6 to 4-byte IPv4. The
+	// forwarder target checks use the same helper, so config, the core floor,
+	// and dial-time enforcement agree on what a given literal resolves to.
+	ip := ParseIPLiteral(hostname)
 	if ip == nil {
 		return Result{Allowed: true} // hostname, not IP literal
-	}
-
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
 	}
 
 	// Operator override: ip_allowlist exempts specific ranges.
@@ -701,7 +687,17 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 		// If the IP is in api_allowlist, this is a config mismatch (operator
 		// intended to allow it) rather than a real attack. Classify so
 		// adaptive enforcement doesn't escalate, and hint toward ip_allowlist.
-		if s.IsInAPIAllowlist(clean) {
+		classificationHost := hostname
+		if zone := strings.IndexByte(classificationHost, '%'); zone >= 0 {
+			classificationHost = classificationHost[:zone]
+		}
+		// Check both the original zone-free spelling and the canonical IP. The
+		// former preserves equivalent expanded-IPv6 api_allowlist entries; the
+		// latter recognizes mapped and otherwise canonicalized literals. Never
+		// match the raw zone text: it is attacker-controlled and could spoof an
+		// allowlisted domain suffix.
+		apiAllowlisted := s.IsInAPIAllowlist(classificationHost) || s.IsInAPIAllowlist(ip.String())
+		if apiAllowlisted {
 			// Config mismatch (operator allowlisted this IP), not an attack:
 			// classify so adaptive enforcement doesn't escalate. The agent-facing
 			// hint stays terse (no knob); the operator gets ssrf.ip_allowlist from

@@ -1308,7 +1308,8 @@ type ForwarderConfig struct {
 	// AllowInsecureHTTP permits a plaintext http:// destination to a
 	// non-loopback host. Off by default: cleartext forwarding exposes audit
 	// payloads on the wire, and an auth_token over plaintext is refused
-	// regardless of this flag (loopback destinations excepted).
+	// regardless of this flag. Numeric loopback destinations are exempt;
+	// named localhost is resolution-checked and dial-pinned by the runtime.
 	AllowInsecureHTTP bool `yaml:"allow_insecure_http" json:"-"`
 }
 

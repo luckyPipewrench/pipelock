@@ -103,6 +103,61 @@ func TestValidateForwarderValid(t *testing.T) {
 	}
 }
 
+func TestValidateForwarderCanonicalIPAllowlistEquality(t *testing.T) {
+	t.Parallel()
+	cfg := Defaults()
+	cfg.Emit.Forwarder = ForwarderConfig{
+		URL: "https://0x08080808/events", DestinationAllowlist: []string{"8.8.8.8"},
+		SpoolFile: "/var/lib/pipelock/siem.spool", CursorFile: "/var/lib/pipelock/siem.cursor",
+		MinSeverity: SeverityWarn, TimeoutSeconds: 5, QueueSize: 256,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate canonical target/allowlist equality: %v", err)
+	}
+}
+
+func TestValidateForwarderCanonicalizationMatchesRuntimeForms(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rawURL    string
+		allowlist string
+		wantError bool
+	}{
+		{name: "standard IPv4", rawURL: "https://8.8.8.8/events", allowlist: "8.8.8.8"},
+		{name: "full hex IPv4", rawURL: "https://0x08080808/events", allowlist: "8.8.8.8"},
+		{name: "dotted hex IPv4", rawURL: "https://0x08.0x08.0x08.0x08/events", allowlist: "8.8.8.8"},
+		{name: "dotted octal IPv4", rawURL: "https://010.010.010.010/events", allowlist: "8.8.8.8"},
+		{name: "mixed radix IPv4", rawURL: "https://0x08.010.8.0x08/events", allowlist: "8.8.8.8"},
+		{name: "full octal IPv4", rawURL: "https://01002004010/events", allowlist: "8.8.8.8"},
+		{name: "decimal IPv4", rawURL: "https://134744072/events", allowlist: "8.8.8.8"},
+		{name: "IPv4 mapped IPv6", rawURL: "https://[::ffff:8.8.8.8]/events", allowlist: "8.8.8.8"},
+		{name: "IPv6 zone", rawURL: "https://[2001:db8::1%25eth0]/events", allowlist: "2001:db8::1"},
+		{name: "trailing root dot", rawURL: "https://8.8.8.8./events", allowlist: "8.8.8.8"},
+		{name: "IPv4 bogus zone allowlist", rawURL: "https://10.0.0.1/events", allowlist: "10.0.0.1%x"},
+		{name: "hostname percent rejected", rawURL: "https://api.vendor.example/events", allowlist: "api%zone.vendor.example", wantError: true},
+		{name: "only one trailing root dot stripped", rawURL: "https://8.8.8.8../events", allowlist: "8.8.8.8", wantError: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Emit.Forwarder = ForwarderConfig{
+				URL: tc.rawURL, DestinationAllowlist: []string{tc.allowlist},
+				SpoolFile: "/var/lib/pipelock/siem.spool", CursorFile: "/var/lib/pipelock/siem.cursor",
+				MinSeverity: SeverityWarn, TimeoutSeconds: 5, QueueSize: 256,
+			}
+			err := cfg.Validate()
+			if tc.wantError && err == nil {
+				t.Fatal("Validate succeeded, want canonicalization rejection")
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("Validate canonicalization: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateForwarderTransportPolicyAllowsSafe(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

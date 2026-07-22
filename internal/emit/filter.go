@@ -86,9 +86,28 @@ func (s *FilteringSink) Close() error {
 }
 
 func (s *FilteringSink) Start() {
+	_ = s.Activate()
+}
+
+// Activate preserves activation errors from wrapped sinks. Legacy start-only
+// sinks remain supported and cannot report an activation failure.
+func (s *FilteringSink) Activate() error {
+	if activator, ok := s.sink.(interface{ Activate() error }); ok {
+		return activator.Activate()
+	}
 	if starter, ok := s.sink.(interface{ Start() }); ok {
 		starter.Start()
 	}
+	return nil
+}
+
+// ActivationConflictKeys delegates exclusive activation identities to the
+// inner sink so runtime reload can sequence shared-state forwarders safely.
+func (s *FilteringSink) ActivationConflictKeys() []string {
+	if keyed, ok := s.sink.(interface{ ActivationConflictKeys() []string }); ok {
+		return keyed.ActivationConflictKeys()
+	}
+	return nil
 }
 
 func containsFold(values []string, candidate string) bool {

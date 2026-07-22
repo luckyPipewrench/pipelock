@@ -469,6 +469,51 @@ func TestParseAlternativeIP(t *testing.T) {
 	}
 }
 
+func TestParseIPLiteralCanonicalizesStandardAlternativeAndZones(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+		v4   bool
+	}{
+		{name: "hostname", host: "api.vendor.example"},
+		{name: "hostname with percent", host: "api%zone.vendor.example"},
+		{name: "standard IPv4", host: "8.8.8.8", want: "8.8.8.8", v4: true},
+		{name: "hex IPv4", host: "0x08080808", want: "8.8.8.8", v4: true},
+		{name: "uppercase hex IPv4", host: "0X08080808", want: "8.8.8.8", v4: true},
+		{name: "dotted hex IPv4", host: "0x08.0x08.0x08.0x08", want: "8.8.8.8", v4: true},
+		{name: "dotted octal IPv4", host: "010.010.010.010", want: "8.8.8.8", v4: true},
+		{name: "mixed radix IPv4", host: "0X08.010.8.0x08", want: "8.8.8.8", v4: true},
+		{name: "full octal IPv4", host: "01002004010", want: "8.8.8.8", v4: true},
+		{name: "decimal IPv4", host: "134744072", want: "8.8.8.8", v4: true},
+		{name: "surrounding whitespace", host: " 8.8.8.8 ", want: "8.8.8.8", v4: true},
+		{name: "trailing DNS root", host: "8.8.8.8.", want: "8.8.8.8", v4: true},
+		{name: "double trailing DNS root", host: "8.8.8.8.."},
+		{name: "IPv4 bogus zone fails closed", host: "10.0.0.1%x", want: "10.0.0.1", v4: true},
+		{name: "IPv6 zone", host: "fe80::1%eth0", want: "fe80::1"},
+		{name: "IPv4-mapped IPv6", host: "::ffff:8.8.8.8", want: "8.8.8.8", v4: true},
+		{name: "uppercase IPv4-mapped IPv6", host: "::FFFF:8.8.8.8", want: "8.8.8.8", v4: true},
+		{name: "bracketed IPv6", host: "[2001:db8::1]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseIPLiteral(tt.host)
+			if tt.want == "" {
+				if got != nil {
+					t.Fatalf("ParseIPLiteral(%q) = %s, want nil", tt.host, got)
+				}
+				return
+			}
+			if got == nil || got.String() != tt.want {
+				t.Fatalf("ParseIPLiteral(%q) = %v, want %s", tt.host, got, tt.want)
+			}
+			if tt.v4 && len(got) != net.IPv4len {
+				t.Fatalf("ParseIPLiteral(%q) length = %d, want canonical IPv4 length %d", tt.host, len(got), net.IPv4len)
+			}
+		})
+	}
+}
+
 func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"}

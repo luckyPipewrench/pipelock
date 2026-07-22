@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -431,21 +432,41 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	}
 	s.killswitch.Reload(newCfg)
 
-	// Reload emit sinks: build new sinks from config, swap into
-	// emitter, close old sinks.
+	// Reload emit sinks: activate the replacement before publication. A
+	// forwarder sharing a spool or cursor requires the old worker to close first
+	// so the two can never race durable state; if the replacement then fails,
+	// the runtime reports
+	// a degraded reload and keeps the unswapped sink set (with that one forwarder
+	// closed) rather than claiming success.
 	newSinks, sinkErr := BuildEmitSinks(newCfg, s.metrics)
 	if sinkErr != nil {
-		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
-			fmt.Errorf("emit sink rebuild failed: %w", sinkErr))
-	} else {
-		oldSinks := s.emitter.ReloadSinks(newSinks)
-		for _, old := range oldSinks {
-			if closeErr := old.Close(); closeErr != nil {
-				s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
-					fmt.Errorf("closing old emit sink: %w", closeErr))
-			}
+		reloadErr := fmt.Errorf("emit sink rebuild failed; previous sinks retained: %w", sinkErr)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload degraded: %v\n", reloadErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), reloadErr)
+		s.logger.LogConfigReload("failed", reloadErr.Error(), newCfg.Hash())
+		return reloadErr
+	}
+	preclosed, activationErr := activateReplacementEmitSinks(s.emitSinks, newSinks)
+	if activationErr != nil {
+		for _, sink := range newSinks {
+			_ = sink.Close()
 		}
-		activateEmitSinks(newSinks)
+		reloadErr := fmt.Errorf("emit sink activation failed; previous sink set not swapped: %w", activationErr)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload degraded: %v\n", reloadErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), reloadErr)
+		s.logger.LogConfigReload("failed", reloadErr.Error(), newCfg.Hash())
+		return reloadErr
+	}
+	oldSinks := s.emitter.ReloadSinks(newSinks)
+	s.emitSinks = append([]emit.Sink(nil), newSinks...)
+	for i, old := range oldSinks {
+		if preclosed[i] {
+			continue
+		}
+		if closeErr := old.Close(); closeErr != nil {
+			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
+				fmt.Errorf("closing old emit sink: %w", closeErr))
+		}
 	}
 
 	if needsHITLApprover(newCfg) && !s.hasApprover {
@@ -891,6 +912,7 @@ func (s *Server) cleanup() {
 	if s.emitter != nil {
 		_ = s.emitter.Close()
 		s.emitter = nil
+		s.emitSinks = nil
 	}
 	if s.logger != nil {
 		s.logger.Close()

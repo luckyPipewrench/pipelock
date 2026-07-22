@@ -46,6 +46,7 @@ const (
 
 var (
 	ErrQueueFull             = errors.New("siem forwarder queue full, event dropped")
+	ErrActivationFailed      = errors.New("siem forwarder activation failed")
 	errClosed                = errors.New("siem forwarder closed")
 	errDestinationUnresolved = errors.New("siem forwarder destination unresolved")
 	// errPermanentEncode marks an event that can never be serialized (e.g. a
@@ -105,12 +106,14 @@ type DeliveryEvent struct {
 }
 
 type Health struct {
-	Queued      int       `json:"queued"`
-	Delivered   uint64    `json:"delivered"`
-	Failed      uint64    `json:"failed"`
-	Dropped     uint64    `json:"dropped"`
-	LastError   string    `json:"last_error,omitempty"`
-	LastSuccess time.Time `json:"last_success_time,omitempty"`
+	Active          bool      `json:"active"`
+	ActivationError string    `json:"activation_error,omitempty"`
+	Queued          int       `json:"queued"`
+	Delivered       uint64    `json:"delivered"`
+	Failed          uint64    `json:"failed"`
+	Dropped         uint64    `json:"dropped"`
+	LastError       string    `json:"last_error,omitempty"`
+	LastSuccess     time.Time `json:"last_success_time,omitempty"`
 }
 
 type cursor struct {
@@ -132,11 +135,15 @@ type Forwarder struct {
 	start               sync.Once
 	lifecycleMu         sync.Mutex
 	closed              bool
+	active              bool
+	activationErr       error
 	resourceClose       sync.Once
 	observer            Observer
 	isInternalIP        func(net.IP) bool
 	closeResources      func()
 	allowPrivateLiteral bool
+	allowNamedLoopback  bool
+	targetLiteral       net.IP
 	appendEvent         func(emit.Event) error
 	maxSpoolBytes       int64
 	lockFile            *os.File
@@ -199,11 +206,21 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 			}
 		}
 	}
-	allowPrivateLiteral := net.ParseIP(target.Hostname()) != nil
+	targetLiteral := scanner.ParseIPLiteral(target.Hostname())
+	allowPrivateLiteral := targetLiteral != nil
+	allowNamedLoopback := target.Scheme == "http" && normalizeHost(target.Hostname()) == "localhost"
+	// "localhost" is an identity claim, not merely a cleartext transport
+	// exemption. Keep it pinned to loopback even when the operator separately
+	// allows insecure HTTP; otherwise DNS can retarget an allowlisted localhost
+	// destination to a non-loopback address.
 	validationCtx, validationCancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer validationCancel()
 	var startupResolutionErr error
-	if err := validateResolvedHost(validationCtx, resolver, target.Hostname(), internalIP, allowPrivateLiteral); err != nil {
+	resolvedPolicy := resolvedHostPolicy{
+		allowPrivate:   allowPrivateLiteral,
+		namedLocalhost: allowNamedLoopback,
+	}
+	if err := validateResolvedHost(validationCtx, resolver, target.Hostname(), internalIP, resolvedPolicy); err != nil {
 		if errors.Is(err, errDestinationUnresolved) {
 			startupResolutionErr = err
 		} else {
@@ -242,6 +259,8 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 		isInternalIP:        internalIP,
 		closeResources:      closeResources,
 		allowPrivateLiteral: allowPrivateLiteral,
+		allowNamedLoopback:  allowNamedLoopback,
+		targetLiteral:       targetLiteral,
 		maxSpoolBytes:       cfg.MaxSpoolBytes,
 		deliverCtx:          deliverCtx,
 		deliverCancel:       deliverCancel,
@@ -266,21 +285,24 @@ func New(cfg Config, opts Options) (*Forwarder, error) {
 		f.recordFailure(startupResolutionErr)
 	}
 	if !opts.DeferredStart {
-		f.Start()
+		if err := f.Activate(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
 	}
 	return f, nil
 }
 
-// Start activates replay and delivery. Runtime reloads build a dormant
-// replacement, close the old sink, then start the replacement so two workers
-// never race the same spool and cursor.
-func (f *Forwarder) Start() {
+// Activate starts replay and delivery after acquiring the exclusive state
+// lock. A failed activation remains observable and all later emits fail closed.
+func (f *Forwarder) Activate() error {
+	f.lifecycleMu.Lock()
+	if f.closed {
+		f.lifecycleMu.Unlock()
+		return errClosed
+	}
+	var recordErr error
 	f.start.Do(func() {
-		f.lifecycleMu.Lock()
-		defer f.lifecycleMu.Unlock()
-		if f.closed {
-			return
-		}
 		// Acquire the exclusive state lock at delivery time, not in New: a
 		// reload builds the replacement while the outgoing forwarder still
 		// holds the lock, and only releases it on Close before this Start
@@ -289,13 +311,60 @@ func (f *Forwarder) Start() {
 		// events queue and overflow rather than racing another writer.
 		lock, err := acquireStateLock(f.cfg.SpoolFile)
 		if err != nil {
-			f.recordFailure(err)
+			f.activationErr = fmt.Errorf("%w: %w", ErrActivationFailed, err)
+			recordErr = f.activationErr
 			return
 		}
 		f.lockFile = lock
+		f.active = true
 		f.worker.Add(1)
 		go f.run()
 	})
+	activationErr := f.activationErr
+	f.lifecycleMu.Unlock()
+	// Observer callbacks and stderr reporting are external work. Keep them out
+	// of lifecycleMu so an observer that inspects Health cannot deadlock.
+	if recordErr != nil {
+		f.recordFailure(recordErr)
+	}
+	return activationErr
+}
+
+// Start preserves the legacy deferred-start interface. Callers that can handle
+// activation failure should prefer Activate.
+func (f *Forwarder) Start() {
+	_ = f.Activate()
+}
+
+// ActivationConflictKeys identifies every durable path used by the worker.
+// Runtime reload must close an outgoing forwarder before activating a
+// replacement that shares the spool, cursor, or spool-lock sidecar in any role;
+// otherwise two workers can race state or replace a lock file still held by the
+// outgoing worker.
+func (f *Forwarder) ActivationConflictKeys() []string {
+	return []string{
+		absoluteCleanPath(f.cfg.SpoolFile),
+		absoluteCleanPath(f.cfg.CursorFile),
+		absoluteCleanPath(f.cfg.SpoolFile + ".lock"),
+	}
+}
+
+func absoluteCleanPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		return resolved
+	}
+	// Cursor and lock files may not exist until the worker first writes or
+	// activates. Resolve their existing parent so two spellings through a
+	// symlinked directory still identify the same future durable path.
+	dir, base := filepath.Split(abs)
+	if resolvedDir, resolveErr := filepath.EvalSymlinks(filepath.Clean(dir)); resolveErr == nil {
+		return filepath.Join(resolvedDir, base)
+	}
+	return abs
 }
 
 func validateTarget(rawURL string, allowedHosts []string, authToken string, allowInsecureHTTP bool) (*url.URL, error) {
@@ -308,13 +377,13 @@ func validateTarget(rawURL string, allowedHosts []string, authToken string, allo
 	}
 	allowed := make(map[string]struct{}, len(allowedHosts))
 	for _, entry := range allowedHosts {
-		host := normalizeHost(entry)
-		if host == "" || (net.ParseIP(host) == nil && strings.ContainsAny(host, "*/:@[]")) {
+		host := canonicalHost(entry)
+		if host == "" || (scanner.ParseIPLiteral(host) == nil && strings.ContainsAny(host, "*/:@[]%")) {
 			return nil, fmt.Errorf("invalid siem forwarder allowed host %q: use an exact hostname only", entry)
 		}
 		allowed[host] = struct{}{}
 	}
-	host := normalizeHost(u.Hostname())
+	host := canonicalHost(u.Hostname())
 	if len(allowed) == 0 {
 		return nil, errors.New("siem forwarder requires a non-empty destination allowlist")
 	}
@@ -336,24 +405,36 @@ func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
 
+func canonicalHost(host string) string {
+	if ip := scanner.ParseIPLiteral(host); ip != nil {
+		return ip.String()
+	}
+	return normalizeHost(host)
+}
+
 // hostIsLoopback reports whether an already-normalized host refers to the local
 // machine, where plaintext http forwarding is acceptable.
 func hostIsLoopback(host string) bool {
 	if host == "localhost" {
 		return true
 	}
-	if ip := net.ParseIP(host); ip != nil {
+	if ip := scanner.ParseIPLiteral(host); ip != nil {
 		return ip.IsLoopback()
 	}
 	return false
 }
 
-func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host string, internal func(net.IP) bool, allowPrivateLiteral bool) error {
-	if ip := net.ParseIP(host); ip != nil {
-		if isImmutableDenyIP(ip) {
-			return fmt.Errorf("SSRF blocked: destination is cloud-metadata/link-local IP %s (never permitted even in the forwarder allowlist)", host)
+type resolvedHostPolicy struct {
+	allowPrivate   bool
+	namedLocalhost bool
+}
+
+func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host string, internal func(net.IP) bool, policy resolvedHostPolicy) error {
+	if ip := scanner.ParseIPLiteral(host); ip != nil {
+		if scanner.IsNonOverridableSSRFTarget(ip) {
+			return fmt.Errorf("SSRF blocked: destination is a non-overridable IP %s (metadata, link-local, multicast, and unspecified addresses are never permitted)", host)
 		}
-		if internal(ip) && !allowPrivateLiteral {
+		if internal(ip) && !policy.allowPrivate {
 			return fmt.Errorf("SSRF blocked: destination is internal IP %s", host)
 		}
 		return nil
@@ -365,7 +446,8 @@ func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host s
 	if len(ips) == 0 {
 		return fmt.Errorf("%w: DNS returned no addresses for %s", errDestinationUnresolved, host)
 	}
-	return assertResolvedIPsSafe(host, ips, internal, allowPrivateLiteral)
+	_, err = assertResolvedIPsSafe(host, ips, internal, policy)
+	return err
 }
 
 // assertResolvedIPsSafe rejects a resolved address set that contains an
@@ -373,31 +455,25 @@ func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host s
 // allowPrivate). Startup validation and connection-time pinning both call it so
 // the resolved-IP SSRF rule stays in lock-step and cannot drift between the two
 // paths.
-func assertResolvedIPsSafe(host string, ips []string, internal func(net.IP) bool, allowPrivate bool) error {
+func assertResolvedIPsSafe(host string, ips []string, internal func(net.IP) bool, policy resolvedHostPolicy) ([]net.IP, error) {
+	canonical := make([]net.IP, 0, len(ips))
 	for _, rawIP := range ips {
-		ip := net.ParseIP(stripZone(rawIP))
+		ip := scanner.ParseIPLiteral(rawIP)
 		if ip == nil {
-			return fmt.Errorf("SSRF blocked: unparseable DNS address %q for %s", rawIP, host)
+			return nil, fmt.Errorf("SSRF blocked: unparseable DNS address %q for %s", rawIP, host)
 		}
-		if isImmutableDenyIP(ip) {
-			return fmt.Errorf("SSRF blocked: %s resolves to cloud-metadata/link-local IP %s (never permitted even in the forwarder allowlist)", host, rawIP)
+		if scanner.IsNonOverridableSSRFTarget(ip) {
+			return nil, fmt.Errorf("SSRF blocked: %s resolves to non-overridable IP %s (metadata, link-local, multicast, and unspecified addresses are never permitted)", host, rawIP)
 		}
-		if internal(ip) && !allowPrivate {
-			return fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, rawIP)
+		if policy.namedLocalhost && !ip.IsLoopback() {
+			return nil, fmt.Errorf("SSRF blocked: plaintext localhost destination %s resolved to non-loopback IP %s", host, rawIP)
 		}
+		if internal(ip) && !policy.allowPrivate && (!policy.namedLocalhost || !ip.IsLoopback()) {
+			return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, rawIP)
+		}
+		canonical = append(canonical, ip)
 	}
-	return nil
-}
-
-func isImmutableDenyIP(ip net.IP) bool {
-	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || scanner.IsCloudMetadataIP(ip)
-}
-
-func stripZone(ip string) string {
-	if idx := strings.IndexByte(ip, '%'); idx >= 0 {
-		return ip[:idx]
-	}
-	return ip
+	return canonical, nil
 }
 
 func prepareStateFiles(spoolPath, cursorPath string) error {
@@ -511,13 +587,16 @@ func verifyCursor(spoolPath string, c cursor) error {
 }
 
 func (f *Forwarder) Emit(_ context.Context, event emit.Event) error {
-	if event.Severity < f.cfg.MinSeverity {
-		return nil
-	}
 	f.lifecycleMu.Lock()
 	defer f.lifecycleMu.Unlock()
 	if f.closed {
 		return errClosed
+	}
+	if f.activationErr != nil {
+		return f.activationErr
+	}
+	if event.Severity < f.cfg.MinSeverity {
+		return nil
 	}
 	select {
 	case f.queue <- event:
@@ -536,6 +615,7 @@ func (f *Forwarder) Close() error {
 	f.lifecycleMu.Lock()
 	if !f.closed {
 		f.closed = true
+		f.active = false
 		close(f.done)
 	}
 	f.lifecycleMu.Unlock()
@@ -554,15 +634,24 @@ func (f *Forwarder) Close() error {
 }
 
 func (f *Forwarder) Health() Health {
+	f.lifecycleMu.Lock()
+	active := f.active
+	activationError := ""
+	if f.activationErr != nil {
+		activationError = f.activationErr.Error()
+	}
+	f.lifecycleMu.Unlock()
 	f.healthMu.RLock()
 	defer f.healthMu.RUnlock()
 	return Health{
-		Queued:      len(f.queue),
-		Delivered:   f.delivered.Load(),
-		Failed:      f.failed.Load(),
-		Dropped:     f.dropped.Load(),
-		LastError:   f.lastError,
-		LastSuccess: f.lastOK,
+		Active:          active,
+		ActivationError: activationError,
+		Queued:          len(f.queue),
+		Delivered:       f.delivered.Load(),
+		Failed:          f.failed.Load(),
+		Dropped:         f.dropped.Load(),
+		LastError:       f.lastError,
+		LastSuccess:     f.lastOK,
 	}
 }
 
@@ -908,12 +997,13 @@ func (f *Forwarder) safeDialContext(ctx context.Context, network, addr string) (
 	if err != nil {
 		return nil, fmt.Errorf("siem forwarder split destination %q: %w", addr, err)
 	}
-	if normalizeHost(host) != normalizeHost(f.target.Hostname()) {
+	if canonicalHost(host) != canonicalHost(f.target.Hostname()) {
 		return nil, fmt.Errorf("siem forwarder refused unexpected destination host %q", host)
 	}
-	if literalIP := net.ParseIP(host); literalIP != nil {
-		if isImmutableDenyIP(literalIP) {
-			return nil, fmt.Errorf("SSRF blocked: destination is cloud-metadata/link-local IP %s (never permitted even in the forwarder allowlist)", host)
+	if f.targetLiteral != nil {
+		literalIP := f.targetLiteral
+		if scanner.IsNonOverridableSSRFTarget(literalIP) {
+			return nil, fmt.Errorf("SSRF blocked: destination is a non-overridable IP %s (metadata, link-local, multicast, and unspecified addresses are never permitted)", host)
 		}
 		if f.isInternalIP(literalIP) && !f.allowPrivateLiteral {
 			return nil, fmt.Errorf("SSRF blocked: destination is internal IP %s", host)
@@ -927,10 +1017,14 @@ func (f *Forwarder) safeDialContext(ctx context.Context, network, addr string) (
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
 	}
-	if err := assertResolvedIPsSafe(host, ips, f.isInternalIP, f.allowPrivateLiteral); err != nil {
+	canonical, err := assertResolvedIPsSafe(host, ips, f.isInternalIP, resolvedHostPolicy{
+		allowPrivate:   f.allowPrivateLiteral,
+		namedLocalhost: f.allowNamedLoopback,
+	})
+	if err != nil {
 		return nil, err
 	}
-	return f.dial(ctx, network, net.JoinHostPort(stripZone(ips[0]), port))
+	return f.dial(ctx, network, net.JoinHostPort(canonical[0].String(), port))
 }
 
 func persistCursor(path string, c cursor) error {

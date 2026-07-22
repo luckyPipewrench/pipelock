@@ -1090,6 +1090,29 @@ func parseAlternativeIP(hostname string) net.IP {
 	return net.IPv4(byte(val>>24), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
 }
 
+// ParseIPLiteral parses a standard or alternative IP literal into the scanner's
+// canonical net.IP. It strips a single trailing DNS root dot and any trailing
+// zone ID, decodes alternative IPv4 forms, and normalizes IPv4-mapped IPv6 to
+// four-byte IPv4. It returns nil for an ordinary hostname.
+func ParseIPLiteral(hostname string) net.IP {
+	hostname = strings.TrimSpace(hostname)
+	if zone := strings.IndexByte(hostname, '%'); zone >= 0 {
+		hostname = hostname[:zone]
+	}
+	hostname = strings.TrimSuffix(hostname, ".")
+	ip := net.ParseIP(hostname)
+	if ip == nil {
+		ip = parseAlternativeIP(hostname)
+	}
+	if ip == nil {
+		return nil
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4
+	}
+	return ip
+}
+
 // metadataIPv4s lists the well-known cloud-provider instance-metadata IPv4
 // endpoints that are operationally distinct from generic private-network
 // blocks. AWS / Azure / GCP IMDS all share 169.254.169.254. Azure also exposes

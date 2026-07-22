@@ -4,11 +4,15 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"os/signal"
+	goruntime "runtime"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -324,12 +328,83 @@ func applyEmitFilter(sinks []emit.Sink, cfg config.EmitFilter) []emit.Sink {
 	return wrapped
 }
 
-func activateEmitSinks(sinks []emit.Sink) {
-	for _, sink := range sinks {
+func activateEmitSinks(sinks []emit.Sink) error {
+	var activationErrors []error
+	for i, sink := range sinks {
+		if activator, ok := sink.(interface{ Activate() error }); ok {
+			if err := activator.Activate(); err != nil {
+				activationErrors = append(activationErrors, fmt.Errorf("sink %d (%T): %w", i, sink, err))
+			}
+			continue
+		}
 		if starter, ok := sink.(interface{ Start() }); ok {
 			starter.Start()
 		}
 	}
+	return errors.Join(activationErrors...)
+}
+
+func activationConflictKeys(sink emit.Sink) []string {
+	if keyed, ok := sink.(interface{ ActivationConflictKeys() []string }); ok {
+		return keyed.ActivationConflictKeys()
+	}
+	return nil
+}
+
+func activationKeysConflict(left, right string) bool {
+	if left == right || (goruntime.GOOS == "windows" && strings.EqualFold(left, right)) {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+}
+
+// activateReplacementEmitSinks activates a replacement set before publication.
+// Forwarders sharing any durable state identity are the exception: their
+// outgoing sink must release its state first. The returned map marks old sinks
+// already closed.
+// On activation failure the caller does not swap, so every non-conflicting old
+// sink keeps serving; a shared-state forwarder remains loudly degraded because
+// it cannot be restarted after releasing its lock.
+func activateReplacementEmitSinks(oldSinks, newSinks []emit.Sink) (map[int]bool, error) {
+	var newKeys []string
+	for _, sink := range newSinks {
+		for _, key := range activationConflictKeys(sink) {
+			if key != "" {
+				newKeys = append(newKeys, key)
+			}
+		}
+	}
+	preclosed := make(map[int]bool)
+	var closeErrors []error
+	for i, sink := range oldSinks {
+		conflicts := false
+		for _, oldKey := range activationConflictKeys(sink) {
+			if oldKey == "" {
+				continue
+			}
+			for _, newKey := range newKeys {
+				if conflicts = activationKeysConflict(oldKey, newKey); conflicts {
+					break
+				}
+			}
+			if conflicts {
+				break
+			}
+		}
+		if !conflicts {
+			continue
+		}
+		preclosed[i] = true
+		if err := sink.Close(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close conflicting old sink %d (%T): %w", i, sink, err))
+		}
+	}
+	if err := errors.Join(closeErrors...); err != nil {
+		return preclosed, err
+	}
+	return preclosed, activateEmitSinks(newSinks)
 }
 
 // RedactEndpoint strips userinfo, query, and fragment from an endpoint URL

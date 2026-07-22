@@ -103,6 +103,7 @@ type Server struct {
 	sentry                 *plsentry.Client
 	logger                 *audit.Logger
 	emitter                *emit.Emitter
+	emitSinks              []emit.Sink
 	scanner                *scanner.Scanner
 	metrics                *metrics.Metrics
 	killswitch             *killswitch.Controller
@@ -346,10 +347,20 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if instanceID == "" {
 		instanceID = emit.DefaultInstanceID()
 	}
+	if activationErr := activateEmitSinks(emitSinks); activationErr != nil {
+		activationErr = fmt.Errorf("activating configured emit sinks: %w", activationErr)
+		logger.LogError(audit.NewResourceLogContext("EMIT_ACTIVATION", opts.ConfigFile), activationErr)
+		_, _ = fmt.Fprintf(opts.Stderr, "WARNING: audit sink activation failed; startup aborted so configured audit delivery cannot be bypassed: %v\n", activationErr)
+		for _, sink := range emitSinks {
+			_ = sink.Close()
+		}
+		s.cleanup()
+		return nil, activationErr
+	}
 	emitter := emit.NewEmitter(instanceID, emitSinks...)
-	activateEmitSinks(emitSinks)
 	logger.SetEmitter(emitter)
 	s.emitter = emitter
+	s.emitSinks = append([]emit.Sink(nil), emitSinks...)
 	emitLicenseExpiryWarning(cfg, logger, sentryClient, opts.Stderr)
 
 	runtimeMode := config.RuntimeForward

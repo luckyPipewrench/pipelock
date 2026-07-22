@@ -5,6 +5,7 @@ package emit
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -166,6 +167,36 @@ func TestFilteringSinkStartsWrappedSink(t *testing.T) {
 	starter.Start()
 	if !inner.started {
 		t.Fatal("wrapped sink was not started")
+	}
+}
+
+type activatableMockSink struct {
+	mockSink
+	err       error
+	activated bool
+	started   bool
+}
+
+func (s *activatableMockSink) Activate() error {
+	s.activated = true
+	return s.err
+}
+
+func (s *activatableMockSink) Start() { s.started = true }
+
+func TestFilteringSinkPreservesActivationError(t *testing.T) {
+	wantErr := errors.New("state lock unavailable")
+	inner := &activatableMockSink{err: wantErr}
+	sink := NewFilteringSink(inner, Filter{Actions: []string{conventionActionBlock}})
+	activator, ok := sink.(interface{ Activate() error })
+	if !ok {
+		t.Fatal("filtered sink does not expose error-returning activation")
+	}
+	if err := activator.Activate(); !errors.Is(err, wantErr) {
+		t.Fatalf("Activate error = %v, want %v", err, wantErr)
+	}
+	if !inner.activated || inner.started {
+		t.Fatalf("activation delegation = activated:%v started:%v, want Activate preferred", inner.activated, inner.started)
 	}
 }
 

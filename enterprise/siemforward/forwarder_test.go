@@ -24,7 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -37,6 +39,12 @@ type sequenceResolver struct {
 }
 
 type blockingResolver struct{}
+
+type resolverFunc func(context.Context, string) ([]string, error)
+
+func (f resolverFunc) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return f(ctx, host)
+}
 
 func (blockingResolver) LookupHost(ctx context.Context, _ string) ([]string, error) {
 	<-ctx.Done()
@@ -99,6 +107,12 @@ func TestNewFailsClosedForUnsafeDestinations(t *testing.T) {
 		{name: "metadata literal 169.254.169.254 allowlisted", rawURL: "http://169.254.169.254/events", allowed: []string{"169.254.169.254"}},
 		{name: "azure wireserver literal 168.63.129.16 allowlisted", rawURL: "http://168.63.129.16/events", allowed: []string{"168.63.129.16"}},
 		{name: "ipv6 metadata literal fd00:ec2::254 allowlisted", rawURL: "http://[fd00:ec2::254]/events", allowed: []string{"fd00:ec2::254"}},
+		{name: "encoded metadata", rawURL: "http://0xa9fea9fe/events", allowed: []string{"169.254.169.254"}},
+		{name: "encoded unspecified", rawURL: "http://0x00000000/events", allowed: []string{"0.0.0.0"}},
+		{name: "encoded multicast", rawURL: "http://0xe0000001/events", allowed: []string{"224.0.0.1"}},
+		{name: "IPv4-mapped metadata", rawURL: "http://[::ffff:169.254.169.254]/events", allowed: []string{"169.254.169.254"}},
+		{name: "trailing root metadata", rawURL: "http://169.254.169.254./events", allowed: []string{"169.254.169.254"}},
+		{name: "zoned IPv6 multicast", rawURL: "http://[ff02::1%25eth0]/events", allowed: []string{"ff02::1"}},
 		{name: "private DNS", rawURL: "https://api.vendor.example/events", allowed: []string{"api.vendor.example"}, resolve: []string{"192.168.1.20"}},
 		{name: "missing allowlist", rawURL: "https://api.vendor.example/events", resolve: []string{testPublicIP}},
 		{name: "wrong allowlist", rawURL: "https://api.vendor.example/events", allowed: []string{"other.vendor.example"}, resolve: []string{testPublicIP}},
@@ -140,6 +154,8 @@ func TestNewAllowsExplicitPrivateIPLiteral(t *testing.T) {
 	}{
 		{name: "loopback sidecar", rawURL: "http://127.0.0.1/events", host: "127.0.0.1"},
 		{name: "rfc1918 siem", rawURL: "http://10.0.0.5/events", host: "10.0.0.5"},
+		{name: "encoded rfc1918 siem", rawURL: "http://0x0a000005/events", host: "10.0.0.5"},
+		{name: "public target", rawURL: "https://0x08080808/events", host: "8.8.8.8"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,6 +167,131 @@ func TestNewAllowsExplicitPrivateIPLiteral(t *testing.T) {
 			}
 			if err := f.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateResolvedHostTreatsIPv4ZoneSuffixAsLiteral(t *testing.T) {
+	t.Parallel()
+	internalChecks := 0
+	err := validateResolvedHost(t.Context(), resolverFunc(func(context.Context, string) ([]string, error) {
+		t.Fatal("literal target unexpectedly reached DNS resolution")
+		return nil, nil
+	}), "10.0.0.1%x", func(ip net.IP) bool {
+		internalChecks++
+		return ip.Equal(net.ParseIP("10.0.0.1"))
+	}, resolvedHostPolicy{allowPrivate: true})
+	if err != nil {
+		t.Fatalf("validateResolvedHost: %v", err)
+	}
+	if internalChecks != 1 {
+		t.Fatalf("internal checks = %d, want 1 canonical literal check", internalChecks)
+	}
+}
+
+func TestValidateTargetCanonicalIPAllowlistEquality(t *testing.T) {
+	t.Parallel()
+	if _, err := validateTarget("https://0x08080808/events", []string{"8.8.8.8"}, "", false); err != nil {
+		t.Fatalf("validateTarget canonical equality: %v", err)
+	}
+}
+
+func TestConfigAndRuntimeForwarderCanonicalizationParity(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rawURL    string
+		allowlist string
+	}{
+		{name: "standard IPv4", rawURL: "https://8.8.8.8/events", allowlist: "8.8.8.8"},
+		{name: "full hex IPv4", rawURL: "https://0x08080808/events", allowlist: "8.8.8.8"},
+		{name: "dotted hex IPv4", rawURL: "https://0x08.0x08.0x08.0x08/events", allowlist: "8.8.8.8"},
+		{name: "dotted octal IPv4", rawURL: "https://010.010.010.010/events", allowlist: "8.8.8.8"},
+		{name: "mixed radix IPv4", rawURL: "https://0x08.010.8.0x08/events", allowlist: "8.8.8.8"},
+		{name: "full octal IPv4", rawURL: "https://01002004010/events", allowlist: "8.8.8.8"},
+		{name: "decimal IPv4", rawURL: "https://134744072/events", allowlist: "8.8.8.8"},
+		{name: "IPv4 mapped IPv6", rawURL: "https://[::ffff:8.8.8.8]/events", allowlist: "8.8.8.8"},
+		{name: "uppercase IPv4 mapped IPv6", rawURL: "https://[::FFFF:8.8.8.8]/events", allowlist: "8.8.8.8"},
+		{name: "IPv6 zone", rawURL: "https://[2001:db8::1%25eth0]/events", allowlist: "2001:db8::1"},
+		{name: "trailing root dot", rawURL: "https://8.8.8.8./events", allowlist: "8.8.8.8"},
+		{name: "allowlist whitespace", rawURL: "https://8.8.8.8/events", allowlist: " 8.8.8.8 "},
+		{name: "IPv4 bogus zone allowlist", rawURL: "https://10.0.0.1/events", allowlist: "10.0.0.1%x"},
+		{name: "hostname percent rejected", rawURL: "https://api.vendor.example/events", allowlist: "api%zone.vendor.example"},
+		{name: "only one trailing root dot stripped", rawURL: "https://8.8.8.8../events", allowlist: "8.8.8.8"},
+		{name: "bracketed allowlist rejected", rawURL: "https://[2001:db8::1]/events", allowlist: "[2001:db8::1]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Emit.Forwarder = config.ForwarderConfig{
+				URL: tc.rawURL, DestinationAllowlist: []string{tc.allowlist},
+				SpoolFile: "/var/lib/pipelock/siem.spool", CursorFile: "/var/lib/pipelock/siem.cursor",
+				MinSeverity: config.SeverityWarn, TimeoutSeconds: 5, QueueSize: 256,
+			}
+			configErr := cfg.Validate()
+			_, runtimeErr := validateTarget(tc.rawURL, []string{tc.allowlist}, "", false)
+			if (configErr == nil) != (runtimeErr == nil) {
+				t.Fatalf("canonicalization parity: config error = %v, runtime error = %v", configErr, runtimeErr)
+			}
+		})
+	}
+}
+
+func TestConfigForwarderAllowlistParserParityWithScanner(t *testing.T) {
+	t.Parallel()
+	forms := []struct {
+		form       string
+		targetHost string
+		wantIP     string
+	}{
+		{form: "8.8.8.8", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "0x08080808", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "0X08080808", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "0x08.0x08.0x08.0x08", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "0X08.010.8.0x08", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "010.010.010.010", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "01002004010", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "134744072", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "8.8.8.8.", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "8.8.8.8..", targetHost: "8.8.8.8"},
+		{form: " 8.8.8.8 ", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "8.8.8.8%x", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "::ffff:8.8.8.8", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "::FFFF:8.8.8.8", targetHost: "8.8.8.8", wantIP: "8.8.8.8"},
+		{form: "2001:db8::1", targetHost: "[2001:db8::1]", wantIP: "2001:db8::1"},
+		{form: "2001:db8::1%eth0", targetHost: "[2001:db8::1]", wantIP: "2001:db8::1"},
+		{form: "[2001:db8::1]", targetHost: "[2001:db8::1]"},
+	}
+	for _, tc := range forms {
+		t.Run(tc.form, func(t *testing.T) {
+			t.Parallel()
+			ip := scanner.ParseIPLiteral(tc.form)
+			if tc.wantIP == "" {
+				if ip != nil {
+					t.Fatalf("scanner.ParseIPLiteral(%q) = %s, want nil", tc.form, ip)
+				}
+			} else if ip == nil || ip.String() != tc.wantIP {
+				t.Fatalf("scanner.ParseIPLiteral(%q) = %v, want %s", tc.form, ip, tc.wantIP)
+			}
+			rawURL := "https://" + tc.targetHost + "/events"
+			cfg := config.Defaults()
+			cfg.Emit.Forwarder = config.ForwarderConfig{
+				URL: rawURL, DestinationAllowlist: []string{tc.form},
+				SpoolFile: "/var/lib/pipelock/siem.spool", CursorFile: "/var/lib/pipelock/siem.cursor",
+				MinSeverity: config.SeverityWarn, TimeoutSeconds: 5, QueueSize: 256,
+			}
+			configErr := cfg.Validate()
+			_, runtimeErr := validateTarget(rawURL, []string{tc.form}, "", false)
+			if tc.wantIP == "" {
+				if configErr == nil || runtimeErr == nil {
+					t.Fatalf("unsupported form %q accepted: config error=%v runtime error=%v", tc.form, configErr, runtimeErr)
+				}
+				return
+			}
+			if configErr != nil || runtimeErr != nil {
+				t.Fatalf("parser drift for %q -> %s: config error=%v runtime error=%v", tc.form, ip, configErr, runtimeErr)
 			}
 		})
 	}
@@ -169,13 +310,13 @@ func TestAssertResolvedIPsSafeDeniesImmutableRangesWithPrivateAllowed(t *testing
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := assertResolvedIPsSafe("api.vendor.example", []string{tc.ip}, func(net.IP) bool {
+			_, err := assertResolvedIPsSafe("api.vendor.example", []string{tc.ip}, func(net.IP) bool {
 				return false
-			}, true)
+			}, resolvedHostPolicy{allowPrivate: true})
 			if err == nil {
 				t.Fatal("assertResolvedIPsSafe allowed immutable-deny IP with allowPrivate=true")
 			}
-			if !strings.Contains(err.Error(), "cloud-metadata/link-local IP") {
+			if !strings.Contains(err.Error(), "non-overridable IP") {
 				t.Fatalf("error = %q, want immutable-deny reason", err)
 			}
 		})
@@ -203,6 +344,7 @@ func TestSafeDialContextDeniesImmutableLiteralWithPrivateAllowed(t *testing.T) {
 			dialed := false
 			f := &Forwarder{
 				target:              target,
+				targetLiteral:       scanner.ParseIPLiteral(tc.host),
 				isInternalIP:        func(net.IP) bool { return false },
 				allowPrivateLiteral: true,
 				dial: func(context.Context, string, string) (net.Conn, error) {
@@ -214,7 +356,7 @@ func TestSafeDialContextDeniesImmutableLiteralWithPrivateAllowed(t *testing.T) {
 			if err == nil {
 				t.Fatal("safeDialContext allowed immutable-deny literal with allowPrivateLiteral=true")
 			}
-			if !strings.Contains(err.Error(), "cloud-metadata/link-local IP") {
+			if !strings.Contains(err.Error(), "non-overridable IP") {
 				t.Fatalf("error = %q, want immutable-deny reason", err)
 			}
 			if dialed {
@@ -226,7 +368,7 @@ func TestSafeDialContextDeniesImmutableLiteralWithPrivateAllowed(t *testing.T) {
 
 func TestForwarderIPLiteralCannotBeRetargetedByResolver(t *testing.T) {
 	t.Parallel()
-	cfg := testConfig(t, "http://"+testPublicIP+"/events")
+	cfg := testConfig(t, "http://0xcb00710a/events")
 	cfg.AllowedHosts = []string{testPublicIP}
 	dialed := make(chan string, 1)
 	f, err := New(cfg, Options{
@@ -280,6 +422,105 @@ func TestForwarderDeniesDNSRebindingAtSendTime(t *testing.T) {
 	}
 	if got := f.Health().Delivered; got != 0 {
 		t.Fatalf("Delivered = %d, want 0", got)
+	}
+}
+
+func TestForwarderPlaintextLocalhostRequiresLoopbackResolution(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		answers       []string
+		authToken     string
+		allowInsecure bool
+	}{
+		{name: "public", answers: []string{testPublicIP}},
+		{name: "mixed", answers: []string{"127.0.0.1", testPublicIP}},
+		{name: "insecure flag does not retarget localhost", answers: []string{testPublicIP}, allowInsecure: true},
+		{name: "auth token still requires loopback with insecure flag", answers: []string{testPublicIP}, authToken: "secret", allowInsecure: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "http://localhost/events")
+			cfg.AllowedHosts = []string{"localhost"}
+			cfg.AuthToken = tc.authToken
+			cfg.AllowInsecureHTTP = tc.allowInsecure
+			if _, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{tc.answers}}}); err == nil || !strings.Contains(err.Error(), "non-loopback") {
+				t.Fatalf("New error = %v, want non-loopback localhost rejection", err)
+			}
+		})
+	}
+}
+
+func TestForwarderPlaintextLocalhostPinsLoopbackAndBlocksRebinding(t *testing.T) {
+	t.Parallel()
+	for _, allowInsecure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allow_insecure_http=%t", allowInsecure), func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig(t, "http://localhost/events")
+			cfg.AllowedHosts = []string{"localhost"}
+			cfg.AllowInsecureHTTP = allowInsecure
+			resolver := &sequenceResolver{answers: [][]string{{"127.0.0.1"}, {testPublicIP}}}
+			dialed := make(chan string, 1)
+			f, err := New(cfg, Options{
+				Resolver: resolver,
+				DialContext: func(_ context.Context, _, addr string) (net.Conn, error) {
+					dialed <- addr
+					return nil, errors.New("must not dial rebound address")
+				},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			if err := f.Emit(t.Context(), testEvent(1)); err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			waitFor(t, func() bool { return f.Health().Failed > 0 })
+			select {
+			case addr := <-dialed:
+				t.Fatalf("dialer called after localhost rebound: %s", addr)
+			default:
+			}
+		})
+	}
+}
+
+func TestForwarderPlaintextLocalhostServesLoopback(t *testing.T) {
+	t.Parallel()
+	received := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := testConfig(t, "http://localhost/events")
+	cfg.AllowedHosts = []string{"localhost"}
+	cfg.AllowInsecureHTTP = false
+	f, err := New(cfg, Options{
+		Resolver:    &sequenceResolver{answers: [][]string{{"127.0.0.1"}}},
+		DialContext: routeToServer(t, srv),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if err := f.Emit(t.Context(), testEvent(1)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("loopback localhost delivery was not served")
+	}
+}
+
+func TestForwarderAllowInsecureLocalhostStillRequiresLoopback(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t, "http://localhost/events")
+	cfg.AllowedHosts = []string{"localhost"}
+	cfg.AllowInsecureHTTP = true
+	if _, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}}); err == nil || !strings.Contains(err.Error(), "non-loopback") {
+		t.Fatalf("New error = %v, want non-loopback localhost rejection despite cleartext opt-in", err)
 	}
 }
 
@@ -853,38 +1094,92 @@ func TestNewEnforcesTransportConfidentiality(t *testing.T) {
 	}
 }
 
-func TestStartTakesExclusiveStateLock(t *testing.T) {
+func TestActivationFailureFailsClosedAndIsObservable(t *testing.T) {
 	t.Parallel()
 	failingDial := func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("no endpoint")
 	}
 	cfg := testConfig(t, "http://api.vendor.example/events")
+	cfg.MinSeverity = emit.SeverityWarn
 	first, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
 	if err != nil {
 		t.Fatalf("New first: %v", err)
 	}
-	// A second forwarder on the same spool/cursor cannot start delivery: the
-	// exclusive lock is already held, so it fails safe rather than racing.
-	second, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
+	// A deferred replacement can be constructed while the old worker holds the
+	// spool lock, but Activate must return a stable fail-closed error.
+	second, err := New(cfg, Options{
+		Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial, DeferredStart: true,
+	})
 	if err != nil {
-		t.Fatalf("New second: %v", err)
+		t.Fatalf("New deferred second: %v", err)
 	}
-	if got := second.Health().LastError; !strings.Contains(got, "locked by another process") {
-		t.Fatalf("second forwarder LastError = %q, want a lock conflict", got)
+	if err := second.Activate(); !errors.Is(err, ErrActivationFailed) {
+		t.Fatalf("Activate error = %v, want ErrActivationFailed", err)
+	}
+	belowThreshold := testEvent(2)
+	belowThreshold.Severity = emit.SeverityInfo
+	if err := second.Emit(t.Context(), belowThreshold); !errors.Is(err, ErrActivationFailed) {
+		t.Fatalf("below-threshold Emit error = %v, want ErrActivationFailed", err)
+	}
+	health := second.Health()
+	if health.Active || !strings.Contains(health.ActivationError, ErrActivationFailed.Error()) {
+		t.Fatalf("second health = %+v, want inactive activation failure", health)
 	}
 	_ = second.Close()
+
+	// The ordinary non-deferred constructor returns the same activation error;
+	// it never hands the caller a silently dormant sink.
+	if third, thirdErr := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial}); !errors.Is(thirdErr, ErrActivationFailed) {
+		if third != nil {
+			_ = third.Close()
+		}
+		t.Fatalf("New activation error = %v, want ErrActivationFailed", thirdErr)
+	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close first: %v", err)
 	}
 	// Once the first releases the lock, a fresh forwarder acquires it cleanly.
-	third, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
+	fourth, err := New(cfg, Options{Resolver: &sequenceResolver{answers: [][]string{{testPublicIP}}}, DialContext: failingDial})
 	if err != nil {
-		t.Fatalf("New third: %v", err)
+		t.Fatalf("New fourth: %v", err)
 	}
-	t.Cleanup(func() { _ = third.Close() })
-	if got := third.Health().LastError; strings.Contains(got, "locked by another process") {
-		t.Fatalf("third forwarder still reports a lock conflict: %q", got)
+	t.Cleanup(func() { _ = fourth.Close() })
+	if health := fourth.Health(); !health.Active || health.ActivationError != "" {
+		t.Fatalf("fourth forwarder health = %+v, want active", health)
 	}
+}
+
+func TestForwarderConcurrentEmitActivateClose(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t, "http://api.vendor.example/events")
+	f, err := New(cfg, Options{
+		Resolver:      &sequenceResolver{answers: [][]string{{testPublicIP}}},
+		DeferredStart: true,
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("endpoint unavailable")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_ = f.Emit(t.Context(), testEvent(n))
+		}(i)
+	}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = f.Activate()
+	}()
+	go func() {
+		defer wg.Done()
+		_ = f.Close()
+	}()
+	wg.Wait()
 }
 
 func TestForwarderDropsUnencodableEventWithoutBlocking(t *testing.T) {

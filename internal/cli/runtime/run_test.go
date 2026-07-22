@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1530,4 +1531,171 @@ logging:
 		}
 		return nil
 	})
+}
+
+type runtimeActivationSink struct {
+	activationErr error
+	activated     atomic.Bool
+	started       atomic.Bool
+	closed        atomic.Bool
+	emitted       atomic.Int32
+}
+
+func (s *runtimeActivationSink) Emit(context.Context, emit.Event) error {
+	s.emitted.Add(1)
+	return nil
+}
+
+func (s *runtimeActivationSink) Close() error {
+	s.closed.Store(true)
+	return nil
+}
+
+func (s *runtimeActivationSink) Activate() error {
+	s.activated.Store(true)
+	return s.activationErr
+}
+
+func (s *runtimeActivationSink) Start() {
+	s.started.Store(true)
+}
+
+var errReloadWindowSinkClosed = errors.New("reload-window sink closed")
+
+type reloadWindowSink struct {
+	key           string
+	activationErr error
+	closeStarted  chan struct{}
+	releaseClose  chan struct{}
+	activated     atomic.Bool
+	closed        atomic.Bool
+	accepted      atomic.Int32
+	rejected      atomic.Int32
+}
+
+func (s *reloadWindowSink) Emit(context.Context, emit.Event) error {
+	if s.closed.Load() {
+		s.rejected.Add(1)
+		return errReloadWindowSinkClosed
+	}
+	s.accepted.Add(1)
+	return nil
+}
+
+func (s *reloadWindowSink) Close() error {
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if s.closeStarted != nil {
+		close(s.closeStarted)
+	}
+	if s.releaseClose != nil {
+		<-s.releaseClose
+	}
+	return nil
+}
+
+func (s *reloadWindowSink) Activate() error {
+	s.activated.Store(true)
+	return s.activationErr
+}
+
+func (s *reloadWindowSink) ActivationConflictKeys() []string { return []string{s.key} }
+
+func TestActivateEmitSinksReturnsErrorsAndPrefersActivate(t *testing.T) {
+	wantOne := errors.New("first activation failed")
+	wantTwo := errors.New("second activation failed")
+	first := &runtimeActivationSink{activationErr: wantOne}
+	second := &runtimeActivationSink{activationErr: wantTwo}
+	err := activateEmitSinks([]emit.Sink{first, second})
+	if !errors.Is(err, wantOne) || !errors.Is(err, wantTwo) {
+		t.Fatalf("activateEmitSinks error = %v, want both activation errors", err)
+	}
+	if !first.activated.Load() || !second.activated.Load() || first.started.Load() || second.started.Load() {
+		t.Fatal("activateEmitSinks did not prefer error-returning Activate")
+	}
+}
+
+func TestFailedReplacementActivationDoesNotSwapOldSink(t *testing.T) {
+	oldSink := &runtimeActivationSink{}
+	wantErr := errors.New("replacement state lock failed")
+	newSink := &runtimeActivationSink{activationErr: wantErr}
+	emitter := emit.NewEmitter("test", oldSink)
+	oldSinks := []emit.Sink{oldSink}
+	newSinks := []emit.Sink{newSink}
+	_, err := activateReplacementEmitSinks(oldSinks, newSinks)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("activateReplacementEmitSinks error = %v, want %v", err, wantErr)
+	}
+	// This is the runtime's swap gate: the replacement is published only after
+	// activation succeeds. Emit must therefore still reach the old sink.
+	if err == nil {
+		emitter.ReloadSinks(newSinks)
+	}
+	emitter.EmitWithSeverity(t.Context(), emit.SeverityWarn, "test", nil)
+	if oldSink.emitted.Load() != 1 || newSink.emitted.Load() != 0 {
+		t.Fatalf("emit counts old=%d new=%d, want old sink retained", oldSink.emitted.Load(), newSink.emitted.Load())
+	}
+	_ = emitter.Close()
+}
+
+func TestSameSpoolReloadWindowRejectsLoudlyWithoutSwappingFailedReplacement(t *testing.T) {
+	wantErr := errors.New("replacement activation failed")
+	oldSink := &reloadWindowSink{
+		key:          "/state/siem.spool",
+		closeStarted: make(chan struct{}),
+		releaseClose: make(chan struct{}),
+	}
+	newSink := &reloadWindowSink{key: oldSink.key, activationErr: wantErr}
+	emitter := emit.NewEmitter("test", oldSink)
+
+	type activationResult struct {
+		preclosed map[int]bool
+		err       error
+	}
+	result := make(chan activationResult, 1)
+	go func() {
+		preclosed, err := activateReplacementEmitSinks(
+			[]emit.Sink{oldSink},
+			[]emit.Sink{newSink},
+		)
+		result <- activationResult{preclosed: preclosed, err: err}
+	}()
+
+	// Close marks the old sink unavailable before waiting for its drain. The
+	// emitter still points at it during this window, so an event must receive a
+	// concrete sink error (which Emitter reports to stderr), never be accepted
+	// into a closed sink or panic on a closed channel.
+	select {
+	case <-oldSink.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old sink did not enter the same-spool close window")
+	}
+	emitter.EmitWithSeverity(t.Context(), emit.SeverityWarn, "during-reload-window", nil)
+	close(oldSink.releaseClose)
+
+	var got activationResult
+	select {
+	case got = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("replacement activation did not finish")
+	}
+	if !got.preclosed[0] || !errors.Is(got.err, wantErr) || !newSink.activated.Load() {
+		t.Fatalf("activation result preclosed=%v activated=%v err=%v", got.preclosed, newSink.activated.Load(), got.err)
+	}
+
+	// The failed replacement is not published. Subsequent events continue to
+	// hit the retained-but-closed old sink and fail observably.
+	emitter.EmitWithSeverity(t.Context(), emit.SeverityWarn, "after-activation-failure", nil)
+	if gotRejected := oldSink.rejected.Load(); gotRejected != 2 {
+		t.Fatalf("closed old sink rejected %d events, want both window events", gotRejected)
+	}
+	if gotAccepted := oldSink.accepted.Load(); gotAccepted != 0 {
+		t.Fatalf("closed old sink silently accepted %d events", gotAccepted)
+	}
+	if gotAccepted := newSink.accepted.Load(); gotAccepted != 0 {
+		t.Fatalf("failed replacement received %d events before publication", gotAccepted)
+	}
+	_ = emitter.Close()
+	_ = newSink.Close()
 }

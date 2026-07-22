@@ -2675,11 +2675,11 @@ func (c *Config) validateEmit() error {
 		if u.User != nil || u.Fragment != "" {
 			return fmt.Errorf("emit.forwarder.url must not contain userinfo or a fragment")
 		}
-		host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		host := canonicalForwarderHost(u.Hostname())
 		allowed := false
 		for _, entry := range c.Emit.Forwarder.DestinationAllowlist {
-			normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(entry), "."))
-			if normalized == "" || (net.ParseIP(normalized) == nil && strings.ContainsAny(normalized, "*/:@[]")) {
+			normalized := canonicalForwarderHost(entry)
+			if normalized == "" || (parseForwarderIPLiteral(normalized) == nil && strings.ContainsAny(normalized, "*/:@[]%")) {
 				return fmt.Errorf("invalid emit.forwarder.destination_allowlist entry %q: exact hostnames only", entry)
 			}
 			allowed = allowed || normalized == host
@@ -2711,15 +2711,66 @@ func (c *Config) validateEmit() error {
 }
 
 // forwarderHostIsLoopback reports whether an already-normalized forwarder host
-// refers to the local machine, where plaintext http is acceptable.
+// refers to the local machine, where plaintext http is acceptable. Named
+// localhost resolution is revalidated and pinned by the runtime forwarder.
 func forwarderHostIsLoopback(host string) bool {
 	if host == "localhost" {
 		return true
 	}
-	if ip := net.ParseIP(host); ip != nil {
+	if ip := parseForwarderIPLiteral(host); ip != nil {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+func canonicalForwarderHost(host string) string {
+	if ip := parseForwarderIPLiteral(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+}
+
+// parseForwarderIPLiteral mirrors scanner.ParseIPLiteral without importing the
+// scanner package (scanner depends on config). Keeping config-side allowlist
+// equality canonical prevents validation/runtime drift for encoded IPv4 forms.
+func parseForwarderIPLiteral(host string) net.IP {
+	host = strings.TrimSpace(host)
+	if zone := strings.IndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	host = strings.TrimSuffix(host, ".")
+	if ip := net.ParseIP(host); ip != nil {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4
+		}
+		return ip
+	}
+	if strings.Contains(host, ".") {
+		parts := strings.Split(host, ".")
+		if len(parts) != net.IPv4len {
+			return nil
+		}
+		octets := make([]byte, net.IPv4len)
+		nonstandard := false
+		for i, part := range parts {
+			value, err := strconv.ParseUint(part, 0, 16)
+			if err != nil || value > 255 {
+				return nil
+			}
+			octets[i] = byte(value)
+			nonstandard = nonstandard || strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X") ||
+				(len(part) > 1 && part[0] == '0' && part != "0")
+		}
+		if !nonstandard {
+			return nil
+		}
+		return net.IPv4(octets[0], octets[1], octets[2], octets[3]).To4()
+	}
+	value, err := strconv.ParseUint(host, 0, 32)
+	if err != nil {
+		return nil
+	}
+	return net.IPv4(byte(value>>24), byte(value>>16&0xFF), byte(value>>8&0xFF), byte(value&0xFF)).To4()
 }
 
 func validateEmitFilterValues(name string, values []string) error {

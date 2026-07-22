@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -166,6 +168,27 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 	}
 	if rpc.JSONRPC != jsonRPC20 {
 		t.Errorf("jsonrpc = %q, want %q", rpc.JSONRPC, jsonRPC20)
+	}
+}
+
+func TestRunWSProxy_UpstreamUsesConfiguredDialContext(t *testing.T) {
+	sc := testScannerForWS(t)
+	errDialBlocked := errors.New("sentinel dial blocked")
+	var dialCalls atomic.Int32
+	var stdout, stderr bytes.Buffer
+
+	err := RunWSProxy(context.Background(), strings.NewReader(""), &stdout, &stderr, "ws://api.vendor.example/mcp", MCPProxyOpts{
+		Scanner: sc,
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errDialBlocked
+		},
+	})
+	if !errors.Is(err, errDialBlocked) {
+		t.Fatalf("RunWSProxy error = %v, want sentinel dial error", err)
+	}
+	if dialCalls.Load() == 0 {
+		t.Fatal("configured dialer was not called")
 	}
 }
 

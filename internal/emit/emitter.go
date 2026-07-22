@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"time"
 )
@@ -73,10 +74,29 @@ func (e *Emitter) EmitWithSeverity(ctx context.Context, sev Severity, eventType 
 	e.mu.RUnlock()
 
 	for _, s := range sinks {
-		if err := s.Emit(ctx, event); err != nil {
+		if err := s.Emit(ctx, event); err != nil && !isExpectedSinkStatus(err) {
 			fmt.Fprintf(os.Stderr, "emit: sink error (event=%s): %v\n", eventType, err)
 		}
 	}
+}
+
+// isExpectedSinkStatus reports whether err is an exact routine, already-accounted
+// sink status: a queue-full drop or a degraded advisory. Each built-in sink
+// returns these sentinels directly after reflecting the status in Stats(). A
+// wrapped or joined error may carry a distinct failure and must remain visible.
+func isExpectedSinkStatus(err error) bool {
+	// Exact identity match, deliberately NOT errors.Is: a wrapped or joined error
+	// (e.g. errors.Join(ErrQueueFull, realErr)) may carry a distinct failure and
+	// must stay visible. slices.Contains compares by ==, so only a bare sentinel
+	// is treated as a routine, already-accounted status.
+	return slices.Contains(routineSinkStatuses, err)
+}
+
+// routineSinkStatuses are the exact sentinels a sink returns for a queue-full
+// drop or a degraded advisory, both already reflected in the sink's Stats().
+var routineSinkStatuses = []error{
+	ErrQueueFull, ErrSyslogQueueFull, ErrOTLPQueueFull,
+	ErrWebhookDegraded, ErrSyslogDegraded, ErrOTLPDegraded,
 }
 
 // ReloadSinks atomically replaces the sink set and returns the old sinks.

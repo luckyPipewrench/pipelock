@@ -69,10 +69,13 @@ type mcpListenerBlockDecision struct {
 //     SSRF posture at the call site. Matches the parity of the forward,
 //     reverse, and TLS-intercept transports, which all dial the configured
 //     upstream directly with a nil Proxy.
-func newReverseUpstreamTransport() *http.Transport {
+func newReverseUpstreamTransport(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableCompression = true
 	t.Proxy = nil
+	if dialContext != nil {
+		t.DialContext = dialContext
+	}
 	return t
 }
 
@@ -231,6 +234,7 @@ func RunHTTPListenerProxy(
 		TaintTrustedSourceFn:     opts.TaintTrustedSourceFn,
 		EnvelopeEmitter:          opts.envelopeEmitter(),
 		EnvelopeEmitterFn:        opts.EnvelopeEmitterFn,
+		DialContext:              opts.DialContext,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -249,12 +253,12 @@ func RunHTTPListenerProxy(
 	// internal/mcp/transport/httpclient.go:45.
 	upstreamClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: newReverseUpstreamTransport(),
+		Transport: newReverseUpstreamTransport(opts.DialContext),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	upstreamStreamTransport := newReverseUpstreamTransport()
+	upstreamStreamTransport := newReverseUpstreamTransport(opts.DialContext)
 	upstreamStreamTransport.ResponseHeaderTimeout = 30 * time.Second
 	upstreamStreamClient := &http.Client{
 		Timeout:       0,
@@ -425,6 +429,33 @@ func RunHTTPListenerProxy(
 				}
 			}
 			info.SetHeaders(w.Header())
+		}
+		// handleMetadataDialError recognizes a dial-time metadata refusal
+		// (MetadataDialBlockError from the metadata-safe dialer) and renders it
+		// through the shared block-decision path so it emits a receipt and stamps
+		// the ssrf_metadata block-reason header (403), matching every other
+		// listener block instead of a bare 502. Returns true when it handled the
+		// error, so every listener method (POST, SSE, DELETE) shares identical
+		// metadata-block behavior. Non-metadata dial errors return false and fall
+		// through to the caller's generic handling.
+		handleMetadataDialError := func(dialErr error, id json.RawMessage) bool {
+			var mdErr *MetadataDialBlockError
+			if !errors.As(dialErr, &mdErr) {
+				return false
+			}
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          blockreason.SSRFMetadata,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryNone,
+				layer:           scanner.ScannerSSRF,
+				pattern:         scanner.ScannerSSRFMetadata,
+				target:          upstreamURL,
+				receiptSeverity: config.SeverityHigh,
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("upstream resolves to a cloud metadata endpoint")))
+			return true
 		}
 		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
@@ -625,6 +656,9 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
+				if handleMetadataDialError(err, nil) {
+					return
+				}
 				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -748,6 +782,9 @@ func RunHTTPListenerProxy(
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
+				if handleMetadataDialError(err, nil) {
+					return
+				}
 				logUpstreamRequestError(safeLogW, r.Context())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1023,6 +1060,9 @@ func RunHTTPListenerProxy(
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
+			if handleMetadataDialError(err, frame.ID) {
+				return
+			}
 			logUpstreamRequestError(safeLogW, r.Context())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)

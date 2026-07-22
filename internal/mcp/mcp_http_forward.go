@@ -117,7 +117,7 @@ func RunHTTPProxy(
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
 
-	httpClient := transport.NewHTTPClient(upstreamURL, extraHeaders)
+	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
 	var upstreamMu sync.Mutex
 
 	// Tool scanning baseline for this session. Clone the caller's ToolCfg

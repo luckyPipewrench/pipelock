@@ -381,6 +381,35 @@ func TestMCPContractGateFallbacks(t *testing.T) {
 	}
 }
 
+func TestMCPUpstreamGateMetadataHardFloorWithoutContractLoader(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"169.254.0.0/16"}
+	cfg.SSRF.IPAllowlist = []string{"169.254.0.0/16"}
+	cfg.DNS.HostOverrides = map[string][]string{
+		"metadata-upstream.vendor.example": {"169.254.169.254"},
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	for _, upstreamURL := range []string{
+		"http://169.254.169.254/mcp",
+		"ws://metadata-upstream.vendor.example/mcp",
+	} {
+		t.Run(upstreamURL, func(t *testing.T) {
+			gate, err := evaluateMCPUpstreamGate(context.Background(), upstreamURL, MCPProxyOpts{Scanner: sc})
+			if err != nil {
+				t.Fatalf("upstream gate err = %v", err)
+			}
+			if gate.Verdict != config.ActionBlock || gate.LiveVerdict != config.ActionBlock {
+				t.Fatalf("metadata upstream gate = %+v, want block", gate)
+			}
+			if gate.WinningSource != contractruntime.WinningSourceScanner {
+				t.Fatalf("winning source = %q, want scanner", gate.WinningSource)
+			}
+		})
+	}
+}
+
 func TestMCPUpstreamGateForMethodRejectsGETWithPOSTOnlyContract(t *testing.T) {
 	opts := mcpLiveLockOpts(t, contractruntime.ModeLive,
 		contractruntimetest.HTTPEnforceRule("r-post-only", "api.example.com", "/", http.MethodPost))

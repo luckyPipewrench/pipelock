@@ -154,7 +154,7 @@ func (w *WebhookSink) Emit(_ context.Context, event Event) error {
 		return nil
 	default:
 		w.closeMu.Unlock()
-		w.recordDropped("queue_full", event, nil)
+		w.recordDropped("queue_full", nil)
 		return ErrQueueFull
 	}
 }
@@ -220,12 +220,13 @@ func (w *WebhookSink) safeSend(event Event) {
 
 // send POSTs a single event as JSON to the webhook URL.
 func (w *WebhookSink) send(event Event) {
-	// Snapshot the failure/drop count before the send so a successful delivery
-	// only clears the degraded flag if no failure or drop was recorded while
-	// this send was in flight. Without this, a concurrent queue-full drop (which
-	// sets degraded=true) could be silently erased by this send's success,
-	// leaving Dropped>0 while Degraded reported false.
-	failSnapshot := w.failed.Load() + w.dropped.Load()
+	// Snapshot the health-change counters before the send so a successful
+	// delivery only clears degraded health if no failure, drop, or abandonment
+	// was recorded while this send was in flight. Without this, a concurrent
+	// queue-full drop could be silently erased by this send's success.
+	failedSnapshot := w.failed.Load()
+	droppedSnapshot := w.dropped.Load()
+	abandonedSnapshot := w.abandoned.Load()
 
 	payload := webhookPayload{
 		Severity:  event.Severity.String(),
@@ -263,11 +264,17 @@ func (w *WebhookSink) send(event Event) {
 		return
 	}
 	w.delivered.Add(1)
-	// Only clear degraded if no failure/drop landed while this send was in
-	// flight; otherwise a concurrent drop's degraded signal would be lost.
-	if w.failed.Load()+w.dropped.Load() == failSnapshot {
+	w.lastErrMu.Lock()
+	// Clear paired health only if no newer failure, drop, or abandonment was
+	// recorded while this request was in flight. Rechecking under the same lock
+	// that guards health updates closes the check-then-clear race.
+	if w.failed.Load() == failedSnapshot &&
+		w.dropped.Load() == droppedSnapshot &&
+		w.abandoned.Load() == abandonedSnapshot {
 		w.degraded.Store(false)
+		w.lastErr = ""
 	}
+	w.lastErrMu.Unlock()
 }
 
 // Stats returns a consistent snapshot of webhook sink delivery health.
@@ -277,13 +284,14 @@ func (w *WebhookSink) Stats() WebhookStats {
 	}
 	w.lastErrMu.Lock()
 	lastErr := w.lastErr
+	degraded := w.degraded.Load()
 	w.lastErrMu.Unlock()
 	stats := WebhookStats{
 		Delivered: w.delivered.Load(),
 		Failed:    w.failed.Load(),
 		Dropped:   w.dropped.Load(),
 		Abandoned: w.abandoned.Load(),
-		Degraded:  w.degraded.Load(),
+		Degraded:  degraded,
 		LastError: lastErr,
 	}
 	if w.queue != nil {
@@ -314,26 +322,32 @@ func sanitizeWebhookErr(err error) string {
 
 func (w *WebhookSink) recordFailure(reason string, event Event, err error) {
 	w.failed.Add(1)
+	w.lastErrMu.Lock()
 	w.degraded.Store(true)
 	if err != nil {
-		w.lastErrMu.Lock()
 		w.lastErr = sanitizeWebhookErr(err)
-		w.lastErrMu.Unlock()
 	}
+	w.lastErrMu.Unlock()
 	w.logDiagnostic("delivery_failed", reason, event, err, 0)
 }
 
-func (w *WebhookSink) recordDropped(reason string, event Event, err error) {
+// recordDropped accounts for an event dropped on the Emit hot path (queue full).
+// It only updates atomic counters and lastErr and MUST NOT write a diagnostic
+// synchronously: Emit runs on the request/enforcement path, and a queue-full
+// drop means the system is already under telemetry backpressure, so a synchronous
+// stderr write (which can block on a stalled pipe/journald) could turn that
+// backpressure into request-path blocking. The drop is observable via
+// Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
+func (w *WebhookSink) recordDropped(reason string, err error) {
 	w.dropped.Add(1)
-	w.degraded.Store(true)
 	lastErr := reason
 	if err != nil {
 		lastErr = sanitizeWebhookErr(err)
 	}
 	w.lastErrMu.Lock()
+	w.degraded.Store(true)
 	w.lastErr = lastErr
 	w.lastErrMu.Unlock()
-	w.logDiagnostic("event_dropped", reason, event, err, 0)
 }
 
 func (w *WebhookSink) recordAbandoned(reason string, count int) {
@@ -341,8 +355,8 @@ func (w *WebhookSink) recordAbandoned(reason string, count int) {
 		return
 	}
 	w.abandoned.Add(uint64(count))
-	w.degraded.Store(true)
 	w.lastErrMu.Lock()
+	w.degraded.Store(true)
 	w.lastErr = reason
 	w.lastErrMu.Unlock()
 	w.logDiagnostic("events_abandoned", reason, Event{Type: "unknown"}, nil, count)

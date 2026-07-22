@@ -56,7 +56,7 @@ func RunWSProxy(
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
 
-	wsClient, err := transport.NewWSClient(innerCtx, upstreamURL)
+	wsClient, err := transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
 	if err != nil {
 		return fmt.Errorf("connecting to upstream: %w", err)
 	}

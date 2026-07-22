@@ -51,8 +51,8 @@ func TestSourceBuildVersionIsArtifactSafe(t *testing.T) {
 				t.Fatalf("version label %q contains a Kubernetes-unsafe character", label)
 			}
 
-			if len(image.Tag) > 63 || len(label) > 63 {
-				t.Fatalf("version-derived artifact values exceed 63 bytes: tag=%d label=%d", len(image.Tag), len(label))
+			if len(image.Tag) > 128 || len(label) > 63 {
+				t.Fatalf("version-derived artifact values exceed limits (OCI tag 128, k8s label 63): tag=%d label=%d", len(image.Tag), len(label))
 			}
 		})
 	}

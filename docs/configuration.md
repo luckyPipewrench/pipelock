@@ -1894,17 +1894,14 @@ Budgets cap what an agent can do within a rolling time window. All fields defaul
 | `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection (0 = disabled, default 20 when set). **Enforced.** |
 | `max_wall_clock_minutes` | `int` | `0` | Max session duration in minutes (0 = unlimited). **Enforced.** |
 | `dow_action` | `string` | `"block"` | Action when a denial-of-wallet limit is exceeded: `"block"` (reject the tool call) or `"warn"` (log and allow) |
-| `max_concurrent_tool_calls` | `int` | `0` | Max parallel in-flight tool calls (0 = unlimited). **Enforced.** |
-| `max_retries_per_endpoint` | `int` | `0` | Max calls to the same domain+path (0 = unlimited, default 20 when set). **Enforced.** |
-| `fan_out_limit` | `int` | `0` | Max unique endpoints within the fan-out window (0 = unlimited). **Enforced.** |
-| `fan_out_window_seconds` | `int` | `0` | Sliding window for fan-out detection (0 = disabled). **Enforced.** |
+| `max_concurrent_tool_calls` | `int` | `0` | Reserved for future lease-based concurrency control. Any nonzero value is rejected because concurrency is not yet enforced. |
 
 When a budget limit is reached:
 
 - **Request count and domain limits** are checked before the outbound request. Exceeding either returns `429 Too Many Requests`.
 - **Byte limit (fetch proxy):** the response body read is capped at the remaining byte budget. If the response exceeds the limit, it is discarded and a `429` is returned.
 - **Byte limit (CONNECT/WebSocket):** streaming connections track bytes after close. The byte budget is enforced on the next admission check, not mid-stream, because tunnel data cannot be recalled after transmission.
-- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, per-tool retry storms, loop/cycle detection, and wall-clock duration.
+- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, same-tool retry storms, loop/cycle detection, and wall-clock duration. Endpoint retry, fan-out, and concurrent-call limits are not enforced.
 
 ### Listener Binding
 

@@ -44,6 +44,20 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		}
 	}()
 
+	// Reload is also called directly by the Conductor apply boundary and tests,
+	// not only by the file reloader. Reject reserved, unenforced DoW limits before
+	// any restart-only preservation or license teardown can mutate runtime state.
+	// The file reloader already validates through config.Load, but this boundary
+	// must remain fail-closed for every caller.
+	if newCfg == nil {
+		return errors.New("rejected: invalid config reload: config is nil")
+	}
+	if validationErr := newCfg.ValidateReservedDoWLimits(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
+
 	oldCfg := s.proxy.CurrentConfig()
 	if oldCfg != nil {
 		// Block fetch_proxy.listen changes via reload. The listener binds at

@@ -929,6 +929,112 @@ func TestApplyConductorPolicyBundleRejectsConflictingDLPRedefinition(t *testing.
 	}
 }
 
+func TestApplyConductorPolicyBundleRejectsUnenforcedConcurrentToolLimit(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-reserved-concurrency", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"",
+	}, "\n"))
+	bundle.Payload.ConfigYAML = strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"agents:",
+		"  _default:",
+		"    budget:",
+		"      max_concurrent_tool_calls: 3",
+		"",
+	}, "\n")
+	payloadHash, err := bundle.Payload.PayloadHash()
+	if err != nil {
+		t.Fatalf("PayloadHash() error = %v", err)
+	}
+	bundle.PayloadSHA256 = payloadHash
+	bundle = signRuntimePolicyBundle(t, signer, bundle)
+
+	_, err = s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+	if err == nil {
+		t.Fatal("ApplyConductorPolicyBundle accepted max_concurrent_tool_calls")
+	}
+	// Agent profiles are follower-local and not permitted in signed policy
+	// bundles, so the whole agents section must fail before config loading can
+	// reach the reserved-field validator.
+	for _, want := range []string{"config section not permitted", `"agents"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ApplyConductorPolicyBundle error = %q, want substring %q", err, want)
+		}
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("rejected concurrency bundle changed live config")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("rejected concurrency bundle changed live scanner")
+	}
+}
+
+func TestApplyConductorPolicyBundleAuthenticatesBeforeConfigValidation(t *testing.T) {
+	forbiddenYAML := strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"agents:",
+		"  _default:",
+		"    budget:",
+		"      max_concurrent_tool_calls: 3",
+		"",
+	}, "\n")
+
+	t.Run("signature before config validation", func(t *testing.T) {
+		s, signer := newConductorApplyTestServer(t)
+		bundle := signedRuntimePolicyBundle(t, signer, "bundle-tampered-config", 1, "", strings.Join([]string{
+			"mode: strict",
+			"api_allowlist:",
+			"  - api.example.com",
+			"",
+		}, "\n"))
+		bundle.Payload.ConfigYAML = forbiddenYAML
+		payloadHash, err := bundle.Payload.PayloadHash()
+		if err != nil {
+			t.Fatalf("PayloadHash() error = %v", err)
+		}
+		bundle.PayloadSHA256 = payloadHash
+
+		_, err = s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+		if !errors.Is(err, conductor.ErrSignatureVerification) {
+			t.Fatalf("ApplyConductorPolicyBundle(tampered config) error = %v, want ErrSignatureVerification", err)
+		}
+		if strings.Contains(err.Error(), "config section not permitted") {
+			t.Fatalf("ApplyConductorPolicyBundle(tampered config) reached config validation before signature verification: %v", err)
+		}
+	})
+
+	t.Run("payload hash before config validation", func(t *testing.T) {
+		s, signer := newConductorApplyTestServer(t)
+		bundle := signedRuntimePolicyBundle(t, signer, "bundle-tampered-hash", 1, "", strings.Join([]string{
+			"mode: strict",
+			"api_allowlist:",
+			"  - api.example.com",
+			"",
+		}, "\n"))
+		bundle.Payload.ConfigYAML = forbiddenYAML
+		bundle.PayloadSHA256 = strings.Repeat("0", 64)
+		bundle = signRuntimePolicyBundle(t, signer, bundle)
+
+		_, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+		if !errors.Is(err, conductor.ErrHashMismatch) {
+			t.Fatalf("ApplyConductorPolicyBundle(tampered payload hash) error = %v, want ErrHashMismatch", err)
+		}
+		if strings.Contains(err.Error(), "config section not permitted") {
+			t.Fatalf("ApplyConductorPolicyBundle(tampered payload hash) reached config validation before payload verification: %v", err)
+		}
+	})
+}
+
 func TestApplyConductorPolicyBundlePreservesReloadDowngradeGuardAfterAdditiveMerge(t *testing.T) {
 	s, signer := newConductorApplyTestServer(t)
 	oldCfg := s.proxy.CurrentConfig()
@@ -1135,6 +1241,11 @@ func signedRuntimePolicyBundle(t *testing.T, signer runtimePolicySigner, id stri
 		PayloadSHA256:      payloadHash,
 		Payload:            payload,
 	}
+	return signRuntimePolicyBundle(t, signer, bundle)
+}
+
+func signRuntimePolicyBundle(t *testing.T, signer runtimePolicySigner, bundle conductor.PolicyBundle) conductor.PolicyBundle {
+	t.Helper()
 	preimage, err := bundle.SignablePreimage()
 	if err != nil {
 		t.Fatalf("SignablePreimage() error = %v", err)

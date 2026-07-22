@@ -947,13 +947,9 @@ Key-free evidence capture:
 			if dowBudget != nil && dowBudget.HasDoWFields() {
 				tracker := proxy.NewDoWTracker(proxy.DoWConfig{
 					MaxToolCallsPerSession: dowBudget.MaxToolCallsPerSession,
-					MaxConcurrentToolCalls: dowBudget.MaxConcurrentToolCalls,
 					MaxWallClockMinutes:    dowBudget.MaxWallClockMinutes,
 					MaxRetriesPerTool:      dowBudget.MaxRetriesPerTool,
-					MaxRetriesPerEndpoint:  dowBudget.MaxRetriesPerEndpoint,
 					LoopDetectionWindow:    dowBudget.LoopDetectionWindow,
-					FanOutLimit:            dowBudget.FanOutLimit,
-					FanOutWindowSeconds:    dowBudget.FanOutWindowSeconds,
 					Action:                 dowBudget.DoWAction,
 				})
 				dowAction := dowBudget.DoWAction

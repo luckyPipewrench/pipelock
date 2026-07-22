@@ -279,6 +279,23 @@ func TestLicenseGateViaLoad(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsReservedDoWLimitBeforeLicenseGate(t *testing.T) {
+	_, err := config.LoadBytes([]byte(`
+agents:
+  unlicensed-agent:
+    budget:
+      max_concurrent_tool_calls: 3
+`))
+	if err == nil {
+		t.Fatal("reserved DoW limit passed after license gate stripped the named agent")
+	}
+	for _, want := range []string{"agents.unlicensed-agent.budget", "max_concurrent_tool_calls", "not yet enforced", "Unset it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
 func TestLicenseGateViaLoad_WithValidToken(t *testing.T) {
 	token, pubHex := testLicenseKeyPair(t)
 	tmp := t.TempDir()

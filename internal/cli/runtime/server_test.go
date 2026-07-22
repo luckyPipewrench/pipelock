@@ -1559,6 +1559,42 @@ func TestServer_Reload_StrictRejectsDowngrade(t *testing.T) {
 	}
 }
 
+func TestServer_ReloadRejectsNilConfig(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+
+	err := s.Reload(nil)
+	if err == nil || err.Error() != "rejected: invalid config reload: config is nil" {
+		t.Fatalf("Reload(nil) error = %v, want nil-config rejection", err)
+	}
+	if live := s.proxy.CurrentConfig(); live != oldCfg {
+		t.Fatal("rejected nil reload changed the live config")
+	}
+}
+
+func TestServer_ReloadRejectsUnenforcedConcurrentToolLimit(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+
+	newCfg := oldCfg.Clone()
+	newCfg.Agents = map[string]config.AgentProfile{
+		"_default": {Budget: config.BudgetConfig{MaxConcurrentToolCalls: 3}},
+	}
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload accepted unenforced max_concurrent_tool_calls")
+	}
+	for _, want := range []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Reload error = %q, want substring %q", err, want)
+		}
+	}
+	if live := s.proxy.CurrentConfig(); live != oldCfg {
+		t.Fatal("rejected reload changed the live config")
+	}
+}
+
 func TestServer_Reload_MCPResponseScanningFallbackEmitsNotice(t *testing.T) {
 	s, buf := newTestServer(t, nil)
 	s.runtimeMode = config.RuntimeMCPProxy

@@ -577,6 +577,65 @@ func TestMcpProxyCmd_HelpMentionsFlightRecorderReceipts(t *testing.T) {
 	}
 }
 
+func TestMcpProxyCmd_ToolCallBudgetBlocksOverLimit(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte(`mode: balanced
+agents:
+  _default:
+    budget:
+      max_tool_calls_per_session: 1
+      max_retries_per_tool: 100
+      loop_detection_window: 20
+      dow_action: block
+mcp_input_scanning:
+  enabled: false
+mcp_tool_scanning:
+  enabled: false
+mcp_tool_policy:
+  enabled: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runtime-test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"play_game","arguments":{"turn":1}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"play_game","arguments":{"turn":2}}}`,
+	}, "\n") + "\n"
+	stdout, stderr, err := runMCPProxyCommandWithInput(t, []string{
+		"proxy",
+		"--config", configPath,
+		"--env", "PIPELOCK_TEST_MCP_HELPER=1",
+		"--",
+		os.Args[0],
+		"-test.run=TestMCPRuntimeHelperProcess$",
+	}, input)
+	if err != nil {
+		t.Fatalf("run mcp proxy command: %v\nstderr:\n%s", err, stderr)
+	}
+
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		var response struct {
+			ID    json.RawMessage `json:"id"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(line), &response) == nil && string(response.ID) == "4" &&
+			strings.Contains(response.Error.Message, "tool call limit exceeded: 2/1") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("second tools/call was not blocked by the real tracker; stdout:\n%s", stdout)
+	}
+}
+
 func TestMcpProxyCmd_EmitsSignedReceipts_StdioSubprocess(t *testing.T) {
 	t.Parallel()
 
@@ -1291,6 +1350,16 @@ func runMCPProxyCommand(t *testing.T, configPath string) (string, string, error)
 
 func runMCPProxyCommandWithArgs(t *testing.T, args []string) (string, string, error) {
 	t.Helper()
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runtime-test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"play_game","arguments":{"player":"demo"}}}`,
+	}, "\n") + "\n"
+	return runMCPProxyCommandWithInput(t, args, input)
+}
+
+func runMCPProxyCommandWithInput(t *testing.T, args []string, input string) (string, string, error) {
+	t.Helper()
 
 	// The proxy run is input-bounded: it completes on its own once the
 	// supplied stdin reaches EOF — the stdin forwarder closes the wrapped
@@ -1309,11 +1378,7 @@ func runMCPProxyCommandWithArgs(t *testing.T, args []string) (string, string, er
 	cmd.SetContext(ctx)
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetIn(strings.NewReader(strings.Join([]string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runtime-test","version":"0"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"play_game","arguments":{"player":"demo"}}}`,
-	}, "\n") + "\n"))
+	cmd.SetIn(strings.NewReader(input))
 	cmd.SetArgs(args)
 
 	done := make(chan error, 1)

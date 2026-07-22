@@ -17,10 +17,15 @@ import (
 const dataImagePrefix = "data:image/"
 
 // maxQueryEntropyImagePixels bounds the allocation made while proving that an
-// image is actually decodable. Inline query images above this size remain
-// subject to the entropy gate instead of turning verification into a memory
-// exhaustion primitive.
-const maxQueryEntropyImagePixels = 4 * 1024 * 1024
+// image is actually decodable. png.Decode allocates the destination image sized
+// to the IHDR dimensions (up to ~8 bytes per pixel) before this carve-out
+// runs on the request/enforcement path, so a highly compressible IDAT could
+// otherwise force a large transient allocation per candidate query value under
+// concurrent scanning. Inline images in a URL query parameter are small in
+// practice, so the ceiling is deliberately tight (512x512 -> ~2 MiB worst case);
+// anything larger simply remains subject to the entropy gate instead of turning
+// verification into a memory-exhaustion primitive.
+const maxQueryEntropyImagePixels = 512 * 512
 
 // verifiedQueryImagePlaceholder is inserted only after strict verification.
 // A literal NUL cannot occur in a URL accepted by net/url, and the raw scanner

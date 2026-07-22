@@ -457,17 +457,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		s.logger.LogConfigReload("failed", reloadErr.Error(), newCfg.Hash())
 		return reloadErr
 	}
-	oldSinks := s.emitter.ReloadSinks(newSinks)
+	retiredSinks := s.emitter.ReloadSinks(newSinks)
+	finalizeRetiredSinks := newRetiredSinkFinalizer(s.emitter, retiredSinks, preclosed, func(closeErr error) {
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
+			fmt.Errorf("closing old emit sink: %w", closeErr))
+	})
+	// Install cleanup immediately after publication. Any later panic still
+	// drains and finalizes exactly this generation before Reload returns.
+	defer finalizeRetiredSinks()
 	s.emitSinks = append([]emit.Sink(nil), newSinks...)
-	for i, old := range oldSinks {
-		if preclosed[i] {
-			continue
-		}
-		if closeErr := old.Close(); closeErr != nil {
-			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
-				fmt.Errorf("closing old emit sink: %w", closeErr))
-		}
-	}
+	finalizeRetiredSinks()
 
 	if needsHITLApprover(newCfg) && !s.hasApprover {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to HITL ask mode but approver was not initialized at startup; detections will be blocked")
@@ -476,6 +475,35 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil
+}
+
+// newRetiredSinkFinalizer returns idempotent cleanup for one generation. It is
+// called both on the normal reload path and as a deferred panic/error fallback.
+func newRetiredSinkFinalizer(
+	emitter *emit.Emitter,
+	generation *emit.RetiredSinks,
+	preclosed map[int]bool,
+	onCloseError func(error),
+) func() {
+	sinks := generation.Sinks()
+	closed := make([]bool, len(sinks))
+	for index := range sinks {
+		closed[index] = preclosed[index]
+	}
+
+	return func() {
+		for index, sink := range sinks {
+			if closed[index] {
+				continue
+			}
+			closeErr := sink.Close()
+			closed[index] = true
+			if closeErr != nil && onCloseError != nil {
+				onCloseError(closeErr)
+			}
+		}
+		emitter.FinalizeRetiredSinks(generation)
+	}
 }
 
 func strictRuleBundleDegradationDisallowed(oldCfg, newCfg *config.Config) bool {

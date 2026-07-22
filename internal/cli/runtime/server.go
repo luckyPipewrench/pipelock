@@ -358,6 +358,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		return nil, activationErr
 	}
 	emitter := emit.NewEmitter(instanceID, emitSinks...)
+	m.SetAuditSinkHealthSnapshot(emitter.SinkHealth)
 	logger.SetEmitter(emitter)
 	s.emitter = emitter
 	s.emitSinks = append([]emit.Sink(nil), emitSinks...)

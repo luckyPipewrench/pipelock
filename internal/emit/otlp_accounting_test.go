@@ -406,6 +406,9 @@ func TestOTLPSink_PanicDropsOnlyCurrentEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("panic Emit: %v", err)
 	}
+	// ErrOTLPDegraded means the event WAS accepted for delivery (the prior panic
+	// set the degraded advisory); it is not a failure to emit. Accepting it makes
+	// this deterministic instead of racing the panic event's async failure.
 	if err := sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "after-panic", Timestamp: time.Now()}); err != nil && !errors.Is(err, ErrOTLPDegraded) {
 		t.Fatalf("post-panic Emit: %v", err)
 	}

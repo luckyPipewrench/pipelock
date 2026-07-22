@@ -245,15 +245,17 @@ func TestEmitter_ReloadSinks(t *testing.T) {
 	// Reload with new sinks
 	new1 := &mockSink{}
 	returned := em.ReloadSinks([]Sink{new1})
+	oldSinks := returned.Sinks()
 
-	if len(returned) != 2 {
-		t.Fatalf("expected 2 old sinks returned, got %d", len(returned))
+	if len(oldSinks) != 2 {
+		t.Fatalf("expected 2 old sinks returned, got %d", len(oldSinks))
 	}
 
 	// Close old sinks (caller responsibility)
-	for _, s := range returned {
+	for _, s := range oldSinks {
 		_ = s.Close()
 	}
+	em.FinalizeRetiredSinks(returned)
 
 	// Emit to new sinks
 	em.Emit(context.Background(), "error", nil)
@@ -273,13 +275,15 @@ func TestEmitter_ReloadSinks_ToEmpty(t *testing.T) {
 	em := NewEmitter(testStr, s)
 
 	// Reload to zero sinks
-	old := em.ReloadSinks(nil)
+	retired := em.ReloadSinks(nil)
+	old := retired.Sinks()
 	if len(old) != 1 {
 		t.Fatalf("expected 1 old sink, got %d", len(old))
 	}
 	for _, o := range old {
 		_ = o.Close()
 	}
+	em.FinalizeRetiredSinks(retired)
 
 	// Should not panic with zero sinks
 	em.Emit(context.Background(), testEventBlocked, nil)
@@ -294,10 +298,12 @@ func TestEmitter_ReloadSinks_FromEmpty(t *testing.T) {
 
 	// Reload to add sinks
 	s := &mockSink{}
-	old := em.ReloadSinks([]Sink{s})
+	retired := em.ReloadSinks([]Sink{s})
+	old := retired.Sinks()
 	if len(old) != 0 {
 		t.Fatalf("expected 0 old sinks, got %d", len(old))
 	}
+	em.FinalizeRetiredSinks(retired)
 
 	em.Emit(context.Background(), "error", nil)
 	if len(s.getEvents()) != 1 {
@@ -334,10 +340,12 @@ func TestEmitter_ReloadSinks_Concurrent(t *testing.T) {
 	// Reloader
 	for range 50 {
 		newSink := &mockSink{}
-		old := em.ReloadSinks([]Sink{newSink})
+		retired := em.ReloadSinks([]Sink{newSink})
+		old := retired.Sinks()
 		for _, o := range old {
 			_ = o.Close()
 		}
+		em.FinalizeRetiredSinks(retired)
 	}
 
 	close(stop)

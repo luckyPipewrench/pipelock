@@ -197,6 +197,53 @@ func TestHTTPClient_ClientDoCancellationPreserved(t *testing.T) {
 	}
 }
 
+func TestHTTPClientWithDialer_AllRequestTypesUseCustomDialer(t *testing.T) {
+	errDialBlocked := errors.New("sentinel dial blocked")
+
+	t.Run("post", func(t *testing.T) {
+		var calls atomic.Int32
+		c := NewHTTPClientWithDialer("http://api.vendor.example/mcp", nil, func(_ context.Context, _, _ string) (net.Conn, error) {
+			calls.Add(1)
+			return nil, errDialBlocked
+		})
+		_, err := c.SendMessage(context.Background(), []byte(testJSONID2))
+		if !errors.Is(err, ErrUpstreamRequestFailed) {
+			t.Fatalf("SendMessage error = %v, want ErrUpstreamRequestFailed", err)
+		}
+		if calls.Load() == 0 {
+			t.Fatal("custom dialer was not called for POST")
+		}
+	})
+
+	t.Run("get stream", func(t *testing.T) {
+		var calls atomic.Int32
+		c := NewHTTPClientWithDialer("http://api.vendor.example/mcp", nil, func(_ context.Context, _, _ string) (net.Conn, error) {
+			calls.Add(1)
+			return nil, errDialBlocked
+		})
+		_, err := c.OpenGETStream(context.Background())
+		if !errors.Is(err, ErrUpstreamRequestFailed) {
+			t.Fatalf("OpenGETStream error = %v, want ErrUpstreamRequestFailed", err)
+		}
+		if calls.Load() == 0 {
+			t.Fatal("custom dialer was not called for GET stream")
+		}
+	})
+
+	t.Run("delete session", func(t *testing.T) {
+		var calls atomic.Int32
+		c := NewHTTPClientWithDialer("http://api.vendor.example/mcp", nil, func(_ context.Context, _, _ string) (net.Conn, error) {
+			calls.Add(1)
+			return nil, errDialBlocked
+		})
+		c.sessionID = "session-1"
+		c.DeleteSession(io.Discard)
+		if calls.Load() == 0 {
+			t.Fatal("custom dialer was not called for DELETE session")
+		}
+	})
+}
+
 func TestHTTPClient_SessionIDTracking(t *testing.T) {
 	var calls atomic.Int32
 

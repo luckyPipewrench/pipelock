@@ -968,6 +968,7 @@ func (s *Server) Start(ctx context.Context) error {
 				FrozenToolStableKey:          s.opts.MCPUpstream,
 				ContractLoaderPtr:            s.proxy.ContractLoaderPtr(),
 				ContractAgent:                edition.ProfileDefault,
+				DialContext:                  mcp.NewMetadataSafeDialContext(mcpScannerFn),
 			}
 			if s.opts.MCPAuthTokenFile != "" {
 				listenerOpts.ListenerBearerTokenFn = func() (string, error) {
@@ -1002,12 +1003,14 @@ func (s *Server) Start(ctx context.Context) error {
 		rpHandler.SetRequestPolicyFn(s.proxy.ApplyRequestPolicy)
 		rpHandler.SetRequestPolicyPrepareFn(s.proxy.PrepareRequestPolicyBody)
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())
-		// Submit profile dials through the SSRF-safe dial path (resolve +
-		// validate every IP against internal CIDRs before connecting),
-		// matching the fetch/forward transports. Generic reverse-proxy mode
-		// keeps the default dialer: the operator chose that upstream.
+		// Generic reverse-proxy mode keeps operator-selected private/loopback
+		// upstreams reachable, but still applies the metadata hard floor at
+		// dial time. Submit profile is stricter and uses the full SSRF-safe
+		// dialer, matching the fetch/forward transports.
 		if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
 			rpHandler.SetSafeDialer(s.proxy.SafeDialer())
+		} else {
+			rpHandler.SetSafeDialer(s.proxy.MetadataSafeDialer())
 		}
 
 		rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)

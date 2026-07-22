@@ -145,16 +145,18 @@ func NewReverseProxy(
 // called before serving requests; it is not safe to call concurrently with
 // ServeHTTP because it replaces proxy.Transport.
 //
-// The submit profile uses this so outbound dials resolve DNS and validate
-// every resolved IP against internal CIDR blocks before connecting, closing
-// the DNS-rebinding / TOCTOU gap the cloned default dialer leaves open. The
-// rebuilt base preserves DisableCompression (so the compressed-response
+// The submit profile uses this with the full SSRF-safe dialer so outbound
+// dials resolve DNS and validate every resolved IP against internal CIDR
+// blocks before connecting, closing the DNS-rebinding / TOCTOU gap the cloned
+// default dialer leaves open. Generic reverse-proxy mode uses a metadata-only
+// dialer so operator-selected private/loopback upstreams remain reachable.
+// The rebuilt base preserves DisableCompression (so the compressed-response
 // fail-closed guard in modifyResponse keeps working) and re-wraps in the
 // signing round tripper so RFC 9421 @target-uri signing is unaffected.
 //
-// A nil dialer is a no-op: the handler keeps its default transport. This
-// keeps generic reverse-proxy mode (Profile == "") on the default dialer,
-// where the operator is presumed to have chosen the upstream already.
+// A nil dialer is a no-op: the handler keeps its default transport. Runtime
+// startup passes a metadata-only dialer for generic reverse-proxy mode and the
+// full SSRF-safe dialer for constrained submit-profile mode.
 func (rp *ReverseProxyHandler) SetSafeDialer(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
 	if dial == nil {
 		return

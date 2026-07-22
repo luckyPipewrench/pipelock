@@ -32,6 +32,7 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		ScannerCoreSSRF,
 		ScannerCoreResponse,
 		ScannerBodyDLP,
+		ScannerDenialOfWallet,
 		DecideInjectionLabel,
 		DecidePolicyLabel,
 		DecideStructuralLabel,
@@ -194,6 +195,55 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 	t.Run("unknown label is fail-safe", func(t *testing.T) {
 		if _, ok := GuidanceForResult("nonexistent", "query"); ok {
 			t.Fatal("unknown label must return ok=false")
+		}
+	})
+}
+
+func TestOperatorHintForResultResolvesDenialOfWalletReasons(t *testing.T) {
+	tests := []struct {
+		name     string
+		reason   string
+		wantKnob string
+	}{
+		{
+			name:     "tool call budget",
+			reason:   "tool call limit exceeded: 11/10",
+			wantKnob: "max_tool_calls_per_session",
+		},
+		{
+			name:     "wall clock budget",
+			reason:   "wall clock budget exceeded: 31m0s/30m0s",
+			wantKnob: "max_wall_clock_minutes",
+		},
+		{
+			name:     "identical call loop",
+			reason:   "loop detected: expensive_tool called 6 times with same args (limit 5)",
+			wantKnob: "max_retries_per_tool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, ok := GuidanceForResult(ScannerDenialOfWallet, tt.reason)
+			if !ok {
+				t.Fatal("GuidanceForResult(denial_of_wallet) not ok")
+			}
+			if !strings.Contains(g.OperatorKnob, "agents._default.budget."+tt.wantKnob) {
+				t.Fatalf("operator knob = %q, want agents._default.budget.%s", g.OperatorKnob, tt.wantKnob)
+			}
+			if hint := OperatorHintForResult(ScannerDenialOfWallet, tt.reason); hint != g.OperatorKnob {
+				t.Fatalf("OperatorHintForResult() = %q, want %q", hint, g.OperatorKnob)
+			}
+		})
+	}
+
+	t.Run("unclassified detector uses truthful family fallback", func(t *testing.T) {
+		hint := OperatorHintForResult(ScannerDenialOfWallet, "cycle detected: a -> b -> a -> b")
+		if !strings.Contains(hint, "agents._default.budget") {
+			t.Fatalf("fallback hint = %q, want the denial-of-wallet budget family", hint)
+		}
+		if !strings.Contains(hint, "dow_action") {
+			t.Fatalf("fallback hint = %q, want the verified enforcement knob", hint)
 		}
 	})
 }

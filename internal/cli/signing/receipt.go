@@ -40,6 +40,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	var hexdump bool
 	var posturePath string
 	var postureKey string
+	var endorsementPaths []string
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -58,7 +59,9 @@ key to verify across a rotation; the offending key is named if a segment is
 signed by an untrusted key. With no --key, the first segment's key is trusted
 on first use and any rotation is flagged for you to confirm. Unpinned
 verification is structural-only and exits non-zero unless --allow-unpinned is
-passed explicitly.
+passed explicitly. Alternatively, pass --rotation-endorsement for each
+old-key-signed rotation authorization and pin only the genesis root key. The
+endorsement path never uses trust-on-first-use: at least one --key is required.
 
 Exit 0 = valid, exit 1 = invalid or malformed.
 
@@ -82,8 +85,19 @@ Examples:
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
 			}
+			if len(endorsementPaths) > 0 {
+				switch {
+				case fleetReport:
+					return fmt.Errorf("--rotation-endorsement cannot be combined with --fleet-report")
+				case cleanReport != "":
+					return fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report")
+				case chainDir == "" && !strings.HasSuffix(args[0], ".jsonl"):
+					return fmt.Errorf("--rotation-endorsement requires --chain or a JSONL receipt file")
+				}
+			}
 			verifyOpts := verifyReceiptOptions{
 				AllowUnpinned: allowUnpinned,
+				SessionID:     sessionID,
 				Print: receiptPrintOptions{
 					ShowRaw: showRaw,
 					Hexdump: hexdump,
@@ -92,6 +106,13 @@ Examples:
 					Path:   posturePath,
 					KeyHex: postureKey,
 				},
+			}
+			for _, endorsementPath := range endorsementPaths {
+				endorsement, loadErr := receipt.LoadRotationEndorsementFile(endorsementPath)
+				if loadErr != nil {
+					return fmt.Errorf("loading --rotation-endorsement %q: %w", endorsementPath, loadErr)
+				}
+				verifyOpts.RotationEndorsements = append(verifyOpts.RotationEndorsements, endorsement)
 			}
 			if fleetReport {
 				if chainDir != "" {
@@ -147,6 +168,8 @@ Examples:
 	cmd.Flags().BoolVar(&hexdump, "hexdump", false, "append canonical raw field hexdumps in human output")
 	cmd.Flags().StringVar(&posturePath, "posture", "", "signed posture capsule JSON to assess containment")
 	cmd.Flags().StringVar(&postureKey, "posture-key", "", "trusted posture capsule public key (hex)")
+	cmd.Flags().StringArrayVar(&endorsementPaths, "rotation-endorsement", nil,
+		"old-key-signed rotation endorsement JSON; repeat for each endorsed boundary")
 	return cmd
 }
 
@@ -168,9 +191,11 @@ type receiptPostureOptions struct {
 }
 
 type verifyReceiptOptions struct {
-	AllowUnpinned bool
-	Print         receiptPrintOptions
-	Posture       receiptPostureOptions
+	AllowUnpinned        bool
+	SessionID            string
+	Print                receiptPrintOptions
+	Posture              receiptPostureOptions
+	RotationEndorsements []receipt.RotationEndorsement
 }
 
 func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts verifyReceiptOptions) error {
@@ -321,7 +346,19 @@ func verifyChainFromFileWithOptions(out io.Writer, path string, trustedKeys []st
 }
 
 func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
-	receipts, err := receipt.ExtractReceipts(path)
+	var (
+		receipts []receipt.Receipt
+		err      error
+	)
+	if len(opts.RotationEndorsements) > 0 {
+		var evidenceSessionID string
+		receipts, evidenceSessionID, err = receipt.ExtractReceiptsWithSessionID(path)
+		if err == nil && evidenceSessionID != opts.SessionID {
+			return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", opts.SessionID, evidenceSessionID)
+		}
+	} else {
+		receipts, err = receipt.ExtractReceipts(path)
+	}
 	if err != nil {
 		return fmt.Errorf("extracting receipts: %w", err)
 	}
@@ -351,14 +388,23 @@ func verifyChainDetailed(out io.Writer, label string, receipts []receipt.Receipt
 		return fmt.Errorf("no receipts in %s", label)
 	}
 
-	result := receipt.VerifyChainTrusted(receipts, trustedKeys)
+	var result receipt.ChainResult
+	if len(opts.RotationEndorsements) > 0 {
+		result = receipt.VerifyChainWithEndorsements(opts.SessionID, receipts, opts.RotationEndorsements, trustedKeys)
+	} else {
+		result = receipt.VerifyChainTrusted(receipts, trustedKeys)
+	}
 	if !result.Valid {
 		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", label)
 		_, _ = fmt.Fprintf(out, "  Error:    %s\n", result.Error)
 		_, _ = fmt.Fprintf(out, "  Broke at: seq %d\n", result.BrokenAtSeq)
 		if result.UntrustedSignerKey != "" {
 			_, _ = fmt.Fprintf(out, "  Untrusted signer key: %s\n", result.UntrustedSignerKey)
-			_, _ = fmt.Fprintf(out, "  If this is a legitimate key rotation, re-run with --key for each trusted key.\n")
+			if len(result.EndorsementGaps) > 0 {
+				_, _ = fmt.Fprintln(out, "  Rotation endorsement: missing, invalid, or not bound to this chain boundary.")
+			} else {
+				_, _ = fmt.Fprintln(out, "  If this is a legitimate key rotation, re-run with --key for each trusted key.")
+			}
 		}
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
 	}
@@ -375,6 +421,11 @@ func verifyChainDetailed(out io.Writer, label string, receipts []receipt.Receipt
 	_, _ = fmt.Fprintf(out, "  Start:     %s\n", result.StartTime.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  End:       %s\n", result.EndTime.Format("2006-01-02T15:04:05Z"))
 	printSignerKeys(out, result)
+	for i, basis := range result.TrustBasis {
+		if i < len(result.Segments) {
+			_, _ = fmt.Fprintf(out, "  Segment trust: %s (%s)\n", result.Segments[i].SignerKey, basis)
+		}
+	}
 	printReceiptLimits(out)
 	if err := printContainmentForReceipts(out, receipts, opts.Posture); err != nil {
 		return err

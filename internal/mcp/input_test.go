@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -4306,6 +4308,68 @@ func TestForwardScannedInput_DoWWarn(t *testing.T) {
 
 	if !strings.Contains(logW.String(), "DoW") {
 		t.Errorf("expected DoW log in warn mode, got: %s", logW.String())
+	}
+}
+
+func TestForwardScannedInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) {
+	tests := []struct {
+		name      string
+		action    string
+		wantEvent string
+	}{
+		{name: "blocked", action: config.ActionBlock, wantEvent: string(audit.EventBlocked)},
+		{name: "anomaly", action: config.ActionWarn, wantEvent: string(audit.EventAnomaly)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := testInputScanner(t)
+			auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+			auditLogger, err := audit.New("json", "file", auditPath, false, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			reason := "tool call limit exceeded: 11/10"
+			opts := testOpts(sc)
+			opts.AuditLogger = auditLogger
+			opts.DoWCheck = func(_, _ string) (bool, string, string, string) {
+				return false, tt.action, reason, "tool_call_limit"
+			}
+
+			request := makeRequest(101, "tools/call", map[string]interface{}{
+				"name":      testDoWToolName,
+				"arguments": map[string]string{"q": "hello"},
+			}) + "\n"
+			var serverIn bytes.Buffer
+			var logW bytes.Buffer
+			blockedCh := make(chan BlockedRequest, 1)
+			ForwardScannedInput(
+				transport.NewStdioReader(strings.NewReader(request)),
+				transport.NewStdioWriter(&serverIn),
+				&logW, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, opts,
+			)
+			auditLogger.Close()
+
+			data, err := os.ReadFile(filepath.Clean(auditPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("decode audit event: %v; data=%q", err, data)
+			}
+			if entry["event"] != tt.wantEvent {
+				t.Fatalf("event = %v, want %s", entry["event"], tt.wantEvent)
+			}
+			if entry["scanner"] != scanner.ScannerDenialOfWallet {
+				t.Fatalf("scanner = %v, want %s", entry["scanner"], scanner.ScannerDenialOfWallet)
+			}
+			hint, _ := entry["remediation_hint"].(string)
+			if !strings.Contains(hint, "agents._default.budget.max_tool_calls_per_session") {
+				t.Fatalf("remediation_hint = %q, want exact tool-call budget knob", hint)
+			}
+		})
 	}
 }
 

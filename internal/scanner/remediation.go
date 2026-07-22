@@ -5,9 +5,12 @@ package scanner
 
 import "strings"
 
-// ScannerBodyDLP identifies request-body DLP blocks emitted outside the URL
-// scanner pipeline.
-const ScannerBodyDLP = "body_dlp"
+// ScannerBodyDLP and ScannerDenialOfWallet identify blocks emitted outside the
+// URL scanner pipeline.
+const (
+	ScannerBodyDLP        = "body_dlp"
+	ScannerDenialOfWallet = "denial_of_wallet"
+)
 
 // Decide*Label values identify non-URL blocks emitted by internal/decide.
 // They are not URL scanner pipeline labels, but they share the remediation
@@ -19,7 +22,12 @@ const (
 )
 
 const (
-	bodyDLPOperatorKnob = "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."
+	bodyDLPOperatorKnob        = "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."
+	denialOfWalletOperatorKnob = "Tune the limit identified by the reason under `agents._default.budget` (or the matched `agents.<name>.budget`): `max_tool_calls_per_session`, `max_wall_clock_minutes`, `max_retries_per_tool`, or `loop_detection_window`. " +
+		"To audit instead of block, set that budget's `dow_action` to `warn`; this changes enforcement for all denial-of-wallet findings."
+	denialOfWalletToolCallsOperatorKnob = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the session's tool-call budget is intentionally higher."
+	denialOfWalletWallClockOperatorKnob = "Raise `agents._default.budget.max_wall_clock_minutes` (or the matched `agents.<name>.budget.max_wall_clock_minutes`) if the session is intentionally longer-lived."
+	denialOfWalletRetriesOperatorKnob   = "Raise `agents._default.budget.max_retries_per_tool` (or the matched `agents.<name>.budget.max_retries_per_tool`) if repeated identical calls are expected."
 
 	decideInjectionOperatorKnob  = "Prompt-injection scanning matched content in the action. For shell/file/tool explain blocks, tune `response_scanning` (for example suppress or disable per response-scanning config); MCP request-input injection is tuned by `mcp_input_scanning`."
 	decidePolicyOperatorKnob     = "Tool policy denied the action. Edit the matching `mcp_tool_policy.rules` entry, or narrow/add a rule for the intended tool call."
@@ -58,6 +66,7 @@ const (
 	highEntropyAgentReason        = "Request blocked: high-entropy content resembling exfiltration was detected."
 	protectedAddressAgentReason   = "Request blocked: the destination resolves to protected internal or metadata infrastructure."
 	protectiveCeilingAgentReason  = "Request blocked: a protective request ceiling was exceeded."
+	denialOfWalletAgentReason     = "Request blocked: the MCP action exceeded its denial-of-wallet budget."
 	injectionTraversalAgentReason = "Request blocked: the URL contains an injection/traversal sequence."
 	promptInjectionAgentReason    = "Request blocked: the content matched a prompt-injection pattern."
 	toolPolicyAgentReason         = "Request blocked: the tool call is not permitted by policy."
@@ -180,6 +189,10 @@ var remediationGuidance = map[string]RemediationGuidance{
 		OperatorKnob: bodyDLPOperatorKnob,
 		AgentReason:  secretAgentReason,
 	},
+	ScannerDenialOfWallet: {
+		OperatorKnob: denialOfWalletOperatorKnob,
+		AgentReason:  denialOfWalletAgentReason,
+	},
 	DecideInjectionLabel: {
 		OperatorKnob: decideInjectionOperatorKnob,
 		AgentReason:  promptInjectionAgentReason,
@@ -217,11 +230,10 @@ func OperatorHintFor(label string) string {
 }
 
 // GuidanceForResult returns guidance using the scan Reason to disambiguate
-// same-label variants. Today only ScannerEntropy needs it: query entropy and
-// path/subdomain entropy share the label but need different knobs, and the
-// Reason ("... query ...") is the only signal that separates them. Every other
-// label falls through to the label-keyed table. This is the single place that
-// disambiguation lives, so explain, audit, and any future consumer agree.
+// same-label variants. ScannerEntropy distinguishes query from path/subdomain
+// entropy, while ScannerDenialOfWallet distinguishes budget-limit reasons.
+// Every other label falls through to the label-keyed table. This is the single
+// place that disambiguation lives, so explain, audit, and future consumers agree.
 func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	if label == ScannerEntropy && strings.Contains(reason, "query ") {
 		return RemediationGuidance{
@@ -229,6 +241,23 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 			OperatorBroader: queryEntropyOperatorBroader,
 			AgentReason:     highEntropyAgentReason,
 		}, true
+	}
+	if label == ScannerDenialOfWallet {
+		operatorKnob := ""
+		switch {
+		case strings.Contains(reason, "tool call limit exceeded"):
+			operatorKnob = denialOfWalletToolCallsOperatorKnob
+		case strings.Contains(reason, "wall clock budget exceeded"):
+			operatorKnob = denialOfWalletWallClockOperatorKnob
+		case strings.Contains(reason, "loop detected"):
+			operatorKnob = denialOfWalletRetriesOperatorKnob
+		}
+		if operatorKnob != "" {
+			return RemediationGuidance{
+				OperatorKnob: operatorKnob,
+				AgentReason:  denialOfWalletAgentReason,
+			}, true
+		}
 	}
 	// The dial-time SSRF guard logs metadata blocks under the generic
 	// ScannerSSRF label (the metadata classification lives in the reason

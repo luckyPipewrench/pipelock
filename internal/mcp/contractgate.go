@@ -71,6 +71,37 @@ func evaluateMCPUpstreamGate(ctx context.Context, upstreamURL string, opts MCPPr
 
 func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method string, opts MCPProxyOpts) (mcpContractGateOutput, error) {
 	loader := opts.contractLoader()
+	gateURL := mcpUpstreamGateURL(upstreamURL)
+	var scanResult scanner.Result
+	var scannerVerdict string
+	var scannerMatched bool
+	sc := opts.scanner()
+	if sc != nil {
+		scanResult = sc.Scan(ctx, gateURL)
+		scannerMatched = !scanResult.Allowed
+		if scannerMatched {
+			scannerVerdict = config.ActionBlock
+		} else {
+			scannerVerdict = config.ActionAllow
+		}
+		// The metadata SSRF hard floor applies even when no live-lock
+		// contract is configured. Preserve the historical no-loader allow
+		// fallback for other upstream scanner results in this narrow path.
+		if scannerMatched && scanResult.Scanner == scanner.ScannerSSRFMetadata {
+			if method == "" {
+				method = http.MethodPost
+			}
+			return evaluateMCPHTTPGate(mcpHTTPGateInput{
+				opts:             opts,
+				targetURL:        gateURL,
+				method:           method,
+				effectiveAction:  mcpContractURLAction,
+				scannerVerdict:   scannerVerdict,
+				scannerMatched:   scannerMatched,
+				killSwitchActive: opts.KillSwitch != nil && opts.KillSwitch.IsActive(),
+			})
+		}
+	}
 	if loader == nil || loader.Current() == nil {
 		return mcpContractGateOutput{
 			Verdict:       config.ActionAllow,
@@ -79,15 +110,8 @@ func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method s
 			WinningSource: contractruntime.WinningSourceScanner,
 		}, nil
 	}
-	sc := opts.scanner()
 	if sc == nil {
 		return mcpContractGateOutput{}, fmt.Errorf("scanner unavailable")
-	}
-	gateURL := mcpUpstreamGateURL(upstreamURL)
-	scanResult := sc.Scan(ctx, gateURL)
-	scannerVerdict := config.ActionAllow
-	if !scanResult.Allowed {
-		scannerVerdict = config.ActionBlock
 	}
 	if method == "" {
 		method = http.MethodPost
@@ -98,7 +122,7 @@ func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method s
 		method:           method,
 		effectiveAction:  mcpContractURLAction,
 		scannerVerdict:   scannerVerdict,
-		scannerMatched:   !scanResult.Allowed,
+		scannerMatched:   scannerMatched,
 		killSwitchActive: opts.KillSwitch != nil && opts.KillSwitch.IsActive(),
 	})
 }

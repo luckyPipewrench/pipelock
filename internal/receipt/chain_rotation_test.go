@@ -6,6 +6,7 @@ package receipt
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,6 +20,7 @@ func signSegmentReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevH
 		ActionID:      NewActionID(),
 		ActionType:    ActionRead,
 		Timestamp:     ts,
+		SessionID:     "proxy",
 		Target:        chainTestTarget,
 		Verdict:       testVerdict,
 		Transport:     chainTestTransport,
@@ -330,6 +332,25 @@ func TestVerifyChain_BoundaryFieldMismatchesRejected(t *testing.T) {
 
 	segA, tailA := buildSegment(t, privA, 3, GenesisHash, base, nil)
 	priorTail := segA[len(segA)-1]
+
+	// A transition must actually change the signer. Accepting A -> A would
+	// create an ambiguous segment boundary and breaks endorsement matching.
+	t.Run("same_signer_key", func(t *testing.T) {
+		t.Parallel()
+		marker := &KeyTransition{
+			PriorSignerKey: keyA,
+			PriorChainSeq:  priorTail.ActionRecord.ChainSeq,
+			PriorChainHash: tailA,
+		}
+		segSame, _ := buildSegment(t, privA, 2, tailA, base.Add(time.Hour), marker)
+		res := VerifyChainTrusted(append(append([]Receipt{}, segA...), segSame...), []string{keyA})
+		if res.Valid {
+			t.Fatal("key transition that does not change signer key must be rejected")
+		}
+		if !strings.Contains(res.Error, "does not change signer key") {
+			t.Fatalf("error = %q, want same-key transition explanation", res.Error)
+		}
+	})
 
 	// Wrong prior_signer_key in the marker (does not name the prior segment).
 	t.Run("wrong_prior_signer_key", func(t *testing.T) {

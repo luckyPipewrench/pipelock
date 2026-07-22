@@ -291,6 +291,21 @@ func TestWSClient_DialFailure(t *testing.T) {
 	}
 }
 
+func TestNewWSClientWithDialer_UsesCustomDialer(t *testing.T) {
+	errDialBlocked := errors.New("sentinel dial blocked")
+	var calls int
+	_, err := NewWSClientWithDialer(context.Background(), "ws://api.vendor.example/mcp", func(_ context.Context, _, _ string) (net.Conn, error) {
+		calls++
+		return nil, errDialBlocked
+	})
+	if !errors.Is(err, errDialBlocked) {
+		t.Fatalf("NewWSClientWithDialer error = %v, want sentinel dial error", err)
+	}
+	if calls == 0 {
+		t.Fatal("custom dialer was not called")
+	}
+}
+
 func TestWSClient_ConnectionClosed(t *testing.T) {
 	srv := wsTestServer(t, func(conn net.Conn) {
 		// Close immediately without sending anything.

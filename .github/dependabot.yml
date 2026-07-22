@@ -1,0 +1,31 @@
+# Dependabot configuration.
+#
+# Renovate is the primary dependency bot for this repository and owns routine
+# version updates across every ecosystem. Dependabot is configured ONLY as a
+# security backstop for the one gap Renovate cannot cover as of 2026:
+# remediation of TRANSITIVE npm vulnerabilities. Renovate's OSV remediation
+# covers direct dependencies only, and its `transitiveRemediation` option was
+# removed, so a transitive npm advisory (for example GHSA-4c8g-83qw-93j6 in
+# fast-uri under sdk/verifiers/ts) produces an alert but no Renovate PR.
+#
+# REQUIRED companion setting, which cannot be expressed in this file: a repo
+# admin must enable Settings > Security > Advanced Security > "Dependabot
+# security updates" and leave "Dependabot version updates" OFF. That toggle is
+# what actually opens security PRs; this file only customizes the npm surface.
+# The toggle is repository-wide across ecosystems; Renovate normally reaches
+# non-npm direct-dependency advisories first, so a duplicate is rare and closed
+# manually. Enable it only after the initial fast-uri fix has merged, otherwise
+# Dependabot immediately opens a duplicate PR.
+#
+# open-pull-requests-limit: 0 disables Dependabot version-update PRs so it never
+# competes with Renovate on routine npm bumps; security-update PRs use a
+# separate internal limit and still open.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/sdk/verifiers/ts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    labels:
+      - "security"

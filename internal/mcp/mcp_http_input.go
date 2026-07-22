@@ -441,7 +441,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
 			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
-			auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason)
+			auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), scanner.ScannerDenialOfWallet, eval.DoWReason)
 		}
 		if m != nil {
 			m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -507,7 +507,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
 			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
-			auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason, 0)
+			auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
 		}
 		recordAdaptiveSignal(session.SignalNearMiss)
 	}

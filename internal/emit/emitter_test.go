@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -434,6 +435,20 @@ func TestEmitter_ExpectedSinkStatusNoStderr(t *testing.T) {
 		})
 		if !strings.Contains(out, "unexpected joined boom") {
 			t.Fatalf("unexpected error joined with sink status was suppressed: %q", out)
+		}
+	})
+
+	t.Run("wrapped routine status still prints", func(t *testing.T) {
+		// The suppression is an exact-identity match, so a wrapped sentinel is
+		// NOT a routine status and must stay visible: it may carry added context
+		// or a distinct failure the bare sentinel does not.
+		wrapped := fmt.Errorf("delivering to remote: %w", ErrQueueFull)
+		em := NewEmitter(testStr, &mockSink{err: wrapped})
+		out := captureEmitterStderr(t, func() {
+			em.Emit(context.Background(), testEventBlocked, map[string]any{"k": "v"})
+		})
+		if !strings.Contains(out, "delivering to remote") {
+			t.Fatalf("wrapped routine status was suppressed: %q", out)
 		}
 	})
 }

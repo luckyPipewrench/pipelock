@@ -35,7 +35,15 @@ type WSClient struct {
 // a WSClient. The connection is established using gobwas/ws.Dial with the
 // provided context for timeout/cancellation.
 func NewWSClient(ctx context.Context, rawURL string) (*WSClient, error) {
-	conn, br, _, err := ws.Dial(ctx, rawURL)
+	return NewWSClientWithDialer(ctx, rawURL, nil)
+}
+
+// NewWSClientWithDialer establishes a WebSocket connection using an optional
+// custom network dialer. The dialer runs before the TCP connection and WebSocket
+// handshake, so callers can enforce SSRF checks at connection time.
+func NewWSClientWithDialer(ctx context.Context, rawURL string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) (*WSClient, error) {
+	dialer := ws.Dialer{NetDial: dialContext}
+	conn, br, _, err := dialer.Dial(ctx, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("ws dial %s: %w", rawURL, err)
 	}

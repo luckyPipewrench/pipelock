@@ -2834,14 +2834,15 @@ func (c *Config) validateSSRF() error {
 // scanner.IsNonOverridableSSRFTarget; keep the two in sync.
 var nonOverridableSSRFRanges = func() []*net.IPNet {
 	cidrs := []string{
-		"169.254.0.0/16",    // IPv4 link-local (contains 169.254.169.254 IMDS)
-		"168.63.129.16/32",  // Azure WireServer metadata
-		"fd00:ec2::254/128", // AWS IMDSv6
-		"fe80::/10",         // IPv6 link-local
-		"224.0.0.0/4",       // IPv4 multicast
-		"ff00::/8",          // IPv6 multicast
-		"0.0.0.0/32",        // IPv4 unspecified
-		"::/128",            // IPv6 unspecified
+		"169.254.0.0/16",     // IPv4 link-local (contains 169.254.169.254 IMDS)
+		"168.63.129.16/32",   // Azure WireServer metadata
+		"100.100.100.200/32", // Alibaba Cloud ECS metadata
+		"fd00:ec2::254/128",  // AWS IMDSv6
+		"fe80::/10",          // IPv6 link-local
+		"224.0.0.0/4",        // IPv4 multicast
+		"ff00::/8",           // IPv6 multicast
+		"0.0.0.0/32",         // IPv4 unspecified
+		"::/128",             // IPv6 unspecified
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {

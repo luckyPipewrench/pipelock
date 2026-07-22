@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -80,6 +81,13 @@ type HTTPClient struct {
 // If headers is nil, no extra headers are added. Headers are cloned to
 // prevent mutation after construction.
 func NewHTTPClient(url string, headers http.Header) *HTTPClient {
+	return NewHTTPClientWithDialer(url, headers, nil)
+}
+
+// NewHTTPClientWithDialer creates an HTTPClient with an optional custom dialer.
+// The dialer is used for every upstream POST, GET stream, DELETE, and reconnect
+// performed by this client.
+func NewHTTPClientWithDialer(url string, headers http.Header, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *HTTPClient {
 	// Clone http.DefaultTransport with DisableCompression: true so the
 	// SSE/JSON upstream's Content-Encoding survives transparent-
 	// decompression stripping. Without this, gzip-compressed MCP
@@ -97,6 +105,9 @@ func NewHTTPClient(url string, headers http.Header) *HTTPClient {
 	// reverse, and TLS-intercept transports, which all dial the configured
 	// upstream directly with a nil Proxy.
 	transport.Proxy = nil
+	if dialContext != nil {
+		transport.DialContext = dialContext
+	}
 	return &HTTPClient{
 		url:     url,
 		headers: headers.Clone(),

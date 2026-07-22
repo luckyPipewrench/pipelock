@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -78,6 +79,10 @@ type MCPProxyOpts struct {
 	// browser can use Authorization for listener authentication while Pipelock
 	// supplies a separate static Authorization credential to the upstream.
 	UpstreamHeaders http.Header
+	// DialContext is the dial path used for configured HTTP/SSE/WS MCP upstreams.
+	// Long-lived Pipelock servers pass the proxy SSRF-safe dialer here so DNS
+	// rebinding and metadata endpoints are checked again at connection time.
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// Scanning
 	Scanner        *scanner.Scanner

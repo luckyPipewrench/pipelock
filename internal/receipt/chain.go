@@ -77,6 +77,13 @@ type ChainResult struct {
 	// operator can decide whether it is a legitimate rotation to add to the
 	// trusted set or an attacker-introduced key to investigate.
 	UntrustedSignerKey string
+	// TrustBasis records how each segment key was trusted: "root" for an
+	// operator-pinned key and "endorsed" for a successor authorized by the
+	// immediately preceding trusted key.
+	TrustBasis []string
+	// EndorsementGaps identifies rotation segment keys that lacked a valid,
+	// boundary-matching authorization from the retiring key.
+	EndorsementGaps []string
 }
 
 // ChainFailureKind classifies why chain verification failed.
@@ -186,6 +193,159 @@ func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 // signer key set.
 func VerifyChainIntegrityTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 	return verifyChainTrusted(receipts, trustedKeys, true)
+}
+
+// VerifyChainWithEndorsements verifies a rotated receipt chain while allowing
+// an old-key-signed endorsement to authorize each successor key. Root keys are
+// still supplied out of band. An absent, invalid, duplicate, replayed, or
+// boundary-mismatched endorsement fails closed for a successor that is not a
+// root key.
+func VerifyChainWithEndorsements(sessionID string, receipts []Receipt, endorsements []RotationEndorsement, rootTrustedKeys []string) ChainResult {
+	if strings.TrimSpace(sessionID) == "" {
+		return ChainResult{Error: "rotation endorsement verification requires a recorder session ID", FailureKind: ChainFailureTrust}
+	}
+	if len(receipts) == 0 {
+		if len(endorsements) != 0 {
+			return ChainResult{Error: "rotation endorsements supplied for an empty receipt chain", FailureKind: ChainFailureTrust}
+		}
+		return ChainResult{Valid: true, IntegrityVerified: true}
+	}
+
+	allKeys := make([]string, 0, len(receipts))
+	seenKeys := make(map[string]struct{})
+	for _, receipt := range receipts {
+		if _, ok := seenKeys[receipt.SignerKey]; !ok {
+			seenKeys[receipt.SignerKey] = struct{}{}
+			allKeys = append(allKeys, receipt.SignerKey)
+		}
+	}
+	base := VerifyChainTrusted(receipts, allKeys)
+	if !base.Valid {
+		return base
+	}
+	roots, err := normalizeTrustedKeys(rootTrustedKeys)
+	if err != nil {
+		base.Valid = false
+		base.FailureKind = ChainFailureTrust
+		base.Error = fmt.Sprintf("trusted key set: %v", err)
+		return base
+	}
+	rootSet := make(map[string]struct{}, len(roots))
+	for _, key := range roots {
+		rootSet[key] = struct{}{}
+	}
+	if len(rootSet) == 0 {
+		return endorsementFailure(base, receipts[0].SignerKey, errors.New("rotation endorsement verification requires at least one trusted root key"))
+	}
+	if _, trusted := rootSet[receipts[0].SignerKey]; !trusted {
+		return endorsementFailure(base, receipts[0].SignerKey, errors.New("genesis signer key is not in the trusted root set"))
+	}
+	if err := verifySignedRecorderSession(sessionID, receipts); err != nil {
+		return endorsementFailure(base, "", err)
+	}
+
+	for _, endorsement := range endorsements {
+		if err := VerifyRotationEndorsement(endorsement); err != nil {
+			return endorsementFailure(base, endorsement.NewSignerKey, err)
+		}
+	}
+
+	base.TrustBasis = make([]string, 0, len(base.Segments))
+	base.TrustBasis = append(base.TrustBasis, "root")
+	used := make(map[int]struct{}, len(endorsements))
+	priorTailIndex := -1
+	for segmentIndex := 1; segmentIndex < len(base.Segments); segmentIndex++ {
+		segment := base.Segments[segmentIndex]
+		var found bool
+		priorTailIndex, found = findRotationPriorTail(receipts, priorTailIndex+1, segment.SignerKey)
+		if !found {
+			return endorsementFailure(base, segment.SignerKey, errors.New("cannot locate rotation boundary"))
+		}
+		prior := receipts[priorTailIndex]
+		priorHash, hashErr := ReceiptHash(prior)
+		if hashErr != nil {
+			return endorsementFailure(base, segment.SignerKey, hashErr)
+		}
+		boundary := receipts[priorTailIndex+1]
+		match := -1
+		for endorsementIndex, endorsement := range endorsements {
+			if _, alreadyUsed := used[endorsementIndex]; alreadyUsed {
+				continue
+			}
+			if endorsement.SessionID != sessionID ||
+				endorsement.PriorSignerKey != prior.SignerKey ||
+				endorsement.PriorFinalSeq != prior.ActionRecord.ChainSeq ||
+				endorsement.PriorTailHash != priorHash ||
+				endorsement.NewSignerKey != boundary.SignerKey {
+				continue
+			}
+			if match >= 0 {
+				return endorsementFailure(base, segment.SignerKey, errors.New("multiple rotation endorsements match one receipt boundary"))
+			}
+			match = endorsementIndex
+		}
+		_, rooted := rootSet[segment.SignerKey]
+		if match >= 0 {
+			used[match] = struct{}{}
+		}
+		if rooted {
+			base.TrustBasis = append(base.TrustBasis, "root")
+			continue
+		}
+		if match < 0 {
+			return endorsementFailure(base, segment.SignerKey, errors.New("rotation endorsement does not match receipt boundary"))
+		}
+		base.TrustBasis = append(base.TrustBasis, "endorsed")
+	}
+	if len(used) != len(endorsements) {
+		return endorsementFailure(base, "", errors.New("unused rotation endorsement does not match a required boundary"))
+	}
+	return base
+}
+
+func findRotationPriorTail(receipts []Receipt, start int, signerKey string) (int, bool) {
+	for i := start; i < len(receipts); i++ {
+		if receipts[i].SignerKey == signerKey {
+			return i - 1, true
+		}
+	}
+	return 0, false
+}
+
+func verifySignedRecorderSession(expected string, receipts []Receipt) error {
+	firstBoundary := len(receipts)
+	for i := 1; i < len(receipts); i++ {
+		if receipts[i].ActionRecord.KeyTransition != nil {
+			firstBoundary = i
+			break
+		}
+	}
+	rootOpenFound := false
+	for i, receipt := range receipts {
+		if open := sessionOpen(receipt.ActionRecord.SessionControl); open != nil {
+			if open.RecorderSession != expected {
+				return fmt.Errorf("signed recorder session %q does not match endorsement session %q", open.RecorderSession, expected)
+			}
+			if i < firstBoundary {
+				rootOpenFound = true
+			}
+		}
+	}
+	if rootOpenFound {
+		return nil
+	}
+	return errors.New("root receipt segment has no signed session_open recorder binding")
+}
+
+func endorsementFailure(base ChainResult, key string, err error) ChainResult {
+	base.Valid = false
+	base.FailureKind = ChainFailureTrust
+	base.UntrustedSignerKey = key
+	base.Error = err.Error()
+	if key != "" {
+		base.EndorsementGaps = []string{key}
+	}
+	return base
 }
 
 func verifyChainTrusted(receipts []Receipt, trustedKeys []string, integrityOnly bool) ChainResult {
@@ -363,6 +523,9 @@ func (v *chainVerifier) startRotatedSegment(r Receipt, marker *KeyTransition) (C
 	}
 	if marker.PriorSignerKey != v.curKey {
 		return v.brokenAt(r, "key_transition prior_signer_key does not match prior segment key"), false
+	}
+	if r.SignerKey == v.curKey {
+		return v.brokenAt(r, "key_transition does not change signer key"), false
 	}
 	if v.curSeg != nil && marker.PriorChainSeq != v.curSeg.FinalSeq {
 		return v.brokenAt(r, "key_transition prior_chain_seq does not match prior segment final seq"), false
@@ -773,6 +936,11 @@ func ExtractReceiptsWithSessionID(path string) ([]Receipt, string, error) {
 	var sessionID string
 	if len(entries) > 0 {
 		sessionID = entries[0].SessionID
+		for _, entry := range entries[1:] {
+			if entry.SessionID != sessionID {
+				return nil, "", fmt.Errorf("evidence file mixes recorder sessions %q and %q", sessionID, entry.SessionID)
+			}
+		}
 	}
 	receipts, err := extractReceiptsFromEntries(entries)
 	return receipts, sessionID, err

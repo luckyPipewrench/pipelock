@@ -8,10 +8,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -36,6 +40,59 @@ func buildRotatedChainJSONL(t *testing.T, aN, bN int) (dir string, pubA, pubB ed
 	emitInto(t, dir, privA, aN, 0)
 	emitInto(t, dir, privB, bN, aN)
 	return dir, pa, pb
+}
+
+func buildEndorsedRotatedChainJSONL(t *testing.T) (dir string, pubA ed25519.PublicKey, endorsementPath string) {
+	t.Helper()
+	dir = t.TempDir()
+	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey A: %v", err)
+	}
+	_, privB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey B: %v", err)
+	}
+	emitInto(t, dir, privA, 2, 0)
+	emitInto(t, dir, privB, 2, 2)
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, "proxy")
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	boundary := -1
+	for i := 1; i < len(receipts); i++ {
+		if receipts[i].ActionRecord.KeyTransition != nil {
+			boundary = i
+			break
+		}
+	}
+	if boundary < 1 {
+		t.Fatal("rotated fixture has no key transition")
+	}
+	prior := receipts[boundary-1]
+	priorHash, err := receipt.ReceiptHash(prior)
+	if err != nil {
+		t.Fatalf("ReceiptHash: %v", err)
+	}
+	endorsement, err := receipt.SignRotationEndorsement(receipt.RotationEndorsement{
+		SessionID:     "proxy",
+		PriorFinalSeq: prior.ActionRecord.ChainSeq,
+		PriorTailHash: priorHash,
+		NewSignerKey:  receipts[boundary].SignerKey,
+		RotatedAt:     time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+	}, privA)
+	if err != nil {
+		t.Fatalf("SignRotationEndorsement: %v", err)
+	}
+	data, err := json.Marshal(endorsement)
+	if err != nil {
+		t.Fatalf("Marshal endorsement: %v", err)
+	}
+	endorsementPath = filepath.Join(dir, "rotation-endorsement.json")
+	if err := os.WriteFile(endorsementPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile endorsement: %v", err)
+	}
+	return dir, pubA, endorsementPath
 }
 
 func emitInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx int) {
@@ -67,6 +124,7 @@ func emitInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx
 			Transport: "fetch",
 			Method:    http.MethodGet,
 			Target:    fmt.Sprintf("https://example.com/%d", startIdx+i),
+			SessionID: "agent-session",
 		}); err != nil {
 			t.Fatalf("Emit %d: %v", i, err)
 		}
@@ -147,6 +205,151 @@ func TestVerifyReceiptCmd_RotatedChainTrustOnFirstUseFlags(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), keyB) {
 		t.Errorf("expected the rotated-to key in output, got: %s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_RotationEndorsementAuthorizesSuccessor(t *testing.T) {
+	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	keyA := hex.EncodeToString(pubA)
+
+	var buf bytes.Buffer
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--chain", dir, "--key", keyA, "--rotation-endorsement", endorsementPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("endorsed CLI verification failed: %v\n%s", err, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "CHAIN VALID") || !strings.Contains(out, "(endorsed)") {
+		t.Fatalf("endorsed trust basis missing from output:\n%s", out)
+	}
+
+	buf.Reset()
+	cmd = VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--chain", dir, "--rotation-endorsement", endorsementPath})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "trusted root key") {
+		t.Fatalf("unpinned endorsement verification did not fail closed: err=%v output=%s", err, buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *testing.T) {
+	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	query, err := recorder.QuerySession(dir, "proxy", nil)
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if len(query.Entries) == 0 {
+		t.Fatal("fixture has no recorder entries")
+	}
+	writeEntries := func(name string, mutate func(int, *recorder.Entry)) string {
+		t.Helper()
+		entries := append([]recorder.Entry(nil), query.Entries...)
+		for i := range entries {
+			mutate(i, &entries[i])
+			if i == 0 {
+				entries[i].PrevHash = recorder.GenesisHash
+			} else {
+				entries[i].PrevHash = entries[i-1].Hash
+			}
+			entries[i].Hash = recorder.ComputeHash(entries[i])
+		}
+		path := filepath.Join(t.TempDir(), name)
+		file, openErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- test-controlled temp path.
+		if openErr != nil {
+			t.Fatalf("OpenFile: %v", openErr)
+		}
+		enc := json.NewEncoder(file)
+		for _, entry := range entries {
+			if encodeErr := enc.Encode(entry); encodeErr != nil {
+				_ = file.Close()
+				t.Fatalf("Encode entry: %v", encodeErr)
+			}
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
+		}
+		return path
+	}
+	foreignPath := writeEntries("mixed.jsonl", func(i int, entry *recorder.Entry) {
+		if i > 0 {
+			entry.SessionID = "other"
+		}
+	})
+
+	var buf bytes.Buffer
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "mixes recorder sessions") {
+		t.Fatalf("foreign-session JSONL accepted: err=%v output=%s", err, buf.String())
+	}
+
+	foreignPath = writeEntries("foreign.jsonl", func(_ int, entry *recorder.Entry) {
+		entry.SessionID = "other"
+	})
+	buf.Reset()
+	cmd = VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), `endorsed receipt session "proxy" does not match evidence session "other"`) {
+		t.Fatalf("consistent foreign-session JSONL accepted: err=%v output=%s", err, buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_RotationEndorsementFlagConflicts(t *testing.T) {
+	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	keyA := hex.EncodeToString(pubA)
+	files, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("find evidence JSONL: files=%v err=%v", files, err)
+	}
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "missing endorsement file",
+			args:    []string{"--chain", dir, "--key", keyA, "--rotation-endorsement", filepath.Join(dir, "missing.json")},
+			wantErr: "loading --rotation-endorsement",
+		},
+		{
+			name:    "fleet report",
+			args:    []string{"ignored.json", "--fleet-report", "--key", keyA, "--rotation-endorsement", endorsementPath},
+			wantErr: "cannot be combined with --fleet-report",
+		},
+		{
+			name:    "chain clean report",
+			args:    []string{"--chain", dir, "--key", keyA, "--clean-report", filepath.Join(dir, "clean.json"), "--rotation-endorsement", endorsementPath},
+			wantErr: "cannot be combined with --clean-report",
+		},
+		{
+			name:    "jsonl clean report",
+			args:    []string{files[0], "--key", keyA, "--clean-report", filepath.Join(dir, "clean.json"), "--rotation-endorsement", endorsementPath},
+			wantErr: "cannot be combined with --clean-report",
+		},
+		{
+			name:    "single receipt",
+			args:    []string{"ignored.json", "--key", keyA, "--rotation-endorsement", endorsementPath},
+			wantErr: "requires --chain or a JSONL receipt file",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cmd := VerifyReceiptCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err=%v, want %q; output=%s", err, tc.wantErr, buf.String())
+			}
+		})
 	}
 }
 

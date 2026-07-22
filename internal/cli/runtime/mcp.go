@@ -831,6 +831,7 @@ Key-free evidence capture:
 			}
 			defer sc.Close()
 			auditLogger := audit.NewNop()
+			upstreamDialContext := mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc })
 
 			ks := killswitch.New(cfg)
 
@@ -1251,6 +1252,7 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
+						DialContext:            upstreamDialContext,
 					}
 					if listenerAuthTokenFile != "" {
 						listenerOpts.ListenerBearerTokenFn = func() (string, error) {
@@ -1303,6 +1305,7 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
+						DialContext:            upstreamDialContext,
 					}
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
@@ -1355,6 +1358,7 @@ Key-free evidence capture:
 					ContractLoader:         contractLoader,
 					ContractAgent:          contractAgent,
 					DeferManager:           deferManager,
+					DialContext:            upstreamDialContext,
 				}
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)

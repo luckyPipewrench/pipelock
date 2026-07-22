@@ -22,6 +22,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+func reverseMetadataTestClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{Proxy: nil}}
+}
+
 // TestSubmitProfile_SetSafeDialerIsUsed proves that after SetSafeDialer,
 // the reverse proxy dials the upstream through the supplied dialer rather
 // than the default transport. A sentinel dialer records that it was
@@ -66,6 +70,87 @@ func TestSubmitProfile_SetSafeDialerIsUsed(t *testing.T) {
 	if dialerCalls.Load() == 0 {
 		t.Error("safe dialer was never invoked; SetSafeDialer did not take effect")
 	}
+}
+
+func TestReverseProxy_MetadataSafeDialerBlocksMetadataButAllowsLoopback(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	t.Run("metadata blocked", func(t *testing.T) {
+		upstreamURL, err := url.Parse("http://169.254.169.254")
+		if err != nil {
+			t.Fatalf("parse upstream: %v", err)
+		}
+		var cfgPtr atomic.Pointer[config.Config]
+		var scPtr atomic.Pointer[scanner.Scanner]
+		cfgPtr.Store(cfg)
+		scPtr.Store(sc)
+		handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+		handler.SetSafeDialer(p.MetadataSafeDialer())
+		proxy := newIPv4Server(t, handler)
+		defer proxy.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := reverseMetadataTestClient().Do(req)
+		if err != nil {
+			t.Fatalf("reverse proxy request: %v", err)
+		}
+		reason := resp.Header.Get("X-Pipelock-Block-Reason")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+		}
+		if reason != "ssrf_metadata" {
+			t.Fatalf("X-Pipelock-Block-Reason = %q, want ssrf_metadata", reason)
+		}
+	})
+
+	t.Run("loopback allowed", func(t *testing.T) {
+		var upstreamHit atomic.Bool
+		upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			upstreamHit.Store(true)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer upstream.Close()
+		upstreamURL, err := url.Parse(upstream.URL)
+		if err != nil {
+			t.Fatalf("parse upstream: %v", err)
+		}
+		var cfgPtr atomic.Pointer[config.Config]
+		var scPtr atomic.Pointer[scanner.Scanner]
+		cfgPtr.Store(cfg)
+		scPtr.Store(sc)
+		handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+		handler.SetSafeDialer(p.MetadataSafeDialer())
+		proxy := newIPv4Server(t, handler)
+		defer proxy.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := reverseMetadataTestClient().Do(req)
+		if err != nil {
+			t.Fatalf("reverse proxy request: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if !upstreamHit.Load() {
+			t.Fatal("loopback upstream was not reached")
+		}
+	})
 }
 
 // TestSubmitProfile_SetSafeDialerNilIsNoop verifies a nil dialer leaves the

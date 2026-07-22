@@ -233,6 +233,34 @@ func TestRunHTTPProxy_ForwardsCleanRequest(t *testing.T) {
 	}
 }
 
+func TestRunHTTPProxy_UpstreamUsesConfiguredDialContext(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	errDialBlocked := errors.New("sentinel dial blocked")
+	var dialCalls atomic.Int32
+	stdin := strings.NewReader(jsonToolsCallEcho + "\n")
+	var stdout, stderr bytes.Buffer
+
+	err := RunHTTPProxy(context.Background(), stdin, &stdout, &stderr, "http://api.vendor.example/mcp", nil, MCPProxyOpts{
+		Scanner: sc,
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errDialBlocked
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+	if dialCalls.Load() == 0 {
+		t.Fatal("configured dialer was not called")
+	}
+	if !strings.Contains(stderr.String(), "upstream request failed") {
+		t.Fatalf("stderr = %q, want sanitized upstream request failure", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "upstream HTTP request failed") {
+		t.Fatalf("stdout = %q, want upstream error response", stdout.String())
+	}
+}
+
 func TestRunHTTPProxy_RedactsToolCallArguments(t *testing.T) {
 	secret := mcpRedactionSecret()
 	var upstreamBody bytes.Buffer
@@ -2181,6 +2209,154 @@ func TestRunHTTPProxy_NotificationBlocked(t *testing.T) {
 }
 
 // ---------- RunHTTPListenerProxy tests ----------
+
+func TestRunHTTPListenerProxy_UpstreamUsesConfiguredDialContext(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	errDialBlocked := errors.New("sentinel dial blocked")
+	var dialCalls atomic.Int32
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logBuf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, "http://api.vendor.example/mcp", &logBuf, MCPProxyOpts{
+			Scanner: sc,
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				dialCalls.Add(1)
+				return nil, errDialBlocked
+			},
+		})
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String()+"/", strings.NewReader(jsonToolsCallEcho))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("listener POST: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadGateway, body)
+	}
+	if dialCalls.Load() == 0 {
+		t.Fatal("configured dialer was not called")
+	}
+
+	// The SSE stream transport (upstreamStreamTransport) is a separate transport
+	// from the POST path; a GET/SSE request must dial through the same guarded
+	// dialer so the metadata hard floor cannot silently regress on the stream
+	// surface.
+	postDials := dialCalls.Load()
+	streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
+	if err != nil {
+		t.Fatalf("new SSE request: %v", err)
+	}
+	streamReq.Header.Set("Accept", "text/event-stream")
+	streamResp, err := http.DefaultClient.Do(streamReq)
+	if err != nil {
+		t.Fatalf("listener GET/SSE: %v", err)
+	}
+	streamBody, _ := io.ReadAll(streamResp.Body)
+	_ = streamResp.Body.Close()
+	if streamResp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("SSE status = %d, want %d; body=%s", streamResp.StatusCode, http.StatusBadGateway, streamBody)
+	}
+	if dialCalls.Load() <= postDials {
+		t.Fatal("configured dialer was not called for the SSE stream path")
+	}
+
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "closed network connection") {
+		t.Fatalf("RunHTTPListenerProxy: %v", err)
+	}
+}
+
+func TestRunHTTPListenerProxy_MetadataDialBlockSurfacesReason(t *testing.T) {
+	// A benign upstream URL passes scanning/gating, but the dialer refuses at
+	// connection time (the DNS-rebind backstop) with the typed
+	// MetadataDialBlockError. Both the POST and SSE listener paths must surface a
+	// 403 carrying the ssrf_metadata block reason rather than a generic 502.
+	sc := testScannerForHTTP(t)
+	h := newMCPDecisionReceiptHarness(t)
+	metaDialer := func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, &MetadataDialBlockError{Host: "api.vendor.example", IP: net.ParseIP("169.254.169.254")}
+	}
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logBuf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, "http://api.vendor.example/mcp", &logBuf, MCPProxyOpts{
+			Scanner:          sc,
+			DialContext:      metaDialer,
+			ReceiptEmitter:   h.v1,
+			V2ReceiptEmitter: h.v2,
+			PolicyHash:       mcpTestPolicyHash,
+		})
+	}()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		accept string
+	}{
+		{"post", http.MethodPost, ""},
+		{"sse", http.MethodGet, "text/event-stream"},
+		{"delete", http.MethodDelete, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body io.Reader
+			if tc.method == http.MethodPost {
+				body = strings.NewReader(jsonToolsCallEcho)
+			}
+			req, err := http.NewRequestWithContext(ctx, tc.method, "http://"+ln.Addr().String()+"/", body)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			if tc.method == http.MethodPost {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			if tc.accept != "" {
+				req.Header.Set("Accept", tc.accept)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			reason := resp.Header.Get("X-Pipelock-Block-Reason")
+			receiptID := resp.Header.Get("X-Pipelock-Block-Reason-Receipt")
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s status = %d, want 403 (metadata dial block)", tc.name, resp.StatusCode)
+			}
+			if reason != "ssrf_metadata" {
+				t.Fatalf("%s X-Pipelock-Block-Reason = %q, want ssrf_metadata", tc.name, reason)
+			}
+			// A non-empty receipt id proves the block routed through the
+			// receipt-emitting decision path, not the bare header-only 502.
+			if receiptID == "" {
+				t.Fatalf("%s: no X-Pipelock-Block-Reason-Receipt; metadata dial block did not emit a receipt", tc.name)
+			}
+		})
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "closed network connection") {
+		t.Fatalf("RunHTTPListenerProxy: %v", err)
+	}
+}
 
 // startListenerProxy starts RunHTTPListenerProxy on a free port and returns
 // the base URL (e.g. "http://127.0.0.1:<port>") and a cancel function.
@@ -6992,7 +7168,7 @@ func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
 // regress. Matches the parity of the forward, reverse, and TLS-intercept
 // transports.
 func TestNewReverseUpstreamTransport_IgnoresAmbientProxyEnv(t *testing.T) {
-	tr := newReverseUpstreamTransport()
+	tr := newReverseUpstreamTransport(nil)
 	if tr.Proxy != nil {
 		t.Error("reverse upstream transport Proxy must be nil (no ambient HTTP_PROXY chaining)")
 	}

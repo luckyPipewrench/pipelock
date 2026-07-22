@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"encoding/base32"
@@ -2453,6 +2454,47 @@ func TestScan_QueryEntropyBlocksImageDataURLBoundaryBypasses(t *testing.T) {
 				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerEntropy, result.Reason)
 			}
 		})
+	}
+}
+
+// TestScan_QueryEntropyBlocksTrailingSecretInIDAT pins the invariant that a PNG
+// whose IDAT zlib stream decompresses to the valid scanline bytes PLUS a trailing
+// high-entropy secret is NOT accepted as a verified image. png.Decode rejects the
+// extra decompressed data ("too much pixel data"), so decodeVerifiedPNGOrJPEG
+// fails and the value stays subject to the entropy gate. A gpt-5.5 deep review
+// raised this as a potential exfiltration path; this test confirms it is closed
+// by construction.
+func TestScan_QueryEntropyBlocksTrailingSecretInIDAT(t *testing.T) {
+	secret := queryEntropyFixtureSecret()
+	// 1x1 true-color (RGB, 8-bit): one filtered row = filter(0x00) + R,G,B.
+	raw := append([]byte{0x00, 0x11, 0x22, 0x33}, []byte(secret)...)
+	var zb bytes.Buffer
+	zw := zlib.NewWriter(&zb)
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+	sig := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	ihdr := []byte{0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0}
+	p := append([]byte(nil), sig...)
+	p = appendPNGChunk(p, "IHDR", ihdr)
+	p = appendPNGChunk(p, "IDAT", zb.Bytes())
+	p = appendPNGChunk(p, "IEND", nil)
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(p)
+
+	if isVerifiedImageDataURL(dataURL) {
+		t.Fatal("trailing-secret IDAT was accepted as a verified image (exfiltration bypass)")
+	}
+
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	scn := MustNew(cfg)
+	defer scn.Close()
+	if r := scn.Scan(context.Background(), "https://example.com/page?img="+url.QueryEscape(dataURL)); r.Allowed {
+		t.Fatal("trailing-secret IDAT data URL was allowed; must stay entropy-scanned")
 	}
 }
 

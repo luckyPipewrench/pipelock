@@ -243,6 +243,163 @@ func TestWriteBundleUnderDirRejectsSymlinkRootAndFinalPath(t *testing.T) {
 	})
 }
 
+func TestLoadStateMarkerCheckpointRejectsInvalidBundleMaterial(t *testing.T) {
+	dir := t.TempDir()
+	_, keyHex := testReceiptChain(t, 2)
+	checkpoint := Checkpoint{
+		SessionID:    "proxy",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		ReceiptCount: 2,
+		SignerKeys:   []string{keyHex},
+	}
+	bundleSeq := 0
+	writeBundle := func(t *testing.T, cp Checkpoint, proof Proof) StateMarker {
+		t.Helper()
+		bundleSeq++
+		rel := "bundle-" + strconv.Itoa(bundleSeq) + ".json"
+		data, err := WriteBundleUnderDir(dir, rel, NewBundle(cp, proof))
+		if err != nil {
+			t.Fatalf("WriteBundleUnderDir: %v", err)
+		}
+		sum := sha256.Sum256(data)
+		return StateMarker{
+			Schema:       stateMarkerSchema,
+			SessionID:    cp.SessionID,
+			FinalSeq:     cp.FinalSeq,
+			RootHash:     cp.RootHash,
+			Backend:      proof.Backend,
+			LogIndex:     proof.LogIndex,
+			AnchoredAt:   time.Now().UTC(),
+			BundleSHA256: hex.EncodeToString(sum[:]),
+			BundlePath:   rel,
+		}
+	}
+	baseProof := Proof{Backend: LocalBackend, LogIndex: 7}
+	baseMarker := writeBundle(t, checkpoint, baseProof)
+
+	tests := []struct {
+		name   string
+		marker StateMarker
+		setup  func(t *testing.T, marker *StateMarker)
+		want   string
+	}{
+		{
+			name:   "path escape",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				marker.BundlePath = "../bundle.json"
+			},
+			want: "must stay under receipt directory",
+		},
+		{
+			name:   "missing bundle",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				marker.BundlePath = "missing.json"
+			},
+			want: "open anchor-state bundle",
+		},
+		{
+			name:   "hash mismatch",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				marker.BundleSHA256 = strings.Repeat("b", 64)
+			},
+			want: "bundle hash does not match state marker",
+		},
+		{
+			name:   "malformed bundle",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				data := []byte(`{"version":`)
+				sum := sha256.Sum256(data)
+				marker.BundlePath = "malformed.json"
+				marker.BundleSHA256 = hex.EncodeToString(sum[:])
+				if err := os.WriteFile(filepath.Join(dir, marker.BundlePath), data, 0o600); err != nil {
+					t.Fatalf("WriteFile malformed bundle: %v", err)
+				}
+			},
+			want: "parse anchor bundle",
+		},
+		{
+			name:   "marker fields mismatch bundle",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				marker.FinalSeq++
+			},
+			want: "bundle does not match state marker",
+		},
+		{
+			name:   "zero receipt count",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				cp := checkpoint
+				cp.ReceiptCount = 0
+				*marker = writeBundle(t, cp, baseProof)
+			},
+			want: "receipt_count is zero",
+		},
+		{
+			name:   "missing signer keys",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				cp := checkpoint
+				cp.SignerKeys = nil
+				*marker = writeBundle(t, cp, baseProof)
+			},
+			want: "has no signer keys",
+		},
+		{
+			name:   "invalid signer key",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				cp := checkpoint
+				cp.SignerKeys = []string{strings.Repeat("A", 64)}
+				*marker = writeBundle(t, cp, baseProof)
+			},
+			want: "signer key is invalid",
+		},
+		{
+			name:   "receipt count mismatch",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				marker.ReceiptCount = checkpoint.ReceiptCount + 1
+				marker.SignerKey = keyHex
+			},
+			want: "receipt_count does not match state marker",
+		},
+		{
+			name:   "signer key mismatch",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				marker.ReceiptCount = checkpoint.ReceiptCount
+				marker.SignerKey = strings.Repeat("b", 64)
+			},
+			want: "signer_key does not match state marker",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			marker := tc.marker
+			tc.setup(t, &marker)
+			if _, err := LoadStateMarkerCheckpoint(dir, marker); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadStateMarkerCheckpoint err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestWriteStateMarkerWritesCanonicalPrivateJSON(t *testing.T) {
 	dir := t.TempDir()
 	anchoredAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
@@ -762,6 +919,25 @@ func TestLoadIndexedStateMarkerRejectsHostileParent(t *testing.T) {
 		}
 		if _, found, err := LoadIndexedStateMarker(dir, requested); err == nil || found || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("LoadIndexedStateMarker found=%v err=%v, want regular-file refusal", found, err)
+		}
+	})
+	t.Run("missing receipt directory", func(t *testing.T) {
+		if _, err := LoadStateMarkers(filepath.Join(t.TempDir(), "missing")); err != nil {
+			t.Fatalf("LoadStateMarkers missing root err = %v, want absent history", err)
+		}
+	})
+	t.Run("invalid indexed marker name", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := WriteStateMarker(dir, marker); err != nil {
+			t.Fatalf("WriteStateMarker: %v", err)
+		}
+		index, err := openStateMarkerIndex(dir)
+		if err != nil {
+			t.Fatalf("openStateMarkerIndex: %v", err)
+		}
+		defer func() { _ = index.Close() }()
+		if _, found, err := index.LoadStateMarker(filepath.Join("nested", "marker.json")); err == nil || found || !strings.Contains(err.Error(), "marker name") {
+			t.Fatalf("LoadStateMarker invalid name found=%v err=%v, want name rejection", found, err)
 		}
 	})
 }

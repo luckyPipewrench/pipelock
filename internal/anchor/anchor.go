@@ -175,6 +175,9 @@ func NewBundle(checkpoint Checkpoint, proof Proof) Bundle {
 }
 
 func validateProofBackendConsistency(proof Proof) error {
+	if proof.Backend == RekorBackend && proof.Rekor == nil {
+		return fmt.Errorf("anchor proof backend %q requires rekor proof material", proof.Backend)
+	}
 	if proof.Backend != RekorBackend && proof.Rekor != nil {
 		return fmt.Errorf("anchor proof backend %q must not carry rekor proof material", proof.Backend)
 	}

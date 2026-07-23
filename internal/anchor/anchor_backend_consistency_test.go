@@ -94,4 +94,18 @@ func TestAnchorProofBackendRekorConsistency(t *testing.T) {
 			t.Fatalf("VerifyBundle Rekor bundle invalid: %s", report.Error)
 		}
 	})
+
+	t.Run("loader rejects rekor proof missing Rekor material", func(t *testing.T) {
+		strippedRekorBundle := cleanLocalBundle
+		strippedRekorBundle.Backend = RekorBackend
+		strippedRekorBundle.Proof.Backend = RekorBackend
+		strippedRekorBundle.Proof.Rekor = nil
+		strippedJSON, err := json.Marshal(strippedRekorBundle)
+		if err != nil {
+			t.Fatalf("marshal stripped rekor bundle: %v", err)
+		}
+		if _, err := LoadBundleBytes(strippedJSON); err == nil || !strings.Contains(err.Error(), "requires rekor proof material") {
+			t.Fatalf("LoadBundleBytes error = %v, want rekor-material-required rejection", err)
+		}
+	})
 }

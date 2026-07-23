@@ -180,7 +180,7 @@ func TestHandleDirectForward_ValidCONNECTRoundTrip(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleDirectForward(serverConn)
+		handleDirectForward(serverConn, true)
 	}()
 
 	_, _ = fmt.Fprintf(clientConn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n",
@@ -1108,7 +1108,7 @@ func TestHandleDirectForward_502BadGateway(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleDirectForward(serverConn)
+		handleDirectForward(serverConn, true)
 	}()
 
 	_, _ = fmt.Fprintf(clientConn, "CONNECT 192.0.2.1:99999 HTTP/1.1\r\nHost: 192.0.2.1:99999\r\n\r\n")
@@ -1130,7 +1130,7 @@ func TestHandleDirectForward_ShortCONNECT(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleDirectForward(serverConn)
+		handleDirectForward(serverConn, true)
 	}()
 
 	_, _ = fmt.Fprintf(clientConn, "CONNECT\r\n")
@@ -1144,7 +1144,7 @@ func TestHandleDirectForward_ReadEOF(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleDirectForward(serverConn)
+		handleDirectForward(serverConn, true)
 	}()
 
 	_ = clientConn.Close()

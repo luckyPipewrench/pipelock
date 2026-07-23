@@ -328,6 +328,65 @@ Honest limit: anchoring narrows post-anchor omission and tampering windows, but
 it does not prove real-time truth by whoever held the receipt signing key and
 does not prove traffic outside the mediated boundary did not happen.
 
+### Automatic runtime anchoring
+
+`pipelock run` can anchor the live `proxy` receipt chain without a separate
+scheduled CLI job. Configuring exactly one anchor point is the opt-in; there is
+no enable flag and no public Rekor URL default. With no `rekor_url` or
+`local_log`, runtime anchoring is completely inert and receipts remain locally
+tamper-evident only.
+
+```yaml
+flight_recorder:
+  dir: /var/lib/pipelock/evidence
+  signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key
+  anchor:
+    rekor_url: https://rekor.internal.example
+    rekor_key_path: /etc/pipelock/keys/rekor-entry.key
+    interval: 1h
+    receipt_threshold: 1000
+```
+
+The first pass that finds at least one receipt anchors immediately. After that,
+the time and receipt-count triggers are ORed: a new checkpoint is submitted when
+either `interval` has elapsed or `receipt_threshold` new receipts have arrived.
+Set either trigger to `0` to disable it; at least one must remain active. Trigger
+changes and anchor-point additions/removals take effect on config reload. The
+loop never submits an unchanged or empty receipt head.
+
+Rekor submission uses the v1 `hashedrekord` API. Only the checkpoint's SHA-512
+digest and signature leave the box; receipt content is never submitted. The
+separate `rekor_key_path` Ed25519 key signs the log entry and is reloaded for
+each attempt so replacing the key file does not require restarting Pipelock.
+
+Anchoring is fail-degraded, not a traffic gate. An unavailable log, unreadable
+entry key, invalid chain, or write failure increments
+`pipelock_evidence_auto_anchor_failures_total`, records the last error in the
+`/stats` evidence-health JSON, and prints a `CRITICAL` line to stderr. Proxy
+traffic and receipt emission continue without waiting for the retry, which runs
+on a later pass. Successful markers feed the existing `anchoring_fresh` evidence
+health grade and anchor-lag metrics.
+
+The log operator determines the ceiling of the proof. A self-hosted Rekor log
+adds tamper evidence and durability, but it is not independent from its
+operator. A public log can provide an independent witness, but it publishes
+checkpoint metadata and may impose rate limits. Pipelock deliberately chooses
+neither for you.
+
+For hermetic development, configure the deterministic local backend instead:
+
+```yaml
+flight_recorder:
+  anchor:
+    local_log: /var/lib/pipelock/anchor-log.jsonl
+    log_id: local-fake-log
+    interval: 1h
+    receipt_threshold: 1000
+```
+
+`rekor_url` and `local_log` are mutually exclusive. The local backend exercises
+the same checkpoint, bundle, and marker flow but is not an independent witness.
+
 ## How the chain works
 
 Each receipt contains:

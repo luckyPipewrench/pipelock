@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -141,6 +142,33 @@ func TestEvidenceMetricsSettersSnapshotsAndDynamicCollector(t *testing.T) {
 	if got := testutil.ToFloat64(m.evidenceAnchoredFinalSeq); got != 42 {
 		t.Fatalf("anchored final seq gauge = %v, want 42", got)
 	}
+	m.RecordEvidenceAutoAnchorAttempt()
+	m.RecordEvidenceAutoAnchorSuccess()
+	m.RecordEvidenceAutoAnchorAttempt()
+	m.RecordEvidenceAutoAnchorFailure(" test failure ")
+	autoAnchor := m.EvidenceAutoAnchorStatsSnapshot()
+	if autoAnchor.Attempts != 2 || autoAnchor.Successes != 1 || autoAnchor.Failures != 1 || autoAnchor.LastError != "test failure" {
+		t.Fatalf("auto-anchor stats = %+v, want 2/1/1 and last error", autoAnchor)
+	}
+	for name, metric := range map[string]prometheus.Counter{
+		"attempts":  m.evidenceAutoAnchorAttempts,
+		"successes": m.evidenceAutoAnchorSuccesses,
+		"failures":  m.evidenceAutoAnchorFailures,
+	} {
+		want := 1.0
+		if name == "attempts" {
+			want = 2
+		}
+		if got := testutil.ToFloat64(metric); got != want {
+			t.Fatalf("auto-anchor %s counter = %v, want %v", name, got, want)
+		}
+	}
+	// An oversized last-error string is truncated to the rune bound so a hostile
+	// failure message cannot grow the stats snapshot without limit.
+	m.RecordEvidenceAutoAnchorFailure(strings.Repeat("x", 5000))
+	if truncated := m.EvidenceAutoAnchorStatsSnapshot().LastError; len([]rune(truncated)) != 1024 {
+		t.Fatalf("oversized last error rune length = %d, want 1024", len([]rune(truncated)))
+	}
 
 	m.SetEvidenceRequirements(map[string]bool{
 		EvidenceRequirementRecorderEnabled: true,
@@ -215,6 +243,9 @@ func TestEvidenceMetricsNilAndZeroValueFailClosed(t *testing.T) {
 	nilMetrics.SetEvidenceSelfAuditOK(false)
 	nilMetrics.SetEvidenceHeartbeatInterval(1, true)
 	nilMetrics.SetEvidenceAnchor(1, 1)
+	nilMetrics.RecordEvidenceAutoAnchorAttempt()
+	nilMetrics.RecordEvidenceAutoAnchorSuccess()
+	nilMetrics.RecordEvidenceAutoAnchorFailure("failure")
 	nilMetrics.SetEvidenceRequirement(EvidenceRequirementRecorderEnabled, true)
 	nilMetrics.SetEvidenceRequirements(map[string]bool{EvidenceRequirementRecorderEnabled: true})
 	nilMetrics.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) { return EvidenceHealthStats{}, true })
@@ -223,6 +254,9 @@ func TestEvidenceMetricsNilAndZeroValueFailClosed(t *testing.T) {
 	}
 	if gaps, fsync := nilMetrics.EvidenceStatsCountersSnapshot(); gaps != (EvidenceGapStats{}) || fsync != (EvidenceFsyncStats{}) {
 		t.Fatalf("nil EvidenceStatsCountersSnapshot = (%+v, %+v), want zero", gaps, fsync)
+	}
+	if got := nilMetrics.EvidenceAutoAnchorStatsSnapshot(); got != (EvidenceAutoAnchorStats{}) {
+		t.Fatalf("nil auto-anchor stats = %+v, want zero", got)
 	}
 	if stats, ok := nilMetrics.EvidenceHealthStatsSnapshot(); ok || stats.CurrentAEL != 0 || stats.Requirements != nil {
 		t.Fatalf("nil EvidenceHealthStatsSnapshot = (%+v, %v), want zero false", stats, ok)

@@ -208,17 +208,19 @@ func (h *evidenceHealthMonitor) refreshAnchor() {
 		h.setAnchor(nil)
 		return
 	}
-	if state.FinalSeq > snap.ChainSeq {
+	if (state.SignerKey == "" || state.SignerKey == e.SignerKeyHex()) && state.FinalSeq >= snap.ChainSeq {
 		h.fail("sampler_error", fmt.Errorf("anchor-state final_seq %d is ahead of chain_head_seq %d", state.FinalSeq, snap.ChainSeq))
 		h.setAnchor(nil)
 		return
 	}
-	if current := h.anchorSnapshot(); current != nil && state.FinalSeq < current.FinalSeq {
+	if current := h.anchorSnapshot(); current != nil && state.ReceiptCount == 0 && state.FinalSeq < current.FinalSeq {
 		return
 	}
 	lag := uint64(0)
-	if snap.ChainSeq > state.FinalSeq {
-		lag = snap.ChainSeq - state.FinalSeq
+	if state.SignerKey != "" && state.SignerKey != e.SignerKeyHex() {
+		lag = snap.ChainSeq
+	} else if snap.ChainSeq > state.FinalSeq+1 {
+		lag = snap.ChainSeq - state.FinalSeq - 1
 	}
 	anchoredAt := state.AnchoredAt.UTC()
 	anchor := &metrics.EvidenceAnchorStats{
@@ -275,15 +277,17 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		metrics.EvidenceRequirementSelfAuditOK:     h.selfAuditOK.Load(),
 	}
 	anchor := h.anchorSnapshot()
+	autoAnchor := h.metrics.EvidenceAutoAnchorStatsSnapshot()
 	lastAnchor := 0.0
 	var anchorLag uint64
 	if anchor == nil {
-		anchorLag = snap.ChainSeq + 1
+		anchorLag = snap.ChainSeq
 	} else {
 		anchorLag = anchor.LagReceipts
 		lastAnchor = anchor.LastTimestampSeconds
 		maxLag := cfg.FlightRecorder.EvidenceMaxAnchorLagDuration()
-		if maxLag == 0 || time.Since(time.Unix(0, int64(anchor.LastTimestampSeconds*1e9))) <= maxLag {
+		autoAnchorHealthy := !cfg.FlightRecorder.AnchorConfigured() || autoAnchor.LastError == ""
+		if autoAnchorHealthy && (maxLag == 0 || time.Since(time.Unix(0, int64(anchor.LastTimestampSeconds*1e9))) <= maxLag) {
 			requirements[metrics.EvidenceRequirementAnchoringFresh] = true
 		}
 	}
@@ -319,6 +323,7 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		DurabilityBlocks:           durabilityBlocks,
 		DurabilityInvariantOK:      h.selfAuditOK.Load() && gatedFsync >= durabilityBlocks,
 		Anchor:                     anchor,
+		AutoAnchor:                 autoAnchor,
 		CPC:                        nil,
 		AnchoredFinalSeq:           anchoredFinalSeq(anchor),
 		AnchorLagReceipts:          anchorLag,
@@ -530,6 +535,8 @@ type anchorState struct {
 	AnchoredAt   time.Time `json:"anchored_at"`
 	BundleSHA256 string    `json:"bundle_sha256"`
 	BundlePath   string    `json:"bundle_path"`
+	ReceiptCount uint64    `json:"-"`
+	SignerKey    string    `json:"-"`
 }
 
 const maxEvidenceAnchorStateBytes = 64 * 1024
@@ -558,13 +565,35 @@ func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error)
 		return anchorState{}, false, err
 	}
 	var selected anchorState
+	var selectedAuto anchorState
 	found := false
+	autoFound := false
 	seenSeq := map[uint64]string{}
+	seenReceiptCount := map[uint64]string{}
 	for _, marker := range markers {
 		if marker.SessionID != sessionID {
 			continue
 		}
 		state := anchorStateFromMarker(marker)
+		if isAutoAnchorBundlePath(state.BundlePath) {
+			checkpoint, loadErr := loadAutoAnchorCheckpoint(dir, state)
+			if loadErr != nil {
+				return anchorState{}, false, fmt.Errorf("read auto-anchor state: %w", loadErr)
+			}
+			state.ReceiptCount = checkpoint.ReceiptCount
+			if len(checkpoint.SignerKeys) > 0 {
+				state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
+			}
+			if previousRoot, ok := seenReceiptCount[state.ReceiptCount]; ok && previousRoot != state.RootHash {
+				return anchorState{}, false, fmt.Errorf("ambiguous auto-anchor state markers for session %q at receipt_count %d", sessionID, state.ReceiptCount)
+			}
+			seenReceiptCount[state.ReceiptCount] = state.RootHash
+			if !autoFound || state.ReceiptCount > selectedAuto.ReceiptCount {
+				selectedAuto = state
+				autoFound = true
+			}
+			continue
+		}
 		if previousRoot, ok := seenSeq[state.FinalSeq]; ok && previousRoot != state.RootHash {
 			return anchorState{}, false, fmt.Errorf("ambiguous anchor-state markers for session %q at final_seq %d", sessionID, state.FinalSeq)
 		}
@@ -574,7 +603,15 @@ func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error)
 			found = true
 		}
 	}
+	if autoFound {
+		return selectedAuto, true, nil
+	}
 	return selected, found, nil
+}
+
+func isAutoAnchorBundlePath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+	return strings.HasPrefix(clean, autoAnchorBundleDir+"/anchor-proxy-")
 }
 
 func anchorStateFromMarker(marker anchor.StateMarker) anchorState {

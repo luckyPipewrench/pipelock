@@ -2393,6 +2393,15 @@ flight_recorder:
     enabled: true
     self_audit_interval: 30s
     max_anchor_lag: 24h
+  # Setting exactly one anchor point activates runtime auto-anchoring.
+  # There is no public Rekor URL default.
+  anchor:
+    rekor_url: https://rekor.internal.example
+    rekor_key_path: /etc/pipelock/keys/rekor-entry.key
+    # local_log: /var/lib/pipelock/anchor-log.jsonl # alternative to Rekor
+    # log_id: local-fake-log
+    interval: 1h
+    receipt_threshold: 1000
 
 dashboard_snapshot:
   enabled: true
@@ -2417,6 +2426,21 @@ dashboard_snapshot:
 | `evidence_health.enabled` | `true` | Enable observability-only evidence health grading and `/stats` evidence-health output. This does not gate traffic. |
 | `evidence_health.self_audit_interval` | `30s` | Evidence self-audit interval. Must be between 5s and 10m. |
 | `evidence_health.max_anchor_lag` | `24h` | Maximum accepted age/lag window for anchor freshness reporting. A stale or missing anchor lowers the reported grade; it cannot fabricate health. |
+| `anchor.rekor_url` | (empty) | Rekor v1 base URL. Setting it activates the Rekor auto-anchor backend. There is no public default. Mutually exclusive with `anchor.local_log`. |
+| `anchor.rekor_key_path` | (empty) | Ed25519 private key that signs Rekor entry submissions. Required with `anchor.rekor_url`; loaded again on every attempt so file replacement is picked up without restart. |
+| `anchor.local_log` | (empty) | Deterministic local anchor-log JSONL path. Setting it activates the local test/development backend. Mutually exclusive with `anchor.rekor_url`; not an operator-independent witness. |
+| `anchor.log_id` | `local-fake-log` | Log identifier for the local backend. |
+| `anchor.interval` | `1h` | Time trigger. Anchor after this much time has elapsed since the last successful anchor. `0` disables this trigger. |
+| `anchor.receipt_threshold` | `1000` | Count trigger. Anchor after this many new receipts. `0` disables this trigger. The first non-empty chain anchors immediately; the two triggers are ORed, and both cannot be disabled when an anchor point is set. |
+
+Configuring an anchor point is the complete opt-in. Without `anchor.rekor_url`
+or `anchor.local_log`, the section is inert. Auto-anchor failures degrade
+evidence health and retry later; they never block or delay proxy traffic or
+receipt emission. Rekor uses v1 `hashedrekord`, and only the checkpoint's
+SHA-512 digest and signature leave the box, never receipt content. A self-hosted
+log provides durability and tamper evidence but not operator independence; a
+public log can provide an independent witness but publishes checkpoint metadata
+and may rate-limit submissions.
 
 ### Dashboard Runtime Snapshot
 

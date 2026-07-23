@@ -650,6 +650,7 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 		cfg.FlightRecorder.RequireReceipts = true
 	})
 	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/current-head")
 	newer := validEvidenceHealthAnchorState()
 	newer.FinalSeq = 1
 	writeEvidenceHealthAnchorState(t, h.recorder.Dir(), newer)
@@ -662,6 +663,9 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	}
 	if stats.Anchor == nil {
 		t.Fatal("valid marker did not produce anchor stats")
+	}
+	if stats.AnchorLagReceipts != 0 || stats.Anchor.LagReceipts != 0 {
+		t.Fatalf("fully covered chain anchor lag = %d/%d, want zero", stats.AnchorLagReceipts, stats.Anchor.LagReceipts)
 	}
 	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatal("valid fresh marker did not set anchoring_fresh")
@@ -708,6 +712,7 @@ func TestEvidenceHealthReadsIndexedAnchorStateMarkers(t *testing.T) {
 		cfg.FlightRecorder.RequireReceipts = true
 	})
 	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/current-head")
 	if _, err := os.Stat(filepath.Join(h.recorder.Dir(), evidenceAnchorStateFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("legacy anchor-state presence err = %v, want absent legacy marker", err)
 	}

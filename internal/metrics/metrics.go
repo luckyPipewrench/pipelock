@@ -150,9 +150,13 @@ type Metrics struct {
 	evidenceAELRequirements     *prometheus.GaugeVec
 	evidenceSelfAuditOK         prometheus.Gauge
 	evidenceSelfAuditFailures   *prometheus.CounterVec
+	evidenceAutoAnchorAttempts  prometheus.Counter
+	evidenceAutoAnchorSuccesses prometheus.Counter
+	evidenceAutoAnchorFailures  prometheus.Counter
 	evidenceSequenceGapCounts   map[string]int64
 	evidenceFsyncErrorCounts    map[string]int64
 	evidenceSelfAuditFailCounts map[string]int64
+	evidenceAutoAnchorStats     EvidenceAutoAnchorStats
 	evidenceRequirementValues   map[string]bool
 	evidenceHealthFunc          func() (EvidenceHealthStats, bool)
 	evidenceCollector           *evidenceCollector

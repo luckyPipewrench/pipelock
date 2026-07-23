@@ -1490,6 +1490,7 @@ type FlightRecorder struct {
 	RequireReceipts    bool                         `yaml:"require_receipts"`         // fail closed when a required receipt cannot be emitted (default false)
 	Completeness       FlightRecorderCompleteness   `yaml:"completeness" json:"-"`    // restart-only evidence completeness knobs
 	EvidenceHealth     FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"` // observability-only evidence health grading
+	Anchor             FlightRecorderAnchor         `yaml:"anchor" json:"-"`          // optional runtime receipt-chain anchoring
 }
 
 type FlightRecorderCompleteness struct {
@@ -1502,10 +1503,24 @@ type FlightRecorderEvidenceHealth struct {
 	MaxAnchorLag      string `yaml:"max_anchor_lag"`
 }
 
+// FlightRecorderAnchor configures runtime anchoring. Setting exactly one anchor
+// point (RekorURL or LocalLog) activates the loop; the remaining fields alone
+// are inert.
+type FlightRecorderAnchor struct {
+	RekorURL         string  `yaml:"rekor_url"`
+	RekorKeyPath     string  `yaml:"rekor_key_path"`
+	LocalLog         string  `yaml:"local_log"`
+	LogID            string  `yaml:"log_id"`
+	Interval         string  `yaml:"interval"`
+	ReceiptThreshold *uint64 `yaml:"receipt_threshold"`
+}
+
 const (
 	DefaultFlightRecorderHeartbeatInterval = 60 * time.Second
 	DefaultEvidenceHealthSelfAuditInterval = 30 * time.Second
 	DefaultEvidenceHealthMaxAnchorLag      = 24 * time.Hour
+	DefaultFlightRecorderAnchorInterval    = time.Hour
+	DefaultFlightRecorderAnchorThreshold   = uint64(1000)
 	DefaultDashboardSnapshotInterval       = 10 * time.Second
 )
 
@@ -1573,6 +1588,29 @@ func (f FlightRecorder) EvidenceMaxAnchorLagDuration() time.Duration {
 		return DefaultEvidenceHealthMaxAnchorLag
 	}
 	return lag
+}
+
+func (f FlightRecorder) AnchorConfigured() bool {
+	return strings.TrimSpace(f.Anchor.RekorURL) != "" || strings.TrimSpace(f.Anchor.LocalLog) != ""
+}
+
+func (f FlightRecorder) AnchorIntervalDuration() time.Duration {
+	raw := strings.TrimSpace(f.Anchor.Interval)
+	if raw == "" {
+		return DefaultFlightRecorderAnchorInterval
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval < 0 {
+		return DefaultFlightRecorderAnchorInterval
+	}
+	return interval
+}
+
+func (f FlightRecorder) AnchorReceiptThreshold() uint64 {
+	if f.Anchor.ReceiptThreshold == nil {
+		return DefaultFlightRecorderAnchorThreshold
+	}
+	return *f.Anchor.ReceiptThreshold
 }
 
 // DashboardSnapshot configures the proxy-produced, read-only dashboard runtime

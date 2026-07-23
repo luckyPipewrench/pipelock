@@ -275,7 +275,7 @@ func TestWriteStateMarkerRejectsSymlinkLatestPointer(t *testing.T) {
 		BundleSHA256: strings.Repeat("b", 64),
 		BundlePath:   "bundle.json",
 	})
-	if err == nil || !strings.Contains(err.Error(), "latest marker is not a regular file") {
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("WriteStateMarker err = %v, want symlink latest-pointer refusal", err)
 	}
 	root, openErr := os.OpenRoot(filepath.Dir(outside))

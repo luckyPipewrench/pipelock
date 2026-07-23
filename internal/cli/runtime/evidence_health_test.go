@@ -591,6 +591,37 @@ func TestReadAnchorStateForSessionHandlesConflicts(t *testing.T) {
 		}
 	})
 
+	t.Run("verified conflict at the highest coverage fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		// Two bundle-backed markers at the same highest coverage with different
+		// roots. The write path blocks this, so plant the index entries directly to
+		// exercise the read. There is no valid pointer, so the resilient scan runs.
+		for _, rootByte := range []string{"c", "e"} {
+			s := validEvidenceHealthAnchorState()
+			s.FinalSeq = 2
+			s.RootHash = strings.Repeat(rootByte, 64)
+			marker := anchorStateToMarker(writeEvidenceHealthAnchorBundle(t, dir, s))
+			marker.Schema = "pipelock.anchorstate.v1"
+			path, err := anchorpkg.StateMarkerPath(dir, marker)
+			if err != nil {
+				t.Fatalf("StateMarkerPath: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				t.Fatalf("MkdirAll index: %v", err)
+			}
+			data, err := json.Marshal(marker)
+			if err != nil {
+				t.Fatalf("Marshal marker: %v", err)
+			}
+			if err := os.WriteFile(filepath.Clean(path), append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("WriteFile marker: %v", err)
+			}
+		}
+		if state, found, _, err := readAnchorStateForSessionWithSkipped(dir, transcriptRootSessionID); err == nil || found {
+			t.Fatalf("verified max-coverage conflict = (%+v, found=%v, err=%v), want fail closed", state, found, err)
+		}
+	})
+
 	t.Run("ambiguous recovery candidates are all skipped", func(t *testing.T) {
 		dir := t.TempDir()
 		indexDir := filepath.Join(dir, "anchor-state.d")

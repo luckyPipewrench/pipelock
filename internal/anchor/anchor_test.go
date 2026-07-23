@@ -880,6 +880,34 @@ func TestLoadStateMarkersReadsLegacySingleFile(t *testing.T) {
 	}
 }
 
+func TestWriteStateMarkerRejectsCorruptLegacyPointerBeforeMigration(t *testing.T) {
+	dir := t.TempDir()
+	// A corrupt legacy pointer with no index yet must not be silently overwritten
+	// by a fresh index and pointer: that would erase the evidence it was damaged.
+	corrupt := []byte(`{"schema":`)
+	if err := os.WriteFile(filepath.Join(dir, legacyStateMarker), corrupt, filePermissions); err != nil {
+		t.Fatalf("write corrupt legacy: %v", err)
+	}
+	err := WriteStateMarker(dir, StateMarker{
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "bundle.json",
+	})
+	if err == nil {
+		t.Fatal("WriteStateMarker err = nil, want fail-closed on a corrupt legacy pointer")
+	}
+	if got, _ := os.ReadFile(filepath.Clean(filepath.Join(dir, legacyStateMarker))); string(got) != string(corrupt) {
+		t.Fatalf("legacy pointer = %q, want the corrupt file preserved, not overwritten", got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, stateMarkerIndexDir)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("index dir stat err = %v, want no index created over a corrupt legacy pointer", statErr)
+	}
+}
+
 func TestWriteStateMarkerMigratesLegacyPointerBeforeCreatingIndex(t *testing.T) {
 	dir := t.TempDir()
 	legacy := StateMarker{

@@ -575,10 +575,25 @@ func readAnchorStateForSessionWithSkipped(dir, sessionID string) (anchorState, b
 	} else if latestFound && latest.SessionID == sessionID && latest.ReceiptCount > 0 {
 		indexed, indexedFound, indexErr := anchor.LoadIndexedStateMarker(dir, latest)
 		if indexErr == nil && indexedFound && anchor.StateMarkersEqual(indexed, latest) {
-			return anchorStateFromMarker(latest), true, skipped, nil
+			// Trust the O(1) pointer only after authenticating the single latest
+			// bundle: hash it against BundleSHA256 and hydrate coverage/signer from
+			// the verified checkpoint rather than the enriched JSON. This opens one
+			// bundle (not the whole history), so it stays O(1) while a missing,
+			// corrupt, or marker-mismatched bundle can no longer read as fresh.
+			state := anchorStateFromMarker(latest)
+			if checkpoint, verifyErr := loadAutoAnchorCheckpoint(dir, state); verifyErr == nil {
+				state.ReceiptCount = checkpoint.ReceiptCount
+				if len(checkpoint.SignerKeys) > 0 {
+					state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
+				}
+				return state, true, skipped, nil
+			}
+			skipped++
+			latestIssue = errors.New("anchor-state latest bundle is missing or does not match its marker")
+		} else {
+			skipped++
+			latestIssue = errors.New("anchor-state latest marker does not match its immutable index entry")
 		}
-		skipped++
-		latestIssue = errors.New("anchor-state latest marker does not match its immutable index entry")
 	} else if latestFound && latest.SessionID != sessionID {
 		if indexInitiallyMissing {
 			latestIssue = fmt.Errorf("anchor-state session_id %q does not match %q", latest.SessionID, sessionID)
@@ -598,6 +613,7 @@ func readAnchorStateForSessionWithSkipped(dir, sessionID string) (anchorState, b
 	candidates := make(map[uint64]anchorState)
 	roots := make(map[uint64]string)
 	ambiguous := make(map[uint64]bool)
+	maxCoverage := uint64(0)
 	for _, marker := range markers {
 		if marker.SessionID != sessionID {
 			continue
@@ -613,6 +629,9 @@ func readAnchorStateForSessionWithSkipped(dir, sessionID string) (anchorState, b
 			state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
 		}
 		coverage := anchorStateCoverage(state)
+		if coverage > maxCoverage {
+			maxCoverage = coverage
+		}
 		if ambiguous[coverage] {
 			skipped++
 			continue
@@ -627,6 +646,13 @@ func readAnchorStateForSessionWithSkipped(dir, sessionID string) (anchorState, b
 		if previous, ok := candidates[coverage]; !ok || state.AnchoredAt.After(previous.AnchoredAt) {
 			candidates[coverage] = state
 		}
+	}
+	// Two bundle-verified markers at the SELECTED (highest) coverage with different
+	// roots is forked or tampered history, not ordinary corruption to skip past.
+	// Fail closed rather than silently degrading to an older anchor and hiding it.
+	// A conflict only at a LOWER coverage does not affect a clean higher selection.
+	if maxCoverage > 0 && ambiguous[maxCoverage] {
+		return anchorState{}, false, skipped, fmt.Errorf("anchor-state has conflicting verified markers at the highest coverage %d", maxCoverage)
 	}
 	var selected anchorState
 	var selectedCoverage uint64

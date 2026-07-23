@@ -758,7 +758,7 @@ func TestVerifyAutoAnchorProof(t *testing.T) {
 }
 
 func TestReadAnchorStateForSessionRejectsCorruptAndAmbiguousAutoMarkers(t *testing.T) {
-	t.Run("corrupt current bundle is deferred to seed authenticity check", func(t *testing.T) {
+	t.Run("corrupt current bundle is caught at the health read", func(t *testing.T) {
 		trig := newAutoAnchorTestRig(t)
 		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/corrupt-bundle")
 		trig.monitor.runPass()
@@ -769,13 +769,16 @@ func TestReadAnchorStateForSessionRejectsCorruptAndAmbiguousAutoMarkers(t *testi
 		if err := os.WriteFile(bundles[0], []byte("{ not a bundle"), 0o600); err != nil {
 			t.Fatalf("corrupt bundle: %v", err)
 		}
-		if _, found, err := readAnchorStateForSession(trig.recorder.Dir()); err != nil || !found {
-			t.Fatalf("health read with corrupt bundle = (found=%v, err=%v), want enriched marker", found, err)
+		// The fast path authenticates the latest bundle, so a corrupt current
+		// bundle can no longer read as a trusted enriched marker; the read must not
+		// return it as valid state.
+		if state, found, err := readAnchorStateForSession(trig.recorder.Dir()); found && err == nil && state.ReceiptCount > 0 {
+			t.Fatalf("health read with corrupt bundle = (found=%v, err=%v, state=%+v), want the corrupt bundle rejected", found, err, state)
 		}
 		restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
 		restarted.runPass()
-		if got := trig.metrics.EvidenceAutoAnchorStatsSnapshot().LastError; !strings.Contains(got, "bundle hash does not match") {
-			t.Fatalf("seed error = %q, want bundle hash mismatch", got)
+		if got := trig.metrics.EvidenceAutoAnchorStatsSnapshot().LastError; !strings.Contains(got, "bundle") {
+			t.Fatalf("seed error = %q, want bundle failure", got)
 		}
 	})
 	t.Run("writer rejects ambiguous same-receipt-count marker", func(t *testing.T) {
@@ -970,24 +973,24 @@ func TestReadAnchorStateForSessionSkipsCorruptHistoricalState(t *testing.T) {
 	})
 }
 
-func TestReadAnchorStateForSessionFastPathUsesEnrichedMarkerWithoutBundle(t *testing.T) {
+func TestReadAnchorStateForSessionFastPathRequiresLatestBundle(t *testing.T) {
 	trig := newAutoAnchorTestRig(t)
-	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/no-recurring-bundle-read")
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/fast-path-bundle")
 	trig.monitor.runPass()
 	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
 	if err != nil || !found {
 		t.Fatalf("read initial state = (%+v, %v, %v)", state, found, err)
 	}
+	// The O(1) fast path authenticates the single latest bundle before trusting
+	// the pointer, so removing it must stop the read from returning the enriched
+	// marker as valid state. (The gain over the old scan is that only the latest
+	// bundle is opened, not every historical one.)
 	if err := os.Remove(filepath.Join(trig.recorder.Dir(), filepath.FromSlash(state.BundlePath))); err != nil {
 		t.Fatalf("Remove bundle: %v", err)
 	}
-
 	got, found, err := readAnchorStateForSession(trig.recorder.Dir())
-	if err != nil || !found {
-		t.Fatalf("read enriched state without bundle = (%+v, %v, %v), want matched pointer/index fast path", got, found, err)
-	}
-	if got.ReceiptCount == 0 || got.SignerKey == "" {
-		t.Fatalf("enriched state = %+v, want receipt count and signer key", got)
+	if found && err == nil && got.ReceiptCount > 0 {
+		t.Fatalf("read without the latest bundle = (%+v, %v, %v), want the unverifiable pointer rejected", got, found, err)
 	}
 }
 
@@ -1252,8 +1255,8 @@ func TestAutoAnchorSeedRejectsForgedEnrichedMarker(t *testing.T) {
 	restarted.runPass()
 
 	stats := trig.metrics.EvidenceAutoAnchorStatsSnapshot()
-	if stats.Failures == 0 || !strings.Contains(stats.LastError, "does not match state marker") {
-		t.Fatalf("forged marker auto-anchor stats = %+v, want bundle mismatch failure", stats)
+	if stats.Failures == 0 || !strings.Contains(stats.LastError, "bundle") {
+		t.Fatalf("forged marker auto-anchor stats = %+v, want a bundle-authenticity failure", stats)
 	}
 }
 

@@ -335,7 +335,14 @@ func prepareStateMarkerIndex(cleanDir string) error {
 		return fmt.Errorf("inspect anchor-state index: %w", err)
 	}
 	legacy, found, legacyErr := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
-	if legacyErr != nil || !found {
+	if legacyErr != nil {
+		// A corrupt, hostile, or unreadable legacy pointer must not be silently
+		// overwritten by a fresh index and pointer: that would erase the only
+		// evidence the prior anchor state was damaged or tampered with. Resilient
+		// skipping belongs on read paths, not this state-mutating write path.
+		return fmt.Errorf("inspect legacy anchor-state pointer before index migration: %w", legacyErr)
+	}
+	if !found {
 		return nil
 	}
 	if checkpoint, checkpointErr := LoadStateMarkerCheckpoint(cleanDir, legacy); checkpointErr == nil {

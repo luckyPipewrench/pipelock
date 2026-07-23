@@ -471,7 +471,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but the managed DROP counter did not increase (%d -> %d)", code, before, after))
 	case egressAttrUnknownUnexpectedExit:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed with unexpected exit %d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code))
-	default: // egressAttrPass
+	case egressAttrPass:
 		return doctorResult{
 			status: statusPass,
 			detail: fmt.Sprintf("direct egress blocked at managed nftables DROP (curl exit %d, counter %d -> %d); proxy-unaware tools fail here", code, before, after),
@@ -479,6 +479,9 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 				"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
 			class: classProxyCompat,
 		}
+	default:
+		// Fail closed: an unhandled attribution outcome must never claim PASS.
+		return unknownInfra(fmt.Sprintf("unexpected direct-egress attribution outcome %d (exit %d); refusing to claim containment", outcome, code))
 	}
 }
 

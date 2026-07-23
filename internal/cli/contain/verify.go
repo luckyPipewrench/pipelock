@@ -1874,8 +1874,12 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but managed DROP counter did not increase (%d -> %d); failure may be unrelated to containment", code, before, after)
 	case egressAttrUnknownUnexpectedExit:
 		return statusUnknown, fmt.Sprintf("curl failed with unexpected exit=%d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code)
-	default: // egressAttrPass
+	case egressAttrPass:
 		return statusPass, fmt.Sprintf("curl blocked (exit=%d); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
+	default:
+		// Fail closed: an unhandled attribution outcome (e.g. a future enum
+		// value) must never fall through to PASS.
+		return statusUnknown, fmt.Sprintf("unexpected direct-egress attribution outcome %d (exit=%d); refusing to claim containment", outcome, code)
 	}
 }
 
@@ -1927,7 +1931,16 @@ func classifyDirectEgressAttribution(code int, hasCounter bool, before uint64, b
 }
 
 // isDirectEgressBlockedCurlExit identifies dial outcomes consistent with either
-// an explicit rejection or a silently dropped SYN.
+// an explicit rejection (7) or a silently dropped SYN that times out (28).
+// Exit 28 is a GENERIC curl timeout and cannot, from the exit code alone, be
+// distinguished as a pre-connect vs post-connect timeout. That ambiguity is
+// bounded by two independent guarantees the caller enforces: the direct canary
+// targets an unroutable TEST-NET-1 black hole (192.0.2.1:9) where no connection
+// can establish, so a timeout there is necessarily a dial-level outcome, not a
+// post-connect one; and PASS additionally requires a managed DROP-counter delta
+// that attributes the block to our own nft rule. The residual case — concurrent
+// same-UID traffic supplying the counter delta — is the UID-wide-counter
+// limitation tracked as a separate follow-up, not a new hole introduced here.
 func isDirectEgressBlockedCurlExit(code int) bool {
 	return code == 7 || code == 28
 }

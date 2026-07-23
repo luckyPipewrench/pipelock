@@ -22,7 +22,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 )
 
-const testConfigSyslogAddr = "udp://syslog.example.com:514"
+const (
+	testConfigSyslogAddr = "udp://syslog.example.com:514"
+	testConfigWebhookURL = "https://siem.vendor.example/events"
+)
 
 func TestParseSyslogAddress(t *testing.T) {
 	tests := []struct {
@@ -851,7 +854,7 @@ func TestMakeSyslogMessage_InvalidFormat(t *testing.T) {
 	}
 }
 
-func TestSyslogFormatValidationParity(t *testing.T) {
+func TestExportFormatValidationParity(t *testing.T) {
 	tests := []struct {
 		name      string
 		format    string
@@ -886,6 +889,12 @@ func TestSyslogFormatValidationParity(t *testing.T) {
 			}
 			if got := configValidateAcceptsSyslogFormat(tt.format); got != tt.supported {
 				t.Fatalf("config Validate syslog format %q success = %v, want %v", tt.format, got, tt.supported)
+			}
+			if got := formatEventAcceptsFormat(tt.format); got != tt.supported {
+				t.Fatalf("formatEvent(%q) success = %v, want %v", tt.format, got, tt.supported)
+			}
+			if got := configValidateAcceptsWebhookFormat(tt.format); got != tt.supported {
+				t.Fatalf("config Validate webhook format %q success = %v, want %v", tt.format, got, tt.supported)
 			}
 		})
 	}
@@ -954,6 +963,24 @@ func configValidateAcceptsSyslogFormat(format string) bool {
 	cfg.ApplyDefaults()
 	cfg.Emit.Syslog.Address = testConfigSyslogAddr
 	cfg.Emit.Syslog.Format = format
+	return cfg.Validate() == nil
+}
+
+func formatEventAcceptsFormat(format string) bool {
+	_, _, err := formatEvent(Event{
+		Severity:  SeverityWarn,
+		Type:      EventHeaderDLP,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	}, format, "1.2.3")
+	return err == nil
+}
+
+func configValidateAcceptsWebhookFormat(format string) bool {
+	cfg := config.Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Webhook.URL = testConfigWebhookURL
+	cfg.Emit.Webhook.Format = format
 	return cfg.Validate() == nil
 }
 

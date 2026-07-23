@@ -283,6 +283,52 @@ func TestBuildEmitSinks_WebhookWithAllOptions(t *testing.T) {
 	}
 }
 
+func TestBuildEmitSinksWebhookOCSFOverHTTP(t *testing.T) {
+	bodyCh := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		bodyCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := testConfig()
+	cfg.Emit.Webhook.URL = srv.URL
+	cfg.Emit.Webhook.MinSeverity = config.SeverityInfo
+	cfg.Emit.Webhook.Format = config.EmitFormatOCSF
+	sinks, err := BuildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("BuildEmitSinks: %v", err)
+	}
+	emitter := emit.NewEmitter("test-instance", sinks...)
+	emitter.EmitWithSeverity(t.Context(), emit.SeverityWarn, emit.EventBodyDLP, map[string]any{
+		"action": "block",
+		"reason": "secret detected",
+	})
+	if err := emitter.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case body := <-bodyCh:
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("webhook OCSF is not JSON: %v\n%s", err, body)
+		}
+		if got["class_uid"] != float64(2004) || got["type_uid"] != float64(200401) {
+			t.Fatalf("webhook OCSF identity fields = %#v", got)
+		}
+		if got["message"] != "body_dlp: secret detected" {
+			t.Fatalf("webhook OCSF message = %#v", got["message"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for OCSF webhook delivery")
+	}
+}
+
 func TestBuildEmitSinks_SyslogOnly(t *testing.T) {
 	conn := listenUDP(t)
 
@@ -1538,6 +1584,7 @@ type runtimeActivationSink struct {
 	activated     atomic.Bool
 	started       atomic.Bool
 	closed        atomic.Bool
+	closeCount    atomic.Int32
 	emitted       atomic.Int32
 }
 
@@ -1547,6 +1594,7 @@ func (s *runtimeActivationSink) Emit(context.Context, emit.Event) error {
 }
 
 func (s *runtimeActivationSink) Close() error {
+	s.closeCount.Add(1)
 	s.closed.Store(true)
 	return nil
 }
@@ -1637,6 +1685,34 @@ func TestFailedReplacementActivationDoesNotSwapOldSink(t *testing.T) {
 		t.Fatalf("emit counts old=%d new=%d, want old sink retained", oldSink.emitted.Load(), newSink.emitted.Load())
 	}
 	_ = emitter.Close()
+}
+
+func TestRetiredSinkFinalizerRunsOnPanicAndIsIdempotent(t *testing.T) {
+	preclosed := &runtimeActivationSink{}
+	draining := &runtimeActivationSink{}
+	emitter := emit.NewEmitter("test", preclosed, draining)
+	generation := emitter.ReloadSinks(nil)
+	finalize := newRetiredSinkFinalizer(emitter, generation, map[int]bool{0: true}, nil)
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "post-swap panic" {
+				t.Fatalf("recover() = %v, want post-swap panic", recovered)
+			}
+		}()
+		defer finalize()
+		panic("post-swap panic")
+	}()
+
+	// The normal-path call and deferred fallback can both run safely: the
+	// preclosed sink remains untouched and the draining sink closes only once.
+	finalize()
+	if got := preclosed.closeCount.Load(); got != 0 {
+		t.Fatalf("preclosed sink Close calls = %d, want 0", got)
+	}
+	if got := draining.closeCount.Load(); got != 1 {
+		t.Fatalf("draining sink Close calls = %d, want 1", got)
+	}
 }
 
 func TestSameSpoolReloadWindowRejectsLoudlyWithoutSwappingFailedReplacement(t *testing.T) {

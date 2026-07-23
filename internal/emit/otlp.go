@@ -68,19 +68,7 @@ var ErrOTLPDegraded = errors.New("emit: otlp sink degraded")
 const errOTLPClosed = "emit: otlp sink closed"
 
 // OTLPStats reports delivery health for an OTLPSink.
-type OTLPStats struct {
-	Delivered uint64
-	Failed    uint64
-	Dropped   uint64
-	Abandoned uint64
-	Degraded  bool
-	// LastError is the most recent failure, drop, or abandonment reason while
-	// the sink is degraded. It is cleared on the next successful delivery, so a
-	// non-degraded snapshot reports an empty LastError.
-	LastError string
-	QueueLen  int
-	QueueCap  int
-}
+type OTLPStats = sinkStats
 
 // OTLPSink sends audit events as OTLP log records over HTTP/protobuf.
 // Events are queued and sent asynchronously by a single background goroutine.

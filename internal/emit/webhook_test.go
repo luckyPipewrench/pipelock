@@ -111,6 +111,102 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 	}
 }
 
+func TestWebhookSink_OCSFOverHTTP(t *testing.T) {
+	type capture struct {
+		body        []byte
+		contentType string
+	}
+	captures := make(chan capture, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		captures <- capture{body: body, contentType: r.Header.Get("Content-Type")}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	sink := NewWebhookSink(srv.URL, WithWebhookFormat(FormatOCSF, "1.2.3"))
+	event := Event{
+		Severity:   SeverityCritical,
+		Type:       EventBodyDLP,
+		Timestamp:  time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+		InstanceID: testInstanceName,
+		Fields: map[string]any{
+			"action":    conventionActionBlock,
+			"agent":     "agent-a",
+			fieldReason: "secret detected",
+		},
+	}
+	if err := sink.Emit(t.Context(), event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var gotCapture capture
+	select {
+	case gotCapture = <-captures:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for webhook capture")
+	}
+	if gotCapture.contentType != contentTypeJSON {
+		t.Fatalf("Content-Type = %q, want %q", gotCapture.contentType, contentTypeJSON)
+	}
+	got := parseOCSFEvent(t, string(gotCapture.body))
+	assertNumber(t, got, "class_uid", ocsfClassUIDDetectionFinding)
+	assertString(t, got, "message", "body_dlp: secret detected")
+	assertString(t, got, "action", conventionActionBlock)
+	product := assertMap(t, assertMap(t, got, "metadata"), "product")
+	assertString(t, product, "version", "1.2.3")
+	if stats := sink.Stats(); stats.Delivered != 1 || stats.Failed != 0 {
+		t.Fatalf("delivery stats = %+v", stats)
+	}
+}
+
+func TestWebhookSink_OCSFHostileFieldNeverSendsEmptyPayload(t *testing.T) {
+	captures := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		captures <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink := NewWebhookSink(srv.URL, WithWebhookFormat(FormatOCSF, "dev"))
+	if err := sink.Emit(t.Context(), Event{
+		Severity:  SeverityWarn,
+		Type:      EventError,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{"unmarshalable": make(chan int)},
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var body []byte
+	select {
+	case body = <-captures:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for webhook capture")
+	}
+	if len(body) == 0 || string(body) == "{}" {
+		t.Fatalf("OCSF body failed open: %q", body)
+	}
+	got := parseOCSFEvent(t, string(body))
+	assertNumber(t, got, "class_uid", ocsfClassUIDDetectionFinding)
+	if _, ok := got["finding_info"].(map[string]any); !ok {
+		t.Fatalf("finding_info missing from OCSF fallback-safe body: %#v", got)
+	}
+}
+
 func TestWebhookSink_BearerToken(t *testing.T) {
 	var gotAuth string
 	done := make(chan struct{})
@@ -263,7 +359,10 @@ func TestWebhookSink_CloseDrainsPending(t *testing.T) {
 			Timestamp:  time.Now(),
 			InstanceID: testStr,
 		})
-		if err != nil {
+		// ErrWebhookDegraded means the event WAS queued (a prior async delivery
+		// failed); it is an advisory, not a blocked emit. Accepting it makes this
+		// deterministic instead of racing the async failure.
+		if err != nil && !errors.Is(err, ErrWebhookDegraded) {
 			t.Fatalf("Emit %d returned error: %v", i, err)
 		}
 	}
@@ -298,6 +397,9 @@ func TestWebhookSink_ServerErrorDoesNotBlock(t *testing.T) {
 			Timestamp:  time.Now(),
 			InstanceID: testStr,
 		})
+		// ErrWebhookDegraded means the event WAS queued (a prior async delivery
+		// failed); it is an advisory, not a blocked emit. Accepting it makes this
+		// deterministic instead of racing the async failure.
 		if err != nil && !errors.Is(err, ErrWebhookDegraded) {
 			t.Fatalf("Emit %d returned error: %v", i, err)
 		}
@@ -655,7 +757,7 @@ func TestWebhookSink_StatsNilAndAbandoned(t *testing.T) {
 	}
 
 	sink := &WebhookSink{queue: make(chan Event, 2)}
-	sink.recordAbandoned("drain_timeout", 2)
+	sink.recordAbandoned(2)
 	stats := sink.Stats()
 	if stats.Abandoned != 2 || !stats.Degraded || stats.LastError != "drain_timeout" || stats.QueueCap != 2 {
 		t.Fatalf("stats = %+v, want abandoned degraded snapshot", stats)
@@ -911,7 +1013,7 @@ func TestWebhookSink_RecordDroppedWithErrorAndAbandonedZeroCount(t *testing.T) {
 	}
 
 	// A zero or negative abandon count must be a no-op.
-	sink.recordAbandoned("drain_timeout", 0)
+	sink.recordAbandoned(0)
 	if stats := sink.Stats(); stats.Abandoned != 0 {
 		t.Fatalf("stats after zero-count abandon = %+v, want Abandoned=0", stats)
 	}

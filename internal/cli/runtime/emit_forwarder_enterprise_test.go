@@ -114,9 +114,11 @@ func TestServerReloadActivationFailureRetainsOldSinkAndReportsFailure(t *testing
 	t.Parallel()
 	s, buf := newTestServer(t, nil)
 	oldSink := &runtimeActivationSink{}
-	for _, sink := range s.emitter.ReloadSinks([]emit.Sink{oldSink}) {
+	retired := s.emitter.ReloadSinks([]emit.Sink{oldSink})
+	for _, sink := range retired.Sinks() {
 		_ = sink.Close()
 	}
+	s.emitter.FinalizeRetiredSinks(retired)
 	s.emitSinks = []emit.Sink{oldSink}
 
 	dir := t.TempDir()

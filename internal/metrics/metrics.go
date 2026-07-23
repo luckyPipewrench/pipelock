@@ -168,6 +168,9 @@ type Metrics struct {
 	siemForwarderLastSuccess prometheus.Gauge
 	siemForwarderSpoolBytes  prometheus.Gauge
 
+	// Built-in audit sink delivery health (audit_sinks.go).
+	auditSinkCollector *auditSinkCollector
+
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex
 	startTime              time.Time
@@ -241,6 +244,8 @@ func New() *Metrics {
 	m.registerEvidenceMetrics(reg)
 	m.registerRuleBundleMetrics(reg)
 	m.registerSIEMForwarderMetrics(reg)
+	m.auditSinkCollector = newAuditSinkCollector()
+	reg.MustRegister(m.auditSinkCollector)
 
 	// Built-in Go runtime + process collectors. These expose
 	// go_memstats_heap_alloc_bytes, go_goroutines, process_resident_memory_bytes,

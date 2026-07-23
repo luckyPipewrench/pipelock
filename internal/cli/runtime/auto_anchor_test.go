@@ -677,6 +677,57 @@ func TestAutoAnchorReusesPendingProofOnPersistRetry(t *testing.T) {
 	assertAutoAnchorStats(t, trig.metrics, 3, 1, 2, "")
 }
 
+func TestAutoAnchorConcurrentPassesSubmitHeadOnce(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	trig.monitor.seeded = true
+	trig.cfg.FlightRecorder.Anchor.Interval = "0"
+	trig.cfg.FlightRecorder.Anchor.ReceiptThreshold = uint64Pointer(1)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/concurrent-head")
+
+	// Block inside the first submit so a second pass runs while the first is
+	// mid-submission. The in-flight guard must keep the second pass from
+	// submitting the same head again.
+	submitEntered := make(chan struct{})
+	releaseSubmit := make(chan struct{})
+	var once sync.Once
+	backend := &countingAnchorBackend{onSubmit: func() {
+		once.Do(func() {
+			close(submitEntered)
+			<-releaseSubmit
+		})
+	}}
+	trig.monitor.backendFn = func(config.FlightRecorderAnchor) (anchorpkg.Backend, error) { return backend, nil }
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		trig.monitor.runPass()
+	}()
+	select {
+	case <-submitEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first submit did not start")
+	}
+	// Second pass while the first submit is blocked: it must observe the
+	// in-flight guard and skip without a second submit.
+	trig.monitor.runPass()
+	if got := backend.submits.Load(); got != 1 {
+		t.Fatalf("submits while first is in flight = %d, want 1", got)
+	}
+	close(releaseSubmit)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first pass did not finish")
+	}
+	if got := backend.submits.Load(); got != 1 {
+		t.Fatalf("total submits for one head = %d, want exactly 1", got)
+	}
+	if trig.monitor.anchorInFlight {
+		t.Fatal("in-flight guard must clear after the pass returns")
+	}
+}
+
 func TestVerifyAutoAnchorProof(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "local-anchor-log.jsonl")

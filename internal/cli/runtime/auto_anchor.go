@@ -61,6 +61,13 @@ type autoAnchorMonitor struct {
 	pending           bool
 	pendingCheckpoint anchorpkg.Checkpoint
 	pendingProof      anchorpkg.Proof
+
+	// anchorInFlight serializes the submit/reuse decision so the pending-dedup
+	// check-then-act cannot be split by a second caller. The production loop is
+	// single-goroutine, so this is uncontended today; it keeps the dedup correct
+	// by construction if a future change ever runs anchor passes concurrently,
+	// without holding mu across the backend network call.
+	anchorInFlight bool
 }
 
 func newAutoAnchorMonitor(
@@ -305,9 +312,14 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 	if !m.checkpointAdvanced(checkpoint.ReceiptCount) {
 		return errors.New("live receipt checkpoint did not advance beyond the last anchored sequence")
 	}
-	proof, err := m.submitOrReusePending(anchorCfg, checkpoint)
+	proof, skipped, err := m.submitOrReusePending(anchorCfg, checkpoint)
 	if err != nil {
 		return err
+	}
+	if skipped {
+		// Another submission for this monitor is already in flight; a concurrent
+		// pass must not submit or persist the same head a second time.
+		return nil
 	}
 	bundleRel := filepath.ToSlash(filepath.Join(autoAnchorBundleDir, fmt.Sprintf("anchor-proxy-%d-%d-%.12s.json", checkpoint.ReceiptCount, checkpoint.FinalSeq, checkpoint.RootHash)))
 	bundleBytes, err := anchorpkg.WriteBundleUnderDir(m.recorder.Dir(), bundleRel, anchorpkg.NewBundle(checkpoint, proof))
@@ -353,7 +365,7 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 // resubmitting an identical head to the transparency log, which would spam the
 // log and create duplicate anchors. The freshly returned proof is verified
 // before it is retained.
-func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorderAnchor, checkpoint anchorpkg.Checkpoint) (anchorpkg.Proof, error) {
+func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorderAnchor, checkpoint anchorpkg.Checkpoint) (anchorpkg.Proof, bool, error) {
 	m.mu.Lock()
 	if m.pending &&
 		m.pendingCheckpoint.ReceiptCount == checkpoint.ReceiptCount &&
@@ -361,27 +373,37 @@ func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorder
 		m.pendingCheckpoint.FinalSeq == checkpoint.FinalSeq {
 		proof := m.pendingProof
 		m.mu.Unlock()
-		return proof, nil
+		return proof, false, nil
 	}
+	if m.anchorInFlight {
+		m.mu.Unlock()
+		return anchorpkg.Proof{}, true, nil
+	}
+	m.anchorInFlight = true
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.anchorInFlight = false
+		m.mu.Unlock()
+	}()
 
 	backend, err := m.backendFn(anchorCfg)
 	if err != nil {
-		return anchorpkg.Proof{}, fmt.Errorf("configure auto-anchor backend: %w", err)
+		return anchorpkg.Proof{}, false, fmt.Errorf("configure auto-anchor backend: %w", err)
 	}
 	proof, err := backend.Submit(checkpoint)
 	if err != nil {
-		return anchorpkg.Proof{}, fmt.Errorf("submit live receipt checkpoint: %w", err)
+		return anchorpkg.Proof{}, false, fmt.Errorf("submit live receipt checkpoint: %w", err)
 	}
 	if err := verifyAutoAnchorProof(backend, proof, checkpoint); err != nil {
-		return anchorpkg.Proof{}, fmt.Errorf("verify live receipt anchor proof: %w", err)
+		return anchorpkg.Proof{}, false, fmt.Errorf("verify live receipt anchor proof: %w", err)
 	}
 	m.mu.Lock()
 	m.pending = true
 	m.pendingCheckpoint = checkpoint
 	m.pendingProof = proof
 	m.mu.Unlock()
-	return proof, nil
+	return proof, false, nil
 }
 
 // verifyAutoAnchorProof checks a freshly returned anchor proof before it is

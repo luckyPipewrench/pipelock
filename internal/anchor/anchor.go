@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,8 +38,12 @@ const (
 	stateMarkerSchema   = "pipelock.anchorstate.v1"
 	stateMarkerIndexDir = "anchor-state.d"
 	legacyStateMarker   = "anchor-state.json"
+	stateMarkerLockFile = ".anchor-state.lock"
 	maxStateMarkerBytes = 64 * 1024
+	maxStateBundleBytes = 10 << 20
 )
+
+var errStateMarkerExists = errors.New("anchor-state marker identity already exists")
 
 var DefaultLimits = []string{
 	"Anchor bundles bind a verified receipt-chain checkpoint to backend proof material.",
@@ -115,6 +120,8 @@ type StateMarker struct {
 	AnchoredAt   time.Time `json:"anchored_at"`
 	BundleSHA256 string    `json:"bundle_sha256"`
 	BundlePath   string    `json:"bundle_path"`
+	ReceiptCount uint64    `json:"receipt_count,omitempty"`
+	SignerKey    string    `json:"signer_key,omitempty"`
 }
 
 type VerifyReport struct {
@@ -280,7 +287,142 @@ func WriteStateMarker(dir string, marker StateMarker) error {
 		return fmt.Errorf("marshal anchor-state marker: %w", err)
 	}
 	cleanDir := filepath.Clean(dir)
-	return writeStateMarkerFile(cleanDir, marker, append(data, '\n'))
+	data = append(data, '\n')
+	unlock, err := lockStateMarkerDir(cleanDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := prepareStateMarkerIndex(cleanDir); err != nil {
+		return err
+	}
+	path, err := StateMarkerPath(cleanDir, marker)
+	if err != nil {
+		return err
+	}
+	existing, found, err := LoadStateMarkerFile(path)
+	if err != nil {
+		return err
+	}
+	if found {
+		if !StateMarkersEqual(existing, marker) {
+			return errors.New("anchor-state marker identity already exists with different contents")
+		}
+	} else {
+		if err := writeStateMarkerFile(cleanDir, marker, data); err != nil {
+			if !errors.Is(err, errStateMarkerExists) {
+				return err
+			}
+			existing, found, err = LoadStateMarkerFile(path)
+			if err != nil {
+				return err
+			}
+			if !found || !StateMarkersEqual(existing, marker) {
+				return errors.New("anchor-state marker identity already exists with different contents")
+			}
+		}
+	}
+	return updateLatestStateMarker(cleanDir, marker, data)
+}
+
+func prepareStateMarkerIndex(cleanDir string) error {
+	indexDir := filepath.Join(cleanDir, stateMarkerIndexDir)
+	_, err := os.Lstat(indexDir)
+	if err == nil {
+		return validateStateMarkerIndexDir(indexDir)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect anchor-state index: %w", err)
+	}
+	legacy, found, legacyErr := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
+	if legacyErr != nil {
+		// A corrupt, hostile, or unreadable legacy pointer must not be silently
+		// overwritten by a fresh index and pointer: that would erase the only
+		// evidence the prior anchor state was damaged or tampered with. Resilient
+		// skipping belongs on read paths, not this state-mutating write path.
+		return fmt.Errorf("inspect legacy anchor-state pointer before index migration: %w", legacyErr)
+	}
+	if !found {
+		return nil
+	}
+	if checkpoint, checkpointErr := LoadStateMarkerCheckpoint(cleanDir, legacy); checkpointErr == nil {
+		legacy.ReceiptCount = checkpoint.ReceiptCount
+		legacy.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		return fmt.Errorf("marshal legacy anchor-state marker: %w", err)
+	}
+	data = append(data, '\n')
+	if err := writeStateMarkerFile(cleanDir, legacy, data); err != nil {
+		return err
+	}
+	if legacy.ReceiptCount > 0 {
+		return writeLatestStateMarkerFile(cleanDir, data)
+	}
+	return nil
+}
+
+// LoadStateMarkerCheckpoint opens marker's bundle beneath dir, verifies its
+// bounded bytes against the marker digest, and returns checkpoint metadata only
+// when the bundle and marker describe the same anchor.
+func LoadStateMarkerCheckpoint(dir string, marker StateMarker) (Checkpoint, error) {
+	rel := filepath.Clean(filepath.FromSlash(marker.BundlePath))
+	if filepath.IsAbs(rel) || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return Checkpoint{}, errors.New("anchor-state bundle path must stay under receipt directory")
+	}
+	root, err := os.OpenRoot(filepath.Clean(dir))
+	if err != nil {
+		return Checkpoint{}, fmt.Errorf("open receipt directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(rel)
+	if err != nil {
+		return Checkpoint{}, fmt.Errorf("open anchor-state bundle: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxStateBundleBytes+1))
+	if err != nil {
+		return Checkpoint{}, fmt.Errorf("read anchor-state bundle: %w", err)
+	}
+	if len(data) > maxStateBundleBytes {
+		return Checkpoint{}, fmt.Errorf("anchor-state bundle exceeds %d bytes", maxStateBundleBytes)
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != marker.BundleSHA256 {
+		return Checkpoint{}, errors.New("anchor-state bundle hash does not match state marker")
+	}
+	bundle, err := LoadBundleBytes(data)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if bundle.Version != BundleVersion ||
+		bundle.Backend != marker.Backend ||
+		bundle.Checkpoint.SessionID != marker.SessionID ||
+		bundle.Checkpoint.FinalSeq != marker.FinalSeq ||
+		bundle.Checkpoint.RootHash != marker.RootHash ||
+		bundle.Proof.Backend != marker.Backend ||
+		bundle.Proof.LogIndex != marker.LogIndex {
+		return Checkpoint{}, errors.New("anchor-state bundle does not match state marker")
+	}
+	if bundle.Checkpoint.ReceiptCount == 0 {
+		return Checkpoint{}, errors.New("anchor-state bundle receipt_count is zero")
+	}
+	if len(bundle.Checkpoint.SignerKeys) == 0 {
+		return Checkpoint{}, errors.New("anchor-state bundle has no signer keys")
+	}
+	for _, signerKey := range bundle.Checkpoint.SignerKeys {
+		if !isLowerHexSHA256(signerKey) {
+			return Checkpoint{}, errors.New("anchor-state bundle signer key is invalid")
+		}
+	}
+	if marker.ReceiptCount > 0 && bundle.Checkpoint.ReceiptCount != marker.ReceiptCount {
+		return Checkpoint{}, errors.New("anchor-state bundle receipt_count does not match state marker")
+	}
+	if marker.SignerKey != "" && bundle.Checkpoint.SignerKeys[len(bundle.Checkpoint.SignerKeys)-1] != marker.SignerKey {
+		return Checkpoint{}, errors.New("anchor-state bundle signer_key does not match state marker")
+	}
+	return bundle.Checkpoint, nil
 }
 
 func StateMarkerPath(dir string, marker StateMarker) (string, error) {
@@ -289,6 +431,39 @@ func StateMarkerPath(dir string, marker StateMarker) (string, error) {
 		return "", err
 	}
 	return filepath.Join(filepath.Clean(dir), stateMarkerIndexDir, name), nil
+}
+
+// LoadIndexedStateMarker strictly loads marker's deterministic immutable index
+// entry after rejecting a symlinked or non-directory index parent.
+func LoadIndexedStateMarker(dir string, marker StateMarker) (StateMarker, bool, error) {
+	cleanDir := filepath.Clean(dir)
+	index, err := openStateMarkerIndex(cleanDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return StateMarker{}, false, nil
+	}
+	if err != nil {
+		return StateMarker{}, false, fmt.Errorf("inspect anchor-state index: %w", err)
+	}
+	defer func() { _ = index.Close() }()
+	name, err := stateMarkerFileName(marker)
+	if err != nil {
+		return StateMarker{}, false, err
+	}
+	loaded, found, err := index.LoadStateMarker(name)
+	if err != nil || !found {
+		return loaded, found, err
+	}
+	if stateMarkerIdentity(loaded) != stateMarkerIdentity(marker) {
+		return StateMarker{}, false, fmt.Errorf("anchor-state indexed marker %q does not match requested marker identity", name)
+	}
+	loadedName, err := stateMarkerFileName(loaded)
+	if err != nil {
+		return StateMarker{}, false, err
+	}
+	if loadedName != name {
+		return StateMarker{}, false, fmt.Errorf("anchor-state indexed marker %q does not match loaded marker identity", name)
+	}
+	return loaded, true, nil
 }
 
 func validateStateMarkerIndexDir(indexDir string) error {
@@ -304,34 +479,28 @@ func validateStateMarkerIndexDir(indexDir string) error {
 
 func LoadStateMarkers(dir string) ([]StateMarker, error) {
 	cleanDir := filepath.Clean(dir)
-	var markers []StateMarker
-	if marker, found, err := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker)); err != nil {
-		return nil, err
-	} else if found {
-		markers = append(markers, marker)
-	}
-
-	indexDir := filepath.Join(cleanDir, stateMarkerIndexDir)
-	_, err := os.Lstat(indexDir)
+	index, err := openStateMarkerIndex(cleanDir)
 	if errors.Is(err, os.ErrNotExist) {
+		var markers []StateMarker
+		if marker, found, err := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker)); err != nil {
+			return nil, err
+		} else if found {
+			markers = append(markers, marker)
+		}
 		return markers, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect anchor-state index: %w", err)
 	}
-	if err := validateStateMarkerIndexDir(indexDir); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(indexDir)
+	defer func() { _ = index.Close() }()
+	entries, err := index.ReadDir()
 	if err != nil {
 		return nil, fmt.Errorf("read anchor-state index: %w", err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	seen := make(map[string]string, len(markers)+len(entries))
-	for _, marker := range markers {
-		key := stateMarkerIdentity(marker)
-		seen[key] = legacyStateMarker
-	}
+	markers := make([]StateMarker, 0, len(entries))
+	seen := make(map[string]string, len(entries))
+	seenMarkers := make(map[string]StateMarker, len(entries))
 	for _, entry := range entries {
 		if IsStateMarkerTempName(entry.Name()) {
 			continue
@@ -342,15 +511,7 @@ func LoadStateMarkers(dir string) ([]StateMarker, error) {
 		if filepath.Ext(entry.Name()) != ".json" {
 			return nil, fmt.Errorf("read anchor-state index: unexpected marker name %q", entry.Name())
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("inspect anchor-state marker %q: %w", entry.Name(), err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("read anchor-state index: %s is not a regular marker", entry.Name())
-		}
-		path := filepath.Join(indexDir, entry.Name())
-		marker, found, err := LoadStateMarkerFile(path)
+		marker, found, err := index.LoadStateMarker(entry.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -366,12 +527,169 @@ func LoadStateMarkers(dir string) ([]StateMarker, error) {
 		}
 		key := stateMarkerIdentity(marker)
 		if previous, ok := seen[key]; ok {
+			if previous == legacyStateMarker && StateMarkersEqual(seenMarkers[key], marker) {
+				continue
+			}
 			return nil, fmt.Errorf("anchor-state marker %q duplicates %q", entry.Name(), previous)
 		}
 		seen[key] = entry.Name()
+		seenMarkers[key] = marker
 		markers = append(markers, marker)
 	}
+	latest, latestFound, latestErr := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
+	if latestErr != nil {
+		return nil, latestErr
+	}
+	if latestFound {
+		key := stateMarkerIdentity(latest)
+		indexed, ok := seenMarkers[key]
+		if !ok || !StateMarkersEqual(indexed, latest) {
+			return nil, errors.New("anchor-state latest pointer does not match immutable marker history")
+		}
+	}
 	return markers, nil
+}
+
+// LoadStateMarkersResilient reads immutable marker history for operational
+// recovery. Individual malformed history entries are skipped and counted so a
+// damaged old marker cannot blind anchoring. Structural failures of the index
+// directory still fail closed because the directory cannot be traversed safely.
+//
+// The legacy single-file marker is used only when no index exists. Once an
+// index exists, anchor-state.json is the latest pointer rather than independent
+// history.
+func LoadStateMarkersResilient(dir string) ([]StateMarker, int, error) {
+	cleanDir := filepath.Clean(dir)
+	indexDir := filepath.Join(cleanDir, stateMarkerIndexDir)
+	_, err := os.Lstat(indexDir)
+	if errors.Is(err, os.ErrNotExist) {
+		marker, found, loadErr := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
+		if loadErr != nil {
+			return nil, 1, nil
+		}
+		if !found {
+			return nil, 0, nil
+		}
+		return []StateMarker{marker}, 0, nil
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("inspect anchor-state index: %w", err)
+	}
+	if err := validateStateMarkerIndexDir(indexDir); err != nil {
+		return nil, 0, err
+	}
+	entries, err := os.ReadDir(indexDir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read anchor-state index: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	markers := make([]StateMarker, 0, len(entries))
+	skipped := 0
+	for _, entry := range entries {
+		if IsStateMarkerTempName(entry.Name()) {
+			continue
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			skipped++
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || !info.Mode().IsRegular() {
+			skipped++
+			continue
+		}
+		marker, found, loadErr := LoadStateMarkerFile(filepath.Join(indexDir, entry.Name()))
+		if loadErr != nil || !found {
+			skipped++
+			continue
+		}
+		want, nameErr := stateMarkerFileName(marker)
+		if nameErr != nil || entry.Name() != want {
+			skipped++
+			continue
+		}
+		markers = append(markers, marker)
+	}
+	return markers, skipped, nil
+}
+
+func updateLatestStateMarker(cleanDir string, marker StateMarker, data []byte) error {
+	current, found, err := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
+	if err == nil && found && current.SessionID == marker.SessionID {
+		currentCoverage := stateMarkerOrderingCoverage(cleanDir, current)
+		nextCoverage := stateMarkerOrderingCoverage(cleanDir, marker)
+		switch {
+		case currentCoverage > nextCoverage:
+			return nil
+		case currentCoverage == nextCoverage && current.RootHash != marker.RootHash:
+			return fmt.Errorf("anchor-state marker conflicts with latest marker at coverage %d", nextCoverage)
+		}
+		return writeLatestStateMarkerFile(cleanDir, data)
+	}
+	markers, _, loadErr := LoadStateMarkersResilient(cleanDir)
+	if loadErr != nil {
+		return loadErr
+	}
+	selected := marker
+	selectedCoverage := stateMarkerOrderingCoverage(cleanDir, marker)
+	for _, candidate := range markers {
+		if candidate.SessionID != marker.SessionID {
+			continue
+		}
+		coverage := stateMarkerOrderingCoverage(cleanDir, candidate)
+		switch {
+		case coverage > selectedCoverage:
+			selected = candidate
+			selectedCoverage = coverage
+		case coverage == selectedCoverage && candidate.RootHash != selected.RootHash:
+			return fmt.Errorf("anchor-state marker conflicts with history at coverage %d", coverage)
+		}
+	}
+	if !StateMarkersEqual(selected, marker) {
+		selectedData, marshalErr := json.Marshal(selected)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal anchor-state latest marker: %w", marshalErr)
+		}
+		data = append(selectedData, '\n')
+	}
+	return writeLatestStateMarkerFile(cleanDir, data)
+}
+
+// StateMarkersEqual reports whether two markers carry the same state. Time is
+// compared by instant rather than time.Location pointer identity.
+func StateMarkersEqual(a, b StateMarker) bool {
+	return a.Schema == b.Schema &&
+		a.SessionID == b.SessionID &&
+		a.FinalSeq == b.FinalSeq &&
+		a.RootHash == b.RootHash &&
+		a.Backend == b.Backend &&
+		a.LogIndex == b.LogIndex &&
+		a.AnchoredAt.Equal(b.AnchoredAt) &&
+		a.BundleSHA256 == b.BundleSHA256 &&
+		a.BundlePath == b.BundlePath &&
+		a.ReceiptCount == b.ReceiptCount &&
+		a.SignerKey == b.SignerKey
+}
+
+func stateMarkerOrderingCoverage(dir string, marker StateMarker) uint64 {
+	if checkpoint, err := LoadStateMarkerCheckpoint(dir, marker); err == nil {
+		return checkpoint.ReceiptCount
+	}
+	return stateMarkerSequenceCoverage(marker)
+}
+
+func stateMarkerCoverage(marker StateMarker) uint64 {
+	if marker.ReceiptCount > 0 {
+		return marker.ReceiptCount
+	}
+	return stateMarkerSequenceCoverage(marker)
+}
+
+func stateMarkerSequenceCoverage(marker StateMarker) uint64 {
+	if marker.FinalSeq == math.MaxUint64 {
+		return marker.FinalSeq
+	}
+	return marker.FinalSeq + 1
 }
 
 // IsStateMarkerTempName reports whether name matches the private temp-file
@@ -447,21 +765,39 @@ func LoadStateMarkerFile(path string) (StateMarker, bool, error) {
 	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
 		return StateMarker{}, false, errors.New("anchor-state marker changed during validation")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, maxStateMarkerBytes+1))
+	marker, err := loadOpenedStateMarkerFile(file)
 	if err != nil {
-		return StateMarker{}, false, fmt.Errorf("read anchor-state marker: %w", err)
-	}
-	if len(data) > maxStateMarkerBytes {
-		return StateMarker{}, false, fmt.Errorf("anchor-state marker exceeds size limit of %d bytes", maxStateMarkerBytes)
-	}
-	var marker StateMarker
-	if err := decodeStrict(data, &marker); err != nil {
-		return StateMarker{}, false, fmt.Errorf("parse anchor-state marker: %w", err)
-	}
-	if err := validateStateMarker(marker); err != nil {
 		return StateMarker{}, false, err
 	}
 	return marker, true, nil
+}
+
+func loadOpenedStateMarkerFile(file *os.File) (StateMarker, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return StateMarker{}, fmt.Errorf("inspect opened anchor-state marker: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return StateMarker{}, errors.New("anchor-state marker is not a regular file")
+	}
+	if info.Size() > maxStateMarkerBytes {
+		return StateMarker{}, fmt.Errorf("anchor-state marker exceeds size limit of %d bytes", maxStateMarkerBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxStateMarkerBytes+1))
+	if err != nil {
+		return StateMarker{}, fmt.Errorf("read anchor-state marker: %w", err)
+	}
+	if len(data) > maxStateMarkerBytes {
+		return StateMarker{}, fmt.Errorf("anchor-state marker exceeds size limit of %d bytes", maxStateMarkerBytes)
+	}
+	var marker StateMarker
+	if err := decodeStrict(data, &marker); err != nil {
+		return StateMarker{}, fmt.Errorf("parse anchor-state marker: %w", err)
+	}
+	if err := validateStateMarker(marker); err != nil {
+		return StateMarker{}, err
+	}
+	return marker, nil
 }
 
 func validateStateMarker(marker StateMarker) error {
@@ -471,14 +807,20 @@ func validateStateMarker(marker StateMarker) error {
 	if strings.TrimSpace(marker.SessionID) == "" {
 		return errors.New("anchor-state marker session_id is empty")
 	}
-	if !isLowerHexBytes(marker.RootHash, sha256.Size) {
+	if !isLowerHexSHA256(marker.RootHash) {
 		return errors.New("anchor-state marker root_hash is invalid")
 	}
-	if !isLowerHexBytes(marker.BundleSHA256, sha256.Size) {
+	if !isLowerHexSHA256(marker.BundleSHA256) {
 		return errors.New("anchor-state marker bundle_sha256 is invalid")
 	}
 	if strings.TrimSpace(marker.BundlePath) == "" {
 		return errors.New("anchor-state marker bundle_path is empty")
+	}
+	if (marker.ReceiptCount == 0) != (marker.SignerKey == "") {
+		return errors.New("anchor-state marker receipt_count and signer_key must both be present or absent")
+	}
+	if marker.SignerKey != "" && !isLowerHexSHA256(marker.SignerKey) {
+		return errors.New("anchor-state marker signer_key is invalid")
 	}
 	return nil
 }
@@ -498,8 +840,8 @@ func stateMarkerIdentity(marker StateMarker) string {
 	return marker.SessionID + "\x00" + strconv.FormatUint(marker.FinalSeq, 10) + "\x00" + marker.RootHash
 }
 
-func isLowerHexBytes(value string, bytesLen int) bool {
-	if len(value) != bytesLen*2 {
+func isLowerHexSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
 		return false
 	}
 	for _, ch := range value {

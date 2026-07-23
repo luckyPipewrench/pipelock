@@ -1041,7 +1041,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 
 // parseAlternativeIP decodes non-standard IP address notations that
 // net.ParseIP does not handle: hex (0x7f000001), octal (0177.0.0.1),
-// decimal integer (2130706433), and mixed-radix dotted notation.
+// decimal integer (2130706433), and mixed-radix inet_aton notation.
 // Attackers use these to bypass SSRF checks that only recognize
 // standard dotted-decimal. Returns nil if the hostname is not an
 // alternative IP notation.
@@ -1051,19 +1051,45 @@ func parseAlternativeIP(hostname string) net.IP {
 		return nil
 	}
 
-	// Dotted notation with possible hex/octal octets (e.g., 0177.0.0.1, 0x7f.0.0.1).
+	// Dotted inet_aton notation. Two components are A.B, where A is 8 bits
+	// and B is 24 bits. Three components are A.B.C, where A and B are 8 bits
+	// and C is 16 bits. Four components are four 8-bit octets.
 	if strings.Contains(hostname, ".") {
 		parts := strings.Split(hostname, ".")
-		if len(parts) != 4 {
+		if len(parts) < 2 || len(parts) > net.IPv4len {
 			return nil
 		}
-		octets := make([]byte, 4)
+		if len(parts) < net.IPv4len {
+			widths := []int{8, 24}
+			if len(parts) == 3 {
+				widths = []int{8, 8, 16}
+			}
+			values := make([]uint64, len(parts))
+			for i, part := range parts {
+				value, ok := parseInetAtonComponent(part, widths[i])
+				if !ok {
+					return nil
+				}
+				values[i] = value
+			}
+
+			packed := values[0] << 24
+			if len(values) == 2 {
+				packed |= values[1]
+			} else {
+				packed |= values[1]<<16 | values[2]
+			}
+			// #nosec G115 -- component bit limits above prove packed fits exactly in 32 bits.
+			return net.IPv4(byte(packed>>24), byte(packed>>16), byte(packed>>8), byte(packed))
+		}
+
+		octets := make([]byte, net.IPv4len)
 		for i, part := range parts {
-			val, err := strconv.ParseUint(part, 0, 16) // base 0: auto-detect hex/octal/decimal; 16 bits max per octet
-			if err != nil || val > 255 {
+			val, ok := parseInetAtonComponent(part, 8)
+			if !ok {
 				return nil
 			}
-			octets[i] = byte(val)
+			octets[i] = byte(val & 0xFF)
 		}
 		// Only return if at least one octet used non-standard notation.
 		// Standard dotted-decimal is already handled by net.ParseIP.
@@ -1083,11 +1109,49 @@ func parseAlternativeIP(hostname string) net.IP {
 
 	// Single integer notation: hex (0x7f000001), octal (017700000001),
 	// or decimal (2130706433). Represents the full 32-bit IPv4 address.
-	val, err := strconv.ParseUint(hostname, 0, 32) // base 0: auto-detect; 32 bits for full IPv4
-	if err != nil {
+	val, ok := parseInetAtonComponent(hostname, 32)
+	if !ok {
 		return nil
 	}
-	return net.IPv4(byte(val>>24), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
+	return net.IPv4(byte(val>>24&0xFF), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
+}
+
+// parseInetAtonComponent parses one component using inet_aton's historical
+// radix rules: decimal by default, octal after a leading zero, and hexadecimal
+// after 0x. The explicit grammar rejects signs, separators, and trailing junk
+// so ordinary hostnames cannot become IP literals by partial parsing.
+func parseInetAtonComponent(component string, bits int) (uint64, bool) {
+	if component == "" {
+		return 0, false
+	}
+
+	base := 10
+	digits := component
+	if len(component) > 1 && component[0] == '0' {
+		base = 8
+		digits = component[1:]
+		if len(component) > 2 && (component[1] == 'x' || component[1] == 'X') {
+			base = 16
+			digits = component[2:]
+		}
+	}
+	if digits == "" {
+		return 0, false
+	}
+	for _, digit := range digits {
+		valid := digit >= '0' && digit <= '9'
+		switch base {
+		case 8:
+			valid = digit >= '0' && digit <= '7'
+		case 16:
+			valid = valid || digit >= 'a' && digit <= 'f' || digit >= 'A' && digit <= 'F'
+		}
+		if !valid {
+			return 0, false
+		}
+	}
+	value, err := strconv.ParseUint(digits, base, bits)
+	return value, err == nil
 }
 
 // ParseIPLiteral parses a standard or alternative IP literal into the scanner's
@@ -1174,31 +1238,40 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	// be removed from the check set via config alone.
 	allCIDRs := s.mergedSSRFCIDRs()
 
-	// Decode non-standard IP notations (hex, octal, decimal integer) BEFORE
-	// DNS resolution. Attackers use 0x7f000001, 0177.0.0.1, or 2130706433
-	// to reach 127.0.0.1 without net.ParseIP recognizing it. If the hostname
-	// decodes to a valid IP, check CIDRs directly and skip DNS.
-	if altIP := parseAlternativeIP(hostname); altIP != nil {
-		if v4 := altIP.To4(); v4 != nil {
-			altIP = v4
-		}
-		for _, cidr := range allCIDRs {
-			if cidr.Contains(altIP) {
-				scannerLabel := ScannerSSRF
-				blockReason := fmt.Sprintf("SSRF blocked: %s decodes to internal IP %s", hostname, altIP)
-				if isCloudMetadataIP(altIP) {
-					scannerLabel = ScannerSSRFMetadata
-					blockReason = fmt.Sprintf("SSRF blocked: %s decodes to cloud metadata endpoint %s", hostname, altIP)
-				}
-				return Result{
-					Allowed: false,
-					Reason:  blockReason,
-					Scanner: scannerLabel,
-					Score:   1.0,
-				}
+	// scan canonicalizes alternative IPv4 forms before reaching this function,
+	// so use the shared standard-or-alternative parser here. Literal targets are
+	// enforced directly against the same non-overridable floor, CIDRs, and IP
+	// allowlist as resolved addresses; DNS must not influence a literal verdict.
+	if literalIP := ParseIPLiteral(hostname); literalIP != nil {
+		if IsNonOverridableSSRFTarget(literalIP) {
+			scannerLabel := ScannerSSRF
+			blockReason := fmt.Sprintf("SSRF blocked: %s is a non-overridable internal IP", hostname)
+			if isCloudMetadataIP(literalIP) {
+				scannerLabel = ScannerSSRFMetadata
+				blockReason = fmt.Sprintf("SSRF blocked: %s is a cloud metadata endpoint", hostname)
+			}
+			return Result{
+				Allowed: false,
+				Reason:  blockReason,
+				Scanner: scannerLabel,
+				Score:   1.0,
 			}
 		}
-		// Non-standard IP that doesn't match internal CIDRs - allow.
+		for _, cidr := range allCIDRs {
+			if cidr.Contains(literalIP) && !s.IsIPAllowlisted(literalIP) {
+				result := Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("SSRF blocked: %s is an internal IP", hostname),
+					Scanner: ScannerSSRF,
+					Score:   1.0,
+				}
+				if s.IsInAPIAllowlist(hostname) {
+					result.Hint = HintForScanner(ScannerSSRF)
+					result.Class = ClassConfigMismatch
+				}
+				return result
+			}
+		}
 		return Result{Allowed: true}
 	}
 

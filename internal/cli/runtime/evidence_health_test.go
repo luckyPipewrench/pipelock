@@ -7,11 +7,15 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -228,7 +232,9 @@ func TestEvidenceHealthAnchorStateMalformedMarkersFailClosed(t *testing.T) {
 				cfg.FlightRecorder.RequireReceipts = true
 			})
 			emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
-			writeEvidenceHealthAnchorState(t, h.recorder.Dir(), tt.mutate(validEvidenceHealthAnchorState()))
+			state := tt.mutate(validEvidenceHealthAnchorState())
+			state.SignerKey = e.SignerKeyHex()
+			writeEvidenceHealthAnchorState(t, h.recorder.Dir(), state)
 
 			h.runPass()
 
@@ -536,74 +542,131 @@ func TestReadAnchorStateFilesystemGuards(t *testing.T) {
 	}
 }
 
-func TestReadAnchorStateForSessionFailsClosedOnConflicts(t *testing.T) {
-	tests := []struct {
-		name    string
-		setup   func(t *testing.T, dir string)
-		wantErr string
-	}{
-		{
-			name: "legacy session mismatch",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				state := validEvidenceHealthAnchorState()
-				state.SessionID = "different-session"
-				writeEvidenceHealthAnchorState(t, dir, state)
-			},
-			wantErr: "does not match",
-		},
-		{
-			name: "ambiguous indexed markers",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				first := anchorStateToMarker(validEvidenceHealthAnchorState())
-				if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
-					t.Fatalf("WriteStateMarker first: %v", err)
-				}
-				second := first
-				second.RootHash = strings.Repeat("c", 64)
-				second.BundleSHA256 = strings.Repeat("d", 64)
-				if err := anchorpkg.WriteStateMarker(dir, second); err != nil {
-					t.Fatalf("WriteStateMarker second: %v", err)
-				}
-			},
-			wantErr: "ambiguous anchor-state markers",
-		},
-		{
-			name: "ambiguous lower sequence markers",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				first := anchorStateToMarker(validEvidenceHealthAnchorState())
-				first.FinalSeq = 1
-				if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
-					t.Fatalf("WriteStateMarker first: %v", err)
-				}
-				higher := first
-				higher.FinalSeq = 2
-				higher.RootHash = strings.Repeat("c", 64)
-				higher.BundleSHA256 = strings.Repeat("d", 64)
-				if err := anchorpkg.WriteStateMarker(dir, higher); err != nil {
-					t.Fatalf("WriteStateMarker higher: %v", err)
-				}
-				conflictingLower := first
-				conflictingLower.RootHash = strings.Repeat("e", 64)
-				conflictingLower.BundleSHA256 = strings.Repeat("f", 64)
-				if err := anchorpkg.WriteStateMarker(dir, conflictingLower); err != nil {
-					t.Fatalf("WriteStateMarker conflicting lower: %v", err)
-				}
-			},
-			wantErr: "ambiguous anchor-state markers",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			tc.setup(t, dir)
-			if _, found, err := readAnchorStateForSession(dir, transcriptRootSessionID); err == nil || found || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("readAnchorStateForSession found=%v err=%v, want %q", found, err, tc.wantErr)
+func TestReadAnchorStateForSessionHandlesConflicts(t *testing.T) {
+	t.Run("legacy session mismatch fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		state := validEvidenceHealthAnchorState()
+		state.SessionID = "different-session"
+		writeEvidenceHealthAnchorState(t, dir, state)
+		if _, found, err := readAnchorStateForSession(dir); err == nil || found || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("readAnchorStateForSession found=%v err=%v, want session mismatch", found, err)
+		}
+	})
+
+	t.Run("corrupt legacy pointer is counted once", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, evidenceAnchorStateFile), []byte(`{"schema":`), 0o600); err != nil {
+			t.Fatalf("WriteFile corrupt legacy pointer: %v", err)
+		}
+		if _, found, skipped, err := readAnchorStateForSessionWithSkipped(dir, transcriptRootSessionID); err == nil || found || skipped != 1 {
+			t.Fatalf("corrupt legacy pointer = (found=%v, skipped=%d, err=%v), want one skipped file and error", found, skipped, err)
+		}
+	})
+
+	t.Run("ambiguous lower history does not wedge latest", func(t *testing.T) {
+		dir := t.TempDir()
+		firstState := validEvidenceHealthAnchorState()
+		firstState.FinalSeq = 1
+		first := anchorStateToMarker(writeEvidenceHealthAnchorBundle(t, dir, firstState))
+		if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
+			t.Fatalf("WriteStateMarker first: %v", err)
+		}
+		higherState := firstState
+		higherState.FinalSeq = 2
+		higherState.RootHash = strings.Repeat("c", 64)
+		higher := anchorStateToMarker(writeEvidenceHealthAnchorBundle(t, dir, higherState))
+		if err := anchorpkg.WriteStateMarker(dir, higher); err != nil {
+			t.Fatalf("WriteStateMarker higher: %v", err)
+		}
+		conflictingLowerState := firstState
+		conflictingLowerState.RootHash = strings.Repeat("e", 64)
+		conflictingLower := anchorStateToMarker(writeEvidenceHealthAnchorBundle(t, dir, conflictingLowerState))
+		if err := anchorpkg.WriteStateMarker(dir, conflictingLower); err != nil {
+			t.Fatalf("WriteStateMarker conflicting lower: %v", err)
+		}
+
+		got, found, err := readAnchorStateForSession(dir)
+		if err != nil || !found || got.FinalSeq != higher.FinalSeq || got.RootHash != higher.RootHash {
+			t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want unaffected higher pointer", got, found, err)
+		}
+	})
+
+	t.Run("verified conflict at the highest coverage fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		// Two bundle-backed markers at the same highest coverage with different
+		// roots. The write path blocks this, so plant the index entries directly to
+		// exercise the read. There is no valid pointer, so the resilient scan runs.
+		for _, rootByte := range []string{"c", "e"} {
+			s := validEvidenceHealthAnchorState()
+			s.FinalSeq = 2
+			s.RootHash = strings.Repeat(rootByte, 64)
+			marker := anchorStateToMarker(writeEvidenceHealthAnchorBundle(t, dir, s))
+			marker.Schema = "pipelock.anchorstate.v1"
+			path, err := anchorpkg.StateMarkerPath(dir, marker)
+			if err != nil {
+				t.Fatalf("StateMarkerPath: %v", err)
 			}
-		})
-	}
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				t.Fatalf("MkdirAll index: %v", err)
+			}
+			data, err := json.Marshal(marker)
+			if err != nil {
+				t.Fatalf("Marshal marker: %v", err)
+			}
+			if err := os.WriteFile(filepath.Clean(path), append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("WriteFile marker: %v", err)
+			}
+		}
+		if state, found, _, err := readAnchorStateForSessionWithSkipped(dir, transcriptRootSessionID); err == nil || found {
+			t.Fatalf("verified max-coverage conflict = (%+v, found=%v, err=%v), want fail closed", state, found, err)
+		}
+	})
+
+	t.Run("ambiguous recovery candidates are all skipped", func(t *testing.T) {
+		dir := t.TempDir()
+		indexDir := filepath.Join(dir, "anchor-state.d")
+		if err := os.Mkdir(indexDir, 0o750); err != nil {
+			t.Fatalf("Mkdir index: %v", err)
+		}
+		for i, rootByte := range []string{"a", "b", "c"} {
+			marker := anchorStateToMarker(validEvidenceHealthAnchorState())
+			marker.FinalSeq = 1
+			marker.RootHash = strings.Repeat(rootByte, 64)
+			marker.BundleSHA256 = strings.Repeat(string(rune('d'+i)), 64)
+			path, err := anchorpkg.StateMarkerPath(dir, marker)
+			if err != nil {
+				t.Fatalf("StateMarkerPath: %v", err)
+			}
+			marker.Schema = "pipelock.anchorstate.v1"
+			data, err := json.Marshal(marker)
+			if err != nil {
+				t.Fatalf("Marshal marker: %v", err)
+			}
+			if err := os.WriteFile(filepath.Clean(path), append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("WriteFile marker: %v", err)
+			}
+		}
+		state, found, skipped, err := readAnchorStateForSessionWithSkipped(dir, transcriptRootSessionID)
+		if err != nil || found || skipped != 3 {
+			t.Fatalf("ambiguous recovery = (%+v, %v, %d, %v), want no selection and three skipped", state, found, skipped, err)
+		}
+	})
+
+	t.Run("hostile index structure fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Symlink(t.TempDir(), filepath.Join(dir, "anchor-state.d")); err != nil {
+			t.Fatalf("Symlink index: %v", err)
+		}
+		if _, found, _, err := readAnchorStateForSessionWithSkipped(dir, transcriptRootSessionID); err == nil || found {
+			t.Fatalf("readAnchorStateForSessionWithSkipped found=%v err=%v, want structural failure", found, err)
+		}
+	})
+
+	t.Run("maximum sequence coverage does not overflow", func(t *testing.T) {
+		if got := anchorStateCoverage(anchorState{FinalSeq: math.MaxUint64}); got != math.MaxUint64 {
+			t.Fatalf("anchorStateCoverage = %d, want MaxUint64", got)
+		}
+	})
 }
 
 func TestEvidenceHealthNilGuardHelpers(t *testing.T) {
@@ -653,6 +716,7 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/current-head")
 	newer := validEvidenceHealthAnchorState()
 	newer.FinalSeq = 1
+	newer.SignerKey = e.SignerKeyHex()
 	writeEvidenceHealthAnchorState(t, h.recorder.Dir(), newer)
 
 	h.runPass()
@@ -677,7 +741,11 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	older := validEvidenceHealthAnchorState()
 	older.FinalSeq = 0
 	older.AnchoredAt = time.Now().UTC().Add(-time.Hour)
-	writeEvidenceHealthAnchorState(t, h.recorder.Dir(), older)
+	older.SignerKey = e.SignerKeyHex()
+	older = writeEvidenceHealthAnchorBundle(t, h.recorder.Dir(), older)
+	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(older)); err != nil {
+		t.Fatalf("WriteStateMarker older: %v", err)
+	}
 	h.runPass()
 	afterOlder, ok := h.stats()
 	if !ok {
@@ -687,12 +755,18 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 		t.Fatalf("older marker replaced newer anchor: before=%+v after=%+v", stats.Anchor, afterOlder.Anchor)
 	}
 
+	staleMonitor, _, staleEmitter, _ := newEvidenceHealthTestMonitor(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	emitEvidenceHealthTestReceipt(t, staleEmitter, "https://api.vendor.example/stale-baseline")
+	emitEvidenceHealthTestReceipt(t, staleEmitter, "https://api.vendor.example/stale-current-head")
 	stale := validEvidenceHealthAnchorState()
 	stale.FinalSeq = 1
 	stale.AnchoredAt = time.Now().UTC().Add(-(config.DefaultEvidenceHealthMaxAnchorLag + time.Second))
-	writeEvidenceHealthAnchorState(t, h.recorder.Dir(), stale)
-	h.runPass()
-	afterStale, ok := h.stats()
+	stale.SignerKey = staleEmitter.SignerKeyHex()
+	writeEvidenceHealthAnchorState(t, staleMonitor.recorder.Dir(), stale)
+	staleMonitor.runPass()
+	afterStale, ok := staleMonitor.stats()
 	if !ok {
 		t.Fatal("stats unavailable after stale marker")
 	}
@@ -719,13 +793,16 @@ func TestEvidenceHealthReadsIndexedAnchorStateMarkers(t *testing.T) {
 
 	older := validEvidenceHealthAnchorState()
 	older.FinalSeq = 0
+	older.SignerKey = e.SignerKeyHex()
+	older = writeEvidenceHealthAnchorBundle(t, h.recorder.Dir(), older)
 	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(older)); err != nil {
 		t.Fatalf("WriteStateMarker older: %v", err)
 	}
 	newer := validEvidenceHealthAnchorState()
 	newer.FinalSeq = 1
 	newer.RootHash = strings.Repeat("c", 64)
-	newer.BundleSHA256 = strings.Repeat("d", 64)
+	newer.SignerKey = e.SignerKeyHex()
+	newer = writeEvidenceHealthAnchorBundle(t, h.recorder.Dir(), newer)
 	if err := anchorpkg.WriteStateMarker(h.recorder.Dir(), anchorStateToMarker(newer)); err != nil {
 		t.Fatalf("WriteStateMarker newer: %v", err)
 	}
@@ -845,6 +922,7 @@ func validEvidenceHealthAnchorState() anchorState {
 
 func writeEvidenceHealthAnchorState(t *testing.T, dir string, state anchorState) {
 	t.Helper()
+	state = writeEvidenceHealthAnchorBundle(t, dir, state)
 	data, err := json.Marshal(state)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -852,6 +930,32 @@ func writeEvidenceHealthAnchorState(t *testing.T, dir string, state anchorState)
 	if err := os.WriteFile(filepath.Join(dir, evidenceAnchorStateFile), append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+}
+
+func writeEvidenceHealthAnchorBundle(t *testing.T, dir string, state anchorState) anchorState {
+	t.Helper()
+	identity := sha256.Sum256([]byte(state.SessionID + "\x00" + strconv.FormatUint(state.FinalSeq, 10) + "\x00" + state.RootHash + "\x00" + state.AnchoredAt.String()))
+	state.BundlePath = filepath.ToSlash(filepath.Join("test-anchor-bundles", hex.EncodeToString(identity[:])+".json"))
+	checkpoint := anchorpkg.Checkpoint{
+		SessionID:    state.SessionID,
+		FinalSeq:     state.FinalSeq,
+		RootHash:     state.RootHash,
+		ReceiptCount: state.FinalSeq + 1,
+		SignerKeys:   []string{state.SignerKey},
+	}
+	if state.SignerKey == "" {
+		checkpoint.SignerKeys[0] = strings.Repeat("c", 64)
+	}
+	data, err := anchorpkg.WriteBundleUnderDir(dir, state.BundlePath, anchorpkg.NewBundle(checkpoint, anchorpkg.Proof{
+		Backend:  state.Backend,
+		LogIndex: state.LogIndex,
+	}))
+	if err != nil {
+		t.Fatalf("WriteBundleUnderDir: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	state.BundleSHA256 = hex.EncodeToString(sum[:])
+	return state
 }
 
 func anchorStateToMarker(state anchorState) anchorpkg.StateMarker {

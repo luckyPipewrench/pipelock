@@ -150,6 +150,7 @@ type Metrics struct {
 	evidenceAELRequirements     *prometheus.GaugeVec
 	evidenceSelfAuditOK         prometheus.Gauge
 	evidenceSelfAuditFailures   *prometheus.CounterVec
+	evidenceAnchorStateSkipped  prometheus.Counter
 	evidenceAutoAnchorAttempts  prometheus.Counter
 	evidenceAutoAnchorSuccesses prometheus.Counter
 	evidenceAutoAnchorFailures  prometheus.Counter

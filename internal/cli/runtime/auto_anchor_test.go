@@ -79,7 +79,7 @@ func TestAutoAnchorFirstReceiptPersistsBundleMarkerAndMetrics(t *testing.T) {
 	if len(entries) != 1 || entries[0].Checkpoint.ReceiptCount != 2 || entries[0].Checkpoint.FinalSeq != 1 {
 		t.Fatalf("local anchor entries = %+v, want one first-receipt checkpoint", entries)
 	}
-	state, found, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID)
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
 	if err != nil || !found {
 		t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want marker", state, found, err)
 	}
@@ -154,7 +154,7 @@ func TestAutoAnchorSeedsStaleMarkerAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestAutoAnchorRejectsMarkerAtNextUnwrittenSequence(t *testing.T) {
+func TestAutoAnchorSkipsUnbackedMarkerAtNextUnwrittenSequence(t *testing.T) {
 	trig := newAutoAnchorTestRig(t)
 	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/current-head")
 	snapshot, ok := trig.emitter.HealthSnapshot()
@@ -175,7 +175,7 @@ func TestAutoAnchorRejectsMarkerAtNextUnwrittenSequence(t *testing.T) {
 
 	trig.monitor.runPass()
 
-	assertAutoAnchorStats(t, trig.metrics, 0, 0, 1, "ahead of chain sequence")
+	assertAutoAnchorStats(t, trig.metrics, 1, 1, 0, "")
 }
 
 func TestAutoAnchorRestartAfterKeyRotationUsesReceiptCountAndPreservesBundles(t *testing.T) {
@@ -204,7 +204,7 @@ func TestAutoAnchorRestartAfterKeyRotationUsesReceiptCountAndPreservesBundles(t 
 	logs := &bytes.Buffer{}
 	first := newAutoAnchorMonitor(recA, m, func() *receipt.Emitter { return emitterA }, func() *config.Config { return cfg }, logs)
 	first.runPass()
-	stateA, found, err := readAnchorStateForSession(dir, transcriptRootSessionID)
+	stateA, found, err := readAnchorStateForSession(dir)
 	if err != nil || !found {
 		t.Fatalf("read first anchor state = (%+v, %v, %v)", stateA, found, err)
 	}
@@ -247,7 +247,7 @@ func TestAutoAnchorRestartAfterKeyRotationUsesReceiptCountAndPreservesBundles(t 
 	if len(entries) != 2 || entries[0].Checkpoint.ReceiptCount != 4 || entries[1].Checkpoint.ReceiptCount != 8 {
 		t.Fatalf("rotation anchors = %+v, want receipt counts 4 then 8", entries)
 	}
-	stateB, found, err := readAnchorStateForSession(dir, transcriptRootSessionID)
+	stateB, found, err := readAnchorStateForSession(dir)
 	if err != nil || !found {
 		t.Fatalf("read second anchor state = (%+v, %v, %v)", stateB, found, err)
 	}
@@ -498,7 +498,7 @@ func TestLoadAutoAnchorCheckpointRejectsUnsafePaths(t *testing.T) {
 		BundleSHA256: hex.EncodeToString(sum[:]),
 		BundlePath:   filepath.ToSlash(filepath.Join(autoAnchorBundleDir, filepath.Base(link))),
 	}
-	if _, err := loadAutoAnchorCheckpoint(root, state); err == nil || !strings.Contains(err.Error(), "open auto-anchor bundle") {
+	if _, err := loadAutoAnchorCheckpoint(root, state); err == nil || !strings.Contains(err.Error(), "open anchor-state bundle") {
 		t.Fatalf("symlink escape bundle err = %v, want rooted-open rejection", err)
 	}
 }
@@ -758,7 +758,7 @@ func TestVerifyAutoAnchorProof(t *testing.T) {
 }
 
 func TestReadAnchorStateForSessionRejectsCorruptAndAmbiguousAutoMarkers(t *testing.T) {
-	t.Run("corrupt auto bundle fails closed", func(t *testing.T) {
+	t.Run("corrupt current bundle is caught at the health read", func(t *testing.T) {
 		trig := newAutoAnchorTestRig(t)
 		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/corrupt-bundle")
 		trig.monitor.runPass()
@@ -769,20 +769,28 @@ func TestReadAnchorStateForSessionRejectsCorruptAndAmbiguousAutoMarkers(t *testi
 		if err := os.WriteFile(bundles[0], []byte("{ not a bundle"), 0o600); err != nil {
 			t.Fatalf("corrupt bundle: %v", err)
 		}
-		if _, _, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID); err == nil {
-			t.Fatal("readAnchorStateForSession with a corrupt auto bundle = nil error, want fail-closed")
+		// The fast path authenticates the latest bundle, so a corrupt current
+		// bundle can no longer read as a trusted enriched marker; the read must not
+		// return it as valid state.
+		if state, found, err := readAnchorStateForSession(trig.recorder.Dir()); found && err == nil && state.ReceiptCount > 0 {
+			t.Fatalf("health read with corrupt bundle = (found=%v, err=%v, state=%+v), want the corrupt bundle rejected", found, err, state)
+		}
+		restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
+		restarted.runPass()
+		if got := trig.metrics.EvidenceAutoAnchorStatsSnapshot().LastError; !strings.Contains(got, "bundle") {
+			t.Fatalf("seed error = %q, want bundle failure", got)
 		}
 	})
-	t.Run("ambiguous same-receipt-count markers fail closed", func(t *testing.T) {
+	t.Run("writer rejects ambiguous same-receipt-count marker", func(t *testing.T) {
 		trig := newAutoAnchorTestRig(t)
 		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/ambiguous")
 		trig.monitor.runPass()
-		state, found, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID)
+		state, found, err := readAnchorStateForSession(trig.recorder.Dir())
 		if err != nil || !found {
 			t.Fatalf("baseline read = (%+v, %v, %v)", state, found, err)
 		}
-		// Plant a second auto marker + bundle at the SAME receipt_count but a
-		// different root hash. Selection must refuse to pick a winner.
+		// A second auto marker at the same receipt count but a different root
+		// must not replace the authoritative latest pointer.
 		conflictRel := filepath.ToSlash(filepath.Join(autoAnchorBundleDir, "anchor-proxy-conflict.json"))
 		conflictCP := anchorpkg.Checkpoint{
 			SessionID: state.SessionID, FinalSeq: state.FinalSeq, ReceiptCount: state.ReceiptCount,
@@ -793,17 +801,477 @@ func TestReadAnchorStateForSessionRejectsCorruptAndAmbiguousAutoMarkers(t *testi
 			t.Fatalf("write conflict bundle: %v", werr)
 		}
 		sum := sha256.Sum256(bundleBytes)
-		if werr := anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
+		werr = anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
 			SessionID: conflictCP.SessionID, FinalSeq: conflictCP.FinalSeq, RootHash: conflictCP.RootHash,
 			Backend: anchorpkg.LocalBackend, AnchoredAt: time.Now().UTC(),
 			BundleSHA256: hex.EncodeToString(sum[:]), BundlePath: conflictRel,
-		}); werr != nil {
-			t.Fatalf("write conflict marker: %v", werr)
+			ReceiptCount: conflictCP.ReceiptCount, SignerKey: trig.emitter.SignerKeyHex(),
+		})
+		if werr == nil || !strings.Contains(werr.Error(), "conflicts with latest marker") {
+			t.Fatalf("write conflict marker err = %v, want latest conflict", werr)
 		}
-		if _, _, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID); err == nil {
-			t.Fatal("readAnchorStateForSession with ambiguous markers = nil error, want fail-closed")
+		selected, found, readErr := readAnchorStateForSession(trig.recorder.Dir())
+		if readErr != nil || !found || selected.RootHash != state.RootHash {
+			t.Fatalf("read after rejected conflict = (%+v, %v, %v), want original pointer", selected, found, readErr)
 		}
 	})
+}
+
+func TestReadAnchorStateForSessionManualHigherCoverageBeatsAuto(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/auto")
+	trig.monitor.runPass()
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/manual")
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	checkpoint, err := anchorpkg.BuildCheckpoint(transcriptRootSessionID, receipts, []string{trig.emitter.SignerKeyHex()})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	bundleRel := "manual-anchor.json"
+	bundleBytes, err := anchorpkg.WriteBundleUnderDir(trig.recorder.Dir(), bundleRel, anchorpkg.NewBundle(checkpoint, anchorpkg.Proof{
+		Backend: anchorpkg.LocalBackend,
+		LogID:   "manual-test-log",
+	}))
+	if err != nil {
+		t.Fatalf("WriteBundleUnderDir: %v", err)
+	}
+	bundleSum := sha256.Sum256(bundleBytes)
+	if err := anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
+		SessionID:    transcriptRootSessionID,
+		FinalSeq:     checkpoint.FinalSeq,
+		RootHash:     checkpoint.RootHash,
+		Backend:      anchorpkg.LocalBackend,
+		AnchoredAt:   time.Now().UTC().Add(-time.Second),
+		BundleSHA256: hex.EncodeToString(bundleSum[:]),
+		BundlePath:   bundleRel,
+	}); err != nil {
+		t.Fatalf("WriteStateMarker manual: %v", err)
+	}
+
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want manual marker", state, found, err)
+	}
+	if state.FinalSeq != checkpoint.FinalSeq || state.ReceiptCount != checkpoint.ReceiptCount || state.BundlePath != bundleRel {
+		t.Fatalf("selected anchor state = %+v, want higher-coverage manual marker", state)
+	}
+}
+
+func TestAutoAnchorSeedRejectsUnbackedManualMarkerOutrankingAuto(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/anchored")
+	trig.monitor.runPass()
+	anchored, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read anchored state = (%+v, %v, %v)", anchored, found, err)
+	}
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/unanchored")
+	snapshot, ok := trig.emitter.HealthSnapshot()
+	if !ok || snapshot.ChainSeq == 0 {
+		t.Fatalf("HealthSnapshot = (%+v, %v), want live chain", snapshot, ok)
+	}
+	if err := anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
+		SessionID:    transcriptRootSessionID,
+		FinalSeq:     snapshot.ChainSeq - 1,
+		RootHash:     strings.Repeat("c", 64),
+		Backend:      anchorpkg.LocalBackend,
+		AnchoredAt:   time.Now().UTC().Add(-time.Second),
+		BundleSHA256: strings.Repeat("d", 64),
+		BundlePath:   "manual-forged.json",
+	}); err != nil {
+		t.Fatalf("WriteStateMarker forged manual marker: %v", err)
+	}
+
+	restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
+	if err := restarted.seed(time.Now().UTC(), snapshot, trig.emitter.SignerKeyHex()); err != nil {
+		t.Fatalf("seed with forged manual marker: %v", err)
+	}
+	if restarted.lastReceiptCount != anchored.ReceiptCount || restarted.lastFinalSeq != anchored.FinalSeq {
+		t.Fatalf("seeded anchor = (count=%d, final_seq=%d), want authentic auto marker (count=%d, final_seq=%d)",
+			restarted.lastReceiptCount, restarted.lastFinalSeq, anchored.ReceiptCount, anchored.FinalSeq)
+	}
+}
+
+func TestReadAnchorStateForSessionSkipsCorruptHistoricalState(t *testing.T) {
+	t.Run("marker", func(t *testing.T) {
+		trig := newAutoAnchorTestRig(t)
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/valid")
+		trig.monitor.runPass()
+		if err := os.WriteFile(filepath.Join(trig.recorder.Dir(), "anchor-state.d", "corrupt.json"), []byte(`{"schema":`), 0o600); err != nil {
+			t.Fatalf("WriteFile corrupt marker: %v", err)
+		}
+		if err := os.Remove(filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile)); err != nil {
+			t.Fatalf("Remove latest pointer: %v", err)
+		}
+
+		state, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+		if err != nil || !found {
+			t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want valid marker despite corrupt history", state, found, err)
+		}
+		if skipped != 1 {
+			t.Fatalf("skipped historical markers = %d, want 1", skipped)
+		}
+	})
+
+	t.Run("bundle", func(t *testing.T) {
+		trig := newAutoAnchorTestRig(t)
+		trig.cfg.FlightRecorder.Anchor.Interval = "0"
+		trig.cfg.FlightRecorder.Anchor.ReceiptThreshold = uint64Pointer(1)
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/older")
+		trig.monitor.runPass()
+		older, found, err := readAnchorStateForSession(trig.recorder.Dir())
+		if err != nil || !found {
+			t.Fatalf("read older state = (%+v, %v, %v)", older, found, err)
+		}
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/newer")
+		trig.monitor.runPass()
+		olderMarkerPath, err := anchorpkg.StateMarkerPath(trig.recorder.Dir(), anchorpkg.StateMarker{
+			SessionID: older.SessionID,
+			FinalSeq:  older.FinalSeq,
+			RootHash:  older.RootHash,
+		})
+		if err != nil {
+			t.Fatalf("StateMarkerPath older: %v", err)
+		}
+		olderData, err := os.ReadFile(filepath.Clean(olderMarkerPath))
+		if err != nil {
+			t.Fatalf("ReadFile older marker: %v", err)
+		}
+		var legacy map[string]any
+		if err := json.Unmarshal(olderData, &legacy); err != nil {
+			t.Fatalf("Unmarshal older marker: %v", err)
+		}
+		delete(legacy, "receipt_count")
+		delete(legacy, "signer_key")
+		olderData, err = json.Marshal(legacy)
+		if err != nil {
+			t.Fatalf("Marshal legacy marker: %v", err)
+		}
+		if err := os.WriteFile(filepath.Clean(olderMarkerPath), append(olderData, '\n'), 0o600); err != nil {
+			t.Fatalf("WriteFile legacy marker: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(trig.recorder.Dir(), filepath.FromSlash(older.BundlePath)), []byte(`{"corrupt":true}`), 0o600); err != nil {
+			t.Fatalf("WriteFile corrupt historical bundle: %v", err)
+		}
+		if err := os.Remove(filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile)); err != nil {
+			t.Fatalf("Remove latest pointer: %v", err)
+		}
+
+		state, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+		if err != nil || !found {
+			t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want latest marker despite corrupt old bundle", state, found, err)
+		}
+		if skipped != 1 {
+			t.Fatalf("skipped historical bundles = %d, want 1", skipped)
+		}
+		if state.FinalSeq <= older.FinalSeq {
+			t.Fatalf("selected state = %+v, want marker newer than final_seq %d", state, older.FinalSeq)
+		}
+	})
+}
+
+func TestReadAnchorStateForSessionFastPathRequiresLatestBundle(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/fast-path-bundle")
+	trig.monitor.runPass()
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read initial state = (%+v, %v, %v)", state, found, err)
+	}
+	// The O(1) fast path authenticates the single latest bundle before trusting
+	// the pointer, so removing it must stop the read from returning the enriched
+	// marker as valid state. (The gain over the old scan is that only the latest
+	// bundle is opened, not every historical one.)
+	if err := os.Remove(filepath.Join(trig.recorder.Dir(), filepath.FromSlash(state.BundlePath))); err != nil {
+		t.Fatalf("Remove bundle: %v", err)
+	}
+	got, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if found && err == nil && got.ReceiptCount > 0 {
+		t.Fatalf("read without the latest bundle = (%+v, %v, %v), want the unverifiable pointer rejected", got, found, err)
+	}
+}
+
+func TestReadAnchorStateForSessionFallbackRejectsUnbackedEnrichedMarker(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/backed-anchor")
+	trig.monitor.runPass()
+	backed, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read backed state = (%+v, %v, %v)", backed, found, err)
+	}
+	forgedCoverage := backed.ReceiptCount + 100
+	forgedRoot := sha256.Sum256([]byte("unbacked-enriched-history"))
+	if err := anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
+		SessionID:    transcriptRootSessionID,
+		FinalSeq:     forgedCoverage - 1,
+		RootHash:     hex.EncodeToString(forgedRoot[:]),
+		Backend:      anchorpkg.LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("d", 64),
+		BundlePath:   "missing-forged-bundle.json",
+		ReceiptCount: forgedCoverage,
+		SignerKey:    trig.emitter.SignerKeyHex(),
+	}); err != nil {
+		t.Fatalf("WriteStateMarker forged history: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile), []byte(`{"schema":`), 0o600); err != nil {
+		t.Fatalf("WriteFile torn pointer: %v", err)
+	}
+
+	got, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil || !found {
+		t.Fatalf("fallback read = (%+v, %v, %d, %v), want backed state", got, found, skipped, err)
+	}
+	if got.RootHash != backed.RootHash || got.ReceiptCount != backed.ReceiptCount {
+		t.Fatalf("fallback selected unbacked state %+v, want backed state %+v", got, backed)
+	}
+	if skipped != 2 {
+		t.Fatalf("skipped pointer/marker count = %d, want 2", skipped)
+	}
+}
+
+func TestReadAnchorStateForSessionFallsBackFromTornLatestPointer(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/torn-pointer")
+	trig.monitor.runPass()
+	if err := os.WriteFile(filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile), []byte(`{"schema":`), 0o600); err != nil {
+		t.Fatalf("WriteFile torn pointer: %v", err)
+	}
+
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want indexed fallback", state, found, err)
+	}
+	snapshot, ok := trig.emitter.HealthSnapshot()
+	if !ok {
+		t.Fatal("emitter health snapshot unavailable")
+	}
+	restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
+	if err := restarted.seed(time.Now().UTC(), snapshot, trig.emitter.SignerKeyHex()); err != nil {
+		t.Fatalf("seed with torn-pointer fallback: %v", err)
+	}
+}
+
+func TestReadAnchorStateForSessionFallsBackFromDisagreeingLatestPointer(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/disagreeing-pointer")
+	trig.monitor.runPass()
+	want, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read initial state = (%+v, %v, %v)", want, found, err)
+	}
+	pointerPath := filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile)
+	data, err := os.ReadFile(filepath.Clean(pointerPath))
+	if err != nil {
+		t.Fatalf("ReadFile pointer: %v", err)
+	}
+	var forged map[string]any
+	if err := json.Unmarshal(data, &forged); err != nil {
+		t.Fatalf("Unmarshal pointer: %v", err)
+	}
+	forged["root_hash"] = strings.Repeat("f", 64)
+	data, err = json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("Marshal pointer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Clean(pointerPath), append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile pointer: %v", err)
+	}
+
+	got, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil || !found || got.RootHash != want.RootHash {
+		t.Fatalf("fallback state = (%+v, %v, %v), want indexed root %q", got, found, err, want.RootHash)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped pointer count = %d, want 1", skipped)
+	}
+}
+
+func TestReadAnchorStateForSessionOtherSessionPointerOnlyForcesFallback(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/proxy-session")
+	trig.monitor.runPass()
+	want, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read proxy state = (%+v, %v, %v)", want, found, err)
+	}
+	if err := anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
+		SessionID:    "other-session",
+		FinalSeq:     99,
+		RootHash:     strings.Repeat("c", 64),
+		Backend:      anchorpkg.LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("d", 64),
+		BundlePath:   "other-session-bundle.json",
+		ReceiptCount: 100,
+		SignerKey:    strings.Repeat("e", 64),
+	}); err != nil {
+		t.Fatalf("WriteStateMarker other session: %v", err)
+	}
+
+	got, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil || !found || got.RootHash != want.RootHash || got.ReceiptCount != want.ReceiptCount {
+		t.Fatalf("proxy fallback = (%+v, %v, %d, %v), want %+v", got, found, skipped, err, want)
+	}
+	if skipped != 0 {
+		t.Fatalf("cross-session pointer skipped count = %d, want 0", skipped)
+	}
+}
+
+func TestReadAnchorStateForSessionRejectsPointerContentForgedFromIndex(t *testing.T) {
+	// A pointer whose identity (session, final_seq, root) still matches its index
+	// entry but whose non-identity content (receipt_count) is forged, with the
+	// immutable index entry left untouched, must not be trusted by the O(1) fast
+	// path: the content-equality check must reject it and fall back to the index.
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/pointer-content-forge")
+	trig.monitor.runPass()
+	want, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found || want.ReceiptCount == 0 {
+		t.Fatalf("read initial state = (%+v, %v, %v)", want, found, err)
+	}
+	pointerPath := filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile)
+	data, err := os.ReadFile(filepath.Clean(pointerPath))
+	if err != nil {
+		t.Fatalf("ReadFile pointer: %v", err)
+	}
+	var forged map[string]any
+	if err := json.Unmarshal(data, &forged); err != nil {
+		t.Fatalf("Unmarshal pointer: %v", err)
+	}
+	// Keep the identity fields; forge only the coverage count. The index entry on
+	// disk is NOT modified.
+	forged["receipt_count"] = float64(want.ReceiptCount + 999)
+	data, err = json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("Marshal forged pointer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Clean(pointerPath), append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile forged pointer: %v", err)
+	}
+
+	got, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil || !found {
+		t.Fatalf("fallback read = (%+v, %v, %v)", got, found, err)
+	}
+	if got.ReceiptCount != want.ReceiptCount {
+		t.Fatalf("selected receipt_count = %d, want the untouched index value %d (forged pointer content must be rejected)", got.ReceiptCount, want.ReceiptCount)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped pointer count = %d, want 1", skipped)
+	}
+}
+
+func TestReadAnchorStateForSessionCorruptHighestMarkerFallsBackLower(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	trig.cfg.FlightRecorder.Anchor.Interval = "0"
+	trig.cfg.FlightRecorder.Anchor.ReceiptThreshold = uint64Pointer(1)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/lower-anchor")
+	trig.monitor.runPass()
+	lower, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read lower state = (%+v, %v, %v)", lower, found, err)
+	}
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/higher-anchor")
+	trig.monitor.runPass()
+	higher, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found || higher.ReceiptCount <= lower.ReceiptCount {
+		t.Fatalf("read higher state = (%+v, %v, %v), want coverage above %d", higher, found, err, lower.ReceiptCount)
+	}
+	higherPath, err := anchorpkg.StateMarkerPath(trig.recorder.Dir(), anchorpkg.StateMarker{
+		SessionID: higher.SessionID,
+		FinalSeq:  higher.FinalSeq,
+		RootHash:  higher.RootHash,
+	})
+	if err != nil {
+		t.Fatalf("StateMarkerPath higher: %v", err)
+	}
+	if err := os.WriteFile(filepath.Clean(higherPath), []byte(`{"schema":`), 0o600); err != nil {
+		t.Fatalf("corrupt higher marker: %v", err)
+	}
+	if err := os.Remove(filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile)); err != nil {
+		t.Fatalf("Remove latest pointer: %v", err)
+	}
+
+	got, found, skipped, err := readAnchorStateForSessionWithSkipped(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil || !found || got.RootHash != lower.RootHash || got.ReceiptCount != lower.ReceiptCount {
+		t.Fatalf("fallback from corrupt highest = (%+v, %v, %d, %v), want lower %+v", got, found, skipped, err, lower)
+	}
+	if skipped != 1 {
+		t.Fatalf("corrupt highest skipped count = %d, want 1", skipped)
+	}
+}
+
+func TestAutoAnchorSeedRejectsForgedEnrichedMarker(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/forged-marker")
+	trig.monitor.runPass()
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read initial state = (%+v, %v, %v)", state, found, err)
+	}
+	markerPath, err := anchorpkg.StateMarkerPath(trig.recorder.Dir(), anchorpkg.StateMarker{
+		SessionID: state.SessionID,
+		FinalSeq:  state.FinalSeq,
+		RootHash:  state.RootHash,
+	})
+	if err != nil {
+		t.Fatalf("StateMarkerPath: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(markerPath))
+	if err != nil {
+		t.Fatalf("ReadFile marker: %v", err)
+	}
+	var forged map[string]any
+	if err := json.Unmarshal(data, &forged); err != nil {
+		t.Fatalf("Unmarshal marker: %v", err)
+	}
+	forged["receipt_count"] = float64(999)
+	forged["signer_key"] = trig.emitter.SignerKeyHex()
+	forged["anchored_at"] = time.Now().UTC().Add(-(config.DefaultEvidenceHealthMaxAnchorLag + time.Second)).Format(time.RFC3339Nano)
+	data, err = json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("Marshal forged marker: %v", err)
+	}
+	for _, path := range []string{markerPath, filepath.Join(trig.recorder.Dir(), evidenceAnchorStateFile)} {
+		if err := os.WriteFile(filepath.Clean(path), append(data, '\n'), 0o600); err != nil {
+			t.Fatalf("WriteFile forged marker %s: %v", filepath.Base(path), err)
+		}
+	}
+	health := newEvidenceHealthMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
+	health.runPass()
+	healthStats, ok := health.stats()
+	if !ok {
+		t.Fatal("evidence health stats unavailable")
+	}
+	if healthStats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
+		t.Fatal("inflated receipt_count fabricated anchor freshness")
+	}
+
+	restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
+	restarted.runPass()
+
+	stats := trig.metrics.EvidenceAutoAnchorStatsSnapshot()
+	if stats.Failures == 0 || !strings.Contains(stats.LastError, "bundle") {
+		t.Fatalf("forged marker auto-anchor stats = %+v, want a bundle-authenticity failure", stats)
+	}
+}
+
+func TestLoadAutoAnchorCheckpointRejectsForgedSignerKey(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/forged-signer")
+	trig.monitor.runPass()
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
+	if err != nil || !found {
+		t.Fatalf("read anchor state = (%+v, %v, %v)", state, found, err)
+	}
+	state.SignerKey = strings.Repeat("f", 64)
+	if _, err := loadAutoAnchorCheckpoint(trig.recorder.Dir(), state); err == nil || !strings.Contains(err.Error(), "signer_key does not match") {
+		t.Fatalf("loadAutoAnchorCheckpoint err = %v, want signer-key mismatch", err)
+	}
 }
 
 func TestAutoAnchorConcurrentEmitterAndEvidenceHealth(t *testing.T) {
@@ -851,7 +1319,7 @@ func TestAutoAnchorConcurrentEmitterAndEvidenceHealth(t *testing.T) {
 	}
 
 	trig.monitor.runPass()
-	state, found, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID)
+	state, found, err := readAnchorStateForSession(trig.recorder.Dir())
 	if err != nil || !found {
 		t.Fatalf("read final concurrent anchor state = (%+v, %v, %v)", state, found, err)
 	}

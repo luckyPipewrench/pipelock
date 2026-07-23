@@ -239,6 +239,9 @@ func validateBundleOutputPath(receiptDir, bundlePath string) error {
 
 func writeAnchorStateMarker(output bundleOutput, checkpoint anchorpkg.Checkpoint, proof anchorpkg.Proof, bundleBytes []byte) error {
 	sum := sha256.Sum256(bundleBytes)
+	if len(checkpoint.SignerKeys) == 0 {
+		return fmt.Errorf("anchor checkpoint has no signer keys")
+	}
 	return anchorpkg.WriteStateMarker(output.receiptDir, anchorpkg.StateMarker{
 		SessionID:    checkpoint.SessionID,
 		FinalSeq:     checkpoint.FinalSeq,
@@ -248,6 +251,8 @@ func writeAnchorStateMarker(output bundleOutput, checkpoint anchorpkg.Checkpoint
 		AnchoredAt:   time.Now().UTC(),
 		BundleSHA256: hex.EncodeToString(sum[:]),
 		BundlePath:   output.markerPath,
+		ReceiptCount: checkpoint.ReceiptCount,
+		SignerKey:    checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1],
 	})
 }
 

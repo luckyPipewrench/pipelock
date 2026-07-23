@@ -1148,11 +1148,17 @@ func TestFileAnchorResolverRejectsHostileIndexEntries(t *testing.T) {
 				t.Fatalf("write marker: %v", err)
 			}
 		}},
-		{name: "duplicate legacy and index identity", setup: func(t *testing.T, dir string) {
+		{name: "conflicting legacy pointer and index content", setup: func(t *testing.T, dir string) {
+			// A legacy pointer that shares an index entry's identity but carries
+			// different content is hostile and must be rejected. (An identical
+			// legacy pointer equal to its index entry is the normal latest-pointer
+			// state and is accepted; the happy-path resolver tests cover that.)
 			if err := anchor.WriteStateMarker(dir, marker); err != nil {
 				t.Fatalf("write indexed marker: %v", err)
 			}
-			data, err := json.Marshal(marker)
+			conflicting := marker
+			conflicting.LogIndex = marker.LogIndex + 1
+			data, err := json.Marshal(conflicting)
 			if err != nil {
 				t.Fatalf("marshal marker: %v", err)
 			}
@@ -1192,12 +1198,19 @@ func TestFileAnchorResolverRejectsAmbiguousSessionMarkers(t *testing.T) {
 	}
 	second := marker
 	second.FinalSeq = marker.FinalSeq + 1
+	second.RootHash = strings.Repeat("c", 64)
+	second.BundleSHA256 = strings.Repeat("d", 64)
+	second.BundlePath = "second-anchor-bundle.json"
 	data, err := json.Marshal(second)
 	if err != nil {
 		t.Fatalf("marshal second: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "anchor-state.json"), data, anchorTestFileMode); err != nil {
-		t.Fatalf("write legacy marker: %v", err)
+	secondPath, err := anchor.StateMarkerPath(dir, second)
+	if err != nil {
+		t.Fatalf("second marker path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Clean(secondPath), data, anchorTestFileMode); err != nil {
+		t.Fatalf("write second marker: %v", err)
 	}
 	resolver, err := NewFileAnchorResolver(dir, filepath.Join(dir, "anchors.jsonl"), nil, false)
 	if err != nil {

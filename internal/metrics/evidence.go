@@ -205,6 +205,12 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 		Name:      "selfaudit_failures_total",
 		Help:      "Total evidence self-audit failures by bounded check label.",
 	}, []string{"check"})
+	m.evidenceAnchorStateSkipped = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Subsystem: "evidence",
+		Name:      "anchor_state_skipped_total",
+		Help:      "Total malformed or conflicting local anchor-state entries skipped during recovery.",
+	})
 	m.evidenceAutoAnchorAttempts = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Subsystem: "evidence",
@@ -238,6 +244,7 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 		m.evidenceAELRequirements,
 		m.evidenceSelfAuditOK,
 		m.evidenceSelfAuditFailures,
+		m.evidenceAnchorStateSkipped,
 		m.evidenceAutoAnchorAttempts,
 		m.evidenceAutoAnchorSuccesses,
 		m.evidenceAutoAnchorFailures,
@@ -298,6 +305,13 @@ func (m *Metrics) RecordSelfAuditFailure(check string) {
 	if m.evidenceSelfAuditFailures != nil {
 		m.evidenceSelfAuditFailures.WithLabelValues(check).Inc()
 	}
+}
+
+func (m *Metrics) RecordEvidenceAnchorStateSkipped(n int) {
+	if m == nil || n <= 0 || m.evidenceAnchorStateSkipped == nil {
+		return
+	}
+	m.evidenceAnchorStateSkipped.Add(float64(n))
 }
 
 func (m *Metrics) RecordEvidenceAutoAnchorAttempt() {

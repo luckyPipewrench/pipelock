@@ -188,6 +188,12 @@ func TestProbeListedToolTargets_PassWithExplicitTarget(t *testing.T) {
 	env := makeProbeEnv(t)
 	target := filepath.Join(t.TempDir(), "claude")
 	writeFakeWrapper(t, target, 0o755)
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != "sudo" || !containsArg(args, "test") || !containsArg(args, "-x") || !containsArg(args, target) {
+			t.Fatalf("unexpected agent executable check: %s %v", name, args)
+		}
+		return "", 0, nil
+	}
 	env.readFile = func(path string) ([]byte, error) {
 		if path == env.toolsListPath {
 			return []byte("claude\t" + target + "\n"), nil
@@ -237,6 +243,13 @@ func TestProbeListedToolTargets_PassWithAgentPathLookup(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeFakeWrapper(t, filepath.Join(agentHomeBin, "claude"), 0o755)
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != "sudo" || !containsArg(args, "test") || !containsArg(args, "-x") ||
+			!containsArg(args, "/home/"+testAgentUser+"/.local/bin/claude") {
+			t.Fatalf("unexpected agent executable check: %s %v", name, args)
+		}
+		return "", 0, nil
+	}
 	env.readFile = func(path string) ([]byte, error) {
 		if path == env.toolsListPath {
 			return []byte("claude\t\n"), nil
@@ -246,6 +259,32 @@ func TestProbeListedToolTargets_PassWithAgentPathLookup(t *testing.T) {
 	status, detail := probeListedToolTargets(context.Background(), env)
 	if status != statusPass {
 		t.Fatalf("status: %s detail=%s", status, detail)
+	}
+}
+
+func TestProbeListedToolTargets_FailsWhenOnlyRootCanTraverseTarget(t *testing.T) {
+	env := makeProbeEnv(t)
+	target := filepath.Join(t.TempDir(), "root-only", "claude")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatalf("mkdir target parent: %v", err)
+	}
+	writeFakeWrapper(t, target, 0o755)
+	env.readFile = func(path string) ([]byte, error) {
+		if path == env.toolsListPath {
+			return []byte("claude\t" + target + "\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected readFile %s", path)
+	}
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != "sudo" || !containsArg(args, target) {
+			t.Fatalf("unexpected agent executable check: %s %v", name, args)
+		}
+		return "test: " + target + ": Permission denied", 1, nil
+	}
+
+	status, detail := probeListedToolTargets(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, "not executable/traversable by") {
+		t.Fatalf("probe = (%q, %q), want agent-context traversal failure", status, detail)
 	}
 }
 

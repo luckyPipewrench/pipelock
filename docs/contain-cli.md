@@ -118,7 +118,8 @@ The nftables step checks the installed `nft` version before generating rules. Th
 
 ## `pipelock contain verify`
 
-Verify is read-only. It walks 12 probes in order and prints pass / fail / skip per probe. It does not require root.
+Verify is read-only. It walks 12 probes in order and prints pass / fail / skip /
+unknown per probe. It does not require root.
 
 ```bash
 pipelock contain verify
@@ -133,7 +134,7 @@ pipelock contain verify
 | 5 | `ca_bundle_present` | `/etc/pipelock/combined-ca.pem` is readable by the agent user. |
 | 6 | `pipelock_listening_loopback` | Pipelock is accepting connections on `127.0.0.1:<proxy-port>`. |
 | 7 | `no_proxy_env_correct` | `plk-launch` sets `NO_PROXY` to the loopback set documented in policy. |
-| 8 | `cc_agent_egress_denied` | A direct outbound canary from `pipelock-agent` is blocked by nftables. |
+| 8 | `cc_agent_egress_denied` | A DNS-free direct outbound canary from `pipelock-agent` reports that its TCP dial did not complete and coincides with an increment in the exact managed catch-all nftables DROP counter. |
 | 9 | `operator_egress_reachable` | The same canary from the operator user is allowed (proves the rule scopes correctly). |
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
@@ -146,7 +147,14 @@ Flags:
 | `--json` | false | Emit newline-delimited JSON records instead of text output. |
 | `--port` | `8888` | Loopback port to probe for the listener check (matches `--proxy-port` from install). |
 
-Exit code is 0 if every probe passed, 1 if any probe failed, and 2 if verification was incomplete because one or more probes skipped. Each failing probe prints a structured one-line detail so operators can dashboard the output.
+Exit code is 0 if every probe passed, 1 if any probe failed, and 2 if
+verification was incomplete because one or more probes skipped or were
+inconclusive (`unknown`). Probe 8 uses a literal TEST-NET IPv4 target and a
+two-second ceiling so DNS/TLS failures cannot produce a pass. Its managed
+counter is scoped to the contained UID rather than the individual curl process,
+so unrelated simultaneous traffic under that same UID can still contribute a
+counter increment; verify remains read-only and does not install a temporary
+probe-specific rule.
 
 ## Runtime contract
 
@@ -197,12 +205,12 @@ Checks:
 | 3 | `python_through_proxy` | `python` reaches an allowed host via the `pipelock-python` wrapper. |
 | 4 | `node_through_proxy` | node's `fetch()` reaches an allowed host via the `pipelock-node` wrapper + undici shim. |
 | 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error — no hang, no bypass. |
-| 6 | `raw_egress_blocked` | Direct, proxy-bypassing egress from the agent is blocked. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
+| 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 
-Each non-passing check prints a one-line remediation tagged with its class. For example, a proxy-unaware tool produces:
+Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 
 ```text
-  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked at dial (curl exit 7); proxy-unaware tools fail here
+  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked at managed nftables DROP (curl exit 7, counter 12 -> 13); proxy-unaware tools fail here
           ↳ [proxy-compat] a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=http://127.0.0.1:8888
 ```
 
@@ -214,7 +222,10 @@ Flags:
 | `--port` | `8888` | Loopback proxy port to test (matches `--proxy-port` from install). |
 | `--url` | `https://example.com/` | Allowed canary URL the agent should be able to reach. |
 
-Exit code is 0 if every check passed, 1 if any check failed, and 2 if the diagnosis was incomplete because a check skipped (for example, not run as root, or a tool isn't installed). Checks that can't proceed skip with remediation rather than failing.
+Exit code is 0 if every check passed, 1 if any check failed, and 2 if the
+diagnosis was incomplete because a check skipped or was inconclusive. Missing
+tools skip; unattributable raw-egress failures report `unknown` rather than
+claiming containment.
 
 After the result summary, `doctor` prints the resolved evidence paths so operators know where to find audit logs and signed receipts:
 

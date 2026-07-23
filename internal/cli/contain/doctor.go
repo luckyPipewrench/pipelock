@@ -31,7 +31,7 @@ import (
 //	local-context — Pipelock misclassified harmless local context
 //	infra         — infra protection tripped (DNS failure, gateway down)
 //
-// Each check reports pass/fail/skip plus an operator-readable remediation.
+// Each check reports pass/fail/skip/unknown plus an operator-readable remediation.
 const (
 	classNone        = ""
 	classPolicy      = "policy"
@@ -52,10 +52,13 @@ type doctorEnv struct {
 	canaryURL      string
 	curlPath       string
 
-	runCmd   runCommand
-	dialCtx  dialFunc
-	readFile func(path string) ([]byte, error)
-	stat     func(path string) (os.FileInfo, error)
+	runCmd runCommand
+	// dropCounter reads the same managed catch-all nftables counter used by
+	// contain verify. Nil means attribution is unavailable, never PASS.
+	dropCounter func(ctx context.Context) (uint64, error)
+	dialCtx     dialFunc
+	readFile    func(path string) ([]byte, error)
+	stat        func(path string) (os.FileInfo, error)
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -63,9 +66,12 @@ type doctorEnv struct {
 // wiring without spawning real processes or touching the network.
 var doctorEnvFactory = defaultDoctorEnv
 
+// defaultDoctorEnv builds the production doctor environment and its live
+// managed DROP-counter reader.
 func defaultDoctorEnv() *doctorEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
-	return &doctorEnv{
+	counterEnv := defaultProbeEnv()
+	env := &doctorEnv{
 		port:           defaultProxyPort,
 		agentUserName:  defaultAgentUser,
 		wrapperDir:     defaultWrapperDir,
@@ -78,6 +84,29 @@ func defaultDoctorEnv() *doctorEnv {
 		readFile:       os.ReadFile,
 		stat:           os.Stat,
 	}
+	env.dropCounter = doctorDropCounterReader(counterEnv, env)
+	return env
+}
+
+// doctorDropCounterReader binds the verify counter reader to live doctor flag
+// values at each read, while retaining an injectable base environment for tests.
+func doctorDropCounterReader(base *probeEnv, env *doctorEnv) func(context.Context) (uint64, error) {
+	return func(ctx context.Context) (uint64, error) {
+		// doctor flags are applied after the factory returns. Copy their live
+		// values into the verify environment on each read so a non-default
+		// installed proxy port is not mistaken for an unsafe loopback allow.
+		probe := doctorCounterProbeEnv(base, env)
+		return probe.dropCounter(ctx, &probe)
+	}
+}
+
+// doctorCounterProbeEnv copies live doctor flag overrides into a probe
+// environment without mutating the shared defaults.
+func doctorCounterProbeEnv(base *probeEnv, env *doctorEnv) probeEnv {
+	probe := *base
+	probe.port = env.port
+	probe.agentUserName = env.agentUserName
+	return probe
 }
 
 // doctorResult is one check outcome. remediation is the operator's next step
@@ -97,6 +126,21 @@ func fail(class, detail, remediation string) doctorResult {
 
 func skip(detail, remediation string) doctorResult {
 	return doctorResult{status: statusSkip, detail: detail, remediation: remediation}
+}
+
+// unknown returns an inconclusive result that must never count as a pass.
+func unknown(class, detail, remediation string) doctorResult {
+	return doctorResult{
+		status:      statusUnknown,
+		detail:      detail,
+		remediation: remediation,
+		class:       class,
+	}
+}
+
+// unknownInfra returns an inconclusive infrastructure-attribution result.
+func unknownInfra(detail string) doctorResult {
+	return unknown(classInfra, detail, rawEgressAttributionRemediation)
 }
 
 type doctorCheck struct {
@@ -125,6 +169,8 @@ const remediationRunAsRoot = "re-run as root: sudo pipelock contain doctor"
 
 const remediationInstall = "run `pipelock contain install` first"
 
+const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
+
 // sudoAgent prefixes a command so it runs as the contained agent. doctor is an
 // operator/root diagnostic; root can sudo to the agent without a password.
 func (env *doctorEnv) sudoAgent(args ...string) (string, []string) {
@@ -151,6 +197,12 @@ func classifyAgentRun(out string, err error, tool string) (doctorResult, bool) {
 // --proxy/--cacert (rather than relying on env) makes the check definitive:
 // success means the proxy + CA path itself works, independent of env plumbing.
 func (env *doctorEnv) curlProxyArgs(url string) []string {
+	return env.curlProxyArgsWithWriteOut(url, "%{http_code}")
+}
+
+// curlProxyArgsWithWriteOut builds the explicit proxy curl command with the
+// requested curl write-out signal.
+func (env *doctorEnv) curlProxyArgsWithWriteOut(url, writeOut string) []string {
 	curl := env.curlPath
 	if curl == "" {
 		curl = defaultCurlPath
@@ -163,7 +215,7 @@ func (env *doctorEnv) curlProxyArgs(url string) []string {
 		"--max-time", curlMaxTime,
 		"-sS",
 		"-o", "/dev/null",
-		"-w", "%{http_code}",
+		"-w", writeOut,
 		url,
 	}
 }
@@ -328,8 +380,14 @@ func checkNodeThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 // resolved or the agent bypassed the proxy).
 const dnsFailureHost = "pipelock-doctor-nonexistent.invalid"
 
+// checkDNSFailure proves an invalid hostname is rejected by the proxy rather
+// than succeeding, hanging, or failing without proxy attribution.
 func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
-	name, args := env.sudoAgent(env.curlProxyArgs("https://" + dnsFailureHost + "/")...)
+	// %{http_connect} is the proxy's CONNECT response. It gives this check a
+	// positive attribution signal: a 5xx proves Pipelock handled the request and
+	// rejected the unresolvable target. A bare nonzero curl exit could instead be
+	// a dead proxy, TLS failure, or unrelated transport error.
+	name, args := env.sudoAgent(env.curlProxyArgsWithWriteOut("https://"+dnsFailureHost+"/", "%{http_connect}")...)
 	out, code, err := env.runCmd(ctx, name, args...)
 	if res, done := classifyAgentRun(out, err, "curl"); done {
 		return res
@@ -337,46 +395,49 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 	if isSudoTargetCommandMissing(out) {
 		return skip("curl not available for the agent", "install curl on the host")
 	}
-	// curl returning non-zero (proxy CONNECT failure) is the clean,
-	// fast-failure path.
-	if code != 0 {
-		return pass(fmt.Sprintf("unresolvable host failed cleanly (curl exit %d), no hang", code))
+	connectCode, ok := trailingHTTPCode(out)
+	if code != 0 && ok && connectCode >= 500 && connectCode < 600 {
+		return pass(fmt.Sprintf("proxy CONNECT returned HTTP %d for the unresolvable host (curl exit %d, clean failure)", connectCode, code))
 	}
-	httpCode, ok := trailingHTTPCode(out)
-	if ok && httpCode >= 500 {
-		return pass(fmt.Sprintf("proxy returned a %d error for the unresolvable host (clean failure)", httpCode))
-	}
-	if ok && is2xx3xx(httpCode) {
+	if code == 0 && ok && connectCode == 200 {
 		return fail(classInfra,
-			fmt.Sprintf("an unresolvable host returned HTTP %d — a bogus name resolved or egress bypassed the proxy", httpCode),
+			fmt.Sprintf("an unresolvable host completed proxy CONNECT with HTTP %d — a bogus name resolved or DNS was intercepted", connectCode),
 			"investigate DNS interception / captive portal; the agent should never reach "+dnsFailureHost)
 	}
-	return pass(fmt.Sprintf("unresolvable host produced a non-success response: %s", oneLine(out)))
+	return unknown(classInfra,
+		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s): %s",
+			code, formatObservedHTTPCode(connectCode, ok), oneLine(out)),
+		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")
+}
+
+// formatObservedHTTPCode renders a parsed status or an explicit parse failure.
+func formatObservedHTTPCode(code int, ok bool) string {
+	if !ok {
+		return "unparseable"
+	}
+	return strconv.Itoa(code)
 }
 
 // ---------------------------------------------------------------------------
 // Check 6: raw-egress diagnostics
 // ---------------------------------------------------------------------------
 
-func (env *doctorEnv) curlDirectArgs(url string) []string {
-	curl := env.curlPath
-	if curl == "" {
-		curl = defaultCurlPath
-	}
-	return []string{
-		curl,
-		"--connect-timeout", curlConnectTimeout,
-		"--max-time", curlMaxTime,
-		"--noproxy", "*",
-		"-sS",
-		"-o", "/dev/null",
-		"-w", "%{http_code}",
-		url,
-	}
+// curlDirectArgs builds the bounded DNS-free direct-egress probe.
+func (env *doctorEnv) curlDirectArgs() []string {
+	return curlDirectCanaryArgsFor(env.curlPath)
 }
 
+// checkRawEgressBlocked requires probe-specific time_connect evidence plus a
+// positive DROP-counter delta before a dial-level curl failure can pass;
+// completed dials and post-connect failures always fail closed.
 func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
-	name, args := env.sudoAgent(env.curlDirectArgs(env.canaryURL)...)
+	var before uint64
+	var beforeErr error
+	if env.dropCounter != nil {
+		before, beforeErr = env.dropCounter(ctx)
+	}
+
+	name, args := env.sudoAgent(env.curlDirectArgs()...)
 	out, code, err := env.runCmd(ctx, name, args...)
 	if res, done := classifyAgentRun(out, err, "curl"); done {
 		return res
@@ -384,44 +445,49 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	if isSudoTargetCommandMissing(out) {
 		return skip("curl not available for the agent", "install curl on the host")
 	}
-	// Fail closed: only an exit code that proves the local dial or DNS was
-	// refused counts as "blocked." Exit 0 means the agent got an HTTP response
-	// (egress succeeded), and a post-connect failure (TLS error, etc.) means
-	// the TCP connection was established — both are holes, not a clean block.
-	if isDialBlockedCurlExit(code) {
-		return doctorResult{
-			status: statusPass,
-			detail: fmt.Sprintf("direct egress blocked at dial (curl exit %d); proxy-unaware tools fail here", code),
-			remediation: "a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — " +
-				"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
-			class: classProxyCompat,
-		}
-	}
 	if code == 0 {
 		httpCode, ok := trailingHTTPCode(out)
 		detail := "agent completed a direct HTTP request, bypassing the proxy"
 		if ok {
-			detail = fmt.Sprintf("CONTAINMENT HOLE: agent reached %s directly (HTTP %d), bypassing the proxy", env.canaryURL, httpCode)
+			detail = fmt.Sprintf("CONTAINMENT HOLE: agent reached %s directly (HTTP %d), bypassing the proxy", directEgressCanaryURL, httpCode)
 		}
 		return fail(classInfra, detail,
 			"the nftables owner-match egress rule is missing or broken; run `pipelock contain verify` and re-install")
 	}
-	// Non-zero, but not a dial-level refusal: the connection likely
-	// established before failing (e.g. a TLS error), so egress was NOT blocked.
-	// Do not claim PASS — surface it as an inconclusive hole.
-	return fail(classInfra,
-		fmt.Sprintf("direct egress was not cleanly blocked (curl exit %d): the connection may have reached the host before failing: %s", code, oneLine(out)),
-		"verify the nftables owner-match drop is present (`pipelock contain verify`); a TLS/post-connect error here means the TCP dial was not blocked")
+	dialCompletion := parseDirectCurlDialCompletion(out)
+	outcome, after, afterErr := classifyDirectEgressAttribution(code, dialCompletion, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
+		return env.dropCounter(ctx)
+	})
+	switch outcome {
+	case egressAttrFailPostConnect:
+		return fail(classInfra,
+			fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit %d): %s", code, oneLine(out)),
+			"verify the nftables owner-match drop is present (`pipelock contain verify`); a post-connect error means the outbound dial escaped containment")
+	case egressAttrUnknownDialCompletion:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but probe-specific time_connect was missing or unparseable; refusing to claim containment", code))
+	case egressAttrUnknownNoCounter:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but no DROP counter reader is available; containment attribution is inconclusive", code))
+	case egressAttrUnknownBeforeErr:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter before the probe failed: %v", code, beforeErr))
+	case egressAttrUnknownAfterErr:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter after the probe failed: %v", code, afterErr))
+	case egressAttrUnknownNoDelta:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but the managed DROP counter did not increase (%d -> %d)", code, before, after))
+	case egressAttrUnknownUnexpectedExit:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed with unexpected exit %d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code))
+	case egressAttrPass:
+		return doctorResult{
+			status: statusPass,
+			detail: fmt.Sprintf("direct egress dial did not complete (curl exit %d, time_connect=0) and managed nftables DROP counter increased (%d -> %d); proxy-unaware tools fail here", code, before, after),
+			remediation: "a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — " +
+				"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
+			class: classProxyCompat,
+		}
+	default:
+		// Fail closed: an unhandled attribution outcome must never claim PASS.
+		return unknownInfra(fmt.Sprintf("unexpected direct-egress attribution outcome %d (exit %d); refusing to claim containment", outcome, code))
+	}
 }
-
-// dialBlockedCurlExitCodes are the curl exit codes that prove the agent's
-// outbound dial or DNS resolution was refused (the nftables owner-match drop
-// working): 6 (couldn't resolve host), 7 (couldn't connect), 28 (operation
-// timed out — a silently dropped SYN). Any other outcome means the connection
-// got further, so it must not be read as a blocked dial.
-var dialBlockedCurlExitCodes = map[int]bool{6: true, 7: true, 28: true}
-
-func isDialBlockedCurlExit(code int) bool { return dialBlockedCurlExitCodes[code] }
 
 // ---------------------------------------------------------------------------
 // Command wiring + runner
@@ -433,6 +499,7 @@ type doctorOpts struct {
 	url        string
 }
 
+// doctorCmd builds the live containment-diagnostics command.
 func doctorCmd() *cobra.Command {
 	var opts doctorOpts
 
@@ -458,7 +525,7 @@ mutates state. Run it as root (it sudoes to the agent for the live probes).
 Exit codes:
   0  All checks passed.
   1  At least one check failed.
-  2  Incomplete (a check was skipped — e.g. not run as root, tool missing).`,
+  2  Incomplete (a check was skipped or inconclusive).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
@@ -492,6 +559,8 @@ type doctorRecord struct {
 	Class       string `json:"class,omitempty"`
 }
 
+// runDoctor executes all checks, writes fail-closed output, and returns the
+// aggregate CLI exit contract.
 func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -499,13 +568,21 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 	}
 
 	w := cmd.OutOrStdout()
+	var textWriter *errorTrackingWriter
+	if !opts.jsonOutput {
+		textWriter = &errorTrackingWriter{w: w}
+		w = textWriter
+	}
 	enc := json.NewEncoder(w)
 
 	if !opts.jsonOutput {
 		_, _ = fmt.Fprintln(w, "pipelock contain doctor")
+		if err := textWriter.Err(); err != nil {
+			return fmt.Errorf("writing doctor header: %w", err)
+		}
 	}
 
-	var passN, failN, skipN int
+	var passN, failN, skipN, unknownN int
 	for _, c := range allDoctorChecks() {
 		res := c.fn(ctx, env)
 		switch res.status {
@@ -515,6 +592,8 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			failN++
 		case statusSkip:
 			skipN++
+		case statusUnknown:
+			unknownN++
 		default:
 			failN++
 			res.detail = fmt.Sprintf("invalid status %q (detail: %s)", res.status, res.detail)
@@ -535,13 +614,16 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			continue
 		}
 		writeDoctorLine(w, c, res)
+		if err := textWriter.Err(); err != nil {
+			return fmt.Errorf("writing check %d text: %w", c.n, err)
+		}
 	}
 
 	exitCode := cliutil.ExitOK
 	switch {
 	case failN > 0:
 		exitCode = cliutil.ExitGeneral
-	case skipN > 0:
+	case skipN > 0 || unknownN > 0:
 		exitCode = cliutil.ExitConfig
 	}
 
@@ -550,14 +632,22 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			Pass:     passN,
 			Fail:     failN,
 			Skip:     skipN,
+			Unknown:  unknownN,
 			Total:    len(allDoctorChecks()),
 			ExitCode: exitCode,
 		}}); err != nil {
 			return fmt.Errorf("encoding aggregate JSON: %w", err)
 		}
 	} else {
-		_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
+		if unknownN > 0 {
+			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP / %d UNKNOWN — exit %d\n", passN, failN, skipN, unknownN, exitCode)
+		} else {
+			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
+		}
 		printEvidencePaths(w)
+		if err := textWriter.Err(); err != nil {
+			return fmt.Errorf("writing doctor aggregate: %w", err)
+		}
 	}
 
 	if exitCode == cliutil.ExitOK {
@@ -565,6 +655,9 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 	}
 	if failN > 0 {
 		return cliutil.ExitCodeError(exitCode, fmt.Errorf("%d check(s) failed", failN))
+	}
+	if unknownN > 0 {
+		return cliutil.ExitCodeError(exitCode, fmt.Errorf("%d check(s) inconclusive; diagnosis incomplete", unknownN))
 	}
 	return cliutil.ExitCodeError(exitCode, fmt.Errorf("%d check(s) skipped; diagnosis incomplete", skipN))
 }
@@ -578,6 +671,8 @@ func writeDoctorLine(w io.Writer, c doctorCheck, res doctorResult) {
 		tag = "[FAIL]"
 	case statusSkip:
 		tag = "[SKIP]"
+	case statusUnknown:
+		tag = "[UNKNOWN]"
 	}
 	line := fmt.Sprintf("  %s check %d: %s", tag, c.n, c.desc)
 	if res.detail != "" {

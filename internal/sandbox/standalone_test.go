@@ -7,7 +7,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -175,8 +177,69 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 	}
 }
 
+func TestHandleStandaloneProxyConnection_NilHandlerFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  standaloneProxyConnectionConfig
+	}{
+		{name: "nil handler defaults to deny"},
+		{
+			name: "explicit unscanned opt-in false denies",
+			cfg: standaloneProxyConnectionConfig{
+				AllowUnscannedDirectForward: false,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			targetLn, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("target listen: %v", err)
+			}
+			defer func() { _ = targetLn.Close() }()
+
+			accepted := make(chan struct{}, 1)
+			acceptDone := make(chan struct{})
+			go func() {
+				defer close(acceptDone)
+				conn, acceptErr := targetLn.Accept()
+				if acceptErr != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				accepted <- struct{}{}
+			}()
+
+			clientConn, serverConn := net.Pipe()
+			handlerDone := make(chan struct{})
+			go func() {
+				defer close(handlerDone)
+				handleStandaloneProxyConnection(serverConn, tc.cfg)
+			}()
+
+			_, _ = fmt.Fprintf(clientConn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetLn.Addr(), targetLn.Addr())
+			_ = clientConn.SetReadDeadline(time.Now().Add(time.Second))
+			buf := make([]byte, 1)
+			if _, readErr := clientConn.Read(buf); !errors.Is(readErr, io.EOF) {
+				t.Fatalf("bridge read error = %v, want EOF from fail-closed connection", readErr)
+			}
+			_ = clientConn.Close()
+			<-handlerDone
+
+			_ = targetLn.Close()
+			<-acceptDone
+			select {
+			case <-accepted:
+				t.Fatal("nil-handler bridge forwarded to target")
+			default:
+			}
+		})
+	}
+}
+
 func TestHandleDirectForward_CONNECT(t *testing.T) {
-	// Test the fallback CONNECT handler used when no ProxyHandler is set.
+	// Test the debug-only CONNECT handler with its explicit opt-in enabled.
 	// Set up a target server.
 	targetLn, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -201,7 +264,9 @@ func TestHandleDirectForward_CONNECT(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleDirectForward(serverConn)
+		handleStandaloneProxyConnection(serverConn, standaloneProxyConnectionConfig{
+			AllowUnscannedDirectForward: true,
+		})
 	}()
 
 	// Send CONNECT request.
@@ -235,7 +300,9 @@ func TestHandleDirectForward_BadRequest(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleDirectForward(serverConn)
+		handleStandaloneProxyConnection(serverConn, standaloneProxyConnectionConfig{
+			AllowUnscannedDirectForward: true,
+		})
 	}()
 
 	// Send non-CONNECT request.

@@ -48,10 +48,18 @@ type containmentRunRule struct {
 
 // containmentProbeFixture is the parsed *.probe.json input.
 type containmentProbeFixture struct {
-	AgentUser    string               `json:"agent_user"`
-	OperatorUser string               `json:"operator_user"`
-	Runs         []containmentRunRule `json:"runs"`
+	AgentUser        string               `json:"agent_user"`
+	OperatorUser     string               `json:"operator_user"`
+	DropCounterReads []uint64             `json:"drop_counter_reads"`
+	Runs             []containmentRunRule `json:"runs"`
 }
+
+const (
+	defaultFixtureAgentUser = "pipelock-agent"
+	fixtureCurlPath         = "/usr/bin/curl"
+	directCanaryURL         = "http://192.0.2.1:9/"
+	operatorCanaryURL       = "https://example.com/"
+)
 
 // containmentExpectProbe is one expected per-probe outcome.
 type containmentExpectProbe struct {
@@ -91,7 +99,75 @@ func loadContainmentProbe(t *testing.T, path string) containmentProbeFixture {
 			t.Fatalf("probe fixture %s: runs[%d] has an empty match (would match every command)", path, i)
 		}
 	}
+	if err := validateContainmentProbeFixture(fx); err != nil {
+		t.Fatalf("invalid probe fixture %s: %v", path, err)
+	}
 	return fx
+}
+
+// validateContainmentProbeFixture makes the canned runner prove the actual
+// canary command contract, not merely that sudo/curl ran under two usernames.
+// Without these exact anchors, a probe-8 regression back to the proxy-capable
+// operator URL (or loss of --noproxy) could still match a broad fixture rule and
+// let the standalone conformance gate report PASS.
+func validateContainmentProbeFixture(fx containmentProbeFixture) error {
+	agentUser := fx.AgentUser
+	if agentUser == "" {
+		agentUser = defaultFixtureAgentUser
+	}
+	directRequired := []string{
+		"sudo -n -u " + agentUser + " -- " + fixtureCurlPath,
+		"--connect-timeout 1",
+		"--max-time 2",
+		"--noproxy *",
+		"PLK_TIME_CONNECT=%{time_connect}",
+		directCanaryURL,
+	}
+	operatorInvocation := fixtureCurlPath
+	if fx.OperatorUser != "" {
+		operatorInvocation = "sudo -n -u " + fx.OperatorUser + " -- " + fixtureCurlPath
+	}
+	operatorRequired := []string{
+		operatorInvocation,
+		"--connect-timeout 3",
+		"--max-time 5",
+		"--noproxy *",
+		operatorCanaryURL,
+	}
+
+	if matches := countRulesWithExactAnchors(fx.Runs, directRequired); matches != 1 {
+		return fmt.Errorf("has %d exact probe-8 command rule(s), want 1 with match anchors %q", matches, directRequired)
+	}
+	if matches := countRulesWithExactAnchors(fx.Runs, operatorRequired); matches != 1 {
+		return fmt.Errorf("has %d exact probe-9 command rule(s), want 1 with match anchors %q", matches, operatorRequired)
+	}
+	return nil
+}
+
+func countRulesWithExactAnchors(rules []containmentRunRule, required []string) int {
+	matches := 0
+	for _, rule := range rules {
+		if containsAllExact(rule.Match, required) {
+			matches++
+		}
+	}
+	return matches
+}
+
+func containsAllExact(got, required []string) bool {
+	for _, want := range required {
+		found := false
+		for _, value := range got {
+			if value == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // loadContainmentExpect reads and parses a *.expect.json fixture. Fail-closed:
@@ -138,7 +214,7 @@ func validateContainmentExpect(fx containmentExpectFixture) error {
 			return fmt.Errorf("probes[%d] name = %q, want %q", i, p.Name, wantName)
 		}
 		if !isContainmentStatus(p.Status) {
-			return fmt.Errorf("probes[%d] status = %q, want pass/fail/skip", i, p.Status)
+			return fmt.Errorf("probes[%d] status = %q, want pass/fail/skip/unknown", i, p.Status)
 		}
 	}
 	for probe := range expectedContainmentProbes {
@@ -151,7 +227,7 @@ func validateContainmentExpect(fx containmentExpectFixture) error {
 
 func isContainmentStatus(status string) bool {
 	switch status {
-	case contain.ConformanceStatusPass, contain.ConformanceStatusFail, contain.ConformanceStatusSkip:
+	case contain.ConformanceStatusPass, contain.ConformanceStatusFail, contain.ConformanceStatusSkip, contain.ConformanceStatusUnknown:
 		return true
 	default:
 		return false
@@ -257,6 +333,7 @@ func runContainmentFixture(t *testing.T, name string) ([]contain.ConformanceProb
 		RunCommand:   runner.Run,
 		AgentUser:    probeFx.AgentUser,
 		OperatorUser: probeFx.OperatorUser,
+		DropCounter:  fixtureDropCounter(probeFx.DropCounterReads),
 	}
 	results, exit, err := contain.RunContainmentConformance(context.Background(), env)
 	if err != nil {
@@ -266,6 +343,21 @@ func runContainmentFixture(t *testing.T, name string) ([]contain.ConformanceProb
 		t.Fatalf("%s: invalid canned command-runner fixture: %v", name, err)
 	}
 	return results, exit
+}
+
+func fixtureDropCounter(values []uint64) contain.ConformanceDropCounter {
+	if len(values) == 0 {
+		return nil
+	}
+	next := 0
+	return func(context.Context) (uint64, error) {
+		if next >= len(values) {
+			return 0, fmt.Errorf("DROP counter fixture exhausted after %d read(s)", next)
+		}
+		value := values[next]
+		next++
+		return value, nil
+	}
 }
 
 // assertMatchesExpect checks per-probe status and aggregate exit code against
@@ -433,6 +525,83 @@ func TestContainmentConformance_InvalidExpectFailsClosed(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("invalid expect fixture error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateContainmentProbeFixtureRequiresExactCanaryCommands(t *testing.T) {
+	t.Parallel()
+
+	directRule := containmentRunRule{Match: []string{
+		"sudo -n -u pipelock-agent -- /usr/bin/curl",
+		"--connect-timeout 1",
+		"--max-time 2",
+		"--noproxy *",
+		"PLK_TIME_CONNECT=%{time_connect}",
+		directCanaryURL,
+	}}
+	operatorRule := containmentRunRule{Match: []string{
+		"sudo -n -u operator -- /usr/bin/curl",
+		"--connect-timeout 3",
+		"--max-time 5",
+		"--noproxy *",
+		operatorCanaryURL,
+	}}
+	valid := containmentProbeFixture{
+		AgentUser:    defaultFixtureAgentUser,
+		OperatorUser: "operator",
+		Runs:         []containmentRunRule{directRule, operatorRule},
+	}
+	if err := validateContainmentProbeFixture(valid); err != nil {
+		t.Fatalf("valid fixture rejected: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*containmentProbeFixture)
+		wantErr string
+	}{
+		{
+			name: "broad username-only agent rule",
+			mutate: func(fx *containmentProbeFixture) {
+				fx.Runs[0].Match = []string{"sudo", "pipelock-agent", fixtureCurlPath}
+			},
+			wantErr: "exact probe-8 command",
+		},
+		{
+			name: "agent rule missing no-proxy bypass",
+			mutate: func(fx *containmentProbeFixture) {
+				fx.Runs[0].Match = append([]string(nil), directRule.Match[:3]...)
+				fx.Runs[0].Match = append(fx.Runs[0].Match, directCanaryURL)
+			},
+			wantErr: "exact probe-8 command",
+		},
+		{
+			name: "agent rule points at operator canary",
+			mutate: func(fx *containmentProbeFixture) {
+				fx.Runs[0].Match = append([]string(nil), directRule.Match...)
+				fx.Runs[0].Match[len(fx.Runs[0].Match)-1] = operatorCanaryURL
+			},
+			wantErr: "exact probe-8 command",
+		},
+		{
+			name: "operator rule missing reachability URL",
+			mutate: func(fx *containmentProbeFixture) {
+				fx.Runs[1].Match = append([]string(nil), operatorRule.Match[:len(operatorRule.Match)-1]...)
+			},
+			wantErr: "exact probe-9 command",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := valid
+			fx.Runs = append([]containmentRunRule(nil), valid.Runs...)
+			tc.mutate(&fx)
+			err := validateContainmentProbeFixture(fx)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
 			}
 		})
 	}

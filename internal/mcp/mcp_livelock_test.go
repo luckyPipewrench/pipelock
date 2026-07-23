@@ -394,6 +394,8 @@ func TestMCPUpstreamGateMetadataHardFloorWithoutContractLoader(t *testing.T) {
 	for _, upstreamURL := range []string{
 		"http://169.254.169.254/mcp",
 		"ws://metadata-upstream.vendor.example/mcp",
+		"http://0xa9.0xfea9fe/mcp",
+		"ws://0xa9.0xfea9fe/mcp",
 	} {
 		t.Run(upstreamURL, func(t *testing.T) {
 			gate, err := evaluateMCPUpstreamGate(context.Background(), upstreamURL, MCPProxyOpts{Scanner: sc})

@@ -49,8 +49,16 @@ type StandaloneLaunchConfig struct {
 	// ProxyHandler is called for each connection from the sandboxed agent.
 	// It receives the connection from the bridge proxy and should handle
 	// it as an HTTP forward proxy (CONNECT tunneling, DLP scanning, etc.).
-	// If nil, connections are forwarded directly (no scanning).
+	// If nil, connections are closed without forwarding.
 	ProxyHandler func(conn net.Conn)
+}
+
+// standaloneProxyConnectionConfig controls how one accepted bridge connection
+// is dispatched. Unscanned forwarding is an internal debug-only opt-in whose
+// zero value is fail closed.
+type standaloneProxyConnectionConfig struct {
+	ProxyHandler                func(net.Conn)
+	AllowUnscannedDirectForward bool
 }
 
 // LaunchStandalone runs a command in a full sandbox with network traffic
@@ -144,12 +152,9 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 			proxyWg.Add(1)
 			go func() {
 				defer proxyWg.Done()
-				if cfg.ProxyHandler != nil {
-					cfg.ProxyHandler(conn)
-				} else {
-					// Default: direct forwarding (no scanning).
-					handleDirectForward(conn)
-				}
+				handleStandaloneProxyConnection(conn, standaloneProxyConnectionConfig{
+					ProxyHandler: cfg.ProxyHandler,
+				})
 			}()
 		}
 	}()
@@ -262,12 +267,25 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	return waitErr
 }
 
+// handleStandaloneProxyConnection dispatches a bridge connection to the
+// scanning handler. A missing handler fails closed unless an internal caller
+// explicitly opts into the unscanned debug-only forwarding path.
+func handleStandaloneProxyConnection(conn net.Conn, cfg standaloneProxyConnectionConfig) {
+	if cfg.ProxyHandler != nil {
+		cfg.ProxyHandler(conn)
+		return
+	}
+	handleDirectForward(conn, cfg.AllowUnscannedDirectForward)
+}
+
 // handleDirectForward bridges a Unix socket connection to a direct TCP
-// connection. DEBUG ONLY - no scanning, no SSRF protection. Production
-// code paths always use cfg.ProxyHandler which routes through pipelock's
-// full scanner pipeline.
-func handleDirectForward(conn net.Conn) {
+// connection only when allowUnscannedDirectForward is explicitly true.
+// This is DEBUG ONLY: it performs no scanning or SSRF protection.
+func handleDirectForward(conn net.Conn, allowUnscannedDirectForward bool) {
 	defer func() { _ = conn.Close() }()
+	if !allowUnscannedDirectForward {
+		return
+	}
 
 	// Read the first line to get the CONNECT target.
 	// For now, just close - the real handler is provided by the CLI.

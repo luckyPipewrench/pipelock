@@ -13,8 +13,9 @@ import (
 // This file is the ONLY exported surface the containment-conformance
 // artifact under sdk/conformance/ depends on. It deliberately exposes the
 // minimum needed to drive the egress-containment probes (probe 8 / probe 9)
-// against a canned command-runner, with NO access to the real sudo/curl/nft
-// execution path and NO leak of the unexported probe/probeEnv internals.
+// against canned command and DROP-counter readers, with NO access to the real
+// sudo/curl/nft execution path and NO leak of the unexported probe/probeEnv
+// internals.
 //
 // DESIGN NOTE (why this shape):
 //   - The probe registry, probeEnv, and probeRecord types are unexported and
@@ -24,10 +25,10 @@ import (
 //   - The conformance artifact only needs to prove the DIRECT-EGRESS probes:
 //     probe 8 (pipelock-agent must NOT reach the internet directly) and
 //     probe 9 (the operator must still reach the internet). Those two probes
-//     depend solely on the injected command runner plus the agent/operator
-//     usernames — none of the filesystem/dialer/hasher seams.
-//   - So we export exactly one options struct (ConformanceEnv) carrying just an
-//     injected runner, and one driver (RunContainmentConformance) returning
+//     depend solely on the injected command and DROP-counter readers plus the
+//     agent/operator usernames — none of the filesystem/dialer/hasher seams.
+//   - So we export exactly one options struct (ConformanceEnv) carrying those
+//     two narrow readers, and one driver (RunContainmentConformance) returning
 //     exported result records plus the same aggregate exit code runVerify would
 //     produce for these probes. The sdk/conformance test imports this, drives it
 //     from JSON fixtures, and asserts per-probe status + exit code. This mirrors
@@ -40,6 +41,11 @@ import (
 // Fixtures map a (name, argv) invocation to a canned (stdout, exitCode).
 type ConformanceRunCommand func(ctx context.Context, name string, args ...string) (stdout string, exitCode int, err error)
 
+// ConformanceDropCounter is the canned managed nftables DROP-counter reader
+// used by the offline conformance harness. Probe 8 reads it immediately before
+// and after the canned curl invocation.
+type ConformanceDropCounter func(ctx context.Context) (uint64, error)
+
 // ConformanceEnv carries the minimal inputs the egress-containment probes need.
 // It is an options struct (not a long parameter list) so future conformance
 // knobs are added as fields, never as new positional arguments.
@@ -48,6 +54,10 @@ type ConformanceEnv struct {
 	// (RunContainmentConformance returns an error rather than silently
 	// passing, matching pipelock's fail-closed default).
 	RunCommand ConformanceRunCommand
+
+	// DropCounter is required for probe 8 to return PASS. A nil reader or a
+	// non-increasing sequence produces UNKNOWN/exit 2, matching live verify.
+	DropCounter ConformanceDropCounter
 
 	// AgentUser is the unprivileged agent account probe 8 must prove is
 	// blocked from direct egress. Defaults to the production agent user when
@@ -61,7 +71,7 @@ type ConformanceEnv struct {
 }
 
 // ConformanceProbeResult is one exported per-probe outcome. Status is one of
-// the canonical "pass" / "fail" / "skip" strings the verify command emits.
+// the canonical "pass" / "fail" / "skip" / "unknown" strings verify emits.
 type ConformanceProbeResult struct {
 	Probe  int    `json:"probe"`
 	Name   string `json:"name"`
@@ -72,16 +82,17 @@ type ConformanceProbeResult struct {
 // Exported status constants so the conformance artifact can assert against
 // them without re-declaring the unexported originals.
 const (
-	ConformanceStatusPass = statusPass
-	ConformanceStatusFail = statusFail
-	ConformanceStatusSkip = statusSkip
+	ConformanceStatusPass    = statusPass
+	ConformanceStatusFail    = statusFail
+	ConformanceStatusSkip    = statusSkip
+	ConformanceStatusUnknown = statusUnknown
 )
 
 // Exit codes mirror the verify command's aggregate contract:
 //
 //	0  every driven probe passed,
 //	1  at least one probe FAILED (containment is broken),
-//	2  no failures but at least one probe SKIPPED (incomplete verification).
+//	2  no failures but at least one probe SKIPPED or UNKNOWN (incomplete).
 //
 // These are re-exported from cliutil so callers (and the gate script) do not
 // have to import cliutil just to read the numbers.
@@ -103,11 +114,11 @@ const (
 // against the injected command runner in env, and returns the per-probe
 // results plus the aggregate exit code.
 //
-// The aggregate exit code follows the same fail > skip > pass precedence the
-// real `contain verify` driver uses (runVerify): a single FAIL yields exit 1
-// regardless of how many probes passed, because a broken containment boundary
-// is never offset by other green probes. This is the property the must-fail
-// "leaky-egress" fixture exercises.
+// The aggregate exit code follows the same fail > incomplete > pass precedence
+// the real `contain verify` driver uses (runVerify): a single FAIL yields exit 1
+// regardless of how many probes passed, while SKIP/UNKNOWN without a failure
+// yields exit 2. This is the property the must-fail "leaky-egress" fixture
+// exercises.
 //
 // A nil runner (misconfigured fixture) fails closed: the function returns a
 // non-nil error and the invalid exit code, never a silent pass.
@@ -127,6 +138,11 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 		operatorUser:  env.OperatorUser,
 		runCmd:        runCommand(env.RunCommand),
 	}
+	if env.DropCounter != nil {
+		internalEnv.dropCounter = func(ctx context.Context, _ *probeEnv) (uint64, error) {
+			return env.DropCounter(ctx)
+		}
+	}
 	if internalEnv.agentUserName == "" {
 		internalEnv.agentUserName = defaultAgentUser
 	}
@@ -138,7 +154,7 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 	}
 
 	results := make([]ConformanceProbeResult, 0, len(egressProbes))
-	var passN, failN, skipN int
+	var passN, failN, skipN, unknownN int
 	for _, p := range egressProbes {
 		status, detail := p.fn(ctx, internalEnv)
 		switch status {
@@ -148,6 +164,8 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 			failN++
 		case statusSkip:
 			skipN++
+		case statusUnknown:
+			unknownN++
 		default:
 			// Unknown status coerces to fail and carries the value forward,
 			// exactly as runVerify does. A probe must never vanish silently.
@@ -167,7 +185,7 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 	switch {
 	case failN > 0:
 		exitCode = ConformanceExitFail
-	case skipN > 0:
+	case skipN > 0 || unknownN > 0:
 		exitCode = ConformanceExitSkip
 	}
 	return results, exitCode, nil

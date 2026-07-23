@@ -49,6 +49,7 @@ const (
 
 const goodNFTContainmentOutput = `table inet pipelock_containment {
 	chain output_filter {
+		type filter hook output priority filter; policy accept;
 		meta skuid 1000 accept
 		meta skuid 988 accept
 		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -145,6 +146,45 @@ func TestEnforcementProbesSkipsByStableName(t *testing.T) {
 	}
 }
 
+func TestProbeListedToolTargets_AgentContextFailuresSkip(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		runErr error
+		want   string
+	}{
+		{name: "runner failure", runErr: errors.New("sudo unavailable"), want: "could not verify"},
+		{name: "agent missing", output: "sudo: unknown user pipelock-agent", want: "user missing"},
+		{name: "sudo refusal", output: testSudoNeedsPwd, want: "sudo -n refused"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "tool")
+			writeFakeWrapper(t, target, 0o755)
+			env := makeProbeEnv(t, func(e *probeEnv) {
+				e.readFile = func(path string) ([]byte, error) {
+					if path != e.toolsListPath {
+						t.Fatalf("read path = %q, want %q", path, e.toolsListPath)
+					}
+					return []byte("tool\t" + target + "\n"), nil
+				}
+				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					if name != testSudoCmd || !containsArg(args, target) {
+						t.Fatalf("command = %q %v, want sudo test of %q", name, args, target)
+					}
+					return tc.output, 1, tc.runErr
+				}
+			})
+
+			status, detail := probeListedToolTargets(context.Background(), env)
+			if status != statusSkip || !strings.Contains(detail, tc.want) {
+				t.Fatalf("result = %q %q, want skip containing %q", status, detail, tc.want)
+			}
+		})
+	}
+}
+
 // makeProbeEnv builds a probeEnv with sane defaults plus overrides.
 // The pure-Go probes (1, 4, 5, 6, 7) get filesystem and lookup stubs;
 // the shell-out probes (2, 3, 8, 9) get runCmd.
@@ -166,6 +206,7 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		pinPath:       filepath.Join(t.TempDir(), "binary-pin.sha256"),
 		toolsListPath: filepath.Join(t.TempDir(), "tools.list"),
 		runCmd:        rejectAllRun,
+		dropCounter:   rejectAllDropCounter,
 		dialCtx:       rejectAllDial,
 		lookupUser:    rejectAllLookup,
 		groupIDs:      rejectAllGroupIDs,
@@ -187,6 +228,12 @@ func rejectAllGroupIDs(u *user.User) ([]string, error) {
 
 func rejectAllRun(_ context.Context, name string, args ...string) (string, int, error) {
 	return "", -1, fmt.Errorf("unstubbed run: %s %v", name, args)
+}
+
+// rejectAllDropCounter fails tests that invoke the containment counter without
+// installing a deterministic counter stub.
+func rejectAllDropCounter(_ context.Context, _ *probeEnv) (uint64, error) {
+	return 0, errors.New("unstubbed containment DROP counter")
 }
 
 func rejectAllDial(_ context.Context, _, address string, _ time.Duration) (net.Conn, error) {
@@ -386,6 +433,23 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "skuid drop rule",
 		},
 		{
+			name: "otherwise canonical regular chain is not containment",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+			`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "not the managed output base chain",
+		},
+		{
 			name:       "permission denied",
 			stdout:     "Error: Operation not permitted\n",
 			code:       1,
@@ -444,6 +508,24 @@ func TestProbeNFTContainment(t *testing.T) {
 			code:       0,
 			wantStatus: statusFail,
 			wantDetail: "skuid-drop rule missing",
+		},
+		{
+			name: "canary-specific drop before catch all is unexpected",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 ip daddr 192.0.2.1 drop
+			meta skuid 987 drop
+		}
+	}
+			`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "broad loopback accept",
@@ -1182,6 +1264,43 @@ func containTestLookup(name string) (*user.User, error) {
 	}
 }
 
+func TestNFTLineParsers_HandleEscapedQuotesFailClosed(t *testing.T) {
+	line := `comment "escaped \" quote and \\ slash { }" {`
+	fields := nftLineFields(line)
+	if len(fields) != 3 || fields[0] != "comment" || fields[2] != "{" {
+		t.Fatalf("fields = %q, want quoted comment plus structural brace", fields)
+	}
+	if delta := nftLineBraceDelta(line); delta != 1 {
+		t.Fatalf("brace delta = %d, want 1 with quoted braces ignored", delta)
+	}
+	if !nftLineHasBalancedQuotes(line) {
+		t.Fatal("escaped quote sequence was treated as an unterminated quote")
+	}
+	if isNFTChainDeclaration(`chain output_filter { comment "unterminated`, testChain) {
+		t.Fatal("unterminated chain declaration was accepted")
+	}
+
+	malformedChain := `table inet pipelock_containment {
+	chain output_filter {
+		comment "unterminated
+		meta skuid 987 drop
+	}
+}`
+	candidateMatched := false
+	if chainHasLineBeforeAgentDrop(malformedChain, testChain, 987, func(line string) bool {
+		if strings.Contains(line, "meta skuid") {
+			candidateMatched = true
+			return true
+		}
+		return false
+	}) {
+		t.Fatal("malformed chain output produced a match")
+	}
+	if candidateMatched {
+		t.Fatal("matcher was invoked on a rule after an unterminated quote")
+	}
+}
+
 // Probe 4: wrapper_scripts_installed -----------------------------------------
 
 func TestProbeWrapperScripts(t *testing.T) {
@@ -1621,22 +1740,519 @@ func TestExtractNoProxy(t *testing.T) {
 
 // Probe 8 + 9: egress canary + operator reachability -------------------------
 
-func TestProbeCCAgentEgressDenied(t *testing.T) {
+func TestManagedContainmentDropPacketCount(t *testing.T) {
 	tests := []struct {
-		name       string
-		stdout     string
-		code       int
-		runErr     error
-		curlPath   string
-		wantStatus string
-		wantDetail string
+		name    string
+		output  string
+		chain   string
+		uid     int
+		want    uint64
+		wantErr string
 	}{
 		{
-			name:       "egress blocked (curl exit 7)",
-			stdout:     "curl: (7) Failed to connect",
-			code:       7,
-			wantStatus: statusPass,
-			wantDetail: "containment enforced",
+			name:   "reads exact managed catch-all rule",
+			output: goodNFTContainmentOutputRealListing,
+			chain:  testChain,
+			uid:    987,
+			want:   12,
+		},
+		{
+			name: "rejects unexpanded counter",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "no expanded packet counter",
+		},
+		{
+			name:    "rejects different uid",
+			output:  goodNFTContainmentOutputRealListing,
+			chain:   testChain,
+			uid:     986,
+			wantErr: "no managed catch-all DROP packet counter",
+		},
+		{
+			name: "rejects malformed packet count",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets nope bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "parse managed catch-all DROP packet counter",
+		},
+		{
+			name: "rejects multiple counters in one managed rule",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 12 bytes 0 counter packets 13 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "multiple packet counters",
+		},
+		{
+			name: "rejects extra bookkeeping predicates",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 12 bytes 0 meta mark 1 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "no managed catch-all DROP packet counter",
+		},
+		{
+			name: "accepts maximum uint64 packet count",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 18446744073709551615 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain: testChain,
+			uid:   987,
+			want:  ^uint64(0),
+		},
+		{
+			name: "rejects packet count overflow",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 18446744073709551616 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "value out of range",
+		},
+		{
+			name: "rejects matching lookalike in wrong chain",
+			output: `table inet pipelock_containment {
+	chain decoy {
+		meta skuid 987 counter packets 44 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+	chain output_filter {
+		meta skuid 987 counter packets 12 bytes 0 drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "no managed catch-all DROP packet counter",
+		},
+		{
+			name: "rejects duplicate managed catch-all counters",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+		meta skuid 987 counter packets 13 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "found 2 managed catch-all DROP packet counters",
+		},
+		{
+			name: "rejects destination-specific lookalike",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 ip daddr 192.0.2.1 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "no managed catch-all DROP packet counter",
+		},
+		{
+			name: "rejects destination predicate before skuid",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		ip daddr 203.0.113.10 meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "no managed catch-all DROP packet counter",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := managedContainmentDropPacketCount(tc.output, tc.chain, tc.uid)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("managedContainmentDropPacketCount: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("packet count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNFTChainTraversalRejectsCraftedNamesAndMalformedComments(t *testing.T) {
+	const managedRule = `meta skuid 987 counter packets 44 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop`
+	tests := []struct {
+		name string
+		out  string
+	}{
+		{
+			name: "chain-name prefix is not the managed chain",
+			out: `table inet pipelock_containment {
+	chain output_filter decoy {
+		` + managedRule + `
+	}
+}`,
+		},
+		{
+			name: "unterminated quoted comment cannot bleed into later chain",
+			out: `table inet pipelock_containment {
+	chain output_filter {
+		comment "unterminated }
+	chain decoy {
+		` + managedRule + `
+	}
+}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if outputHasNFTChainDeclaration(tc.out, testChain) && tc.name == "chain-name prefix is not the managed chain" {
+				t.Fatal("crafted prefix was accepted as an exact chain declaration")
+			}
+			if got, err := managedContainmentDropPacketCount(tc.out, testChain, 987); err == nil {
+				t.Fatalf("crafted output attributed packet count %d to %s", got, testChain)
+			}
+		})
+	}
+}
+
+func TestReadContainmentDropCounter(t *testing.T) {
+	tests := []struct {
+		name       string
+		lookupErr  error
+		output     string
+		code       int
+		runErr     error
+		want       uint64
+		wantErr    string
+		wantRunCmd bool
+	}{
+		{name: "reads live managed counters", output: goodNFTContainmentOutputRealListing, want: 12, wantRunCmd: true},
+		{
+			name: "rejects unhooked regular chain",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+			meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			wantErr:    "not the managed output base chain",
+			wantRunCmd: true,
+		},
+		{
+			name: "accepts harmless quoted nft comments and handle annotations",
+			output: `table inet pipelock_containment {
+	chain output_filter { # handle 1
+		comment "managed drop evidence }"
+		type filter hook output priority 0; policy accept;
+		meta skuid 1000 accept comment "operator accept" # handle 2
+		meta skuid 988 accept comment "proxy accept" # handle 3
+		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept comment "loopback } allow" # handle 4
+		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 5
+		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 6
+		meta skuid 987 counter packets 12 bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop comment "canonical drop evidence" # handle 7
+	}
+}`,
+			want:       12,
+			wantRunCmd: true,
+		},
+		{
+			name: "rejects unexpected nft json instead of misaggregating it",
+			output: `{"nftables":[
+{"chain":{"family":"inet","table":"pipelock_containment","name":"output_filter","type":"filter","hook":"output","prio":0,"policy":"accept"}},
+{"rule":{"family":"inet","table":"pipelock_containment","chain":"output_filter","expr":[
+{"match":{"op":"==","left":{"meta":{"key":"skuid"}},"right":987}},
+{"counter":{"packets":12,"bytes":840}},
+{"log":{"prefix":"pipelock-contain class=not_routing_through_pipelock "}},
+{"drop":null}
+]}}
+]}`,
+			wantErr:    "not the managed output base chain",
+			wantRunCmd: true,
+		},
+		{
+			name: "rejects canary interception before managed counter",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+			type filter hook output priority 0; policy accept;
+		meta skuid 987 ip daddr 192.0.2.1 drop
+		meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			wantErr:    "unexpected verdict before managed catch-all DROP",
+			wantRunCmd: true,
+		},
+		{name: "agent lookup failure", lookupErr: errors.New("missing user"), wantErr: "lookup agent uid"},
+		{name: "nft invocation failure", runErr: errors.New("nft missing"), wantErr: "list nft chain", wantRunCmd: true},
+		{name: "nft nonzero exit", output: "operation not permitted", code: 1, wantErr: "exit=1", wantRunCmd: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runCalled := false
+			env := makeProbeEnv(t, func(e *probeEnv) {
+				e.lookupUser = func(name string) (*user.User, error) {
+					switch name {
+					case testProxyUser:
+						return &user.User{Uid: "988", Username: testProxyUser}, nil
+					case testAgentUser:
+						return &user.User{Uid: "987", Username: testAgentUser}, tc.lookupErr
+					default:
+						t.Fatalf("unexpected lookup user %q", name)
+						return nil, nil
+					}
+				}
+				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					runCalled = true
+					if name != testNFT {
+						t.Fatalf("command = %q, want %q", name, testNFT)
+					}
+					wantArgs := []string{"-n", "list", "chain", "inet", testTable, testChain}
+					if strings.Join(args, " ") != strings.Join(wantArgs, " ") {
+						t.Fatalf("args = %v, want %v", args, wantArgs)
+					}
+					return tc.output, tc.code, tc.runErr
+				}
+			})
+
+			got, err := readContainmentDropCounter(context.Background(), env)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("readContainmentDropCounter: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("counter = %d, want %d", got, tc.want)
+			}
+			if runCalled != tc.wantRunCmd {
+				t.Fatalf("run called = %t, want %t", runCalled, tc.wantRunCmd)
+			}
+		})
+	}
+}
+
+func TestChainHasManagedOutputBaseChain(t *testing.T) {
+	tests := []struct {
+		name string
+		decl string
+		want bool
+	}{
+		{
+			name: "symbolic filter priority emitted by nft",
+			decl: "type filter hook output priority filter; policy accept;",
+			want: true,
+		},
+		{
+			name: "numeric filter priority emitted by nft",
+			decl: "type filter hook output priority 0; policy accept;",
+			want: true,
+		},
+		{name: "regular chain is unattached", want: false},
+		{
+			name: "wrong hook",
+			decl: "type filter hook input priority filter; policy accept;",
+			want: false,
+		},
+		{
+			name: "wrong priority",
+			decl: "type filter hook output priority 10; policy accept;",
+			want: false,
+		},
+		{
+			name: "wrong policy",
+			decl: "type filter hook output priority filter; policy drop;",
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := "table inet pipelock_containment {\n\tchain output_filter {\n\t\t" + tc.decl +
+				"\n\t}\n}"
+			if got := chainHasManagedOutputBaseChain(out, testChain); got != tc.want {
+				t.Fatalf("chainHasManagedOutputBaseChain() = %t, want %t for %q", got, tc.want, tc.decl)
+			}
+		})
+	}
+}
+
+func TestParseDirectCurlDialCompletion(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want directDialCompletion
+	}{
+		{name: "zero means dial did not complete", out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", want: directDialNotCompleted},
+		{name: "positive means dial completed", out: "curl: (28) timed out\nPLK_TIME_CONNECT=0.125381\n000", want: directDialCompleted},
+		{name: "missing sentinel", out: "curl: (7) refused", want: directDialUnknown},
+		{name: "empty value", out: "PLK_TIME_CONNECT=\n000", want: directDialUnknown},
+		{name: "malformed value", out: "PLK_TIME_CONNECT=not-a-number\n000", want: directDialUnknown},
+		{name: "locale comma is not guessed", out: "PLK_TIME_CONNECT=0,125381\n000", want: directDialUnknown},
+		{name: "negative value", out: "PLK_TIME_CONNECT=-0.1\n000", want: directDialUnknown},
+		{name: "nan value", out: "PLK_TIME_CONNECT=NaN\n000", want: directDialUnknown},
+		{name: "infinite value", out: "PLK_TIME_CONNECT=+Inf\n000", want: directDialUnknown},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseDirectCurlDialCompletion(tc.out); got != tc.want {
+				t.Fatalf("parseDirectCurlDialCompletion(%q) = %d, want %d", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProbeCCAgentEgressDenied(t *testing.T) {
+	tests := []struct {
+		name             string
+		stdout           string
+		code             int
+		runErr           error
+		curlPath         string
+		counterBefore    uint64
+		counterAfter     uint64
+		counterBeforeErr error
+		counterAfterErr  error
+		noCounterReader  bool
+		wantStatus       string
+		wantDetail       string
+	}{
+		{
+			name:          "attributable egress block passes",
+			stdout:        "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          7,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusPass,
+			wantDetail:    "managed DROP counter increased",
+		},
+		{
+			name:          "attributable connect timeout before dial passes",
+			stdout:        "curl: (28) Connection timed out\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          28,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusPass,
+			wantDetail:    "time_connect=0",
+		},
+		{
+			name:          "completed dial timeout fails despite UID-wide counter delta",
+			stdout:        "curl: (28) Operation timed out\nPLK_TIME_CONNECT=0.125381\n000",
+			code:          28,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusFail,
+			wantDetail:    "CONTAINMENT HOLE",
+		},
+		{
+			name:          "unknown dial timing cannot pass from UID-wide counter delta",
+			stdout:        "curl: (7) Failed to connect\nPLK_TIME_CONNECT=unparseable\n000",
+			code:          7,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusUnknown,
+			wantDetail:    "time_connect was missing or unparseable",
+		},
+		{
+			name:          "DNS failure without counter delta is inconclusive",
+			stdout:        "curl: (6) Could not resolve host: example.com\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          6,
+			counterBefore: 12,
+			counterAfter:  12,
+			wantStatus:    statusUnknown,
+			wantDetail:    "may be unrelated to containment",
+		},
+		{
+			name:          "DNS failure with unrelated counter delta is inconclusive",
+			stdout:        "curl: (6) Could not resolve host: example.com\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          6,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusUnknown,
+			wantDetail:    "unexpected exit=6 despite a counter delta",
+		},
+		{
+			name:          "timeout without counter delta is inconclusive",
+			stdout:        "curl: (28) Connection timed out\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          28,
+			counterBefore: 12,
+			counterAfter:  12,
+			wantStatus:    statusUnknown,
+			wantDetail:    "may be unrelated to containment",
+		},
+		{
+			name:          "counter reset or wrap is inconclusive",
+			stdout:        "curl: (28) Connection timed out\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          28,
+			counterBefore: ^uint64(0),
+			counterAfter:  0,
+			wantStatus:    statusUnknown,
+			wantDetail:    "did not increase",
+		},
+		{
+			name:          "TLS handshake proves post-connect breach without counter delta",
+			stdout:        "curl: (35) TLS connect error",
+			code:          35,
+			counterBefore: 12,
+			counterAfter:  12,
+			wantStatus:    statusFail,
+			wantDetail:    "reached the network",
+		},
+		{
+			name:          "post-connect empty reply fails despite counter delta",
+			stdout:        "curl: (52) Empty reply from server",
+			code:          52,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusFail,
+			wantDetail:    "CONTAINMENT HOLE",
+		},
+		{
+			name:            "no counter reader is inconclusive even for refused connection",
+			stdout:          "curl: (7) Failed to connect: Connection refused\nPLK_TIME_CONNECT=0.000000\n000",
+			code:            7,
+			noCounterReader: true,
+			wantStatus:      statusUnknown,
+			wantDetail:      "no DROP counter reader",
+		},
+		{
+			name:             "counter unavailable before probe is inconclusive",
+			stdout:           "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
+			code:             7,
+			counterBeforeErr: errors.New("operation not permitted"),
+			counterAfter:     13,
+			wantStatus:       statusUnknown,
+			wantDetail:       "before probe",
+		},
+		{
+			name:            "counter unavailable after probe is inconclusive",
+			stdout:          "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
+			code:            7,
+			counterBefore:   12,
+			counterAfterErr: errors.New("table disappeared"),
+			wantStatus:      statusUnknown,
+			wantDetail:      "after probe",
 		},
 		{
 			name:       "egress succeeded (regression)",
@@ -1701,6 +2317,18 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := makeProbeEnv(t, func(e *probeEnv) {
 				e.curlPath = tc.curlPath
+				if tc.noCounterReader {
+					e.dropCounter = nil
+				} else {
+					counterReads := 0
+					e.dropCounter = func(_ context.Context, _ *probeEnv) (uint64, error) {
+						counterReads++
+						if counterReads == 1 {
+							return tc.counterBefore, tc.counterBeforeErr
+						}
+						return tc.counterAfter, tc.counterAfterErr
+					}
+				}
 				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 					if name != testSudoCmd {
 						t.Fatalf("unexpected cmd %q", name)
@@ -1709,6 +2337,16 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 					joined := strings.Join(args, " ")
 					if !strings.Contains(joined, "-u "+testAgentUser) {
 						t.Fatalf("argv missing -u %s: %v", testAgentUser, args)
+					}
+					if !strings.Contains(joined, directEgressCanaryURL) || strings.Contains(joined, canaryURL) {
+						t.Fatalf("argv does not use DNS-free direct canary %q: %v", directEgressCanaryURL, args)
+					}
+					if !strings.Contains(joined, "--connect-timeout "+directCurlConnectTimeout) ||
+						!strings.Contains(joined, "--max-time "+directCurlMaxTime) {
+						t.Fatalf("argv does not use bounded direct-canary timeouts: %v", args)
+					}
+					if !strings.Contains(joined, directCurlTimeConnectPrefix+"%{time_connect}") {
+						t.Fatalf("argv does not capture probe-specific time_connect: %v", args)
 					}
 					return tc.stdout, tc.code, tc.runErr
 				}
@@ -1961,6 +2599,46 @@ func TestCappedBuffer(t *testing.T) {
 	})
 }
 
+type shortWriteRecorder struct {
+	calls int
+}
+
+func (w *shortWriteRecorder) Write(p []byte) (int, error) {
+	w.calls++
+	return len(p) - 1, nil
+}
+
+type failAfterWriter struct {
+	successfulWrites int
+	writes           int
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.writes >= w.successfulWrites {
+		return 0, errors.New("write blew up")
+	}
+	w.writes++
+	return len(p), nil
+}
+
+func TestErrorTrackingWriter_ShortWriteIsSticky(t *testing.T) {
+	dst := &shortWriteRecorder{}
+	w := &errorTrackingWriter{w: dst}
+
+	if _, err := w.Write([]byte("record")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if !errors.Is(w.Err(), io.ErrShortWrite) {
+		t.Fatalf("tracked error = %v, want %v", w.Err(), io.ErrShortWrite)
+	}
+	if _, err := w.Write([]byte("second")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("sticky write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if dst.calls != 1 {
+		t.Fatalf("underlying writer calls = %d, want 1 after sticky failure", dst.calls)
+	}
+}
+
 // Runner ---------------------------------------------------------------------
 
 func TestRunVerify_TextOutput_AllPass(t *testing.T) {
@@ -2126,6 +2804,228 @@ func TestRunVerify_SkipExitCode(t *testing.T) {
 	}
 }
 
+func TestRunVerify_UnknownExitCode(t *testing.T) {
+	env := allPassEnv(t)
+	env.dropCounter = func(_ context.Context, _ *probeEnv) (uint64, error) {
+		return 12, nil
+	}
+
+	cmd := newVerifyCmd(t)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	err := runVerify(cmd, env, verifyOpts{jsonOutput: false})
+	if err == nil {
+		t.Fatal("expected error for inconclusive egress attribution")
+	}
+	if code := cliutil.ExitCodeOf(err); code != cliutil.ExitConfig {
+		t.Errorf("exit code: got %d, want %d", code, cliutil.ExitConfig)
+	}
+	if !strings.Contains(buf.String(), "[UNKNOWN]") || !strings.Contains(buf.String(), "1 UNKNOWN") {
+		t.Errorf("missing unknown result in output: %q", buf.String())
+	}
+}
+
+func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
+	env := allPassEnv(t)
+	env.dropCounter = func(_ context.Context, _ *probeEnv) (uint64, error) {
+		return 12, nil
+	}
+
+	cmd := newVerifyCmd(t)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	err := runVerify(cmd, env, verifyOpts{jsonOutput: true})
+	if code := cliutil.ExitCodeOf(err); code != cliutil.ExitConfig {
+		t.Fatalf("exit code = %d, want %d (err=%v)", code, cliutil.ExitConfig, err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 13 {
+		t.Fatalf("JSON record count = %d, want 13: %q", len(lines), buf.String())
+	}
+	var canary probeRecord
+	if err := json.Unmarshal([]byte(lines[7]), &canary); err != nil {
+		t.Fatalf("decode canary: %v", err)
+	}
+	if canary.Probe != 8 || canary.Status != statusUnknown {
+		t.Fatalf("canary record = %+v, want probe 8 unknown", canary)
+	}
+	var agg aggregateRecord
+	if err := json.Unmarshal([]byte(lines[12]), &agg); err != nil {
+		t.Fatalf("decode aggregate: %v", err)
+	}
+	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 11 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
+		t.Fatalf("aggregate = %+v, want 11 pass / 1 unknown / exit 2", agg.Aggregate)
+	}
+}
+
+func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(map[bool]string{false: "text", true: "json"}[jsonOutput], func(t *testing.T) {
+			env := allPassEnv(t)
+			env.dropCounter = func(_ context.Context, _ *probeEnv) (uint64, error) {
+				return 12, nil
+			}
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				switch {
+				case name == testSystemctl:
+					return "", -1, errors.New("systemctl unavailable")
+				case name == testSudoCmd && containsArg(args, testOperatorUser) && containsArg(args, curlPath):
+					return "curl: (22) HTTP 500", 22, nil
+				default:
+					return defaultRunForAllPass(name, args)
+				}
+			}
+
+			cmd := newVerifyCmd(t)
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			err := runVerify(cmd, env, verifyOpts{jsonOutput: jsonOutput})
+			if code := cliutil.ExitCodeOf(err); code != cliutil.ExitGeneral {
+				t.Fatalf("exit code = %d, want fail precedence %d (err=%v)", code, cliutil.ExitGeneral, err)
+			}
+
+			out := buf.String()
+			if jsonOutput {
+				lines := strings.Split(strings.TrimSpace(out), "\n")
+				var agg aggregateRecord
+				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
+					t.Fatalf("decode aggregate: %v\n%s", err, out)
+				}
+				if agg.Aggregate.Pass != 9 || agg.Aggregate.Fail != 1 ||
+					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
+					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
+					t.Fatalf("mixed aggregate = %+v, want 9 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
+				}
+				return
+			}
+			if !strings.Contains(out, "9 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
+				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestRunVerify_TextWriteFailureFailsClosed(t *testing.T) {
+	cmd := newVerifyCmd(t)
+	cmd.SetOut(errWriter{})
+	if err := runVerify(cmd, allPassEnv(t), verifyOpts{}); err == nil ||
+		!strings.Contains(err.Error(), "writing verify header") {
+		t.Fatalf("text output failure = %v, want surfaced header write error", err)
+	}
+}
+
+func TestRunVerify_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
+	tests := []struct {
+		name             string
+		jsonOutput       bool
+		successfulWrites int
+		want             string
+	}{
+		{name: "text probe", successfulWrites: 1, want: "writing probe 1 text"},
+		{name: "text aggregate", successfulWrites: 13, want: "writing verify aggregate"},
+		{name: "JSON probe", jsonOutput: true, want: "encoding probe 1 JSON"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 12, want: "encoding aggregate JSON"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newVerifyCmd(t)
+			cmd.SetOut(&failAfterWriter{successfulWrites: tc.successfulWrites})
+			err := runVerify(cmd, allPassEnv(t), verifyOpts{jsonOutput: tc.jsonOutput})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("output failure = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunVerify_NFTStructuralAndCounterCompositionFailsClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		rules    string
+		wantExit int
+	}{
+		{
+			name: "unhooked lookalike chain",
+			rules: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 1000 accept
+		meta skuid 988 accept
+		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 counter packets %d bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			wantExit: cliutil.ExitGeneral,
+		},
+		{
+			name: "structural probe fooled by predicate before skuid",
+			rules: `table inet pipelock_containment {
+	chain output_filter {
+		type filter hook output priority 0; policy accept;
+		meta skuid 1000 accept
+		meta skuid 988 accept
+		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		ip daddr 192.0.2.1 meta skuid 987 counter packets %d bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			wantExit: cliutil.ExitConfig,
+		},
+		{
+			name: "canary intercepted before attributed counter",
+			rules: `table inet pipelock_containment {
+	chain output_filter {
+		type filter hook output priority 0; policy accept;
+		meta skuid 1000 accept
+		meta skuid 988 accept
+		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 ip daddr 192.0.2.1 drop
+		meta skuid 987 counter packets %d bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			wantExit: cliutil.ExitGeneral,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			chainReads := 0
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != testNFT {
+					return defaultRunForAllPass(name, args)
+				}
+				packets := 12
+				if containsArg(args, "chain") {
+					packets += chainReads
+					chainReads++
+				}
+				return fmt.Sprintf(tc.rules, packets), 0, nil
+			}
+			env.dropCounter = readContainmentDropCounter
+
+			cmd := newVerifyCmd(t)
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			err := runVerify(cmd, env, verifyOpts{})
+			if code := cliutil.ExitCodeOf(err); code != tc.wantExit {
+				t.Fatalf("exit code = %d, want %d (err=%v, output=%q)", code, tc.wantExit, err, buf.String())
+			}
+			if strings.Contains(buf.String(), "— exit 0") {
+				t.Fatalf("broken nftables state reported aggregate PASS: %q", buf.String())
+			}
+		})
+	}
+}
+
 func TestVerifyCmd_Wiring(t *testing.T) {
 	root := Cmd()
 	verify := findSubcmd(t, root, "verify")
@@ -2283,6 +3183,11 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		return defaultRunForAllPass(name, args)
 	}
+	var counterReads uint64
+	env.dropCounter = func(_ context.Context, _ *probeEnv) (uint64, error) {
+		counterReads++
+		return 11 + counterReads, nil
+	}
 
 	// Filesystem state for probes 4, 5, 7, 12.
 	writeFakeWrapper(t, env.launchPath, 0o755)
@@ -2337,9 +3242,13 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 		if containsArg(args, "plk-launch") || containsArg(args, probe11Sentinel) {
 			return "plk-launch: tool " + probe11Sentinel + " not in pipelock contain allow-list", 5, nil
 		}
+		// Probe 12: positive agent-context executability/traversal check.
+		if containsArg(args, "test") && containsArg(args, "-x") {
+			return "", 0, nil
+		}
 		// Either pipelock-agent (probe 8) or operator (probe 9). Match by argv.
 		if containsArg(args, testAgentUser) {
-			return "curl: (7) Failed to connect", 7, nil
+			return "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000", 7, nil
 		}
 		return "200", 0, nil
 	case curlPath:
@@ -2355,6 +3264,7 @@ func TestOneLine(t *testing.T) {
 	}{
 		{"hello\nworld\r\n", "hello world"},
 		{"  trim me\n", "trim me"},
+		{"before\x1b[2J after\u202e forged", "before [2J after forged"},
 		{"", ""},
 	}
 	for _, c := range cases {

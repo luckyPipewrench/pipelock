@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -21,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -52,11 +54,24 @@ const (
 	curlPath           = defaultCurlPath
 	canaryURL          = "https://example.com/"
 
+	// Probe 8 uses a DNS-free, non-routable TEST-NET-1 address on a normally
+	// unused port. This forces the probe packet through the managed catch-all
+	// agent DROP rule and removes DNS/TLS as alternate causes of failure. The
+	// curl's own time_connect measurement provides probe-specific evidence of
+	// whether this canary established TCP; the UID-wide DROP counter only
+	// corroborates a dial that did not complete.
+	directEgressCanaryURL       = "http://192.0.2.1:9/"
+	directCurlConnectTimeout    = "1"
+	directCurlMaxTime           = "2"
+	directCurlTimeConnectPrefix = "PLK_TIME_CONNECT="
+	directCurlWriteOut          = "\n" + directCurlTimeConnectPrefix + "%{time_connect}\n%{http_code}"
+
 	// Probe status values. Strings (not an enum type) so JSON
 	// serialization is identity and tests can compare cheaply.
-	statusPass = "pass"
-	statusFail = "fail"
-	statusSkip = "skip"
+	statusPass    = "pass"
+	statusFail    = "fail"
+	statusSkip    = "skip"
+	statusUnknown = "unknown"
 
 	// Internal: cap on stdout/stderr we keep from a subprocess so a
 	// runaway command can't blow the runner's heap.
@@ -95,6 +110,10 @@ type lookupUserFunc func(name string) (*user.User, error)
 
 type groupIDsFunc func(*user.User) ([]string, error)
 
+// dropCounterFunc reads the total packet count for the managed nftables DROP
+// rules that apply to the contained agent user.
+type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
+
 // probeEnv carries the inputs every probe needs. Everything is
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
@@ -125,14 +144,15 @@ type probeEnv struct {
 	// run produced, even when --posture-output points off the default path.
 	postureProofPath string
 
-	runCmd     runCommand
-	dialCtx    dialFunc
-	lookupUser lookupUserFunc
-	groupIDs   groupIDsFunc
-	stat       func(path string) (os.FileInfo, error)
-	readFile   func(path string) ([]byte, error)
-	selfPath   func() (string, error)
-	hashFile   func(path string) (string, error)
+	runCmd      runCommand
+	dropCounter dropCounterFunc
+	dialCtx     dialFunc
+	lookupUser  lookupUserFunc
+	groupIDs    groupIDsFunc
+	stat        func(path string) (os.FileInfo, error)
+	readFile    func(path string) ([]byte, error)
+	selfPath    func() (string, error)
+	hashFile    func(path string) (string, error)
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -161,6 +181,7 @@ func defaultProbeEnv() *probeEnv {
 		wrapperInvPath:     defaultWrapperInvPath,
 		toolsListPath:      defaultToolsListPath,
 		runCmd:             realRunCommand,
+		dropCounter:        readContainmentDropCounter,
 		dialCtx:            realDial,
 		lookupUser:         user.Lookup,
 		groupIDs:           realGroupIDs,
@@ -227,6 +248,35 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 }
 
 func (c *cappedBuffer) String() string { return c.buf.String() }
+
+// errorTrackingWriter preserves the first output error even when a text
+// renderer intentionally ignores individual fmt write results. Command drivers
+// check Err after each logical record so a broken output stream can never be
+// reported as a successful verification.
+type errorTrackingWriter struct {
+	w   io.Writer
+	err error
+}
+
+// Write forwards p while recording the first error or short write.
+func (w *errorTrackingWriter) Write(p []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.err = err
+	}
+	return n, err
+}
+
+// Err returns the first write failure observed by Write.
+func (w *errorTrackingWriter) Err() error {
+	return w.err
+}
 
 // realDial dials network+address with a fixed timeout, honoring ctx
 // cancellation. Tests inject a deterministic dialer.
@@ -308,7 +358,9 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s", len(env.workspacePaths), env.agentUserName)
 }
 
-func probeListedToolTargets(_ context.Context, env *probeEnv) (string, string) {
+// probeListedToolTargets verifies each configured wrapper target exists and is
+// executable from the contained agent's user context.
+func probeListedToolTargets(ctx context.Context, env *probeEnv) (string, string) {
 	data, err := env.readFile(env.toolsListPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -351,6 +403,22 @@ func probeListedToolTargets(_ context.Context, env *probeEnv) (string, string) {
 		}
 		if info.Mode().Perm()&0o111 == 0 {
 			bad = append(bad, fmt.Sprintf("%s target %s is not executable", entry.name, target))
+			continue
+		}
+
+		out, code, runErr := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--", "test", "-x", target)
+		if runErr != nil {
+			return statusSkip, fmt.Sprintf("could not verify %s as %s: %v", target, env.agentUserName, runErr)
+		}
+		if isSudoUserMissing(out) {
+			return statusSkip, fmt.Sprintf("%s user missing (install never ran)", env.agentUserName)
+		}
+		if isSudoRefusal(out) {
+			return statusSkip, fmt.Sprintf("sudo -n refused agent-context executable check for %s", target)
+		}
+		if code != 0 {
+			bad = append(bad, fmt.Sprintf("%s target %s is not executable/traversable by %s: %s",
+				entry.name, target, env.agentUserName, oneLine(out)))
 		}
 	}
 	if len(bad) > 0 {
@@ -496,6 +564,7 @@ type aggregateBody struct {
 	Pass     int `json:"pass"`
 	Fail     int `json:"fail"`
 	Skip     int `json:"skip"`
+	Unknown  int `json:"unknown,omitempty"`
 	Total    int `json:"total"`
 	ExitCode int `json:"exit_code"`
 }
@@ -535,8 +604,8 @@ verify never mutates state. Probes that require root visibility
 Exit codes:
   0  All probes passed.
   1  At least one probe failed (containment is broken or partially installed).
-  2  Verification incomplete (one or more probes skipped, curl/sudo missing,
-     context cancelled).`,
+  2  Verification incomplete (one or more probes skipped or inconclusive,
+     curl/sudo missing, context cancelled).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
@@ -576,6 +645,11 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 	}
 
 	w := cmd.OutOrStdout()
+	var textWriter *errorTrackingWriter
+	if !opts.jsonOutput {
+		textWriter = &errorTrackingWriter{w: w}
+		w = textWriter
+	}
 	enc := json.NewEncoder(w)
 
 	if !opts.jsonOutput {
@@ -584,13 +658,16 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 			header += " --enforcement-only"
 		}
 		_, _ = fmt.Fprintln(w, header)
+		if err := textWriter.Err(); err != nil {
+			return fmt.Errorf("writing verify header: %w", err)
+		}
 	}
 
 	probes := probesForEnv(env)
 	if opts.enforcementOnly {
 		probes = enforcementProbes(probes)
 	}
-	var passN, failN, skipN int
+	var passN, failN, skipN, unknownN int
 
 	for _, p := range probes {
 		status, detail := p.fn(ctx, env)
@@ -601,6 +678,8 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 			failN++
 		case statusSkip:
 			skipN++
+		case statusUnknown:
+			unknownN++
 		default:
 			// A probe returned something unexpected. Coerce to fail
 			// and carry the value forward so we don't silently drop it.
@@ -622,13 +701,16 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 		}
 
 		writeTextLine(w, p, status, detail)
+		if err := textWriter.Err(); err != nil {
+			return fmt.Errorf("writing probe %d text: %w", p.n, err)
+		}
 	}
 
 	exitCode := cliutil.ExitOK
 	switch {
 	case failN > 0:
 		exitCode = cliutil.ExitGeneral
-	case skipN > 0:
+	case skipN > 0 || unknownN > 0:
 		exitCode = cliutil.ExitConfig
 	}
 
@@ -637,13 +719,21 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 			Pass:     passN,
 			Fail:     failN,
 			Skip:     skipN,
+			Unknown:  unknownN,
 			Total:    len(probes),
 			ExitCode: exitCode,
 		}}); err != nil {
 			return fmt.Errorf("encoding aggregate JSON: %w", err)
 		}
 	} else {
-		_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
+		if unknownN > 0 {
+			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP / %d UNKNOWN — exit %d\n", passN, failN, skipN, unknownN, exitCode)
+		} else {
+			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
+		}
+		if err := textWriter.Err(); err != nil {
+			return fmt.Errorf("writing verify aggregate: %w", err)
+		}
 	}
 
 	if exitCode == cliutil.ExitOK {
@@ -651,6 +741,9 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 	}
 	if failN > 0 {
 		return cliutil.ExitCodeError(exitCode, fmt.Errorf("%d probe(s) failed", failN))
+	}
+	if unknownN > 0 {
+		return cliutil.ExitCodeError(exitCode, fmt.Errorf("%d probe(s) inconclusive; verification incomplete", unknownN))
 	}
 	return cliutil.ExitCodeError(exitCode, fmt.Errorf("%d probe(s) skipped; verification incomplete", skipN))
 }
@@ -678,6 +771,8 @@ func writeTextLine(w io.Writer, p probe, status, detail string) {
 		tag = "[FAIL]"
 	case statusSkip:
 		tag = "[SKIP]"
+	case statusUnknown:
+		tag = "[UNKNOWN]"
 	}
 
 	line := fmt.Sprintf("  %s probe %d: %s", tag, p.n, p.desc)
@@ -763,6 +858,8 @@ func parseSystemdShow(out string) map[string]string {
 // Probe 3: nftables_containment_ruleset
 // ---------------------------------------------------------------------------
 
+// probeNFTContainment verifies the installed nftables boundary structure,
+// ordering, UID ownership, and persistence wiring.
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "list", "table", "inet", env.nftTable)
 	if err != nil {
@@ -779,7 +876,7 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out))
 	}
 
-	if !strings.Contains(out, "chain "+env.nftChain) {
+	if !outputHasNFTChainDeclaration(out, env.nftChain) {
 		return statusFail, fmt.Sprintf("chain %s missing from table", env.nftChain)
 	}
 
@@ -807,6 +904,9 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	if chainHasUnsafeVerdictBeforeAgentDrop(out, env.nftChain, current, env.port) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
+	}
+	if !chainHasManagedOutputBaseChain(out, env.nftChain) {
+		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
 		if err := verifyNFTPersistence(env); err != nil {
@@ -987,13 +1087,16 @@ func chainHasAgentDNSDropBeforeCatchAll(out, chainName string, agentUID int, pro
 	})
 }
 
+// chainHasUnsafeVerdictBeforeAgentDrop detects an unmanaged verdict that can
+// bypass or intercept traffic before the contained agent's catch-all DROP.
 func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmentUIDs, proxyPort int) bool {
 	return chainHasLineBeforeAgentDrop(out, chainName, uids.agentUID, func(line string) bool {
 		// Before the agent catch-all drop, only the managed operator/proxy
 		// accepts, the agent's proxy loopback allow, and DNS drops are safe.
 		// Any other terminal/control-flow verdict can bypass containment under
-		// the base-chain "policy accept" default.
-		if !lineHasAnyToken(line, "accept", "return", "jump", "goto", "queue") {
+		// the base-chain "policy accept" default or intercept the direct canary
+		// before it reaches the counter used for attribution.
+		if !lineHasAnyToken(line, "accept", "drop", "reject", "return", "jump", "goto", "queue") {
 			return false
 		}
 		if uids.operatorKnown && lineHasTerminalSkuidVerdict(line, uids.operatorUID, "accept") {
@@ -1009,15 +1112,18 @@ func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmen
 			lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "tcp", 53, "drop") {
 			return false
 		}
-		if uid, ok := terminalSkuidUIDVerdict(line, "accept"); ok && uid != uids.agentUID {
-			return false
+		for _, verdict := range []string{"accept", "drop", "reject"} {
+			if uid, ok := terminalSkuidUIDVerdict(line, verdict); ok && uid != uids.agentUID {
+				return false
+			}
 		}
 		return true
 	})
 }
 
+// terminalSkuidUIDVerdict extracts the UID from an exact skuid verdict rule.
 func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
-	fields := strings.Fields(line)
+	fields := nftLineFields(line)
 	for i := 0; i+1 < len(fields); i++ {
 		if fields[i] != "skuid" {
 			continue
@@ -1034,9 +1140,10 @@ func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 	return 0, false
 }
 
+// lineHasSkuid reports whether an nft rule matches uid via skuid.
 func lineHasSkuid(line string, uid int) bool {
 	want := strconv.Itoa(uid)
-	fields := strings.Fields(line)
+	fields := nftLineFields(line)
 	for i, field := range fields {
 		if field == "skuid" && i+1 < len(fields) && fields[i+1] == want {
 			return true
@@ -1045,8 +1152,9 @@ func lineHasSkuid(line string, uid int) bool {
 	return false
 }
 
+// lineHasTerminalSkuidVerdict matches an exact UID with a terminal verdict.
 func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
-	fields := strings.Fields(line)
+	fields := nftLineFields(line)
 	uidText := strconv.Itoa(uid)
 	skuidAt := indexSkuidUID(fields, uidText)
 	if skuidAt == -1 {
@@ -1059,8 +1167,9 @@ func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	return fieldsAreNFTBookkeeping(fields[skuidAt+1 : verdictAt])
 }
 
+// lineHasSkuidProtocolDPortVerdict matches the canonical UID/protocol/port rule.
 func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, port int, verdict string) bool {
-	fields := strings.Fields(line)
+	fields := nftLineFields(line)
 	skuidAt := indexSkuidUID(fields, strconv.Itoa(uid))
 	if skuidAt == -1 || skuidAt+3 >= len(fields) {
 		return false
@@ -1093,6 +1202,8 @@ func indexTokenAfter(fields []string, want string, start int) int {
 	return -1
 }
 
+// fieldsAreNFTBookkeeping accepts only counter and log tokens between the
+// managed rule's UID predicate and DROP verdict.
 func fieldsAreNFTBookkeeping(fields []string) bool {
 	inPrefix := false
 	seenCounter := false
@@ -1109,7 +1220,7 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 			// "counter packets <n> bytes <n>"; consume the numeric
 			// argument that follows the packets/bytes keyword.
 			expectCount = false
-			if _, err := strconv.Atoi(field); err == nil {
+			if _, err := strconv.ParseUint(field, 10, 64); err == nil {
 				continue
 			}
 			return false
@@ -1133,8 +1244,9 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 	return !inPrefix && !expectCount
 }
 
+// lineHasIPDAddr reports whether an nft rule contains an exact IPv4 destination.
 func lineHasIPDAddr(line, addr string) bool {
-	fields := strings.Fields(line)
+	fields := nftLineFields(line)
 	for i := 0; i+2 < len(fields); i++ {
 		if fields[i] == "ip" && fields[i+1] == "daddr" && fields[i+2] == addr {
 			return true
@@ -1143,9 +1255,10 @@ func lineHasIPDAddr(line, addr string) bool {
 	return false
 }
 
+// lineHasDPort reports whether an nft rule contains an exact destination port.
 func lineHasDPort(line string, port int) bool {
 	want := strconv.Itoa(port)
-	fields := strings.Fields(line)
+	fields := nftLineFields(line)
 	for i, field := range fields {
 		if field == "dport" && i+1 < len(fields) && fields[i+1] == want {
 			return true
@@ -1154,8 +1267,9 @@ func lineHasDPort(line string, port int) bool {
 	return false
 }
 
+// lineHasToken finds an exact unquoted nft syntax token.
 func lineHasToken(line, want string) bool {
-	for _, field := range strings.Fields(line) {
+	for _, field := range nftLineFields(line) {
 		if field == want {
 			return true
 		}
@@ -1163,8 +1277,9 @@ func lineHasToken(line, want string) bool {
 	return false
 }
 
+// lineHasAnyToken finds any requested unquoted nft syntax token.
 func lineHasAnyToken(line string, wants ...string) bool {
-	for _, field := range strings.Fields(line) {
+	for _, field := range nftLineFields(line) {
 		for _, want := range wants {
 			if field == want {
 				return true
@@ -1174,6 +1289,140 @@ func lineHasAnyToken(line string, wants ...string) bool {
 	return false
 }
 
+// nftLineFields tokenizes one nft list-output line without treating whitespace
+// or verdict-looking words inside quoted strings as rule syntax. A trailing
+// "# handle N" annotation is a comment and is omitted. This is intentionally a
+// small list-output tokenizer, not a general nft parser: the verifier only
+// needs stable tokens for the canonical rules renderNFTRules emits.
+func nftLineFields(line string) []string {
+	fields := make([]string, 0, 16)
+	var field strings.Builder
+	inQuote := false
+	escaped := false
+	flush := func() {
+		if field.Len() == 0 {
+			return
+		}
+		fields = append(fields, field.String())
+		field.Reset()
+	}
+
+	for _, r := range line {
+		if inQuote {
+			field.WriteRune(r)
+			switch {
+			case escaped:
+				escaped = false
+			case r == '\\':
+				escaped = true
+			case r == '"':
+				inQuote = false
+			}
+			continue
+		}
+
+		switch r {
+		case '#':
+			flush()
+			return fields
+		case '"':
+			inQuote = true
+			field.WriteRune(r)
+		case ' ', '\t', '\r', '\n', '\v', '\f':
+			flush()
+		default:
+			field.WriteRune(r)
+		}
+	}
+	flush()
+	return fields
+}
+
+// nftLineBraceDelta counts structural braces while ignoring braces inside
+// quoted comments/log prefixes and trailing "# handle N" annotations.
+func nftLineBraceDelta(line string) int {
+	delta := 0
+	inQuote := false
+	escaped := false
+	for _, r := range line {
+		if inQuote {
+			switch {
+			case escaped:
+				escaped = false
+			case r == '\\':
+				escaped = true
+			case r == '"':
+				inQuote = false
+			}
+			continue
+		}
+		switch r {
+		case '#':
+			return delta
+		case '"':
+			inQuote = true
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	return delta
+}
+
+// nftLineHasBalancedQuotes rejects malformed list output before chain traversal.
+// Without this check, an unterminated quoted comment could hide the target
+// chain's closing brace and make rules in a later chain look attributable to it.
+func nftLineHasBalancedQuotes(line string) bool {
+	inQuote := false
+	escaped := false
+	for _, r := range line {
+		if inQuote {
+			switch {
+			case escaped:
+				escaped = false
+			case r == '\\':
+				escaped = true
+			case r == '"':
+				inQuote = false
+			}
+			continue
+		}
+		switch r {
+		case '#':
+			return true
+		case '"':
+			inQuote = true
+		}
+	}
+	return !inQuote
+}
+
+// isNFTChainDeclaration reports whether line declares exactly chainName.
+func isNFTChainDeclaration(line, chainName string) bool {
+	if !nftLineHasBalancedQuotes(line) {
+		return false
+	}
+	fields := nftLineFields(line)
+	if len(fields) == 3 {
+		return fields[0] == "chain" && fields[1] == chainName && fields[2] == "{"
+	}
+	// Retain support for compact synthetic listings used by older tests while
+	// requiring an exact name rather than a prefix match.
+	return line == "chain "+chainName+"{"
+}
+
+// outputHasNFTChainDeclaration finds an exact chain declaration in nft output.
+func outputHasNFTChainDeclaration(out, chainName string) bool {
+	for _, raw := range strings.Split(out, "\n") {
+		if isNFTChainDeclaration(strings.TrimSpace(raw), chainName) {
+			return true
+		}
+	}
+	return false
+}
+
+// chainHasLineBeforeAgentDrop applies match only before the managed agent DROP.
 func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func(string) bool) bool {
 	inChain := false
 	depth := 0
@@ -1182,32 +1431,31 @@ func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func
 		if line == "" {
 			continue
 		}
-		if !inChain && (strings.HasPrefix(line, "chain "+chainName+" ") || line == "chain "+chainName+"{") {
+		if !inChain && isNFTChainDeclaration(line, chainName) {
 			inChain = true
 		}
 		if !inChain {
 			continue
 		}
-		if strings.Contains(line, "{") {
-			depth += strings.Count(line, "{")
+		if !nftLineHasBalancedQuotes(line) {
+			return false
 		}
+		depth += nftLineBraceDelta(line)
 		if lineHasTerminalSkuidVerdict(line, agentUID, "drop") {
 			return false
 		}
 		if match(line) {
 			return true
 		}
-		if strings.Contains(line, "}") {
-			depth -= strings.Count(line, "}")
-			if depth <= 0 {
-				inChain = false
-				depth = 0
-			}
+		if depth <= 0 {
+			inChain = false
+			depth = 0
 		}
 	}
 	return false
 }
 
+// chainHasLine applies match only within the requested, structurally valid chain.
 func chainHasLine(out, chainName string, match func(string) bool) bool {
 	inChain := false
 	depth := 0
@@ -1216,24 +1464,22 @@ func chainHasLine(out, chainName string, match func(string) bool) bool {
 		if line == "" {
 			continue
 		}
-		if !inChain && (strings.HasPrefix(line, "chain "+chainName+" ") || line == "chain "+chainName+"{") {
+		if !inChain && isNFTChainDeclaration(line, chainName) {
 			inChain = true
 		}
 		if !inChain {
 			continue
 		}
-		if strings.Contains(line, "{") {
-			depth += strings.Count(line, "{")
+		if !nftLineHasBalancedQuotes(line) {
+			return false
 		}
+		depth += nftLineBraceDelta(line)
 		if match(line) {
 			return true
 		}
-		if strings.Contains(line, "}") {
-			depth -= strings.Count(line, "}")
-			if depth <= 0 {
-				inChain = false
-				depth = 0
-			}
+		if depth <= 0 {
+			inChain = false
+			depth = 0
 		}
 	}
 	return false
@@ -1457,8 +1703,145 @@ func curlNoProxyArgsFor(curl string) []string {
 	}
 }
 
+// curlDirectCanaryArgsFor builds the bounded DNS-free direct-egress probe.
+func curlDirectCanaryArgsFor(curl string) []string {
+	if curl == "" {
+		curl = defaultCurlPath
+	}
+	return []string{
+		curl,
+		"--connect-timeout", directCurlConnectTimeout,
+		"--max-time", directCurlMaxTime,
+		"--noproxy", "*",
+		"-sS",
+		"-o", "/dev/null",
+		"-w", directCurlWriteOut,
+		directEgressCanaryURL,
+	}
+}
+
+// readContainmentDropCounter reads the packet counter on the single managed
+// catch-all DROP rule for the current contained-agent UID. Probe 8 uses a
+// literal IP and therefore must reach this rule rather than either DNS rule.
+func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, error) {
+	current, err := containmentUIDsFromProbeEnv(env)
+	if err != nil {
+		return 0, err
+	}
+	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "list", "chain", "inet", env.nftTable, env.nftChain)
+	if err != nil {
+		return 0, fmt.Errorf("list nft chain: %w", err)
+	}
+	if code != 0 {
+		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
+	}
+	if !chainHasManagedOutputBaseChain(out, env.nftChain) {
+		return 0, fmt.Errorf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
+	}
+	if chainHasUnsafeVerdictBeforeAgentDrop(out, env.nftChain, current, env.port) {
+		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", env.nftChain)
+	}
+	return managedContainmentDropPacketCount(out, env.nftChain, current.agentUID)
+}
+
+// chainHasManagedOutputBaseChain confirms the requested chain is attached to
+// the local-output hook with the declaration renderNFTRules installs. nft may
+// print the standard "filter" priority symbolically or as its numeric value 0.
+// Without this check, a regular/unhooked lookalike chain could provide a benign
+// counter that the direct-canary packet never traverses.
+func chainHasManagedOutputBaseChain(out, chainName string) bool {
+	return chainHasLine(out, chainName, func(line string) bool {
+		fields := nftLineFields(strings.ReplaceAll(line, ";", " "))
+		if len(fields) != 8 {
+			return false
+		}
+		return fields[0] == "type" &&
+			fields[1] == "filter" &&
+			fields[2] == "hook" &&
+			fields[3] == "output" &&
+			fields[4] == "priority" &&
+			(fields[5] == "filter" || fields[5] == "0") &&
+			fields[6] == "policy" &&
+			fields[7] == "accept"
+	})
+}
+
+// managedContainmentDropPacketCount extracts the packet count from exactly one
+// canonical managed agent catch-all DROP rule in the requested chain. Duplicate
+// lookalikes, wrong-chain rules, DNS counters, and rules with extra predicates
+// are rejected rather than accepted as attribution evidence.
+func managedContainmentDropPacketCount(out, chainName string, agentUID int) (uint64, error) {
+	var packets uint64
+	var parseErr error
+	matched := 0
+	_ = chainHasLine(out, chainName, func(line string) bool {
+		if parseErr != nil ||
+			!strings.Contains(line, `log prefix "`+nftLogPrefix(EgressClassNotRoutingThroughPipelock)+` "`) {
+			return false
+		}
+
+		fields := nftLineFields(line)
+		uidAt := indexSkuidUID(fields, strconv.Itoa(agentUID))
+		// renderNFTRules emits the catch-all expression as the complete
+		// `meta skuid <uid>` predicate. Requiring it at the start rejects a
+		// destination/interface/etc. predicate placed before skuid; such a
+		// lookalike would not necessarily see the direct-canary packet.
+		if uidAt != 2 || fields[0] != "meta" || fields[1] != "skuid" {
+			return false
+		}
+		dropAt := indexTokenAfter(fields, "drop", uidAt+1)
+		if dropAt == -1 || uidAt+1 >= dropAt || fields[uidAt+1] != "counter" {
+			return false
+		}
+		packetsAt := -1
+		for i := uidAt + 1; i+2 < dropAt; i++ {
+			if fields[i] == "counter" && fields[i+1] == "packets" {
+				if packetsAt != -1 {
+					parseErr = fmt.Errorf("managed catch-all DROP rule has multiple packet counters: %s", oneLine(line))
+					return false
+				}
+				packetsAt = i + 2
+			}
+		}
+		if packetsAt == -1 {
+			parseErr = fmt.Errorf("managed catch-all DROP rule has no expanded packet counter: %s", oneLine(line))
+			return false
+		}
+		parsed, err := strconv.ParseUint(fields[packetsAt], 10, 64)
+		if err != nil {
+			parseErr = fmt.Errorf("parse managed catch-all DROP packet counter %q: %w", fields[packetsAt], err)
+			return false
+		}
+		if !fieldsAreNFTBookkeeping(fields[uidAt+1 : dropAt]) {
+			return false
+		}
+		packets = parsed
+		matched++
+		return false
+	})
+	if parseErr != nil {
+		return 0, parseErr
+	}
+	if matched == 0 {
+		return 0, fmt.Errorf("no managed catch-all DROP packet counter found in chain %s for agent uid %d", chainName, agentUID)
+	}
+	if matched != 1 {
+		return 0, fmt.Errorf("found %d managed catch-all DROP packet counters in chain %s for agent uid %d; want exactly one", matched, chainName, agentUID)
+	}
+	return packets, nil
+}
+
+// probeCCAgentEgressDenied verifies that curl's probe-specific time_connect
+// reports no completed TCP dial and that the exact managed catch-all DROP
+// counter also increased. The counter is UID-wide corroboration only: it cannot
+// turn a completed or unattributable canary dial into PASS.
 func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, string) {
-	curlArgs := curlNoProxyArgsFor(env.curlPath)
+	var before uint64
+	var beforeErr error
+	if env.dropCounter != nil {
+		before, beforeErr = env.dropCounter(ctx, env)
+	}
+	curlArgs := curlDirectCanaryArgsFor(env.curlPath)
 	curlPath := curlArgs[0]
 	args := append([]string{"-n", "-u", env.agentUserName, "--"}, curlArgs...)
 	out, code, err := env.runCmd(ctx, "sudo", args...)
@@ -1475,9 +1858,152 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 		return statusSkip, fmt.Sprintf("sudo could not execute %s; install curl to enable canary", curlPath)
 	}
 	if code == 0 {
-		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from example.com", oneLine(out))
+		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from direct canary %s", oneLine(out), directEgressCanaryURL)
 	}
-	return statusPass, fmt.Sprintf("curl blocked (exit=%d) — containment enforced", code)
+	dialCompletion := parseDirectCurlDialCompletion(out)
+	outcome, after, afterErr := classifyDirectEgressAttribution(code, dialCompletion, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
+		return env.dropCounter(ctx, env)
+	})
+	switch outcome {
+	case egressAttrFailPostConnect:
+		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit=%d): %s", code, oneLine(out))
+	case egressAttrUnknownDialCompletion:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but probe-specific time_connect was missing or unparseable; refusing to claim containment", code)
+	case egressAttrUnknownNoCounter:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but no DROP counter reader is available; containment attribution is inconclusive", code)
+	case egressAttrUnknownBeforeErr:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but containment attribution is inconclusive: read DROP counter before probe: %v", code, beforeErr)
+	case egressAttrUnknownAfterErr:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but containment attribution is inconclusive: read DROP counter after probe: %v", code, afterErr)
+	case egressAttrUnknownNoDelta:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but managed DROP counter did not increase (%d -> %d); failure may be unrelated to containment", code, before, after)
+	case egressAttrUnknownUnexpectedExit:
+		return statusUnknown, fmt.Sprintf("curl failed with unexpected exit=%d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code)
+	case egressAttrPass:
+		return statusPass, fmt.Sprintf("curl dial did not complete (exit=%d, time_connect=0); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
+	default:
+		// Fail closed: an unhandled attribution outcome (e.g. a future enum
+		// value) must never fall through to PASS.
+		return statusUnknown, fmt.Sprintf("unexpected direct-egress attribution outcome %d (exit=%d); refusing to claim containment", outcome, code)
+	}
+}
+
+// egressAttribution is the transport-neutral verdict of the shared direct-egress
+// counter-attribution decision tree. Callers map it to their own result type.
+type egressAttribution int
+
+const (
+	egressAttrFailPostConnect       egressAttribution = iota // connection established -> containment hole
+	egressAttrUnknownDialCompletion                          // probe-specific dial completion is missing/unparseable
+	egressAttrUnknownNoCounter                               // no DROP counter reader available
+	egressAttrUnknownBeforeErr                               // reading the counter before the probe failed
+	egressAttrUnknownAfterErr                                // reading the counter after the probe failed
+	egressAttrUnknownNoDelta                                 // counter did not increase -> unattributable
+	egressAttrUnknownUnexpectedExit                          // counter delta but a non-dial-blocked exit
+	egressAttrPass                                           // dial-blocked exit AND positive counter delta
+)
+
+// classifyDirectEgressAttribution is the SINGLE source of truth for the
+// direct-egress containment verdict on a NON-ZERO canary exit, shared by
+// `contain verify` (probeCCAgentEgressDenied) and `contain doctor`
+// (checkRawEgressBlocked) so the two can never silently disagree about whether
+// containment held. Callers handle skip cases and the code==0 unexpected-success
+// case first, then map the returned attribution to their own result type and
+// wording. Branch order is security-critical: probe-specific evidence that the
+// dial completed, or an independently post-connect exit, is a containment hole
+// regardless of the counter. Missing probe-specific timing stays UNKNOWN. PASS
+// requires a dial that did not complete, a dial-blocked exit, and a positive
+// managed DROP-counter delta. readAfter is invoked lazily so completed,
+// post-connect, unknown-timing, and no-counter paths perform no counter read.
+func classifyDirectEgressAttribution(code int, dialCompletion directDialCompletion, hasCounter bool, before uint64, beforeErr error, readAfter func() (uint64, error)) (outcome egressAttribution, after uint64, afterErr error) {
+	if dialCompletion == directDialCompleted {
+		return egressAttrFailPostConnect, 0, nil
+	}
+	if isPostConnectCurlExit(code) {
+		return egressAttrFailPostConnect, 0, nil
+	}
+	if dialCompletion != directDialNotCompleted {
+		return egressAttrUnknownDialCompletion, 0, nil
+	}
+	if !hasCounter {
+		return egressAttrUnknownNoCounter, 0, nil
+	}
+	after, afterErr = readAfter()
+	if beforeErr != nil {
+		return egressAttrUnknownBeforeErr, after, afterErr
+	}
+	if afterErr != nil {
+		return egressAttrUnknownAfterErr, after, afterErr
+	}
+	if after <= before {
+		return egressAttrUnknownNoDelta, after, afterErr
+	}
+	if !isDirectEgressBlockedCurlExit(code) {
+		return egressAttrUnknownUnexpectedExit, after, afterErr
+	}
+	return egressAttrPass, after, afterErr
+}
+
+// directDialCompletion is curl's probe-specific account of whether its TCP
+// connection completed. Unknown is deliberately distinct from not-completed:
+// missing or malformed write-out evidence can never support PASS.
+type directDialCompletion int
+
+const (
+	directDialUnknown directDialCompletion = iota
+	directDialNotCompleted
+	directDialCompleted
+)
+
+// parseDirectCurlDialCompletion reads curl's stable time_connect sentinel.
+// strconv.ParseFloat is locale-independent, and curl's write-out variables use
+// a dot decimal separator. Exactly zero means TCP never connected; any finite
+// positive value means the direct dial escaped containment.
+func parseDirectCurlDialCompletion(out string) directDialCompletion {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, directCurlTimeConnectPrefix) {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, directCurlTimeConnectPrefix))
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return directDialUnknown
+		}
+		if value == 0 {
+			return directDialNotCompleted
+		}
+		return directDialCompleted
+	}
+	return directDialUnknown
+}
+
+// isDirectEgressBlockedCurlExit identifies dial outcomes consistent with either
+// an explicit rejection (7) or a silently dropped SYN that times out (28).
+// Exit 28 is a generic curl timeout, so the caller separately requires this
+// canary's time_connect to be exactly zero before either exit can support PASS.
+// The UID-wide managed DROP-counter delta then corroborates that no-dial result;
+// it is never treated as probe attribution on its own.
+func isDirectEgressBlockedCurlExit(code int) bool {
+	return code == 7 || code == 28
+}
+
+// isPostConnectCurlExit identifies curl failures that require a connection to
+// have progressed beyond the outbound dial. These are containment failures even
+// if unrelated same-UID traffic also increments the managed DROP counter.
+func isPostConnectCurlExit(code int) bool {
+	switch code {
+	// Server/protocol responses or completed transfer setup.
+	case 8, 16, 18, 21, 22, 23, 25, 30, 31, 33, 36, 38, 39, 47,
+		52, 61, 63, 64, 67, 68, 69, 70, 71, 72, 73, 74, 78, 79,
+		84, 85, 86, 87, 88, 92, 94, 95, 96:
+		return true
+	// TLS peer/handshake evidence or network I/O after connect.
+	case 35, 51, 55, 56, 60, 80, 83, 90, 91, 97:
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1566,11 +2092,12 @@ func isSudoTargetCommandMissing(out string) bool {
 		strings.Contains(low, "no such file or directory")
 }
 
-// oneLine trims trailing whitespace and collapses internal newlines so
-// detail lines don't break text output.
+// oneLine trims and collapses whitespace, and removes control/format runes so
+// subprocess output cannot inject terminal escapes or bidirectional formatting
+// into text-mode evidence.
 func oneLine(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	return s
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.In(r, unicode.Cf)
+	})
+	return strings.Join(fields, " ")
 }

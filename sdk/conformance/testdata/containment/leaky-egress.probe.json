@@ -1,17 +1,18 @@
 {
-  "description": "Containment BROKEN: probe 8 (agent egress) SUCCEEDS — the agent reached example.com directly. This is the must-fail fixture: probe 8 must report 'fail' and the overall exit code must be non-zero. If this ever passes, the egress-denied test is not real.",
+  "description": "Containment BROKEN: probe 8's DNS-free direct canary SUCCEEDS. This is the must-fail fixture: probe 8 must report 'fail' and the overall exit code must be non-zero. If this ever passes, the egress-denied test is not real.",
   "agent_user": "pipelock-agent",
   "operator_user": "operator",
+  "drop_counter_reads": [12],
   "runs": [
     {
       "comment": "probe 8: agent egress canary LEAKS. curl succeeds (exit 0, HTTP 200) — direct egress was NOT contained.",
-      "match": ["sudo", "pipelock-agent", "/usr/bin/curl"],
-      "stdout": "200",
+      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "PLK_TIME_CONNECT=%{time_connect}", "http://192.0.2.1:9/"],
+      "stdout": "\nPLK_TIME_CONNECT=0.125381\n200",
       "exit_code": 0
     },
     {
       "comment": "probe 9: operator egress canary still reaches example.com (unchanged).",
-      "match": ["sudo", "operator", "/usr/bin/curl"],
+      "match": ["sudo -n -u operator -- /usr/bin/curl", "--connect-timeout 3", "--max-time 5", "--noproxy *", "https://example.com/"],
       "stdout": "200",
       "exit_code": 0
     }

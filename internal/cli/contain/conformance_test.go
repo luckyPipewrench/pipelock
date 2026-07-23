@@ -28,6 +28,18 @@ func conformanceRunner(probe8, probe9 cannedResp) ConformanceRunCommand {
 	}
 }
 
+func conformanceDropCounters(values ...uint64) ConformanceDropCounter {
+	next := 0
+	return func(context.Context) (uint64, error) {
+		if next >= len(values) {
+			return 0, errors.New("canned DROP counter exhausted")
+		}
+		value := values[next]
+		next++
+		return value, nil
+	}
+}
+
 func TestRunContainmentConformance_NilRunnerFailsClosed(t *testing.T) {
 	results, exit, err := RunContainmentConformance(context.Background(), ConformanceEnv{})
 	if err == nil {
@@ -51,17 +63,31 @@ func TestRunContainmentConformance_Outcomes(t *testing.T) {
 		probe8     cannedResp // sudo -u agent -- curl
 		probe9     cannedResp // curl (operator, empty user -> direct)
 		wantExit   int
+		dropCounts []uint64
 		wantStatus map[int]string // probe number -> expected status
 	}{
 		{
-			name:      "both_pass_nil_ctx_default_agent_user",
-			ctx:       nil, // exercises the ctx == nil default
-			agentUser: "",  // exercises the defaultAgentUser fallback
-			probe8:    cannedResp{out: "curl: (7) refused", code: blockedExit},
-			probe9:    cannedResp{out: "200", code: 0},
-			wantExit:  ConformanceExitOK,
+			name:       "both_pass_nil_ctx_default_agent_user",
+			ctx:        nil, // exercises the ctx == nil default
+			agentUser:  "",  // exercises the defaultAgentUser fallback
+			probe8:     cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: blockedExit},
+			probe9:     cannedResp{out: "200", code: 0},
+			dropCounts: []uint64{12, 13},
+			wantExit:   ConformanceExitOK,
 			wantStatus: map[int]string{
 				8: ConformanceStatusPass,
+				9: ConformanceStatusPass,
+			},
+		},
+		{
+			name:      "blocked_curl_without_counter_is_unknown",
+			ctx:       context.Background(),
+			agentUser: "pipelock-agent",
+			probe8:    cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: blockedExit},
+			probe9:    cannedResp{out: "200", code: 0},
+			wantExit:  ConformanceExitSkip,
+			wantStatus: map[int]string{
+				8: ConformanceStatusUnknown,
 				9: ConformanceStatusPass,
 			},
 		},
@@ -75,6 +101,30 @@ func TestRunContainmentConformance_Outcomes(t *testing.T) {
 			wantStatus: map[int]string{
 				8: ConformanceStatusFail,
 				9: ConformanceStatusPass,
+			},
+		},
+		{
+			name:      "agent_leak_overrides_operator_skip",
+			ctx:       context.Background(),
+			agentUser: "pipelock-agent",
+			probe8:    cannedResp{out: "200", code: 0},
+			probe9:    cannedResp{err: errors.New("curl unavailable")},
+			wantExit:  ConformanceExitFail,
+			wantStatus: map[int]string{
+				8: ConformanceStatusFail,
+				9: ConformanceStatusSkip,
+			},
+		},
+		{
+			name:      "operator_failure_overrides_unknown_agent_attribution",
+			ctx:       context.Background(),
+			agentUser: "pipelock-agent",
+			probe8:    cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: blockedExit},
+			probe9:    cannedResp{out: "curl: (22) HTTP 500", code: 22},
+			wantExit:  ConformanceExitFail,
+			wantStatus: map[int]string{
+				8: ConformanceStatusUnknown,
+				9: ConformanceStatusFail,
 			},
 		},
 		{
@@ -96,6 +146,9 @@ func TestRunContainmentConformance_Outcomes(t *testing.T) {
 			env := ConformanceEnv{
 				RunCommand: conformanceRunner(tc.probe8, tc.probe9),
 				AgentUser:  tc.agentUser,
+			}
+			if tc.dropCounts != nil {
+				env.DropCounter = conformanceDropCounters(tc.dropCounts...)
 			}
 			results, exit, err := RunContainmentConformance(tc.ctx, env)
 			if err != nil {

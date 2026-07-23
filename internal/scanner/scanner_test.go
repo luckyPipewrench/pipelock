@@ -31,6 +31,16 @@ const (
 	testSecretVal  = "SuperSecretValue123456"
 )
 
+type failOnLookupResolver struct {
+	t *testing.T
+}
+
+func (r failOnLookupResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	r.t.Helper()
+	r.t.Fatalf("resolver invoked for IP literal %q", host)
+	return nil, nil
+}
+
 // testSeedPhrase12 is a known-valid BIP-39 12-word mnemonic (checksum passes).
 const testSeedPhrase12 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
@@ -432,6 +442,19 @@ func TestParseAlternativeIP(t *testing.T) {
 		{"hex dotted loopback", "0x7f.0.0.1", "127.0.0.1"},
 		{"hex dotted 10.10.0.1", "0x0a.0x0a.0.1", "10.10.0.1"},
 
+		// Legacy two- and three-component inet_aton forms
+		{"two component decimal loopback", "127.1", "127.0.0.1"},
+		{"three component decimal loopback", "127.0.1", "127.0.0.1"},
+		{"two component octal loopback", "0177.1", "127.0.0.1"},
+		{"two component hex loopback", "0x7f.1", "127.0.0.1"},
+		{"two component uppercase hex loopback", "0X7F.0X1", "127.0.0.1"},
+		{"two component large tail", "127.65530", "127.0.255.250"},
+		{"three component mixed radix", "0177.0x0.01", "127.0.0.1"},
+		{"two component maximum tail", "127.16777215", "127.255.255.255"},
+		{"three component maximum tail", "127.0.65535", "127.0.255.255"},
+		{"two component public", "8.8", "8.0.0.8"},
+		{"three component public", "8.8.8", "8.8.0.8"},
+
 		// Decimal integer
 		{"decimal loopback", "2130706433", "127.0.0.1"},
 		{"decimal 10.0.0.1", "167772161", "10.0.0.1"},
@@ -444,8 +467,24 @@ func TestParseAlternativeIP(t *testing.T) {
 		{"hostname", "example.com", ""},
 		{"empty", "", ""},
 		{"too many octets", "0x7f.0.0.0.1", ""},
-		{"too few octets", "0x7f.0.1", ""},
 		{"octet overflow", "0x7f.0.0.256", ""},
+		{"two component head overflow", "256.1", ""},
+		{"two component tail overflow", "127.16777216", ""},
+		{"three component middle overflow", "127.256.1", ""},
+		{"three component tail overflow", "127.0.65536", ""},
+		{"empty component", "127..1", ""},
+		{"leading sign", "+127.1", ""},
+		{"trailing junk", "127.1x", ""},
+		{"invalid octal", "08.1", ""},
+		{"hex prefix without digits", "127.0x", ""},
+		{"hex tail overflow", "127.0x1000000", ""},
+		{"octal tail overflow", "127.0100000000", ""},
+		{"underscore separator", "127.1_0", ""},
+		{"four component underscore separator", "127.0.0.1_0", ""},
+		{"binary full integer", "0b11111111111111111111111111111111", ""},
+		{"explicit octal full integer", "0o17777777777", ""},
+		{"unicode digit", "127.１", ""},
+		{"numeric-looking hostname", "127.1.vendor.example", ""},
 		{"negative", "-1", ""},
 		{"overflow 32bit", "4294967296", ""},
 	}
@@ -484,11 +523,16 @@ func TestParseIPLiteralCanonicalizesStandardAlternativeAndZones(t *testing.T) {
 		{name: "dotted hex IPv4", host: "0x08.0x08.0x08.0x08", want: "8.8.8.8", v4: true},
 		{name: "dotted octal IPv4", host: "010.010.010.010", want: "8.8.8.8", v4: true},
 		{name: "mixed radix IPv4", host: "0X08.010.8.0x08", want: "8.8.8.8", v4: true},
+		{name: "two component IPv4", host: "8.8", want: "8.0.0.8", v4: true},
+		{name: "three component IPv4", host: "8.8.8", want: "8.8.0.8", v4: true},
 		{name: "full octal IPv4", host: "01002004010", want: "8.8.8.8", v4: true},
 		{name: "decimal IPv4", host: "134744072", want: "8.8.8.8", v4: true},
 		{name: "surrounding whitespace", host: " 8.8.8.8 ", want: "8.8.8.8", v4: true},
 		{name: "trailing DNS root", host: "8.8.8.8.", want: "8.8.8.8", v4: true},
 		{name: "double trailing DNS root", host: "8.8.8.8.."},
+		{name: "four component underscore separator", host: "127.0.0.1_0"},
+		{name: "binary full integer", host: "0b11111111111111111111111111111111"},
+		{name: "explicit octal full integer", host: "0o17777777777"},
 		{name: "IPv4 bogus zone fails closed", host: "10.0.0.1%x", want: "10.0.0.1", v4: true},
 		{name: "IPv6 zone", host: "fe80::1%eth0", want: "fe80::1"},
 		{name: "IPv4-mapped IPv6", host: "::ffff:8.8.8.8", want: "8.8.8.8", v4: true},
@@ -530,6 +574,13 @@ func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 		{"octal loopback", "http://0177.0.0.1/admin", ScannerSSRF},
 		{"decimal integer loopback", "http://2130706433/admin", ScannerSSRF},
 		{"hex dotted loopback", "http://0x7f.0.0.1/admin", ScannerSSRF},
+		{"two component loopback", "http://127.1/admin", ScannerSSRF},
+		{"three component loopback", "http://127.0.1/admin", ScannerSSRF},
+		{"octal two component loopback", "http://0177.1/admin", ScannerSSRF},
+		{"hex two component loopback", "http://0x7f.1/admin", ScannerSSRF},
+		{"two component large tail loopback", "http://127.65530/admin", ScannerSSRF},
+		{"mixed radix three component loopback", "http://0177.0x0.01/admin", ScannerSSRF},
+		{"hex two component metadata endpoint", "http://0xa9.0xfea9fe/latest/meta-data/", ScannerSSRFMetadata},
 		// 0xa9fea9fe == 169.254.169.254 (AWS / Azure / GCP IMDS): should be
 		// classified as the dedicated metadata subtype, not generic SSRF.
 		{"hex metadata endpoint", "http://0xa9fea9fe/latest/meta-data/", ScannerSSRFMetadata},
@@ -539,6 +590,7 @@ func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			s.resolver = failOnLookupResolver{t: t}
 			result := s.Scan(context.Background(), tt.url)
 			if result.Allowed {
 				t.Errorf("expected %s to be blocked (SSRF hex/octal bypass)", tt.url)
@@ -550,19 +602,26 @@ func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 	}
 }
 
-func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
+func TestScan_LiteralPolicyDoesNotUseResolver(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
-	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	// 8.8.8.8 is external, so add it to ip_allowlist so that when core CIDRs
-	// are merged into checkSSRF, the allowlist bypass lets it through.
-	cfg.SSRF.IPAllowlist = []string{"8.8.8.0/24"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 	s := MustNew(cfg)
 
-	// 8.8.8.8 in hex = 0x08080808 - should be allowed (not internal, IP-allowlisted).
-	result := s.Scan(context.Background(), "http://0x08080808/")
-	if !result.Allowed {
-		t.Errorf("expected external hex IP to be allowed, got blocked: %s", result.Reason)
+	for _, tt := range []struct {
+		name   string
+		rawURL string
+	}{
+		{name: "public literal", rawURL: "http://0x08080808/"},
+		{name: "IP-allowlisted private literal", rawURL: "http://0177.1/"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s.resolver = failOnLookupResolver{t: t}
+			result := s.Scan(context.Background(), tt.rawURL)
+			if !result.Allowed {
+				t.Errorf("expected literal %s to be allowed without DNS, got blocked: %s", tt.rawURL, result.Reason)
+			}
+		})
 	}
 }
 

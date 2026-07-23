@@ -406,7 +406,7 @@ func TestOTLPSink_PanicDropsOnlyCurrentEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("panic Emit: %v", err)
 	}
-	if err := sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "after-panic", Timestamp: time.Now()}); err != nil {
+	if err := sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "after-panic", Timestamp: time.Now()}); err != nil && !errors.Is(err, ErrOTLPDegraded) {
 		t.Fatalf("post-panic Emit: %v", err)
 	}
 
@@ -628,5 +628,61 @@ func TestOTLPSink_LogDiagnosticMarshalErrorDoesNotPanic(t *testing.T) {
 	}
 	if !strings.Contains(stats.LastError, "diagnostic error string panic") {
 		t.Fatalf("LastError = %q, want recovered error string panic", stats.LastError)
+	}
+}
+
+func TestOTLPSink_SuccessDoesNotEraseConcurrentDropDegraded(t *testing.T) {
+	// Mirrors WebhookSink protection: a successful send must not clear the
+	// degraded flag when a failure, drop, or abandonment is recorded while that
+	// send is in flight. Covers all three counter classes the snapshot guard
+	// compares (failed, dropped, abandoned).
+	cases := []struct {
+		name    string
+		inject  func(s *OTLPSink)
+		wantErr string
+		count   func(st OTLPStats) uint64
+	}{
+		{"drop", func(s *OTLPSink) { s.recordDropped("queue_full", nil) }, "queue_full", func(st OTLPStats) uint64 { return st.Dropped }},
+		{"failure", func(s *OTLPSink) { s.recordFailure("send_error", Event{}, errors.New("send failed")) }, "", func(st OTLPStats) uint64 { return st.Failed }},
+		{"abandon", func(s *OTLPSink) { s.recordAbandoned("drain_timeout", Event{}, 1) }, "drain_timeout", func(st OTLPStats) uint64 { return st.Abandoned }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sink *OTLPSink
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				tc.inject(sink)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			var err error
+			sink, err = NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 4, false)
+			if err != nil {
+				t.Fatalf("NewOTLPSink: %v", err)
+			}
+			defer func() { _ = sink.Close() }()
+
+			sink.send(Event{Type: "blocked", Timestamp: time.Now()})
+
+			st := sink.Stats()
+			if st.Delivered != 1 {
+				t.Fatalf("delivered = %d, want 1", st.Delivered)
+			}
+			if got := tc.count(st); got != 1 {
+				t.Fatalf("%s counter = %d, want 1", tc.name, got)
+			}
+			if !st.Degraded {
+				t.Fatalf("degraded was erased despite a concurrent %s during the send", tc.name)
+			}
+			// recordFailure derives LastError from the error (not the reason),
+			// so the failure case only asserts a non-empty preserved error;
+			// drop/abandon assert the exact reason.
+			if tc.wantErr != "" && st.LastError != tc.wantErr {
+				t.Fatalf("LastError = %q, want %q preserved", st.LastError, tc.wantErr)
+			}
+			if st.LastError == "" {
+				t.Fatalf("LastError was cleared; want the concurrent %s error preserved", tc.name)
+			}
+		})
 	}
 }

@@ -94,6 +94,46 @@ func assertJSONFieldsMatchSchema(t *testing.T, typ reflect.Type, properties map[
 	}
 }
 
+func TestAnchorBundleV1SchemaIntegerFieldsAreBounded(t *testing.T) {
+	data, err := os.ReadFile(filepath.Clean(anchorBundleSchemaPath))
+	if err != nil {
+		t.Fatalf("read anchor bundle schema: %v", err)
+	}
+	var schema struct {
+		Defs map[string]struct {
+			Properties map[string]struct {
+				Maximum json.Number `json:"maximum"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("parse anchor bundle schema: %v", err)
+	}
+	// Every published integer field must carry the Go decode bound so a future
+	// widening trips this guard instead of silently accepting values the runtime
+	// rejects. JSON numbers stay exact here because json.Number keeps the literal.
+	const (
+		uint64Max = "18446744073709551615"
+		int64Max  = "9223372036854775807"
+	)
+	for _, tc := range []struct{ def, field, max string }{
+		{"checkpoint", "final_seq", uint64Max},
+		{"checkpoint", "receipt_count", uint64Max},
+		{"proof", "log_index", uint64Max},
+		{"rekor_proof", "integrated_time", int64Max},
+		{"rekor_inclusion_proof", "log_index", uint64Max},
+		{"rekor_inclusion_proof", "tree_size", uint64Max},
+	} {
+		prop, ok := schema.Defs[tc.def].Properties[tc.field]
+		if !ok {
+			t.Fatalf("schema $defs.%s.%s is missing", tc.def, tc.field)
+		}
+		if got := prop.Maximum.String(); got != tc.max {
+			t.Fatalf("schema $defs.%s.%s maximum = %q, want %q", tc.def, tc.field, got, tc.max)
+		}
+	}
+}
+
 func goldenAnchorBundleV1() Bundle {
 	return Bundle{
 		Version:   BundleVersion,

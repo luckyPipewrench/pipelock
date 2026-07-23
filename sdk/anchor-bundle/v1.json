@@ -25,6 +25,7 @@
         "final_seq": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 18446744073709551615,
           "description": "Final receipt sequence number in the verified chain."
         },
         "root_hash": {
@@ -35,6 +36,7 @@
         "receipt_count": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 18446744073709551615,
           "description": "Number of receipts covered by the checkpoint."
         },
         "start_time": {
@@ -83,6 +85,7 @@
         "log_index": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 18446744073709551615,
           "description": "Backend-defined entry position."
         },
         "entry_hash": {
@@ -162,6 +165,7 @@
         "integrated_time": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 9223372036854775807,
           "description": "Rekor integrated time in Unix seconds. This is backend evidence, not the checkpoint creator's created_at value."
         },
         "signed_entry_timestamp": {
@@ -193,11 +197,13 @@
         "log_index": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 18446744073709551615,
           "description": "Entry index covered by the inclusion proof."
         },
         "tree_size": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 18446744073709551615,
           "description": "Merkle-tree size covered by the inclusion proof."
         },
         "hashes": {

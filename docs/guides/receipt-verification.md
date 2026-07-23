@@ -387,6 +387,11 @@ flight_recorder:
 `rekor_url` and `local_log` are mutually exclusive. The local backend exercises
 the same checkpoint, bundle, and marker flow but is not an independent witness.
 
+External systems can parse the emitted JSON using the experimental [Anchor
+Bundle v1 specification](../specs/anchor-bundle-v1.md). The published shape is
+not an anchor-backend plugin API and does not make an external proof verifiable
+by `pipelock-verifier`.
+
 ## How the chain works
 
 Each receipt contains:

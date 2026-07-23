@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pipelab.org/schemas/anchor-bundle-v1.schema.json",
+  "title": "Pipelock Anchor Bundle v1",
+  "description": "Experimental snapshot of the version 1 anchor-bundle JSON emitted by Pipelock. This schema documents structure; it does not verify receipts, checkpoint truth, or backend proof semantics.",
+  "$defs": {
+    "checkpoint": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "final_seq",
+        "root_hash",
+        "receipt_count",
+        "start_time",
+        "end_time",
+        "signer_keys"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Receipt-chain session identifier."
+        },
+        "final_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Final receipt sequence number in the verified chain."
+        },
+        "root_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hexadecimal SHA-256 hash of the final receipt."
+        },
+        "receipt_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615,
+          "description": "Number of receipts covered by the checkpoint."
+        },
+        "start_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp carried by the first covered receipt."
+        },
+        "end_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp carried by the final covered receipt."
+        },
+        "signer_keys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "description": "Ordered, de-duplicated Ed25519 public keys trusted for the covered receipt-chain segments, encoded as lowercase hexadecimal."
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": [
+        "backend",
+        "log_id",
+        "log_index",
+        "entry_hash",
+        "log_root_hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Backend identifier. Consumers must not infer backend support from this string alone."
+        },
+        "log_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Backend-defined log or witness identifier."
+        },
+        "log_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Backend-defined entry position."
+        },
+        "entry_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Backend-defined entry digest."
+        },
+        "log_root_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Backend-defined log root or checkpoint digest."
+        },
+        "rekor": {
+          "$ref": "#/$defs/rekor_proof",
+          "description": "Optional proof material emitted by the built-in Rekor backend."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "rekor"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "rekor"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "rekor"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "rekor_proof": {
+      "type": "object",
+      "required": [
+        "url",
+        "uuid",
+        "body",
+        "public_key",
+        "signature",
+        "integrated_time",
+        "signed_entry_timestamp",
+        "inclusion_proof"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Configured Rekor base URL."
+        },
+        "uuid": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Rekor entry UUID."
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base64-encoded Rekor entry body."
+        },
+        "public_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "PEM-encoded public key for the Rekor entry signature."
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base64-encoded signature over the checkpoint digest."
+        },
+        "integrated_time": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807,
+          "description": "Rekor integrated time in Unix seconds. This is backend evidence, not the checkpoint creator's created_at value."
+        },
+        "signed_entry_timestamp": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base64-encoded Rekor Signed Entry Timestamp."
+        },
+        "inclusion_proof": {
+          "$ref": "#/$defs/rekor_inclusion_proof"
+        }
+      }
+    },
+    "rekor_inclusion_proof": {
+      "type": "object",
+      "required": [
+        "root_hash",
+        "log_index",
+        "tree_size",
+        "hashes",
+        "checkpoint"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "root_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "description": "Rekor Merkle-tree root hash."
+        },
+        "log_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Entry index covered by the inclusion proof."
+        },
+        "tree_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615,
+          "description": "Merkle-tree size covered by the inclusion proof."
+        },
+        "hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{64}$"
+          },
+          "description": "Merkle audit-path hashes."
+        },
+        "checkpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Signed Rekor checkpoint text."
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "version",
+    "backend",
+    "created_at",
+    "checkpoint",
+    "proof",
+    "limits"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Anchor-bundle format version."
+    },
+    "backend": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Backend identifier. Pipelock verification also requires this value to equal proof.backend."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Bundle assembly time from the Pipelock process clock. It is not a trusted or independently witnessed timestamp."
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/checkpoint"
+    },
+    "proof": {
+      "$ref": "#/$defs/proof"
+    },
+    "limits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Human-readable limitations emitted for the selected backend. Verifiers use canonical built-in limits rather than trusting this array."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "backend": {
+            "const": "local"
+          }
+        },
+        "required": [
+          "backend"
+        ]
+      },
+      "then": {
+        "properties": {
+          "proof": {
+            "properties": {
+              "backend": {
+                "const": "local"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "backend": {
+            "const": "rekor"
+          }
+        },
+        "required": [
+          "backend"
+        ]
+      },
+      "then": {
+        "properties": {
+          "proof": {
+            "properties": {
+              "backend": {
+                "const": "rekor"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

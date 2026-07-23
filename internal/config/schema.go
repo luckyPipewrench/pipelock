@@ -1354,6 +1354,7 @@ type WebhookConfig struct {
 	AuthToken   string `yaml:"auth_token"`
 	TimeoutSecs int    `yaml:"timeout_seconds"`
 	QueueSize   int    `yaml:"queue_size"`
+	Format      string `yaml:"format" json:"-"` // json (default), cef, or ocsf
 }
 
 // SyslogConfig configures the syslog emission sink (RFC 5424).

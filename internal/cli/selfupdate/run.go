@@ -39,7 +39,7 @@ func bareVersion(v string) string {
 }
 
 // parseSemver parses "X.Y.Z" into three ints. Returns ok=false if not parseable
-// (e.g. a "0.1.0-dev" dev build's core still parses, but "unknown" does not).
+// (e.g. a "0.0.0-dev.unknown" dev build's core still parses, but "unknown" does not).
 func parseSemver(v string) (major, minor, patch int, ok bool) {
 	parts := strings.Split(bareVersion(v), ".")
 	if len(parts) != 3 {

@@ -772,7 +772,7 @@ func TestCheckMinPipelock(t *testing.T) {
 		{"final current exceeds pre-release min", "1.3.0-beta", "1.3.0", false},
 		{"build metadata stripped from current", "1.3.0", "1.3.0+incompatible", false},
 		{"build metadata stripped from min", "1.3.0+metadata", "1.3.0", false},
-		{"pseudo-version below normal release", "1.0.0", "0.0.0-20260709120000-abcdefabcdef", true},
+		{"Go pseudo-version below normal release", "1.0.0", "0.0.0-20260709120000-abcdefabcdef", true},
 		{"patch comparison", "1.3.1", "1.3.0", true},
 		{"patch meets", "1.3.0", "1.3.1", false},
 		{"prerelease below final min", "1.3.0", "1.3.0-beta.1", true},
@@ -786,7 +786,11 @@ func TestCheckMinPipelock(t *testing.T) {
 		// release (see the "current below min" cases above, which still error).
 		{"git-describe current treated as newest", "3.0.0", "2-147-gf1c242a0", false},
 		{"tag-distance git-describe current treated as newest", "3.0.0", "2.0.0-147-gf1c242a0", false},
-		{"default source-build current treated as newest", "3.0.0", "0.1.0-dev", false},
+		{"unknown source-build current treated as newest", "3.0.0", "0.0.0-dev.unknown", false},
+		{"dirty unknown source-build current treated as newest", "3.0.0", "0.0.0-dev.unknown.dirty", false},
+		{"detailed source-build current treated as newest", "3.0.0", "0.0.0-dev.20260721.g680cd0614d2e", false},
+		{"dirty source-build current treated as newest", "3.0.0", "0.0.0-dev.20260721.g680cd0614d2e.dirty", false},
+		{"unknown-date source-build current treated as newest", "3.0.0", "0.0.0-dev.unknown-date.g680cd0614d2e", false},
 		{"go-install devel current treated as newest", "3.0.0", "devel", false},
 		{"empty current treated as newest", "3.0.0", "", false},
 	}

@@ -2616,6 +2616,9 @@ func (c *Config) validateEmit() error {
 		if c.Emit.Webhook.QueueSize <= 0 {
 			return fmt.Errorf("emit.webhook.queue_size must be positive")
 		}
+		if c.Emit.Webhook.Format != "" && !emitformat.Supported(c.Emit.Webhook.Format) {
+			return fmt.Errorf("invalid emit.webhook.format %q: must be %s", c.Emit.Webhook.Format, emitformat.AllowedSet())
+		}
 	}
 	if c.Emit.Syslog.Address != "" {
 		sysU, sysErr := url.Parse(c.Emit.Syslog.Address)

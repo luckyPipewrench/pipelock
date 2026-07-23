@@ -27,7 +27,7 @@ func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
 		SchemaVersion: "1",
 		GeneratedAt:   time.Date(2026, time.April, 11, 17, 45, 0, 0, time.UTC),
 		ExpiresAt:     time.Date(2026, time.May, 11, 17, 45, 0, 0, time.UTC),
-		ToolVersion:   "0.1.0-dev",
+		ToolVersion:   "0.0.0-dev.unknown",
 		ConfigHash:    "abc123",
 		Evidence:      testEvidenceBundle(),
 		Signature:     "deadbeef",
@@ -45,11 +45,11 @@ func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
 	}{
 		{
 			name:  "top-level fields shuffled",
-			input: `{"tool_version":"0.1.0-dev","signature":"deadbeef","schema_version":"1","generated_at":"2026-04-11T17:45:00Z","evidence":{"verify_install":{"proxying":true,"receipt_count":2,"flight_recorder_active":true},"discover":{"unknown":0,"total_servers":2,"protected_other":0,"parse_errors":0,"high_risk":0,"protected_pipelock":1,"total_clients":1,"unprotected":1},"simulate":{"total":2,"passed":2,"failed":0,"known_limitations":0,"percentage":100,"grade":"A","mode":"balanced","scenarios":[{"name":"scenario-a","category":"DLP Exfiltration","detected":true},{"name":"scenario-b","category":"Prompt Injection","detected":true,"detail":"matched"}]},"flight_recorder":{"scanner_verdict":{"zeta":{"warn":1,"allow":0,"block":0},"alpha":{"block":2,"allow":1,"warn":0}},"receipt_count":2,"last_receipt_at":"2026-04-11T17:40:00Z"}},"expires_at":"2026-05-11T17:45:00Z","signer_key_id":"feedface","config_hash":"abc123"}`,
+			input: `{"tool_version":"0.0.0-dev.unknown","signature":"deadbeef","schema_version":"1","generated_at":"2026-04-11T17:45:00Z","evidence":{"verify_install":{"proxying":true,"receipt_count":2,"flight_recorder_active":true},"discover":{"unknown":0,"total_servers":2,"protected_other":0,"parse_errors":0,"high_risk":0,"protected_pipelock":1,"total_clients":1,"unprotected":1},"simulate":{"total":2,"passed":2,"failed":0,"known_limitations":0,"percentage":100,"grade":"A","mode":"balanced","scenarios":[{"name":"scenario-a","category":"DLP Exfiltration","detected":true},{"name":"scenario-b","category":"Prompt Injection","detected":true,"detail":"matched"}]},"flight_recorder":{"scanner_verdict":{"zeta":{"warn":1,"allow":0,"block":0},"alpha":{"block":2,"allow":1,"warn":0}},"receipt_count":2,"last_receipt_at":"2026-04-11T17:40:00Z"}},"expires_at":"2026-05-11T17:45:00Z","signer_key_id":"feedface","config_hash":"abc123"}`,
 		},
 		{
 			name:  "nested map fields shuffled",
-			input: `{"schema_version":"1","generated_at":"2026-04-11T17:45:00Z","expires_at":"2026-05-11T17:45:00Z","tool_version":"0.1.0-dev","config_hash":"abc123","evidence":{"discover":{"total_clients":1,"total_servers":2,"protected_pipelock":1,"protected_other":0,"unprotected":1,"unknown":0,"high_risk":0,"parse_errors":0},"verify_install":{"receipt_count":2,"flight_recorder_active":true,"proxying":true},"simulate":{"passed":2,"total":2,"failed":0,"known_limitations":0,"percentage":100,"grade":"A","mode":"balanced","scenarios":[{"category":"DLP Exfiltration","name":"scenario-a","detected":true},{"detail":"matched","detected":true,"category":"Prompt Injection","name":"scenario-b"}]},"flight_recorder":{"last_receipt_at":"2026-04-11T17:40:00Z","receipt_count":2,"scanner_verdict":{"alpha":{"warn":0,"block":2,"allow":1},"zeta":{"allow":0,"warn":1,"block":0}}}},"signature":"deadbeef","signer_key_id":"feedface"}`,
+			input: `{"schema_version":"1","generated_at":"2026-04-11T17:45:00Z","expires_at":"2026-05-11T17:45:00Z","tool_version":"0.0.0-dev.unknown","config_hash":"abc123","evidence":{"discover":{"total_clients":1,"total_servers":2,"protected_pipelock":1,"protected_other":0,"unprotected":1,"unknown":0,"high_risk":0,"parse_errors":0},"verify_install":{"receipt_count":2,"flight_recorder_active":true,"proxying":true},"simulate":{"passed":2,"total":2,"failed":0,"known_limitations":0,"percentage":100,"grade":"A","mode":"balanced","scenarios":[{"category":"DLP Exfiltration","name":"scenario-a","detected":true},{"detail":"matched","detected":true,"category":"Prompt Injection","name":"scenario-b"}]},"flight_recorder":{"last_receipt_at":"2026-04-11T17:40:00Z","receipt_count":2,"scanner_verdict":{"alpha":{"warn":0,"block":2,"allow":1},"zeta":{"allow":0,"warn":1,"block":0}}}},"signature":"deadbeef","signer_key_id":"feedface"}`,
 		},
 	}
 
@@ -1278,7 +1278,7 @@ func goldenCapsule() *Capsule {
 		SchemaVersion: "1",
 		GeneratedAt:   time.Date(2026, time.April, 11, 17, 45, 0, 0, time.UTC),
 		ExpiresAt:     time.Date(2026, time.May, 11, 17, 45, 0, 0, time.UTC),
-		ToolVersion:   "0.1.0-dev",
+		ToolVersion:   "0.0.0-dev.unknown",
 		ConfigHash:    "abc123",
 		Evidence:      testEvidenceBundle(),
 		Signature:     strings.Repeat("d", 128),
@@ -1293,7 +1293,7 @@ func TestRenderProofMarkdown_Golden(t *testing.T) {
 	want := `# Pipelock Posture Proof
 
 - Schema version: ` + "`1`" + `
-- Tool version: ` + "`0.1.0-dev`" + `
+- Tool version: ` + "`0.0.0-dev.unknown`" + `
 - Generated at: 2026-04-11T17:45:00Z
 - Expires at: 2026-05-11T17:45:00Z
 - Config hash: ` + "`abc123`" + `

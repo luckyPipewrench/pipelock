@@ -9,7 +9,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-ARG VERSION=0.1.0-dev
+ARG VERSION=0.0.0-dev.unknown
 ARG BUILD_DATE=unknown
 ARG GIT_COMMIT=unknown
 ARG LICENSE_PUBLIC_KEY=""

@@ -28,7 +28,7 @@ const (
 	testComponent  = "pipelock"
 	testActionWarn = "warn"
 	testConfigHash = "testhash"
-	testVersion    = "0.1.0-dev"
+	testVersion    = "0.0.0-dev.unknown"
 	testAgentName  = "claude-code"
 	testDoWTarget  = "expensive_tool"
 	testMethodGet  = "GET"

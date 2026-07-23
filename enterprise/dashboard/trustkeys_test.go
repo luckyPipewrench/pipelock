@@ -1198,12 +1198,19 @@ func TestFileAnchorResolverRejectsAmbiguousSessionMarkers(t *testing.T) {
 	}
 	second := marker
 	second.FinalSeq = marker.FinalSeq + 1
+	second.RootHash = strings.Repeat("c", 64)
+	second.BundleSHA256 = strings.Repeat("d", 64)
+	second.BundlePath = "second-anchor-bundle.json"
 	data, err := json.Marshal(second)
 	if err != nil {
 		t.Fatalf("marshal second: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "anchor-state.json"), data, anchorTestFileMode); err != nil {
-		t.Fatalf("write legacy marker: %v", err)
+	secondPath, err := anchor.StateMarkerPath(dir, second)
+	if err != nil {
+		t.Fatalf("second marker path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Clean(secondPath), data, anchorTestFileMode); err != nil {
+		t.Fatalf("write second marker: %v", err)
 	}
 	resolver, err := NewFileAnchorResolver(dir, filepath.Join(dir, "anchors.jsonl"), nil, false)
 	if err != nil {

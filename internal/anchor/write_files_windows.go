@@ -190,3 +190,40 @@ func isWindowsReparseOrSymlink(info os.FileInfo) bool {
 	mode := info.Mode()
 	return mode&os.ModeSymlink != 0 || mode&os.ModeIrregular != 0
 }
+
+type stateMarkerIndexReader struct {
+	dir string
+}
+
+func openStateMarkerIndex(cleanDir string) (*stateMarkerIndexReader, error) {
+	indexDir := filepath.Join(cleanDir, stateMarkerIndexDir)
+	info, err := os.Lstat(indexDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil {
+		return nil, err
+	}
+	if isWindowsReparseOrSymlink(info) || !info.IsDir() {
+		return nil, errors.New("anchor-state directory is not a regular directory")
+	}
+	return &stateMarkerIndexReader{dir: indexDir}, nil
+}
+
+func (r *stateMarkerIndexReader) Close() error {
+	return nil
+}
+
+func (r *stateMarkerIndexReader) ReadDir() ([]os.DirEntry, error) {
+	return os.ReadDir(r.dir)
+}
+
+func (r *stateMarkerIndexReader) LoadStateMarker(name string) (StateMarker, bool, error) {
+	if strings.ContainsRune(name, filepath.Separator) || name == "." || name == ".." {
+		return StateMarker{}, false, fmt.Errorf("anchor-state marker name %q is invalid", name)
+	}
+	if err := ensureWindowsDirNoReparse(r.dir, "anchor-state directory"); err != nil {
+		return StateMarker{}, false, err
+	}
+	return LoadStateMarkerFile(filepath.Join(r.dir, name))
+}

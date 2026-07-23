@@ -156,6 +156,63 @@ func openAnchorDir(path string) (int, error) {
 	return unix.Open(filepath.Clean(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 }
 
+type stateMarkerIndexReader struct {
+	file *os.File
+}
+
+func openStateMarkerIndex(cleanDir string) (*stateMarkerIndexReader, error) {
+	rootFD, err := unix.Open(filepath.Clean(cleanDir), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	}
+	defer func() { _ = unix.Close(rootFD) }()
+	indexFD, err := unix.Openat(rootFD, stateMarkerIndexDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, os.ErrNotExist
+		}
+		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+			return nil, errors.New("anchor-state directory is not a regular directory")
+		}
+		return nil, err
+	}
+	return &stateMarkerIndexReader{file: os.NewFile(uintptr(indexFD), stateMarkerIndexDir)}, nil
+}
+
+func (r *stateMarkerIndexReader) Close() error {
+	if r == nil || r.file == nil {
+		return nil
+	}
+	return r.file.Close()
+}
+
+func (r *stateMarkerIndexReader) ReadDir() ([]os.DirEntry, error) {
+	return r.file.ReadDir(-1)
+}
+
+func (r *stateMarkerIndexReader) LoadStateMarker(name string) (StateMarker, bool, error) {
+	if strings.ContainsRune(name, filepath.Separator) || name == "." || name == ".." {
+		return StateMarker{}, false, fmt.Errorf("anchor-state marker name %q is invalid", name)
+	}
+	fd, err := unix.Openat(int(r.file.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return StateMarker{}, false, nil
+		}
+		return StateMarker{}, false, fmt.Errorf("read anchor-state marker %q: %w", name, err)
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer func() { _ = file.Close() }()
+	marker, err := loadOpenedStateMarkerFile(file)
+	if err != nil {
+		return StateMarker{}, false, err
+	}
+	return marker, true, nil
+}
+
 func writeFileUnderDir(rootFD int, rel string, data []byte) error {
 	cleanRel := filepath.Clean(rel)
 	parts := strings.Split(cleanRel, string(filepath.Separator))

@@ -499,6 +499,43 @@ func TestLoadStateMarkersTreatsMatchingLatestPointerAsIndexAlias(t *testing.T) {
 	}
 }
 
+func TestLoadStateMarkersRejectsMutablePointerNotInIndex(t *testing.T) {
+	dir := t.TempDir()
+	indexed := StateMarker{
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "indexed-bundle.json",
+	}
+	if err := WriteStateMarker(dir, indexed); err != nil {
+		t.Fatalf("WriteStateMarker indexed: %v", err)
+	}
+	forgedPointer := StateMarker{
+		Schema:       stateMarkerSchema,
+		SessionID:    "session-a",
+		FinalSeq:     2,
+		RootHash:     strings.Repeat("c", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("d", 64),
+		BundlePath:   "forged-pointer-bundle.json",
+	}
+	data, err := json.Marshal(forgedPointer)
+	if err != nil {
+		t.Fatalf("Marshal forged pointer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, legacyStateMarker), append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile forged latest pointer: %v", err)
+	}
+
+	if _, err := LoadStateMarkers(dir); err == nil || !strings.Contains(err.Error(), "latest pointer does not match immutable marker history") {
+		t.Fatalf("LoadStateMarkers err = %v, want latest-pointer mismatch", err)
+	}
+}
+
 func TestWriteStateMarkerPreservesImmutableIdentity(t *testing.T) {
 	dir := t.TempDir()
 	marker := StateMarker{
@@ -655,6 +692,76 @@ func TestLoadIndexedStateMarkerRejectsHostileParent(t *testing.T) {
 		}
 		if _, found, err := LoadIndexedStateMarker(dir, StateMarker{}); err == nil || found || !strings.Contains(err.Error(), "session_id is empty") {
 			t.Fatalf("LoadIndexedStateMarker found=%v err=%v, want identity rejection", found, err)
+		}
+	})
+	t.Run("wrong content at requested path", func(t *testing.T) {
+		dir := t.TempDir()
+		requested := marker
+		requested.Schema = stateMarkerSchema
+		wrong := requested
+		wrong.FinalSeq++
+		wrong.RootHash = strings.Repeat("c", 64)
+		wrong.BundleSHA256 = strings.Repeat("d", 64)
+		path, err := StateMarkerPath(dir, requested)
+		if err != nil {
+			t.Fatalf("StateMarkerPath requested: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("MkdirAll index: %v", err)
+		}
+		data, err := json.Marshal(wrong)
+		if err != nil {
+			t.Fatalf("Marshal wrong marker: %v", err)
+		}
+		if err := os.WriteFile(filepath.Clean(path), append(data, '\n'), 0o600); err != nil {
+			t.Fatalf("WriteFile wrong marker: %v", err)
+		}
+		if _, found, err := LoadIndexedStateMarker(dir, requested); err == nil || found || !strings.Contains(err.Error(), "does not match requested marker identity") {
+			t.Fatalf("LoadIndexedStateMarker found=%v err=%v, want identity mismatch", found, err)
+		}
+	})
+	t.Run("symlinked marker entry", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs privileges on Windows")
+		}
+		dir := t.TempDir()
+		requested := marker
+		requested.Schema = stateMarkerSchema
+		path, err := StateMarkerPath(dir, requested)
+		if err != nil {
+			t.Fatalf("StateMarkerPath requested: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("MkdirAll index: %v", err)
+		}
+		outside := filepath.Join(t.TempDir(), "outside-marker.json")
+		data, err := json.Marshal(requested)
+		if err != nil {
+			t.Fatalf("Marshal requested marker: %v", err)
+		}
+		if err := os.WriteFile(outside, append(data, '\n'), 0o600); err != nil {
+			t.Fatalf("WriteFile outside marker: %v", err)
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Fatalf("Symlink marker path: %v", err)
+		}
+		if _, found, err := LoadIndexedStateMarker(dir, requested); err == nil || found {
+			t.Fatalf("LoadIndexedStateMarker found=%v err=%v, want no-follow refusal", found, err)
+		}
+	})
+	t.Run("directory at marker entry", func(t *testing.T) {
+		dir := t.TempDir()
+		requested := marker
+		requested.Schema = stateMarkerSchema
+		path, err := StateMarkerPath(dir, requested)
+		if err != nil {
+			t.Fatalf("StateMarkerPath requested: %v", err)
+		}
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			t.Fatalf("MkdirAll marker path: %v", err)
+		}
+		if _, found, err := LoadIndexedStateMarker(dir, requested); err == nil || found || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("LoadIndexedStateMarker found=%v err=%v, want regular-file refusal", found, err)
 		}
 	})
 }
@@ -1073,6 +1180,44 @@ func TestWriteStateMarkerUsesNewLegacyBundleCoverageForPointerOrdering(t *testin
 	}
 	if latest.RootHash != higher.RootHash {
 		t.Fatalf("latest pointer root = %q, want higher legacy marker root %q", latest.RootHash, higher.RootHash)
+	}
+}
+
+func TestWriteStateMarkerDoesNotPreserveUnbackedEnrichedPointer(t *testing.T) {
+	dir := t.TempDir()
+	poisoned := StateMarker{
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC().Add(-time.Minute),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "missing-poisoned-bundle.json",
+		ReceiptCount: 999,
+		SignerKey:    strings.Repeat("c", 64),
+	}
+	if err := WriteStateMarker(dir, poisoned); err != nil {
+		t.Fatalf("WriteStateMarker poisoned pointer: %v", err)
+	}
+	lower := StateMarker{
+		SessionID:    poisoned.SessionID,
+		FinalSeq:     10,
+		RootHash:     strings.Repeat("d", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("e", 64),
+		BundlePath:   "lower-but-backed-by-legacy-coverage.json",
+	}
+	if err := WriteStateMarker(dir, lower); err != nil {
+		t.Fatalf("WriteStateMarker lower: %v", err)
+	}
+
+	latest, found, err := LoadStateMarkerFile(filepath.Join(dir, legacyStateMarker))
+	if err != nil || !found {
+		t.Fatalf("LoadStateMarkerFile latest = (%+v, %v, %v)", latest, found, err)
+	}
+	if latest.RootHash != lower.RootHash {
+		t.Fatalf("latest pointer root = %q, want unverified enriched marker replaced by %q", latest.RootHash, lower.RootHash)
 	}
 }
 

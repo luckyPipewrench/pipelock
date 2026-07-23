@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "backend": "rekor",
+  "created_at": "2026-07-23T16:30:00Z",
+  "checkpoint": {
+    "session_id": "agent-a",
+    "final_seq": 41,
+    "root_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "receipt_count": 42,
+    "start_time": "2026-07-23T16:00:00Z",
+    "end_time": "2026-07-23T16:29:30Z",
+    "signer_keys": [
+      "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    ]
+  },
+  "proof": {
+    "backend": "rekor",
+    "log_id": "example-log-id",
+    "log_index": 7,
+    "entry_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "log_root_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+    "rekor": {
+      "url": "https://rekor.vendor.example",
+      "uuid": "example-entry-uuid",
+      "body": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiaGFzaGVkcmVrb3JkIn0=",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nZXhhbXBsZQ==\n-----END PUBLIC KEY-----\n",
+      "signature": "ZXhhbXBsZS1zaWduYXR1cmU=",
+      "integrated_time": 1784824200,
+      "signed_entry_timestamp": "ZXhhbXBsZS1zZXQ=",
+      "inclusion_proof": {
+        "root_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "log_index": 7,
+        "tree_size": 8,
+        "hashes": [
+          "3333333333333333333333333333333333333333333333333333333333333333"
+        ],
+        "checkpoint": "example-log.example - 8\nexample-checkpoint-signature\n"
+      }
+    }
+  },
+  "limits": [
+    "Rekor verification proves the checkpoint entry has a valid SET and inclusion proof under a pinned Rekor log key.",
+    "Rekor anchoring does not prove the checkpoint was witnessed before every later action unless the anchored checkpoint covers the whole receipt chain being verified.",
+    "Rekor anchoring does not prove the log remained globally consistent after the recorded checkpoint without a later consistency audit.",
+    "Anchoring does not prove real-time truth by whoever held the receipt signing key."
+  ]
+}

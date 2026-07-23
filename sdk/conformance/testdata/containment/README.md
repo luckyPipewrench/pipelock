@@ -55,10 +55,11 @@ Each fixture is a pair:
         "--connect-timeout 1",
         "--max-time 2",
         "--noproxy *",
+        "PLK_TIME_CONNECT=%{time_connect}",
         "http://192.0.2.1:9/"
       ],
-      "stdout": "200",
-      "exit_code": 0
+      "stdout": "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
+      "exit_code": 7
     }
   ]
 }
@@ -78,11 +79,14 @@ probe.
   harness requires exact invocation, timeout, `--noproxy *`, and URL anchors
   for both probes so a raw-egress canary regression cannot keep matching a
   broad username-only rule.
-- `stdout`: the merged stdout/stderr the probe sees. Probe 8 keys off the exit
-  code; probe 9 reads the trailing whitespace-separated token as the HTTP code.
+- `stdout`: the merged stdout/stderr the probe sees. Probe 8 parses the
+  `PLK_TIME_CONNECT=` sentinel and combines it with the exit code and DROP
+  counter; probe 9 reads the trailing whitespace-separated token as the HTTP
+  code.
 - `exit_code`: the process exit code. `0` means curl succeeded.
 - `drop_counter_reads`: the managed catch-all DROP-counter values returned to
-  probe 8. A missing reader, read error, or non-increasing pair is inconclusive.
+  probe 8. The UID-wide counter only corroborates this canary's time_connect
+  result; a missing reader, read error, or non-increasing pair is inconclusive.
 
 ## `*.expect.json` schema
 

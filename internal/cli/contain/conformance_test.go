@@ -70,7 +70,7 @@ func TestRunContainmentConformance_Outcomes(t *testing.T) {
 			name:       "both_pass_nil_ctx_default_agent_user",
 			ctx:        nil, // exercises the ctx == nil default
 			agentUser:  "",  // exercises the defaultAgentUser fallback
-			probe8:     cannedResp{out: "curl: (7) refused", code: blockedExit},
+			probe8:     cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: blockedExit},
 			probe9:     cannedResp{out: "200", code: 0},
 			dropCounts: []uint64{12, 13},
 			wantExit:   ConformanceExitOK,
@@ -83,7 +83,7 @@ func TestRunContainmentConformance_Outcomes(t *testing.T) {
 			name:      "blocked_curl_without_counter_is_unknown",
 			ctx:       context.Background(),
 			agentUser: "pipelock-agent",
-			probe8:    cannedResp{out: "curl: (7) refused", code: blockedExit},
+			probe8:    cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: blockedExit},
 			probe9:    cannedResp{out: "200", code: 0},
 			wantExit:  ConformanceExitSkip,
 			wantStatus: map[int]string{
@@ -119,7 +119,7 @@ func TestRunContainmentConformance_Outcomes(t *testing.T) {
 			name:      "operator_failure_overrides_unknown_agent_attribution",
 			ctx:       context.Background(),
 			agentUser: "pipelock-agent",
-			probe8:    cannedResp{out: "curl: (7) refused", code: blockedExit},
+			probe8:    cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: blockedExit},
 			probe9:    cannedResp{out: "curl: (22) HTTP 500", code: 22},
 			wantExit:  ConformanceExitFail,
 			wantStatus: map[int]string{

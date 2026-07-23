@@ -134,7 +134,7 @@ pipelock contain verify
 | 5 | `ca_bundle_present` | `/etc/pipelock/combined-ca.pem` is readable by the agent user. |
 | 6 | `pipelock_listening_loopback` | Pipelock is accepting connections on `127.0.0.1:<proxy-port>`. |
 | 7 | `no_proxy_env_correct` | `plk-launch` sets `NO_PROXY` to the loopback set documented in policy. |
-| 8 | `cc_agent_egress_denied` | A DNS-free direct outbound canary from `pipelock-agent` coincides with an increment in the exact managed catch-all nftables DROP counter. |
+| 8 | `cc_agent_egress_denied` | A DNS-free direct outbound canary from `pipelock-agent` reports that its TCP dial did not complete and coincides with an increment in the exact managed catch-all nftables DROP counter. |
 | 9 | `operator_egress_reachable` | The same canary from the operator user is allowed (proves the rule scopes correctly). |
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
@@ -205,7 +205,7 @@ Checks:
 | 3 | `python_through_proxy` | `python` reaches an allowed host via the `pipelock-python` wrapper. |
 | 4 | `node_through_proxy` | node's `fetch()` reaches an allowed host via the `pipelock-node` wrapper + undici shim. |
 | 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error — no hang, no bypass. |
-| 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary coincides with an increment in the managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
+| 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 

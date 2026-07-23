@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -56,10 +57,14 @@ const (
 	// Probe 8 uses a DNS-free, non-routable TEST-NET-1 address on a normally
 	// unused port. This forces the probe packet through the managed catch-all
 	// agent DROP rule and removes DNS/TLS as alternate causes of failure. The
-	// shorter budget also narrows the same-UID counter-attribution window.
-	directEgressCanaryURL    = "http://192.0.2.1:9/"
-	directCurlConnectTimeout = "1"
-	directCurlMaxTime        = "2"
+	// curl's own time_connect measurement provides probe-specific evidence of
+	// whether this canary established TCP; the UID-wide DROP counter only
+	// corroborates a dial that did not complete.
+	directEgressCanaryURL       = "http://192.0.2.1:9/"
+	directCurlConnectTimeout    = "1"
+	directCurlMaxTime           = "2"
+	directCurlTimeConnectPrefix = "PLK_TIME_CONNECT="
+	directCurlWriteOut          = "\n" + directCurlTimeConnectPrefix + "%{time_connect}\n%{http_code}"
 
 	// Probe status values. Strings (not an enum type) so JSON
 	// serialization is identity and tests can compare cheaply.
@@ -1710,7 +1715,7 @@ func curlDirectCanaryArgsFor(curl string) []string {
 		"--noproxy", "*",
 		"-sS",
 		"-o", "/dev/null",
-		"-w", "%{http_code}",
+		"-w", directCurlWriteOut,
 		directEgressCanaryURL,
 	}
 }
@@ -1826,13 +1831,10 @@ func managedContainmentDropPacketCount(out, chainName string, agentUID int) (uin
 	return packets, nil
 }
 
-// probeCCAgentEgressDenied verifies that a failed direct-egress curl coincides
-// with an increment in the exact managed catch-all DROP counter. The counter is
-// UID-wide, not process-exclusive: the literal-IP target, single-rule match,
-// and two-second ceiling reduce but cannot eliminate attribution from other
-// concurrent traffic under the contained UID. A fully exclusive counter would
-// require temporarily mutating nftables, which would violate verify's read-only
-// contract.
+// probeCCAgentEgressDenied verifies that curl's probe-specific time_connect
+// reports no completed TCP dial and that the exact managed catch-all DROP
+// counter also increased. The counter is UID-wide corroboration only: it cannot
+// turn a completed or unattributable canary dial into PASS.
 func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, string) {
 	var before uint64
 	var beforeErr error
@@ -1858,12 +1860,15 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from direct canary %s", oneLine(out), directEgressCanaryURL)
 	}
-	outcome, after, afterErr := classifyDirectEgressAttribution(code, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
+	dialCompletion := parseDirectCurlDialCompletion(out)
+	outcome, after, afterErr := classifyDirectEgressAttribution(code, dialCompletion, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
 		return env.dropCounter(ctx, env)
 	})
 	switch outcome {
 	case egressAttrFailPostConnect:
 		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit=%d): %s", code, oneLine(out))
+	case egressAttrUnknownDialCompletion:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but probe-specific time_connect was missing or unparseable; refusing to claim containment", code)
 	case egressAttrUnknownNoCounter:
 		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but no DROP counter reader is available; containment attribution is inconclusive", code)
 	case egressAttrUnknownBeforeErr:
@@ -1875,7 +1880,7 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 	case egressAttrUnknownUnexpectedExit:
 		return statusUnknown, fmt.Sprintf("curl failed with unexpected exit=%d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code)
 	case egressAttrPass:
-		return statusPass, fmt.Sprintf("curl blocked (exit=%d); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
+		return statusPass, fmt.Sprintf("curl dial did not complete (exit=%d, time_connect=0); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
 	default:
 		// Fail closed: an unhandled attribution outcome (e.g. a future enum
 		// value) must never fall through to PASS.
@@ -1889,6 +1894,7 @@ type egressAttribution int
 
 const (
 	egressAttrFailPostConnect       egressAttribution = iota // connection established -> containment hole
+	egressAttrUnknownDialCompletion                          // probe-specific dial completion is missing/unparseable
 	egressAttrUnknownNoCounter                               // no DROP counter reader available
 	egressAttrUnknownBeforeErr                               // reading the counter before the probe failed
 	egressAttrUnknownAfterErr                                // reading the counter after the probe failed
@@ -1903,13 +1909,21 @@ const (
 // (checkRawEgressBlocked) so the two can never silently disagree about whether
 // containment held. Callers handle skip cases and the code==0 unexpected-success
 // case first, then map the returned attribution to their own result type and
-// wording. Branch order is security-critical: a post-connect exit is a
-// containment hole regardless of the counter, and PASS requires BOTH a
-// dial-blocked exit and a positive managed DROP-counter delta. readAfter is
-// invoked lazily so the post-connect and no-counter paths perform no counter read.
-func classifyDirectEgressAttribution(code int, hasCounter bool, before uint64, beforeErr error, readAfter func() (uint64, error)) (outcome egressAttribution, after uint64, afterErr error) {
+// wording. Branch order is security-critical: probe-specific evidence that the
+// dial completed, or an independently post-connect exit, is a containment hole
+// regardless of the counter. Missing probe-specific timing stays UNKNOWN. PASS
+// requires a dial that did not complete, a dial-blocked exit, and a positive
+// managed DROP-counter delta. readAfter is invoked lazily so completed,
+// post-connect, unknown-timing, and no-counter paths perform no counter read.
+func classifyDirectEgressAttribution(code int, dialCompletion directDialCompletion, hasCounter bool, before uint64, beforeErr error, readAfter func() (uint64, error)) (outcome egressAttribution, after uint64, afterErr error) {
+	if dialCompletion == directDialCompleted {
+		return egressAttrFailPostConnect, 0, nil
+	}
 	if isPostConnectCurlExit(code) {
 		return egressAttrFailPostConnect, 0, nil
+	}
+	if dialCompletion != directDialNotCompleted {
+		return egressAttrUnknownDialCompletion, 0, nil
 	}
 	if !hasCounter {
 		return egressAttrUnknownNoCounter, 0, nil
@@ -1930,17 +1944,46 @@ func classifyDirectEgressAttribution(code int, hasCounter bool, before uint64, b
 	return egressAttrPass, after, afterErr
 }
 
+// directDialCompletion is curl's probe-specific account of whether its TCP
+// connection completed. Unknown is deliberately distinct from not-completed:
+// missing or malformed write-out evidence can never support PASS.
+type directDialCompletion int
+
+const (
+	directDialUnknown directDialCompletion = iota
+	directDialNotCompleted
+	directDialCompleted
+)
+
+// parseDirectCurlDialCompletion reads curl's stable time_connect sentinel.
+// strconv.ParseFloat is locale-independent, and curl's write-out variables use
+// a dot decimal separator. Exactly zero means TCP never connected; any finite
+// positive value means the direct dial escaped containment.
+func parseDirectCurlDialCompletion(out string) directDialCompletion {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, directCurlTimeConnectPrefix) {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, directCurlTimeConnectPrefix))
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return directDialUnknown
+		}
+		if value == 0 {
+			return directDialNotCompleted
+		}
+		return directDialCompleted
+	}
+	return directDialUnknown
+}
+
 // isDirectEgressBlockedCurlExit identifies dial outcomes consistent with either
 // an explicit rejection (7) or a silently dropped SYN that times out (28).
-// Exit 28 is a GENERIC curl timeout and cannot, from the exit code alone, be
-// distinguished as a pre-connect vs post-connect timeout. That ambiguity is
-// bounded by two independent guarantees the caller enforces: the direct canary
-// targets an unroutable TEST-NET-1 black hole (192.0.2.1:9) where no connection
-// can establish, so a timeout there is necessarily a dial-level outcome, not a
-// post-connect one; and PASS additionally requires a managed DROP-counter delta
-// that attributes the block to our own nft rule. The residual case — concurrent
-// same-UID traffic supplying the counter delta — is the UID-wide-counter
-// limitation tracked as a separate follow-up, not a new hole introduced here.
+// Exit 28 is a generic curl timeout, so the caller separately requires this
+// canary's time_connect to be exactly zero before either exit can support PASS.
+// The UID-wide managed DROP-counter delta then corroborates that no-dial result;
+// it is never treated as probe attribution on its own.
 func isDirectEgressBlockedCurlExit(code int) bool {
 	return code == 7 || code == 28
 }

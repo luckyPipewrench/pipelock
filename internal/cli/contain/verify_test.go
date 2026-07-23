@@ -2097,6 +2097,32 @@ func TestChainHasManagedOutputBaseChain(t *testing.T) {
 	}
 }
 
+func TestParseDirectCurlDialCompletion(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want directDialCompletion
+	}{
+		{name: "zero means dial did not complete", out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", want: directDialNotCompleted},
+		{name: "positive means dial completed", out: "curl: (28) timed out\nPLK_TIME_CONNECT=0.125381\n000", want: directDialCompleted},
+		{name: "missing sentinel", out: "curl: (7) refused", want: directDialUnknown},
+		{name: "empty value", out: "PLK_TIME_CONNECT=\n000", want: directDialUnknown},
+		{name: "malformed value", out: "PLK_TIME_CONNECT=not-a-number\n000", want: directDialUnknown},
+		{name: "locale comma is not guessed", out: "PLK_TIME_CONNECT=0,125381\n000", want: directDialUnknown},
+		{name: "negative value", out: "PLK_TIME_CONNECT=-0.1\n000", want: directDialUnknown},
+		{name: "nan value", out: "PLK_TIME_CONNECT=NaN\n000", want: directDialUnknown},
+		{name: "infinite value", out: "PLK_TIME_CONNECT=+Inf\n000", want: directDialUnknown},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseDirectCurlDialCompletion(tc.out); got != tc.want {
+				t.Fatalf("parseDirectCurlDialCompletion(%q) = %d, want %d", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProbeCCAgentEgressDenied(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -2114,7 +2140,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 	}{
 		{
 			name:          "attributable egress block passes",
-			stdout:        "curl: (7) Failed to connect",
+			stdout:        "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
 			code:          7,
 			counterBefore: 12,
 			counterAfter:  13,
@@ -2122,8 +2148,35 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 			wantDetail:    "managed DROP counter increased",
 		},
 		{
+			name:          "attributable connect timeout before dial passes",
+			stdout:        "curl: (28) Connection timed out\nPLK_TIME_CONNECT=0.000000\n000",
+			code:          28,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusPass,
+			wantDetail:    "time_connect=0",
+		},
+		{
+			name:          "completed dial timeout fails despite UID-wide counter delta",
+			stdout:        "curl: (28) Operation timed out\nPLK_TIME_CONNECT=0.125381\n000",
+			code:          28,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusFail,
+			wantDetail:    "CONTAINMENT HOLE",
+		},
+		{
+			name:          "unknown dial timing cannot pass from UID-wide counter delta",
+			stdout:        "curl: (7) Failed to connect\nPLK_TIME_CONNECT=unparseable\n000",
+			code:          7,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusUnknown,
+			wantDetail:    "time_connect was missing or unparseable",
+		},
+		{
 			name:          "DNS failure without counter delta is inconclusive",
-			stdout:        "curl: (6) Could not resolve host: example.com",
+			stdout:        "curl: (6) Could not resolve host: example.com\nPLK_TIME_CONNECT=0.000000\n000",
 			code:          6,
 			counterBefore: 12,
 			counterAfter:  12,
@@ -2132,7 +2185,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:          "DNS failure with unrelated counter delta is inconclusive",
-			stdout:        "curl: (6) Could not resolve host: example.com",
+			stdout:        "curl: (6) Could not resolve host: example.com\nPLK_TIME_CONNECT=0.000000\n000",
 			code:          6,
 			counterBefore: 12,
 			counterAfter:  13,
@@ -2141,7 +2194,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:          "timeout without counter delta is inconclusive",
-			stdout:        "curl: (28) Connection timed out",
+			stdout:        "curl: (28) Connection timed out\nPLK_TIME_CONNECT=0.000000\n000",
 			code:          28,
 			counterBefore: 12,
 			counterAfter:  12,
@@ -2150,7 +2203,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:          "counter reset or wrap is inconclusive",
-			stdout:        "curl: (28) Connection timed out",
+			stdout:        "curl: (28) Connection timed out\nPLK_TIME_CONNECT=0.000000\n000",
 			code:          28,
 			counterBefore: ^uint64(0),
 			counterAfter:  0,
@@ -2177,7 +2230,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:            "no counter reader is inconclusive even for refused connection",
-			stdout:          "curl: (7) Failed to connect: Connection refused",
+			stdout:          "curl: (7) Failed to connect: Connection refused\nPLK_TIME_CONNECT=0.000000\n000",
 			code:            7,
 			noCounterReader: true,
 			wantStatus:      statusUnknown,
@@ -2185,7 +2238,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:             "counter unavailable before probe is inconclusive",
-			stdout:           "curl: (7) Failed to connect",
+			stdout:           "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
 			code:             7,
 			counterBeforeErr: errors.New("operation not permitted"),
 			counterAfter:     13,
@@ -2194,7 +2247,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:            "counter unavailable after probe is inconclusive",
-			stdout:          "curl: (7) Failed to connect",
+			stdout:          "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
 			code:            7,
 			counterBefore:   12,
 			counterAfterErr: errors.New("table disappeared"),
@@ -2291,6 +2344,9 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 					if !strings.Contains(joined, "--connect-timeout "+directCurlConnectTimeout) ||
 						!strings.Contains(joined, "--max-time "+directCurlMaxTime) {
 						t.Fatalf("argv does not use bounded direct-canary timeouts: %v", args)
+					}
+					if !strings.Contains(joined, directCurlTimeConnectPrefix+"%{time_connect}") {
+						t.Fatalf("argv does not capture probe-specific time_connect: %v", args)
 					}
 					return tc.stdout, tc.code, tc.runErr
 				}
@@ -3192,7 +3248,7 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 		}
 		// Either pipelock-agent (probe 8) or operator (probe 9). Match by argv.
 		if containsArg(args, testAgentUser) {
-			return "curl: (7) Failed to connect", 7, nil
+			return "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000", 7, nil
 		}
 		return "200", 0, nil
 	case curlPath:

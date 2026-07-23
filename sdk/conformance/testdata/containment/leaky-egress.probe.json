@@ -6,8 +6,8 @@
   "runs": [
     {
       "comment": "probe 8: agent egress canary LEAKS. curl succeeds (exit 0, HTTP 200) — direct egress was NOT contained.",
-      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "http://192.0.2.1:9/"],
-      "stdout": "200",
+      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "PLK_TIME_CONNECT=%{time_connect}", "http://192.0.2.1:9/"],
+      "stdout": "\nPLK_TIME_CONNECT=0.125381\n200",
       "exit_code": 0
     },
     {

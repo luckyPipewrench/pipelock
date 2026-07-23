@@ -427,8 +427,9 @@ func (env *doctorEnv) curlDirectArgs() []string {
 	return curlDirectCanaryArgsFor(env.curlPath)
 }
 
-// checkRawEgressBlocked requires positive DROP-counter attribution before a
-// dial-level curl failure can pass; post-connect failures always fail closed.
+// checkRawEgressBlocked requires probe-specific time_connect evidence plus a
+// positive DROP-counter delta before a dial-level curl failure can pass;
+// completed dials and post-connect failures always fail closed.
 func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	var before uint64
 	var beforeErr error
@@ -453,7 +454,8 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 		return fail(classInfra, detail,
 			"the nftables owner-match egress rule is missing or broken; run `pipelock contain verify` and re-install")
 	}
-	outcome, after, afterErr := classifyDirectEgressAttribution(code, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
+	dialCompletion := parseDirectCurlDialCompletion(out)
+	outcome, after, afterErr := classifyDirectEgressAttribution(code, dialCompletion, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
 		return env.dropCounter(ctx)
 	})
 	switch outcome {
@@ -461,6 +463,8 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 		return fail(classInfra,
 			fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit %d): %s", code, oneLine(out)),
 			"verify the nftables owner-match drop is present (`pipelock contain verify`); a post-connect error means the outbound dial escaped containment")
+	case egressAttrUnknownDialCompletion:
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but probe-specific time_connect was missing or unparseable; refusing to claim containment", code))
 	case egressAttrUnknownNoCounter:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but no DROP counter reader is available; containment attribution is inconclusive", code))
 	case egressAttrUnknownBeforeErr:
@@ -474,7 +478,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	case egressAttrPass:
 		return doctorResult{
 			status: statusPass,
-			detail: fmt.Sprintf("direct egress blocked at managed nftables DROP (curl exit %d, counter %d -> %d); proxy-unaware tools fail here", code, before, after),
+			detail: fmt.Sprintf("direct egress dial did not complete (curl exit %d, time_connect=0) and managed nftables DROP counter increased (%d -> %d); proxy-unaware tools fail here", code, before, after),
 			remediation: "a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — " +
 				"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
 			class: classProxyCompat,

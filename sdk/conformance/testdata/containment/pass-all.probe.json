@@ -1,13 +1,13 @@
 {
-  "description": "Containment intact: probe 8's DNS-free TEST-NET direct canary is BLOCKED with an attributable DROP-counter delta, and probe 9 (operator egress) reaches example.com. This is the clean baseline the gate must PASS.",
+  "description": "Containment intact: probe 8's DNS-free TEST-NET direct canary reports time_connect=0 and a corroborating DROP-counter delta, and probe 9 (operator egress) reaches example.com. This is the clean baseline the gate must PASS.",
   "agent_user": "pipelock-agent",
   "operator_user": "operator",
   "drop_counter_reads": [12, 13],
   "runs": [
     {
-      "comment": "probe 8: DNS-free agent egress canary. curl is BLOCKED and the managed DROP counter increases from 12 to 13.",
-      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "http://192.0.2.1:9/"],
-      "stdout": "curl: (7) Failed to connect to 192.0.2.1 port 9: Connection refused",
+      "comment": "probe 8: DNS-free agent egress canary. curl reports no completed dial and the managed DROP counter increases from 12 to 13.",
+      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "PLK_TIME_CONNECT=%{time_connect}", "http://192.0.2.1:9/"],
+      "stdout": "curl: (7) Failed to connect to 192.0.2.1 port 9: Connection refused\nPLK_TIME_CONNECT=0.000000\n000",
       "exit_code": 7
     },
     {

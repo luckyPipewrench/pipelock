@@ -265,10 +265,11 @@ func TestCheckRawEgressBlocked(t *testing.T) {
 		env := newDoctorEnv(t, func(args []string) (string, int, error) {
 			if !argsContain(args, "--noproxy", directEgressCanaryURL,
 				"--connect-timeout", directCurlConnectTimeout,
-				"--max-time", directCurlMaxTime) {
+				"--max-time", directCurlMaxTime,
+				directCurlTimeConnectPrefix+"%{time_connect}") {
 				t.Fatalf("did not attempt direct egress: %v", args)
 			}
-			return "curl: (7) refused", 7, nil
+			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil
 		})
 		res := checkRawEgressBlocked(context.Background(), env)
 		if res.status != statusPass || res.class != classProxyCompat {
@@ -409,7 +410,7 @@ func TestRunDoctor_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 			env := newDoctorEnv(t, func(args []string) (string, int, error) {
 				switch {
 				case argsContain(args, "--noproxy"):
-					return "curl: (7) refused", 7, nil
+					return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil
 				case argsContain(args, dnsFailureHost):
 					return "curl: (7) proxy unavailable\n000", 7, nil
 				case argsContain(args, "pipelock-python"):
@@ -592,9 +593,51 @@ func TestCheckRawEgress_CompletedRequestIsHole(t *testing.T) {
 func TestCheckRawEgress_AttributedDialBlockedExitsPass(t *testing.T) {
 	for _, code := range []int{7, 28} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
-			env := newDoctorEnv(t, func([]string) (string, int, error) { return "curl error", code, nil })
+			env := newDoctorEnv(t, func([]string) (string, int, error) {
+				return "curl error\nPLK_TIME_CONNECT=0.000000\n000", code, nil
+			})
 			if res := checkRawEgressBlocked(context.Background(), env); res.status != statusPass {
 				t.Errorf("curl exit %d plus counter delta should prove a blocked dial: got %q", code, res.status)
+			}
+		})
+	}
+}
+
+func TestCheckRawEgress_ProbeSpecificDialAttribution(t *testing.T) {
+	tests := []struct {
+		name       string
+		out        string
+		code       int
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name:       "completed dial timeout fails despite UID-wide counter delta",
+			out:        "curl: (28) Operation timed out\nPLK_TIME_CONNECT=0.125381\n000",
+			code:       28,
+			wantStatus: statusFail,
+			wantDetail: "CONTAINMENT HOLE",
+		},
+		{
+			name:       "unknown dial timing cannot pass from UID-wide counter delta",
+			out:        "curl: (7) Failed to connect\nPLK_TIME_CONNECT=unparseable\n000",
+			code:       7,
+			wantStatus: statusUnknown,
+			wantDetail: "time_connect was missing or unparseable",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDoctorEnv(t, func([]string) (string, int, error) {
+				return tc.out, tc.code, nil
+			})
+			res := checkRawEgressBlocked(context.Background(), env)
+			if res.status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q (detail=%q)", res.status, tc.wantStatus, res.detail)
+			}
+			if !strings.Contains(res.detail, tc.wantDetail) {
+				t.Fatalf("detail = %q, want substring %q", res.detail, tc.wantDetail)
 			}
 		})
 	}
@@ -632,17 +675,20 @@ func TestCheckRawEgress_PostConnectExitsFailClosed(t *testing.T) {
 func TestCheckRawEgress_UnattributableFailuresAreUnknown(t *testing.T) {
 	tests := []struct {
 		name  string
+		out   string
 		code  int
 		setup func(*doctorEnv)
 		want  string
 	}{
 		{
 			name: "DNS failure cannot match literal-IP canary",
+			out:  "curl failed\nPLK_TIME_CONNECT=0.000000\n000",
 			code: 6,
 			want: "unexpected exit 6",
 		},
 		{
 			name: "timeout without counter delta",
+			out:  "curl failed\nPLK_TIME_CONNECT=0.000000\n000",
 			code: 28,
 			setup: func(env *doctorEnv) {
 				env.dropCounter = func(context.Context) (uint64, error) { return 12, nil }
@@ -651,6 +697,7 @@ func TestCheckRawEgress_UnattributableFailuresAreUnknown(t *testing.T) {
 		},
 		{
 			name: "no counter reader",
+			out:  "curl failed\nPLK_TIME_CONNECT=0.000000\n000",
 			code: 7,
 			setup: func(env *doctorEnv) {
 				env.dropCounter = nil
@@ -659,6 +706,7 @@ func TestCheckRawEgress_UnattributableFailuresAreUnknown(t *testing.T) {
 		},
 		{
 			name: "counter read fails before probe",
+			out:  "curl failed\nPLK_TIME_CONNECT=0.000000\n000",
 			code: 7,
 			setup: func(env *doctorEnv) {
 				env.dropCounter = func(context.Context) (uint64, error) {
@@ -669,6 +717,7 @@ func TestCheckRawEgress_UnattributableFailuresAreUnknown(t *testing.T) {
 		},
 		{
 			name: "counter read fails after probe",
+			out:  "curl failed\nPLK_TIME_CONNECT=0.000000\n000",
 			code: 7,
 			setup: func(env *doctorEnv) {
 				reads := 0
@@ -687,7 +736,7 @@ func TestCheckRawEgress_UnattributableFailuresAreUnknown(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newDoctorEnv(t, func([]string) (string, int, error) {
-				return "curl failed", tc.code, nil
+				return tc.out, tc.code, nil
 			})
 			if tc.setup != nil {
 				tc.setup(env)
@@ -754,7 +803,7 @@ func allPassDoctorEnv(t *testing.T) *doctorEnv {
 	return newDoctorEnv(t, func(args []string) (string, int, error) {
 		switch {
 		case argsContain(args, "--noproxy"):
-			return "curl: (7) refused", 7, nil // direct egress blocked
+			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil // direct egress blocked
 		case argsContain(args, dnsFailureHost):
 			return "curl: (56) CONNECT tunnel failed, response 502\n502", 56, nil // attributed proxy DNS failure
 		default:

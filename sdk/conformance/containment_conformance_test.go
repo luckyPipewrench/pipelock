@@ -120,6 +120,7 @@ func validateContainmentProbeFixture(fx containmentProbeFixture) error {
 		"--connect-timeout 1",
 		"--max-time 2",
 		"--noproxy *",
+		"PLK_TIME_CONNECT=%{time_connect}",
 		directCanaryURL,
 	}
 	operatorInvocation := fixtureCurlPath
@@ -537,6 +538,7 @@ func TestValidateContainmentProbeFixtureRequiresExactCanaryCommands(t *testing.T
 		"--connect-timeout 1",
 		"--max-time 2",
 		"--noproxy *",
+		"PLK_TIME_CONNECT=%{time_connect}",
 		directCanaryURL,
 	}}
 	operatorRule := containmentRunRule{Match: []string{

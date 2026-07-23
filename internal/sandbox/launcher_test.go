@@ -140,6 +140,9 @@ func launchSandboxedToCompletion(t *testing.T, cfg LaunchConfig) error {
 
 	select {
 	case err := <-done:
+		if errors.Is(err, ErrUnavailable) {
+			t.Skipf("sandbox launch unavailable in this runner: %v", err)
+		}
 		return err
 	case <-time.After(sandboxLaunchTimeout + sandboxWatchdogGrace):
 		cancel()
@@ -168,6 +171,9 @@ func launchSandboxedStarted(t *testing.T, cfg LaunchConfig) (*exec.Cmd, context.
 	case res := <-done:
 		if res.err != nil {
 			cancel()
+			if errors.Is(res.err, ErrUnavailable) {
+				t.Skipf("sandbox launch unavailable in this runner: %v", res.err)
+			}
 			t.Fatalf("LaunchSandboxed: %v", res.err)
 		}
 		return res.cmd, cancel

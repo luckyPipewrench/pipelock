@@ -254,6 +254,7 @@ func TestLoadStateMarkerCheckpointRejectsInvalidBundleMaterial(t *testing.T) {
 		SignerKeys:   []string{keyHex},
 	}
 	bundleSeq := 0
+	bundleDataByRel := make(map[string][]byte)
 	writeBundle := func(t *testing.T, cp Checkpoint, proof Proof) StateMarker {
 		t.Helper()
 		bundleSeq++
@@ -262,6 +263,7 @@ func TestLoadStateMarkerCheckpointRejectsInvalidBundleMaterial(t *testing.T) {
 		if err != nil {
 			t.Fatalf("WriteBundleUnderDir: %v", err)
 		}
+		bundleDataByRel[rel] = append([]byte(nil), data...)
 		sum := sha256.Sum256(data)
 		return StateMarker{
 			Schema:       stateMarkerSchema,
@@ -284,6 +286,26 @@ func TestLoadStateMarkerCheckpointRejectsInvalidBundleMaterial(t *testing.T) {
 		setup  func(t *testing.T, marker *StateMarker)
 		want   string
 	}{
+		{
+			name:   "symlinked bundle escapes receipt directory",
+			marker: baseMarker,
+			setup: func(t *testing.T, marker *StateMarker) {
+				t.Helper()
+				if runtime.GOOS == "windows" {
+					t.Skip("symlink creation requires privileges on Windows")
+				}
+				data := bundleDataByRel[baseMarker.BundlePath]
+				outside := filepath.Join(t.TempDir(), "bundle.json")
+				if err := os.WriteFile(outside, data, 0o600); err != nil {
+					t.Fatalf("WriteFile outside bundle: %v", err)
+				}
+				marker.BundlePath = "linked-bundle.json"
+				if err := os.Symlink(outside, filepath.Join(dir, marker.BundlePath)); err != nil {
+					t.Fatalf("Symlink bundle: %v", err)
+				}
+			},
+			want: "path escapes from parent",
+		},
 		{
 			name:   "path escape",
 			marker: baseMarker,

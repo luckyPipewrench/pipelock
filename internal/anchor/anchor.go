@@ -174,6 +174,13 @@ func NewBundle(checkpoint Checkpoint, proof Proof) Bundle {
 	}
 }
 
+func validateProofBackendConsistency(proof Proof) error {
+	if proof.Backend != RekorBackend && proof.Rekor != nil {
+		return fmt.Errorf("anchor proof backend %q must not carry rekor proof material", proof.Backend)
+	}
+	return nil
+}
+
 func VerifyBundle(b Bundle, receipts []receipt.Receipt, trustedKeys []string, backend Backend) VerifyReport {
 	report := VerifyReport{
 		Valid:      false,
@@ -187,6 +194,10 @@ func VerifyBundle(b Bundle, receipts []receipt.Receipt, trustedKeys []string, ba
 	}
 	if b.Backend != b.Proof.Backend {
 		report.Error = fmt.Sprintf("anchor bundle backend %q does not match proof backend %q", b.Backend, b.Proof.Backend)
+		return report
+	}
+	if err := validateProofBackendConsistency(b.Proof); err != nil {
+		report.Error = err.Error()
 		return report
 	}
 	if backend == nil {
@@ -238,6 +249,9 @@ func LoadBundle(path string) (Bundle, error) {
 func LoadBundleBytes(data []byte) (Bundle, error) {
 	var b Bundle
 	if err := decodeStrict(data, &b); err != nil {
+		return Bundle{}, fmt.Errorf("parse anchor bundle: %w", err)
+	}
+	if err := validateProofBackendConsistency(b.Proof); err != nil {
 		return Bundle{}, fmt.Errorf("parse anchor bundle: %w", err)
 	}
 	return b, nil

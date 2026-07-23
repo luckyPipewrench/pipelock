@@ -100,6 +100,9 @@ func (l LocalLog) Verify(proof Proof, checkpoint Checkpoint) error {
 	if proof.Backend != LocalBackend {
 		return fmt.Errorf("anchor proof backend %q is not %q", proof.Backend, LocalBackend)
 	}
+	if err := validateProofBackendConsistency(proof); err != nil {
+		return err
+	}
 	if l.Path == "" {
 		return errors.New("local anchor log path required")
 	}

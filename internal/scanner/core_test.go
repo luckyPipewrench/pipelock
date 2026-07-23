@@ -188,14 +188,12 @@ func TestCore_BlockCannotBeOverriddenByMainScanner(t *testing.T) {
 
 // TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled exercises the core SSRF
 // floor via the shared IP-literal parser (parseAlternativeIP / ParseIPLiteral).
-// This is unit coverage of a SINGLE shared code path: every transport (fetch,
-// forward proxy, CONNECT, WebSocket, MCP URL scanning) canonicalizes the
-// destination host through this same parser before dialing, so a literal blocked
-// here is blocked on every transport. Documented transport-specific exception
-// (per AGENTS.md "Transport claims need coverage for each applicable surface"):
-// the legacy-literal decode has no per-transport branch, so there is nothing
-// transport-specific to cover separately; the case names describe the literal
-// form, not a transport.
+// Transport wiring is covered separately: fetch, forward proxy, CONNECT, and
+// WebSocket in proxy.TestLegacyIPv4LiteralBlockedAtTransportEntryPoints; MCP
+// stdio resources/read input in TestScanRequest_ResourcesReadHTTPURIUsesURLPolicy;
+// and configured MCP HTTP/SSE/WS upstreams in
+// TestMCPUpstreamGateMetadataHardFloorWithoutContractLoader. The cases below
+// prove only the shared parser and immutable core floor.
 func TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()

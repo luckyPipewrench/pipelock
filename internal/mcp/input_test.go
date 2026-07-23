@@ -2710,6 +2710,7 @@ func TestScanRequest_ResourcesReadHTTPURIUsesURLPolicy(t *testing.T) {
 	}{
 		{"http", "http://169.254.169.254/latest/meta-data/"},
 		{"https", "https://169.254.169.254/latest/meta-data/"},
+		{"legacy IPv4 literal", "http://10.1/private"},
 	}
 
 	for _, tt := range tests {
@@ -2720,7 +2721,7 @@ func TestScanRequest_ResourcesReadHTTPURIUsesURLPolicy(t *testing.T) {
 
 			verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
 			if verdict.Clean {
-				t.Fatal("resources/read HTTP(S) URI to metadata endpoint should be blocked by URL policy")
+				t.Fatal("resources/read HTTP(S) URI to protected address should be blocked by URL policy")
 			}
 			if len(verdict.URLFindings) != 1 {
 				t.Fatalf("URLFindings len = %d, want 1: %+v", len(verdict.URLFindings), verdict)

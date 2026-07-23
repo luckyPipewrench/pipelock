@@ -6,6 +6,7 @@ package setup
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -14,6 +15,48 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestSourceBuildVersionIsArtifactSafe(t *testing.T) {
+	oldVersion := cliutil.Version
+	t.Cleanup(func() { cliutil.Version = oldVersion })
+
+	ociTagPattern := regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+	kubernetesLabelPattern := regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
+	tests := []struct {
+		name    string
+		version string
+	}{
+		{name: "unknown source build", version: "0.0.0-dev.unknown"},
+		{name: "detailed source build", version: "0.0.0-dev.20260721.g680cd0614d2e"},
+		{name: "dirty detailed source build", version: "0.0.0-dev.20260721.g680cd0614d2e.dirty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cliutil.Version = tt.version
+
+			image := parseImageRef(resolveImage(sidecarOptions{}))
+			if image.Tag != tt.version {
+				t.Fatalf("image tag = %q, want %q", image.Tag, tt.version)
+			}
+			if !ociTagPattern.MatchString(image.Tag) {
+				t.Fatalf("image tag %q contains an OCI-unsafe character", image.Tag)
+			}
+
+			label := managedComponentLabels("proxy")["app.kubernetes.io/version"]
+			if label != tt.version {
+				t.Fatalf("version label = %q, want %q", label, tt.version)
+			}
+			if !kubernetesLabelPattern.MatchString(label) {
+				t.Fatalf("version label %q contains a Kubernetes-unsafe character", label)
+			}
+
+			if len(image.Tag) > 128 || len(label) > 63 {
+				t.Fatalf("version-derived artifact values exceed limits (OCI tag 128, k8s label 63): tag=%d label=%d", len(image.Tag), len(label))
+			}
+		})
+	}
+}
 
 func envValue(t *testing.T, envList []interface{}, name string) string {
 	t.Helper()

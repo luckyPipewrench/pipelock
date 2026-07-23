@@ -329,7 +329,7 @@ func newConnectAuditContext(logger *audit.Logger, target, clientIP, requestID, a
 }
 
 // Version is set at build time via ldflags.
-var Version = "0.1.0-dev"
+var Version = "0.0.0-dev.unknown"
 
 // editionSnapshot wraps an Edition for atomic pointer storage.
 type editionSnapshot struct{ edition.Edition }

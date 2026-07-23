@@ -321,9 +321,13 @@ func TestIsNewer(t *testing.T) {
 		{"v2.7.0", "v3.0.0", true},
 		{"v2.7.0", "v2.7.0", false},
 		{"v2.8.0", "v2.7.0", false},
-		{"0.1.0-dev", "v2.8.0", true}, // dev build -> any real release is newer
-		{"unknown", "v2.8.0", true},   // unparseable current -> newer
-		{"v2.7.0", "garbage", false},  // unparseable latest -> not newer
+		{"0.0.0-dev.unknown", "v2.8.0", true},
+		{"0.0.0-dev.unknown.dirty", "v2.8.0", true},
+		{"0.0.0-dev.unknown-date.g680cd0614d2e", "v2.8.0", true},
+		{"0.0.0-dev.20260721.g680cd0614d2e", "v2.8.0", true},
+		{"0.0.0-dev.20260721.g680cd0614d2e.dirty", "v2.8.0", true},
+		{"unknown", "v2.8.0", true},  // unparseable current -> newer
+		{"v2.7.0", "garbage", false}, // unparseable latest -> not newer
 	}
 	for _, tc := range cases {
 		t.Run(tc.cur+"->"+tc.latest, func(t *testing.T) {

@@ -466,7 +466,7 @@ jobs:
 
       - name: Build binary
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev.unknown")
           go build -trimpath -ldflags "-s -w \
             -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=$VERSION \
             -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=$VERSION" \
@@ -477,7 +477,7 @@ jobs:
 
       - name: Build binary (enterprise)
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev.unknown")
           go build -tags enterprise -trimpath -ldflags "-s -w \
             -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=$VERSION \
             -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=$VERSION" \

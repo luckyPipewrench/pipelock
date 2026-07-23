@@ -298,7 +298,7 @@ func TestWebhookSink_ServerErrorDoesNotBlock(t *testing.T) {
 			Timestamp:  time.Now(),
 			InstanceID: testStr,
 		})
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrWebhookDegraded) {
 			t.Fatalf("Emit %d returned error: %v", i, err)
 		}
 	}

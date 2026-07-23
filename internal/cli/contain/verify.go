@@ -1858,26 +1858,72 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from direct canary %s", oneLine(out), directEgressCanaryURL)
 	}
-	if isPostConnectCurlExit(code) {
+	outcome, after, afterErr := classifyDirectEgressAttribution(code, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
+		return env.dropCounter(ctx, env)
+	})
+	switch outcome {
+	case egressAttrFailPostConnect:
 		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit=%d): %s", code, oneLine(out))
-	}
-	if env.dropCounter == nil {
+	case egressAttrUnknownNoCounter:
 		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but no DROP counter reader is available; containment attribution is inconclusive", code)
-	}
-	after, afterErr := env.dropCounter(ctx, env)
-	if beforeErr != nil {
+	case egressAttrUnknownBeforeErr:
 		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but containment attribution is inconclusive: read DROP counter before probe: %v", code, beforeErr)
+	case egressAttrUnknownAfterErr:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but containment attribution is inconclusive: read DROP counter after probe: %v", code, afterErr)
+	case egressAttrUnknownNoDelta:
+		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but managed DROP counter did not increase (%d -> %d); failure may be unrelated to containment", code, before, after)
+	case egressAttrUnknownUnexpectedExit:
+		return statusUnknown, fmt.Sprintf("curl failed with unexpected exit=%d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code)
+	default: // egressAttrPass
+		return statusPass, fmt.Sprintf("curl blocked (exit=%d); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
+	}
+}
+
+// egressAttribution is the transport-neutral verdict of the shared direct-egress
+// counter-attribution decision tree. Callers map it to their own result type.
+type egressAttribution int
+
+const (
+	egressAttrFailPostConnect       egressAttribution = iota // connection established -> containment hole
+	egressAttrUnknownNoCounter                               // no DROP counter reader available
+	egressAttrUnknownBeforeErr                               // reading the counter before the probe failed
+	egressAttrUnknownAfterErr                                // reading the counter after the probe failed
+	egressAttrUnknownNoDelta                                 // counter did not increase -> unattributable
+	egressAttrUnknownUnexpectedExit                          // counter delta but a non-dial-blocked exit
+	egressAttrPass                                           // dial-blocked exit AND positive counter delta
+)
+
+// classifyDirectEgressAttribution is the SINGLE source of truth for the
+// direct-egress containment verdict on a NON-ZERO canary exit, shared by
+// `contain verify` (probeCCAgentEgressDenied) and `contain doctor`
+// (checkRawEgressBlocked) so the two can never silently disagree about whether
+// containment held. Callers handle skip cases and the code==0 unexpected-success
+// case first, then map the returned attribution to their own result type and
+// wording. Branch order is security-critical: a post-connect exit is a
+// containment hole regardless of the counter, and PASS requires BOTH a
+// dial-blocked exit and a positive managed DROP-counter delta. readAfter is
+// invoked lazily so the post-connect and no-counter paths perform no counter read.
+func classifyDirectEgressAttribution(code int, hasCounter bool, before uint64, beforeErr error, readAfter func() (uint64, error)) (outcome egressAttribution, after uint64, afterErr error) {
+	if isPostConnectCurlExit(code) {
+		return egressAttrFailPostConnect, 0, nil
+	}
+	if !hasCounter {
+		return egressAttrUnknownNoCounter, 0, nil
+	}
+	after, afterErr = readAfter()
+	if beforeErr != nil {
+		return egressAttrUnknownBeforeErr, after, afterErr
 	}
 	if afterErr != nil {
-		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but containment attribution is inconclusive: read DROP counter after probe: %v", code, afterErr)
+		return egressAttrUnknownAfterErr, after, afterErr
 	}
 	if after <= before {
-		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but managed DROP counter did not increase (%d -> %d); failure may be unrelated to containment", code, before, after)
+		return egressAttrUnknownNoDelta, after, afterErr
 	}
 	if !isDirectEgressBlockedCurlExit(code) {
-		return statusUnknown, fmt.Sprintf("curl failed with unexpected exit=%d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code)
+		return egressAttrUnknownUnexpectedExit, after, afterErr
 	}
-	return statusPass, fmt.Sprintf("curl blocked (exit=%d); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
+	return egressAttrPass, after, afterErr
 }
 
 // isDirectEgressBlockedCurlExit identifies dial outcomes consistent with either

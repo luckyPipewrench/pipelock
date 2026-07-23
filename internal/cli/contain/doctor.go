@@ -453,34 +453,32 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 		return fail(classInfra, detail,
 			"the nftables owner-match egress rule is missing or broken; run `pipelock contain verify` and re-install")
 	}
-	if isPostConnectCurlExit(code) {
+	outcome, after, afterErr := classifyDirectEgressAttribution(code, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
+		return env.dropCounter(ctx)
+	})
+	switch outcome {
+	case egressAttrFailPostConnect:
 		return fail(classInfra,
 			fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit %d): %s", code, oneLine(out)),
 			"verify the nftables owner-match drop is present (`pipelock contain verify`); a post-connect error means the outbound dial escaped containment")
-	}
-
-	if env.dropCounter == nil {
+	case egressAttrUnknownNoCounter:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but no DROP counter reader is available; containment attribution is inconclusive", code))
-	}
-	after, afterErr := env.dropCounter(ctx)
-	if beforeErr != nil {
+	case egressAttrUnknownBeforeErr:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter before the probe failed: %v", code, beforeErr))
-	}
-	if afterErr != nil {
+	case egressAttrUnknownAfterErr:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter after the probe failed: %v", code, afterErr))
-	}
-	if after <= before {
+	case egressAttrUnknownNoDelta:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but the managed DROP counter did not increase (%d -> %d)", code, before, after))
-	}
-	if !isDirectEgressBlockedCurlExit(code) {
+	case egressAttrUnknownUnexpectedExit:
 		return unknownInfra(fmt.Sprintf("direct egress curl failed with unexpected exit %d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code))
-	}
-	return doctorResult{
-		status: statusPass,
-		detail: fmt.Sprintf("direct egress blocked at managed nftables DROP (curl exit %d, counter %d -> %d); proxy-unaware tools fail here", code, before, after),
-		remediation: "a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — " +
-			"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
-		class: classProxyCompat,
+	default: // egressAttrPass
+		return doctorResult{
+			status: statusPass,
+			detail: fmt.Sprintf("direct egress blocked at managed nftables DROP (curl exit %d, counter %d -> %d); proxy-unaware tools fail here", code, before, after),
+			remediation: "a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — " +
+				"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
+			class: classProxyCompat,
+		}
 	}
 }
 

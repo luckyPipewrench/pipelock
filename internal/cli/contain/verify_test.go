@@ -146,6 +146,45 @@ func TestEnforcementProbesSkipsByStableName(t *testing.T) {
 	}
 }
 
+func TestProbeListedToolTargets_AgentContextFailuresSkip(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		runErr error
+		want   string
+	}{
+		{name: "runner failure", runErr: errors.New("sudo unavailable"), want: "could not verify"},
+		{name: "agent missing", output: "sudo: unknown user pipelock-agent", want: "user missing"},
+		{name: "sudo refusal", output: testSudoNeedsPwd, want: "sudo -n refused"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "tool")
+			writeFakeWrapper(t, target, 0o755)
+			env := makeProbeEnv(t, func(e *probeEnv) {
+				e.readFile = func(path string) ([]byte, error) {
+					if path != e.toolsListPath {
+						t.Fatalf("read path = %q, want %q", path, e.toolsListPath)
+					}
+					return []byte("tool\t" + target + "\n"), nil
+				}
+				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					if name != testSudoCmd || !containsArg(args, target) {
+						t.Fatalf("command = %q %v, want sudo test of %q", name, args, target)
+					}
+					return tc.output, 1, tc.runErr
+				}
+			})
+
+			status, detail := probeListedToolTargets(context.Background(), env)
+			if status != statusSkip || !strings.Contains(detail, tc.want) {
+				t.Fatalf("result = %q %q, want skip containing %q", status, detail, tc.want)
+			}
+		})
+	}
+}
+
 // makeProbeEnv builds a probeEnv with sane defaults plus overrides.
 // The pure-Go probes (1, 4, 5, 6, 7) get filesystem and lookup stubs;
 // the shell-out probes (2, 3, 8, 9) get runCmd.
@@ -1225,6 +1264,43 @@ func containTestLookup(name string) (*user.User, error) {
 	}
 }
 
+func TestNFTLineParsers_HandleEscapedQuotesFailClosed(t *testing.T) {
+	line := `comment "escaped \" quote and \\ slash { }" {`
+	fields := nftLineFields(line)
+	if len(fields) != 3 || fields[0] != "comment" || fields[2] != "{" {
+		t.Fatalf("fields = %q, want quoted comment plus structural brace", fields)
+	}
+	if delta := nftLineBraceDelta(line); delta != 1 {
+		t.Fatalf("brace delta = %d, want 1 with quoted braces ignored", delta)
+	}
+	if !nftLineHasBalancedQuotes(line) {
+		t.Fatal("escaped quote sequence was treated as an unterminated quote")
+	}
+	if isNFTChainDeclaration(`chain output_filter { comment "unterminated`, testChain) {
+		t.Fatal("unterminated chain declaration was accepted")
+	}
+
+	malformedChain := `table inet pipelock_containment {
+	chain output_filter {
+		comment "unterminated
+		meta skuid 987 drop
+	}
+}`
+	candidateMatched := false
+	if chainHasLineBeforeAgentDrop(malformedChain, testChain, 987, func(line string) bool {
+		if strings.Contains(line, "meta skuid") {
+			candidateMatched = true
+			return true
+		}
+		return false
+	}) {
+		t.Fatal("malformed chain output produced a match")
+	}
+	if candidateMatched {
+		t.Fatal("matcher was invoked on a rule after an unterminated quote")
+	}
+}
+
 // Probe 4: wrapper_scripts_installed -----------------------------------------
 
 func TestProbeWrapperScripts(t *testing.T) {
@@ -1710,6 +1786,28 @@ func TestManagedContainmentDropPacketCount(t *testing.T) {
 			wantErr: "parse managed catch-all DROP packet counter",
 		},
 		{
+			name: "rejects multiple counters in one managed rule",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 12 bytes 0 counter packets 13 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "multiple packet counters",
+		},
+		{
+			name: "rejects extra bookkeeping predicates",
+			output: `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 counter packets 12 bytes 0 meta mark 1 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
+	}
+}`,
+			chain:   testChain,
+			uid:     987,
+			wantErr: "no managed catch-all DROP packet counter",
+		},
+		{
 			name: "accepts maximum uint64 packet count",
 			output: `table inet pipelock_containment {
 	chain output_filter {
@@ -2033,6 +2131,15 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 			wantDetail:    "may be unrelated to containment",
 		},
 		{
+			name:          "DNS failure with unrelated counter delta is inconclusive",
+			stdout:        "curl: (6) Could not resolve host: example.com",
+			code:          6,
+			counterBefore: 12,
+			counterAfter:  13,
+			wantStatus:    statusUnknown,
+			wantDetail:    "unexpected exit=6 despite a counter delta",
+		},
+		{
 			name:          "timeout without counter delta is inconclusive",
 			stdout:        "curl: (28) Connection timed out",
 			code:          28,
@@ -2051,22 +2158,22 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 			wantDetail:    "did not increase",
 		},
 		{
-			name:          "TLS failure without counter delta is inconclusive",
+			name:          "TLS handshake proves post-connect breach without counter delta",
 			stdout:        "curl: (35) TLS connect error",
 			code:          35,
 			counterBefore: 12,
 			counterAfter:  12,
-			wantStatus:    statusUnknown,
-			wantDetail:    "may be unrelated to containment",
+			wantStatus:    statusFail,
+			wantDetail:    "reached the network",
 		},
 		{
-			name:          "TLS failure with unrelated counter delta is still inconclusive",
-			stdout:        "curl: (35) TLS connect error",
-			code:          35,
+			name:          "post-connect empty reply fails despite counter delta",
+			stdout:        "curl: (52) Empty reply from server",
+			code:          52,
 			counterBefore: 12,
 			counterAfter:  13,
-			wantStatus:    statusUnknown,
-			wantDetail:    "unexpected exit=35 despite a counter delta",
+			wantStatus:    statusFail,
+			wantDetail:    "CONTAINMENT HOLE",
 		},
 		{
 			name:            "no counter reader is inconclusive even for refused connection",
@@ -2436,6 +2543,46 @@ func TestCappedBuffer(t *testing.T) {
 	})
 }
 
+type shortWriteRecorder struct {
+	calls int
+}
+
+func (w *shortWriteRecorder) Write(p []byte) (int, error) {
+	w.calls++
+	return len(p) - 1, nil
+}
+
+type failAfterWriter struct {
+	successfulWrites int
+	writes           int
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.writes >= w.successfulWrites {
+		return 0, errors.New("write blew up")
+	}
+	w.writes++
+	return len(p), nil
+}
+
+func TestErrorTrackingWriter_ShortWriteIsSticky(t *testing.T) {
+	dst := &shortWriteRecorder{}
+	w := &errorTrackingWriter{w: dst}
+
+	if _, err := w.Write([]byte("record")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if !errors.Is(w.Err(), io.ErrShortWrite) {
+		t.Fatalf("tracked error = %v, want %v", w.Err(), io.ErrShortWrite)
+	}
+	if _, err := w.Write([]byte("second")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("sticky write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if dst.calls != 1 {
+		t.Fatalf("underlying writer calls = %d, want 1 after sticky failure", dst.calls)
+	}
+}
+
 // Runner ---------------------------------------------------------------------
 
 func TestRunVerify_TextOutput_AllPass(t *testing.T) {
@@ -2711,6 +2858,31 @@ func TestRunVerify_TextWriteFailureFailsClosed(t *testing.T) {
 	if err := runVerify(cmd, allPassEnv(t), verifyOpts{}); err == nil ||
 		!strings.Contains(err.Error(), "writing verify header") {
 		t.Fatalf("text output failure = %v, want surfaced header write error", err)
+	}
+}
+
+func TestRunVerify_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
+	tests := []struct {
+		name             string
+		jsonOutput       bool
+		successfulWrites int
+		want             string
+	}{
+		{name: "text probe", successfulWrites: 1, want: "writing probe 1 text"},
+		{name: "text aggregate", successfulWrites: 13, want: "writing verify aggregate"},
+		{name: "JSON probe", jsonOutput: true, want: "encoding probe 1 JSON"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 12, want: "encoding aggregate JSON"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newVerifyCmd(t)
+			cmd.SetOut(&failAfterWriter{successfulWrites: tc.successfulWrites})
+			err := runVerify(cmd, allPassEnv(t), verifyOpts{jsonOutput: tc.jsonOutput})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("output failure = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 

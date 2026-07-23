@@ -253,6 +253,7 @@ type errorTrackingWriter struct {
 	err error
 }
 
+// Write forwards p while recording the first error or short write.
 func (w *errorTrackingWriter) Write(p []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
@@ -267,6 +268,7 @@ func (w *errorTrackingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// Err returns the first write failure observed by Write.
 func (w *errorTrackingWriter) Err() error {
 	return w.err
 }
@@ -351,6 +353,8 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s", len(env.workspacePaths), env.agentUserName)
 }
 
+// probeListedToolTargets verifies each configured wrapper target exists and is
+// executable from the contained agent's user context.
 func probeListedToolTargets(ctx context.Context, env *probeEnv) (string, string) {
 	data, err := env.readFile(env.toolsListPath)
 	if err != nil {
@@ -849,6 +853,8 @@ func parseSystemdShow(out string) map[string]string {
 // Probe 3: nftables_containment_ruleset
 // ---------------------------------------------------------------------------
 
+// probeNFTContainment verifies the installed nftables boundary structure,
+// ordering, UID ownership, and persistence wiring.
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "list", "table", "inet", env.nftTable)
 	if err != nil {
@@ -1076,6 +1082,8 @@ func chainHasAgentDNSDropBeforeCatchAll(out, chainName string, agentUID int, pro
 	})
 }
 
+// chainHasUnsafeVerdictBeforeAgentDrop detects an unmanaged verdict that can
+// bypass or intercept traffic before the contained agent's catch-all DROP.
 func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmentUIDs, proxyPort int) bool {
 	return chainHasLineBeforeAgentDrop(out, chainName, uids.agentUID, func(line string) bool {
 		// Before the agent catch-all drop, only the managed operator/proxy
@@ -1108,6 +1116,7 @@ func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmen
 	})
 }
 
+// terminalSkuidUIDVerdict extracts the UID from an exact skuid verdict rule.
 func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 	fields := nftLineFields(line)
 	for i := 0; i+1 < len(fields); i++ {
@@ -1126,6 +1135,7 @@ func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 	return 0, false
 }
 
+// lineHasSkuid reports whether an nft rule matches uid via skuid.
 func lineHasSkuid(line string, uid int) bool {
 	want := strconv.Itoa(uid)
 	fields := nftLineFields(line)
@@ -1137,6 +1147,7 @@ func lineHasSkuid(line string, uid int) bool {
 	return false
 }
 
+// lineHasTerminalSkuidVerdict matches an exact UID with a terminal verdict.
 func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	fields := nftLineFields(line)
 	uidText := strconv.Itoa(uid)
@@ -1151,6 +1162,7 @@ func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	return fieldsAreNFTBookkeeping(fields[skuidAt+1 : verdictAt])
 }
 
+// lineHasSkuidProtocolDPortVerdict matches the canonical UID/protocol/port rule.
 func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, port int, verdict string) bool {
 	fields := nftLineFields(line)
 	skuidAt := indexSkuidUID(fields, strconv.Itoa(uid))
@@ -1185,6 +1197,8 @@ func indexTokenAfter(fields []string, want string, start int) int {
 	return -1
 }
 
+// fieldsAreNFTBookkeeping accepts only counter and log tokens between the
+// managed rule's UID predicate and DROP verdict.
 func fieldsAreNFTBookkeeping(fields []string) bool {
 	inPrefix := false
 	seenCounter := false
@@ -1225,6 +1239,7 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 	return !inPrefix && !expectCount
 }
 
+// lineHasIPDAddr reports whether an nft rule contains an exact IPv4 destination.
 func lineHasIPDAddr(line, addr string) bool {
 	fields := nftLineFields(line)
 	for i := 0; i+2 < len(fields); i++ {
@@ -1235,6 +1250,7 @@ func lineHasIPDAddr(line, addr string) bool {
 	return false
 }
 
+// lineHasDPort reports whether an nft rule contains an exact destination port.
 func lineHasDPort(line string, port int) bool {
 	want := strconv.Itoa(port)
 	fields := nftLineFields(line)
@@ -1246,6 +1262,7 @@ func lineHasDPort(line string, port int) bool {
 	return false
 }
 
+// lineHasToken finds an exact unquoted nft syntax token.
 func lineHasToken(line, want string) bool {
 	for _, field := range nftLineFields(line) {
 		if field == want {
@@ -1255,6 +1272,7 @@ func lineHasToken(line, want string) bool {
 	return false
 }
 
+// lineHasAnyToken finds any requested unquoted nft syntax token.
 func lineHasAnyToken(line string, wants ...string) bool {
 	for _, field := range nftLineFields(line) {
 		for _, want := range wants {
@@ -1375,6 +1393,7 @@ func nftLineHasBalancedQuotes(line string) bool {
 	return !inQuote
 }
 
+// isNFTChainDeclaration reports whether line declares exactly chainName.
 func isNFTChainDeclaration(line, chainName string) bool {
 	if !nftLineHasBalancedQuotes(line) {
 		return false
@@ -1388,6 +1407,7 @@ func isNFTChainDeclaration(line, chainName string) bool {
 	return line == "chain "+chainName+"{"
 }
 
+// outputHasNFTChainDeclaration finds an exact chain declaration in nft output.
 func outputHasNFTChainDeclaration(out, chainName string) bool {
 	for _, raw := range strings.Split(out, "\n") {
 		if isNFTChainDeclaration(strings.TrimSpace(raw), chainName) {
@@ -1397,6 +1417,7 @@ func outputHasNFTChainDeclaration(out, chainName string) bool {
 	return false
 }
 
+// chainHasLineBeforeAgentDrop applies match only before the managed agent DROP.
 func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func(string) bool) bool {
 	inChain := false
 	depth := 0
@@ -1429,6 +1450,7 @@ func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func
 	return false
 }
 
+// chainHasLine applies match only within the requested, structurally valid chain.
 func chainHasLine(out, chainName string, match func(string) bool) bool {
 	inChain := false
 	depth := 0
@@ -1676,6 +1698,7 @@ func curlNoProxyArgsFor(curl string) []string {
 	}
 }
 
+// curlDirectCanaryArgsFor builds the bounded DNS-free direct-egress probe.
 func curlDirectCanaryArgsFor(curl string) []string {
 	if curl == "" {
 		curl = defaultCurlPath
@@ -1835,6 +1858,9 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from direct canary %s", oneLine(out), directEgressCanaryURL)
 	}
+	if isPostConnectCurlExit(code) {
+		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit=%d): %s", code, oneLine(out))
+	}
 	if env.dropCounter == nil {
 		return statusUnknown, fmt.Sprintf("curl failed (exit=%d), but no DROP counter reader is available; containment attribution is inconclusive", code)
 	}
@@ -1854,8 +1880,28 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 	return statusPass, fmt.Sprintf("curl blocked (exit=%d); managed DROP counter increased (%d -> %d) — containment enforced", code, before, after)
 }
 
+// isDirectEgressBlockedCurlExit identifies dial outcomes consistent with either
+// an explicit rejection or a silently dropped SYN.
 func isDirectEgressBlockedCurlExit(code int) bool {
 	return code == 7 || code == 28
+}
+
+// isPostConnectCurlExit identifies curl failures that require a connection to
+// have progressed beyond the outbound dial. These are containment failures even
+// if unrelated same-UID traffic also increments the managed DROP counter.
+func isPostConnectCurlExit(code int) bool {
+	switch code {
+	// Server/protocol responses or completed transfer setup.
+	case 8, 16, 18, 21, 22, 23, 25, 30, 31, 33, 36, 38, 39, 47,
+		52, 61, 63, 64, 67, 68, 69, 70, 71, 72, 73, 74, 78, 79,
+		84, 85, 86, 87, 88, 92, 94, 95, 96:
+		return true
+	// TLS peer/handshake evidence or network I/O after connect.
+	case 35, 51, 55, 56, 60, 80, 83, 90, 91, 97:
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------

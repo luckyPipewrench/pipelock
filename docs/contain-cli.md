@@ -207,7 +207,7 @@ Checks:
 | 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error — no hang, no bypass. |
 | 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary coincides with an increment in the managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 
-Each non-passing check prints a one-line remediation tagged with its class. For example, a proxy-unaware tool produces:
+Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 
 ```text
   [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked at managed nftables DROP (curl exit 7, counter 12 -> 13); proxy-unaware tools fail here

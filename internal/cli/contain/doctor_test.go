@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,26 @@ func TestDoctorCounterProbeEnvUsesLiveDoctorOverrides(t *testing.T) {
 	}
 	if base.port != defaultProxyPort || base.agentUserName != defaultAgentUser {
 		t.Fatalf("base probe env was mutated: port=%d agent=%q", base.port, base.agentUserName)
+	}
+}
+
+func TestDoctorDropCounterReaderUsesLiveDoctorOverrides(t *testing.T) {
+	base := &probeEnv{}
+	doctor := &doctorEnv{port: 9443, agentUserName: "custom-agent"}
+	base.dropCounter = func(_ context.Context, got *probeEnv) (uint64, error) {
+		if got.port != doctor.port || got.agentUserName != doctor.agentUserName {
+			t.Fatalf("counter env = port %d agent %q, want port %d agent %q",
+				got.port, got.agentUserName, doctor.port, doctor.agentUserName)
+		}
+		return 42, nil
+	}
+
+	got, err := doctorDropCounterReader(base, doctor)(context.Background())
+	if err != nil {
+		t.Fatalf("counter read: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("counter = %d, want 42", got)
 	}
 }
 
@@ -452,6 +473,37 @@ func TestRunDoctor_TextWriteFailureFailsClosed(t *testing.T) {
 		!strings.Contains(err.Error(), "writing doctor header") {
 		t.Fatalf("text output failure = %v, want surfaced header write error", err)
 	}
+
+	jsonCmd := &cobra.Command{}
+	jsonCmd.SetOut(errWriter{})
+	if err := runDoctor(jsonCmd, allPassDoctorEnv(t), doctorOpts{jsonOutput: true}); err == nil ||
+		!strings.Contains(err.Error(), "encoding check 1 JSON") {
+		t.Fatalf("JSON output failure = %v, want surfaced check 1 encode error", err)
+	}
+}
+
+func TestRunDoctor_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
+	tests := []struct {
+		name             string
+		jsonOutput       bool
+		successfulWrites int
+		want             string
+	}{
+		{name: "text check", successfulWrites: 1, want: "writing check 1 text"},
+		{name: "text aggregate", successfulWrites: 8, want: "writing doctor aggregate"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 6, want: "encoding aggregate JSON"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.SetOut(&failAfterWriter{successfulWrites: tc.successfulWrites})
+			err := runDoctor(cmd, allPassDoctorEnv(t), doctorOpts{jsonOutput: tc.jsonOutput})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("output failure = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestDoctorCmd_RunEHappyPath(t *testing.T) {
@@ -539,10 +591,41 @@ func TestCheckRawEgress_CompletedRequestIsHole(t *testing.T) {
 
 func TestCheckRawEgress_AttributedDialBlockedExitsPass(t *testing.T) {
 	for _, code := range []int{7, 28} {
-		env := newDoctorEnv(t, func([]string) (string, int, error) { return "curl error", code, nil })
-		if res := checkRawEgressBlocked(context.Background(), env); res.status != statusPass {
-			t.Errorf("curl exit %d plus counter delta should prove a blocked dial: got %q", code, res.status)
-		}
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			env := newDoctorEnv(t, func([]string) (string, int, error) { return "curl error", code, nil })
+			if res := checkRawEgressBlocked(context.Background(), env); res.status != statusPass {
+				t.Errorf("curl exit %d plus counter delta should prove a blocked dial: got %q", code, res.status)
+			}
+		})
+	}
+}
+
+func TestCheckRawEgress_PostConnectExitsFailClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{name: "TLS handshake", code: 35},
+		{name: "empty reply", code: 52},
+		{name: "send error", code: 55},
+		{name: "receive error", code: 56},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// newDoctorEnv supplies an increasing counter. A post-connect exit
+			// must still FAIL; unrelated same-UID traffic cannot convert it to PASS.
+			env := newDoctorEnv(t, func([]string) (string, int, error) {
+				return "curl reached peer then failed", tc.code, nil
+			})
+			res := checkRawEgressBlocked(context.Background(), env)
+			if res.status != statusFail || res.class != classInfra {
+				t.Fatalf("post-connect exit %d = status %q class %q, want fail/infra", tc.code, res.status, res.class)
+			}
+			if !strings.Contains(res.detail, "CONTAINMENT HOLE") {
+				t.Fatalf("post-connect detail = %q, want containment-hole evidence", res.detail)
+			}
+		})
 	}
 }
 
@@ -557,11 +640,6 @@ func TestCheckRawEgress_UnattributableFailuresAreUnknown(t *testing.T) {
 			name: "DNS failure cannot match literal-IP canary",
 			code: 6,
 			want: "unexpected exit 6",
-		},
-		{
-			name: "TLS failure cannot match HTTP canary",
-			code: 35,
-			want: "unexpected exit 35",
 		},
 		{
 			name: "timeout without counter delta",

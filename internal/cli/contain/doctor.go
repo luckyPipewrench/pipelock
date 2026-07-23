@@ -66,6 +66,8 @@ type doctorEnv struct {
 // wiring without spawning real processes or touching the network.
 var doctorEnvFactory = defaultDoctorEnv
 
+// defaultDoctorEnv builds the production doctor environment and its live
+// managed DROP-counter reader.
 func defaultDoctorEnv() *doctorEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	counterEnv := defaultProbeEnv()
@@ -82,16 +84,24 @@ func defaultDoctorEnv() *doctorEnv {
 		readFile:       os.ReadFile,
 		stat:           os.Stat,
 	}
-	env.dropCounter = func(ctx context.Context) (uint64, error) {
-		// doctor flags are applied after the factory returns. Copy their live
-		// values into the verify environment on each read so a non-default
-		// installed proxy port is not mistaken for an unsafe loopback allow.
-		probe := doctorCounterProbeEnv(counterEnv, env)
-		return readContainmentDropCounter(ctx, &probe)
-	}
+	env.dropCounter = doctorDropCounterReader(counterEnv, env)
 	return env
 }
 
+// doctorDropCounterReader binds the verify counter reader to live doctor flag
+// values at each read, while retaining an injectable base environment for tests.
+func doctorDropCounterReader(base *probeEnv, env *doctorEnv) func(context.Context) (uint64, error) {
+	return func(ctx context.Context) (uint64, error) {
+		// doctor flags are applied after the factory returns. Copy their live
+		// values into the verify environment on each read so a non-default
+		// installed proxy port is not mistaken for an unsafe loopback allow.
+		probe := doctorCounterProbeEnv(base, env)
+		return probe.dropCounter(ctx, &probe)
+	}
+}
+
+// doctorCounterProbeEnv copies live doctor flag overrides into a probe
+// environment without mutating the shared defaults.
 func doctorCounterProbeEnv(base *probeEnv, env *doctorEnv) probeEnv {
 	probe := *base
 	probe.port = env.port
@@ -118,6 +128,7 @@ func skip(detail, remediation string) doctorResult {
 	return doctorResult{status: statusSkip, detail: detail, remediation: remediation}
 }
 
+// unknown returns an inconclusive result that must never count as a pass.
 func unknown(class, detail, remediation string) doctorResult {
 	return doctorResult{
 		status:      statusUnknown,
@@ -127,6 +138,7 @@ func unknown(class, detail, remediation string) doctorResult {
 	}
 }
 
+// unknownInfra returns an inconclusive infrastructure-attribution result.
 func unknownInfra(detail string) doctorResult {
 	return unknown(classInfra, detail, rawEgressAttributionRemediation)
 }
@@ -188,6 +200,8 @@ func (env *doctorEnv) curlProxyArgs(url string) []string {
 	return env.curlProxyArgsWithWriteOut(url, "%{http_code}")
 }
 
+// curlProxyArgsWithWriteOut builds the explicit proxy curl command with the
+// requested curl write-out signal.
 func (env *doctorEnv) curlProxyArgsWithWriteOut(url, writeOut string) []string {
 	curl := env.curlPath
 	if curl == "" {
@@ -366,6 +380,8 @@ func checkNodeThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 // resolved or the agent bypassed the proxy).
 const dnsFailureHost = "pipelock-doctor-nonexistent.invalid"
 
+// checkDNSFailure proves an invalid hostname is rejected by the proxy rather
+// than succeeding, hanging, or failing without proxy attribution.
 func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 	// %{http_connect} is the proxy's CONNECT response. It gives this check a
 	// positive attribution signal: a 5xx proves Pipelock handled the request and
@@ -394,6 +410,7 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")
 }
 
+// formatObservedHTTPCode renders a parsed status or an explicit parse failure.
 func formatObservedHTTPCode(code int, ok bool) string {
 	if !ok {
 		return "unparseable"
@@ -405,10 +422,13 @@ func formatObservedHTTPCode(code int, ok bool) string {
 // Check 6: raw-egress diagnostics
 // ---------------------------------------------------------------------------
 
+// curlDirectArgs builds the bounded DNS-free direct-egress probe.
 func (env *doctorEnv) curlDirectArgs() []string {
 	return curlDirectCanaryArgsFor(env.curlPath)
 }
 
+// checkRawEgressBlocked requires positive DROP-counter attribution before a
+// dial-level curl failure can pass; post-connect failures always fail closed.
 func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	var before uint64
 	var beforeErr error
@@ -432,6 +452,11 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 		}
 		return fail(classInfra, detail,
 			"the nftables owner-match egress rule is missing or broken; run `pipelock contain verify` and re-install")
+	}
+	if isPostConnectCurlExit(code) {
+		return fail(classInfra,
+			fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit %d): %s", code, oneLine(out)),
+			"verify the nftables owner-match drop is present (`pipelock contain verify`); a post-connect error means the outbound dial escaped containment")
 	}
 
 	if env.dropCounter == nil {
@@ -469,6 +494,7 @@ type doctorOpts struct {
 	url        string
 }
 
+// doctorCmd builds the live containment-diagnostics command.
 func doctorCmd() *cobra.Command {
 	var opts doctorOpts
 
@@ -528,6 +554,8 @@ type doctorRecord struct {
 	Class       string `json:"class,omitempty"`
 }
 
+// runDoctor executes all checks, writes fail-closed output, and returns the
+// aggregate CLI exit contract.
 func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 	ctx := cmd.Context()
 	if ctx == nil {

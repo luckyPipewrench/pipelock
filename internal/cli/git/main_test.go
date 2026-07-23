@@ -14,6 +14,10 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	dirMode := os.FileMode(0o700) | 0o050
+	if err := os.Chmod(dir, dirMode); err != nil {
+		panic(err)
+	}
 	cfgPath := filepath.Join(dir, "pipelock.yaml")
 	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
 		panic(err)

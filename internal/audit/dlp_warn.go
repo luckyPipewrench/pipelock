@@ -3,7 +3,11 @@
 
 package audit
 
-import "context"
+import (
+	"context"
+
+	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
+)
 
 // EventDLPWarn is emitted when a warn-mode DLP pattern matches.
 // The match is informational only - no enforcement action is taken.
@@ -19,6 +23,7 @@ func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport str
 		str("pattern", patternName).
 		str("severity", severity).
 		str("transport", transport).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerDLP, patternName)).
 		str("mitre_technique", technique).
 		str("method", ctx.Method()).
 		optStr("url", ctx.URL()).

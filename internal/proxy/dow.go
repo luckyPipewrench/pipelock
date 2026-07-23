@@ -16,8 +16,6 @@ const (
 	BudgetLoop       = "loop_detected"
 	BudgetRunaway    = "runaway_expansion"
 	BudgetCycle      = "cycle_detected"
-	BudgetRetry      = "retry_storm"
-	BudgetFanOut     = "fan_out"
 	BudgetConcurrent = "concurrent_limit"
 	BudgetWallClock  = "wall_clock"
 	BudgetToolCalls  = "tool_call_limit"
@@ -30,10 +28,7 @@ type DoWConfig struct {
 	MaxConcurrentToolCalls int    `yaml:"max_concurrent_tool_calls"`
 	MaxWallClockMinutes    int    `yaml:"max_wall_clock_minutes"`
 	MaxRetriesPerTool      int    `yaml:"max_retries_per_tool"`
-	MaxRetriesPerEndpoint  int    `yaml:"max_retries_per_endpoint"` // same domain+path (default 20, 0=unlimited)
 	LoopDetectionWindow    int    `yaml:"loop_detection_window"`
-	FanOutLimit            int    `yaml:"fan_out_limit"`
-	FanOutWindowSeconds    int    `yaml:"fan_out_window_seconds"`
 	Action                 string `yaml:"action"` // "block" or "warn"
 }
 
@@ -52,14 +47,6 @@ type toolCallEntry struct {
 	at       time.Time
 }
 
-// endpointEntry records an endpoint access for fan-out/retry detection.
-type endpointEntry struct {
-	domain string
-	path   string
-	status int
-	at     time.Time
-}
-
 // DoWTracker tracks denial-of-wallet signals for a single session.
 // Thread-safe via mutex for all state except inflight (atomic).
 type DoWTracker struct {
@@ -71,9 +58,6 @@ type DoWTracker struct {
 	// Tool call tracking (sliding window).
 	toolCalls      []toolCallEntry
 	totalToolCalls int
-
-	// Endpoint tracking (sliding window for fan-out and retry).
-	endpoints []endpointEntry
 
 	// Concurrent call tracking.
 	inflight atomic.Int32
@@ -152,47 +136,6 @@ func (t *DoWTracker) RecordToolCall(toolName, argsJSON string) DoWResult {
 
 	// Check cycle: A->B->A->B pattern.
 	if r := t.checkCycle(); !r.Allowed {
-		return r
-	}
-
-	return DoWResult{Allowed: true}
-}
-
-// RecordEndpoint records an HTTP endpoint access for fan-out and retry
-// detection. status is the HTTP response status code (0 for unknown).
-func (t *DoWTracker) RecordEndpoint(domain, path string, status int) DoWResult {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
-		return DoWResult{Allowed: false, Reason: "session closed", BudgetType: BudgetWallClock}
-	}
-
-	now := time.Now()
-	entry := endpointEntry{
-		domain: domain,
-		path:   path,
-		status: status,
-		at:     now,
-	}
-
-	t.endpoints = append(t.endpoints, entry)
-
-	// Trim endpoints to fan-out window.
-	windowSec := t.cfg.FanOutWindowSeconds
-	if windowSec <= 0 {
-		windowSec = 60 // default: 60 seconds
-	}
-	cutoff := now.Add(-time.Duration(windowSec) * time.Second)
-	t.endpoints = pruneEndpoints(t.endpoints, cutoff)
-
-	// Check fan-out: too many unique endpoints in window.
-	if r := t.checkFanOut(); !r.Allowed {
-		return r
-	}
-
-	// Check retry storm: same endpoint with non-2xx responses.
-	if r := t.checkRetryStorm(domain, path); !r.Allowed {
 		return r
 	}
 
@@ -359,59 +302,6 @@ func (t *DoWTracker) checkCycle() DoWResult {
 	return DoWResult{Allowed: true}
 }
 
-// checkFanOut checks for too many unique endpoints in the window.
-func (t *DoWTracker) checkFanOut() DoWResult {
-	limit := t.cfg.FanOutLimit
-	if limit <= 0 {
-		limit = 50 // default
-	}
-
-	unique := make(map[string]struct{})
-	for _, ep := range t.endpoints {
-		key := ep.domain + "/" + ep.path
-		unique[key] = struct{}{}
-	}
-
-	if len(unique) > limit {
-		return DoWResult{
-			Allowed:    false,
-			Reason:     fmt.Sprintf("fan-out: %d unique endpoints in window (limit %d)", len(unique), limit),
-			BudgetType: BudgetFanOut,
-		}
-	}
-	return DoWResult{Allowed: true}
-}
-
-// defaultMaxEndpointRetries is the fallback limit when MaxRetriesPerEndpoint
-// is zero (not explicitly configured). This matches the config default
-// documented on BudgetConfig.MaxRetriesPerEndpoint.
-const defaultMaxEndpointRetries = 20
-
-// checkRetryStorm checks for repeated requests to the same endpoint with
-// non-2xx status codes, indicating the agent is retrying a failing endpoint.
-func (t *DoWTracker) checkRetryStorm(domain, path string) DoWResult {
-	limit := t.cfg.MaxRetriesPerEndpoint
-	if limit <= 0 {
-		limit = defaultMaxEndpointRetries
-	}
-
-	failCount := 0
-	for _, ep := range t.endpoints {
-		if ep.domain == domain && ep.path == path && (ep.status < 200 || ep.status >= 300) {
-			failCount++
-		}
-	}
-
-	if failCount > limit {
-		return DoWResult{
-			Allowed:    false,
-			Reason:     fmt.Sprintf("retry storm: %s%s failed %d times (limit %d)", domain, path, failCount, limit),
-			BudgetType: BudgetRetry,
-		}
-	}
-	return DoWResult{Allowed: true}
-}
-
 // hashArgs returns a hex-encoded SHA-256 of the argument string.
 // Truncated to 16 chars for space efficiency in the sliding window.
 const argsHashLen = 16
@@ -419,15 +309,4 @@ const argsHashLen = 16
 func hashArgs(args string) string {
 	h := sha256.Sum256([]byte(args))
 	return fmt.Sprintf("%x", h[:argsHashLen/2])
-}
-
-// pruneEndpoints removes entries older than cutoff from the slice.
-func pruneEndpoints(entries []endpointEntry, cutoff time.Time) []endpointEntry {
-	pruned := entries[:0]
-	for _, e := range entries {
-		if e.at.After(cutoff) {
-			pruned = append(pruned, e)
-		}
-	}
-	return pruned
 }

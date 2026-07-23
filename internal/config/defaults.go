@@ -546,6 +546,10 @@ func Defaults() *Config {
 				SelfAuditInterval: "30s",
 				MaxAnchorLag:      "24h",
 			},
+			Anchor: FlightRecorderAnchor{
+				Interval:         DefaultFlightRecorderAnchorInterval.String(),
+				ReceiptThreshold: ptrUint64(DefaultFlightRecorderAnchorThreshold),
+			},
 		},
 		DashboardSnapshot: DashboardSnapshot{
 			Interval: "10s",

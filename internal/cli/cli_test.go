@@ -377,6 +377,35 @@ func TestCheckCmd_InvalidConfig(t *testing.T) {
 	}
 }
 
+func TestCheckCmd_RejectsUnenforcedConcurrentToolLimit(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "concurrent-limit.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`
+agents:
+  _default:
+    budget:
+      max_concurrent_tool_calls: 3
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"check", "--config", cfgPath})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected pipelock check to reject max_concurrent_tool_calls")
+	}
+	for _, want := range []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
 // TestCheckCmd_MediationEnvelopeSignRequiresKey proves that an operator
 // who ships a config with mediation_envelope.sign=true but no
 // signing_key_path gets a loud failure from `pipelock check` before

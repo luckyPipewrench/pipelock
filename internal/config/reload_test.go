@@ -182,6 +182,23 @@ func TestReloader_InvalidConfig(t *testing.T) {
 	}
 }
 
+func TestReloader_RejectsUnenforcedConcurrentToolLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(path, []byte("agents:\n  _default:\n    budget:\n      max_concurrent_tool_calls: 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReloader(path)
+	defer r.Close()
+	r.tryReload()
+
+	select {
+	case cfg := <-r.Changes():
+		t.Fatalf("invalid reserved concurrency config reached reload channel: %+v", cfg.Agents)
+	default:
+	}
+}
+
 func TestReloader_CloseStopsStart(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")

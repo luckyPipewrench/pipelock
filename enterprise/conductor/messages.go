@@ -753,12 +753,8 @@ func (b PolicyBundle) validate(allowLegacyPolicyHash bool) error {
 }
 
 func (b PolicyBundle) validateHashes(allowLegacyPolicyHash bool) error {
-	payloadHash, err := b.Payload.PayloadHash()
-	if err != nil {
+	if err := b.VerifyPayloadHash(); err != nil {
 		return err
-	}
-	if !strings.EqualFold(b.PayloadSHA256, payloadHash) {
-		return fmt.Errorf("%w: payload_sha256", ErrHashMismatch)
 	}
 	policyHash, err := b.Payload.PolicyHash()
 	if err != nil {
@@ -772,6 +768,20 @@ func (b PolicyBundle) validateHashes(allowLegacyPolicyHash bool) error {
 		if legacyErr != nil || !strings.EqualFold(b.PolicyHash, legacyPolicyHash) {
 			return fmt.Errorf("%w: policy_hash", ErrHashMismatch)
 		}
+	}
+	return nil
+}
+
+// VerifyPayloadHash checks the raw payload's cryptographic digest without
+// parsing ConfigYAML. Apply paths use it after signature verification and
+// before any semantic validation of the untrusted config payload.
+func (b PolicyBundle) VerifyPayloadHash() error {
+	payloadHash, err := b.Payload.PayloadHash()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(b.PayloadSHA256, payloadHash) {
+		return fmt.Errorf("%w: payload_sha256", ErrHashMismatch)
 	}
 	return nil
 }

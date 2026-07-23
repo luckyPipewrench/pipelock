@@ -325,7 +325,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateSandbox(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateFlightRecorder(); err != nil {
+	if err := c.validateFlightRecorder(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateDashboardSnapshot(); err != nil {
@@ -3358,7 +3358,10 @@ func (c *Config) validateSandbox() error {
 	return nil
 }
 
-func (c *Config) validateFlightRecorder() error {
+func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
+	if err := c.validateFlightRecorderAnchor(warnings); err != nil {
+		return err
+	}
 	if c.FlightRecorder.RequireReceipts {
 		switch {
 		case !c.FlightRecorder.Enabled:
@@ -3438,6 +3441,71 @@ func (c *Config) validateFlightRecorder() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateFlightRecorderAnchor(warnings *[]Warning) error {
+	anchorCfg := c.FlightRecorder.Anchor
+	rekorConfigured := strings.TrimSpace(anchorCfg.RekorURL) != ""
+	localConfigured := strings.TrimSpace(anchorCfg.LocalLog) != ""
+	if rekorConfigured && localConfigured {
+		return fmt.Errorf("flight_recorder.anchor.rekor_url and flight_recorder.anchor.local_log are mutually exclusive")
+	}
+	if rekorConfigured && strings.TrimSpace(anchorCfg.RekorKeyPath) == "" {
+		return fmt.Errorf("flight_recorder.anchor.rekor_key_path is required when flight_recorder.anchor.rekor_url is set")
+	}
+	if rekorConfigured {
+		parsed, err := url.Parse(strings.TrimSpace(anchorCfg.RekorURL))
+		if err != nil {
+			return fmt.Errorf("flight_recorder.anchor.rekor_url must be a valid URL: %w", err)
+		}
+		if parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return fmt.Errorf("flight_recorder.anchor.rekor_url must use http or https and include a host")
+		}
+		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("flight_recorder.anchor.rekor_url must not contain userinfo, query, or fragment components")
+		}
+		if parsed.Scheme == "http" && !strings.EqualFold(parsed.Hostname(), "localhost") {
+			ip := net.ParseIP(parsed.Hostname())
+			if ip == nil || !ip.IsLoopback() {
+				return fmt.Errorf("flight_recorder.anchor.rekor_url must use https unless the host is a local test endpoint")
+			}
+		}
+	}
+	if anchorCfg.Interval != "" {
+		interval, err := time.ParseDuration(strings.TrimSpace(anchorCfg.Interval))
+		if err != nil {
+			return fmt.Errorf("flight_recorder.anchor.interval must parse as a duration: %w", err)
+		}
+		if interval < 0 {
+			return fmt.Errorf("flight_recorder.anchor.interval must be non-negative")
+		}
+	}
+	if (rekorConfigured || localConfigured) &&
+		c.FlightRecorder.AnchorIntervalDuration() == 0 &&
+		c.FlightRecorder.AnchorReceiptThreshold() == 0 {
+		return fmt.Errorf("flight_recorder auto-anchor configured with no trigger: interval and receipt_threshold are both disabled")
+	}
+	if !rekorConfigured && !localConfigured && c.flightRecorderAnchorHasExplicitSettings() && warnings != nil {
+		*warnings = append(*warnings, Warning{
+			Field:   "flight_recorder.anchor",
+			Message: "has settings but no anchor point; set rekor_url or local_log to activate auto-anchoring",
+		})
+	}
+	return nil
+}
+
+func (c *Config) flightRecorderAnchorHasExplicitSettings() bool {
+	if len(c.rawBytes) == 0 {
+		return false
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(c.rawBytes, &root); err != nil || len(root.Content) == 0 {
+		return false
+	}
+	doc := root.Content[0]
+	flightRecorderNode := mappingValue(doc, "flight_recorder")
+	anchorNode := mappingValue(flightRecorderNode, "anchor")
+	return anchorNode != nil && anchorNode.Kind == yaml.MappingNode && len(anchorNode.Content) > 0
 }
 
 func (c *Config) validateDashboardSnapshot() error {

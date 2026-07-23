@@ -764,6 +764,12 @@ func (c *Config) ApplyDefaults() {
 	if c.FlightRecorder.EvidenceHealth.MaxAnchorLag == "" {
 		c.FlightRecorder.EvidenceHealth.MaxAnchorLag = "24h"
 	}
+	if c.FlightRecorder.Anchor.Interval == "" {
+		c.FlightRecorder.Anchor.Interval = DefaultFlightRecorderAnchorInterval.String()
+	}
+	if c.FlightRecorder.Anchor.ReceiptThreshold == nil {
+		c.FlightRecorder.Anchor.ReceiptThreshold = ptrUint64(DefaultFlightRecorderAnchorThreshold)
+	}
 	if c.DashboardSnapshot.Interval == "" {
 		c.DashboardSnapshot.Interval = DefaultDashboardSnapshotInterval.String()
 	}
@@ -801,6 +807,10 @@ func (c *Config) ApplyDefaults() {
 	if c.HealthWatchdog.IntervalSeconds <= 0 {
 		c.HealthWatchdog.IntervalSeconds = 2
 	}
+}
+
+func ptrUint64(v uint64) *uint64 {
+	return &v
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.

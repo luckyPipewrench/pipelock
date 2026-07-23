@@ -2607,6 +2607,165 @@ func TestEmit_LogDenialOfWalletRemediationHint(t *testing.T) {
 	}
 }
 
+func TestEmit_RemediationHintSweep(t *testing.T) {
+	ctx := LogContext{method: testMethodGet, url: "https://api.vendor.example/data", clientIP: testClientIP, requestID: "req-hint-sweep"}
+	tests := []struct {
+		name        string
+		log         func(*Logger)
+		wantEvent   EventType
+		wantHint    string
+		wantAction  string
+		wantScanner string
+	}{
+		{
+			name: "response scan",
+			log: func(logger *Logger) {
+				logger.LogResponseScan(ctx, actionBlock, 1, []string{"Prompt Injection"}, nil)
+			},
+			wantEvent: EventResponseScan,
+			wantHint:  "suppress:",
+		},
+		{
+			name: "websocket response scan",
+			log: func(logger *Logger) {
+				logger.LogWSScan(WSScanEvent{Target: "wss://api.vendor.example/ws", Direction: DirectionServerToClient, Action: "warn", MatchCount: 1, PatternNames: []string{"Prompt Injection"}})
+			},
+			wantEvent:   EventWSScan,
+			wantHint:    "suppress:",
+			wantAction:  "warn",
+			wantScanner: scannerpkg.AuditResponseScan,
+		},
+		{
+			name: "websocket address protection",
+			log: func(logger *Logger) {
+				logger.LogWSScan(WSScanEvent{Target: "wss://api.vendor.example/ws", Direction: DirectionClientToServer, Action: "warn", Scanner: scannerpkg.AuditAddressProtection, MatchCount: 1, PatternNames: []string{"unapproved destination"}})
+			},
+			wantEvent:   EventWSScan,
+			wantHint:    "address_protection.allowed_addresses",
+			wantAction:  "warn",
+			wantScanner: scannerpkg.AuditAddressProtection,
+		},
+		{
+			name: "header DLP",
+			log: func(logger *Logger) {
+				logger.LogHeaderDLP(ctx, "Authorization", actionBlock, []string{"Generic API Key"}, nil)
+			},
+			wantEvent: EventHeaderDLP,
+			wantHint:  "suppress:",
+		},
+		{
+			name: "body prompt injection",
+			log: func(logger *Logger) {
+				logger.LogBodyScan(ctx, EventBodyPromptInjection, actionBlock, 1, []string{"Prompt Injection"})
+			},
+			wantEvent: EventBodyPromptInjection,
+			wantHint:  "response_scanning.exempt_domains",
+		},
+		{
+			name: "chain detection",
+			log: func(logger *Logger) {
+				logger.LogChainDetection("lethal-trifecta", "critical", actionBlock, "send", "session-1")
+			},
+			wantEvent: EventChainDetection,
+			wantHint:  "tool_chain_detection.pattern_overrides",
+		},
+		{
+			name: "blocked media reason selects exact knob",
+			log: func(logger *Logger) {
+				logger.LogBlocked(ctx, scannerpkg.AuditMediaPolicy, "media_policy: image size 2048 exceeds limit 1024")
+			},
+			wantEvent: EventBlocked,
+			wantHint:  "media_policy.max_image_bytes",
+		},
+		{
+			name: "blocked media exposure",
+			log: func(logger *Logger) {
+				logger.LogMediaExposure(ctx, MediaExposureInfo{Transport: "fetch", ContentType: "audio/mpeg", SizeBytes: 2048, Blocked: true, BlockReason: "media_policy: audio stripped"})
+			},
+			wantEvent: EventMediaExposure,
+			wantHint:  "media_policy.strip_audio",
+		},
+		{
+			name: "provenance anomaly",
+			log: func(logger *Logger) {
+				logger.LogAnomaly(ctx, scannerpkg.AuditProvenance, "unsigned tool", 0)
+			},
+			wantEvent: EventAnomaly,
+			wantHint:  "mcp_tool_provenance.trusted_keys",
+		},
+		{
+			name: "request policy block",
+			log: func(logger *Logger) {
+				logger.LogBlocked(ctx, scannerpkg.AuditRequestPolicy, "deny-production-delete")
+			},
+			wantEvent: EventBlocked,
+			wantHint:  "request_policy.rules",
+		},
+		{
+			name: "kill switch deny",
+			log: func(logger *Logger) {
+				logger.LogKillSwitchDeny("fetch", "/fetch", "sentinel", "maintenance", testClientIP)
+			},
+			wantEvent: EventKillSwitchDeny,
+			wantHint:  "active kill-switch source",
+		},
+		{
+			name: "session baseline anomaly",
+			log: func(logger *Logger) {
+				logger.LogSessionAnomaly("session-1", "baseline_deviation", "tool count drift", testClientIP, "req-1", 3)
+			},
+			wantEvent: EventSessionAnomaly,
+			wantHint:  "pipelock baseline show",
+		},
+		{
+			name: "adaptive upgrade",
+			log: func(logger *Logger) {
+				logger.LogAdaptiveUpgrade("session-1", "critical", "warn", actionBlock, "response_scan", testClientIP, "req-1")
+			},
+			wantEvent: EventAdaptiveUpgrade,
+			wantHint:  "affected identity session",
+		},
+		{
+			name: "airlock deny",
+			log: func(logger *Logger) {
+				logger.LogAirlockDeny("session-1", "hard", "fetch", testMethodGet, testClientIP, "req-1")
+			},
+			wantEvent: EventAirlockDeny,
+			wantHint:  "airlock.timers",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+
+			tt.log(logger)
+
+			ev, ok := sink.lastEvent()
+			if !ok {
+				t.Fatal("expected emitted event")
+			}
+			if ev.Type != string(tt.wantEvent) {
+				t.Fatalf("type = %q, want %s", ev.Type, tt.wantEvent)
+			}
+			if tt.wantAction != "" && ev.Fields["action"] != tt.wantAction {
+				t.Fatalf("action = %v, want %s", ev.Fields["action"], tt.wantAction)
+			}
+			if tt.wantScanner != "" && ev.Fields["scanner"] != tt.wantScanner {
+				t.Fatalf("scanner = %v, want %s", ev.Fields["scanner"], tt.wantScanner)
+			}
+			if tt.wantScanner == scannerpkg.AuditAddressProtection && ev.Fields["action"] == scannerpkg.AuditAddressProtection {
+				t.Fatal("address-protection scanner label must not be emitted as the enforcement action")
+			}
+			hint, _ := ev.Fields["remediation_hint"].(string)
+			if !strings.Contains(hint, tt.wantHint) {
+				t.Fatalf("remediation_hint = %q, want substring %q", hint, tt.wantHint)
+			}
+		})
+	}
+}
+
 func TestEmit_LogResponseScanExempt(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

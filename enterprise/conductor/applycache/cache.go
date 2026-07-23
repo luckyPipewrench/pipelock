@@ -454,10 +454,13 @@ func resetBundleStatePaths(c *Cache) ([]string, error) {
 }
 
 func verifyBundle(now time.Time, bundle conductor.PolicyBundle, opts verifyOptions) error {
-	if err := bundle.ValidateAtTime(now); err != nil {
+	if err := bundle.VerifySignaturesAt(now, opts.Resolver); err != nil {
 		return err
 	}
-	if err := bundle.VerifySignaturesAt(now, opts.Resolver); err != nil {
+	if err := bundle.VerifyPayloadHash(); err != nil {
+		return err
+	}
+	if err := bundle.ValidateAtTime(now); err != nil {
 		return err
 	}
 	if bundle.StreamSwitchAuthorization != nil {

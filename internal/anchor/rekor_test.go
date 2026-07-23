@@ -606,7 +606,7 @@ func TestNormalizeRekorBaseURL(t *testing.T) {
 		want string
 		err  string
 	}{
-		{name: "default", raw: "", want: DefaultRekorURL},
+		{name: "empty", raw: "", err: "required"},
 		{name: "trim and canonicalize", raw: " HTTPS://Rekor.Example.Invalid/path/ ", want: "https://rekor.example.invalid/path"},
 		{name: "local http allowed", raw: "http://127.0.0.1:3000/", want: "http://127.0.0.1:3000"},
 		{name: "localhost http allowed", raw: "http://localhost:3000/", want: "http://localhost:3000"},
@@ -988,7 +988,7 @@ func TestRekorLogSubmitRejectsRequestFailures(t *testing.T) {
 		t.Fatalf("Submit bad URL err = %v, want parse error", err)
 	}
 	// Empty URL must fail closed rather than defaulting to the public
-	// rekor.sigstore.dev: submission is an egress of checkpoint hash metadata
+	// a public-log fallback: submission is an egress of checkpoint hash metadata
 	// and must stay inside the operator's declared trust boundary.
 	if _, err := (RekorLog{URL: "", Signer: priv}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "rekor anchor URL is required") {
 		t.Fatalf("Submit empty URL err = %v, want required-URL error", err)

@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"math"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -61,21 +62,22 @@ var evidenceAELRequirementOrder = []string{
 // Prometheus collectors and the JSON /stats endpoint. Nil/false callback
 // results mean evidence health is not measured and should render UNKNOWN.
 type EvidenceHealthStats struct {
-	Schema                     string               `json:"schema"`
-	CurrentAEL                 int                  `json:"current_ael"`
-	Requirements               map[string]bool      `json:"requirements"`
-	ChainHeadSeq               uint64               `json:"chain_head_seq"`
-	ChainHeadAgeSeconds        *float64             `json:"chain_head_age_seconds"`
-	HeartbeatIntervalSeconds   *float64             `json:"heartbeat_interval_seconds"`
-	SequenceGaps               EvidenceGapStats     `json:"sequence_gaps"`
-	FsyncErrors                EvidenceFsyncStats   `json:"fsync_errors"`
-	DurabilityBlocks           uint64               `json:"durability_blocks"`
-	DurabilityInvariantOK      bool                 `json:"durability_invariant_ok"`
-	Anchor                     *EvidenceAnchorStats `json:"anchor"`
-	CPC                        any                  `json:"cpc"`
-	AnchoredFinalSeq           uint64               `json:"-"`
-	AnchorLagReceipts          uint64               `json:"-"`
-	LastAnchorTimestampSeconds float64              `json:"-"`
+	Schema                     string                  `json:"schema"`
+	CurrentAEL                 int                     `json:"current_ael"`
+	Requirements               map[string]bool         `json:"requirements"`
+	ChainHeadSeq               uint64                  `json:"chain_head_seq"`
+	ChainHeadAgeSeconds        *float64                `json:"chain_head_age_seconds"`
+	HeartbeatIntervalSeconds   *float64                `json:"heartbeat_interval_seconds"`
+	SequenceGaps               EvidenceGapStats        `json:"sequence_gaps"`
+	FsyncErrors                EvidenceFsyncStats      `json:"fsync_errors"`
+	DurabilityBlocks           uint64                  `json:"durability_blocks"`
+	DurabilityInvariantOK      bool                    `json:"durability_invariant_ok"`
+	Anchor                     *EvidenceAnchorStats    `json:"anchor"`
+	AutoAnchor                 EvidenceAutoAnchorStats `json:"auto_anchor"`
+	CPC                        any                     `json:"cpc"`
+	AnchoredFinalSeq           uint64                  `json:"-"`
+	AnchorLagReceipts          uint64                  `json:"-"`
+	LastAnchorTimestampSeconds float64                 `json:"-"`
 }
 
 type EvidenceGapStats struct {
@@ -99,6 +101,13 @@ type EvidenceAnchorStats struct {
 	BundlePath           string  `json:"bundle_path"`
 	LagReceipts          uint64  `json:"lag_receipts"`
 	LastTimestampSeconds float64 `json:"last_timestamp_seconds"`
+}
+
+type EvidenceAutoAnchorStats struct {
+	Attempts  uint64 `json:"attempts"`
+	Successes uint64 `json:"successes"`
+	Failures  uint64 `json:"failures"`
+	LastError string `json:"last_error"`
 }
 
 type EvidenceAELInput struct {
@@ -196,6 +205,24 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 		Name:      "selfaudit_failures_total",
 		Help:      "Total evidence self-audit failures by bounded check label.",
 	}, []string{"check"})
+	m.evidenceAutoAnchorAttempts = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Subsystem: "evidence",
+		Name:      "auto_anchor_attempts_total",
+		Help:      "Total runtime receipt-chain auto-anchor attempts.",
+	})
+	m.evidenceAutoAnchorSuccesses = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Subsystem: "evidence",
+		Name:      "auto_anchor_successes_total",
+		Help:      "Total successful runtime receipt-chain auto-anchor attempts.",
+	})
+	m.evidenceAutoAnchorFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Subsystem: "evidence",
+		Name:      "auto_anchor_failures_total",
+		Help:      "Total failed runtime receipt-chain auto-anchor attempts.",
+	})
 	m.evidenceSelfAuditOK.Set(1)
 	for _, req := range evidenceAELRequirementOrder {
 		m.evidenceAELRequirements.WithLabelValues(req).Set(0)
@@ -211,6 +238,9 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 		m.evidenceAELRequirements,
 		m.evidenceSelfAuditOK,
 		m.evidenceSelfAuditFailures,
+		m.evidenceAutoAnchorAttempts,
+		m.evidenceAutoAnchorSuccesses,
+		m.evidenceAutoAnchorFailures,
 		m.evidenceCollector,
 	)
 }
@@ -268,6 +298,58 @@ func (m *Metrics) RecordSelfAuditFailure(check string) {
 	if m.evidenceSelfAuditFailures != nil {
 		m.evidenceSelfAuditFailures.WithLabelValues(check).Inc()
 	}
+}
+
+func (m *Metrics) RecordEvidenceAutoAnchorAttempt() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.evidenceAutoAnchorStats.Attempts++
+	m.mu.Unlock()
+	if m.evidenceAutoAnchorAttempts != nil {
+		m.evidenceAutoAnchorAttempts.Inc()
+	}
+}
+
+func (m *Metrics) RecordEvidenceAutoAnchorSuccess() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.evidenceAutoAnchorStats.Successes++
+	m.evidenceAutoAnchorStats.LastError = ""
+	m.mu.Unlock()
+	if m.evidenceAutoAnchorSuccesses != nil {
+		m.evidenceAutoAnchorSuccesses.Inc()
+	}
+}
+
+func (m *Metrics) RecordEvidenceAutoAnchorFailure(err string) {
+	if m == nil {
+		return
+	}
+	const maxLastErrorRunes = 1024
+	trimmed := []rune(strings.ToValidUTF8(strings.TrimSpace(err), "�"))
+	if len(trimmed) > maxLastErrorRunes {
+		trimmed = trimmed[:maxLastErrorRunes]
+	}
+	m.mu.Lock()
+	m.evidenceAutoAnchorStats.Failures++
+	m.evidenceAutoAnchorStats.LastError = string(trimmed)
+	m.mu.Unlock()
+	if m.evidenceAutoAnchorFailures != nil {
+		m.evidenceAutoAnchorFailures.Inc()
+	}
+}
+
+func (m *Metrics) EvidenceAutoAnchorStatsSnapshot() EvidenceAutoAnchorStats {
+	if m == nil {
+		return EvidenceAutoAnchorStats{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.evidenceAutoAnchorStats
 }
 
 func (m *Metrics) SetEvidenceSelfAuditOK(ok bool) {

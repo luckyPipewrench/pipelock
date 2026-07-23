@@ -138,8 +138,8 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 		return Proof{}, errors.New("rekor signing key required")
 	}
 	// Fail closed on an empty submission URL. Defaulting to the public
-	// rekor.sigstore.dev would silently publish receipt-chain checkpoint hash
-	// metadata to a public transparency log, outside the operator's trust
+	// A public-log fallback would silently publish receipt-chain checkpoint hash
+	// metadata outside the operator's trust
 	// boundary — the opposite of "your evidence stays where you put it". The
 	// caller must name the target log explicitly; there is no public default
 	// for submission. (Verification of an already-recorded proof is separate:
@@ -866,15 +866,11 @@ func publicKeyHash(key crypto.PublicKey) uint32 {
 	return binary.BigEndian.Uint32(sum[:4])
 }
 
-func rekorBaseURL(raw string) string {
-	if strings.TrimSpace(raw) == "" {
-		return DefaultRekorURL
-	}
-	return strings.TrimSpace(raw)
-}
-
 func normalizeRekorBaseURL(raw string) (string, error) {
-	base, err := url.Parse(rekorBaseURL(raw))
+	if strings.TrimSpace(raw) == "" {
+		return "", errors.New("rekor URL is required")
+	}
+	base, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return "", fmt.Errorf("parse rekor URL: %w", err)
 	}

@@ -728,6 +728,14 @@ flight_recorder:
     max_anchor_lag: 24h
   # dir: /var/lib/pipelock/recorder
   # signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key
+  # Optional: setting exactly one anchor point activates runtime auto-anchoring.
+  # There is deliberately no public Rekor URL default.
+  # anchor:
+  #   rekor_url: https://rekor.internal.example
+  #   rekor_key_path: /etc/pipelock/keys/rekor-entry.key
+  #   # local_log: /var/lib/pipelock/anchor-log.jsonl # alternative to Rekor
+  #   interval: 1h
+  #   receipt_threshold: 1000
 
 # ---- dashboard_snapshot (read-only dashboard runtime view) ----
 # Writes counts/limits only to <flight_recorder.dir>/dashboard/runtime-snapshot.json

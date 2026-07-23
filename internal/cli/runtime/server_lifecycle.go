@@ -371,6 +371,12 @@ func (s *Server) Start(ctx context.Context) error {
 	if cfg.FlightRecorder.EvidenceHealthEnabled() && s.recorder != nil && s.metrics != nil {
 		newEvidenceHealthMonitor(s.recorder, s.metrics, s.liveReceiptEmitter, s.currentConfig, s.opts.Stderr).start(ctx, &lifecycleWG)
 	}
+	// The loop itself is cheap and inactive without a configured anchor point.
+	// It is started whenever the live recorder/emitter exist so adding an anchor
+	// point on hot reload takes effect without rebuilding recorder state.
+	if receiptEmitterReady(s.liveReceiptEmitter()) && s.recorder != nil && s.metrics != nil {
+		newAutoAnchorMonitor(s.recorder, s.metrics, s.liveReceiptEmitter, s.currentConfig, s.opts.Stderr).start(ctx, &lifecycleWG)
+	}
 	s.startDashboardRuntimeSnapshot(ctx, &lifecycleWG, cfg)
 	stopFileSentry, fsErr := s.startFileSentry(ctx, cfg, cancel)
 	if fsErr != nil {

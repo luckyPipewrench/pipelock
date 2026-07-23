@@ -1464,15 +1464,12 @@ type BudgetConfig struct {
 	MaxUniqueDomainsPerSession int                `yaml:"max_unique_domains_per_session,omitempty"`
 	WindowMinutes              int                `yaml:"window_minutes,omitempty"`
 	MaxToolCallsPerSession     int                `yaml:"max_tool_calls_per_session,omitempty"`
-	MaxConcurrentToolCalls     int                `yaml:"max_concurrent_tool_calls,omitempty"` // parallel in-flight limit (default 10)
+	MaxConcurrentToolCalls     int                `yaml:"max_concurrent_tool_calls,omitempty"` // reserved; validation rejects nonzero values
 	MaxWallClockMinutes        int                `yaml:"max_wall_clock_minutes,omitempty"`
-	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`     // same tool+args (default 5)
-	MaxRetriesPerEndpoint      int                `yaml:"max_retries_per_endpoint,omitempty"` // same domain+path (default 20)
-	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"`    // tool calls to track (default 20)
-	FanOutLimit                int                `yaml:"fan_out_limit,omitempty"`            // max unique endpoints in window (default 50)
-	FanOutWindowSeconds        int                `yaml:"fan_out_window_seconds,omitempty"`   // window for fan-out detection (default 60)
-	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`         // optional domain -> cost weight
-	DoWAction                  string             `yaml:"dow_action,omitempty"`               // "block" or "warn" (default "block")
+	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`  // same tool+args (default 5)
+	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"` // tool calls to track (default 20)
+	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`      // optional domain -> cost weight
+	DoWAction                  string             `yaml:"dow_action,omitempty"`            // "block" or "warn" (default "block")
 }
 
 // FlightRecorder configures the tamper-evident evidence recording system.
@@ -1491,6 +1488,7 @@ type FlightRecorder struct {
 	RequireReceipts    bool                         `yaml:"require_receipts"`         // fail closed when a required receipt cannot be emitted (default false)
 	Completeness       FlightRecorderCompleteness   `yaml:"completeness" json:"-"`    // restart-only evidence completeness knobs
 	EvidenceHealth     FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"` // observability-only evidence health grading
+	Anchor             FlightRecorderAnchor         `yaml:"anchor" json:"-"`          // optional runtime receipt-chain anchoring
 }
 
 type FlightRecorderCompleteness struct {
@@ -1503,10 +1501,24 @@ type FlightRecorderEvidenceHealth struct {
 	MaxAnchorLag      string `yaml:"max_anchor_lag"`
 }
 
+// FlightRecorderAnchor configures runtime anchoring. Setting exactly one anchor
+// point (RekorURL or LocalLog) activates the loop; the remaining fields alone
+// are inert.
+type FlightRecorderAnchor struct {
+	RekorURL         string  `yaml:"rekor_url"`
+	RekorKeyPath     string  `yaml:"rekor_key_path"`
+	LocalLog         string  `yaml:"local_log"`
+	LogID            string  `yaml:"log_id"`
+	Interval         string  `yaml:"interval"`
+	ReceiptThreshold *uint64 `yaml:"receipt_threshold"`
+}
+
 const (
 	DefaultFlightRecorderHeartbeatInterval = 60 * time.Second
 	DefaultEvidenceHealthSelfAuditInterval = 30 * time.Second
 	DefaultEvidenceHealthMaxAnchorLag      = 24 * time.Hour
+	DefaultFlightRecorderAnchorInterval    = time.Hour
+	DefaultFlightRecorderAnchorThreshold   = uint64(1000)
 	DefaultDashboardSnapshotInterval       = 10 * time.Second
 )
 
@@ -1574,6 +1586,29 @@ func (f FlightRecorder) EvidenceMaxAnchorLagDuration() time.Duration {
 		return DefaultEvidenceHealthMaxAnchorLag
 	}
 	return lag
+}
+
+func (f FlightRecorder) AnchorConfigured() bool {
+	return strings.TrimSpace(f.Anchor.RekorURL) != "" || strings.TrimSpace(f.Anchor.LocalLog) != ""
+}
+
+func (f FlightRecorder) AnchorIntervalDuration() time.Duration {
+	raw := strings.TrimSpace(f.Anchor.Interval)
+	if raw == "" {
+		return DefaultFlightRecorderAnchorInterval
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval < 0 {
+		return DefaultFlightRecorderAnchorInterval
+	}
+	return interval
+}
+
+func (f FlightRecorder) AnchorReceiptThreshold() uint64 {
+	if f.Anchor.ReceiptThreshold == nil {
+		return DefaultFlightRecorderAnchorThreshold
+	}
+	return *f.Anchor.ReceiptThreshold
 }
 
 // DashboardSnapshot configures the proxy-produced, read-only dashboard runtime

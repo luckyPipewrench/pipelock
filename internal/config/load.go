@@ -108,7 +108,7 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("parsing config %s: %w", sourceName, err)
+		return nil, fmt.Errorf("parsing config %s: %w", sourceName, clarifyRemovedDoWField(err))
 	}
 	// Reject trailing documents. yaml.v3 Decoder.Decode consumes exactly one
 	// document per call, so a config with `---`-separated extra documents
@@ -120,6 +120,12 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 		return nil, fmt.Errorf("parsing config %s: multiple YAML documents not supported (pipelock config must be a single document)", sourceName)
 	} else if !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config %s: %w", sourceName, err)
+	}
+	// Reject reserved but unenforced limits before license gating can strip an
+	// unlicensed named profile. Security-invalid configuration must never become
+	// valid merely because another stage removes the profile first.
+	if err := cfg.ValidateReservedDoWLimits(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	cfg.rawBytes = data
@@ -229,6 +235,22 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	_ = cfg.CanonicalPolicyHash()
 
 	return cfg, nil
+}
+
+// clarifyRemovedDoWField turns yaml.v3's generic unknown-field error into an
+// actionable migration error for limits that were removed because the runtime
+// never enforced them.
+func clarifyRemovedDoWField(err error) error {
+	for _, field := range []string{
+		"max_retries_per_endpoint",
+		"fan_out_limit",
+		"fan_out_window_seconds",
+	} {
+		if strings.Contains(err.Error(), "field "+field+" not found in type config.BudgetConfig") {
+			return fmt.Errorf("%s was removed because it was not enforced; remove it from the config: %w", field, err)
+		}
+	}
+	return err
 }
 
 func (c *Config) validateForRules() error {

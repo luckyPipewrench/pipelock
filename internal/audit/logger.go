@@ -762,6 +762,7 @@ func (l *Logger) LogAgentIdentityCollision(ctx LogContext, reservedAgent string)
 		optStr("agent", ctx.agent).
 		str("scanner", scanner).
 		optStr("mitre_technique", technique).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAgentIdentity, "reserved control actor")).
 		str("reason", "self-declared agent neutralized: reserved control actor").
 		str("reserved_agent", reservedAgent).
 		scoreField(0.7)
@@ -977,8 +978,11 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 	// filter blocked vs allowed exposures without parsing the reason.
 	e.event = e.event.Bool("blocked", info.Blocked)
 	e.fields["blocked"] = info.Blocked
-	if info.Blocked && info.BlockReason != "" {
-		e = e.str("block_reason", info.BlockReason)
+	if info.Blocked {
+		e = e.optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditMediaPolicy, info.BlockReason))
+		if info.BlockReason != "" {
+			e = e.str("block_reason", info.BlockReason)
+		}
 	}
 	if info.Blocked {
 		e.msg("media response blocked by policy")
@@ -1008,6 +1012,7 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
 		str("mitre_technique", technique).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditResponseScan, strings.Join(patternNames, ", "))).
 		optStr("agent", ctx.agent)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)
@@ -1047,6 +1052,7 @@ func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 		str("authority_kind", d.Authority).
 		str("decision", d.Decision).
 		str("reason", d.Reason).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditTaintPolicy, d.Reason)).
 		optStr("source_url", d.SourceURL).
 		optStr("source_kind", d.SourceKind)
 	e.msg("taint policy decision")
@@ -1365,6 +1371,7 @@ type WSScanEvent struct {
 	ClientIP     string
 	RequestID    string
 	Action       string
+	Scanner      string
 	MatchCount   int
 	PatternNames []string
 	BundleRules  []BundleRuleHit
@@ -1375,9 +1382,12 @@ type WSScanEvent struct {
 // server_to_client is prompt injection detection (T1059).
 // When BundleRules is non-empty, bundle provenance is included in the audit event.
 func (l *Logger) LogWSScan(ev WSScanEvent) {
-	scanner := string(EventResponseScan)
-	if ev.Direction == DirectionClientToServer {
-		scanner = ScannerDLP
+	scanner := ev.Scanner
+	if scanner == "" {
+		scanner = scannerpkg.AuditResponseScan
+		if ev.Direction == DirectionClientToServer {
+			scanner = scannerpkg.ScannerDLP
+		}
 	}
 	technique := TechniqueForScanner(scanner)
 
@@ -1387,8 +1397,10 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 		str("client_ip", ev.ClientIP).
 		str("request_id", ev.RequestID).
 		str("action", ev.Action).
+		str("scanner", scanner).
 		intField("match_count", ev.MatchCount).
 		strs("patterns", ev.PatternNames).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, strings.Join(ev.PatternNames, ", "))).
 		str("mitre_technique", technique)
 	if len(ev.BundleRules) > 0 {
 		e.bundleRulesField(ev.BundleRules)
@@ -1401,6 +1413,15 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 }
 
 // LogSessionAnomaly logs a session behavioral anomaly detection.
+// copyRemediationHint copies remediation_hint from a log entry's fields into an
+// external-emitter fields map when the entry set one, so the emitted event and
+// the structured log carry the same operator guidance.
+func copyRemediationHint(dst, src map[string]any) {
+	if hint, ok := src["remediation_hint"]; ok {
+		dst["remediation_hint"] = hint
+	}
+}
+
 func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, requestID string, score float64) {
 	technique := TechniqueForScanner("session_anomaly")
 
@@ -1408,6 +1429,7 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 		str("session", sessionKey).
 		str("anomaly_type", anomalyType).
 		str("detail", detail).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditSessionAnomaly, anomalyType)).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
 		scoreField(score).
@@ -1423,6 +1445,7 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 			"score":           score,
 			"mitre_technique": technique,
 		}
+		copyRemediationHint(fields, e.fields)
 		if clientIP != "" {
 			fields["client_ip"] = clientIP
 		}
@@ -1439,6 +1462,7 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 		str("session", sessionKey).
 		str("from", from).
 		str("to", to).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAdaptiveEnforcement, to)).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
 		scoreField(score)
@@ -1452,6 +1476,7 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 			"to":      to,
 			"score":   score,
 		}
+		copyRemediationHint(fields, e.fields)
 		if clientIP != "" {
 			fields["client_ip"] = clientIP
 		}
@@ -1506,6 +1531,7 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 		str("from_action", fromAction).
 		str("to_action", toAction).
 		str("scanner", scanner).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAdaptiveEnforcement, scanner)).
 		str("client_ip", clientIP).
 		str("request_id", requestID)
 	e.msg("adaptive enforcement upgrade")
@@ -1527,6 +1553,7 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 			"scanner":          scanner,
 			"severity":         derivedSev,
 		}
+		copyRemediationHint(fields, e.fields)
 		if clientIP != "" {
 			fields["client_ip"] = clientIP
 		}
@@ -1544,6 +1571,7 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 	e := newLogEntry(l.zl.Warn(), EventMCPUnknownTool).
 		str("tool", toolName).
 		str("action", action).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditMCPSessionBinding, "unknown tool")).
 		str("mitre_technique", technique)
 	e.msg("tool not in session baseline")
 
@@ -1565,6 +1593,7 @@ func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, agent
 		str("request_id", requestID).
 		optStr("agent", agent).
 		str("category", category).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditSNIMismatch, category)).
 		str("mitre_technique", technique)
 	e.msg("SNI verification failed")
 
@@ -1580,6 +1609,7 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 		str("endpoint", endpoint).
 		str("source", source).
 		str("deny_message", message).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditKillSwitch, source)).
 		str("client_ip", clientIP)
 	e.msg("kill switch denied request")
 
@@ -1633,6 +1663,7 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 		optStr("agent", ctx.agent).
 		intField("match_count", matchCount).
 		strs("findings", findingNames).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(string(eventType), strings.Join(findingNames, ", "))).
 		optStr("mitre_technique", technique)
 	e.msg("request body " + string(eventType) + " scan hit")
 
@@ -1657,6 +1688,7 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 		optStr("request_id", ctx.requestID).
 		optStr("agent", ctx.agent).
 		strs("patterns", patternNames).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditHeaderDLP, strings.Join(patternNames, ", "))).
 		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)
@@ -1689,6 +1721,7 @@ func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, s
 		str("action", action).
 		str("tool", toolName).
 		str("session", sessionKey).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditChainDetection, pattern)).
 		str("mitre_technique", technique)
 	e.msg("chain pattern detected")
 
@@ -1722,6 +1755,7 @@ func (l *Logger) LogAirlockEnter(sessionKey, tier, trigger, clientIP, requestID 
 		str("session", sessionKey).
 		str("tier", tier).
 		str("trigger", trigger).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, trigger)).
 		optStr("client_ip", clientIP).
 		optStr("request_id", requestID)
 	e.msg("session entered airlock")
@@ -1738,6 +1772,7 @@ func (l *Logger) LogAirlockDeny(sessionKey, tier, transport, method, clientIP, r
 		str("tier", tier).
 		str("transport", transport).
 		str("method", method).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, tier)).
 		optStr("client_ip", clientIP).
 		optStr("request_id", requestID)
 	e.msg("airlock denied request")

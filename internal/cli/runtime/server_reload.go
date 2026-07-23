@@ -44,7 +44,22 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		}
 	}()
 
+	// Reload is also called directly by the Conductor apply boundary and tests,
+	// not only by the file reloader. Reject reserved, unenforced DoW limits before
+	// any restart-only preservation or license teardown can mutate runtime state.
+	// The file reloader already validates through config.Load, but this boundary
+	// must remain fail-closed for every caller.
+	if newCfg == nil {
+		return errors.New("rejected: invalid config reload: config is nil")
+	}
+	if validationErr := newCfg.ValidateReservedDoWLimits(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
+
 	oldCfg := s.proxy.CurrentConfig()
+	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
 	if oldCfg != nil {
 		// Block fetch_proxy.listen changes via reload. The listener binds at
 		// startup and cannot rebind at runtime; preserve the live address so the
@@ -124,6 +139,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		oldFR.RequireReceipts = newFR.RequireReceipts
 		oldFR.EvidenceHealth.SelfAuditInterval = newFR.EvidenceHealth.SelfAuditInterval
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag
+		oldFR.Anchor = newFR.Anchor
 		if !reflect.DeepEqual(oldFR, newFR) {
 			if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
@@ -135,10 +151,12 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			}
 			requireReceipts := newCfg.FlightRecorder.RequireReceipts
 			evidenceHealth := newCfg.FlightRecorder.EvidenceHealth
+			anchorCfg := newCfg.FlightRecorder.Anchor
 			newCfg.FlightRecorder = oldCfg.FlightRecorder
 			newCfg.FlightRecorder.RequireReceipts = requireReceipts
 			newCfg.FlightRecorder.EvidenceHealth.SelfAuditInterval = evidenceHealth.SelfAuditInterval
 			newCfg.FlightRecorder.EvidenceHealth.MaxAnchorLag = evidenceHealth.MaxAnchorLag
+			newCfg.FlightRecorder.Anchor = anchorCfg
 		}
 		// require_receipts reloads freely, but it only has a live emitter to
 		// gate on when one was built at Start (the recorder is restart-only).
@@ -169,7 +187,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// time-windowed dedup keyed on the LAST EMITTED reload event:
 		// the first of a stacked pair still logs, any event with the
 		// same hash inside 2s skips silently.
-		if s.shouldSkipReload(newCfg.Hash()) {
+		if s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged {
 			return nil
 		}
 

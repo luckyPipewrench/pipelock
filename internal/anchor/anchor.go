@@ -29,7 +29,6 @@ const (
 	LocalBackend      = "local"
 	RekorBackend      = "rekor"
 	DefaultLocalLogID = "local-fake-log"
-	DefaultRekorURL   = "https://rekor.sigstore.dev"
 	GenesisHash       = "genesis"
 
 	dirPermissions  = 0o750

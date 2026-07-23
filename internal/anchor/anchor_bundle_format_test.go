@@ -124,13 +124,51 @@ func TestAnchorBundleV1SchemaIntegerFieldsAreBounded(t *testing.T) {
 		{"rekor_inclusion_proof", "log_index", uint64Max},
 		{"rekor_inclusion_proof", "tree_size", uint64Max},
 	} {
-		prop, ok := schema.Defs[tc.def].Properties[tc.field]
-		if !ok {
-			t.Fatalf("schema $defs.%s.%s is missing", tc.def, tc.field)
+		t.Run(tc.def+"."+tc.field, func(t *testing.T) {
+			prop, ok := schema.Defs[tc.def].Properties[tc.field]
+			if !ok {
+				t.Fatalf("schema $defs.%s.%s is missing", tc.def, tc.field)
+			}
+			if got := prop.Maximum.String(); got != tc.max {
+				t.Fatalf("schema $defs.%s.%s maximum = %q, want %q", tc.def, tc.field, got, tc.max)
+			}
+		})
+	}
+}
+
+// TestAnchorBundleV1SchemaForbidsRekorOnNonRekorProof guards the proof
+// conditional: rekor material is Rekor-specific, so a non-Rekor proof (e.g. the
+// local backend) must not carry a rekor object. The spec states other backends
+// do not gain the extension object, and the schema must express that.
+func TestAnchorBundleV1SchemaForbidsRekorOnNonRekorProof(t *testing.T) {
+	data, err := os.ReadFile(filepath.Clean(anchorBundleSchemaPath))
+	if err != nil {
+		t.Fatalf("read anchor bundle schema: %v", err)
+	}
+	var schema struct {
+		Defs map[string]struct {
+			AllOf []struct {
+				Else struct {
+					Not struct {
+						Required []string `json:"required"`
+					} `json:"not"`
+				} `json:"else"`
+			} `json:"allOf"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("parse anchor bundle schema: %v", err)
+	}
+	forbidden := false
+	for _, cond := range schema.Defs["proof"].AllOf {
+		for _, req := range cond.Else.Not.Required {
+			if req == "rekor" {
+				forbidden = true
+			}
 		}
-		if got := prop.Maximum.String(); got != tc.max {
-			t.Fatalf("schema $defs.%s.%s maximum = %q, want %q", tc.def, tc.field, got, tc.max)
-		}
+	}
+	if !forbidden {
+		t.Fatal("proof schema must forbid the rekor property when backend is not rekor")
 	}
 }
 

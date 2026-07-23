@@ -119,6 +119,13 @@
             "required": [
               "rekor"
             ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "rekor"
+              ]
+            }
           }
         }
       ]

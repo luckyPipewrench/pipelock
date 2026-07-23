@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 const (
@@ -169,6 +172,91 @@ func TestAnchorBundleV1SchemaForbidsRekorOnNonRekorProof(t *testing.T) {
 	}
 	if !forbidden {
 		t.Fatal("proof schema must forbid the rekor property when backend is not rekor")
+	}
+}
+
+// compileAnchorBundleV1Schema compiles the published schema as Draft 2020-12
+// with format assertions enabled. jsonschema.UnmarshalJSON preserves numeric
+// literals (json.Number / big.Rat), so integer bounds beyond float64's exact
+// range are compared exactly instead of being collapsed to a float.
+func compileAnchorBundleV1Schema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	f, err := os.Open(filepath.Clean(anchorBundleSchemaPath))
+	if err != nil {
+		t.Fatalf("open anchor bundle schema: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	doc, err := jsonschema.UnmarshalJSON(f)
+	if err != nil {
+		t.Fatalf("parse anchor bundle schema: %v", err)
+	}
+	c := jsonschema.NewCompiler()
+	c.AssertFormat() // treat date-time / uri as assertions, not annotations
+	if err := c.AddResource("anchor-bundle-v1.json", doc); err != nil {
+		t.Fatalf("add schema resource: %v", err)
+	}
+	sch, err := c.Compile("anchor-bundle-v1.json")
+	if err != nil {
+		t.Fatalf("compile anchor bundle schema: %v", err)
+	}
+	return sch
+}
+
+func validateAnchorBundleInstance(t *testing.T, sch *jsonschema.Schema, raw []byte) error {
+	t.Helper()
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("parse instance: %v", err)
+	}
+	return sch.Validate(inst)
+}
+
+// TestAnchorBundleV1SchemaValidatesDocuments proves the published schema
+// actually accepts the fixture and REJECTS violating documents, complementing
+// the structural checks (which prove the constraints have not drifted).
+func TestAnchorBundleV1SchemaValidatesDocuments(t *testing.T) {
+	sch := compileAnchorBundleV1Schema(t)
+	base, err := os.ReadFile(filepath.Clean(anchorBundleExamplePath))
+	if err != nil {
+		t.Fatalf("read anchor bundle fixture: %v", err)
+	}
+	if err := validateAnchorBundleInstance(t, sch, base); err != nil {
+		t.Fatalf("published fixture must validate against v1 schema: %v", err)
+	}
+
+	baseStr := string(base)
+	for _, tc := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			// 2^64 exceeds float64's exact-integer range; a precision-losing
+			// validator would accept it. This is the case AJV cannot catch.
+			name: "reject_final_seq_above_uint64_max",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"final_seq": 41`, `"final_seq": 18446744073709551616`, 1)
+			},
+		},
+		{
+			name:   "reject_rekor_material_on_local_proof",
+			mutate: func(s string) string { return strings.ReplaceAll(s, `"backend": "rekor"`, `"backend": "local"`) },
+		},
+		{
+			name: "reject_malformed_created_at",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"created_at": "2026-07-23T16:30:00Z"`, `"created_at": "not-a-timestamp"`, 1)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := tc.mutate(baseStr)
+			if mutated == baseStr {
+				t.Fatalf("mutation produced no change; fixture substring drifted for %q", tc.name)
+			}
+			if err := validateAnchorBundleInstance(t, sch, []byte(mutated)); err == nil {
+				t.Fatalf("schema must reject a document that %s", strings.ReplaceAll(tc.name, "_", " "))
+			}
+		})
 	}
 }
 

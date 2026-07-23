@@ -58,7 +58,7 @@ unsigned 64-bit range.
 | `log_index` | uint64 | Backend-defined entry position. |
 | `entry_hash` | string | Backend-defined entry digest. Its algorithm and preimage are backend semantics. |
 | `log_root_hash` | string | Backend-defined log root or checkpoint digest. |
-| `rekor` | object, optional | Proof material emitted by the built-in Rekor backend. Other backend names do not gain a generic extension object in v1. |
+| `rekor` | object, conditionally required | Proof material emitted by the built-in Rekor backend: required when `proof.backend` is `rekor`, forbidden otherwise. Other backend names do not gain a generic extension object in v1. |
 
 The generic fields are a common envelope, not a universal proof protocol. v1
 does not define a backend-neutral canonical serialization or digest for

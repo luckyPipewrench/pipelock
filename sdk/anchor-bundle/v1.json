@@ -100,7 +100,7 @@
         },
         "rekor": {
           "$ref": "#/$defs/rekor_proof",
-          "description": "Optional proof material emitted by the built-in Rekor backend."
+          "description": "Rekor proof material. Conditionally required: present (and required) only when proof.backend is rekor, and forbidden otherwise."
         }
       },
       "allOf": [

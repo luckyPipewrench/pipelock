@@ -108,4 +108,15 @@ func TestAnchorProofBackendRekorConsistency(t *testing.T) {
 			t.Fatalf("LoadBundleBytes error = %v, want rekor-material-required rejection", err)
 		}
 	})
+
+	t.Run("bundle verifier rejects rekor proof missing Rekor material", func(t *testing.T) {
+		strippedRekorBundle := cleanLocalBundle
+		strippedRekorBundle.Backend = RekorBackend
+		strippedRekorBundle.Proof.Backend = RekorBackend
+		strippedRekorBundle.Proof.Rekor = nil
+		report := VerifyBundle(strippedRekorBundle, receipts, []string{keyHex}, RekorLog{})
+		if report.Valid || !strings.Contains(report.Error, "requires rekor proof material") {
+			t.Fatalf("VerifyBundle report = %+v, want rekor-material-required rejection", report)
+		}
+	})
 }

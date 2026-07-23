@@ -17,7 +17,23 @@ import (
 type Emitter struct {
 	mu         sync.RWMutex
 	sinks      []Sink
+	retiring   []*RetiredSinks
+	retired    map[string]SinkHealth
 	instanceID string
+}
+
+// RetiredSinks identifies one sink generation replaced by ReloadSinks.
+// Callers close Sinks before passing the generation to FinalizeRetiredSinks.
+type RetiredSinks struct {
+	sinks []Sink
+}
+
+// Sinks returns the sinks owned by this retired generation.
+func (r *RetiredSinks) Sinks() []Sink {
+	if r == nil {
+		return nil
+	}
+	return append([]Sink(nil), r.sinks...)
 }
 
 // NewEmitter creates an Emitter that sends events to all provided sinks.
@@ -99,15 +115,69 @@ var routineSinkStatuses = []error{
 	ErrWebhookDegraded, ErrSyslogDegraded, ErrOTLPDegraded,
 }
 
-// ReloadSinks atomically replaces the sink set and returns the old sinks.
-// The caller is responsible for closing the returned sinks.
+// ReloadSinks atomically replaces the sink set and returns the old generation.
+// The caller is responsible for closing the generation's sinks and finalizing
+// that generation afterward.
 // This enables hot-reload of emit configuration without restarting.
-func (e *Emitter) ReloadSinks(newSinks []Sink) []Sink {
+func (e *Emitter) ReloadSinks(newSinks []Sink) *RetiredSinks {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	old := e.sinks
 	e.sinks = append([]Sink(nil), newSinks...)
-	return old
+	// Keep the old generation visible until its asynchronous queues have been
+	// drained and the caller finalizes it. Otherwise failures and abandonments
+	// recorded by Close after this swap disappear from live sink-health metrics.
+	return e.retireSinksLocked(old)
+}
+
+// FinalizeRetiredSinks snapshots the terminal delivery counters of sink
+// generation returned by ReloadSinks and releases its objects. Callers must
+// invoke it after that generation's sinks have finished closing. Retired
+// counters remain process-lifetime cumulative so Prometheus _total series never
+// reset on a config reload; queue and degraded gauges continue to describe only
+// live or actively draining sinks.
+func (e *Emitter) FinalizeRetiredSinks(generation *RetiredSinks) {
+	if e == nil || generation == nil {
+		return
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	index := slices.Index(e.retiring, generation)
+	if index < 0 {
+		return
+	}
+	if e.retired == nil {
+		e.retired = make(map[string]SinkHealth)
+	}
+	for _, sink := range generation.sinks {
+		provider, ok := sink.(sinkHealthProvider)
+		if !ok {
+			continue
+		}
+		current := provider.SinkHealth()
+		if current.Sink == "" {
+			continue
+		}
+		total := e.retired[current.Sink]
+		total.Sink = current.Sink
+		total.Delivered += current.Delivered
+		total.Failed += current.Failed
+		total.Dropped += current.Dropped
+		total.Abandoned += current.Abandoned
+		e.retired[current.Sink] = total
+	}
+	e.retiring = slices.Delete(e.retiring, index, index+1)
+}
+
+// retireSinksLocked moves sinks into a separately owned draining generation.
+// e.mu must be held by the caller.
+func (e *Emitter) retireSinksLocked(sinks []Sink) *RetiredSinks {
+	generation := &RetiredSinks{sinks: sinks}
+	if len(sinks) > 0 {
+		e.retiring = append(e.retiring, generation)
+	}
+	return generation
 }
 
 // Close closes all sinks and returns the first error encountered.
@@ -119,6 +189,7 @@ func (e *Emitter) Close() error {
 	e.mu.Lock()
 	sinks := e.sinks
 	e.sinks = nil
+	generation := e.retireSinksLocked(sinks)
 	e.mu.Unlock()
 
 	var firstErr error
@@ -127,5 +198,6 @@ func (e *Emitter) Close() error {
 			firstErr = err
 		}
 	}
+	e.FinalizeRetiredSinks(generation)
 	return firstErr
 }

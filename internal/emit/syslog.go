@@ -56,16 +56,7 @@ type syslogMessage struct {
 }
 
 // SyslogStats reports delivery health for a SyslogSink.
-type SyslogStats struct {
-	Delivered uint64
-	Failed    uint64
-	Dropped   uint64
-	Abandoned uint64
-	Degraded  bool
-	LastError string
-	QueueLen  int
-	QueueCap  int
-}
+type SyslogStats = sinkStats
 
 // SyslogSink sends audit events to a syslog server.
 // It maps emit.Severity to syslog priority levels.
@@ -361,42 +352,10 @@ func (s *SyslogSink) safeSend(msg syslogMessage) {
 }
 
 func makeSyslogMessage(event Event, format, deviceVersion string) (syslogMessage, error) {
-	if format == "" {
-		format = FormatJSON
+	if err := validateSyslogFormat(format); err != nil {
+		return syslogMessage{}, err
 	}
-	if format == FormatCEF {
-		msg := FormatCEFEvent(event, deviceVersion)
-		return syslogMessage{
-			severity:  event.Severity,
-			eventType: event.Type,
-			message:   msg,
-		}, nil
-	}
-	if format == FormatOCSF {
-		msg := FormatOCSFEvent(event, deviceVersion)
-		return syslogMessage{
-			severity:  event.Severity,
-			eventType: event.Type,
-			message:   msg,
-		}, nil
-	}
-	// Deliberately stricter than emitformat.Supported: every format needs an
-	// explicit render branch above; an allowlisted-but-unrendered format must
-	// error loudly here (accounted as a delivery failure), never fall through
-	// to JSON rendering.
-	if format != FormatJSON {
-		return syslogMessage{}, fmt.Errorf("emit: unsupported syslog format %q", format)
-	}
-
-	payload := webhookPayload{
-		Severity:  event.Severity.String(),
-		Type:      event.Type,
-		Timestamp: event.Timestamp.UTC().Format(time.RFC3339Nano),
-		Instance:  event.InstanceID,
-		Fields:    event.Fields,
-	}
-
-	msg, err := json.Marshal(payload)
+	payload, _, err := formatEvent(event, format, deviceVersion)
 	if err != nil {
 		return syslogMessage{}, fmt.Errorf("emit: syslog marshal: %w", err)
 	}
@@ -404,7 +363,7 @@ func makeSyslogMessage(event Event, format, deviceVersion string) (syslogMessage
 	return syslogMessage{
 		severity:  event.Severity,
 		eventType: event.Type,
-		message:   string(msg),
+		message:   string(payload),
 	}, nil
 }
 

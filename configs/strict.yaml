@@ -530,6 +530,7 @@ mcp_session_binding:
 #     auth_token: ""
 #     timeout_seconds: 5
 #     queue_size: 64
+#     format: json             # json, cef, or ocsf
 #   syslog:
 #     address: ""
 #     min_severity: warn

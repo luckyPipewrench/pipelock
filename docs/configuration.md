@@ -1415,6 +1415,7 @@ emit:
     auth_token: ""
     timeout_seconds: 5
     queue_size: 64
+    format: json          # json, cef, or ocsf
   syslog:
     address: "udp://syslog.example.com:514"
     min_severity: warn
@@ -1439,6 +1440,7 @@ emit:
 | `webhook.auth_token` | `""` | Bearer token for webhook |
 | `webhook.timeout_seconds` | `5` | HTTP timeout |
 | `webhook.queue_size` | `64` | Async buffer size (overflow = drop + metric) |
+| `webhook.format` | `"json"` | HTTP body format: json, cef, or ocsf |
 | `syslog.address` | `""` | Syslog address (e.g., `udp://host:514`) |
 | `syslog.min_severity` | `"warn"` | info, warn, or critical |
 | `syslog.facility` | `"local0"` | Syslog facility |

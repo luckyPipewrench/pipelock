@@ -9,7 +9,7 @@ platforms, detection rule examples, and automated kill switch response.
 
 ## Event Schema
 
-All three sinks emit the same JSON envelope (OTLP wraps it as an OTLP LogRecord):
+All three sinks default to the same JSON envelope (OTLP wraps it as an OTLP LogRecord); the webhook and syslog sinks can also emit CEF (`format: cef`) or OCSF (`format: ocsf`) instead of JSON (see the format options below):
 
 ```json
 {
@@ -100,6 +100,7 @@ emit:
     auth_token: "your-bearer-token"   # optional Authorization header
     timeout_seconds: 5
     queue_size: 64                    # async buffer capacity
+    format: "ocsf"                   # json, cef, or ocsf
 
   syslog:
     address: "udp://syslog.example.com:514"
@@ -230,6 +231,14 @@ events. All other info-level events are local-only and never sent to sinks.
 control is the emission *threshold* (`min_severity`). This is intentional: it
 prevents misconfiguration from silently hiding critical events.
 
+### OCSF over HTTP
+
+Set `emit.webhook.format: ocsf` for SIEM HTTP ingestion endpoints that accept
+OCSF Detection Finding JSON. Webhook and syslog use the same OCSF encoder, so
+the class, severity, finding, network, and Pipelock extension fields stay
+identical across transports. OCSF webhook requests use
+`Content-Type: application/json`.
+
 ## Forwarding Patterns
 
 ### Webhook to Splunk HEC
@@ -240,6 +249,7 @@ emit:
     url: "https://splunk.example.com:8088/services/collector/event"
     auth_token: "your-splunk-hec-token"
     min_severity: "warn"
+    format: "json"
 ```
 
 Splunk HEC expects `Authorization: Splunk <token>`, but pipelock sends
@@ -648,4 +658,12 @@ check:
 1. Is `emit.webhook.url` (or `emit.syslog.address`) reachable from the
    pipelock host?
 2. Is `min_severity` set low enough? A `blocked` event is severity `warn`.
-3. Check pipelock's stderr for sink errors (`emit: webhook send error: ...`).
+3. Scrape the sink-health metrics below and inspect stderr for the matching
+   sanitized delivery diagnostic.
+
+The Prometheus endpoint exposes current delivery accounting for every built-in
+audit sink under `pipelock_audit_sink_*`, labeled only by `sink` (`webhook`,
+`syslog`, or `otlp`). Alert on `pipelock_audit_sink_degraded == 1` or increases
+in the `failed_total`, `dropped_total`, and `abandoned_total` series. The
+`last_error_present` gauge reports unresolved error state without exporting
+error text or endpoint secrets as labels.

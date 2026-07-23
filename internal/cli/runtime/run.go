@@ -258,6 +258,7 @@ func buildEmitSinks(cfg *config.Config, observer emitDeliveryObserver, appendEnt
 		if cfg.Emit.Webhook.TimeoutSecs > 0 {
 			opts = append(opts, emit.WithWebhookTimeout(time.Duration(cfg.Emit.Webhook.TimeoutSecs)*time.Second))
 		}
+		opts = append(opts, emit.WithWebhookFormat(cfg.Emit.Webhook.Format, cliutil.Version))
 		sinks = append(sinks, emit.NewWebhookSink(cfg.Emit.Webhook.URL, opts...))
 	}
 

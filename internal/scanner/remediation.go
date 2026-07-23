@@ -10,6 +10,51 @@ import "strings"
 const (
 	ScannerBodyDLP        = "body_dlp"
 	ScannerDenialOfWallet = "denial_of_wallet"
+
+	// Audit* labels identify enforcement and warning families emitted outside
+	// the URL scanner pipeline. Keeping their operator guidance in this table
+	// gives generic blocked/anomaly events and dedicated audit events one source
+	// of truth.
+	AuditResponseScan         = "response_scan"
+	AuditHeaderDLP            = "header_dlp"
+	AuditBodyPromptInjection  = "body_prompt_injection"
+	AuditAddressProtection    = "address_protection"
+	AuditChainDetection       = "chain_detection"
+	AuditProvenance           = "provenance"
+	AuditMediaPolicy          = "media_policy"
+	AuditRequestPolicy        = "request_policy"
+	AuditAgentIdentity        = "agent_identity"
+	AuditTaintPolicy          = "taint_policy"
+	AuditSessionAnomaly       = "session_anomaly"
+	AuditAdaptiveEnforcement  = "adaptive_enforcement"
+	AuditMCPSessionBinding    = "mcp_session_binding"
+	AuditFrozenTool           = "frozen_tool"
+	AuditSNIMismatch          = "sni_mismatch"
+	AuditKillSwitch           = "kill_switch"
+	AuditAirlock              = "airlock"
+	AuditCrossRequestEntropy  = "cross_request_entropy"
+	AuditCrossRequestFragment = "cross_request_fragment"
+	AuditGitProtection        = "git_protection"
+	AuditAgentBudget          = "budget"
+	AuditResponseSize         = "response_size"
+	AuditShieldOversize       = "shield_oversize"
+	AuditContract             = "contract"
+	AuditSSEStream            = "sse_stream"
+	AuditUnscannable          = "unscannable_passthrough"
+	AuditA2AScan              = "a2a_scan"
+	AuditA2ACardSignature     = "a2a_card_signature"
+	AuditRedaction            = "redaction"
+	AuditScannerUnavailable   = "scanner_unavailable"
+	AuditMediationEnvelope    = "mediation_envelope"
+	AuditReceiptEmission      = "receipt_emission"
+	AuditReverseSubmit        = "reverse_proxy_submit"
+	AuditA2AHeader            = "a2a_header"
+	AuditA2AResponse          = "a2a_response"
+	AuditBudgetTruncated      = "budget_truncated"
+	AuditTLSResponseBlocked   = "tls_response_blocked"
+	AuditSessionDeny          = "session_deny"
+	AuditTLSHandshakeError    = "tls_handshake_error"
+	AuditTLSAuthorityMismatch = "tls_authority_mismatch"
 )
 
 // Decide*Label values identify non-URL blocks emitted by internal/decide.
@@ -23,13 +68,46 @@ const (
 
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."
-	denialOfWalletOperatorKnob = "Tune the limit identified by the reason under `agents._default.budget` (or the matched `agents.<name>.budget`): `max_tool_calls_per_session`, `max_wall_clock_minutes`, `max_retries_per_tool`, or `loop_detection_window`. " +
-		"To audit instead of block, set that budget's `dow_action` to `warn`; this changes enforcement for all denial-of-wallet findings."
+	denialOfWalletOperatorKnob = "Correct the denial-of-wallet condition named by the reason. `runaway expansion` and alternating `cycle detected` use fixed detector thresholds and have no per-detector limit knob. " +
+		"To audit instead of block, set the matched `agents._default.budget.dow_action` (or `agents.<name>.budget.dow_action`) to `warn`; this changes enforcement for every denial-of-wallet finding."
 	denialOfWalletToolCallsOperatorKnob = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the session's tool-call budget is intentionally higher."
 	denialOfWalletWallClockOperatorKnob = "Raise `agents._default.budget.max_wall_clock_minutes` (or the matched `agents.<name>.budget.max_wall_clock_minutes`) if the session is intentionally longer-lived."
 	denialOfWalletRetriesOperatorKnob   = "Raise `agents._default.budget.max_retries_per_tool` (or the matched `agents.<name>.budget.max_retries_per_tool`) if repeated identical calls are expected."
+	responseScanOperatorKnob            = "For a false-positive response finding, add a top-level `suppress:` entry with `rule:` set to the event's matched pattern and `path:` scoped to the exact request path. `response_scanning.exempt_domains` is broader: it disables injection scanning for every response from that host."
+	headerDLPOperatorKnob               = "For a false-positive header finding, add a top-level `suppress:` entry with `rule:` set to the matched DLP pattern and `path:` scoped to the exact request path. Header scanning calls this suppression list before enforcing the finding."
+	bodyPromptInjectionOperatorKnob     = "Correct the outbound request body. The only destination carve-out this hard-block path consults is `response_scanning.exempt_domains`; adding a host there also disables injection scanning for every inbound response from that host, so it is a broad trust decision rather than a single-finding suppression."
+	addressProtectionOperatorKnob       = "After independently verifying the intended destination, add the exact address to `address_protection.allowed_addresses` (or the matched `agents.<name>.allowed_addresses`). Do not weaken similarity thresholds to approve one address."
+	chainDetectionOperatorKnob          = "If the event's named chain is expected, set that exact key under `tool_chain_detection.pattern_overrides` to `warn`; for a custom pattern, narrow its `sequence` or `action`. This changes only that named pattern."
+	provenanceOperatorKnob              = "In `pipelock` mode, sign the tool metadata with an Ed25519 key present in `mcp_tool_provenance.trusted_keys`. `mcp_tool_provenance.action: warn` downgrades unsigned tools only; invalid signatures, verification errors, and malformed tools/list responses always fail closed. Sigstore trust fields are not consumed by this verifier, so they are not a remediation path."
+	mediaPolicyOperatorKnob             = "Tune the media control identified by the reason under `media_policy`: `strip_audio`, `strip_video`, `strip_images`, `allowed_image_types`, or `max_image_bytes`. Parse/read failures have no exemption; correct the malformed media or upstream response."
+	requestPolicyOperatorKnob           = "Edit the exact matched entry under `request_policy.rules` (the event reason names it), narrowing its route/predicate or changing that rule's action. For parser/opaque findings, tune only `request_policy.on_parse_error` or `request_policy.on_opaque_operation`; allowing either is broader and fail-open for matching body predicates."
+	agentIdentityOperatorKnob           = "Use a non-reserved self-declared agent identity. Reserved control-actor names are a non-tunable identity boundary; there is no exemption knob."
+	taintPolicyOperatorKnob             = "After inspecting the recorded source and action, add a narrow, expiring `taint.trust_overrides` entry matching that source/action, or correct the source classification. Changing `taint.policy` weakens all taint decisions and is broader."
+	sessionAnomalyOperatorKnob          = "For a legitimate domain burst, raise the matched `session_profiling.domain_burst` threshold (global or per-agent) or the global-only `session_profiling.window_minutes`. For a behavioral baseline deviation, inspect the profile and explicitly relearn/ratify it with the baseline operator commands; do not auto-ratify an unexplained deviation."
+	adaptiveEnforcementOperatorKnob     = "Wait for the event's auto-recovery time, or inspect and reset only the affected identity session with the session operator commands after confirming the traffic is legitimate. Changing `adaptive_enforcement.levels` or thresholds affects every session and is broader."
+	mcpSessionBindingOperatorKnob       = "Refresh the MCP session only after verifying the server's current tool inventory. If inventory drift is intentionally non-blocking, change `mcp_session_binding.unknown_tool_action` (or `no_baseline_action` for a missing baseline) to `warn`; that applies to every matching inventory event."
+	sniMismatchOperatorKnob             = "Correct the CONNECT hostname or TLS client so the SNI name matches the requested authority. `forward_proxy.sni_verification: false` disables domain-fronting protection for every tunnel and is not a narrow remediation."
+	killSwitchOperatorKnob              = "Inspect and clear the active kill-switch source named by the event. Config, API, remote kill, stale bundle, SIGUSR1, and sentinel-file sources are OR-composed, so every active source must clear. HTTP and intercepted-request gates consult `kill_switch.allowlist_ips`; Pipelock health, metrics, and main-listener API endpoints have their own exemption flags. Raw/MCP kill-switch gates do not consult those HTTP exemptions."
+	airlockOperatorKnob                 = "Inspect the affected session and wait for its configured `airlock.timers` recovery, or use the authenticated session operator command to lower/reset only that session after confirming the traffic is legitimate. Weakening global triggers or tiers is broader."
+	crossRequestEntropyOperatorKnob     = "For a verified high-entropy destination, add only that host to `cross_request_detection.entropy_budget.exempt_domains`, or raise `bits_per_window` if the session-wide volume is expected. Changing `action` to `warn` affects every entropy-budget finding."
+	crossRequestFragmentOperatorKnob    = "The fragment reassembly DLP path has no per-host or per-rule exemption. Correct the split secret-like payload; the only config relief is the broad `cross_request_detection.action: warn` (or disabling `fragment_reassembly`), which weakens this detector for every session."
+	gitProtectionOperatorKnob           = "Add only the intended owner/repository to `git_protection.allowed_push_repos` after verifying the remote. Disabling `git_protection` permits pushes to every repository and is broader."
+	agentBudgetOperatorKnob             = "Raise only the limit named by the reason under the matched `agents.<name>.budget`: `max_requests_per_session`, `max_bytes_per_session`, or `max_unique_domains_per_session`. Zero disables that ceiling and is broader."
+	responseSizeOperatorKnob            = "Raise only the exact transport response ceiling named in the reason. A `response_scanning.size_exempt_domains` entry is not a universal override: fetch-handler response-size blocks do not consult it."
+	shieldOversizeOperatorKnob          = "Raise `browser_shield.max_shield_bytes` for the expected response size, or add only the trusted host to `browser_shield.exempt_domains`. Changing `browser_shield.oversize_action` to `warn` or `scan_head` permits incompletely shielded content and is broader."
+	contractOperatorKnob                = "Correct the action to match the active contract, or inspect and ratify a narrowly updated contract through the contract operator workflow. Disabling contract enforcement or broadening the manifest without review is not a safe remediation."
+	sseStreamOperatorKnob               = "For a false-positive SSE finding, add a top-level `suppress:` entry for the matched response rule and exact path. For event-size failures, raise `response_scanning.sse_streaming.max_event_bytes`; changing its action to `warn` affects every SSE finding."
+	unscannableOperatorKnob             = "Remove or narrow the matching `response_scanning.unscannable_passthrough` entry to restore fail-closed scanning, or make the upstream response scannable. This event records an explicit full-content visibility gap; do not broaden the entry."
+	a2aScanOperatorKnob                 = "Correct the flagged A2A content. There is no per-finding suppression, and `a2a_scanning.action` is not a universal override: malformed/uninspectable payloads and hostname-exfiltration findings hard-block without consulting it."
+	a2aCardSignatureOperatorKnob        = "Sign the Agent Card with a key whose exact origin is authorized by `a2a_scanning.trusted_agent_card_keys`, or add the verified signer/origin pair there. Disabling signed-card requirements trusts every unsigned card and is broader."
+	redactionOperatorKnob               = "The requested redaction could not be applied safely. Correct the redaction profile or input and retry; there is no exemption knob because forwarding the unredacted payload would leak the protected value."
+	scannerUnavailableOperatorKnob      = "Scanner acquisition failed closed during a reload/runtime transition. Restore scanner health or correct the rejected configuration and retry; there is no policy exemption for running without a scanner."
+	mediationEnvelopeOperatorKnob       = "Mediation-envelope signing or verification failed closed. Restore the configured signing key/trust material or correct the envelope; there is no bypass knob when an envelope is required."
+	receiptEmissionOperatorKnob         = "Required receipt emission failed closed. Restore the configured receipt sink/key and retry; there is no bypass knob while receipt-required enforcement is active."
+	reverseSubmitOperatorKnob           = "Correct the submission to the configured `reverse_proxy` submit profile. This admission gate consults only `reverse_proxy.allowed_methods`, `reverse_proxy.allowed_paths`, and the effective minimum of `reverse_proxy.max_body_bytes` and `request_body_scanning.max_body_bytes`. Raw-path canonicality failures have no exemption."
+	tlsFailureOperatorKnob              = "Correct the TLS handshake, certificate, or authority mismatch at the client/upstream and retry. These checks fail closed and have no per-request exemption; disabling TLS interception or SNI verification is a broad loss of visibility."
 
-	decideInjectionOperatorKnob  = "Prompt-injection scanning matched content in the action. For shell/file/tool explain blocks, tune `response_scanning` (for example suppress or disable per response-scanning config); MCP request-input injection is tuned by `mcp_input_scanning`."
+	decideInjectionOperatorKnob  = "Prompt-injection scanning matched content in the action. Shell/file/tool Decide paths consult `response_scanning.enabled` and `response_scanning.action`; they call `ScanResponse` without the top-level `suppress:` list, so a suppression entry is inert here. MCP Decide input consults `mcp_input_scanning.enabled` and `mcp_input_scanning.action`."
 	decidePolicyOperatorKnob     = "Tool policy denied the action. Edit the matching `mcp_tool_policy.rules` entry, or narrow/add a rule for the intended tool call."
 	decideStructuralOperatorKnob = "The action could not be evaluated safely (unknown event, malformed tool input, or uninspectable input). There is no allow-path knob for the structural failure; correct the action shape and retry."
 
@@ -71,6 +149,10 @@ const (
 	promptInjectionAgentReason    = "Request blocked: the content matched a prompt-injection pattern."
 	toolPolicyAgentReason         = "Request blocked: the tool call is not permitted by policy."
 	decideStructuralAgentReason   = "Request blocked: the action could not be evaluated."
+	auditContentAgentReason       = "Request blocked: protected content or an unsafe instruction pattern was detected."
+	auditPolicyAgentReason        = "Request blocked: an operator-defined safety boundary denied the action."
+	auditRuntimeAgentReason       = "Request blocked: a required security control could not complete safely."
+	auditAnomalyAgentReason       = "Activity was flagged because it crossed an operator-defined safety boundary."
 	// destinationNotPermittedAgentReason is shared by the blocklist and allowlist
 	// blocks. It deliberately does NOT name which mechanism (blocklist vs strict
 	// allowlist) rejected the destination: telling a blocked agent whether it is
@@ -154,7 +236,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 		AgentReason:  protectiveCeilingAgentReason,
 	},
 	ScannerDataBudget: {
-		OperatorKnob: "This is a protective per-domain data ceiling. Adjust the session data budget configuration if the volume is legitimate.",
+		OperatorKnob: "This is the URL scanner's per-domain sliding-window data ceiling. Raise `fetch_proxy.monitoring.max_data_per_minute` if the response volume is legitimate; zero disables this ceiling for every destination.",
 		AgentReason:  protectiveCeilingAgentReason,
 	},
 	ScannerCRLF: {
@@ -173,7 +255,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 		AgentReason:  "Request blocked: the URL scheme is not permitted.",
 	},
 	ScannerCoreResponse: {
-		OperatorKnob: "Core response scanning is an immutable injection floor and cannot be disabled by config.",
+		OperatorKnob: "Core response scanning cannot be disabled wholesale, even when `response_scanning.enabled` is false. For a proven false positive, `ScanResponseWithSuppress` does consult the top-level `suppress:` list: match the exact core pattern name and scope `path:` to the affected response path.",
 		Immutable:    true,
 		AgentReason:  "Response blocked: a prompt-injection pattern was detected.",
 	},
@@ -193,6 +275,46 @@ var remediationGuidance = map[string]RemediationGuidance{
 		OperatorKnob: denialOfWalletOperatorKnob,
 		AgentReason:  denialOfWalletAgentReason,
 	},
+	AuditResponseScan:         {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditHeaderDLP:            {OperatorKnob: headerDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditBodyPromptInjection:  {OperatorKnob: bodyPromptInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditAddressProtection:    {OperatorKnob: addressProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditChainDetection:       {OperatorKnob: chainDetectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditProvenance:           {OperatorKnob: provenanceOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMediaPolicy:          {OperatorKnob: mediaPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditRequestPolicy:        {OperatorKnob: requestPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAgentIdentity:        {OperatorKnob: agentIdentityOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditTaintPolicy:          {OperatorKnob: taintPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSessionAnomaly:       {OperatorKnob: sessionAnomalyOperatorKnob, AgentReason: auditAnomalyAgentReason},
+	AuditAdaptiveEnforcement:  {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPSessionBinding:    {OperatorKnob: mcpSessionBindingOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSNIMismatch:          {OperatorKnob: sniMismatchOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditKillSwitch:           {OperatorKnob: killSwitchOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAirlock:              {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditCrossRequestEntropy:  {OperatorKnob: crossRequestEntropyOperatorKnob, AgentReason: auditAnomalyAgentReason},
+	AuditCrossRequestFragment: {OperatorKnob: crossRequestFragmentOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditGitProtection:        {OperatorKnob: gitProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAgentBudget:          {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditResponseSize:         {OperatorKnob: responseSizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditShieldOversize:       {OperatorKnob: shieldOversizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditContract:             {OperatorKnob: contractOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSSEStream:            {OperatorKnob: sseStreamOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditUnscannable:          {OperatorKnob: unscannableOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditA2AScan:              {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditA2ACardSignature:     {OperatorKnob: a2aCardSignatureOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditRedaction:            {OperatorKnob: redactionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditScannerUnavailable:   {OperatorKnob: scannerUnavailableOperatorKnob, Immutable: true, AgentReason: auditRuntimeAgentReason},
+	AuditMediationEnvelope:    {OperatorKnob: mediationEnvelopeOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditReceiptEmission:      {OperatorKnob: receiptEmissionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditReverseSubmit:        {OperatorKnob: reverseSubmitOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditFrozenTool:           {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditA2AHeader:            {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditA2AResponse:          {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditBudgetTruncated:      {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditTLSResponseBlocked:   {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditSessionDeny:          {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditTLSHandshakeError:    {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditTLSAuthorityMismatch: {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
 	DecideInjectionLabel: {
 		OperatorKnob: decideInjectionOperatorKnob,
 		AgentReason:  promptInjectionAgentReason,
@@ -235,6 +357,184 @@ func OperatorHintFor(label string) string {
 // Every other label falls through to the label-keyed table. This is the single
 // place that disambiguation lives, so explain, audit, and future consumers agree.
 func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
+	// Some transports retain historical audit labels for the same enforcing
+	// family. Normalize them before reason routing so alternate labels cannot
+	// drift to a less accurate hint.
+	switch label {
+	case AuditTLSResponseBlocked:
+		label = AuditResponseScan
+	case AuditBudgetTruncated:
+		label = AuditAgentBudget
+	case AuditSessionDeny:
+		label = AuditAdaptiveEnforcement
+	case AuditA2AHeader, AuditA2AResponse:
+		label = AuditA2AScan
+	}
+
+	lowerReason := strings.ToLower(reason)
+	if label == AuditCrossRequestEntropy && strings.Contains(lowerReason, "cross-request entropy") {
+		return RemediationGuidance{
+			OperatorKnob: "For MCP cross-request entropy, raise `cross_request_detection.entropy_budget.bits_per_window` if the session-wide volume is expected. Changing `cross_request_detection.entropy_budget.action` to `warn` affects every MCP entropy-budget finding. The MCP gate does not consult `entropy_budget.exempt_domains`.",
+			AgentReason:  auditAnomalyAgentReason,
+		}, true
+	}
+	if label == AuditResponseScan {
+		switch {
+		case strings.Contains(lowerReason, "compressed"),
+			strings.Contains(lowerReason, "read error"),
+			strings.Contains(lowerReason, "read_error"),
+			strings.Contains(lowerReason, "cannot be scanned"),
+			strings.Contains(lowerReason, "parse error"),
+			strings.Contains(lowerReason, "parse_error"):
+			return RemediationGuidance{
+				OperatorKnob: "This is a scan-integrity failure, not a pattern false positive: correct the compressed, unreadable, or malformed upstream response and retry. A `suppress:` entry cannot make content scannable; `response_scanning.exempt_domains` would disable scanning for every response from the host and is not a narrow fix.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "size-exempt response scan") && strings.Contains(lowerReason, "inflight"):
+			return RemediationGuidance{
+				OperatorKnob: "Raise `response_scanning.size_exempt_scan_max_inflight_bytes` only if this proxy instance has enough memory for the larger aggregate reservation. The in-flight admission gate reads that field directly.",
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "size-exempt response"):
+			return RemediationGuidance{
+				OperatorKnob: "Raise `response_scanning.size_exempt_scan_max_bytes` only to the largest whole response this trusted host needs. `response_scanning.unscannable_passthrough` is a broader, explicit visibility gap for deliberately opaque content.",
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "response size"),
+			strings.Contains(lowerReason, "scan ceiling"),
+			strings.Contains(lowerReason, "oversized"):
+			return RemediationGuidance{
+				OperatorKnob: responseSizeOperatorKnob,
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		}
+	}
+	if label == AuditMediaPolicy {
+		operatorKnob := ""
+		switch {
+		case strings.Contains(lowerReason, "audio stripped"):
+			operatorKnob = "If this agent intentionally consumes audio, set `media_policy.strip_audio: false`. This permits all otherwise-allowed audio types because Pipelock cannot inspect instructions embedded in audio."
+		case strings.Contains(lowerReason, "video stripped"):
+			operatorKnob = "If this agent intentionally consumes video, set `media_policy.strip_video: false`. This permits all otherwise-allowed video types because Pipelock cannot inspect instructions embedded in video."
+		case strings.Contains(lowerReason, "images stripped"):
+			operatorKnob = "If this agent intentionally consumes images, set `media_policy.strip_images: false`; keep `allowed_image_types`, metadata stripping, and `max_image_bytes` constrained."
+		case strings.Contains(lowerReason, "not in allowed list"):
+			operatorKnob = "After verifying the format is required and non-active, add only that exact image media type to `media_policy.allowed_image_types`. SVG remains unsupported because it is active content."
+		case strings.Contains(lowerReason, "exceeds limit"):
+			operatorKnob = "Raise `media_policy.max_image_bytes` only to the largest verified image size the agent needs; the limit is the decompression-bomb and memory ceiling."
+		case strings.Contains(lowerReason, "parse error"),
+			strings.Contains(lowerReason, "re-marshal"),
+			strings.Contains(lowerReason, "read error"):
+			operatorKnob = "The media could not be parsed or transported safely. Correct the malformed media/upstream response and retry; there is no exemption knob for forwarding an unvalidated media payload."
+		}
+		if operatorKnob != "" {
+			return RemediationGuidance{OperatorKnob: operatorKnob, AgentReason: auditPolicyAgentReason}, true
+		}
+	}
+	if label == AuditRequestPolicy {
+		switch {
+		case strings.Contains(lowerReason, "exceeds max_body_bytes"):
+			return RemediationGuidance{
+				OperatorKnob: "Raise `request_body_scanning.max_body_bytes` only to the largest verified request body this route needs; request-policy body predicates consume that same bounded-read ceiling.",
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "could not be inspected"):
+			return RemediationGuidance{
+				OperatorKnob: "The request body could not be read and therefore cannot be forwarded intact. Correct the client/body stream and retry; `request_policy.on_parse_error` does not control read failures and no exemption can restore consumed bytes.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
+		}
+	}
+	if label == AuditReverseSubmit {
+		switch {
+		case strings.Contains(lowerReason, "not in allowed_methods"):
+			return RemediationGuidance{
+				OperatorKnob: "If this method is intentionally accepted by the submit listener, add only that method to `reverse_proxy.allowed_methods`; this gate reads that list before any scanner work.",
+				AgentReason:  auditPolicyAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "not in allowed_paths"):
+			return RemediationGuidance{
+				OperatorKnob: "If this exact canonical path is intentional, add only it under `reverse_proxy.allowed_paths[].exact`; prefix and regex exemptions are not supported.",
+				AgentReason:  auditPolicyAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "body exceeds"), strings.Contains(lowerReason, "body cap"):
+			return RemediationGuidance{
+				OperatorKnob: "Raise the smaller active body ceiling: `reverse_proxy.max_body_bytes` or `request_body_scanning.max_body_bytes`. The submit gate enforces their minimum before forwarding.",
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "raw path"), strings.Contains(lowerReason, "path is not canonical"):
+			return RemediationGuidance{
+				OperatorKnob: "Send the canonical decoded path without encoded traversal, encoded separators, semicolon parameters, or dot segments. This fail-closed path check has no exemption knob.",
+				AgentReason:  auditPolicyAgentReason,
+			}, true
+		}
+	}
+	if label == AuditRedaction && strings.Contains(lowerReason, "non_json_body") {
+		return RemediationGuidance{
+			OperatorKnob: "If this exact non-JSON route is intentionally safe to forward without redaction, add the narrow host/path match to `redaction.allowlist_unparseable_routes`. `redaction.allowlist_unparseable` is the broader host-wide fallback. Both paths forward the body unredacted, so verify it cannot carry the protected value first.",
+			AgentReason:  auditRuntimeAgentReason,
+		}, true
+	}
+	if label == AuditA2AScan {
+		switch {
+		case strings.Contains(lowerReason, "invalid json"),
+			strings.Contains(lowerReason, "duplicate json"),
+			strings.Contains(lowerReason, "maximum inspectable nesting"),
+			strings.Contains(lowerReason, "could not be read"),
+			strings.Contains(lowerReason, "request body exceeds"):
+			return RemediationGuidance{
+				OperatorKnob: "Correct the malformed, unreadable, oversized, or uninspectable A2A payload and retry. This structural fail-closed path does not consult `a2a_scanning.action` and has no exemption knob.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "hostname exfiltration"):
+			return RemediationGuidance{
+				OperatorKnob: "Remove the secret-like hostname payload. A2A hostname-exfiltration is a hard block and does not consult `a2a_scanning.action`; there is no A2A suppression knob.",
+				AgentReason:  auditContentAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "url/ssrf finding"):
+			return RemediationGuidance{
+				OperatorKnob: "Correct the embedded URL or remediate the underlying URL/SSRF scanner finding. Do not rely on `a2a_scanning.action`: hostname-exfiltration URL findings hard-block before that field is consulted.",
+				AgentReason:  auditContentAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "payload exceeded node budget"),
+			strings.Contains(lowerReason, "a2a-extensions header"),
+			strings.Contains(lowerReason, "injection:"),
+			strings.Contains(lowerReason, "dlp:"),
+			strings.Contains(lowerReason, "agent card drift"):
+			return RemediationGuidance{
+				OperatorKnob: "Correct the flagged A2A content. If this non-structural finding is intentionally audit-only, set `a2a_scanning.action: warn`; this path derives its effective action from that field.",
+				AgentReason:  auditContentAgentReason,
+			}, true
+		}
+	}
+	if label == AuditAgentBudget {
+		operatorKnob := ""
+		switch {
+		case strings.Contains(lowerReason, "request budget"):
+			operatorKnob = "Raise only `agents.<name>.budget.max_requests_per_session` if the session's request count is expected."
+		case strings.Contains(lowerReason, "domain budget"):
+			operatorKnob = "Raise only `agents.<name>.budget.max_unique_domains_per_session` if the session's destination diversity is expected."
+		case strings.Contains(lowerReason, "byte budget"):
+			operatorKnob = "Raise only `agents.<name>.budget.max_bytes_per_session` if the session's response volume is expected."
+		}
+		if operatorKnob != "" {
+			return RemediationGuidance{OperatorKnob: operatorKnob, AgentReason: protectiveCeilingAgentReason}, true
+		}
+	}
+	if label == AuditSessionAnomaly {
+		switch {
+		case strings.Contains(lowerReason, "baseline_deviation"):
+			return RemediationGuidance{
+				OperatorKnob: "Inspect the behavioral profile with `pipelock baseline show <agent>`. If the new behavior is legitimate, deliberately relearn and ratify it with the baseline operator commands; do not enable `behavioral_baseline.auto_ratify` to silence an unexplained deviation.",
+				AgentReason:  auditAnomalyAgentReason,
+			}, true
+		case strings.Contains(lowerReason, "domain_burst"):
+			return RemediationGuidance{
+				OperatorKnob: "Raise the matched `session_profiling.domain_burst` threshold (global or `agents.<name>.session_profiling.domain_burst`) or adjust the global-only `session_profiling.window_minutes` if this destination burst is expected.",
+				AgentReason:  auditAnomalyAgentReason,
+			}, true
+		}
+	}
 	if label == ScannerEntropy && strings.Contains(reason, "query ") {
 		return RemediationGuidance{
 			OperatorKnob:    queryEntropyOperatorKnob,

@@ -15,7 +15,7 @@ import (
 // ~/.local/share/pipelock/rules/. Without this, assess's verify-install
 // step calls rules.MergeIntoConfig with the user's actual installed
 // bundles and fails on any bundle whose min_pipelock requirement exceeds
-// the dev-build version constant ("0.1.0-dev" from cliutil/version.go).
+// the dev-build version constant ("0.0.0-dev.unknown" from cliutil/version.go).
 //
 // XDG_DATA_HOME must be an absolute path: rules.ResolveRulesDir only
 // honors it when filepath.IsAbs returns true (merge.go:21). A relative

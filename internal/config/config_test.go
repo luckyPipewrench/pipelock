@@ -7905,6 +7905,9 @@ func TestDefaults_EmitFields(t *testing.T) {
 	if cfg.Emit.Webhook.MinSeverity != SeverityWarn {
 		t.Errorf("expected default webhook min_severity warn, got %s", cfg.Emit.Webhook.MinSeverity)
 	}
+	if cfg.Emit.Webhook.Format != EmitFormatJSON {
+		t.Errorf("expected default webhook format json, got %s", cfg.Emit.Webhook.Format)
+	}
 	if cfg.Emit.Syslog.MinSeverity != SeverityWarn {
 		t.Errorf("expected default syslog min_severity warn, got %s", cfg.Emit.Syslog.MinSeverity)
 	}
@@ -7916,6 +7919,51 @@ func TestDefaults_EmitFields(t *testing.T) {
 	}
 	if cfg.Emit.Syslog.Format != EmitFormatJSON {
 		t.Errorf("expected default syslog format json, got %s", cfg.Emit.Syslog.Format)
+	}
+}
+
+func TestLoadEmitWebhookFormatDefaultsAndReloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	write := func(formatLine string) {
+		t.Helper()
+		content := "version: 1\nemit:\n  webhook:\n    url: " + testWebhookURL + "\n" + formatLine
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	for _, tt := range []struct {
+		name       string
+		formatLine string
+	}{
+		{name: "omitted"},
+		{name: "blank", formatLine: "    format:\n"},
+		{name: "null", formatLine: "    format: null\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			write(tt.formatLine)
+			cfg, err := LoadForRules(path)
+			if err != nil {
+				t.Fatalf("LoadForRules: %v", err)
+			}
+			if cfg.Emit.Webhook.Format != EmitFormatJSON {
+				t.Fatalf("emit.webhook.format = %q, want %q", cfg.Emit.Webhook.Format, EmitFormatJSON)
+			}
+		})
+	}
+
+	write("    format: json\n")
+	first, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("first LoadForRules: %v", err)
+	}
+	write("    format: ocsf\n")
+	second, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("second LoadForRules: %v", err)
+	}
+	if first.Emit.Webhook.Format != EmitFormatJSON || second.Emit.Webhook.Format != EmitFormatOCSF {
+		t.Fatalf("webhook format reload = %q -> %q, want json -> ocsf", first.Emit.Webhook.Format, second.Emit.Webhook.Format)
 	}
 }
 
@@ -8030,16 +8078,34 @@ func TestValidate_EmitSyslogInvalidSeverity(t *testing.T) {
 
 func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
-		t.Run(sev, func(t *testing.T) {
-			cfg := Defaults()
-			cfg.Emit.Webhook.URL = testWebhookURL
-			cfg.Emit.Webhook.MinSeverity = sev
-			cfg.Emit.Webhook.TimeoutSecs = 10
-			cfg.Emit.Webhook.QueueSize = 32
-			if err := cfg.Validate(); err != nil {
-				t.Errorf("valid webhook config with severity %q should validate, got: %v", sev, err)
-			}
-		})
+		for _, format := range emitformat.SupportedFormats() {
+			t.Run(sev+"/"+format, func(t *testing.T) {
+				cfg := Defaults()
+				cfg.Emit.Webhook.URL = testWebhookURL
+				cfg.Emit.Webhook.MinSeverity = sev
+				cfg.Emit.Webhook.TimeoutSecs = 10
+				cfg.Emit.Webhook.QueueSize = 32
+				cfg.Emit.Webhook.Format = format
+				if err := cfg.Validate(); err != nil {
+					t.Errorf("valid webhook config severity=%q format=%q should validate, got: %v", sev, format, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateEmitWebhookInvalidFormat(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Webhook.URL = testWebhookURL
+	cfg.Emit.Webhook.Format = "xml"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid webhook format")
+	}
+	expected := fmt.Sprintf(`invalid emit.webhook.format "xml": must be %s`, emitformat.AllowedSet())
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

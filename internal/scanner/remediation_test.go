@@ -33,6 +33,46 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		ScannerCoreResponse,
 		ScannerBodyDLP,
 		ScannerDenialOfWallet,
+		AuditResponseScan,
+		AuditHeaderDLP,
+		AuditBodyPromptInjection,
+		AuditAddressProtection,
+		AuditChainDetection,
+		AuditProvenance,
+		AuditMediaPolicy,
+		AuditRequestPolicy,
+		AuditAgentIdentity,
+		AuditTaintPolicy,
+		AuditSessionAnomaly,
+		AuditAdaptiveEnforcement,
+		AuditMCPSessionBinding,
+		AuditFrozenTool,
+		AuditSNIMismatch,
+		AuditKillSwitch,
+		AuditAirlock,
+		AuditCrossRequestEntropy,
+		AuditCrossRequestFragment,
+		AuditGitProtection,
+		AuditAgentBudget,
+		AuditResponseSize,
+		AuditShieldOversize,
+		AuditContract,
+		AuditSSEStream,
+		AuditUnscannable,
+		AuditA2AScan,
+		AuditA2ACardSignature,
+		AuditRedaction,
+		AuditScannerUnavailable,
+		AuditMediationEnvelope,
+		AuditReceiptEmission,
+		AuditReverseSubmit,
+		AuditA2AHeader,
+		AuditA2AResponse,
+		AuditBudgetTruncated,
+		AuditTLSResponseBlocked,
+		AuditSessionDeny,
+		AuditTLSHandshakeError,
+		AuditTLSAuthorityMismatch,
 		DecideInjectionLabel,
 		DecidePolicyLabel,
 		DecideStructuralLabel,
@@ -237,13 +277,187 @@ func TestOperatorHintForResultResolvesDenialOfWalletReasons(t *testing.T) {
 		})
 	}
 
-	t.Run("unclassified detector uses truthful family fallback", func(t *testing.T) {
-		hint := OperatorHintForResult(ScannerDenialOfWallet, "cycle detected: a -> b -> a -> b")
-		if !strings.Contains(hint, "agents._default.budget") {
-			t.Fatalf("fallback hint = %q, want the denial-of-wallet budget family", hint)
+	for _, reason := range []string{
+		"cycle detected: a -> b -> a -> b",
+		"runaway expansion: 5.2x growth per turn",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			guidance, ok := GuidanceForResult(ScannerDenialOfWallet, reason)
+			if !ok {
+				t.Fatal("GuidanceForResult(denial_of_wallet) not ok")
+			}
+			if guidance != remediationGuidance[ScannerDenialOfWallet] {
+				t.Fatalf("guidance = %#v, want family fallback %#v", guidance, remediationGuidance[ScannerDenialOfWallet])
+			}
+			hint := guidance.OperatorKnob
+			if !strings.Contains(hint, "fixed detector thresholds") {
+				t.Fatalf("fallback hint = %q, want fixed-threshold disclosure", hint)
+			}
+			if !strings.Contains(hint, "dow_action") {
+				t.Fatalf("fallback hint = %q, want the verified enforcement knob", hint)
+			}
+			for _, inert := range []string{"max_retries_per_tool", "loop_detection_window"} {
+				if strings.Contains(hint, inert) {
+					t.Fatalf("fallback hint = %q, must not present %s as a detector limit", hint, inert)
+				}
+			}
+		})
+	}
+}
+
+func TestOperatorHintForResultResolvesAuditReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		label  string
+		reason string
+		want   string
+	}{
+		{"media image size", AuditMediaPolicy, "media_policy: image size 2048 exceeds limit 1024", "media_policy.max_image_bytes"},
+		{"media audio", AuditMediaPolicy, "media_policy: audio stripped", "media_policy.strip_audio"},
+		{"media video", AuditMediaPolicy, "media_policy: video stripped", "media_policy.strip_video"},
+		{"media images", AuditMediaPolicy, "media_policy: images stripped", "media_policy.strip_images"},
+		{"media type", AuditMediaPolicy, `media_policy: image type "image/webp" not in allowed list`, "media_policy.allowed_image_types"},
+		{"media parse failure", AuditMediaPolicy, "media_policy: image parse error", "no exemption knob"},
+		{"response integrity", AuditResponseScan, "compressed response cannot be scanned", "scan-integrity failure"},
+		{"response size", AuditResponseScan, "response scan ceiling exceeded", "exact transport response ceiling"},
+		{"size-exempt response", AuditResponseScan, "size-exempt response from api.vendor.example is too large", "response_scanning.size_exempt_scan_max_bytes"},
+		{"size-exempt inflight", AuditResponseScan, "size-exempt response scan would exceed size_exempt_scan_max_inflight_bytes", "response_scanning.size_exempt_scan_max_inflight_bytes"},
+		{"request budget", AuditAgentBudget, "request budget exceeded: 11/10 requests", "max_requests_per_session"},
+		{"domain budget", AuditAgentBudget, "domain budget exceeded: 6/5 unique domains", "max_unique_domains_per_session"},
+		{"truncated byte budget alias", AuditBudgetTruncated, "response truncated at byte budget", "max_bytes_per_session"},
+		{"TLS response integrity alias", AuditTLSResponseBlocked, "compressed response cannot be scanned", "scan-integrity failure"},
+		{"request policy body ceiling", AuditRequestPolicy, "request body exceeds max_body_bytes (1024)", "request_body_scanning.max_body_bytes"},
+		{"request policy unreadable body", AuditRequestPolicy, "request body could not be inspected: read failed", "no exemption"},
+		{"baseline deviation", AuditSessionAnomaly, "baseline_deviation", "pipelock baseline show"},
+		{"domain burst", AuditSessionAnomaly, "ip_domain_burst", "session_profiling.domain_burst"},
+		{"frozen tool is airlock", AuditFrozenTool, "tool not in frozen inventory", "airlock.timers"},
+		{"session deny alias", AuditSessionDeny, "critical", "affected identity session"},
+		{"A2A header alias", AuditA2AHeader, "a2a: A2A-Extensions header contains blocked URI", "a2a_scanning.action"},
+		{"redaction non JSON route", AuditRedaction, "redaction blocked request: non_json_body", "redaction.allowlist_unparseable_routes"},
+		{"MCP cross-request entropy", AuditCrossRequestEntropy, "cross-request entropy budget exceeded: 900/800 bits", "entropy_budget.bits_per_window"},
+		{"submit method", AuditReverseSubmit, "submit profile: method GET not in allowed_methods", "reverse_proxy.allowed_methods"},
+		{"submit path", AuditReverseSubmit, "submit profile: path /v2 not in allowed_paths", "reverse_proxy.allowed_paths[].exact"},
+		{"submit body", AuditReverseSubmit, "submit profile: body exceeds effective cap", "request_body_scanning.max_body_bytes"},
+		{"submit raw path", AuditReverseSubmit, "submit profile: raw path rejected", "no exemption knob"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hint := OperatorHintForResult(tt.label, tt.reason)
+			if !strings.Contains(hint, tt.want) {
+				t.Fatalf("OperatorHintForResult(%q, %q) = %q, want substring %q", tt.label, tt.reason, hint, tt.want)
+			}
+		})
+	}
+
+	if hint := OperatorHintForResult(AuditFrozenTool, "tool not in frozen inventory"); strings.Contains(hint, "mcp_session_binding") {
+		t.Fatalf("frozen-tool hint points at inert session-binding config: %q", hint)
+	}
+}
+
+func TestRemediationHintsDoNotRecommendInertKnobs(t *testing.T) {
+	t.Run("core response discloses scoped suppression", func(t *testing.T) {
+		hint := OperatorHintForResult(ScannerCoreResponse, "core response pattern: role_override")
+		if !strings.Contains(hint, "top-level `suppress:`") || !strings.Contains(hint, "exact core pattern") {
+			t.Fatalf("core-response hint = %q, want its consulted scoped suppression", hint)
 		}
-		if !strings.Contains(hint, "dow_action") {
-			t.Fatalf("fallback hint = %q, want the verified enforcement knob", hint)
+		if !strings.Contains(hint, "cannot be disabled wholesale") {
+			t.Fatalf("core-response hint = %q, want immutable-wholesale distinction", hint)
+		}
+	})
+
+	t.Run("provenance omits inert sigstore trust fields", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditProvenance, "provenance verification failed")
+		for _, inert := range []string{"trusted_issuers", "trusted_subjects"} {
+			if strings.Contains(hint, "`mcp_tool_provenance."+inert+"`") {
+				t.Fatalf("provenance hint = %q, presents inert %s as a config path", hint, inert)
+			}
+		}
+		if !strings.Contains(hint, "trusted_keys") || !strings.Contains(hint, "unsigned tools only") {
+			t.Fatalf("provenance hint = %q, want consumed key and exact action scope", hint)
+		}
+	})
+
+	t.Run("MCP entropy omits HTTP-only host exemption", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditCrossRequestEntropy, "cross-request entropy budget exceeded: 900/800 bits")
+		if strings.Contains(hint, "add only that host") {
+			t.Fatalf("MCP entropy hint = %q, presents HTTP-only exemption as remediation", hint)
+		}
+		if !strings.Contains(hint, "does not consult `entropy_budget.exempt_domains`") {
+			t.Fatalf("MCP entropy hint = %q, want explicit non-consultation warning", hint)
+		}
+	})
+
+	t.Run("fetch response size omits transport-only exemption", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditResponseSize, "response exceeds fetch_proxy.max_response_mb")
+		if strings.Contains(hint, "add the trusted host") {
+			t.Fatalf("fetch response-size hint = %q, presents an unconsulted host exemption", hint)
+		}
+		if !strings.Contains(hint, "fetch-handler response-size blocks do not consult") {
+			t.Fatalf("fetch response-size hint = %q, want transport limitation", hint)
+		}
+	})
+
+	t.Run("redaction distinguishes non-JSON passthrough", func(t *testing.T) {
+		nonJSON := OperatorHintForResult(AuditRedaction, "redaction blocked request: non_json_body")
+		if !strings.Contains(nonJSON, "allowlist_unparseable_routes") || !strings.Contains(nonJSON, "forward the body unredacted") {
+			t.Fatalf("non-JSON redaction hint = %q, want consulted route carve-out and consequence", nonJSON)
+		}
+		generic := OperatorHintForResult(AuditRedaction, "redaction blocked request: invalid profile")
+		if !strings.Contains(generic, "no exemption knob") {
+			t.Fatalf("generic redaction hint = %q, want fail-closed guidance", generic)
+		}
+	})
+
+	t.Run("A2A hard floors omit configurable action", func(t *testing.T) {
+		for _, reason := range []string{
+			"a2a: input exceeds maximum inspectable nesting depth",
+			"a2a: DLP: Hostname Exfiltration",
+		} {
+			hint := OperatorHintForResult(AuditA2AScan, reason)
+			if strings.Contains(hint, "set `a2a_scanning.action") {
+				t.Fatalf("hard-floor A2A hint = %q, presents action as remediation", hint)
+			}
+			if !strings.Contains(hint, "does not consult `a2a_scanning.action`") {
+				t.Fatalf("hard-floor A2A hint = %q, want explicit non-consultation", hint)
+			}
+		}
+		tunable := OperatorHintForResult(AuditA2AScan, "a2a: injection: prompt_override")
+		if !strings.Contains(tunable, "set `a2a_scanning.action: warn`") {
+			t.Fatalf("tunable A2A hint = %q, want consulted action", tunable)
+		}
+	})
+
+	t.Run("Decide injection omits suppression remediation", func(t *testing.T) {
+		hint := OperatorHintForResult(DecideInjectionLabel, "prompt override")
+		if strings.Contains(hint, "for example suppress") {
+			t.Fatalf("Decide injection hint = %q, presents unconsulted suppression", hint)
+		}
+		if !strings.Contains(hint, "suppression entry is inert here") {
+			t.Fatalf("Decide injection hint = %q, want explicit non-consultation", hint)
+		}
+	})
+
+	t.Run("URL data budget names the consumed field", func(t *testing.T) {
+		hint := OperatorHintForResult(ScannerDataBudget, "data budget exceeded")
+		if !strings.Contains(hint, "fetch_proxy.monitoring.max_data_per_minute") {
+			t.Fatalf("data-budget hint = %q, want consumed scanner field", hint)
+		}
+	})
+
+	t.Run("kill switch distinguishes transport exemptions", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditKillSwitch, "sentinel")
+		if !strings.Contains(hint, "kill_switch.allowlist_ips") || !strings.Contains(hint, "Raw/MCP") {
+			t.Fatalf("kill-switch hint = %q, want exact HTTP carve-out scope", hint)
+		}
+	})
+
+	t.Run("reverse submit omits non-admission fields", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditReverseSubmit, "submit profile: method GET not in allowed_methods")
+		for _, inert := range []string{"trusted_upstream", "request_timeout_seconds"} {
+			if strings.Contains(hint, inert) {
+				t.Fatalf("reverse-submit hint = %q, presents non-admission field %s", hint, inert)
+			}
 		}
 	})
 }

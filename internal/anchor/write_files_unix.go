@@ -56,14 +56,36 @@ func writeStateMarkerFile(cleanDir string, marker StateMarker, data []byte) erro
 	if err != nil {
 		return err
 	}
+	return writeStateMarkerAt(indexFD, name, data, false)
+}
+
+func writeLatestStateMarkerFile(cleanDir string, data []byte) error {
+	rootFD, err := openAnchorDir(cleanDir)
+	if err != nil {
+		return fmt.Errorf("open anchor-state directory: %w", err)
+	}
+	defer func() { _ = unix.Close(rootFD) }()
+	var stat unix.Stat_t
+	if err := unix.Fstatat(rootFD, legacyStateMarker, &stat, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+			return errors.New("anchor-state latest marker is not a regular file")
+		}
+	} else if !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("inspect anchor-state latest marker: %w", err)
+	}
+	return writeStateMarkerAt(rootFD, legacyStateMarker, data, true)
+}
+
+func writeStateMarkerAt(dirFD int, name string, data []byte, replace bool) error {
 	var tempName string
+	var err error
 	tempFD := -1
 	for attempts := 0; attempts < 16; attempts++ {
 		tempName, err = stateMarkerTempName()
 		if err != nil {
 			return err
 		}
-		tempFD, err = unix.Openat(indexFD, tempName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, filePermissions)
+		tempFD, err = unix.Openat(dirFD, tempName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, filePermissions)
 		if err == nil {
 			break
 		}
@@ -75,7 +97,7 @@ func writeStateMarkerFile(cleanDir string, marker StateMarker, data []byte) erro
 		return fmt.Errorf("create anchor-state temp file: %w", err)
 	}
 	tempFile := os.NewFile(uintptr(tempFD), tempName)
-	defer func() { _ = unix.Unlinkat(indexFD, tempName, 0) }()
+	defer func() { _ = unix.Unlinkat(dirFD, tempName, 0) }()
 	if _, err := tempFile.Write(data); err != nil {
 		_ = tempFile.Close()
 		return fmt.Errorf("write anchor-state temp file: %w", err)
@@ -91,13 +113,43 @@ func writeStateMarkerFile(cleanDir string, marker StateMarker, data []byte) erro
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("close anchor-state temp file: %w", err)
 	}
-	if err := unix.Renameat(indexFD, tempName, indexFD, name); err != nil {
-		return fmt.Errorf("rename anchor-state marker: %w", err)
+	if replace {
+		if err := unix.Renameat(dirFD, tempName, dirFD, name); err != nil {
+			return fmt.Errorf("rename anchor-state marker: %w", err)
+		}
+	} else if err := unix.Linkat(dirFD, tempName, dirFD, name, 0); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return errStateMarkerExists
+		}
+		return fmt.Errorf("create immutable anchor-state marker: %w", err)
 	}
-	if err := unix.Fsync(indexFD); err != nil {
+	if err := unix.Fsync(dirFD); err != nil {
 		return fmt.Errorf("sync anchor-state directory: %w", err)
 	}
 	return nil
+}
+
+func lockStateMarkerDir(cleanDir string) (func(), error) {
+	if err := os.MkdirAll(cleanDir, dirPermissions); err != nil {
+		return nil, fmt.Errorf("create anchor-state directory: %w", err)
+	}
+	rootFD, err := openAnchorDir(cleanDir)
+	if err != nil {
+		return nil, fmt.Errorf("create anchor-state directory: %w", err)
+	}
+	lockFD, err := unix.Openat(rootFD, stateMarkerLockFile, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, filePermissions)
+	_ = unix.Close(rootFD)
+	if err != nil {
+		return nil, fmt.Errorf("open anchor-state lock: %w", err)
+	}
+	if err := unix.Flock(lockFD, unix.LOCK_EX); err != nil {
+		_ = unix.Close(lockFD)
+		return nil, fmt.Errorf("lock anchor-state writer: %w", err)
+	}
+	return func() {
+		_ = unix.Flock(lockFD, unix.LOCK_UN)
+		_ = unix.Close(lockFD)
+	}, nil
 }
 
 func openAnchorDir(path string) (int, error) {

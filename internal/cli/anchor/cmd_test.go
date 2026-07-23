@@ -103,8 +103,11 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStateMarkers: %v", err)
 	}
-	if len(markers) != 1 || markers[0].BundlePath != "bundle.json" {
-		t.Fatalf("anchor markers = %+v, want receipt-directory-relative bundle path", markers)
+	if len(markers) != 1 ||
+		markers[0].BundlePath != "bundle.json" ||
+		markers[0].ReceiptCount != bundle.Checkpoint.ReceiptCount ||
+		markers[0].SignerKey != keyHex {
+		t.Fatalf("anchor markers = %+v, want enriched receipt-directory-relative marker", markers)
 	}
 	entries, err := anchorpkg.ReadLocalLog(logPath)
 	if err != nil {
@@ -112,6 +115,18 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].LogID != "cli-test-log" {
 		t.Fatalf("unexpected log entries: %+v", entries)
+	}
+}
+
+func TestWriteAnchorStateMarkerRejectsCheckpointWithoutSigner(t *testing.T) {
+	err := writeAnchorStateMarker(
+		bundleOutput{receiptDir: t.TempDir(), markerPath: "bundle.json"},
+		anchorpkg.Checkpoint{SessionID: "file", RootHash: strings.Repeat("a", 64), ReceiptCount: 1},
+		anchorpkg.Proof{Backend: anchorpkg.LocalBackend},
+		[]byte("{}\n"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "no signer keys") {
+		t.Fatalf("writeAnchorStateMarker err = %v, want missing signer rejection", err)
 	}
 }
 

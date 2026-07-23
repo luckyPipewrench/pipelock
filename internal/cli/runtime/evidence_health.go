@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -183,7 +184,10 @@ func (h *evidenceHealthMonitor) refreshAnchor() {
 		h.setAnchor(nil)
 		return
 	}
-	state, found, err := readAnchorStateForSession(h.recorder.Dir(), transcriptRootSessionID)
+	state, found, skipped, err := readAnchorStateForSessionWithSkipped(h.recorder.Dir(), transcriptRootSessionID)
+	if skipped > 0 && h.metrics != nil {
+		h.metrics.RecordEvidenceAnchorStateSkipped(skipped)
+	}
 	if err != nil {
 		h.setAnchor(nil)
 		h.fail("sampler_error", err)
@@ -552,66 +556,102 @@ func readAnchorState(path string) (anchorState, error) {
 	return anchorStateFromMarker(marker), nil
 }
 
-func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error) {
-	legacy, err := readAnchorState(filepath.Join(dir, evidenceAnchorStateFile))
-	if err == nil && legacy.SessionID != sessionID {
-		return anchorState{}, false, fmt.Errorf("anchor-state session_id %q does not match %q", legacy.SessionID, sessionID)
+func readAnchorStateForSession(dir string) (anchorState, bool, error) {
+	state, found, _, err := readAnchorStateForSessionWithSkipped(dir, transcriptRootSessionID)
+	return state, found, err
+}
+
+func readAnchorStateForSessionWithSkipped(dir, sessionID string) (anchorState, bool, int, error) {
+	skipped := 0
+	latestPath := filepath.Join(dir, evidenceAnchorStateFile)
+	indexPath := filepath.Join(dir, "anchor-state.d")
+	_, initialIndexErr := os.Lstat(indexPath)
+	indexInitiallyMissing := errors.Is(initialIndexErr, os.ErrNotExist)
+	latest, latestFound, latestErr := anchor.LoadStateMarkerFile(latestPath)
+	var latestIssue error
+	if latestErr != nil {
+		skipped++
+		latestIssue = latestErr
+	} else if latestFound && latest.SessionID == sessionID && latest.ReceiptCount > 0 {
+		indexed, indexedFound, indexErr := anchor.LoadIndexedStateMarker(dir, latest)
+		if indexErr == nil && indexedFound && anchor.StateMarkersEqual(indexed, latest) {
+			return anchorStateFromMarker(latest), true, skipped, nil
+		}
+		skipped++
+		latestIssue = errors.New("anchor-state latest marker does not match its immutable index entry")
+	} else if latestFound && latest.SessionID != sessionID {
+		if indexInitiallyMissing {
+			latestIssue = fmt.Errorf("anchor-state session_id %q does not match %q", latest.SessionID, sessionID)
+		}
 	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return anchorState{}, false, err
-	}
-	markers, err := anchor.LoadStateMarkers(dir)
+
+	markers, historicalSkipped, err := anchor.LoadStateMarkersResilient(dir)
 	if err != nil {
-		return anchorState{}, false, err
+		return anchorState{}, false, skipped, err
 	}
-	var selected anchorState
-	var selectedAuto anchorState
-	found := false
-	autoFound := false
-	seenSeq := map[uint64]string{}
-	seenReceiptCount := map[uint64]string{}
+	if latestErr != nil && indexInitiallyMissing && historicalSkipped > 0 {
+		if _, indexErr := os.Lstat(indexPath); errors.Is(indexErr, os.ErrNotExist) {
+			historicalSkipped--
+		}
+	}
+	skipped += historicalSkipped
+	candidates := make(map[uint64]anchorState)
+	roots := make(map[uint64]string)
+	ambiguous := make(map[uint64]bool)
 	for _, marker := range markers {
 		if marker.SessionID != sessionID {
 			continue
 		}
 		state := anchorStateFromMarker(marker)
-		if isAutoAnchorBundlePath(state.BundlePath) {
-			checkpoint, loadErr := loadAutoAnchorCheckpoint(dir, state)
-			if loadErr != nil {
-				return anchorState{}, false, fmt.Errorf("read auto-anchor state: %w", loadErr)
-			}
-			state.ReceiptCount = checkpoint.ReceiptCount
-			if len(checkpoint.SignerKeys) > 0 {
-				state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
-			}
-			if previousRoot, ok := seenReceiptCount[state.ReceiptCount]; ok && previousRoot != state.RootHash {
-				return anchorState{}, false, fmt.Errorf("ambiguous auto-anchor state markers for session %q at receipt_count %d", sessionID, state.ReceiptCount)
-			}
-			seenReceiptCount[state.ReceiptCount] = state.RootHash
-			if !autoFound || state.ReceiptCount > selectedAuto.ReceiptCount {
-				selectedAuto = state
-				autoFound = true
-			}
+		checkpoint, loadErr := loadAutoAnchorCheckpoint(dir, state)
+		if loadErr != nil {
+			skipped++
 			continue
 		}
-		if previousRoot, ok := seenSeq[state.FinalSeq]; ok && previousRoot != state.RootHash {
-			return anchorState{}, false, fmt.Errorf("ambiguous anchor-state markers for session %q at final_seq %d", sessionID, state.FinalSeq)
+		state.ReceiptCount = checkpoint.ReceiptCount
+		if len(checkpoint.SignerKeys) > 0 {
+			state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
 		}
-		seenSeq[state.FinalSeq] = state.RootHash
-		if !found || state.FinalSeq > selected.FinalSeq {
-			selected = state
+		coverage := anchorStateCoverage(state)
+		if ambiguous[coverage] {
+			skipped++
+			continue
+		}
+		if previousRoot, ok := roots[coverage]; ok && previousRoot != state.RootHash {
+			delete(candidates, coverage)
+			ambiguous[coverage] = true
+			skipped += 2
+			continue
+		}
+		roots[coverage] = state.RootHash
+		if previous, ok := candidates[coverage]; !ok || state.AnchoredAt.After(previous.AnchoredAt) {
+			candidates[coverage] = state
+		}
+	}
+	var selected anchorState
+	var selectedCoverage uint64
+	found := false
+	for coverage, candidate := range candidates {
+		if !found || coverage > selectedCoverage {
+			selected = candidate
+			selectedCoverage = coverage
 			found = true
 		}
 	}
-	if autoFound {
-		return selectedAuto, true, nil
+	if !found && latestIssue != nil {
+		return anchorState{}, false, skipped, latestIssue
 	}
-	return selected, found, nil
+	return selected, found, skipped, nil
 }
 
-func isAutoAnchorBundlePath(path string) bool {
-	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
-	return strings.HasPrefix(clean, autoAnchorBundleDir+"/anchor-proxy-")
+func anchorStateCoverage(state anchorState) uint64 {
+	if state.ReceiptCount > 0 {
+		return state.ReceiptCount
+	}
+	if state.FinalSeq == math.MaxUint64 {
+		return state.FinalSeq
+	}
+	return state.FinalSeq + 1
 }
 
 func anchorStateFromMarker(marker anchor.StateMarker) anchorState {
@@ -625,6 +665,8 @@ func anchorStateFromMarker(marker anchor.StateMarker) anchorState {
 		AnchoredAt:   marker.AnchoredAt,
 		BundleSHA256: marker.BundleSHA256,
 		BundlePath:   marker.BundlePath,
+		ReceiptCount: marker.ReceiptCount,
+		SignerKey:    marker.SignerKey,
 	}
 }
 

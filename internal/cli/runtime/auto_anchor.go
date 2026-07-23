@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -179,7 +178,10 @@ func (m *autoAnchorMonitor) seed(now time.Time, snapshot receipt.HealthSnapshot,
 	}
 	m.mu.Unlock()
 
-	state, found, err := readAnchorStateForSession(m.recorder.Dir(), m.sessionID)
+	state, found, skipped, err := readAnchorStateForSessionWithSkipped(m.recorder.Dir(), m.sessionID)
+	if skipped > 0 && m.metrics != nil {
+		m.metrics.RecordEvidenceAnchorStateSkipped(skipped)
+	}
 	if err != nil {
 		return fmt.Errorf("seed auto-anchor state: %w", err)
 	}
@@ -190,14 +192,21 @@ func (m *autoAnchorMonitor) seed(now time.Time, snapshot receipt.HealthSnapshot,
 		if err := validateAnchorStateMarker(state, now); err != nil {
 			return fmt.Errorf("seed auto-anchor state: %w", err)
 		}
-		if state.SignerKey != "" {
-			receipts, extractErr := m.extractFn(m.recorder.Dir(), m.sessionID)
-			if extractErr != nil {
-				return fmt.Errorf("seed auto-anchor state: extract receipt chain: %w", extractErr)
-			}
-			if err := validateAutoAnchorSeedState(state, receipts, currentSignerKey); err != nil {
-				return fmt.Errorf("seed auto-anchor state: %w", err)
-			}
+		checkpoint, loadErr := loadAutoAnchorCheckpoint(m.recorder.Dir(), state)
+		if loadErr != nil {
+			return fmt.Errorf("seed auto-anchor state: %w", loadErr)
+		}
+		if len(checkpoint.SignerKeys) == 0 {
+			return errors.New("seed auto-anchor state: anchor checkpoint has no signer keys")
+		}
+		state.ReceiptCount = checkpoint.ReceiptCount
+		state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
+		receipts, extractErr := m.extractFn(m.recorder.Dir(), m.sessionID)
+		if extractErr != nil {
+			return fmt.Errorf("seed auto-anchor state: extract receipt chain: %w", extractErr)
+		}
+		if err := validateAutoAnchorSeedState(state, receipts, currentSignerKey); err != nil {
+			return fmt.Errorf("seed auto-anchor state: %w", err)
 		}
 		if state.SignerKey == "" || state.SignerKey == currentSignerKey {
 			if state.FinalSeq >= snapshot.ChainSeq {
@@ -309,6 +318,9 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 	if err != nil {
 		return fmt.Errorf("build live receipt checkpoint: %w", err)
 	}
+	if len(checkpoint.SignerKeys) == 0 {
+		return errors.New("live receipt checkpoint has no signer keys")
+	}
 	if !m.checkpointAdvanced(checkpoint.ReceiptCount) {
 		return errors.New("live receipt checkpoint did not advance beyond the last anchored sequence")
 	}
@@ -337,6 +349,8 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 		AnchoredAt:   anchoredAt,
 		BundleSHA256: hex.EncodeToString(bundleSum[:]),
 		BundlePath:   bundleRel,
+		ReceiptCount: checkpoint.ReceiptCount,
+		SignerKey:    checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1],
 	}); err != nil {
 		return fmt.Errorf("write live anchor state: %w", err)
 	}
@@ -427,46 +441,19 @@ func (m *autoAnchorMonitor) checkpointAdvanced(receiptCount uint64) bool {
 }
 
 func loadAutoAnchorCheckpoint(dir string, state anchorState) (anchorpkg.Checkpoint, error) {
-	rel := filepath.Clean(filepath.FromSlash(state.BundlePath))
-	if filepath.IsAbs(rel) || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return anchorpkg.Checkpoint{}, errors.New("auto-anchor bundle path must stay under receipt directory")
-	}
-	root, err := os.OpenRoot(filepath.Clean(dir))
-	if err != nil {
-		return anchorpkg.Checkpoint{}, fmt.Errorf("open receipt directory: %w", err)
-	}
-	defer func() { _ = root.Close() }()
-	file, err := root.Open(rel)
-	if err != nil {
-		return anchorpkg.Checkpoint{}, fmt.Errorf("open auto-anchor bundle: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	const maxAutoAnchorBundleBytes = 10 << 20
-	data, err := io.ReadAll(io.LimitReader(file, maxAutoAnchorBundleBytes+1))
-	if err != nil {
-		return anchorpkg.Checkpoint{}, fmt.Errorf("read auto-anchor bundle: %w", err)
-	}
-	if len(data) > maxAutoAnchorBundleBytes {
-		return anchorpkg.Checkpoint{}, fmt.Errorf("auto-anchor bundle exceeds %d bytes", maxAutoAnchorBundleBytes)
-	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != state.BundleSHA256 {
-		return anchorpkg.Checkpoint{}, errors.New("auto-anchor bundle hash does not match state marker")
-	}
-	bundle, err := anchorpkg.LoadBundleBytes(data)
-	if err != nil {
-		return anchorpkg.Checkpoint{}, err
-	}
-	if bundle.Version != anchorpkg.BundleVersion ||
-		bundle.Backend != state.Backend ||
-		bundle.Checkpoint.SessionID != state.SessionID ||
-		bundle.Checkpoint.FinalSeq != state.FinalSeq ||
-		bundle.Checkpoint.RootHash != state.RootHash ||
-		bundle.Proof.Backend != state.Backend ||
-		bundle.Proof.LogIndex != state.LogIndex {
-		return anchorpkg.Checkpoint{}, errors.New("auto-anchor bundle does not match state marker")
-	}
-	return bundle.Checkpoint, nil
+	return anchorpkg.LoadStateMarkerCheckpoint(dir, anchorpkg.StateMarker{
+		Schema:       state.Schema,
+		SessionID:    state.SessionID,
+		FinalSeq:     state.FinalSeq,
+		RootHash:     state.RootHash,
+		Backend:      state.Backend,
+		LogIndex:     state.LogIndex,
+		AnchoredAt:   state.AnchoredAt,
+		BundleSHA256: state.BundleSHA256,
+		BundlePath:   state.BundlePath,
+		ReceiptCount: state.ReceiptCount,
+		SignerKey:    state.SignerKey,
+	})
 }
 
 func validateAutoAnchorSeedState(state anchorState, receipts []receipt.Receipt, currentSignerKey string) error {

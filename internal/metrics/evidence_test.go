@@ -142,6 +142,11 @@ func TestEvidenceMetricsSettersSnapshotsAndDynamicCollector(t *testing.T) {
 	if got := testutil.ToFloat64(m.evidenceAnchoredFinalSeq); got != 42 {
 		t.Fatalf("anchored final seq gauge = %v, want 42", got)
 	}
+	m.RecordEvidenceAnchorStateSkipped(2)
+	m.RecordEvidenceAnchorStateSkipped(0)
+	if got := testutil.ToFloat64(m.evidenceAnchorStateSkipped); got != 2 {
+		t.Fatalf("anchor_state_skipped_total = %v, want 2", got)
+	}
 	m.RecordEvidenceAutoAnchorAttempt()
 	m.RecordEvidenceAutoAnchorSuccess()
 	m.RecordEvidenceAutoAnchorAttempt()
@@ -243,6 +248,7 @@ func TestEvidenceMetricsNilAndZeroValueFailClosed(t *testing.T) {
 	nilMetrics.SetEvidenceSelfAuditOK(false)
 	nilMetrics.SetEvidenceHeartbeatInterval(1, true)
 	nilMetrics.SetEvidenceAnchor(1, 1)
+	nilMetrics.RecordEvidenceAnchorStateSkipped(1)
 	nilMetrics.RecordEvidenceAutoAnchorAttempt()
 	nilMetrics.RecordEvidenceAutoAnchorSuccess()
 	nilMetrics.RecordEvidenceAutoAnchorFailure("failure")
@@ -267,6 +273,7 @@ func TestEvidenceMetricsNilAndZeroValueFailClosed(t *testing.T) {
 	zero.SetEvidenceSelfAuditOK(false)
 	zero.SetEvidenceHeartbeatInterval(1, true)
 	zero.SetEvidenceAnchor(1, 1)
+	zero.RecordEvidenceAnchorStateSkipped(1)
 	zero.SetEvidenceRequirement(EvidenceRequirementRecorderEnabled, true)
 	zero.SetEvidenceRequirements(nil)
 	zero.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {

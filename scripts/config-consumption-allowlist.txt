@@ -58,3 +58,4 @@ TrustedIssuers  # INERT; mapProvenanceConfig drops it; sigstore unimplemented
 TrustedSubjects  # INERT; same as TrustedIssuers
 PublicAllowlistDefault  # INERT; privacy enforcer does not read it
 WellKnownURL  # INERT; no key-discovery fetch implemented for mediation trusted keys
+ReceiptThreshold  # (A) FlightRecorder.AnchorReceiptThreshold() schema.go -> cli/runtime/auto_anchor.go triggered()

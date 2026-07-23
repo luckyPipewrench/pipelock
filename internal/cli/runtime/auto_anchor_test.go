@@ -636,6 +636,125 @@ func TestAutoAnchorPersistentMarkerFailureDoesNotBlockReceiptEmission(t *testing
 	assertAutoAnchorStats(t, trig.metrics, 2, 0, 2, "write live anchor state")
 }
 
+func TestAutoAnchorReusesPendingProofOnPersistRetry(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	// Block the marker directory so bundle+marker persistence fails while the
+	// backend submission succeeds, leaving a pending unpersisted checkpoint.
+	blocker := filepath.Join(trig.recorder.Dir(), "anchor-state.d")
+	if err := os.WriteFile(blocker, []byte("block"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	backend := &countingAnchorBackend{}
+	trig.monitor.seeded = true
+	trig.monitor.backendFn = func(config.FlightRecorderAnchor) (anchorpkg.Backend, error) { return backend, nil }
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/pending-head")
+
+	// Two passes over the SAME head: the first submits, the second must reuse the
+	// pending proof and retry only local persistence — never a second submit.
+	trig.monitor.runPass()
+	trig.monitor.runPass()
+
+	if got := backend.submits.Load(); got != 1 {
+		t.Fatalf("submits for a single unchanged head = %d, want 1 (pending reuse, no resubmit)", got)
+	}
+	if !trig.monitor.pending {
+		t.Fatal("monitor must retain the pending checkpoint while persistence keeps failing")
+	}
+	assertAutoAnchorStats(t, trig.metrics, 2, 0, 2, "write live anchor state")
+
+	// Clearing the blocker lets the retry persist with the SAME pending proof and
+	// still no additional submit.
+	if err := os.Remove(blocker); err != nil {
+		t.Fatalf("remove blocker: %v", err)
+	}
+	trig.monitor.runPass()
+	if got := backend.submits.Load(); got != 1 {
+		t.Fatalf("submits after successful persist retry = %d, want 1", got)
+	}
+	if trig.monitor.pending {
+		t.Fatal("pending must clear after the marker is durable")
+	}
+	assertAutoAnchorStats(t, trig.metrics, 3, 1, 2, "")
+}
+
+func TestVerifyAutoAnchorProof(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "local-anchor-log.jsonl")
+	local := anchorpkg.LocalLog{Path: logPath, LogID: "verify-test-log"}
+	checkpoint := anchorpkg.Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64), ReceiptCount: 1}
+	goodProof, err := local.Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("local submit: %v", err)
+	}
+
+	t.Run("local accepts its own proof", func(t *testing.T) {
+		if err := verifyAutoAnchorProof(local, goodProof, checkpoint); err != nil {
+			t.Fatalf("verifyAutoAnchorProof(local, good) = %v, want nil", err)
+		}
+	})
+	t.Run("local rejects a tampered proof", func(t *testing.T) {
+		bad := goodProof
+		bad.EntryHash = strings.Repeat("b", 64)
+		if err := verifyAutoAnchorProof(local, bad, checkpoint); err == nil {
+			t.Fatal("verifyAutoAnchorProof(local, tampered) = nil, want error")
+		}
+	})
+	t.Run("rekor records without immediate self-verification", func(t *testing.T) {
+		if err := verifyAutoAnchorProof(anchorpkg.RekorLog{URL: "https://rekor.internal.example"}, anchorpkg.Proof{Backend: anchorpkg.RekorBackend}, checkpoint); err != nil {
+			t.Fatalf("verifyAutoAnchorProof(rekor) = %v, want nil", err)
+		}
+	})
+}
+
+func TestReadAnchorStateForSessionRejectsCorruptAndAmbiguousAutoMarkers(t *testing.T) {
+	t.Run("corrupt auto bundle fails closed", func(t *testing.T) {
+		trig := newAutoAnchorTestRig(t)
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/corrupt-bundle")
+		trig.monitor.runPass()
+		bundles, err := filepath.Glob(filepath.Join(trig.recorder.Dir(), autoAnchorBundleDir, "*.json"))
+		if err != nil || len(bundles) != 1 {
+			t.Fatalf("bundles = %v err=%v, want exactly one", bundles, err)
+		}
+		if err := os.WriteFile(bundles[0], []byte("{ not a bundle"), 0o600); err != nil {
+			t.Fatalf("corrupt bundle: %v", err)
+		}
+		if _, _, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID); err == nil {
+			t.Fatal("readAnchorStateForSession with a corrupt auto bundle = nil error, want fail-closed")
+		}
+	})
+	t.Run("ambiguous same-receipt-count markers fail closed", func(t *testing.T) {
+		trig := newAutoAnchorTestRig(t)
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/ambiguous")
+		trig.monitor.runPass()
+		state, found, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID)
+		if err != nil || !found {
+			t.Fatalf("baseline read = (%+v, %v, %v)", state, found, err)
+		}
+		// Plant a second auto marker + bundle at the SAME receipt_count but a
+		// different root hash. Selection must refuse to pick a winner.
+		conflictRel := filepath.ToSlash(filepath.Join(autoAnchorBundleDir, "anchor-proxy-conflict.json"))
+		conflictCP := anchorpkg.Checkpoint{
+			SessionID: state.SessionID, FinalSeq: state.FinalSeq, ReceiptCount: state.ReceiptCount,
+			RootHash: strings.Repeat("c", 64), SignerKeys: []string{trig.emitter.SignerKeyHex()},
+		}
+		bundleBytes, werr := anchorpkg.WriteBundleUnderDir(trig.recorder.Dir(), conflictRel, anchorpkg.NewBundle(conflictCP, anchorpkg.Proof{Backend: anchorpkg.LocalBackend, LogID: "conflict"}))
+		if werr != nil {
+			t.Fatalf("write conflict bundle: %v", werr)
+		}
+		sum := sha256.Sum256(bundleBytes)
+		if werr := anchorpkg.WriteStateMarker(trig.recorder.Dir(), anchorpkg.StateMarker{
+			SessionID: conflictCP.SessionID, FinalSeq: conflictCP.FinalSeq, RootHash: conflictCP.RootHash,
+			Backend: anchorpkg.LocalBackend, AnchoredAt: time.Now().UTC(),
+			BundleSHA256: hex.EncodeToString(sum[:]), BundlePath: conflictRel,
+		}); werr != nil {
+			t.Fatalf("write conflict marker: %v", werr)
+		}
+		if _, _, err := readAnchorStateForSession(trig.recorder.Dir(), transcriptRootSessionID); err == nil {
+			t.Fatal("readAnchorStateForSession with ambiguous markers = nil error, want fail-closed")
+		}
+	})
+}
+
 func TestAutoAnchorConcurrentEmitterAndEvidenceHealth(t *testing.T) {
 	trig := newAutoAnchorTestRig(t)
 	trig.cfg.FlightRecorder.Anchor.Interval = "0"

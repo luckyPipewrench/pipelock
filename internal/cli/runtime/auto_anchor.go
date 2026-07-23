@@ -52,6 +52,15 @@ type autoAnchorMonitor struct {
 	observedChainSeq     uint64
 	observedReceiptCount uint64
 	forceAnchor          bool
+
+	// pending retains a checkpoint that was accepted by the backend but whose
+	// local bundle/marker persistence has not yet completed. It lets a later
+	// pass retry only the local write for the identical head instead of
+	// resubmitting to the transparency log, which would spam the log, burn
+	// rate limits, and create duplicate anchors.
+	pending           bool
+	pendingCheckpoint anchorpkg.Checkpoint
+	pendingProof      anchorpkg.Proof
 }
 
 func newAutoAnchorMonitor(
@@ -276,9 +285,6 @@ func (m *autoAnchorMonitor) triggered(fr config.FlightRecorder, receiptCount uin
 	interval := fr.AnchorIntervalDuration()
 	intervalDue := interval > 0 && !now.Before(m.lastAnchoredAt.Add(interval))
 	threshold := fr.AnchorReceiptThreshold()
-	if fr.Anchor.ReceiptThreshold != nil {
-		threshold = *fr.Anchor.ReceiptThreshold
-	}
 	thresholdDue := threshold > 0 && newReceipts >= threshold
 	return intervalDue || thresholdDue, newReceipts, nil
 }
@@ -299,13 +305,9 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 	if !m.checkpointAdvanced(checkpoint.ReceiptCount) {
 		return errors.New("live receipt checkpoint did not advance beyond the last anchored sequence")
 	}
-	backend, err := m.backendFn(anchorCfg)
+	proof, err := m.submitOrReusePending(anchorCfg, checkpoint)
 	if err != nil {
-		return fmt.Errorf("configure auto-anchor backend: %w", err)
-	}
-	proof, err := backend.Submit(checkpoint)
-	if err != nil {
-		return fmt.Errorf("submit live receipt checkpoint: %w", err)
+		return err
 	}
 	bundleRel := filepath.ToSlash(filepath.Join(autoAnchorBundleDir, fmt.Sprintf("anchor-proxy-%d-%d-%.12s.json", checkpoint.ReceiptCount, checkpoint.FinalSeq, checkpoint.RootHash)))
 	bundleBytes, err := anchorpkg.WriteBundleUnderDir(m.recorder.Dir(), bundleRel, anchorpkg.NewBundle(checkpoint, proof))
@@ -327,6 +329,9 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 		return fmt.Errorf("write live anchor state: %w", err)
 	}
 	m.mu.Lock()
+	m.pending = false
+	m.pendingCheckpoint = anchorpkg.Checkpoint{}
+	m.pendingProof = anchorpkg.Proof{}
 	m.seeded = true
 	m.hasLastAnchor = true
 	m.lastFinalSeq = checkpoint.FinalSeq
@@ -338,6 +343,57 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 	m.mu.Unlock()
 	if m.metrics != nil {
 		m.metrics.RecordEvidenceAutoAnchorSuccess()
+	}
+	return nil
+}
+
+// submitOrReusePending submits the checkpoint to the anchor backend, or reuses
+// the proof from a prior pass whose backend submission succeeded but whose local
+// bundle/marker persistence failed. Reuse prevents a persistence failure from
+// resubmitting an identical head to the transparency log, which would spam the
+// log and create duplicate anchors. The freshly returned proof is verified
+// before it is retained.
+func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorderAnchor, checkpoint anchorpkg.Checkpoint) (anchorpkg.Proof, error) {
+	m.mu.Lock()
+	if m.pending &&
+		m.pendingCheckpoint.ReceiptCount == checkpoint.ReceiptCount &&
+		m.pendingCheckpoint.RootHash == checkpoint.RootHash &&
+		m.pendingCheckpoint.FinalSeq == checkpoint.FinalSeq {
+		proof := m.pendingProof
+		m.mu.Unlock()
+		return proof, nil
+	}
+	m.mu.Unlock()
+
+	backend, err := m.backendFn(anchorCfg)
+	if err != nil {
+		return anchorpkg.Proof{}, fmt.Errorf("configure auto-anchor backend: %w", err)
+	}
+	proof, err := backend.Submit(checkpoint)
+	if err != nil {
+		return anchorpkg.Proof{}, fmt.Errorf("submit live receipt checkpoint: %w", err)
+	}
+	if err := verifyAutoAnchorProof(backend, proof, checkpoint); err != nil {
+		return anchorpkg.Proof{}, fmt.Errorf("verify live receipt anchor proof: %w", err)
+	}
+	m.mu.Lock()
+	m.pending = true
+	m.pendingCheckpoint = checkpoint
+	m.pendingProof = proof
+	m.mu.Unlock()
+	return proof, nil
+}
+
+// verifyAutoAnchorProof checks a freshly returned anchor proof before it is
+// persisted, so a misconfigured or buggy backend that returns a syntactically
+// accepted but invalid proof cannot make the chain look anchored. The local
+// backend verifies deterministically. A Rekor submission is witnessed
+// independently by the offline verifier against the log's public key, which the
+// runtime does not hold, so it is recorded without an immediate
+// self-verification (the documented submit-and-audit-offline model).
+func verifyAutoAnchorProof(backend anchorpkg.Backend, proof anchorpkg.Proof, checkpoint anchorpkg.Checkpoint) error {
+	if local, ok := backend.(anchorpkg.LocalLog); ok {
+		return local.Verify(proof, checkpoint)
 	}
 	return nil
 }

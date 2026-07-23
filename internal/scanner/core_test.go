@@ -186,6 +186,14 @@ func TestCore_BlockCannotBeOverriddenByMainScanner(t *testing.T) {
 	}
 }
 
+// TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled exercises the core SSRF
+// floor via the shared IP-literal parser (parseAlternativeIP / ParseIPLiteral).
+// Transport wiring is covered separately: fetch, forward proxy, CONNECT, and
+// WebSocket in proxy.TestLegacyIPv4LiteralBlockedAtTransportEntryPoints; MCP
+// stdio resources/read input in TestScanRequest_ResourcesReadHTTPURIUsesURLPolicy;
+// and configured MCP HTTP/SSE/WS upstreams in
+// TestMCPUpstreamGateMetadataHardFloorWithoutContractLoader. The cases below
+// prove only the shared parser and immutable core floor.
 func TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
@@ -207,6 +215,13 @@ func TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled(t *testing.T) {
 		{"hex encoded loopback", "http://0x7f000001/"},
 		{"octal encoded loopback", "http://0177.0.0.1/"},
 		{"decimal integer loopback", "http://2130706433/"},
+		{"two component loopback", "http://127.1/"},
+		{"three component loopback", "http://127.0.1/"},
+		{"octal two component loopback", "https://0177.1/"},
+		{"hex two component loopback", "http://0x7f.1/"},
+		{"large decimal tail loopback", "http://127.65530/"},
+		{"mixed radix three component loopback", "http://0177.0x0.01/"},
+		{"trailing root dot two component loopback", "http://127.1./"},
 		{"ipv6 loopback", "http://[::1]/"},
 		{"ipv6 loopback zone id", "http://[::1%25eth0]/"},
 		{"ipv6 link-local zone id", "http://[fe80::1%25eth0]/"},
@@ -220,6 +235,32 @@ func TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled(t *testing.T) {
 			}
 			if result.Scanner != ScannerCoreSSRF {
 				t.Errorf("expected scanner=%s, got %s", ScannerCoreSSRF, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestCore_SSRFLiteral_LegacyInetAtonDoesNotOvermatchHostnames(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = nil
+	s := MustNew(cfg)
+	defer s.Close()
+
+	for _, rawURL := range []string{
+		"http://127.1.vendor.example/",
+		"http://127.0.1.vendor.example/",
+		"http://0x7f.1.vendor.example/",
+		"http://127-1.vendor.example/",
+		"http://127.1-example.vendor.example/",
+		"http://127.1x.vendor.example/",
+		"http://8.8/",
+		"http://8.8.8/",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			if result := s.Scan(context.Background(), rawURL); !result.Allowed {
+				t.Fatalf("legitimate host/public literal %q was blocked: scanner=%s reason=%s", rawURL, result.Scanner, result.Reason)
 			}
 		})
 	}

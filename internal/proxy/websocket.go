@@ -1500,7 +1500,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			Direction:    audit.DirectionClientToServer,
 			ClientIP:     r.clientIP,
 			RequestID:    r.requestID,
-			Action:       scannerLabelAddressProtection,
+			Action:       config.ActionWarn,
+			Scanner:      scannerLabelAddressProtection,
 			MatchCount:   len(addrFindings),
 			PatternNames: names,
 		})
@@ -1724,7 +1725,8 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				Direction:    audit.DirectionClientToServer,
 				ClientIP:     r.clientIP,
 				RequestID:    r.requestID,
-				Action:       scannerLabelAddressProtection,
+				Action:       config.ActionWarn,
+				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
 				PatternNames: names,
 			})
@@ -1779,7 +1781,8 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				Direction:    audit.DirectionClientToServer,
 				ClientIP:     r.clientIP,
 				RequestID:    r.requestID,
-				Action:       scannerLabelAddressProtection,
+				Action:       config.ActionWarn,
+				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
 				PatternNames: names,
 			})

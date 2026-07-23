@@ -17,8 +17,6 @@ const (
 	toolWriteFile  = "write_file"
 	argsNYC        = `{"city":"NYC"}`
 	argsSF         = `{"city":"SF"}`
-	domainExample  = "example.com"
-	pathAPI        = "/api/v1/data"
 	actionBlock    = "block"
 	actionWarn     = "warn"
 )
@@ -30,8 +28,6 @@ func defaultDoWConfig() DoWConfig {
 		MaxConcurrentToolCalls: 5,
 		MaxWallClockMinutes:    60,
 		MaxToolCallsPerSession: 100,
-		FanOutLimit:            5,
-		FanOutWindowSeconds:    60,
 		Action:                 actionBlock,
 	}
 }
@@ -427,126 +423,6 @@ func TestDoW_ConcurrentLimit_ThreadSafe(t *testing.T) {
 	}
 }
 
-// --- Fan-Out Detection ---
-
-func TestDoW_FanOut(t *testing.T) {
-	tracker := NewDoWTracker(DoWConfig{
-		FanOutLimit:         3,
-		FanOutWindowSeconds: 60,
-		Action:              actionBlock,
-	})
-
-	// Hit 3 unique endpoints -- OK.
-	endpoints := []struct{ domain, path string }{
-		{"a.com", "/1"},
-		{"b.com", "/2"},
-		{"c.com", "/3"},
-	}
-	for _, ep := range endpoints {
-		result := tracker.RecordEndpoint(ep.domain, ep.path, 200)
-		if !result.Allowed {
-			t.Fatalf("endpoint %s%s should be allowed: %s", ep.domain, ep.path, result.Reason)
-		}
-	}
-
-	// 4th unique endpoint = fan-out.
-	result := tracker.RecordEndpoint("d.com", "/4", 200)
-	if result.Allowed {
-		t.Error("4th unique endpoint should trigger fan-out")
-	}
-	if result.BudgetType != BudgetFanOut {
-		t.Errorf("BudgetType = %q, want %q", result.BudgetType, BudgetFanOut)
-	}
-}
-
-func TestDoW_FanOut_SameEndpointOK(t *testing.T) {
-	tracker := NewDoWTracker(DoWConfig{
-		FanOutLimit:         3,
-		FanOutWindowSeconds: 60,
-		Action:              actionBlock,
-	})
-
-	// Same endpoint repeatedly should not trigger fan-out.
-	for range 20 {
-		result := tracker.RecordEndpoint(domainExample, pathAPI, 200)
-		if !result.Allowed && result.BudgetType == BudgetFanOut {
-			t.Fatalf("repeated same endpoint should not trigger fan-out: %s", result.Reason)
-		}
-	}
-}
-
-// --- Retry Storm Detection ---
-
-func TestDoW_RetryStorm(t *testing.T) {
-	tracker := NewDoWTracker(DoWConfig{
-		FanOutLimit:         1000, // high so fan-out doesn't fire
-		FanOutWindowSeconds: 60,
-		Action:              actionBlock,
-	})
-
-	// 20 failures to the same endpoint should be OK (at limit).
-	for range 20 {
-		result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
-		if !result.Allowed && result.BudgetType == BudgetRetry {
-			t.Fatalf("retry storm triggered early at count <= 20: %s", result.Reason)
-		}
-	}
-
-	// 21st failure = retry storm.
-	result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
-	if result.Allowed {
-		t.Error("21st failure should trigger retry storm")
-	}
-	if result.BudgetType != BudgetRetry {
-		t.Errorf("BudgetType = %q, want %q", result.BudgetType, BudgetRetry)
-	}
-}
-
-func TestDoW_RetryStorm_ConfigurableLimit(t *testing.T) {
-	tracker := NewDoWTracker(DoWConfig{
-		FanOutLimit:           1000,
-		FanOutWindowSeconds:   60,
-		MaxRetriesPerEndpoint: 5, // custom limit of 5
-		Action:                actionBlock,
-	})
-
-	// 5 failures should be OK (at limit).
-	for range 5 {
-		result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
-		if !result.Allowed && result.BudgetType == BudgetRetry {
-			t.Fatalf("retry storm triggered at count <= 5: %s", result.Reason)
-		}
-	}
-
-	// 6th failure = retry storm with custom limit.
-	result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
-	if result.Allowed {
-		t.Error("6th failure should trigger retry storm with limit of 5")
-	}
-	if result.BudgetType != BudgetRetry {
-		t.Errorf("BudgetType = %q, want %q", result.BudgetType, BudgetRetry)
-	}
-	if !strings.Contains(result.Reason, "limit 5") {
-		t.Errorf("Reason should mention limit 5, got: %s", result.Reason)
-	}
-}
-
-func TestDoW_RetryStorm_SuccessNotCounted(t *testing.T) {
-	tracker := NewDoWTracker(DoWConfig{
-		FanOutLimit:         1000,
-		FanOutWindowSeconds: 60,
-		Action:              actionBlock,
-	})
-
-	// Mix of successes and failures -- only failures count.
-	for range 30 {
-		result := tracker.RecordEndpoint(domainExample, pathAPI, 200)
-		if result.BudgetType == BudgetRetry {
-			t.Fatalf("successful requests should not trigger retry storm: %s", result.Reason)
-		}
-	}
-}
-
 // --- Close ---
 
 func TestDoW_ClosedTracker(t *testing.T) {
@@ -556,11 +432,6 @@ func TestDoW_ClosedTracker(t *testing.T) {
 	result := tracker.RecordToolCall(toolGetWeather, argsNYC)
 	if result.Allowed {
 		t.Error("closed tracker should block tool calls")
-	}
-
-	result = tracker.RecordEndpoint(domainExample, pathAPI, 200)
-	if result.Allowed {
-		t.Error("closed tracker should block endpoint recording")
 	}
 }
 
@@ -662,41 +533,6 @@ func TestHashArgs_Different(t *testing.T) {
 	}
 }
 
-// --- pruneEndpoints ---
-
-func TestPruneEndpoints(t *testing.T) {
-	now := time.Now()
-	entries := []endpointEntry{
-		{domain: "old.com", path: "/old", at: now.Add(-2 * time.Minute)},
-		{domain: "new.com", path: "/new", at: now},
-	}
-
-	cutoff := now.Add(-time.Minute)
-	pruned := pruneEndpoints(entries, cutoff)
-
-	if len(pruned) != 1 {
-		t.Fatalf("pruned length = %d, want 1", len(pruned))
-	}
-	if pruned[0].domain != "new.com" {
-		t.Errorf("remaining entry = %q, want %q", pruned[0].domain, "new.com")
-	}
-}
-
-func TestPruneEndpoints_AllExpired(t *testing.T) {
-	now := time.Now()
-	entries := []endpointEntry{
-		{domain: "old.com", path: "/a", at: now.Add(-5 * time.Minute)},
-		{domain: "old.com", path: "/b", at: now.Add(-3 * time.Minute)},
-	}
-
-	cutoff := now.Add(-time.Minute)
-	pruned := pruneEndpoints(entries, cutoff)
-
-	if len(pruned) != 0 {
-		t.Errorf("all entries should be pruned, got %d", len(pruned))
-	}
-}
-
 // --- Window Trimming ---
 
 func TestDoW_WindowTrimming(t *testing.T) {
@@ -743,20 +579,6 @@ func TestDoW_DefaultWindow(t *testing.T) {
 	}
 }
 
-func TestDoW_DefaultFanOutWindow(t *testing.T) {
-	// Zero FanOutWindowSeconds should use default of 60.
-	tracker := NewDoWTracker(DoWConfig{
-		FanOutLimit: 1000,
-		Action:      actionBlock,
-	})
-
-	// Should not panic with zero config values.
-	result := tracker.RecordEndpoint(domainExample, pathAPI, 200)
-	if !result.Allowed {
-		t.Errorf("should be allowed with defaults: %s", result.Reason)
-	}
-}
-
 // --- Integration-style test ---
 
 func TestDoW_MixedBudgets(t *testing.T) {
@@ -766,12 +588,6 @@ func TestDoW_MixedBudgets(t *testing.T) {
 	result := tracker.RecordToolCall(toolGetWeather, argsNYC)
 	if !result.Allowed {
 		t.Fatalf("first call should be allowed: %s", result.Reason)
-	}
-
-	// Normal endpoint should be fine.
-	result = tracker.RecordEndpoint(domainExample, pathAPI, 200)
-	if !result.Allowed {
-		t.Fatalf("first endpoint should be allowed: %s", result.Reason)
 	}
 
 	// Concurrent acquire should be fine.
@@ -789,11 +605,6 @@ func TestDoW_ZeroConfig(t *testing.T) {
 	result := tracker.RecordToolCall(toolGetWeather, argsNYC)
 	if !result.Allowed {
 		t.Errorf("zero config should allow first call: %s", result.Reason)
-	}
-
-	result = tracker.RecordEndpoint(domainExample, pathAPI, 200)
-	if !result.Allowed {
-		t.Errorf("zero config should allow first endpoint: %s", result.Reason)
 	}
 
 	result = tracker.AcquireConcurrent()

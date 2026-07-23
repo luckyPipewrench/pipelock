@@ -68,19 +68,7 @@ var ErrOTLPDegraded = errors.New("emit: otlp sink degraded")
 const errOTLPClosed = "emit: otlp sink closed"
 
 // OTLPStats reports delivery health for an OTLPSink.
-type OTLPStats struct {
-	Delivered uint64
-	Failed    uint64
-	Dropped   uint64
-	Abandoned uint64
-	Degraded  bool
-	// LastError is the most recent failure, drop, or abandonment reason while
-	// the sink is degraded. It is cleared on the next successful delivery, so a
-	// non-degraded snapshot reports an empty LastError.
-	LastError string
-	QueueLen  int
-	QueueCap  int
-}
+type OTLPStats = sinkStats
 
 // OTLPSink sends audit events as OTLP log records over HTTP/protobuf.
 // Events are queued and sent asynchronously by a single background goroutine.
@@ -291,6 +279,14 @@ func (s *OTLPSink) safeSend(event Event) {
 func (s *OTLPSink) send(event Event) {
 	record := s.eventToLogRecord(event)
 
+	// Snapshot the health-change counters before the send so a successful
+	// delivery only clears degraded health if no failure, drop, or abandonment
+	// was recorded while this send was in flight (mirrors WebhookSink.send);
+	// otherwise a concurrent queue-full drop would be silently erased.
+	failedSnapshot := s.failed.Load()
+	droppedSnapshot := s.dropped.Load()
+	abandonedSnapshot := s.abandoned.Load()
+
 	// Build ExportLogsServiceRequest without importing collector/logs/v1
 	// (which pulls in gRPC). The wire format is just field 1 = ResourceLogs.
 	body, err := otlpMarshalExportLogsRequest(s.resource, record)
@@ -317,12 +313,18 @@ func (s *OTLPSink) send(event Event) {
 		return
 	}
 	s.delivered.Add(1)
-	s.degraded.Store(false)
-	// A successful delivery clears the degraded state, so clear the paired
-	// LastError too; otherwise Stats() would report Degraded=false with a stale
-	// error from an earlier failure.
+	// Clear paired health only if no newer failure, drop, or abandonment was
+	// recorded while this request was in flight. Rechecking under the same lock
+	// that guards health updates closes the check-then-clear race; otherwise a
+	// concurrent queue-full drop would be silently erased and Stats() would
+	// report Degraded=false with a stale error.
 	s.lastErrMu.Lock()
-	s.lastErr = ""
+	if s.failed.Load() == failedSnapshot &&
+		s.dropped.Load() == droppedSnapshot &&
+		s.abandoned.Load() == abandonedSnapshot {
+		s.degraded.Store(false)
+		s.lastErr = ""
+	}
 	s.lastErrMu.Unlock()
 }
 

@@ -31,16 +31,7 @@ type SyslogOption func(*syslogConfig)
 type SyslogSink struct{}
 
 // SyslogStats reports delivery health for a SyslogSink.
-type SyslogStats struct {
-	Delivered uint64
-	Failed    uint64
-	Dropped   uint64
-	Abandoned uint64
-	Degraded  bool
-	LastError string
-	QueueLen  int
-	QueueCap  int
-}
+type SyslogStats = sinkStats
 
 // WithSyslogFormat is a no-op option on Windows.
 func WithSyslogFormat(_, _ string) SyslogOption {

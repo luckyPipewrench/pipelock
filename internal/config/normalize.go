@@ -481,6 +481,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Emit.Webhook.MinSeverity == "" {
 		c.Emit.Webhook.MinSeverity = SeverityWarn
 	}
+	if c.Emit.Webhook.Format == "" {
+		c.Emit.Webhook.Format = EmitFormatJSON
+	}
 	if c.Emit.Syslog.MinSeverity == "" {
 		c.Emit.Syslog.MinSeverity = SeverityWarn
 	}

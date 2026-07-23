@@ -1354,6 +1354,7 @@ type WebhookConfig struct {
 	AuthToken   string `yaml:"auth_token"`
 	TimeoutSecs int    `yaml:"timeout_seconds"`
 	QueueSize   int    `yaml:"queue_size"`
+	Format      string `yaml:"format" json:"-"` // json (default), cef, or ocsf
 }
 
 // SyslogConfig configures the syslog emission sink (RFC 5424).
@@ -1463,15 +1464,12 @@ type BudgetConfig struct {
 	MaxUniqueDomainsPerSession int                `yaml:"max_unique_domains_per_session,omitempty"`
 	WindowMinutes              int                `yaml:"window_minutes,omitempty"`
 	MaxToolCallsPerSession     int                `yaml:"max_tool_calls_per_session,omitempty"`
-	MaxConcurrentToolCalls     int                `yaml:"max_concurrent_tool_calls,omitempty"` // parallel in-flight limit (default 10)
+	MaxConcurrentToolCalls     int                `yaml:"max_concurrent_tool_calls,omitempty"` // reserved; validation rejects nonzero values
 	MaxWallClockMinutes        int                `yaml:"max_wall_clock_minutes,omitempty"`
-	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`     // same tool+args (default 5)
-	MaxRetriesPerEndpoint      int                `yaml:"max_retries_per_endpoint,omitempty"` // same domain+path (default 20)
-	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"`    // tool calls to track (default 20)
-	FanOutLimit                int                `yaml:"fan_out_limit,omitempty"`            // max unique endpoints in window (default 50)
-	FanOutWindowSeconds        int                `yaml:"fan_out_window_seconds,omitempty"`   // window for fan-out detection (default 60)
-	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`         // optional domain -> cost weight
-	DoWAction                  string             `yaml:"dow_action,omitempty"`               // "block" or "warn" (default "block")
+	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`  // same tool+args (default 5)
+	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"` // tool calls to track (default 20)
+	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`      // optional domain -> cost weight
+	DoWAction                  string             `yaml:"dow_action,omitempty"`            // "block" or "warn" (default "block")
 }
 
 // FlightRecorder configures the tamper-evident evidence recording system.

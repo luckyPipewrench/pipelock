@@ -44,6 +44,20 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		}
 	}()
 
+	// Reload is also called directly by the Conductor apply boundary and tests,
+	// not only by the file reloader. Reject reserved, unenforced DoW limits before
+	// any restart-only preservation or license teardown can mutate runtime state.
+	// The file reloader already validates through config.Load, but this boundary
+	// must remain fail-closed for every caller.
+	if newCfg == nil {
+		return errors.New("rejected: invalid config reload: config is nil")
+	}
+	if validationErr := newCfg.ValidateReservedDoWLimits(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
+
 	oldCfg := s.proxy.CurrentConfig()
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
 	if oldCfg != nil {
@@ -461,17 +475,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		s.logger.LogConfigReload("failed", reloadErr.Error(), newCfg.Hash())
 		return reloadErr
 	}
-	oldSinks := s.emitter.ReloadSinks(newSinks)
+	retiredSinks := s.emitter.ReloadSinks(newSinks)
+	finalizeRetiredSinks := newRetiredSinkFinalizer(s.emitter, retiredSinks, preclosed, func(closeErr error) {
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
+			fmt.Errorf("closing old emit sink: %w", closeErr))
+	})
+	// Install cleanup immediately after publication. Any later panic still
+	// drains and finalizes exactly this generation before Reload returns.
+	defer finalizeRetiredSinks()
 	s.emitSinks = append([]emit.Sink(nil), newSinks...)
-	for i, old := range oldSinks {
-		if preclosed[i] {
-			continue
-		}
-		if closeErr := old.Close(); closeErr != nil {
-			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
-				fmt.Errorf("closing old emit sink: %w", closeErr))
-		}
-	}
+	finalizeRetiredSinks()
 
 	if needsHITLApprover(newCfg) && !s.hasApprover {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to HITL ask mode but approver was not initialized at startup; detections will be blocked")
@@ -480,6 +493,35 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil
+}
+
+// newRetiredSinkFinalizer returns idempotent cleanup for one generation. It is
+// called both on the normal reload path and as a deferred panic/error fallback.
+func newRetiredSinkFinalizer(
+	emitter *emit.Emitter,
+	generation *emit.RetiredSinks,
+	preclosed map[int]bool,
+	onCloseError func(error),
+) func() {
+	sinks := generation.Sinks()
+	closed := make([]bool, len(sinks))
+	for index := range sinks {
+		closed[index] = preclosed[index]
+	}
+
+	return func() {
+		for index, sink := range sinks {
+			if closed[index] {
+				continue
+			}
+			closeErr := sink.Close()
+			closed[index] = true
+			if closeErr != nil && onCloseError != nil {
+				onCloseError(closeErr)
+			}
+		}
+		emitter.FinalizeRetiredSinks(generation)
+	}
 }
 
 func strictRuleBundleDegradationDisallowed(oldCfg, newCfg *config.Config) bool {

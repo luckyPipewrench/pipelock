@@ -7905,6 +7905,9 @@ func TestDefaults_EmitFields(t *testing.T) {
 	if cfg.Emit.Webhook.MinSeverity != SeverityWarn {
 		t.Errorf("expected default webhook min_severity warn, got %s", cfg.Emit.Webhook.MinSeverity)
 	}
+	if cfg.Emit.Webhook.Format != EmitFormatJSON {
+		t.Errorf("expected default webhook format json, got %s", cfg.Emit.Webhook.Format)
+	}
 	if cfg.Emit.Syslog.MinSeverity != SeverityWarn {
 		t.Errorf("expected default syslog min_severity warn, got %s", cfg.Emit.Syslog.MinSeverity)
 	}
@@ -7916,6 +7919,51 @@ func TestDefaults_EmitFields(t *testing.T) {
 	}
 	if cfg.Emit.Syslog.Format != EmitFormatJSON {
 		t.Errorf("expected default syslog format json, got %s", cfg.Emit.Syslog.Format)
+	}
+}
+
+func TestLoadEmitWebhookFormatDefaultsAndReloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	write := func(formatLine string) {
+		t.Helper()
+		content := "version: 1\nemit:\n  webhook:\n    url: " + testWebhookURL + "\n" + formatLine
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	for _, tt := range []struct {
+		name       string
+		formatLine string
+	}{
+		{name: "omitted"},
+		{name: "blank", formatLine: "    format:\n"},
+		{name: "null", formatLine: "    format: null\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			write(tt.formatLine)
+			cfg, err := LoadForRules(path)
+			if err != nil {
+				t.Fatalf("LoadForRules: %v", err)
+			}
+			if cfg.Emit.Webhook.Format != EmitFormatJSON {
+				t.Fatalf("emit.webhook.format = %q, want %q", cfg.Emit.Webhook.Format, EmitFormatJSON)
+			}
+		})
+	}
+
+	write("    format: json\n")
+	first, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("first LoadForRules: %v", err)
+	}
+	write("    format: ocsf\n")
+	second, err := LoadForRules(path)
+	if err != nil {
+		t.Fatalf("second LoadForRules: %v", err)
+	}
+	if first.Emit.Webhook.Format != EmitFormatJSON || second.Emit.Webhook.Format != EmitFormatOCSF {
+		t.Fatalf("webhook format reload = %q -> %q, want json -> ocsf", first.Emit.Webhook.Format, second.Emit.Webhook.Format)
 	}
 }
 
@@ -8030,16 +8078,34 @@ func TestValidate_EmitSyslogInvalidSeverity(t *testing.T) {
 
 func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
-		t.Run(sev, func(t *testing.T) {
-			cfg := Defaults()
-			cfg.Emit.Webhook.URL = testWebhookURL
-			cfg.Emit.Webhook.MinSeverity = sev
-			cfg.Emit.Webhook.TimeoutSecs = 10
-			cfg.Emit.Webhook.QueueSize = 32
-			if err := cfg.Validate(); err != nil {
-				t.Errorf("valid webhook config with severity %q should validate, got: %v", sev, err)
-			}
-		})
+		for _, format := range emitformat.SupportedFormats() {
+			t.Run(sev+"/"+format, func(t *testing.T) {
+				cfg := Defaults()
+				cfg.Emit.Webhook.URL = testWebhookURL
+				cfg.Emit.Webhook.MinSeverity = sev
+				cfg.Emit.Webhook.TimeoutSecs = 10
+				cfg.Emit.Webhook.QueueSize = 32
+				cfg.Emit.Webhook.Format = format
+				if err := cfg.Validate(); err != nil {
+					t.Errorf("valid webhook config severity=%q format=%q should validate, got: %v", sev, format, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateEmitWebhookInvalidFormat(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Webhook.URL = testWebhookURL
+	cfg.Emit.Webhook.Format = "xml"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid webhook format")
+	}
+	expected := fmt.Sprintf(`invalid emit.webhook.format "xml": must be %s`, emitformat.AllowedSet())
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -11686,6 +11752,109 @@ func TestValidate_ValidDoWActions(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsUnenforcedConcurrentToolLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []int{-1, 3} {
+		t.Run(fmt.Sprintf("value=%d", value), func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Agents = map[string]AgentProfile{
+				"_default": {Budget: BudgetConfig{MaxConcurrentToolCalls: value}},
+			}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("max_concurrent_tool_calls=%d: expected validation error", value)
+			}
+			for _, want := range []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("max_concurrent_tool_calls=%d: error = %q, want substring %q", value, err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_ConcurrentToolLimitIsKnownButReserved(t *testing.T) {
+	t.Parallel()
+
+	configWithLimit := func(value int) []byte {
+		return []byte(fmt.Sprintf("agents:\n  _default:\n    budget:\n      max_concurrent_tool_calls: %d\n", value))
+	}
+
+	if _, err := LoadBytes(configWithLimit(0)); err != nil {
+		t.Fatalf("zero max_concurrent_tool_calls should remain known and parseable: %v", err)
+	}
+
+	_, err := LoadBytes(configWithLimit(3))
+	if err == nil {
+		t.Fatal("nonzero max_concurrent_tool_calls should fail the startup load path")
+	}
+	for _, want := range []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
+func TestConfigLoadVariants_RejectUnenforcedConcurrentToolLimit(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("agents:\n  _default:\n    budget:\n      max_concurrent_tool_calls: 3\n")
+	path := filepath.Join(t.TempDir(), "reserved-concurrency.yaml")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaders := []struct {
+		name string
+		load func() error
+	}{
+		{name: "Load", load: func() error { _, err := Load(path); return err }},
+		{name: "LoadBytes", load: func() error { _, err := LoadBytes(data); return err }},
+		{name: "LoadPolicyBundleBytes", load: func() error { _, err := LoadPolicyBundleBytes(data); return err }},
+		{name: "LoadForRules", load: func() error { _, err := LoadForRules(path); return err }},
+		{name: "LoadForInspection", load: func() error { _, err := LoadForInspection(path); return err }},
+	}
+	for _, loader := range loaders {
+		loader := loader
+		t.Run(loader.name, func(t *testing.T) {
+			err := loader.load()
+			if err == nil {
+				t.Fatal("unenforced max_concurrent_tool_calls was accepted")
+			}
+			for _, want := range []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_RejectsRemovedDoWFieldsClearly(t *testing.T) {
+	t.Parallel()
+
+	for _, field := range []string{
+		"max_retries_per_endpoint",
+		"fan_out_limit",
+		"fan_out_window_seconds",
+	} {
+		field := field
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			_, err := LoadBytes([]byte("agents:\n  _default:\n    budget:\n      " + field + ": 3\n"))
+			if err == nil {
+				t.Fatalf("expected %s to be rejected", field)
+			}
+			for _, want := range []string{field, "removed", "not enforced", "remove it from the config"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoad_NullBooleanDefaultsToTrue(t *testing.T) {
 	// YAML null (bare key, explicit null, tilde) must default to true,
 	// not silently disable security features. This is a bypass regression:
@@ -14829,12 +14998,10 @@ func TestBudgetConfig_HasDoWFields(t *testing.T) {
 	}{
 		{name: "empty", budget: BudgetConfig{}, want: false},
 		{name: "max_tool_calls", budget: BudgetConfig{MaxToolCallsPerSession: 10}, want: true},
-		{name: "max_concurrent", budget: BudgetConfig{MaxConcurrentToolCalls: 5}, want: true},
+		{name: "reserved_max_concurrent", budget: BudgetConfig{MaxConcurrentToolCalls: 5}, want: false},
 		{name: "max_wall_clock", budget: BudgetConfig{MaxWallClockMinutes: 60}, want: true},
 		{name: "max_retries_tool", budget: BudgetConfig{MaxRetriesPerTool: 3}, want: true},
-		{name: "max_retries_endpoint", budget: BudgetConfig{MaxRetriesPerEndpoint: 3}, want: true},
 		{name: "loop_detection", budget: BudgetConfig{LoopDetectionWindow: 10}, want: true},
-		{name: "fan_out", budget: BudgetConfig{FanOutLimit: 50}, want: true},
 	}
 
 	for _, tt := range tests {

@@ -398,7 +398,7 @@ pipelock contain run -- claude-code
 | **Conductor: fleet control plane** (v2.7, Enterprise) | Signed policy-bundle distribution, signed-evidence audit sink (`pipelock fleet-sink`), enrollment, remote kill, policy rollback, dry-run, decision replay, and runtime/apply-state drift preflight over mTLS/SPIFFE. Gated by the `fleet` license feature; stale-policy behavior is explicit and defaults to strict deny. See the [Conductor guide](docs/guides/conductor.md). |
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, and session smuggling prevention for Google's Agent-to-Agent protocol on forward/MCP paths. |
 | **Behavioral Baseline** | Profile-then-lock for MCP tool behavior with `pipelock baseline list/show/ratify/forget` for operator approval and relearning. See [`docs/cli/baseline.md`](docs/cli/baseline.md). |
-| **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. |
+| **Denial-of-Wallet** | Per-agent MCP budgets for total tool calls, same-tool retries, loop/cycle detection, and wall-clock duration. |
 | **Taint Escalation** | Exposure-based policy escalation across MCP and task boundaries until trust is restored. |
 | **Mediation Envelope** | RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, with inbound verification, replay protection, SPIFFE actor format, and an RFC 9421 signing-key directory. See [federation guide](docs/guides/federation.md). |
 | **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) across independent Go, TypeScript, Rust, and Python implementations, plus a browser wasm surface backed by Go. `EvidenceReceipt v2` uses RFC 8785/JCS canonicalization. AARP/SVID appraisal remains offline verifier-side. |

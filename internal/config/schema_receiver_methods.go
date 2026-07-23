@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"mime"
 	"net"
@@ -288,22 +289,43 @@ func (s *SentryConfig) EffectiveSampleRate() float64 {
 // HasDoWFields returns true if any denial-of-wallet tracking field is set.
 func (b *BudgetConfig) HasDoWFields() bool {
 	return b.MaxToolCallsPerSession > 0 ||
-		b.MaxConcurrentToolCalls > 0 ||
 		b.MaxWallClockMinutes > 0 ||
 		b.MaxRetriesPerTool > 0 ||
-		b.MaxRetriesPerEndpoint > 0 ||
-		b.LoopDetectionWindow > 0 ||
-		b.FanOutLimit > 0
+		b.LoopDetectionWindow > 0
 }
 
-// ValidateDoW checks that dow_action is a recognized value.
+// ValidateDoW rejects reserved, unenforced limits and checks that dow_action is
+// a recognized value.
 func (b *BudgetConfig) ValidateDoW() error {
+	if err := b.validateReservedDoWLimits(); err != nil {
+		return err
+	}
+
 	switch b.DoWAction {
 	case "", ActionBlock, ActionWarn:
 		return nil
 	default:
 		return fmt.Errorf("invalid dow_action %q: must be block or warn", b.DoWAction)
 	}
+}
+
+func (b *BudgetConfig) validateReservedDoWLimits() error {
+	if b.MaxConcurrentToolCalls != 0 {
+		return errors.New("max_concurrent_tool_calls is not yet enforced; it is reserved for future lease-based concurrency control. Unset it")
+	}
+	return nil
+}
+
+// ValidateReservedDoWLimits rejects agent budget fields that are present in
+// the schema but do not yet have runtime enforcement. Admission boundaries
+// that accept an already-constructed Config must call this before applying it.
+func (c *Config) ValidateReservedDoWLimits() error {
+	for name, profile := range c.Agents {
+		if err := profile.Budget.validateReservedDoWLimits(); err != nil {
+			return fmt.Errorf("agents.%s.budget: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // IsEnabled reports whether the media policy is active. Defaults to true

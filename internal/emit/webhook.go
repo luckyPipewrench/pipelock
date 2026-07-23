@@ -33,16 +33,7 @@ var ErrQueueFull = errors.New("emit: webhook queue full, event dropped")
 var ErrWebhookDegraded = errors.New("emit: webhook sink degraded")
 
 // WebhookStats reports delivery health for a WebhookSink.
-type WebhookStats struct {
-	Delivered uint64
-	Failed    uint64
-	Dropped   uint64
-	Abandoned uint64
-	Degraded  bool
-	LastError string
-	QueueLen  int
-	QueueCap  int
-}
+type WebhookStats = sinkStats
 
 // webhookPayload is the JSON structure sent to the webhook endpoint.
 type webhookPayload struct {
@@ -53,7 +44,7 @@ type webhookPayload struct {
 	Fields    map[string]any `json:"fields"`
 }
 
-// WebhookSink sends audit events as JSON to an HTTP endpoint.
+// WebhookSink sends formatted audit events to an HTTP endpoint.
 // Events are queued and sent asynchronously by a single background goroutine.
 type WebhookSink struct {
 	url       string
@@ -74,6 +65,8 @@ type WebhookSink struct {
 	degraded  atomic.Bool
 	lastErrMu sync.Mutex
 	lastErr   string
+	format    string
+	version   string
 }
 
 // WebhookOption configures a WebhookSink.
@@ -111,11 +104,21 @@ func WithMinSeverity(sev Severity) WebhookOption {
 	}
 }
 
-// NewWebhookSink creates a WebhookSink that POSTs JSON events to the given URL.
+// WithWebhookFormat sets the HTTP event wire format. Format names come from
+// emitformat; rendering is shared with syslog through formatEvent.
+func WithWebhookFormat(format, deviceVersion string) WebhookOption {
+	return func(w *WebhookSink) {
+		w.format = format
+		w.version = deviceVersion
+	}
+}
+
+// NewWebhookSink creates a WebhookSink that POSTs events to the given URL.
 // The background goroutine starts immediately and runs until Close is called.
 func NewWebhookSink(url string, opts ...WebhookOption) *WebhookSink {
 	w := &WebhookSink{
 		url:    url,
+		format: FormatJSON,
 		client: &http.Client{Timeout: DefaultWebhookTimeout},
 		queue:  make(chan Event, DefaultQueueSize),
 		done:   make(chan struct{}),
@@ -201,7 +204,7 @@ func (w *WebhookSink) drain() {
 		case event := <-w.queue:
 			w.safeSend(event)
 		case <-deadline:
-			w.recordAbandoned("drain_timeout", len(w.queue))
+			w.recordAbandoned(len(w.queue))
 			return
 		default:
 			return
@@ -218,7 +221,7 @@ func (w *WebhookSink) safeSend(event Event) {
 	w.send(event)
 }
 
-// send POSTs a single event as JSON to the webhook URL.
+// send formats and POSTs a single event to the webhook URL.
 func (w *WebhookSink) send(event Event) {
 	// Snapshot the health-change counters before the send so a successful
 	// delivery only clears degraded health if no failure, drop, or abandonment
@@ -228,17 +231,13 @@ func (w *WebhookSink) send(event Event) {
 	droppedSnapshot := w.dropped.Load()
 	abandonedSnapshot := w.abandoned.Load()
 
-	payload := webhookPayload{
-		Severity:  event.Severity.String(),
-		Type:      event.Type,
-		Timestamp: event.Timestamp.UTC().Format(time.RFC3339Nano),
-		Instance:  event.InstanceID,
-		Fields:    event.Fields,
-	}
-
-	body, err := json.Marshal(payload)
+	body, contentType, err := formatEvent(event, w.format, w.version)
 	if err != nil {
-		w.recordFailure("marshal_error", event, err)
+		reason := "format_error"
+		if w.format == "" || w.format == FormatJSON {
+			reason = "marshal_error"
+		}
+		w.recordFailure(reason, event, err)
 		return
 	}
 
@@ -248,7 +247,7 @@ func (w *WebhookSink) send(event Event) {
 		return
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	if w.token != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", w.token))
 	}
@@ -350,10 +349,11 @@ func (w *WebhookSink) recordDropped(reason string, err error) {
 	w.lastErrMu.Unlock()
 }
 
-func (w *WebhookSink) recordAbandoned(reason string, count int) {
+func (w *WebhookSink) recordAbandoned(count int) {
 	if count < 1 {
 		return
 	}
+	const reason = "drain_timeout" // the only path that abandons webhook events is a drain deadline
 	w.abandoned.Add(uint64(count))
 	w.lastErrMu.Lock()
 	w.degraded.Store(true)

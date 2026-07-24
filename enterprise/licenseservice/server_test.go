@@ -160,6 +160,7 @@ func TestServer_IntermediateEndpoint(t *testing.T) {
 
 func TestServer_IntermediateEndpointUsesVerifiedHandlerCopy(t *testing.T) {
 	srv := newTestServer(t)
+	want := append([]byte(nil), srv.cfg.IntermediateCert...)
 	srv.cfg.IntermediateCert = nil
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/intermediate.json", nil)
@@ -168,6 +169,9 @@ func TestServer_IntermediateEndpointUsesVerifiedHandlerCopy(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != string(want) {
+		t.Fatalf("body = %q, want cached intermediate certificate", got)
 	}
 }
 

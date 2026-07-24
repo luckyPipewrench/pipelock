@@ -97,9 +97,14 @@ type Config struct {
 	// order. Defaults to usd.
 	EvalCurrency string
 
-	// SubscriptionProducts allowlist paid recurring products by product ID. Empty
-	// preserves legacy metadata mapping with a startup warning.
+	// SubscriptionProducts allowlist paid recurring products by product ID.
+	// Production startup fails closed when it is empty.
 	SubscriptionProducts []SubscriptionProductConfig
+
+	// OrderProducts allowlist legacy one-time products by product ID. Empty
+	// disables legacy order.created fulfillment. Enterprise Eval uses its
+	// separate order.paid allowlist and is not configured here.
+	OrderProducts []OrderProductConfig
 }
 
 // SubscriptionProductConfig pins a Polar subscription product to the server-side
@@ -108,6 +113,15 @@ type SubscriptionProductConfig struct {
 	ProductID   string
 	Tier        string
 	Interval    string
+	AmountCents int
+	Currency    string
+}
+
+// OrderProductConfig pins a one-time product to the commercial facts required
+// before the legacy order path can mint a token.
+type OrderProductConfig struct {
+	ProductID   string
+	Tier        string
 	AmountCents int
 	Currency    string
 }
@@ -184,6 +198,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	cfg.SubscriptionProducts = parseSubscriptionProducts(os.Getenv("SUBSCRIPTION_PRODUCTS"))
+	if len(cfg.SubscriptionProducts) == 0 {
+		return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS is required")
+	}
+	seenSubscriptionProducts := make(map[string]struct{}, len(cfg.SubscriptionProducts))
 	for _, product := range cfg.SubscriptionProducts {
 		if product.ProductID == "" {
 			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS contains an empty product ID")
@@ -204,6 +222,31 @@ func LoadConfig() (*Config, error) {
 		if product.Currency == "" {
 			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS product %s must set currency", product.ProductID)
 		}
+		if _, exists := seenSubscriptionProducts[product.ProductID]; exists {
+			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS contains duplicate product ID %s", product.ProductID)
+		}
+		seenSubscriptionProducts[product.ProductID] = struct{}{}
+	}
+
+	cfg.OrderProducts = parseOrderProducts(os.Getenv("ORDER_PRODUCTS"))
+	seenOrderProducts := make(map[string]struct{}, len(cfg.OrderProducts))
+	for _, product := range cfg.OrderProducts {
+		if product.ProductID == "" {
+			return nil, fmt.Errorf("ORDER_PRODUCTS contains an empty product ID")
+		}
+		if !validTiers[product.Tier] || product.Tier != tierTrial {
+			return nil, fmt.Errorf("ORDER_PRODUCTS product %s has invalid one-time tier %q", product.ProductID, product.Tier)
+		}
+		if product.AmountCents <= 0 {
+			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set positive amount_cents", product.ProductID)
+		}
+		if product.Currency == "" {
+			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set currency", product.ProductID)
+		}
+		if _, exists := seenOrderProducts[product.ProductID]; exists {
+			return nil, fmt.Errorf("ORDER_PRODUCTS contains duplicate product ID %s", product.ProductID)
+		}
+		seenOrderProducts[product.ProductID] = struct{}{}
 	}
 
 	// Validate required secrets.
@@ -274,6 +317,32 @@ func parseSubscriptionProducts(raw string) []SubscriptionProductConfig {
 			Interval:    strings.ToLower(strings.TrimSpace(parts[2])),
 			AmountCents: amount,
 			Currency:    strings.ToLower(strings.TrimSpace(parts[4])),
+		})
+	}
+	return out
+}
+
+// parseOrderProducts parses:
+//
+//	product_id:tier:amount_cents:currency[,product_id:...]
+func parseOrderProducts(raw string) []OrderProductConfig {
+	entries := splitAndTrim(raw)
+	out := make([]OrderProductConfig, 0, len(entries))
+	for _, entry := range entries {
+		parts := strings.Split(entry, ":")
+		if len(parts) != 4 {
+			out = append(out, OrderProductConfig{ProductID: strings.TrimSpace(entry)})
+			continue
+		}
+		amount, err := strconv.Atoi(strings.TrimSpace(parts[2]))
+		if err != nil {
+			amount = -1
+		}
+		out = append(out, OrderProductConfig{
+			ProductID:   strings.TrimSpace(parts[0]),
+			Tier:        strings.ToLower(strings.TrimSpace(parts[1])),
+			AmountCents: amount,
+			Currency:    strings.ToLower(strings.TrimSpace(parts[3])),
 		})
 	}
 	return out

@@ -77,6 +77,16 @@ func TestProcessSubscription_TerminalEventsSurviveUnmappableProduct(t *testing.T
 // it at config load would make an Assess customer impossible to map once
 // enforcement is on, and would fail service startup on a correct config.
 func TestLoadConfig_SubscriptionProductsAcceptsAssess(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("SUBSCRIPTION_PRODUCTS", "prod_assess:assess:year:99900:usd")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.SubscriptionProducts) != 1 || cfg.SubscriptionProducts[0].Tier != tierAssess {
+		t.Fatalf("SubscriptionProducts = %+v, want one Assess product", cfg.SubscriptionProducts)
+	}
+
 	products := parseSubscriptionProducts("prod_assess:assess:year:99900:usd")
 	if len(products) != 1 {
 		t.Fatalf("parsed %d products, want 1", len(products))

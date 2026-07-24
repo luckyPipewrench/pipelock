@@ -6,6 +6,7 @@
 package licenseservice
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -75,7 +76,41 @@ func TestEntitlementDB_UpsertWithWebhook(t *testing.T) {
 		}
 	})
 
-	t.Run("replaying the same msgID stays committed and updates state", func(t *testing.T) {
+	t.Run("marker failure rolls back without mutating entitlement", func(t *testing.T) {
+		db := openTestDB(t)
+		ctx := t.Context()
+		const msgID = "msg_abort_marker"
+		if _, err := db.db.ExecContext(ctx, `
+			CREATE TRIGGER abort_selected_webhook
+			BEFORE INSERT ON webhook_deliveries
+			WHEN NEW.msg_id = 'msg_abort_marker'
+			BEGIN
+				SELECT RAISE(ABORT, 'forced marker failure');
+			END
+		`); err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+
+		if err := db.UpsertWithWebhook(ctx, testEntitlement(testSubscriptionID), msgID, EventSubscriptionUpdated); err == nil {
+			t.Fatal("UpsertWithWebhook = nil error, want forced marker failure")
+		}
+		got, err := db.GetBySubscriptionID(ctx, testSubscriptionID)
+		if err != nil {
+			t.Fatalf("GetBySubscriptionID: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("entitlement persisted after marker failure: %+v", got)
+		}
+		committed, err := db.WebhookCommitted(ctx, msgID)
+		if err != nil {
+			t.Fatalf("WebhookCommitted: %v", err)
+		}
+		if committed {
+			t.Fatal("webhook marker persisted after failed transaction")
+		}
+	})
+
+	t.Run("replaying the same msgID stays committed without updating state", func(t *testing.T) {
 		db := openTestDB(t)
 		ctx := t.Context()
 		ent := testEntitlement(testSubscriptionID)
@@ -85,8 +120,8 @@ func TestEntitlementDB_UpsertWithWebhook(t *testing.T) {
 			t.Fatalf("UpsertWithWebhook(first): %v", err)
 		}
 		ent.CustomerEmail = "changed@example.com"
-		if err := db.UpsertWithWebhook(ctx, ent, msgID, EventSubscriptionUpdated); err != nil {
-			t.Fatalf("UpsertWithWebhook(replay): %v", err)
+		if err := db.UpsertWithWebhook(ctx, ent, msgID, EventSubscriptionUpdated); !errors.Is(err, ErrWebhookAlreadyCommitted) {
+			t.Fatalf("UpsertWithWebhook(replay) err = %v, want ErrWebhookAlreadyCommitted", err)
 		}
 
 		committed, err := db.WebhookCommitted(ctx, msgID)
@@ -100,8 +135,8 @@ func TestEntitlementDB_UpsertWithWebhook(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetBySubscriptionID: %v", err)
 		}
-		if got.CustomerEmail != "changed@example.com" {
-			t.Errorf("CustomerEmail = %q, want %q", got.CustomerEmail, "changed@example.com")
+		if got.CustomerEmail != testCustomerEmail {
+			t.Errorf("CustomerEmail = %q, want original %q", got.CustomerEmail, testCustomerEmail)
 		}
 	})
 

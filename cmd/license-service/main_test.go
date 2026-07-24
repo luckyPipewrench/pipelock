@@ -72,6 +72,7 @@ func setServiceRunEnv(t *testing.T, keyPath, certPath string) {
 	t.Setenv("PIPELOCK_LICENSE_KEY_PATH", keyPath)
 	t.Setenv("PIPELOCK_LICENSE_INTERMEDIATE_FILE", certPath)
 	t.Setenv("RESEND_API_KEY", "re_"+"test")
+	t.Setenv("SUBSCRIPTION_PRODUCTS", "prod_test:pro:month:2900:usd")
 	t.Setenv("DB_PATH", filepath.Join(t.TempDir(), "missing-parent", "licenses.db"))
 }
 

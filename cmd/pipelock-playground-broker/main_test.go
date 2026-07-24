@@ -1098,6 +1098,13 @@ func TestValidateFlagsBranches(t *testing.T) {
 		{name: "bad_memory", mutate: func(f *serveFlags) { f.memoryMB = -1 }},
 		{name: "bad_cpus", mutate: func(f *serveFlags) { f.cpus = -1 }},
 		{name: "bad_deadline_grace", mutate: func(f *serveFlags) { f.deadlineGrace = -1 }},
+		{name: "embed_origin_wildcard", mutate: func(f *serveFlags) { f.embedOrigins = []string{"*"} }},
+		{name: "embed_origin_path", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example/path"} }},
+		{name: "embed_origin_query", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example?x=1"} }},
+		{name: "embed_origin_empty_query", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example?"} }},
+		{name: "embed_origin_fragment", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example#part"} }},
+		{name: "embed_origin_empty_fragment", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example#"} }},
+		{name: "embed_origin_malformed", mutate: func(f *serveFlags) { f.embedOrigins = []string{"://bad"} }},
 		{name: "turnstile_url_without_secret", mutate: func(f *serveFlags) { f.turnstileVerifyURL = "https://turnstile.example/verify" }},
 		{name: "bad_turnstile_verify_url", mutate: func(f *serveFlags) {
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
@@ -1578,20 +1585,23 @@ const testEmbedOrigin = "https://site.example"
 // default has to be the closed one: an operator who never thought about
 // embedding should not ship a frameable page.
 func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
-	got := brokerContentSecurityPolicy(nil)
+	got := brokerContentSecurityPolicy(nil, "")
 	if !strings.Contains(got, "frame-ancestors 'none'") {
 		t.Fatalf("CSP with no embed origins = %q, want frame-ancestors 'none'", got)
 	}
-	withOrigin := brokerContentSecurityPolicy([]string{testEmbedOrigin, "https://www.site.example"})
+	withOrigin := brokerContentSecurityPolicy([]string{testEmbedOrigin, "https://www.site.example"}, "https://challenge.vendor.example")
 	if !strings.Contains(withOrigin, "frame-ancestors https://site.example https://www.site.example;") {
 		t.Fatalf("CSP with embed origins = %q, want both origins in frame-ancestors", withOrigin)
+	}
+	if strings.Count(withOrigin, "https://challenge.vendor.example") != 3 {
+		t.Fatalf("CSP = %q, want configured Turnstile origin in script-src, connect-src, and frame-src", withOrigin)
 	}
 }
 
 func assertBrokerSecurityHeaders(t *testing.T, h http.Header) {
 	t.Helper()
 	want := map[string]string{
-		"Content-Security-Policy":   brokerContentSecurityPolicy([]string{testEmbedOrigin}),
+		"Content-Security-Policy":   brokerContentSecurityPolicy([]string{testEmbedOrigin}, ""),
 		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 		"X-Content-Type-Options":    "nosniff",
 		"Referrer-Policy":           "strict-origin-when-cross-origin",

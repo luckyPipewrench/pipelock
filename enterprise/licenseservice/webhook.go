@@ -129,10 +129,6 @@ func NewWebhookHandler(
 	if !ok || !bytes.Equal(im.PublicKey(), signingPub) {
 		return nil, errors.New("intermediate certificate public key does not match license signing private key")
 	}
-	if len(cfg.SubscriptionProducts) == 0 {
-		log.Warn().Msg("SUBSCRIPTION_PRODUCTS unset; preserving legacy subscription product metadata mapping until allowlist is configured")
-	}
-
 	// Load founding count from DB to initialize the in-memory counter.
 	count, err := db.CountFounding(context.Background())
 	if err != nil {
@@ -318,7 +314,11 @@ func (h *WebhookHandler) processSubscriptionDelivery(ctx context.Context, sub *P
 			ent.LastDeliveryAttemptAt = existing.LastDeliveryAttemptAt
 			ent.NextRefreshAt = existing.NextRefreshAt
 		}
-		return h.db.UpsertWithWebhook(ctx, ent, msgID, eventType)
+		err := h.db.UpsertWithWebhook(ctx, ent, msgID, eventType)
+		if errors.Is(err, ErrWebhookAlreadyCommitted) {
+			return h.resendSubscriptionIfNeeded(ctx, ent.SubscriptionID)
+		}
+		return err
 	}
 }
 
@@ -368,7 +368,11 @@ func (h *WebhookHandler) handleActiveDelivery(ctx context.Context, ent *Entitlem
 		h.log.Info().
 			Str("subscription_id", ent.SubscriptionID).
 			Msg("idempotent: license state unchanged, persisting metadata only")
-		return h.db.UpsertWithWebhook(ctx, ent, msgID, eventType)
+		err := h.db.UpsertWithWebhook(ctx, ent, msgID, eventType)
+		if errors.Is(err, ErrWebhookAlreadyCommitted) {
+			return nil
+		}
+		return err
 	}
 
 	// Mint a new license token.
@@ -434,6 +438,9 @@ func (h *WebhookHandler) handleActiveDelivery(ctx context.Context, ent *Entitlem
 		ExpiresAt:      expiresAt,
 		IssuedAt:       now,
 	}, msgID, eventType); err != nil {
+		if errors.Is(err, ErrWebhookAlreadyCommitted) {
+			return h.resendSubscriptionIfNeeded(ctx, ent.SubscriptionID)
+		}
 		if errors.Is(err, ErrTerminalEntitlement) {
 			h.log.Warn().
 				Err(err).
@@ -580,6 +587,9 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 	// Upsert the entitlement to record the ended status, committing the webhook
 	// marker in the same transaction when this came from a delivery.
 	if err := h.db.UpsertWithWebhook(ctx, ent, msgID, eventType); err != nil {
+		if errors.Is(err, ErrWebhookAlreadyCommitted) {
+			return nil
+		}
 		return fmt.Errorf("persist ended entitlement: %w", err)
 	}
 
@@ -884,18 +894,7 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 			Msg("ignoring non-purchase order (subscription events handle these)")
 		return nil
 	}
-
-	// Map product metadata to tier.
-	tier, ok := order.Product.Metadata["pipelock_tier"]
-	if !ok {
-		return fmt.Errorf("order %s product %s (%s) has no pipelock_tier metadata",
-			order.ID, order.Product.ID, order.Product.Name)
-	}
-	if !validTiers[tier] {
-		return fmt.Errorf("order %s product %s has unrecognized pipelock_tier %q",
-			order.ID, order.Product.ID, tier)
-	}
-	if tier == tierEnterpriseEval {
+	if order.Product.Metadata["pipelock_tier"] == tierEnterpriseEval {
 		h.log.Info().
 			Str("order_id", order.ID).
 			Str("event_type", event.Type).
@@ -903,6 +902,13 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 		return nil
 	}
 
+	// The order path is an authorization boundary: require settled payment and
+	// server-side product, tier, price, and currency facts. Product metadata is
+	// only a defense-in-depth consistency check, never the source of authority.
+	tier, err := h.mapOrderProductToTier(order)
+	if err != nil {
+		return fmt.Errorf("authorize order %s: %w", order.ID, err)
+	}
 	features, err := json.Marshal(h.tierToFeatures(tier))
 	if err != nil {
 		return fmt.Errorf("marshal features: %w", err)
@@ -943,6 +949,38 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	}
 
 	return h.handleActive(ctx, ent, existing)
+}
+
+func (h *WebhookHandler) mapOrderProductToTier(order *PolarOrder) (string, error) {
+	if !order.Paid || order.Status != orderStatusPaid {
+		return "", errors.New("order is not paid")
+	}
+	if classifyRefund(order) != refundStateNone {
+		return "", errors.New("order is refunded")
+	}
+	var configured *OrderProductConfig
+	for i := range h.cfg.OrderProducts {
+		if h.cfg.OrderProducts[i].ProductID == order.Product.ID {
+			configured = &h.cfg.OrderProducts[i]
+			break
+		}
+	}
+	if configured == nil {
+		return "", fmt.Errorf("product %s is not allowlisted", order.Product.ID)
+	}
+	if order.Product.Metadata["pipelock_tier"] != configured.Tier {
+		return "", fmt.Errorf("product %s tier metadata %q does not match allowlist tier %q",
+			order.Product.ID, order.Product.Metadata["pipelock_tier"], configured.Tier)
+	}
+	if order.NetAmount != configured.AmountCents {
+		return "", fmt.Errorf("product %s amount %d does not match allowlist amount %d",
+			order.Product.ID, order.NetAmount, configured.AmountCents)
+	}
+	if strings.ToLower(order.Currency) != configured.Currency {
+		return "", fmt.Errorf("product %s currency %q does not match allowlist currency %q",
+			order.Product.ID, order.Currency, configured.Currency)
+	}
+	return configured.Tier, nil
 }
 
 // isIdempotent returns true if the current subscription state matches

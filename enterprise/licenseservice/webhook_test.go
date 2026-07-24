@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -126,6 +127,10 @@ func newTestSetup(t *testing.T) *testSetup {
 		ListenAddr:          ":0",
 		FromEmail:           "test@pipelock.dev",
 		PolarAPIBase:        polarSrv.URL,
+		OrderProducts: []OrderProductConfig{
+			{ProductID: "prod_trial", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
+			{ProductID: "prod_trial_test", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
+		},
 	}
 
 	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase)
@@ -2324,6 +2329,10 @@ func TestProcessSubscription_TrialDoesNotCountAsFounding(t *testing.T) {
 	orderData, err := json.Marshal(map[string]interface{}{
 		"id":             "order_trial_founding_test",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{},
@@ -2420,6 +2429,10 @@ func TestHandleOrderEvent_OneTimeTrial(t *testing.T) {
 	orderData, err := json.Marshal(map[string]interface{}{
 		"id":             "order_trial_123",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{"org": "trialcorp"},
@@ -2518,6 +2531,48 @@ func TestHandleOrderEvent_OneTimeTrial(t *testing.T) {
 	}
 }
 
+func TestMapOrderProductToTierFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	base := &PolarOrder{
+		ID:            "order_gate",
+		BillingReason: "purchase",
+		Status:        orderStatusPaid,
+		Paid:          true,
+		NetAmount:     100,
+		TotalAmount:   100,
+		Currency:      "usd",
+	}
+	base.Product.ID = "prod_trial"
+	base.Product.Metadata = map[string]string{"pipelock_tier": tierTrial}
+
+	tests := []struct {
+		name   string
+		mutate func(*PolarOrder)
+	}{
+		{name: "unpaid", mutate: func(o *PolarOrder) { o.Paid = false }},
+		{name: "wrong status", mutate: func(o *PolarOrder) { o.Status = "pending" }},
+		{name: "refunded", mutate: func(o *PolarOrder) { o.RefundedAmount = 1 }},
+		{name: "unallowlisted product", mutate: func(o *PolarOrder) { o.Product.ID = "prod_other" }},
+		{name: "metadata tier mismatch", mutate: func(o *PolarOrder) { o.Product.Metadata["pipelock_tier"] = tierPro }},
+		{name: "amount mismatch", mutate: func(o *PolarOrder) { o.NetAmount = 1 }},
+		{name: "currency mismatch", mutate: func(o *PolarOrder) { o.Currency = "eur" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			order := *base
+			order.Product = base.Product
+			order.Product.Metadata = maps.Clone(base.Product.Metadata)
+			tt.mutate(&order)
+			if _, err := ts.handler.mapOrderProductToTier(&order); err == nil {
+				t.Fatal("mapOrderProductToTier accepted unauthorized order")
+			}
+		})
+	}
+	if tier, err := ts.handler.mapOrderProductToTier(base); err != nil || tier != tierTrial {
+		t.Fatalf("valid order mapped to tier %q, err %v", tier, err)
+	}
+}
+
 func TestHandleOrderEvent_EnterpriseEvalDoesNotMintOnOrderCreated(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -2541,6 +2596,10 @@ func TestHandleOrderEvent_EnterpriseEvalDoesNotMintOnOrderCreated(t *testing.T) 
 	orderData, err := json.Marshal(map[string]interface{}{
 		"id":             orderID,
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{"org": "evalcorp"},
@@ -2636,6 +2695,10 @@ func TestHandleOrderEvent_RejectsEmptyOrderID(t *testing.T) {
 	orderData, _ := json.Marshal(map[string]interface{}{
 		"id":             "",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{},
@@ -2664,6 +2727,10 @@ func TestHandleOrderEvent_RejectsMissingTierMetadata(t *testing.T) {
 	orderData, _ := json.Marshal(map[string]interface{}{
 		"id":             "order_no_tier",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{},
@@ -2683,8 +2750,8 @@ func TestHandleOrderEvent_RejectsMissingTierMetadata(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing pipelock_tier metadata")
 	}
-	if !strings.Contains(err.Error(), "no pipelock_tier metadata") {
-		t.Errorf("error = %q, want 'no pipelock_tier metadata'", err)
+	if !strings.Contains(err.Error(), "not allowlisted") {
+		t.Errorf("error = %q, want 'not allowlisted'", err)
 	}
 }
 
@@ -2695,6 +2762,10 @@ func TestHandleOrderEvent_RejectsUnknownTier(t *testing.T) {
 	orderData, _ := json.Marshal(map[string]interface{}{
 		"id":             "order_bad_tier",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{},
@@ -2714,8 +2785,8 @@ func TestHandleOrderEvent_RejectsUnknownTier(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unrecognized tier")
 	}
-	if !strings.Contains(err.Error(), "unrecognized pipelock_tier") {
-		t.Errorf("error = %q, want 'unrecognized pipelock_tier'", err)
+	if !strings.Contains(err.Error(), "not allowlisted") {
+		t.Errorf("error = %q, want 'not allowlisted'", err)
 	}
 }
 
@@ -2726,6 +2797,10 @@ func TestHandleOrderEvent_TrialNeverSchedulesRefresh(t *testing.T) {
 	orderData, err := json.Marshal(map[string]interface{}{
 		"id":             "order_no_refresh",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{},
@@ -2780,6 +2855,10 @@ func TestHandleOrderEvent_ReplayIsIdempotent(t *testing.T) {
 	orderData, err := json.Marshal(map[string]interface{}{
 		"id":             "order_replay_test",
 		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     100,
+		"currency":       "usd",
 		"customer": map[string]interface{}{
 			"email":    testCustomerEmail,
 			"metadata": map[string]string{},

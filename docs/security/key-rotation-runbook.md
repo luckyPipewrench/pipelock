@@ -137,7 +137,7 @@ license.IntermediatePayload{
 }
 ```
 
-3. Deploy the new intermediate private key and certificate to the license service. The service signs tokens with `PIPELOCK_LICENSE_KEY_PATH` and serves the configured certificate from `PIPELOCK_LICENSE_INTERMEDIATE_FILE`.
+3. Deploy the new intermediate private key and certificate to the license service, then restart the service. The service pins the verified intermediate public key and serial at startup; replacing the files without a restart makes minting and refresh fail closed with `intermediate certificate changed since startup`. The service signs tokens with `PIPELOCK_LICENSE_KEY_PATH` and serves the configured certificate from `PIPELOCK_LICENSE_INTERMEDIATE_FILE`.
 
 ```bash
 export PIPELOCK_LICENSE_KEY_PATH=/etc/pipelock/license-intermediate.key

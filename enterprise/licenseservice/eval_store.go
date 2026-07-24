@@ -202,18 +202,31 @@ func (e *EntitlementDB) MarkWebhookCommitted(ctx context.Context, msgID, eventTy
 }
 
 func markWebhookCommitted(ctx context.Context, exec entitlementExecer, msgID, eventType, resourceID string) error {
+	_, err := admitWebhook(ctx, exec, msgID, eventType, resourceID)
+	return err
+}
+
+// admitWebhook records a delivery marker and reports whether this transaction
+// admitted the delivery. A duplicate is not an error, but callers that mutate
+// business state must stop before doing so when admitted is false.
+func admitWebhook(ctx context.Context, exec entitlementExecer, msgID, eventType, resourceID string) (bool, error) {
 	if msgID == "" {
-		return errors.New("webhook msg_id is required")
+		return false, errors.New("webhook msg_id is required")
 	}
 	const query = `
 	INSERT INTO webhook_deliveries (msg_id, event_type, resource_id, status, committed_at)
 	VALUES (?, ?, ?, 'committed', datetime('now'))
 	ON CONFLICT(msg_id) DO NOTHING
 	`
-	if _, err := exec.ExecContext(ctx, query, msgID, eventType, resourceID); err != nil {
-		return fmt.Errorf("mark webhook delivery %s committed: %w", msgID, err)
+	result, err := exec.ExecContext(ctx, query, msgID, eventType, resourceID)
+	if err != nil {
+		return false, fmt.Errorf("mark webhook delivery %s committed: %w", msgID, err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read webhook delivery %s admission result: %w", msgID, err)
+	}
+	return rows == 1, nil
 }
 
 // WebhookCommitted reports whether a webhook delivery with the given message ID
@@ -294,6 +307,13 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 		}
 	}
 
+	admitted, err := admitWebhook(ctx, tx, p.WebhookMsgID, p.EventType, p.EvalOrder.OrderID)
+	if err != nil {
+		return fmt.Errorf("admit eval webhook: %w", err)
+	}
+	if !admitted {
+		return ErrWebhookAlreadyCommitted
+	}
 	if err := upsertEntitlement(ctx, tx, p.Entitlement); err != nil {
 		return fmt.Errorf("upsert eval entitlement: %w", err)
 	}
@@ -303,10 +323,6 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 	if err := upsertEvalOrder(ctx, tx, p.EvalOrder); err != nil {
 		return fmt.Errorf("upsert eval order: %w", err)
 	}
-	if err := markWebhookCommitted(ctx, tx, p.WebhookMsgID, p.EventType, p.EvalOrder.OrderID); err != nil {
-		return fmt.Errorf("mark eval webhook committed: %w", err)
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit eval mint transaction: %w", err)
 	}

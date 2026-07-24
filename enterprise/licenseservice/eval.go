@@ -188,6 +188,9 @@ func (h *WebhookHandler) HandleOrderPaidEvent(ctx context.Context, event *PolarW
 		WebhookMsgID: msgID,
 		EventType:    event.Type,
 	}); err != nil {
+		if errors.Is(err, ErrWebhookAlreadyCommitted) {
+			return h.resendEvalIfNeeded(ctx, order.ID)
+		}
 		if errors.Is(err, ErrEvalOrderNotMintable) {
 			h.log.Warn().Str("order_id", order.ID).Msg("eval order no longer mintable at commit; skipping")
 			return nil

@@ -88,6 +88,11 @@ type EntitlementDB struct {
 // after this subscription was already recorded in a terminal state.
 var ErrTerminalEntitlement = errors.New("entitlement is terminal")
 
+// ErrWebhookAlreadyCommitted means another delivery path already admitted this
+// provider message ID. Callers must not perform side effects from freshly built
+// state; they may retry delivery from the persisted record.
+var ErrWebhookAlreadyCommitted = errors.New("webhook already committed")
+
 type entitlementExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -668,6 +673,15 @@ func (e *EntitlementDB) UpsertWithLicenseIssuanceAndWebhook(ctx context.Context,
 		}
 	}()
 
+	if msgID != "" {
+		admitted, err := admitWebhook(ctx, tx, msgID, eventType, ent.SubscriptionID)
+		if err != nil {
+			return fmt.Errorf("admit subscription webhook: %w", err)
+		}
+		if !admitted {
+			return ErrWebhookAlreadyCommitted
+		}
+	}
 	terminal, status, err := currentEntitlementTerminal(ctx, tx, ent.SubscriptionID)
 	if err != nil {
 		return err
@@ -680,11 +694,6 @@ func (e *EntitlementDB) UpsertWithLicenseIssuanceAndWebhook(ctx context.Context,
 	}
 	if err := insertLicenseIssuance(ctx, tx, issuance); err != nil {
 		return fmt.Errorf("insert license issuance %s: %w", issuance.LicenseID, err)
-	}
-	if msgID != "" {
-		if err := markWebhookCommitted(ctx, tx, msgID, eventType, ent.SubscriptionID); err != nil {
-			return fmt.Errorf("mark subscription webhook committed: %w", err)
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit entitlement issuance transaction: %w", err)
@@ -712,11 +721,15 @@ func (e *EntitlementDB) UpsertWithWebhook(ctx context.Context, ent *Entitlement,
 			_ = tx.Rollback()
 		}
 	}()
+	admitted, err := admitWebhook(ctx, tx, msgID, eventType, ent.SubscriptionID)
+	if err != nil {
+		return fmt.Errorf("admit subscription webhook: %w", err)
+	}
+	if !admitted {
+		return ErrWebhookAlreadyCommitted
+	}
 	if err := upsertEntitlement(ctx, tx, ent); err != nil {
 		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
-	}
-	if err := markWebhookCommitted(ctx, tx, msgID, eventType, ent.SubscriptionID); err != nil {
-		return fmt.Errorf("mark subscription webhook committed: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit entitlement webhook transaction: %w", err)

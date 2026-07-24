@@ -39,6 +39,7 @@ func setAdminEnv(t *testing.T) (tokenKeyPath, crlKeyPath string, crlPub ed25519.
 	t.Setenv(license.EnvLicensePublicKey, hex.EncodeToString(rootPub))
 	t.Setenv("PIPELOCK_LICENSE_CRL_SIGNING_KEY_PATH", crlKeyPath)
 	t.Setenv("RESEND_API_KEY", "re_"+"test")
+	t.Setenv("SUBSCRIPTION_PRODUCTS", "prod_test:pro:month:2900:usd")
 	t.Setenv("DB_PATH", filepath.Join(dir, "licenses.db"))
 	t.Setenv("LEDGER_PATH", filepath.Join(dir, "audit.jsonl"))
 	return tokenKeyPath, crlKeyPath, crlPub

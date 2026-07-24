@@ -104,6 +104,12 @@ func TestLoadResultErrorHelpers(t *testing.T) {
 	if got := (BundleError{}).ClassOrDefault(); got != BundleErrorClassIntegrity {
 		t.Fatalf("zero class default = %q, want %q (fail closed)", got, BundleErrorClassIntegrity)
 	}
+	// An unrecognized (e.g. typo'd) class value must also fail closed rather
+	// than pass through unrecognized and be tolerated by the strict integrity
+	// filter.
+	if got := (BundleError{Class: BundleErrorClass("unknown")}).ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("unknown class default = %q, want %q (fail closed)", got, BundleErrorClassIntegrity)
+	}
 
 	result := &LoadResult{
 		Errors: []BundleError{

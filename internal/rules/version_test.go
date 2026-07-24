@@ -163,3 +163,18 @@ func TestCalVerRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestParseCalVer_MaxValidPatchAccepted(t *testing.T) {
+	t.Parallel()
+
+	// A large but in-range patch must be ACCEPTED, proving the huge-patch
+	// rejection is an overflow guard, not an artificially low cap. 2e9 stays
+	// within a 32-bit int so this is platform-portable.
+	cv, err := ParseCalVer("2026.03.2000000000")
+	if err != nil {
+		t.Fatalf("ParseCalVer large valid patch: unexpected error %v", err)
+	}
+	if cv.Patch != 2000000000 {
+		t.Fatalf("Patch = %d, want 2000000000", cv.Patch)
+	}
+}

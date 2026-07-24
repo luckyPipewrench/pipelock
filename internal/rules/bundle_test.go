@@ -1295,3 +1295,17 @@ func TestValidate_V2Bundle_InvalidFeatureName(t *testing.T) {
 		})
 	}
 }
+
+func TestParseBundle_ValidationRejectsMissingRequiredFields(t *testing.T) {
+	t.Parallel()
+
+	// A near-empty bundle (only format_version, no name/version/author/rules)
+	// must fail validation, not parse into a tolerated zero-value bundle.
+	_, err := ParseBundle([]byte("format_version: 1\n"))
+	if err == nil {
+		t.Fatal("expected a bundle missing required fields to be rejected")
+	}
+	if !strings.Contains(err.Error(), "validate bundle") {
+		t.Fatalf("ParseBundle error = %v, want validation failure", err)
+	}
+}

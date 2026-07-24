@@ -570,3 +570,25 @@ func TestFindSigner_TrustedKeyPath(t *testing.T) {
 		t.Errorf("SignerFingerprint = %q, want %q", result.SignerFingerprint, hex.EncodeToString(thirdPub))
 	}
 }
+
+func TestVerifyIntegrity_SignedEmptySignatureFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	bundleContent := []byte("name: signed-empty-signature\n")
+	if err := os.WriteFile(bundlePath, bundleContent, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+	// An EMPTY signature file is a distinct path from a MISSING one: the file
+	// loads but cannot produce a valid signature, so verification must fail.
+	if err := os.WriteFile(bundlePath+".sig", []byte{}, 0o600); err != nil {
+		t.Fatalf("writing empty signature: %v", err)
+	}
+	hash := sha256.Sum256(bundleContent)
+
+	err := VerifyIntegrity(dir, false, "some-signer", hex.EncodeToString(hash[:]), nil)
+	if err == nil {
+		t.Fatal("expected empty signature to fail closed")
+	}
+}

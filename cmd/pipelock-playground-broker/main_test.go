@@ -1105,6 +1105,13 @@ func TestValidateFlagsBranches(t *testing.T) {
 		{name: "embed_origin_fragment", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example#part"} }},
 		{name: "embed_origin_empty_fragment", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example#"} }},
 		{name: "embed_origin_malformed", mutate: func(f *serveFlags) { f.embedOrigins = []string{"://bad"} }},
+		{name: "embed_origin_wildcard_host", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://*.site.example"} }},
+		{name: "turnstile_origin_path", mutate: func(f *serveFlags) {
+			f.turnstileOrigin = "https://challenge.vendor.example/path"
+		}},
+		{name: "turnstile_origin_wildcard_host", mutate: func(f *serveFlags) {
+			f.turnstileOrigin = "https://*.vendor.example"
+		}},
 		{name: "turnstile_url_without_secret", mutate: func(f *serveFlags) { f.turnstileVerifyURL = "https://turnstile.example/verify" }},
 		{name: "bad_turnstile_verify_url", mutate: func(f *serveFlags) {
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
@@ -1593,8 +1600,14 @@ func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
 	if !strings.Contains(withOrigin, "frame-ancestors https://site.example https://www.site.example;") {
 		t.Fatalf("CSP with embed origins = %q, want both origins in frame-ancestors", withOrigin)
 	}
-	if strings.Count(withOrigin, "https://challenge.vendor.example") != 3 {
-		t.Fatalf("CSP = %q, want configured Turnstile origin in script-src, connect-src, and frame-src", withOrigin)
+	for _, want := range []string{
+		"script-src 'self' blob: 'wasm-unsafe-eval' https://challenge.vendor.example;",
+		"connect-src 'self' https://challenge.vendor.example;",
+		"frame-src https://challenge.vendor.example;",
+	} {
+		if !strings.Contains(withOrigin, want) {
+			t.Fatalf("CSP = %q, missing %q", withOrigin, want)
+		}
 	}
 }
 

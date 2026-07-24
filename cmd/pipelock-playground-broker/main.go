@@ -925,7 +925,8 @@ func validateAllowOrigin(raw string) error {
 	if u.Host == "" {
 		return errors.New("host is required")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" ||
+	if u.User != nil || strings.Contains(u.Hostname(), "*") ||
+		u.RawQuery != "" || u.Fragment != "" || u.Path != "" ||
 		strings.Contains(raw, "?") || strings.HasSuffix(raw, "#") {
 		return errors.New("must be an origin only, like https://site.example")
 	}

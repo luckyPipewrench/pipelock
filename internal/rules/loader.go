@@ -145,13 +145,21 @@ func (r *LoadResult) errorsByClass(class BundleErrorClass) []BundleError {
 	return out
 }
 
-// ClassOrDefault returns the recorded class, treating older zero-value
-// BundleError instances as availability failures to preserve compatibility.
+// ClassOrDefault returns the recorded class, failing CLOSED for anything that
+// is not an explicitly recognized class. A zero-value (unclassified) OR an
+// unrecognized/typo'd class value defaults to integrity, so an unclassified
+// failure refuses strict startup rather than silently booting degraded — and a
+// future value the strict-startup integrity filter would not recognize can't
+// slip through as tolerated. Every loader constructor sets a known class
+// explicitly (see TestBundleErrorConstructorsSetClass), so this default is a
+// fail-safe backstop, never a value real code relies on.
 func (e BundleError) ClassOrDefault() BundleErrorClass {
-	if e.Class == "" {
-		return BundleErrorClassAvailability
+	switch e.Class {
+	case BundleErrorClassAvailability, BundleErrorClassIntegrity:
+		return e.Class
+	default:
+		return BundleErrorClassIntegrity
 	}
-	return e.Class
 }
 
 // DegradedBundleNames returns a stable, de-duplicated list of bundles or state

@@ -107,6 +107,7 @@ var compiledStandardResponseNames = map[string]bool{
 	"Tool Invocation":                              true,
 	"Authority Escalation":                         true,
 	"Instruction Downgrade":                        true,
+	"Safety Reclassification Directive":            true,
 	"Instruction Dismissal":                        true,
 	"Priority Override":                            true,
 	"Auth Material Requirement":                    true,

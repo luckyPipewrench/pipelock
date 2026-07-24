@@ -300,7 +300,8 @@ const (
 	// level timers, clean-request de-escalation, and severity-weighted signal
 	// handling change adaptive policy semantics when configured.
 	// Re-bumped because Defaults().Internal now exposes the enforced Azure WireServer and IPv6 unspecified SSRF floor.
-	goldenHashDefaults = "d8a99f8fd46d99b832e287d0647c3b74ea3d3a681983ce9beb5ff80065f5f731"
+	// Re-bumped for Safety Reclassification Directive response pattern coverage.
+	goldenHashDefaults = "3bf819194c9905d3fb5ee84139a61e7277848816f74e9bc02b60c5655f474007"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -442,7 +443,9 @@ const (
 	// separator. See goldenHashDefaults note above.
 	// Re-bumped for adaptive-enforcement recovery and severity-weighting knobs:
 	// see goldenHashDefaults note above.
-	goldenHashRichConfig = "0c48938a2c85558d11a8d9bb73db1bb1f68a4b3d161cc0ff8c400cc10ae49868"
+	// Re-bumped for Safety Reclassification Directive: see goldenHashDefaults
+	// note above.
+	goldenHashRichConfig = "dbd9910451382fa4a90072c7cf9246f55632ee1bc7eb8752b76979c822782ba3"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

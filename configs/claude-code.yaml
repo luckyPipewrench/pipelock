@@ -398,6 +398,8 @@ response_scanning:
       regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(\w+\s+)?(directives|instructions|guidelines|rules|prompts?|constraints|safeguards|policies|guardrails)\s+(aside|away|to\s+(one|the)\s+side)'
     - name: "Instruction Downgrade"
       regex: '(?i)(treat|consider|regard|reinterpret|downgrade)\s+((?:the|all)\s+)?(previous|prior|above|earlier|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt|policies|guardrails|parameters)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)'
+    - name: "Safety Reclassification Directive"
+      regex: '(?i)(reclassif\w*|recategoriz\w*|redefin\w*|relabel\w*|downgrad\w*|deprecat\w*|treat|consider|regard|reinterpret)\s+((?:the|all|any|these|those|my|your|our)\s+)?(previous|prior|above|earlier|system|safety|security|original)\s+((?:\w+\s+){0,2})(instructions?|directives?|rules?|guardrails?|policies|constraints?|prompt|protocols?)\s+((as|to|into)\s+)?(?:\w+\s+){0,2}(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)\b[\s\S]{0,50}?\b(then|and|so|now|,|;)\s+\w*\s*(execut\w*|run|follow|perform|carry\s+out|proceed|comply\s+with|obey|do)\b[\s\S]{0,25}?\b(following|attached|below|user''?s?|these|this)\b'
     - name: "Priority Override"
       regex: '(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)'
     - name: "Markdown Link Credential Exfiltration"

@@ -91,8 +91,33 @@ func newTestSetup(t *testing.T) *testSetup {
 	}
 
 	// Default Polar mock: returns an active pro subscription.
-	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/v1/orders/") {
+			orderID := strings.TrimPrefix(r.URL.Path, "/v1/orders/")
+			productID, tier := "prod_trial", tierTrial
+			org := "testcorp"
+			if orderID == "order_trial_123" {
+				org = "trialcorp"
+			}
+			if orderID == "order_no_tier" || orderID == "order_bad_tier" {
+				productID = "prod_bad"
+			}
+			if orderID == "order_bad_tier" {
+				tier = "premium"
+			}
+			_, _ = fmt.Fprintf(w, `{
+				"id": %q,
+				"billing_reason": "purchase",
+				"status": "paid",
+				"paid": true,
+				"net_amount": 100,
+				"currency": "usd",
+				"customer": {"email": %q, "metadata": {"org": %q}},
+				"product": {"id": %q, "name": "Pipelock Pro Trial", "metadata": {"pipelock_tier": %q}}
+			}`, orderID, testCustomerEmail, org, productID, tier)
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{
 			"id": "%s",
 			"status": "active",
@@ -1931,6 +1956,40 @@ func TestProcessSubscription_EndedEmailFailure(t *testing.T) {
 	}
 }
 
+func TestHandleEnded_ReplayRetriesCancellationEmail(t *testing.T) {
+	ts := newTestSetup(t)
+	var deliveries atomic.Int32
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deliveries.Add(1)
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_ended"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    emailSrv.Client(),
+		apiURL:    emailSrv.URL,
+	}
+
+	expires := time.Now().UTC().Add(24 * time.Hour)
+	existing := testEntitlement(testSubscriptionID)
+	existing.LastLicenseExpiresAt = &expires
+	ended := testEntitlement(testSubscriptionID)
+	ended.Status = statusCanceled
+
+	const deliveryID = "msg_ended_replay"
+	if err := ts.handler.handleEnded(t.Context(), ended, existing, EventSubscriptionCanceled, deliveryID); err != nil {
+		t.Fatalf("handleEnded(first): %v", err)
+	}
+	if err := ts.handler.handleEnded(t.Context(), ended, existing, EventSubscriptionCanceled, deliveryID); err != nil {
+		t.Fatalf("handleEnded(replay): %v", err)
+	}
+	if got := deliveries.Load(); got != 2 {
+		t.Fatalf("cancellation email deliveries = %d, want 2 including committed-marker replay", got)
+	}
+}
+
 func TestProcessSubscription_EndedPreservesLicenseFields(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -2570,6 +2629,41 @@ func TestMapOrderProductToTierFailsClosed(t *testing.T) {
 	}
 	if tier, err := ts.handler.mapOrderProductToTier(base); err != nil || tier != tierTrial {
 		t.Fatalf("valid order mapped to tier %q, err %v", tier, err)
+	}
+}
+
+func TestHandleOrderEvent_RejectsCurrentlyRefundedOrder(t *testing.T) {
+	ts := newTestSetup(t)
+	orderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{
+			"id":"order_refunded",
+			"billing_reason":"purchase",
+			"status":"paid",
+			"paid":true,
+			"refunded_amount":100,
+			"net_amount":100,
+			"currency":"usd",
+			"customer":{"email":"customer@example.com","metadata":{}},
+			"product":{"id":"prod_trial","metadata":{"pipelock_tier":"trial"}}
+		}`))
+	}))
+	t.Cleanup(orderSrv.Close)
+	ts.handler.polar = NewPolarClient(testPolarAPIToken, orderSrv.URL)
+
+	event := &PolarWebhookEvent{Type: EventOrderCreated, Data: json.RawMessage(`{
+		"id":"order_refunded",
+		"billing_reason":"purchase",
+		"status":"paid",
+		"paid":true,
+		"net_amount":100,
+		"currency":"usd",
+		"customer":{"email":"customer@example.com","metadata":{}},
+		"product":{"id":"prod_trial","metadata":{"pipelock_tier":"trial"}}
+	}`)}
+	err := ts.handler.HandleOrderEvent(t.Context(), event)
+	if err == nil || !strings.Contains(err.Error(), "order is refunded") {
+		t.Fatalf("HandleOrderEvent error = %v, want current refund rejection", err)
 	}
 }
 

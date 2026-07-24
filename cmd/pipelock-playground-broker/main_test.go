@@ -256,6 +256,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 		vmDailyTurnBudget:     10,
 		requireSessionSecrets: false,
 		embedOrigins:          []string{testEmbedOrigin},
+		turnstileOrigin:       "https://challenge.vendor.example",
 	})
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
@@ -277,7 +278,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("GET %s status = %d, want 200", tc.path, resp.StatusCode)
 			}
-			assertBrokerSecurityHeaders(t, resp.Header)
+			assertBrokerSecurityHeaders(t, resp.Header, "https://challenge.vendor.example")
 		})
 	}
 }
@@ -499,6 +500,7 @@ func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
 		globalDailyBudget:     10,
 		turnstileSecretFile:   turnstileSecretFile,
 		turnstileVerifyURL:    verifyServer.URL,
+		turnstileOrigin:       "https://challenge.vendor.example",
 		sessionTTL:            defaultSessionTTL,
 		deadlineGrace:         defaultGrace,
 		vmDailyTurnBudget:     10,
@@ -1069,8 +1071,12 @@ func TestValidateFlagsBranches(t *testing.T) {
 	turnstileGate.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 	turnstileGate.turnstileExpectedHostname = "playground.example"
 	turnstileGate.turnstileExpectedAction = "playground-session"
+	turnstileGate.turnstileOrigin = "https://challenge.vendor.example"
 	if err := validateFlags(&turnstileGate); err != nil {
 		t.Fatalf("turnstile gate should validate: %v", err)
+	}
+	if err := validateAllowOrigin("https://site.example:65535"); err != nil {
+		t.Fatalf("maximum valid origin port should validate: %v", err)
 	}
 	cfAccessGate := noHumanGate
 	cfAccessGate.cfAccessTeamDomain = "team.cloudflareaccess.com"
@@ -1106,6 +1112,9 @@ func TestValidateFlagsBranches(t *testing.T) {
 		{name: "embed_origin_empty_fragment", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example#"} }},
 		{name: "embed_origin_malformed", mutate: func(f *serveFlags) { f.embedOrigins = []string{"://bad"} }},
 		{name: "embed_origin_wildcard_host", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://*.site.example"} }},
+		{name: "embed_origin_empty_port", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example:"} }},
+		{name: "embed_origin_port_zero", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example:0"} }},
+		{name: "embed_origin_port_too_large", mutate: func(f *serveFlags) { f.embedOrigins = []string{"https://site.example:65536"} }},
 		{name: "turnstile_origin_path", mutate: func(f *serveFlags) {
 			f.turnstileOrigin = "https://challenge.vendor.example/path"
 		}},
@@ -1611,10 +1620,10 @@ func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
 	}
 }
 
-func assertBrokerSecurityHeaders(t *testing.T, h http.Header) {
+func assertBrokerSecurityHeaders(t *testing.T, h http.Header, turnstileOrigin string) {
 	t.Helper()
 	want := map[string]string{
-		"Content-Security-Policy":   brokerContentSecurityPolicy([]string{testEmbedOrigin}, ""),
+		"Content-Security-Policy":   brokerContentSecurityPolicy([]string{testEmbedOrigin}, turnstileOrigin),
 		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 		"X-Content-Type-Options":    "nosniff",
 		"Referrer-Policy":           "strict-origin-when-cross-origin",

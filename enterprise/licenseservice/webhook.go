@@ -587,10 +587,9 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 	// Upsert the entitlement to record the ended status, committing the webhook
 	// marker in the same transaction when this came from a delivery.
 	if err := h.db.UpsertWithWebhook(ctx, ent, msgID, eventType); err != nil {
-		if errors.Is(err, ErrWebhookAlreadyCommitted) {
-			return nil
+		if !errors.Is(err, ErrWebhookAlreadyCommitted) {
+			return fmt.Errorf("persist ended entitlement: %w", err)
 		}
-		return fmt.Errorf("persist ended entitlement: %w", err)
 	}
 
 	if existing != nil {
@@ -899,6 +898,29 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 			Str("order_id", order.ID).
 			Str("event_type", event.Type).
 			Msg("ignoring enterprise eval order in legacy order handler")
+		return nil
+	}
+
+	currentOrder, err := h.polar.GetOrder(ctx, order.ID)
+	if err != nil {
+		return fmt.Errorf("load current order %s: %w", order.ID, err)
+	}
+	if currentOrder.ID != order.ID {
+		return fmt.Errorf("load current order %s: response ID %q does not match", order.ID, currentOrder.ID)
+	}
+	order = currentOrder
+	if order.BillingReason != "purchase" {
+		h.log.Info().
+			Str("order_id", order.ID).
+			Str("billing_reason", order.BillingReason).
+			Msg("ignoring current non-purchase order")
+		return nil
+	}
+	if order.Product.Metadata["pipelock_tier"] == tierEnterpriseEval {
+		h.log.Info().
+			Str("order_id", order.ID).
+			Str("event_type", event.Type).
+			Msg("ignoring current enterprise eval order in legacy order handler")
 		return nil
 	}
 

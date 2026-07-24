@@ -556,6 +556,10 @@ func validateFlags(f *serveFlags) error {
 	if err := validateTurnstileFlags(f); err != nil {
 		return err
 	}
+	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
+	if hasTurnstile && strings.TrimSpace(f.turnstileOrigin) == "" {
+		return errors.New("--turnstile-origin is required when Turnstile is enabled")
+	}
 	if f.deadlineGrace < 0 {
 		return errors.New("--deadline-grace must be >= 0")
 	}
@@ -924,6 +928,15 @@ func validateAllowOrigin(raw string) error {
 	}
 	if u.Host == "" {
 		return errors.New("host is required")
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return errors.New("port must not be empty")
+	}
+	if port := u.Port(); port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return errors.New("port must be 1-65535")
+		}
 	}
 	if u.User != nil || strings.Contains(u.Hostname(), "*") ||
 		u.RawQuery != "" || u.Fragment != "" || u.Path != "" ||

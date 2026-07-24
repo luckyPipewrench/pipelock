@@ -1967,7 +1967,7 @@ func TestHandleEnded_ReplayRetriesCancellationEmail(t *testing.T) {
 	t.Cleanup(emailSrv.Close)
 	ts.handler.email = &EmailSender{
 		apiKey:    "re_" + "test_key",
-		fromEmail: "test@pipelock.dev",
+		fromEmail: "test@example.com",
 		client:    emailSrv.Client(),
 		apiURL:    emailSrv.URL,
 	}

@@ -1075,6 +1075,11 @@ func TestValidateFlagsBranches(t *testing.T) {
 	if err := validateFlags(&turnstileGate); err != nil {
 		t.Fatalf("turnstile gate should validate: %v", err)
 	}
+	turnstileWithoutOrigin := turnstileGate
+	turnstileWithoutOrigin.turnstileOrigin = ""
+	if err := validateFlags(&turnstileWithoutOrigin); err == nil || !strings.Contains(err.Error(), "--turnstile-origin is required") {
+		t.Fatalf("Turnstile gate without origin error = %v, want required-origin error", err)
+	}
 	if err := validateAllowOrigin("https://site.example:65535"); err != nil {
 		t.Fatalf("maximum valid origin port should validate: %v", err)
 	}

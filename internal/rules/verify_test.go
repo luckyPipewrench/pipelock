@@ -582,7 +582,7 @@ func TestVerifyIntegrity_SignedEmptySignatureFailsClosed(t *testing.T) {
 	}
 	// An EMPTY signature file is a distinct path from a MISSING one: the file
 	// loads but cannot produce a valid signature, so verification must fail.
-	if err := os.WriteFile(bundlePath+".sig", []byte{}, 0o600); err != nil {
+	if err := os.WriteFile(bundlePath+signing.SigExtension, []byte{}, 0o600); err != nil {
 		t.Fatalf("writing empty signature: %v", err)
 	}
 	hash := sha256.Sum256(bundleContent)
@@ -590,5 +590,10 @@ func TestVerifyIntegrity_SignedEmptySignatureFailsClosed(t *testing.T) {
 	err := VerifyIntegrity(dir, false, "some-signer", hex.EncodeToString(hash[:]), nil)
 	if err == nil {
 		t.Fatal("expected empty signature to fail closed")
+	}
+	// Assert the specific empty-signature path (loads but is an invalid-length
+	// signature), not a generic or missing-file failure.
+	if !strings.Contains(err.Error(), "loading signature") {
+		t.Fatalf("VerifyIntegrity error = %v, want a signature-loading failure", err)
 	}
 }

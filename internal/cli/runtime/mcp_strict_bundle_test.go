@@ -35,15 +35,32 @@ func TestMCPProxyCmd_StrictBundleIntegrityFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := mcpProxyCmd()
-	cmd.SilenceUsage = true
-	cmd.SetArgs([]string{"--config", cfgPath, "--upstream", "http://127.0.0.1:1/mcp"})
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	// The strict integrity refusal fires in the shared runtime path after
+	// config resolve but before any upstream dial or subprocess spawn, so every
+	// transport mode must fail closed identically. Prove it on each rather than
+	// claim parity: HTTP/WebSocket upstream and stdio subprocess. The closed
+	// port / never-run command never matters because the refusal returns first.
+	transports := []struct {
+		name string
+		args []string
+	}{
+		{name: "http upstream", args: []string{"--upstream", "http://127.0.0.1:1/mcp"}},
+		{name: "websocket upstream", args: []string{"--upstream", "ws://127.0.0.1:1/mcp"}},
+		{name: "stdio subprocess", args: []string{"--", "cat"}},
+	}
+	for _, tc := range transports {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := mcpProxyCmd()
+			cmd.SilenceUsage = true
+			cmd.SetArgs(append([]string{"--config", cfgPath}, tc.args...))
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
 
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") {
-		t.Fatalf("strict mcp proxy with integrity-failed bundle: err = %v, want integrity refusal\noutput:\n%s", err, out.String())
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") {
+				t.Fatalf("strict mcp proxy with integrity-failed bundle: err = %v, want integrity refusal\noutput:\n%s", err, out.String())
+			}
+		})
 	}
 }

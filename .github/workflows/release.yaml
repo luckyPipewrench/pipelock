@@ -3,7 +3,15 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Semver only — excludes floating tags like v1, v2
+      - 'v*.*.*'  # Coarse prefilter: v-prefixed with at least two dots (the wildcards also match extra dots like v1.2.3.4; excludes floating v1/v2). Strict SemVer is enforced in the release-preflight gate (check-release-ready.sh).
+
+# Serialize release publications so two overlapping tag pushes cannot race on the
+# GoReleaser uploads or the shared force-updated v2 tag (an older run could
+# otherwise overwrite a newer completed release pointer). Do not cancel a run in
+# progress: a half-finished publish must complete, not be interrupted.
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
 
 permissions: {}
 
@@ -297,6 +305,7 @@ jobs:
           subject-path: dist/checksums.txt
 
       - name: Attest SBOM
+        id: attest-sbom
         continue-on-error: true
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
@@ -367,13 +376,21 @@ jobs:
           subject-digest: ${{ steps.license-service-digest.outputs.digest }}
           push-to-registry: true
 
+      # Fail closed: any attestation that did not SUCCEED blocks the release.
+      # `!= 'success'` (not `== 'failure'`) also catches a SKIPPED container
+      # attest step, which happens when its digest step could not resolve the
+      # image — otherwise a missing-digest container publishes with no
+      # provenance while this gate still reports success. `always()` ensures the
+      # gate runs even if an earlier step failed.
       - name: Verify attestation
         if: >-
-          steps.attest-binaries.outcome == 'failure' ||
-          steps.attest-checksums.outcome == 'failure' ||
-          steps.attest-pipelock-container.outcome == 'failure' ||
-          steps.attest-pipelock-init-container.outcome == 'failure' ||
-          steps.attest-license-service-container.outcome == 'failure'
+          always() && (
+          steps.attest-binaries.outcome != 'success' ||
+          steps.attest-checksums.outcome != 'success' ||
+          steps.attest-sbom.outcome != 'success' ||
+          steps.attest-pipelock-container.outcome != 'success' ||
+          steps.attest-pipelock-init-container.outcome != 'success' ||
+          steps.attest-license-service-container.outcome != 'success' )
         run: |
           echo "::error::Attestation failed — release provenance is incomplete"
           exit 1

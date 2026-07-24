@@ -23,7 +23,29 @@ if [ -z "$VERSION" ]; then
   echo "check-release-ready: no version given and GITHUB_REF_NAME unset" >&2
   exit 2
 fi
-VER="${VERSION#v}" # strip leading v -> bare semver used in CHANGELOG/Chart
+# 0. Release tag format. The version is used verbatim as an OCI/Docker image tag
+# and as attestation subject names, so it must be v-prefixed SemVer with an
+# OPTIONAL prerelease and NO build metadata: '+' is invalid in an OCI/Docker tag
+# (tagChars is [A-Za-z0-9_.-]), so a '+build' version would pass an abstract-SemVer
+# check yet break the container publish or mismatch the provenance subject. This
+# gate is the real guard (the 'v*.*.*' release trigger is only a coarse prefilter
+# that also matches v1.2.beta and v1.2.3.4), so a malformed tag fails
+# closed BEFORE anything is built or pushed.
+release_tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+if ! printf '%s\n' "$VERSION" | grep -qE "$release_tag_re"; then
+  echo "check-release-ready: tag '$VERSION' must be vMAJOR.MINOR.PATCH[-prerelease] with no build metadata" >&2
+  exit 2
+fi
+
+VER="${VERSION#v}" # strip leading v -> bare semver used in CHANGELOG/Chart and as the OCI image tag
+
+# The v-stripped version is used verbatim as an OCI/Docker image tag, which is
+# capped at 128 characters; a longer tag passes the format check above yet fails
+# only once container publishing begins.
+if [ "${#VER}" -gt 128 ]; then
+  echo "check-release-ready: tag '$VERSION' exceeds the 128-character OCI image-tag limit" >&2
+  exit 2
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHANGELOG="$REPO_ROOT/CHANGELOG.md"

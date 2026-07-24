@@ -30,7 +30,7 @@ const (
 )
 
 var Limits = []Limit{
-	{ID: LimitKeyholderOmit, Title: "Keyholder Omission", Category: "completeness", Summary: "No in-domain mechanism proves completeness against the party holding the signing key.", Bound: "C2 second recorder / C4 counterparty (separately keyed)."},
+	{ID: LimitKeyholderOmit, Title: "Keyholder Omission", Category: "completeness", Summary: "No in-domain mechanism proves completeness against the party holding the signing key.", Bound: "C2 second recorder / C4 counterparty (separately keyed; reserved and not yet available through an operator entry point)."},
 	{ID: LimitOmitPreAnchor, Title: "Pre-Anchor Omission", Category: "completeness", Summary: "Whole-session omission BEFORE the first anchor is undetectable.", Bound: "Anchor interval + genesis anchor_head binding."},
 	{ID: LimitForgedKey, Title: "Compromised Signing Key", Category: "completeness", Summary: "A record forged under a COMPROMISED signing key is in-domain indistinguishable from a real one.", Bound: "Anchor interval + C2 (attacker lacks the agent-side key)."},
 	{ID: LimitRecorderBinary, Title: "Recorder Binary Trust", Category: "recorder-integrity", Summary: "A malicious/modified recorder binary IS the attacker; its output cannot vouch for itself.", Bound: "Release signing + contain-install binary-hash TOFU pin + external attestation."},

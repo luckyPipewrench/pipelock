@@ -3,8 +3,13 @@
 // Copyright 2026 Pipelock contributors
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
-// Package counterparty verifies enterprise-only side records that bind two
-// already-existing receipts to the same transmitted payload.
+// Package counterparty is a reserved enterprise verification library for side
+// records that bind two already-existing receipts to the same transmitted
+// payload. The counterparty-attestation verifier and replay store are
+// implemented and unit-tested, but are not wired to an operator entry point:
+// there is no CLI command, API handler, or SDK export for operators to invoke
+// today. This is foundation for a future release, not a shipped operator
+// feature.
 //
 // The binding lives beside the core receipt stream as its own signed side
 // record (counterparty_receipt_v1). No field here is added to the v1

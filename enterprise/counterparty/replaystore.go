@@ -124,7 +124,8 @@ func (s *MemReplayStore) CommitIfNew(entry ReplayEntry) error {
 }
 
 // Compact implements CompactableReplayStore; see CompactableReplayStore for the
-// caller's freshness contract.
+// caller's freshness contract. The in-memory store grows unbounded until a
+// caller invokes Compact, so any future operator wiring MUST schedule Compact.
 func (s *MemReplayStore) Compact(before time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -345,7 +346,8 @@ func (s *FileReplayStore) CommitIfNew(entry ReplayEntry) error {
 // Compact implements CompactableReplayStore. It rewrites the durable JSONL file
 // atomically and keeps any entry whose nonce or transfer key is still inside its
 // retention horizon. See CompactableReplayStore for the caller's freshness
-// contract.
+// contract. The durable store grows unbounded until a caller invokes Compact, so
+// any future operator wiring MUST schedule Compact.
 func (s *FileReplayStore) Compact(before time.Time) (removed int, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()

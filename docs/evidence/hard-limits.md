@@ -12,7 +12,7 @@ These limits are not loopholes in receipt verification. They are the boundary of
 
 **Why no rung closes it:** The receipt chain can prove byte integrity, ordering, and signer binding for records it sees. This limit describes a condition outside that in-domain proof.
 
-**Bound:** C2 second recorder / C4 counterparty (separately keyed).
+**Bound:** C2 second recorder / C4 counterparty (separately keyed; reserved and not yet available through an operator entry point).
 
 **How the verifier surfaces it:** Passing verification prints `L-KEYHOLDER-OMIT` with this summary when the verified surface is subject to the limit.
 

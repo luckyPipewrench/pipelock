@@ -544,11 +544,32 @@ func TestMergeIntoConfig_SignedStandardBundleReplacesCompiledFallback(t *testing
 	if got := countResponsePatternsFromBundle(cfg, StandardBundleName); got != 1 {
 		t.Fatalf("standard bundle response patterns = %d, want 1", got)
 	}
-	if p, ok := dlpPatternByName(cfg.DLP.Patterns, "Anthropic API Key"); !ok || p.Bundle != StandardBundleName || p.Compiled {
-		t.Fatalf("Anthropic API Key = %+v, ok=%v; want signed bundle replacement", p, ok)
+	// Assert each replaced name occurs EXACTLY ONCE across the full merged set
+	// and is the non-compiled bundle entry. A first-match lookup would pass even
+	// if a compiled fallback with the same name survived after the bundle entry.
+	dlpHits := 0
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "Anthropic API Key" {
+			dlpHits++
+			if p.Compiled || p.Bundle != StandardBundleName {
+				t.Fatalf("Anthropic API Key entry = %+v, want non-compiled StandardBundleName replacement", p)
+			}
+		}
 	}
-	if p, ok := responsePatternByName(cfg.ResponseScanning.Patterns, "New Instructions"); !ok || p.Bundle != StandardBundleName || p.Compiled {
-		t.Fatalf("New Instructions = %+v, ok=%v; want signed bundle replacement", p, ok)
+	if dlpHits != 1 {
+		t.Fatalf("Anthropic API Key occurs %d times in merged DLP, want exactly 1 (compiled duplicate leaked)", dlpHits)
+	}
+	respHits := 0
+	for _, p := range cfg.ResponseScanning.Patterns {
+		if p.Name == "New Instructions" {
+			respHits++
+			if p.Compiled || p.Bundle != StandardBundleName {
+				t.Fatalf("New Instructions entry = %+v, want non-compiled StandardBundleName replacement", p)
+			}
+		}
+	}
+	if respHits != 1 {
+		t.Fatalf("New Instructions occurs %d times in merged response patterns, want exactly 1 (compiled duplicate leaked)", respHits)
 	}
 }
 

@@ -99,8 +99,10 @@ func TestLoadResultErrorHelpers(t *testing.T) {
 	if got := nilResult.DegradedBundleNames(); got != nil {
 		t.Fatalf("nil DegradedBundleNames = %+v, want nil", got)
 	}
-	if got := (BundleError{}).ClassOrDefault(); got != BundleErrorClassAvailability {
-		t.Fatalf("zero class default = %q, want %q", got, BundleErrorClassAvailability)
+	// An unclassified (zero-value) error must default to integrity so it fails
+	// CLOSED in strict startup rather than silently booting degraded.
+	if got := (BundleError{}).ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("zero class default = %q, want %q (fail closed)", got, BundleErrorClassIntegrity)
 	}
 
 	result := &LoadResult{

@@ -975,6 +975,30 @@ func TestLoadBundles_BundleExceedsMaxFileSize(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_BundlePathDirectoryIsAvailabilityFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "bundle-path-directory")
+	if err := os.MkdirAll(filepath.Join(bundleDir, bundleFilename), 0o750); err != nil {
+		t.Fatalf("mkdir bundle.yaml directory: %v", err)
+	}
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 bundle read error, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassAvailability {
+		t.Fatalf("bundle directory read error class = %q, want %q", got, BundleErrorClassAvailability)
+	}
+	if !strings.Contains(result.Errors[0].Reason, "reading bundle file") {
+		t.Fatalf("bundle read error reason = %q, want read failure", result.Errors[0].Reason)
+	}
+}
+
 func TestLoadBundles_RuleTypeRouting(t *testing.T) {
 	t.Parallel()
 

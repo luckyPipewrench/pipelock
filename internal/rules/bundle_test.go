@@ -190,6 +190,26 @@ rules:
 	}
 }
 
+func TestParseBundle_ValidationErrorRejectsInvalidBundle(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`format_version: 1
+name: BadBundle
+version: "2026.03.1"
+author: Test
+description: Test bundle
+rules: []
+`)
+
+	_, err := ParseBundle(yaml)
+	if err == nil {
+		t.Fatal("expected invalid bundle to be rejected")
+	}
+	if !strings.Contains(err.Error(), "validate bundle") {
+		t.Fatalf("ParseBundle error = %v, want validation failure", err)
+	}
+}
+
 func TestValidateBundleName(t *testing.T) {
 	t.Parallel()
 

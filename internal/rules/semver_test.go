@@ -60,6 +60,31 @@ func TestParseSemver(t *testing.T) {
 	}
 }
 
+func TestComparePrerelease_NumericEqualityAndLength(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want int
+	}{
+		{name: "numeric identifiers equal", a: "beta.01", b: "beta.1", want: 0},
+		{name: "longer prerelease has higher precedence after equal prefix", a: "beta.1.1", b: "beta.1", want: 1},
+		{name: "shorter prerelease has lower precedence after equal prefix", a: "beta.1", b: "beta.1.1", want: -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := comparePrerelease(tc.a, tc.b)
+			if got != tc.want {
+				t.Fatalf("comparePrerelease(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAtomicWriteFile_Success(t *testing.T) {
 	t.Parallel()
 

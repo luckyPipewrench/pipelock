@@ -269,6 +269,26 @@ func TestVerifyIntegrity_SignedTampered(t *testing.T) {
 	}
 }
 
+func TestVerifyIntegrity_SignedMissingSignatureFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	bundleContent := []byte("name: signed-missing-signature\n")
+	if err := os.WriteFile(bundlePath, bundleContent, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+	hash := sha256.Sum256(bundleContent)
+
+	err := VerifyIntegrity(dir, false, "missing-signer", hex.EncodeToString(hash[:]), nil)
+	if err == nil {
+		t.Fatal("expected missing signature to fail closed")
+	}
+	if !strings.Contains(err.Error(), "loading signature") {
+		t.Fatalf("VerifyIntegrity error = %v, want missing signature", err)
+	}
+}
+
 func TestVerifyIntegrity_UnsignedValid(t *testing.T) {
 	t.Parallel()
 

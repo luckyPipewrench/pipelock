@@ -4,6 +4,7 @@
 package rules
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -497,6 +498,57 @@ func TestMergeIntoConfig_IncludeDefaultsFalse_StandardSourceNone(t *testing.T) {
 	}
 	if result.StandardResponse != StandardSourceNone {
 		t.Errorf("expected StandardSourceNone for response, got %s", result.StandardResponse)
+	}
+}
+
+func TestMergeIntoConfig_SignedStandardBundleReplacesCompiledFallback(t *testing.T) {
+	// Non-parallel: mutates keyring globals.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setupKeyring(t, pub)
+
+	cfg := config.Defaults()
+	cfg.Rules.RulesDir = t.TempDir()
+	bundleDir := filepath.Join(cfg.Rules.RulesDir, StandardBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir standard bundle dir: %v", err)
+	}
+	writeSignedBundle(t, bundleDir, testBundle(StandardBundleName, []Rule{
+		func() Rule {
+			r := testDLPRule("dlp-standard", confidenceHigh, StatusStable)
+			r.Name = "Anthropic API Key"
+			return r
+		}(),
+		func() Rule {
+			r := testInjectionRule("inj-standard", confidenceHigh)
+			r.Name = "New Instructions"
+			return r
+		}(),
+	}), pub, priv)
+
+	result := MergeIntoConfig(cfg, testPipelockVersion)
+	if len(result.Errors) != 0 {
+		t.Fatalf("MergeIntoConfig errors: %v", result.Errors)
+	}
+	if result.StandardDLP != StandardSourceBundle {
+		t.Fatalf("StandardDLP = %s, want %s", result.StandardDLP, StandardSourceBundle)
+	}
+	if result.StandardResponse != StandardSourceBundle {
+		t.Fatalf("StandardResponse = %s, want %s", result.StandardResponse, StandardSourceBundle)
+	}
+	if got := countDLPPatternsFromBundle(cfg, StandardBundleName); got != 1 {
+		t.Fatalf("standard bundle DLP patterns = %d, want 1", got)
+	}
+	if got := countResponsePatternsFromBundle(cfg, StandardBundleName); got != 1 {
+		t.Fatalf("standard bundle response patterns = %d, want 1", got)
+	}
+	if p, ok := dlpPatternByName(cfg.DLP.Patterns, "Anthropic API Key"); !ok || p.Bundle != StandardBundleName || p.Compiled {
+		t.Fatalf("Anthropic API Key = %+v, ok=%v; want signed bundle replacement", p, ok)
+	}
+	if p, ok := responsePatternByName(cfg.ResponseScanning.Patterns, "New Instructions"); !ok || p.Bundle != StandardBundleName || p.Compiled {
+		t.Fatalf("New Instructions = %+v, ok=%v; want signed bundle replacement", p, ok)
 	}
 }
 

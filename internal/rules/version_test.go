@@ -66,6 +66,15 @@ func TestParseCalVer(t *testing.T) {
 	}
 }
 
+func TestParseCalVer_RejectsHugePatchNumber(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseCalVer("2026.03.999999999999999999999999999999999999")
+	if err == nil {
+		t.Fatal("expected huge patch number to be rejected")
+	}
+}
+
 func TestCalVerCompare(t *testing.T) {
 	t.Parallel()
 

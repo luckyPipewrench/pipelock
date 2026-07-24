@@ -106,6 +106,11 @@ func TestBundleErrorClassLintDetectsViolations(t *testing.T) {
 			wantNum: 1,
 		},
 		{
+			name:    "positional literal",
+			src:     "package p\nvar _ = BundleError{\"x\"}\n",
+			wantNum: 1,
+		},
+		{
 			name:    "keyed constant class is accepted",
 			src:     "package p\nvar _ = BundleError{Name: \"x\", Class: BundleErrorClassIntegrity}\n",
 			wantNum: 0,

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -221,6 +222,110 @@ func TestBuildServerStaticDir(t *testing.T) {
 	t.Cleanup(ts2.Close)
 	if _, status := httpGetStatus(t, ts2.URL+"/"); status != http.StatusNotFound {
 		t.Fatalf("GET / without --static-dir = %d, want 404", status)
+	}
+}
+
+func TestBrokerSecurityHeaders(t *testing.T) {
+	dir := t.TempDir()
+	uiDir := filepath.Join(dir, "ui")
+	if err := os.MkdirAll(uiDir, 0o750); err != nil {
+		t.Fatalf("mkdir ui: %v", err)
+	}
+	writeTestFile(t, uiDir, "index.html", "<html><body>live demo ui</body></html>")
+	writeTestFile(t, uiDir, "viewer-live.js", "window.playgroundLive = true;\n")
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return fakeProvider{}, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+		listen: defaultListen, provider: "fake", flyApp: "playground-test",
+		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
+		staticDir: uiDir, internalPort: 8080, concurrency: 2,
+		codes: []string{"outer-code"}, maxPerCode: defaultMaxPerCode,
+		gateSecretFile: gateSecretFile, ipRate: defaultIPRate, ipBurst: defaultIPBurst,
+		codeRate: defaultCodeRate, codeBurst: defaultCodeBurst,
+		globalDailyBudget: 10,
+		unsafeNoHumanGate: true,
+		sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
+		vmDailyTurnBudget:     10,
+		requireSessionSecrets: false,
+		embedOrigins:          []string{testEmbedOrigin},
+	})
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	baseURL := startHTTPTestServer(t, handler)
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "static_asset", path: "/viewer-live.js"},
+		{name: "api_live", path: livechat.RouteHealth},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := testHTTPGet(t, baseURL+tc.path)
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want 200", tc.path, resp.StatusCode)
+			}
+			assertBrokerSecurityHeaders(t, resp.Header)
+		})
+	}
+}
+
+func TestBrokerServesWASMAsApplicationWASM(t *testing.T) {
+	dir := t.TempDir()
+	uiDir := filepath.Join(dir, "ui")
+	if err := os.MkdirAll(uiDir, 0o750); err != nil {
+		t.Fatalf("mkdir ui: %v", err)
+	}
+	writeTestFile(t, uiDir, "index.html", "<html><body>live demo ui</body></html>")
+	writeTestFile(t, uiDir, "pipelock-verifier.wasm", "\x00asm\x01\x00\x00\x00")
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return fakeProvider{}, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+		listen: defaultListen, provider: "fake", flyApp: "playground-test",
+		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
+		staticDir: uiDir, internalPort: 8080, concurrency: 2,
+		codes: []string{"outer-code"}, maxPerCode: defaultMaxPerCode,
+		gateSecretFile: gateSecretFile, ipRate: defaultIPRate, ipBurst: defaultIPBurst,
+		codeRate: defaultCodeRate, codeBurst: defaultCodeBurst,
+		globalDailyBudget: 10,
+		unsafeNoHumanGate: true,
+		sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
+		vmDailyTurnBudget:     10,
+		requireSessionSecrets: false,
+	})
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	baseURL := startHTTPTestServer(t, handler)
+
+	resp := testHTTPGet(t, baseURL+"/pipelock-verifier.wasm")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET wasm status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/wasm" {
+		t.Fatalf("Content-Type = %q, want application/wasm", got)
 	}
 }
 
@@ -1428,6 +1533,80 @@ func writeTestFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+func startHTTPTestServer(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen test server: %v", err)
+	}
+	httpSrv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("test server: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(ctx)
+		<-done
+	})
+	return "http://" + ln.Addr().String()
+}
+
+func testHTTPGet(t *testing.T, rawURL string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", rawURL, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", rawURL, err)
+	}
+	return resp
+}
+
+// testEmbedOrigin is the neutral placeholder origin the header tests configure,
+// so no deployment hostname is pinned into the repo.
+const testEmbedOrigin = "https://site.example"
+
+// A broker with no configured embed origin must forbid framing outright. The
+// default has to be the closed one: an operator who never thought about
+// embedding should not ship a frameable page.
+func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
+	got := brokerContentSecurityPolicy(nil)
+	if !strings.Contains(got, "frame-ancestors 'none'") {
+		t.Fatalf("CSP with no embed origins = %q, want frame-ancestors 'none'", got)
+	}
+	withOrigin := brokerContentSecurityPolicy([]string{testEmbedOrigin, "https://www.site.example"})
+	if !strings.Contains(withOrigin, "frame-ancestors https://site.example https://www.site.example;") {
+		t.Fatalf("CSP with embed origins = %q, want both origins in frame-ancestors", withOrigin)
+	}
+}
+
+func assertBrokerSecurityHeaders(t *testing.T, h http.Header) {
+	t.Helper()
+	want := map[string]string{
+		"Content-Security-Policy":   brokerContentSecurityPolicy([]string{testEmbedOrigin}),
+		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+		"X-Content-Type-Options":    "nosniff",
+		"Referrer-Policy":           "strict-origin-when-cross-origin",
+		"Permissions-Policy":        "camera=(), microphone=(), geolocation=()",
+	}
+	for name, value := range want {
+		if got := h.Get(name); got != value {
+			t.Fatalf("%s = %q, want %q", name, got, value)
+		}
+	}
+	if got := h.Get("X-Frame-Options"); got != "" {
+		t.Fatalf("X-Frame-Options = %q, want unset because frame-ancestors allows the cross-origin marketing embed", got)
+	}
+}
+
 // TestBuildVMBaseEnv pins the PLAYGROUND_* env contract that the deploy
 // entrypoint (deploy/fly-playground/entrypoint.sh) consumes into serve flags. A
 // rename here without updating the entrypoint silently breaks the per-VM config,
@@ -1472,8 +1651,8 @@ func TestNoCacheStatic(t *testing.T) {
 	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Fatalf("Cache-Control = %q, want no-cache (so the viewer revalidates after a redeploy)", got)
 	}
-	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("X-Content-Type-Options = %q, want noCacheStatic to leave security headers to securityHeaders", got)
 	}
 }
 

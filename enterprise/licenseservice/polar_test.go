@@ -339,11 +339,13 @@ func TestExtractSubscriptionID(t *testing.T) {
 
 func TestPolarClient_GetSubscription(t *testing.T) {
 	tests := []struct {
-		name       string
-		statusCode int
-		body       string
-		wantErr    bool
-		wantStatus string
+		name         string
+		statusCode   int
+		body         string
+		wantErr      bool
+		wantStatus   string
+		wantAmount   int
+		wantCurrency string
 	}{
 		{
 			name:       "active subscription",
@@ -352,12 +354,16 @@ func TestPolarClient_GetSubscription(t *testing.T) {
 				"id": "sub_test123",
 				"status": "active",
 				"customer": {"email": "test@example.com", "metadata": {}},
-				"product": {"id": "prod_abc", "name": "Pro", "metadata": {"pipelock_tier": "pro"}},
-				"recurring_interval": "month",
-				"current_period_end": "2026-04-12T00:00:00Z"
-			}`,
-			wantErr:    false,
-			wantStatus: "active",
+					"product": {"id": "prod_abc", "name": "Pro", "metadata": {"pipelock_tier": "pro"}},
+					"recurring_interval": "month",
+					"amount": 2900,
+					"currency": "usd",
+					"current_period_end": "2026-04-12T00:00:00Z"
+				}`,
+			wantErr:      false,
+			wantStatus:   "active",
+			wantAmount:   2900,
+			wantCurrency: "usd",
 		},
 		{
 			name:       "404 not found",
@@ -416,6 +422,12 @@ func TestPolarClient_GetSubscription(t *testing.T) {
 			}
 			if err == nil && sub.Status != tt.wantStatus {
 				t.Errorf("GetSubscription() status = %q, want %q", sub.Status, tt.wantStatus)
+			}
+			if err == nil && sub.AmountCents != tt.wantAmount {
+				t.Errorf("GetSubscription() amount = %d, want %d", sub.AmountCents, tt.wantAmount)
+			}
+			if err == nil && sub.Currency != tt.wantCurrency {
+				t.Errorf("GetSubscription() currency = %q, want %q", sub.Currency, tt.wantCurrency)
 			}
 		})
 	}

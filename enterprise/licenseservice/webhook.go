@@ -14,10 +14,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/rs/zerolog"
 )
 
@@ -76,13 +79,16 @@ var validTiers = map[string]bool{
 // WebhookHandler processes Polar webhook events and coordinates license
 // issuance, entitlement tracking, and email delivery.
 type WebhookHandler struct {
-	cfg        *Config
-	db         *EntitlementDB
-	polar      *PolarClient
-	email      *EmailSender
-	ledger     *AuditLedger
-	privateKey ed25519.PrivateKey
-	log        zerolog.Logger
+	cfg              *Config
+	db               *EntitlementDB
+	polar            *PolarClient
+	email            *EmailSender
+	ledger           *AuditLedger
+	privateKey       ed25519.PrivateKey
+	rootPub          ed25519.PublicKey
+	intermediate     license.Intermediate
+	intermediateCert []byte
+	log              zerolog.Logger
 
 	// processMu serializes processSubscription calls to prevent concurrent
 	// webhook deliveries for the same subscription_id from double-minting.
@@ -107,15 +113,24 @@ func NewWebhookHandler(
 	privateKey ed25519.PrivateKey,
 	log zerolog.Logger,
 ) (*WebhookHandler, error) {
-	if len(cfg.IntermediateCert) > 0 {
-		certPub, err := license.ExtractIntermediatePublicKey(cfg.IntermediateCert)
-		if err != nil {
-			return nil, fmt.Errorf("parse intermediate certificate public key: %w", err)
-		}
-		signingPub, ok := privateKey.Public().(ed25519.PublicKey)
-		if !ok || !bytes.Equal(certPub, signingPub) {
-			return nil, errors.New("intermediate certificate public key does not match license signing private key")
-		}
+	rootPub, err := resolveServiceRootPublicKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.IntermediateCert) == 0 {
+		return nil, errors.New("intermediate certificate is required")
+	}
+	intermediateCert := append([]byte(nil), cfg.IntermediateCert...)
+	im, err := license.ParseAndVerifyIntermediate(intermediateCert, rootPub, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("verify intermediate certificate: %w", err)
+	}
+	signingPub, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok || !bytes.Equal(im.PublicKey(), signingPub) {
+		return nil, errors.New("intermediate certificate public key does not match license signing private key")
+	}
+	if len(cfg.SubscriptionProducts) == 0 {
+		log.Warn().Msg("SUBSCRIPTION_PRODUCTS unset; preserving legacy subscription product metadata mapping until allowlist is configured")
 	}
 
 	// Load founding count from DB to initialize the in-memory counter.
@@ -125,15 +140,48 @@ func NewWebhookHandler(
 	}
 
 	return &WebhookHandler{
-		cfg:           cfg,
-		db:            db,
-		polar:         polar,
-		email:         email,
-		ledger:        ledger,
-		privateKey:    privateKey,
-		log:           log,
-		foundingCount: count,
+		cfg:              cfg,
+		db:               db,
+		polar:            polar,
+		email:            email,
+		ledger:           ledger,
+		privateKey:       privateKey,
+		rootPub:          rootPub,
+		intermediate:     im,
+		intermediateCert: intermediateCert,
+		log:              log,
+		foundingCount:    count,
 	}, nil
+}
+
+func resolveServiceRootPublicKey(cfg *Config) (ed25519.PublicKey, error) {
+	if len(cfg.RootPublicKey) == ed25519.PublicKeySize {
+		return append(ed25519.PublicKey(nil), cfg.RootPublicKey...), nil
+	}
+	if key := license.EmbeddedPublicKey(); key != nil {
+		return key, nil
+	}
+	publicKey := strings.TrimSpace(cfg.LicensePublicKey)
+	if publicKey == "" {
+		publicKey = strings.TrimSpace(os.Getenv(license.EnvLicensePublicKey))
+	}
+	if publicKey == "" {
+		return nil, errors.New("license root public key is required (official builds embed it; dev/self-hosted builds set PIPELOCK_LICENSE_PUBLIC_KEY)")
+	}
+	parsed, err := signing.ParsePublicKey(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("parse license root public key: %w", err)
+	}
+	if len(parsed) != ed25519.PublicKeySize {
+		return nil, errors.New("license root public key has invalid size")
+	}
+	return parsed, nil
+}
+
+// IntermediateCert returns the verified root-signed intermediate certificate
+// bytes the handler accepted at startup.
+func (h *WebhookHandler) IntermediateCert() []byte {
+	return append([]byte(nil), h.intermediateCert...)
 }
 
 // HandleEvent processes a validated Polar webhook event. This is the
@@ -144,6 +192,12 @@ func NewWebhookHandler(
 //  2. Fetch current subscription state from Polar API (source of truth)
 //  3. Delegate to processSubscription for shared business logic
 func (h *WebhookHandler) HandleEvent(ctx context.Context, event *PolarWebhookEvent) error {
+	return h.HandleEventDelivery(ctx, event, "")
+}
+
+// HandleEventDelivery processes a validated Polar subscription webhook and uses
+// msgID for durable delivery dedupe when called from the HTTP webhook path.
+func (h *WebhookHandler) HandleEventDelivery(ctx context.Context, event *PolarWebhookEvent, msgID string) error {
 	subID, err := ExtractSubscriptionID(event.Data)
 	if err != nil {
 		return fmt.Errorf("extract subscription ID: %w", err)
@@ -156,6 +210,16 @@ func (h *WebhookHandler) HandleEvent(ctx context.Context, event *PolarWebhookEve
 		Str("subscription_id", subID).
 		Msg("processing webhook event")
 
+	if msgID != "" {
+		committed, err := h.db.WebhookCommitted(ctx, msgID)
+		if err != nil {
+			return fmt.Errorf("check webhook delivery: %w", err)
+		}
+		if committed {
+			return h.resendSubscriptionIfNeeded(ctx, subID)
+		}
+	}
+
 	// Fetch current subscription state from Polar (source of truth).
 	sub, err := h.polar.GetSubscription(ctx, subID)
 	if err != nil {
@@ -163,7 +227,7 @@ func (h *WebhookHandler) HandleEvent(ctx context.Context, event *PolarWebhookEve
 		return fmt.Errorf("fetch subscription from polar: %w", err)
 	}
 
-	return h.processSubscription(ctx, sub)
+	return h.processSubscriptionDelivery(ctx, sub, event.Type, msgID)
 }
 
 // processSubscription handles the core subscription logic shared by both
@@ -176,12 +240,45 @@ func (h *WebhookHandler) HandleEvent(ctx context.Context, event *PolarWebhookEve
 //  3. Load existing entitlement for idempotency comparison
 //  4. If active: mint license token, persist, attempt email delivery
 //  5. If ended: persist, send cancellation email
+//
+// isTerminalSubscriptionStatus reports whether a Polar status ends the
+// subscription, meaning the event removes entitlement rather than granting it.
+func isTerminalSubscriptionStatus(status string) bool {
+	switch status {
+	case statusCanceled, statusRevoked, statusUnpaid:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubscription) error {
+	return h.processSubscriptionDelivery(ctx, sub, "", "")
+}
+
+func (h *WebhookHandler) processSubscriptionDelivery(ctx context.Context, sub *PolarSubscription, eventType, msgID string) error {
 	h.processMu.Lock()
 	defer h.processMu.Unlock()
 
 	ent, err := h.subscriptionToEntitlement(sub)
 	if err != nil {
+		// Refusing to GRANT on a product we cannot map is correct. Refusing to
+		// process the END of one is not: a cancellation or revocation that
+		// cannot be recorded leaves the local entitlement sitting active, which
+		// is the wrong direction to fail. Terminal events are processed from
+		// the stored entitlement so revocation always lands, while any active
+		// event on an unmappable product is still rejected below.
+		if isTerminalSubscriptionStatus(sub.Status) {
+			existing, loadErr := h.db.GetBySubscriptionID(ctx, sub.ID)
+			if loadErr != nil {
+				return fmt.Errorf("load existing entitlement for terminal event: %w", loadErr)
+			}
+			if existing != nil {
+				terminal := *existing
+				terminal.Status = sub.Status
+				return h.handleEnded(ctx, &terminal, existing, eventType, msgID)
+			}
+		}
 		_ = h.ledger.LogError(sub.ID, "map subscription to entitlement", err)
 		return fmt.Errorf("map subscription: %w", err)
 	}
@@ -199,9 +296,9 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 
 	switch sub.Status {
 	case statusActive:
-		return h.handleActive(ctx, ent, existing)
+		return h.handleActiveDelivery(ctx, ent, existing, eventType, msgID)
 	case statusCanceled, statusRevoked, statusUnpaid:
-		return h.handleEnded(ctx, ent, existing)
+		return h.handleEnded(ctx, ent, existing, eventType, msgID)
 	default:
 		h.log.Warn().
 			Str("subscription_id", sub.ID).
@@ -221,13 +318,17 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 			ent.LastDeliveryAttemptAt = existing.LastDeliveryAttemptAt
 			ent.NextRefreshAt = existing.NextRefreshAt
 		}
-		return h.db.Upsert(ctx, ent)
+		return h.db.UpsertWithWebhook(ctx, ent, msgID, eventType)
 	}
 }
 
 // handleActive processes an active subscription: checks idempotency,
 // mints a license if needed, persists state, then attempts email delivery.
 func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, existing *Entitlement) error {
+	return h.handleActiveDelivery(ctx, ent, existing, "", "")
+}
+
+func (h *WebhookHandler) handleActiveDelivery(ctx context.Context, ent *Entitlement, existing *Entitlement, eventType, msgID string) error {
 	if existing != nil && isTerminalEntitlementStatus(existing.Status) {
 		err := fmt.Errorf("%w: subscription %s status %s", ErrTerminalEntitlement, ent.SubscriptionID, existing.Status)
 		h.log.Warn().
@@ -267,12 +368,17 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 		h.log.Info().
 			Str("subscription_id", ent.SubscriptionID).
 			Msg("idempotent: license state unchanged, persisting metadata only")
-		return h.db.Upsert(ctx, ent)
+		return h.db.UpsertWithWebhook(ctx, ent, msgID, eventType)
 	}
 
 	// Mint a new license token.
 	now := time.Now()
-	expiresAt := now.Add(h.tokenLifetimeForTier(ent.Tier))
+	im, err := h.verifiedIntermediateAt(now)
+	if err != nil {
+		_ = h.ledger.LogError(ent.SubscriptionID, "verify intermediate before issue", err)
+		return fmt.Errorf("verify intermediate before issue: %w", err)
+	}
+	expiresAt := h.clampedTokenExpiry(now, h.tokenLifetimeForTier(ent.Tier), im)
 
 	idBytes := make([]byte, 6) // 6 bytes = 12 hex chars
 	if _, err := rand.Read(idBytes); err != nil {
@@ -322,12 +428,12 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	deliveryAttempt := now
 	ent.LastDeliveryAttemptAt = &deliveryAttempt
 
-	if err := h.db.UpsertWithLicenseIssuance(ctx, ent, LicenseIssuance{
+	if err := h.db.UpsertWithLicenseIssuanceAndWebhook(ctx, ent, LicenseIssuance{
 		LicenseID:      lic.ID,
 		SubscriptionID: ent.SubscriptionID,
 		ExpiresAt:      expiresAt,
 		IssuedAt:       now,
-	}); err != nil {
+	}, msgID, eventType); err != nil {
 		if errors.Is(err, ErrTerminalEntitlement) {
 			h.log.Warn().
 				Err(err).
@@ -342,20 +448,8 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	_ = h.ledger.LogLicenseIssued(ent.SubscriptionID, ent.CustomerEmail, lic.ID, ent.Tier, expiresAt)
 
 	// Attempt email delivery, update delivery status after.
-	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, ent.Tier, string(h.cfg.IntermediateCert))
-	if emailErr != nil {
-		h.log.Error().Err(emailErr).
-			Str("subscription_id", ent.SubscriptionID).
-			Msg("email delivery failed")
-		if err := h.db.UpdateDeliveryStatus(ctx, ent.SubscriptionID, "failed", now); err != nil {
-			return fmt.Errorf("update delivery status after email failure: %w", err)
-		}
-		_ = h.ledger.LogEmailFailed(ent.SubscriptionID, ent.CustomerEmail, emailErr)
-	} else {
-		if err := h.db.UpdateDeliveryStatus(ctx, ent.SubscriptionID, "sent", now); err != nil {
-			return fmt.Errorf("update delivery status after email success: %w", err)
-		}
-		_ = h.ledger.LogEmailSent(ent.SubscriptionID, ent.CustomerEmail, msgID)
+	if err := h.deliverLicenseEmail(ctx, ent, token, ent.Tier, now); err != nil {
+		return err
 	}
 
 	h.log.Info().
@@ -367,8 +461,104 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	return nil
 }
 
-// handleEnded processes a canceled/revoked/unpaid subscription.
-func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, existing *Entitlement) error {
+func (h *WebhookHandler) verifiedIntermediateAt(now time.Time) (license.Intermediate, error) {
+	im, err := license.ParseAndVerifyIntermediate(h.intermediateCert, h.rootPub, now)
+	if err != nil {
+		return license.Intermediate{}, err
+	}
+	if !bytes.Equal(im.PublicKey(), h.intermediate.PublicKey()) || im.Serial() != h.intermediate.Serial() {
+		return license.Intermediate{}, errors.New("intermediate certificate changed since startup")
+	}
+	return im, nil
+}
+
+func (h *WebhookHandler) clampedTokenExpiry(now time.Time, lifetime time.Duration, im license.Intermediate) time.Time {
+	expiresAt := now.Add(lifetime)
+	imNotAfter := time.Unix(im.Payload.NotAfter, 0).UTC()
+	if expiresAt.After(imNotAfter) {
+		return imNotAfter
+	}
+	return expiresAt
+}
+
+func (h *WebhookHandler) resendSubscriptionIfNeeded(ctx context.Context, subID string) error {
+	ent, err := h.db.GetBySubscriptionID(ctx, subID)
+	if err != nil {
+		return fmt.Errorf("load entitlement for resend: %w", err)
+	}
+	if ent == nil || ent.LastLicenseID == "" || ent.LastDeliveryStatus == "sent" {
+		return nil
+	}
+	// A replayed webhook reaches this path from the already-committed branch,
+	// which skips the Polar re-fetch and reads only local state. Without these
+	// guards a redelivery arriving after cancellation, or after the token has
+	// expired, would re-send a paid license to someone no longer entitled to
+	// it. Retry delivery only while the entitlement is still active and the
+	// token it would resend is still valid.
+	if ent.Status != statusActive {
+		return nil
+	}
+	if ent.LastLicenseExpiresAt == nil || !time.Now().Before(*ent.LastLicenseExpiresAt) {
+		return nil
+	}
+	token, err := h.regenerateToken(ent)
+	if err != nil {
+		return err
+	}
+	return h.deliverLicenseEmail(ctx, ent, token, ent.LastLicenseTier, time.Now())
+}
+
+// deliverLicenseEmail sends a license token and records the outcome in both the
+// entitlement's delivery status and the audit ledger. Both the first-issue path
+// and the redelivery path run this same sequence, and it is security-and-audit
+// relevant, so it lives in one place: a future change (a retry limit, another
+// audit field) must not be able to land on one path and miss the other.
+func (h *WebhookHandler) deliverLicenseEmail(ctx context.Context, ent *Entitlement, token, tier string, now time.Time) error {
+	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, tier, string(h.intermediateCert))
+	if emailErr != nil {
+		h.log.Error().Err(emailErr).
+			Str("subscription_id", ent.SubscriptionID).
+			Msg("email delivery failed")
+		if err := h.db.UpdateDeliveryStatus(ctx, ent.SubscriptionID, "failed", now); err != nil {
+			return fmt.Errorf("update delivery status after email failure: %w", err)
+		}
+		_ = h.ledger.LogEmailFailed(ent.SubscriptionID, ent.CustomerEmail, emailErr)
+		return nil
+	}
+	if err := h.db.UpdateDeliveryStatus(ctx, ent.SubscriptionID, "sent", now); err != nil {
+		return fmt.Errorf("update delivery status after email success: %w", err)
+	}
+	_ = h.ledger.LogEmailSent(ent.SubscriptionID, ent.CustomerEmail, msgID)
+	return nil
+}
+
+func (h *WebhookHandler) regenerateToken(ent *Entitlement) (string, error) {
+	if ent.LastLicenseIssuedAt == nil || ent.LastLicenseExpiresAt == nil {
+		return "", errors.New("cannot regenerate token without persisted issue and expiry timestamps")
+	}
+	lic := license.License{
+		ID:             ent.LastLicenseID,
+		Email:          ent.CustomerEmail,
+		Org:            ent.Org,
+		IssuedAt:       ent.LastLicenseIssuedAt.Unix(),
+		ExpiresAt:      ent.LastLicenseExpiresAt.Unix(),
+		Features:       h.tierToFeatures(ent.LastLicenseTier),
+		Tier:           ent.LastLicenseTier,
+		SubscriptionID: ent.SubscriptionID,
+	}
+	token, err := license.Issue(lic, h.privateKey)
+	if err != nil {
+		return "", fmt.Errorf("regenerate license token: %w", err)
+	}
+	return token, nil
+}
+
+// handleEnded processes a canceled/revoked/unpaid subscription. The terminal
+// entitlement state and the webhook delivery marker are persisted in one
+// transaction, before any non-idempotent side effect, so a crash between them
+// cannot leave the subscription ended while the marker is absent and a Polar
+// redelivery reprocesses the same terminal event.
+func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, existing *Entitlement, eventType, msgID string) error {
 	// Clear the refresh schedule.
 	ent.NextRefreshAt = nil
 
@@ -387,8 +577,9 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 		ent.LastDeliveryAttemptAt = existing.LastDeliveryAttemptAt
 	}
 
-	// Upsert the entitlement to record the ended status.
-	if err := h.db.Upsert(ctx, ent); err != nil {
+	// Upsert the entitlement to record the ended status, committing the webhook
+	// marker in the same transaction when this came from a delivery.
+	if err := h.db.UpsertWithWebhook(ctx, ent, msgID, eventType); err != nil {
 		return fmt.Errorf("persist ended entitlement: %w", err)
 	}
 
@@ -799,6 +990,30 @@ func (h *WebhookHandler) subscriptionToEntitlement(sub *PolarSubscription) (*Ent
 // Rejects products with missing or unrecognized tier values to prevent
 // misconfigured products from silently granting paid features.
 func (h *WebhookHandler) mapProductToTier(sub *PolarSubscription) (tier string, founding bool, err error) {
+	if len(h.cfg.SubscriptionProducts) > 0 {
+		product, ok := h.subscriptionProduct(sub.Product.ID)
+		if !ok {
+			return "", false, fmt.Errorf("subscription product %s is not allowlisted", sub.Product.ID)
+		}
+		if sub.Product.Metadata["pipelock_tier"] != product.Tier {
+			return "", false, fmt.Errorf("subscription product %s tier metadata %q does not match allowlist tier %q",
+				sub.Product.ID, sub.Product.Metadata["pipelock_tier"], product.Tier)
+		}
+		if sub.RecurringInterval != product.Interval {
+			return "", false, fmt.Errorf("subscription product %s interval %q does not match allowlist interval %q",
+				sub.Product.ID, sub.RecurringInterval, product.Interval)
+		}
+		if sub.AmountCents != product.AmountCents {
+			return "", false, fmt.Errorf("subscription product %s amount %d does not match allowlist amount %d",
+				sub.Product.ID, sub.AmountCents, product.AmountCents)
+		}
+		if strings.ToLower(sub.Currency) != product.Currency {
+			return "", false, fmt.Errorf("subscription product %s currency %q does not match allowlist currency %q",
+				sub.Product.ID, sub.Currency, product.Currency)
+		}
+		return product.Tier, product.Tier == tierFoundingPro, nil
+	}
+
 	t, ok := sub.Product.Metadata["pipelock_tier"]
 	if !ok {
 		return "", false, fmt.Errorf("product %s (%s) has no pipelock_tier metadata",
@@ -812,6 +1027,15 @@ func (h *WebhookHandler) mapProductToTier(sub *PolarSubscription) (tier string, 
 
 	founding = t == tierFoundingPro
 	return t, founding, nil
+}
+
+func (h *WebhookHandler) subscriptionProduct(productID string) (SubscriptionProductConfig, bool) {
+	for _, product := range h.cfg.SubscriptionProducts {
+		if product.ProductID == productID {
+			return product, true
+		}
+	}
+	return SubscriptionProductConfig{}, false
 }
 
 // tierToFeatures returns the feature list for a given tier.

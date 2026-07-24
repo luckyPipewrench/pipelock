@@ -198,6 +198,52 @@ func TestLoadConfig_EvalInvalidAmount(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_SubscriptionProductsConfigured(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("SUBSCRIPTION_PRODUCTS", "prod_pro:pro:month:2900:USD, prod_ent:enterprise:year:990000:usd")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.SubscriptionProducts) != 2 {
+		t.Fatalf("SubscriptionProducts = %v, want 2 entries", cfg.SubscriptionProducts)
+	}
+	if got := cfg.SubscriptionProducts[0]; got.ProductID != "prod_pro" || got.Tier != tierPro || got.Interval != testIntervalMonth || got.AmountCents != 2900 || got.Currency != "usd" {
+		t.Fatalf("first SubscriptionProduct = %+v", got)
+	}
+}
+
+func TestLoadConfig_SubscriptionProductsRejectMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+	}{
+		{name: "missing fields", env: "prod_only"},
+		{name: "bad amount", env: "prod_pro:pro:month:not-money:usd"},
+		{name: "invalid tier", env: "prod_eval:enterprise_eval:month:500000:usd"},
+		{name: "missing interval", env: "prod_pro:pro::2900:usd"},
+		{name: "missing currency", env: "prod_pro:pro:month:2900:"},
+		{name: "empty product id", env: ":pro:month:2900:usd"},
+		{name: "zero amount", env: "prod_pro:pro:month:0:usd"},
+		{name: "negative amount", env: "prod_pro:pro:month:-2900:usd"},
+		// trial and enterprise_eval are one-time purchases handled by the order
+		// path, so they must not be accepted as recurring subscription products.
+		{name: "one-time trial tier", env: "prod_trial:trial:month:4900:usd"},
+		{name: "unknown tier", env: "prod_x:platinum:month:2900:usd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			t.Setenv("SUBSCRIPTION_PRODUCTS", tt.env)
+			if _, err := LoadConfig(); err == nil {
+				t.Fatal("expected malformed SUBSCRIPTION_PRODUCTS to fail config load")
+			}
+		})
+	}
+}
+
 func TestLoadConfig_ZeroFoundingCap(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("FOUNDING_PRO_CAP", "0")

@@ -56,6 +56,8 @@ type PolarSubscription struct {
 	ProductName       string    `json:"product_name"`
 	CurrentPeriodEnd  time.Time `json:"current_period_end"`
 	RecurringInterval string    `json:"recurring_interval"` // "month" or "year"
+	AmountCents       int       `json:"amount"`             // recurring price in minor units when returned by Polar
+	Currency          string    `json:"currency"`           // ISO 4217, lowercase (e.g. "usd")
 
 	// Customer metadata (may contain org name).
 	Customer struct {

@@ -22,9 +22,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func writeServiceTestIntermediate(t *testing.T, intermediatePub ed25519.PublicKey) string {
+func writeServiceTestIntermediate(t *testing.T, intermediatePub ed25519.PublicKey) (string, ed25519.PublicKey) {
 	t.Helper()
-	_, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey(root): %v", err)
 	}
@@ -35,7 +35,7 @@ func writeServiceTestIntermediate(t *testing.T, intermediatePub ed25519.PublicKe
 		Algorithm: license.AlgorithmEd25519,
 		PublicKey: hex.EncodeToString(intermediatePub),
 		NotBefore: now.Add(-time.Minute).Unix(),
-		NotAfter:  now.Add(time.Hour).Unix(),
+		NotAfter:  now.Add(90 * 24 * time.Hour).Unix(),
 		IssuedAt:  now.Add(-time.Minute).Unix(),
 	}, rootPriv)
 	if err != nil {
@@ -49,7 +49,7 @@ func writeServiceTestIntermediate(t *testing.T, intermediatePub ed25519.PublicKe
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write intermediate: %v", err)
 	}
-	return path
+	return path, rootPub
 }
 
 func writeServiceTestKey(t *testing.T, name string) (ed25519.PublicKey, string) {
@@ -77,9 +77,10 @@ func setServiceRunEnv(t *testing.T, keyPath, certPath string) {
 
 func TestRun_LoadsIntermediateAndCRLKeysBeforeDatabaseOpen(t *testing.T) {
 	pub, keyPath := writeServiceTestKey(t, "token")
-	certPath := writeServiceTestIntermediate(t, pub)
+	certPath, rootPub := writeServiceTestIntermediate(t, pub)
 	_, crlKeyPath := writeServiceTestKey(t, "crl")
 	setServiceRunEnv(t, keyPath, certPath)
+	t.Setenv(license.EnvLicensePublicKey, hex.EncodeToString(rootPub))
 	t.Setenv("PIPELOCK_LICENSE_CRL_SIGNING_KEY_PATH", crlKeyPath)
 
 	err := run(zerolog.New(io.Discard))
@@ -100,8 +101,9 @@ func TestRun_LoadIntermediateFailure(t *testing.T) {
 
 func TestRun_LoadCRLSigningKeyFailure(t *testing.T) {
 	pub, keyPath := writeServiceTestKey(t, "token")
-	certPath := writeServiceTestIntermediate(t, pub)
+	certPath, rootPub := writeServiceTestIntermediate(t, pub)
 	setServiceRunEnv(t, keyPath, certPath)
+	t.Setenv(license.EnvLicensePublicKey, hex.EncodeToString(rootPub))
 	t.Setenv("PIPELOCK_LICENSE_CRL_SIGNING_KEY_PATH", filepath.Join(t.TempDir(), "missing-crl.key"))
 
 	err := run(zerolog.New(io.Discard))

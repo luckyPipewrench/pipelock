@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 // Config holds all configuration for the license service, loaded from
@@ -36,6 +38,14 @@ type Config struct {
 	// IntermediateCert is populated by cmd/license-service after loading
 	// IntermediateCertPath. It is public certificate bytes, not a secret.
 	IntermediateCert []byte
+
+	// LicensePublicKey is the dev/self-hosted fallback root public key used to
+	// verify IntermediateCert. Official builds use the embedded key first.
+	LicensePublicKey string
+
+	// RootPublicKey is the resolved root trust anchor. Tests may inject it
+	// directly; production resolves embedded key > LicensePublicKey/env.
+	RootPublicKey ed25519.PublicKey
 
 	// CRLSigningKeyPath optionally points at the root/private key used to sign
 	// dynamic CRLs. Leave empty when CRLs are signed offline and distributed as
@@ -86,6 +96,20 @@ type Config struct {
 	// EvalCurrency is the expected ISO 4217 currency (lowercase) for an eval
 	// order. Defaults to usd.
 	EvalCurrency string
+
+	// SubscriptionProducts allowlist paid recurring products by product ID. Empty
+	// preserves legacy metadata mapping with a startup warning.
+	SubscriptionProducts []SubscriptionProductConfig
+}
+
+// SubscriptionProductConfig pins a Polar subscription product to the server-side
+// commercial facts required before it can mint a token.
+type SubscriptionProductConfig struct {
+	ProductID   string
+	Tier        string
+	Interval    string
+	AmountCents int
+	Currency    string
 }
 
 const (
@@ -111,6 +135,7 @@ func LoadConfig() (*Config, error) {
 			"PIPELOCK_LICENSE_INTERMEDIATE_FILE",
 		),
 		CRLSigningKeyPath: os.Getenv("PIPELOCK_LICENSE_CRL_SIGNING_KEY_PATH"),
+		LicensePublicKey:  strings.TrimSpace(os.Getenv(license.EnvLicensePublicKey)),
 		ResendAPIKey:      os.Getenv("RESEND_API_KEY"),
 		DBPath:            envOrDefault("DB_PATH", defaultDBPath),
 		LedgerPath:        envOrDefault("LEDGER_PATH", defaultLedgerPath),
@@ -158,6 +183,29 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("EVAL_AMOUNT_CENTS must be set (>0) when EVAL_PRODUCT_IDS is configured")
 	}
 
+	cfg.SubscriptionProducts = parseSubscriptionProducts(os.Getenv("SUBSCRIPTION_PRODUCTS"))
+	for _, product := range cfg.SubscriptionProducts {
+		if product.ProductID == "" {
+			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS contains an empty product ID")
+		}
+		// enterprise_eval and trial are one-time purchases handled by the order
+		// path with its own allowlist, so they never belong here. assess is a
+		// live recurring product and must be allowlistable, or an Assess
+		// customer can never be mapped once enforcement is on.
+		if !validTiers[product.Tier] || product.Tier == tierEnterpriseEval || product.Tier == tierTrial {
+			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS product %s has invalid subscription tier %q", product.ProductID, product.Tier)
+		}
+		if product.Interval == "" {
+			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS product %s must set interval", product.ProductID)
+		}
+		if product.AmountCents <= 0 {
+			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS product %s must set positive amount_cents", product.ProductID)
+		}
+		if product.Currency == "" {
+			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS product %s must set currency", product.ProductID)
+		}
+	}
+
 	// Validate required secrets.
 	if cfg.PolarWebhookSecret == "" {
 		return nil, fmt.Errorf("POLAR_WEBHOOK_SECRET is required")
@@ -197,6 +245,36 @@ func splitAndTrim(raw string) []string {
 		if trimmed := strings.TrimSpace(p); trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	return out
+}
+
+// parseSubscriptionProducts parses:
+//
+//	product_id:tier:interval:amount_cents:currency[,product_id:...]
+func parseSubscriptionProducts(raw string) []SubscriptionProductConfig {
+	entries := splitAndTrim(raw)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]SubscriptionProductConfig, 0, len(entries))
+	for _, entry := range entries {
+		parts := strings.Split(entry, ":")
+		if len(parts) != 5 {
+			out = append(out, SubscriptionProductConfig{ProductID: strings.TrimSpace(entry)})
+			continue
+		}
+		amount, err := strconv.Atoi(strings.TrimSpace(parts[3]))
+		if err != nil {
+			amount = -1
+		}
+		out = append(out, SubscriptionProductConfig{
+			ProductID:   strings.TrimSpace(parts[0]),
+			Tier:        strings.ToLower(strings.TrimSpace(parts[1])),
+			Interval:    strings.ToLower(strings.TrimSpace(parts[2])),
+			AmountCents: amount,
+			Currency:    strings.ToLower(strings.TrimSpace(parts[4])),
+		})
 	}
 	return out
 }

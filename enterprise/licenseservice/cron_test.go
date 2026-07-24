@@ -150,6 +150,8 @@ func TestRefreshCron_RefreshOne_PolarError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	pub := priv.Public().(ed25519.PublicKey)
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 
 	// Polar mock that always returns 500.
 	errorPolar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -159,6 +161,8 @@ func TestRefreshCron_RefreshOne_PolarError(t *testing.T) {
 	defer errorPolar.Close()
 
 	cfg := &Config{
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
@@ -223,6 +227,8 @@ func TestRefreshCron_RefreshOne_CanceledSub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	pub := priv.Public().(ed25519.PublicKey)
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 
 	canceledPolar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", testContentTypeJSON)
@@ -238,6 +244,8 @@ func TestRefreshCron_RefreshOne_CanceledSub(t *testing.T) {
 	defer canceledPolar.Close()
 
 	cfg := &Config{
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
 	}

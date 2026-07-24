@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -28,13 +29,14 @@ import (
 func setAdminEnv(t *testing.T) (tokenKeyPath, crlKeyPath string, crlPub ed25519.PublicKey) {
 	t.Helper()
 	tokenPub, tokenKeyPath := writeServiceTestKey(t, "token")
-	certPath := writeServiceTestIntermediate(t, tokenPub)
+	certPath, rootPub := writeServiceTestIntermediate(t, tokenPub)
 	crlPub, crlKeyPath = writeServiceTestKey(t, "crl")
 	dir := t.TempDir()
 	t.Setenv("POLAR_WEBHOOK_SECRET", "whsec_"+"dGVzdA==")
 	t.Setenv("POLAR_API_TOKEN", "polar_"+"test")
 	t.Setenv("PIPELOCK_LICENSE_KEY_PATH", tokenKeyPath)
 	t.Setenv("PIPELOCK_LICENSE_INTERMEDIATE_FILE", certPath)
+	t.Setenv(license.EnvLicensePublicKey, hex.EncodeToString(rootPub))
 	t.Setenv("PIPELOCK_LICENSE_CRL_SIGNING_KEY_PATH", crlKeyPath)
 	t.Setenv("RESEND_API_KEY", "re_"+"test")
 	t.Setenv("DB_PATH", filepath.Join(dir, "licenses.db"))
@@ -234,7 +236,7 @@ func TestDispatchAdmin(t *testing.T) {
 func TestLoadSigningKeyHelpers(t *testing.T) {
 	t.Run("loadSigningKey_happy", func(t *testing.T) {
 		tokenPub, keyPath := writeServiceTestKey(t, "token")
-		certPath := writeServiceTestIntermediate(t, tokenPub)
+		certPath, _ := writeServiceTestIntermediate(t, tokenPub)
 		cfg := &licenseservice.Config{PrivateKeyPath: keyPath, IntermediateCertPath: certPath}
 		priv, err := loadSigningKey(cfg)
 		if err != nil {

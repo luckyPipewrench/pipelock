@@ -58,6 +58,8 @@ pipelock-playground-broker serve \
   --admin-listen 127.0.0.1:8101 \
   --admin-token-env PLAYGROUND_ADMIN_TOKEN \
   --turnstile-secret-env PLAYGROUND_TURNSTILE_SECRET \
+  --turnstile-expected-hostname playground.example.com \
+  --turnstile-action playground-session \
   --vm-model-base-url https://api.provider.example/v1 \
   --vm-model demo-model \
   --vm-model-max-steps 20 \
@@ -66,6 +68,7 @@ pipelock-playground-broker serve \
   --vm-session-ttl 30m \
   --static-dir ./dist/playground \
   --allow-origin https://playground.example.com \
+  --embed-origin https://site.example \
   --public-host playground.example.com
 ```
 

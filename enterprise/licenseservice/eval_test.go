@@ -73,11 +73,13 @@ func newEvalTestSetup(t *testing.T) *evalTestSetup {
 	}))
 	t.Cleanup(emailSrv.Close)
 
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 	cfg := &Config{
 		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "k"),
-		IntermediateCert:    testServiceIntermediateCert(t, pub),
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		ResendAPIKey:        "re_" + "test",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "l.jsonl"),
@@ -345,7 +347,10 @@ func TestHandleOrderPaid_MintedTokenVerifies(t *testing.T) {
 	}
 	// Regenerate the deterministic token from persisted claims and verify it.
 	ent, _ := s.db.GetBySubscriptionID(ctx, testEvalOrderID)
-	tok := s.handler.regenerateEvalToken(ent)
+	tok, err := s.handler.regenerateToken(ent)
+	if err != nil {
+		t.Fatalf("regenerateToken: %v", err)
+	}
 	lic, err := license.Verify(tok, s.publicKey)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)

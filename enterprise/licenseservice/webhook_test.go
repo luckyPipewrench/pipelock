@@ -40,21 +40,27 @@ type testSetup struct {
 	publicKey  ed25519.PublicKey
 }
 
-func testServiceIntermediateCert(t *testing.T, intermediatePub ed25519.PublicKey) []byte {
+func testServiceIntermediateCert(t *testing.T, intermediatePub ed25519.PublicKey) ([]byte, ed25519.PublicKey) {
 	t.Helper()
-	_, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey(root): %v", err)
 	}
 	now := time.Now().UTC()
+	data := testServiceIntermediateCertWithRoot(t, rootPriv, intermediatePub, "im_service_test", now.Add(-time.Minute), now.Add(90*24*time.Hour))
+	return data, rootPub
+}
+
+func testServiceIntermediateCertWithRoot(t *testing.T, rootPriv ed25519.PrivateKey, intermediatePub ed25519.PublicKey, serial string, notBefore, notAfter time.Time) []byte {
+	t.Helper()
 	im, err := license.SignIntermediate(license.IntermediatePayload{
-		Serial:    "im_service_test",
+		Serial:    serial,
 		Purpose:   license.PurposeLicenseSigning,
 		Algorithm: license.AlgorithmEd25519,
 		PublicKey: hex.EncodeToString(intermediatePub),
-		NotBefore: now.Add(-time.Minute).Unix(),
-		NotAfter:  now.Add(time.Hour).Unix(),
-		IssuedAt:  now.Add(-time.Minute).Unix(),
+		NotBefore: notBefore.Unix(),
+		NotAfter:  notAfter.Unix(),
+		IssuedAt:  notBefore.Unix(),
 	}, rootPriv)
 	if err != nil {
 		t.Fatalf("SignIntermediate: %v", err)
@@ -104,11 +110,13 @@ func newTestSetup(t *testing.T) *testSetup {
 	}))
 	t.Cleanup(emailSrv.Close)
 
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 	cfg := &Config{
 		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
-		IntermediateCert:    testServiceIntermediateCert(t, pub),
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		CRLPrivateKey:       crlPriv,
 		ResendAPIKey:        "re_" + "test_key",
 		DBPath:              ":memory:",
@@ -145,6 +153,32 @@ func newTestSetup(t *testing.T) *testSetup {
 		privateKey: priv,
 		publicKey:  pub,
 	}
+}
+
+func testActiveSubscription(productID, tier string) *PolarSubscription {
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            statusActive,
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+		AmountCents:       2900,
+		Currency:          "usd",
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{"org": "testcorp"}
+	sub.Product.ID = productID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": tier}
+	return sub
+}
+
+func countLicenseIssuances(t *testing.T, db *EntitlementDB, subID string) int {
+	t.Helper()
+	var count int
+	if err := db.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM license_issuances WHERE subscription_id = ?`, subID).Scan(&count); err != nil {
+		t.Fatalf("count license issuances: %v", err)
+	}
+	return count
 }
 
 func TestMapProductToTier(t *testing.T) {
@@ -234,6 +268,70 @@ func TestMapProductToTier(t *testing.T) {
 			}
 			if founding != tt.wantFound {
 				t.Errorf("founding = %v, want %v", founding, tt.wantFound)
+			}
+		})
+	}
+}
+
+func TestMapProductToTier_SubscriptionAllowlistRejectsUnknownProduct(t *testing.T) {
+	ts := newTestSetup(t)
+	ts.cfg.SubscriptionProducts = []SubscriptionProductConfig{
+		{ProductID: "prod_allowed", Tier: tierEnterprise, Interval: testIntervalMonth, AmountCents: 9900, Currency: "usd"},
+	}
+	sub := testActiveSubscription("prod_mispriced", tierEnterprise)
+	sub.AmountCents = 9900
+	sub.Currency = "usd"
+
+	_, _, err := ts.handler.mapProductToTier(sub)
+	if err == nil {
+		t.Fatal("expected non-allowlisted subscription product to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not allowlisted") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMapProductToTier_SubscriptionAllowlistUnsetPreservesMetadataMapping(t *testing.T) {
+	ts := newTestSetup(t)
+	ts.cfg.SubscriptionProducts = nil
+	sub := testActiveSubscription("prod_legacy_metadata", tierEnterprise)
+
+	tier, founding, err := ts.handler.mapProductToTier(sub)
+	if err != nil {
+		t.Fatalf("mapProductToTier: %v", err)
+	}
+	if tier != tierEnterprise {
+		t.Fatalf("tier = %q, want %q", tier, tierEnterprise)
+	}
+	if founding {
+		t.Fatal("enterprise tier should not be founding")
+	}
+}
+
+func TestMapProductToTier_SubscriptionAllowlistRequiresCommercialFacts(t *testing.T) {
+	ts := newTestSetup(t)
+	ts.cfg.SubscriptionProducts = []SubscriptionProductConfig{
+		{ProductID: testProductID, Tier: tierEnterprise, Interval: testIntervalMonth, AmountCents: 9900, Currency: "usd"},
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*PolarSubscription)
+	}{
+		{name: "tier mismatch", mutate: func(sub *PolarSubscription) { sub.Product.Metadata["pipelock_tier"] = tierPro }},
+		{name: "interval mismatch", mutate: func(sub *PolarSubscription) { sub.RecurringInterval = testIntervalYear }},
+		{name: "amount mismatch", mutate: func(sub *PolarSubscription) { sub.AmountCents = 100 }},
+		{name: "currency mismatch", mutate: func(sub *PolarSubscription) { sub.Currency = "eur" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub := testActiveSubscription(testProductID, tierEnterprise)
+			sub.AmountCents = 9900
+			sub.Currency = "usd"
+			tt.mutate(sub)
+			if _, _, err := ts.handler.mapProductToTier(sub); err == nil {
+				t.Fatal("expected allowlist mismatch to be rejected")
 			}
 		})
 	}
@@ -578,6 +676,59 @@ func TestProcessSubscription_ActiveMintsCertificate(t *testing.T) {
 	}
 }
 
+func TestProcessSubscription_ExpiryClampedToIntermediateNotAfter(t *testing.T) {
+	db := openTestDB(t)
+	ledger, _ := openTestLedger(t)
+	signingPub, signingPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(signing): %v", err)
+	}
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	notAfter := now.Add(2 * time.Hour)
+	cfg := &Config{
+		IntermediateCert:    testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_short", now.Add(-time.Minute), notAfter),
+		RootPublicKey:       rootPub,
+		FoundingProCap:      50,
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+	}
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_clamp"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	handler, err := NewWebhookHandler(
+		cfg,
+		db,
+		NewPolarClient("token", "http://localhost"),
+		&EmailSender{apiKey: "re_" + "test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL},
+		ledger,
+		signingPriv,
+		zerolog.Nop(),
+	)
+	if err != nil {
+		t.Fatalf("NewWebhookHandler: %v", err)
+	}
+
+	sub := testActiveSubscription(testProductID, tierPro)
+	if err := handler.processSubscription(t.Context(), sub); err != nil {
+		t.Fatalf("processSubscription: %v", err)
+	}
+	ent, err := db.GetBySubscriptionID(t.Context(), testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent.LastLicenseExpiresAt == nil {
+		t.Fatal("LastLicenseExpiresAt is nil")
+	}
+	if !ent.LastLicenseExpiresAt.Equal(notAfter) {
+		t.Fatalf("LastLicenseExpiresAt = %s, want intermediate NotAfter %s", ent.LastLicenseExpiresAt.UTC(), notAfter)
+	}
+}
+
 func TestProcessSubscription_CanceledClearsRefresh(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -848,6 +999,119 @@ func TestProcessSubscription_IdempotentRetriesFailedDelivery(t *testing.T) {
 	}
 }
 
+func TestHandleEventDelivery_ReplayedWebhookIDDoesNotMintTwice(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	// Deliver with a failing email sender so the entitlement is left with
+	// LastDeliveryStatus != "sent". Without that, the replay is short-circuited
+	// by the already-delivered skip and this test passes even with the
+	// webhook-ID dedupe removed, i.e. it would not test what it is named for.
+	// Leaving delivery failed makes the dedupe the only thing standing between
+	// a replayed webhook and a second mint.
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    emailSrv.Client(),
+		apiURL:    emailSrv.URL,
+	}
+
+	event := &PolarWebhookEvent{
+		Type: EventSubscriptionCreated,
+		Data: json.RawMessage(testSubscriptionJSON),
+	}
+	if err := ts.handler.HandleEventDelivery(ctx, event, "msg_subscription_replay"); err != nil {
+		t.Fatalf("HandleEventDelivery(first): %v", err)
+	}
+	first, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID(first): %v", err)
+	}
+	if first == nil || first.LastLicenseID == "" {
+		t.Fatalf("first delivery did not mint: %+v", first)
+	}
+	if err := ts.handler.HandleEventDelivery(ctx, event, "msg_subscription_replay"); err != nil {
+		t.Fatalf("HandleEventDelivery(replay): %v", err)
+	}
+	second, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID(second): %v", err)
+	}
+	if second.LastLicenseID != first.LastLicenseID {
+		t.Fatalf("replay minted a new license: first %q second %q", first.LastLicenseID, second.LastLicenseID)
+	}
+	if got := countLicenseIssuances(t, ts.db, testSubscriptionID); got != 1 {
+		t.Fatalf("license issuance count = %d, want 1", got)
+	}
+}
+
+func TestHandleEventDelivery_ReplayedWebhookRetriesFailedEmailWithoutRemint(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	failEmail := &atomic.Bool{}
+	failEmail.Store(true)
+	emailHits := &atomic.Int32{}
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		emailHits.Add(1)
+		if failEmail.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_retry"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    emailSrv.Client(),
+		apiURL:    emailSrv.URL,
+	}
+
+	event := &PolarWebhookEvent{
+		Type: EventSubscriptionCreated,
+		Data: json.RawMessage(testSubscriptionJSON),
+	}
+	if err := ts.handler.HandleEventDelivery(ctx, event, "msg_subscription_email_retry"); err != nil {
+		t.Fatalf("HandleEventDelivery(first): %v", err)
+	}
+	first, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID(first): %v", err)
+	}
+	if first.LastDeliveryStatus != "failed" {
+		t.Fatalf("first LastDeliveryStatus = %q, want failed", first.LastDeliveryStatus)
+	}
+
+	failEmail.Store(false)
+	if err := ts.handler.HandleEventDelivery(ctx, event, "msg_subscription_email_retry"); err != nil {
+		t.Fatalf("HandleEventDelivery(retry): %v", err)
+	}
+	second, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID(second): %v", err)
+	}
+	if second.LastLicenseID != first.LastLicenseID {
+		t.Fatalf("email retry minted a new license: first %q second %q", first.LastLicenseID, second.LastLicenseID)
+	}
+	if second.LastDeliveryStatus != testDeliveryStatusSent {
+		t.Fatalf("second LastDeliveryStatus = %q, want sent", second.LastDeliveryStatus)
+	}
+	if got := countLicenseIssuances(t, ts.db, testSubscriptionID); got != 1 {
+		t.Fatalf("license issuance count = %d, want 1", got)
+	}
+	if got := emailHits.Load(); got != 2 {
+		t.Fatalf("email hits = %d, want 2", got)
+	}
+}
+
 func TestProcessSubscription_RejectsUnknownTier(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -1069,8 +1333,12 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	pub := priv.Public().(ed25519.PublicKey)
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 
 	cfg := &Config{
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
@@ -1100,8 +1368,10 @@ func TestNewWebhookHandler_RejectsIntermediateSigningKeyMismatch(t *testing.T) {
 		t.Fatalf("GenerateKey(signing): %v", err)
 	}
 
+	cert, rootPub := testServiceIntermediateCert(t, certPub)
 	cfg := &Config{
-		IntermediateCert:    testServiceIntermediateCert(t, certPub),
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
@@ -1125,9 +1395,14 @@ func TestNewWebhookHandler_RejectsMalformedIntermediate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey(signing): %v", err)
 	}
+	rootPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
 
 	cfg := &Config{
 		IntermediateCert:    []byte("{bad json"),
+		RootPublicKey:       rootPub,
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
@@ -1138,8 +1413,82 @@ func TestNewWebhookHandler_RejectsMalformedIntermediate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected malformed intermediate error")
 	}
-	if !strings.Contains(err.Error(), "parse intermediate certificate public key") {
+	if !strings.Contains(err.Error(), "verify intermediate certificate") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewWebhookHandler_VerifiesIntermediateAtStartup(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name    string
+		cert    func(t *testing.T, rootPriv ed25519.PrivateKey, signingPub ed25519.PublicKey) []byte
+		root    func(goodRoot ed25519.PublicKey) ed25519.PublicKey
+		wantErr bool
+	}{
+		{
+			name: "valid",
+			cert: func(t *testing.T, rootPriv ed25519.PrivateKey, signingPub ed25519.PublicKey) []byte {
+				return testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_valid", now.Add(-time.Minute), now.Add(time.Hour))
+			},
+			root: func(goodRoot ed25519.PublicKey) ed25519.PublicKey { return goodRoot },
+		},
+		{
+			name: "expired",
+			cert: func(t *testing.T, rootPriv ed25519.PrivateKey, signingPub ed25519.PublicKey) []byte {
+				return testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_expired", now.Add(-2*time.Hour), now.Add(-time.Hour))
+			},
+			root:    func(goodRoot ed25519.PublicKey) ed25519.PublicKey { return goodRoot },
+			wantErr: true,
+		},
+		{
+			name: "wrong root",
+			cert: func(t *testing.T, rootPriv ed25519.PrivateKey, signingPub ed25519.PublicKey) []byte {
+				return testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_wrong_root", now.Add(-time.Minute), now.Add(time.Hour))
+			},
+			root: func(ed25519.PublicKey) ed25519.PublicKey {
+				wrongRoot, _, err := ed25519.GenerateKey(rand.Reader)
+				if err != nil {
+					t.Fatalf("GenerateKey(wrong root): %v", err)
+				}
+				return wrongRoot
+			},
+			wantErr: true,
+		},
+		{
+			name: "truncated",
+			cert: func(t *testing.T, rootPriv ed25519.PrivateKey, signingPub ed25519.PublicKey) []byte {
+				data := testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_truncated", now.Add(-time.Minute), now.Add(time.Hour))
+				return data[:len(data)/2]
+			},
+			root:    func(goodRoot ed25519.PublicKey) ed25519.PublicKey { return goodRoot },
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t)
+			ledger, _ := openTestLedger(t)
+			signingPub, signingPriv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatalf("GenerateKey(signing): %v", err)
+			}
+			rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatalf("GenerateKey(root): %v", err)
+			}
+			cfg := &Config{
+				IntermediateCert:    tt.cert(t, rootPriv, signingPub),
+				RootPublicKey:       tt.root(rootPub),
+				FoundingProCap:      50,
+				FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+			}
+			_, err = NewWebhookHandler(cfg, db, NewPolarClient("token", "http://localhost"), NewEmailSender("key", "from@test.com"), ledger, signingPriv, zerolog.Nop())
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewWebhookHandler() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -1661,8 +2010,12 @@ func TestNewWebhookHandler_DBError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	pub := priv.Public().(ed25519.PublicKey)
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 
 	cfg := &Config{
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}

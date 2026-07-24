@@ -71,6 +71,16 @@ const (
 	// warmPoolVMCodeBytes mirrors broker.vmInviteCodeBytes for warm-pool VM
 	// code generation. Kept in sync with the broker constant.
 	warmPoolVMCodeBytes = 18
+
+	// brokerCSPTemplate carries a %s for the frame-ancestors source list, which
+	// is deployment-specific: only the site that embeds this broker in an iframe
+	// belongs there. It defaults to 'none' and widens only for origins an
+	// operator passes with --embed-origin, so a deployment that configures
+	// nothing cannot be framed at all.
+	brokerCSPTemplate       = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors %s; script-src 'self' blob: 'wasm-unsafe-eval' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; form-action 'self'"
+	brokerHSTS              = "max-age=31536000; includeSubDomains"
+	brokerReferrerPolicy    = "strict-origin-when-cross-origin"
+	brokerPermissionsPolicy = "camera=(), microphone=(), geolocation=()"
 )
 
 type serveFlags struct {
@@ -113,6 +123,7 @@ type serveFlags struct {
 	sessionTTL                time.Duration
 	deadlineGrace             time.Duration
 	allowOrigin               string
+	embedOrigins              []string
 	publicHosts               []string
 	cfAccessTeamDomain        string
 	cfAccessAUD               string
@@ -207,6 +218,7 @@ func newServeCmd() *cobra.Command {
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
+	fl.StringArrayVar(&f.embedOrigins, "embed-origin", nil, "origin permitted to embed the broker in an iframe, as CSP frame-ancestors (repeatable); framing is forbidden when unset")
 	fl.StringArrayVar(&f.publicHosts, "public-host", nil, "allowed public Host header for the broker (repeatable); defaults to the --allow-origin host when set")
 	fl.StringVar(&f.cfAccessTeamDomain, "cf-access-team-domain", "", "Cloudflare Access team domain, e.g. https://team.cloudflareaccess.com; enables origin-side Access JWT validation when set with --cf-access-aud")
 	fl.StringVar(&f.cfAccessAUD, "cf-access-aud", "", "Cloudflare Access application AUD tag expected in Cf-Access-Jwt-Assertion")
@@ -475,6 +487,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		handler = cfAccessGuard(handler, cfAccess)
 		_, _ = fmt.Fprintf(out, "broker Cloudflare Access JWT guard enabled for %s\n", cfAccess.issuer)
 	}
+	handler = securityHeaders(handler, f.embedOrigins)
 	return srv, handler, reaper.Run, warmPool, nil
 }
 
@@ -547,6 +560,11 @@ func validateFlags(f *serveFlags) error {
 	}
 	if err := validateAllowOrigin(f.allowOrigin); err != nil {
 		return fmt.Errorf("--allow-origin: %w", err)
+	}
+	for _, origin := range f.embedOrigins {
+		if err := validateAllowOrigin(origin); err != nil {
+			return fmt.Errorf("--embed-origin %q: %w", origin, err)
+		}
 	}
 	if err := validateCFAccessFlags(f); err != nil {
 		return err
@@ -904,7 +922,7 @@ func validateAllowOrigin(raw string) error {
 		return errors.New("host is required")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
-		return errors.New("must be an origin only, like https://pipelab.org")
+		return errors.New("must be an origin only, like https://site.example")
 	}
 	return nil
 }
@@ -987,7 +1005,29 @@ func normalizePublicHost(raw string) (string, error) {
 func noCacheStatic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// brokerContentSecurityPolicy renders the CSP for the configured embed origins.
+// With none configured the policy forbids framing entirely.
+func brokerContentSecurityPolicy(embedOrigins []string) string {
+	sources := "'none'"
+	if len(embedOrigins) > 0 {
+		sources = strings.Join(embedOrigins, " ")
+	}
+	return fmt.Sprintf(brokerCSPTemplate, sources)
+}
+
+func securityHeaders(next http.Handler, embedOrigins []string) http.Handler {
+	csp := brokerContentSecurityPolicy(embedOrigins)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("Strict-Transport-Security", brokerHSTS)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", brokerReferrerPolicy)
+		h.Set("Permissions-Policy", brokerPermissionsPolicy)
 		next.ServeHTTP(w, r)
 	})
 }

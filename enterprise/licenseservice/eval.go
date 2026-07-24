@@ -113,7 +113,12 @@ func (h *WebhookHandler) HandleOrderPaidEvent(ctx context.Context, event *PolarW
 
 	// Build the license, entitlement, and issuance.
 	now := time.Now()
-	expiresAt := now.Add(evalTokenLifetime)
+	im, err := h.verifiedIntermediateAt(now)
+	if err != nil {
+		_ = h.ledger.LogError(order.ID, "verify intermediate before issue", err)
+		return fmt.Errorf("verify intermediate before issue: %w", err)
+	}
+	expiresAt := h.clampedTokenExpiry(now, evalTokenLifetime, im)
 	idBytes := make([]byte, 6) // 12 hex chars
 	if _, err := rand.Read(idBytes); err != nil {
 		return fmt.Errorf("generate license ID: %w", err)
@@ -346,29 +351,11 @@ func (h *WebhookHandler) resendEvalIfNeeded(ctx context.Context, orderID string)
 	if ent.LastDeliveryStatus == "sent" {
 		return nil
 	}
-	return h.deliverEvalToken(ctx, ent, h.regenerateEvalToken(ent))
-}
-
-// regenerateEvalToken rebuilds the exact token from persisted claims. license.Issue
-// is deterministic for identical claims + key, so the regenerated token is
-// byte-identical to the original — enabling resend without re-minting.
-func (h *WebhookHandler) regenerateEvalToken(ent *Entitlement) string {
-	lic := license.License{
-		ID:             ent.LastLicenseID,
-		Email:          ent.CustomerEmail,
-		Org:            ent.Org,
-		Features:       h.tierToFeatures(ent.LastLicenseTier),
-		Tier:           ent.LastLicenseTier,
-		SubscriptionID: ent.SubscriptionID,
+	token, err := h.regenerateToken(ent)
+	if err != nil {
+		return err
 	}
-	if ent.LastLicenseIssuedAt != nil {
-		lic.IssuedAt = ent.LastLicenseIssuedAt.Unix()
-	}
-	if ent.LastLicenseExpiresAt != nil {
-		lic.ExpiresAt = ent.LastLicenseExpiresAt.Unix()
-	}
-	token, _ := license.Issue(lic, h.privateKey)
-	return token
+	return h.deliverEvalToken(ctx, ent, token)
 }
 
 // denyEvalOrder records a refused eval order (gated_denied) without minting,

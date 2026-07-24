@@ -85,19 +85,19 @@ func NewServer(
 // handleIntermediate returns the root-signed intermediate certificate used to
 // verify tokens minted by this service.
 func (s *Server) handleIntermediate(w http.ResponseWriter, _ *http.Request) {
-	if len(s.cfg.IntermediateCert) == 0 {
+	intermediateCert := s.handler.IntermediateCert()
+	if len(intermediateCert) == 0 {
 		http.Error(w, "intermediate certificate not configured", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(s.cfg.IntermediateCert); err != nil {
+	if _, err := w.Write(intermediateCert); err != nil {
 		s.log.Error().Err(err).Msg("write intermediate certificate")
 		return
 	}
-	// The early return above guarantees IntermediateCert is non-empty here.
-	if s.cfg.IntermediateCert[len(s.cfg.IntermediateCert)-1] != '\n' {
+	if intermediateCert[len(intermediateCert)-1] != '\n' {
 		if _, err := w.Write([]byte("\n")); err != nil {
 			s.log.Error().Err(err).Msg("write intermediate certificate newline")
 		}
@@ -202,7 +202,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Process the event. Return 500 on failure so Polar retries.
 	// The idempotency logic in HandleEvent prevents duplicate processing.
-	if err := s.handler.HandleEvent(r.Context(), event); err != nil {
+	if err := s.handler.HandleEventDelivery(r.Context(), event, msgID); err != nil {
 		s.log.Error().Err(err).
 			Str("event_type", event.Type).
 			Msg("webhook processing error")

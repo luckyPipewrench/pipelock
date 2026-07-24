@@ -71,11 +71,13 @@ func newTestServer(t *testing.T) *Server {
 	t.Cleanup(emailSrv.Close)
 
 	secret := base64.StdEncoding.EncodeToString([]byte(testServerSecret))
+	cert, rootPub := testServiceIntermediateCert(t, pub)
 	cfg := &Config{
 		PolarWebhookSecret:  "whsec_" + secret,
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
-		IntermediateCert:    testServiceIntermediateCert(t, pub),
+		IntermediateCert:    cert,
+		RootPublicKey:       rootPub,
 		CRLPrivateKey:       crlPriv,
 		ResendAPIKey:        "re_" + "test_server_key",
 		DBPath:              ":memory:",
@@ -156,7 +158,7 @@ func TestServer_IntermediateEndpoint(t *testing.T) {
 	}
 }
 
-func TestServer_IntermediateEndpointMissingCert(t *testing.T) {
+func TestServer_IntermediateEndpointUsesVerifiedHandlerCopy(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfg.IntermediateCert = nil
 
@@ -164,8 +166,8 @@ func TestServer_IntermediateEndpointMissingCert(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
 	}
 }
 

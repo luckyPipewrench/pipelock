@@ -60,18 +60,31 @@ func (s *Server) reportStartupRuleBundleResult(cfg *config.Config, result *rules
 			_, _ = fmt.Fprintln(s.opts.Stderr, "pipelock: SECURITY WARNING: rules.allow_degraded=true; strict mode is booting with degraded rule-bundle integrity after explicit operator opt-in")
 		}
 	}
-	if cfg.Mode != config.ModeStrict || cfg.Rules.AllowDegraded {
+	return strictRuleBundleIntegrityError(cfg, result)
+}
+
+// strictRuleBundleIntegrityError returns a non-nil error when strict mode must
+// refuse to start because an installed bundle failed INTEGRITY verification and
+// the operator has not opted into rules.allow_degraded. It is the shared
+// fail-closed decision for every long-running runtime that merges rule bundles
+// (the main proxy server and `pipelock mcp proxy`), so a tampered installed
+// bundle cannot silently boot a strict deployment on core patterns only.
+// Availability failures (missing optional stores, transient read errors) never
+// refuse — only integrity loss does.
+func strictRuleBundleIntegrityError(cfg *config.Config, result *rules.LoadResult) error {
+	if result == nil || cfg.Mode != config.ModeStrict || cfg.Rules.AllowDegraded {
 		return nil
 	}
-	if integrityErrs := result.IntegrityErrors(); len(integrityErrs) > 0 {
-		details := make([]string, 0, len(integrityErrs))
-		for _, e := range integrityErrs {
-			details = append(details, fmt.Sprintf("%s: %s", e.Name, e.Reason))
-		}
-		return fmt.Errorf("rule bundle integrity failure in strict mode: %s (verify or reinstall the bundle(s), or set rules.allow_degraded: true only as an emergency override)",
-			strings.Join(details, "; "))
+	integrityErrs := result.IntegrityErrors()
+	if len(integrityErrs) == 0 {
+		return nil
 	}
-	return nil
+	details := make([]string, 0, len(integrityErrs))
+	for _, e := range integrityErrs {
+		details = append(details, fmt.Sprintf("%s: %s", e.Name, e.Reason))
+	}
+	return fmt.Errorf("rule bundle integrity failure in strict mode: %s (verify or reinstall the bundle(s), or set rules.allow_degraded: true only as an emergency override)",
+		strings.Join(details, "; "))
 }
 
 func reportReloadRuleBundleResult(stderr io.Writer, logger ruleBundleAuditLogger, cfg *config.Config, result *rules.LoadResult) {

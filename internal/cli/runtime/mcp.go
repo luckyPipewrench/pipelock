@@ -822,6 +822,13 @@ Key-free evidence capture:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
+			// Fail closed in strict mode on installed-bundle integrity loss,
+			// matching the main proxy server's startup path. Without this a
+			// strict `mcp proxy` would silently boot on core patterns only when
+			// a tampered bundle failed verification.
+			if err := strictRuleBundleIntegrityError(cfg, bundleResult); err != nil {
+				return err
+			}
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
 			// Rebuild scanner with the (possibly modified) resolved config.

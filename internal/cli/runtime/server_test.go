@@ -1973,7 +1973,8 @@ func TestReportStartupRuleBundleResultAggregatesStrictIntegrityFailures(t *testi
 			{Name: "bundle-a", Reason: "hash mismatch", Class: rules.BundleErrorClassIntegrity},
 			{Name: "bundle-b", Reason: "expired", Class: rules.BundleErrorClassIntegrity},
 			{Name: "bundle-c", Reason: "requires future feature", Class: rules.BundleErrorClassAvailability},
-			// Zero-value classes preserve older availability semantics.
+			// An unclassified (zero-value) class now defaults to integrity so it
+			// fails CLOSED in strict startup instead of silently booting degraded.
 			{Name: "bundle-legacy", Reason: "legacy zero-value class"},
 		},
 		Degraded: true,
@@ -1984,15 +1985,14 @@ func TestReportStartupRuleBundleResultAggregatesStrictIntegrityFailures(t *testi
 		t.Fatal("strict startup should reject integrity failures")
 	}
 	msg := err.Error()
-	for _, want := range []string{"bundle-a: hash mismatch", "bundle-b: expired"} {
+	for _, want := range []string{"bundle-a: hash mismatch", "bundle-b: expired", "bundle-legacy: legacy zero-value class"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error = %q, want %q", msg, want)
 		}
 	}
-	for _, wantNot := range []string{"bundle-c", "bundle-legacy"} {
-		if strings.Contains(msg, wantNot) {
-			t.Fatalf("error = %q, should not include availability-only failure %q", msg, wantNot)
-		}
+	// Only the explicitly-availability failure must be tolerated in strict mode.
+	if strings.Contains(msg, "bundle-c") {
+		t.Fatalf("error = %q, should not include availability-only failure %q", msg, "bundle-c")
 	}
 	if got := cfg.Rules.DegradedBundles; !reflect.DeepEqual(got, []string{"bundle-a", "bundle-b", "bundle-c", "bundle-legacy"}) {
 		t.Fatalf("degraded bundles = %+v, want all degraded names", got)

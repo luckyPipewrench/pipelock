@@ -326,7 +326,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	// permissions and takes precedence over any token or OIDC principal on the
 	// same request.
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		clientCertAuth, authorization.metaAuthorized, authorization.rawAuthorized,
+		clientCertAuth, authorization.metaAuthorized, authorization.authorizePermission, authorization.rawAuthorized,
 	)
 	authenticated := metaAuthorized
 

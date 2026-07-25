@@ -193,6 +193,7 @@ func (a *dashboardClientCertAuthorizer) authorizeRaw(r *http.Request) error {
 func dashboardClientCertAuthorizers(
 	clientCertAuth *dashboardClientCertAuthorizer,
 	tokenMetaAuthorized func(*http.Request) bool,
+	tokenAuthorizePermission func(*http.Request, dashboard.Permission) error,
 	tokenRawAuthorized func(*http.Request) bool,
 ) (
 	func(*http.Request) bool,
@@ -217,10 +218,16 @@ func dashboardClientCertAuthorizers(
 		}
 		return tokenRawAuthorized(r)
 	}
-	tokenAuthorizePermission := dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized)
+	// The caller supplies the permission authorizer so an OIDC principal's mapped
+	// role decides route permissions. Deriving it here from the metadata/raw
+	// booleans alone would grant every metadata-tier permission to any
+	// authenticated principal, ignoring the configured role map.
 	authorizePermission := func(r *http.Request, permission dashboard.Permission) error {
 		if clientCertAuth != nil {
 			return clientCertAuth.authorizePermission(r, permission)
+		}
+		if tokenAuthorizePermission == nil {
+			return errors.New("dashboard permission authorizer is not configured")
 		}
 		return tokenAuthorizePermission(r, permission)
 	}

@@ -1785,8 +1785,7 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 			parseErr = fmt.Errorf("managed catch-all DROP rule has malformed quoted rule content: %s", oneLine(line))
 			break
 		}
-		if parseErr != nil ||
-			!strings.Contains(line, `log prefix "`+nftLogPrefix(EgressClassNotRoutingThroughPipelock)+` "`) {
+		if !strings.Contains(line, `log prefix "`+nftLogPrefix(EgressClassNotRoutingThroughPipelock)+` "`) {
 			continue
 		}
 

@@ -23,6 +23,7 @@ import (
 
 type dashboardConductorReadClient interface {
 	ListFollowers(ctx context.Context, orgID, fleetID string, limit int) ([]byte, error)
+	ReplayDecision(ctx context.Context, orgID, fleetID, artifactHash string) ([]byte, bool, error)
 }
 
 type dashboardConductorSource struct {
@@ -143,6 +144,30 @@ func (s *dashboardConductorSource) ListFleetFollowers(ctx context.Context, orgID
 	return page, nil
 }
 
+func (s *dashboardConductorSource) ReplayDecision(ctx context.Context, scope dashboard.DecisionScope) (dashboard.DecisionReplayView, bool, error) {
+	if s == nil || s.client == nil {
+		return dashboard.DecisionReplayView{}, false, errors.New("conductor source is nil")
+	}
+	scope.OrgID = strings.TrimSpace(scope.OrgID)
+	scope.FleetID = strings.TrimSpace(scope.FleetID)
+	scope.ArtifactHash = strings.TrimSpace(scope.ArtifactHash)
+	if err := validateDashboardConductorFleetScope(scope.OrgID, scope.FleetID, s.orgID, s.fleet); err != nil {
+		return dashboard.DecisionReplayView{}, false, err
+	}
+	if scope.ArtifactHash == "" {
+		return dashboard.DecisionReplayView{}, false, errors.New("artifact hash is required")
+	}
+	body, found, err := s.client.ReplayDecision(ctx, scope.OrgID, scope.FleetID, scope.ArtifactHash)
+	if err != nil || !found {
+		return dashboard.DecisionReplayView{}, found, err
+	}
+	view, err := dashboardDecisionReplayView(body, scope.ArtifactHash)
+	if err != nil {
+		return dashboard.DecisionReplayView{}, false, err
+	}
+	return view, true, nil
+}
+
 func applyConductorCompleteness(page *dashboard.FleetFollowerPage, resp dashboardConductorFollowersResponse, limit int) error {
 	if resp.HasMore != nil && resp.Complete != nil {
 		return errors.New("conductor followers response has conflicting completeness fields")
@@ -251,6 +276,65 @@ func dashboardFollowerView(f controlplane.FollowerFleetStatus) dashboard.FleetFo
 		view.LastApplyErrorMessage = applied.LastApplyErrorMessage
 	}
 	return view
+}
+
+func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.DecisionReplayView, error) {
+	var result controlplane.DecisionReplayResult
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&result); err != nil {
+		return dashboard.DecisionReplayView{}, fmt.Errorf("decode conductor decision replay response: %w", err)
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return dashboard.DecisionReplayView{}, errors.New("decode conductor decision replay response: trailing JSON data")
+	}
+	if !strings.EqualFold(result.ArtifactHash, strings.TrimSpace(requestedHash)) {
+		return dashboard.DecisionReplayView{}, fmt.Errorf("conductor replay response artifact_hash=%q does not match requested artifact hash", result.ArtifactHash)
+	}
+	if result.Recorded == nil || !result.Recorded.Present {
+		return dashboard.DecisionReplayView{}, errors.New("conductor replay response did not include a recorded decision")
+	}
+	view := dashboard.DecisionReplayView{
+		ActionKind:        result.ActionKind,
+		ArtifactHash:      result.ArtifactHash,
+		UsedStateSnapshot: result.UsedStateSnapshot,
+		ReplayedAt:        result.ReplayedAt,
+		Divergence:        result.Divergence,
+		DivergenceReason:  result.DivergenceReason,
+		RecordedPresent:   result.Recorded.Present,
+		RecordedAccepted:  result.Recorded.Accepted,
+		RecordedHash:      result.Recorded.RecordedHash,
+		RecordedAt:        result.Recorded.PublishedAt,
+	}
+	switch result.ActionKind {
+	case "publish":
+		if result.PublishEvaluation == nil || result.RemoteKill != nil || result.Rollback != nil {
+			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid publish evaluation shape")
+		}
+		view.Valid = result.PublishEvaluation.Valid
+		view.Conflict = result.PublishEvaluation.Conflict
+		view.ResultVersion = result.PublishEvaluation.ResultVersion
+		view.ResultHash = result.PublishEvaluation.ResultHash
+	case "remote_kill":
+		if result.RemoteKill == nil || result.PublishEvaluation != nil || result.Rollback != nil {
+			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid remote-kill evaluation shape")
+		}
+		view.Valid = result.RemoteKill.Valid
+		view.Conflict = result.RemoteKill.Conflict
+		view.ResultVersion = result.RemoteKill.Counter
+		view.ResultHash = result.RemoteKill.MessageHash
+	case "rollback":
+		if result.Rollback == nil || result.PublishEvaluation != nil || result.RemoteKill != nil {
+			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid rollback evaluation shape")
+		}
+		view.Valid = result.Rollback.Valid
+		view.Conflict = result.Rollback.Conflict
+		view.ResultVersion = result.Rollback.WouldRollToVersion
+		view.ResultHash = result.Rollback.WouldRollToHash
+	default:
+		return dashboard.DecisionReplayView{}, fmt.Errorf("conductor replay response action_kind=%q is unsupported", result.ActionKind)
+	}
+	return view, nil
 }
 
 func dashboardConductorFleetScopeAuthorizer(orgID, fleetID string) func(*http.Request, dashboard.DecisionScope, bool) error {

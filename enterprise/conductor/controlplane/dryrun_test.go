@@ -370,6 +370,12 @@ func newDryRunTestHandler(t *testing.T, store BundleStore, emergency EmergencySt
 			}
 			return nil
 		},
+		AuthorizeStream: func(r *http.Request, q StreamStatusQuery) error {
+			if r.Header.Get("X-Pipelock-Stream") != "ok" || q.OrgID != "org-main" || q.FleetID != "prod" {
+				return ErrStreamStatusForbidden
+			}
+			return nil
+		},
 		EmergencyControls: emergency,
 		EmergencyKeys:     emergencyKeys,
 	})
@@ -1120,6 +1126,130 @@ func decodeReplay(t *testing.T, w *httptest.ResponseRecorder) DecisionReplayResu
 		t.Fatalf("decode replay result: %v (body=%s)", err, w.Body.String())
 	}
 	return result
+}
+
+func replayByHashJSON(t *testing.T, handler *Handler, artifactHash string, stream bool) *httptest.ResponseRecorder {
+	t.Helper()
+	target := DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + artifactHash
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if stream {
+		r.Header.Set("X-Pipelock-Stream", "ok")
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	return w
+}
+
+func TestReplayByHashPublish_RecordedMatchesRederived_NoDivergence(t *testing.T) {
+	store := mustStore(t)
+	handler := newDryRunTestHandler(t, store, nil, nil)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id: "bundle-replay-by-hash-1", version: 1, audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	record, created, err := store.Publish(context.Background(), bundle, PublishOptions{Now: testNow})
+	if err != nil || !created {
+		t.Fatalf("seed publish created=%v err=%v, want created", created, err)
+	}
+
+	w := replayByHashJSON(t, handler, record.BundleHash, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("replay by hash code=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	result := decodeReplay(t, w)
+	if result.ActionKind != actionKindPublish || result.ArtifactHash != record.BundleHash {
+		t.Fatalf("replay by hash action/hash = %s/%s, want publish/%s", result.ActionKind, result.ArtifactHash, record.BundleHash)
+	}
+	if result.Recorded == nil || !result.Recorded.Accepted {
+		t.Fatalf("replay by hash recorded=%+v, want present+accepted", result.Recorded)
+	}
+	if result.PublishEvaluation == nil || !result.PublishEvaluation.Valid || result.Divergence {
+		t.Fatalf("replay by hash result=%+v, eval=%+v, want valid no divergence", result, result.PublishEvaluation)
+	}
+}
+
+func TestReplayByHashRemoteKill_RecordedMatchesRederived_NoAdminRequired(t *testing.T) {
+	msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-by-hash", 1, conductor.KillSwitchActive, testNow)
+	emergency := mustEmergencyStore(t)
+	record, created, err := emergency.PublishRemoteKill(context.Background(), msg, testNow)
+	if err != nil || !created {
+		t.Fatalf("seed remote kill created=%v err=%v, want created", created, err)
+	}
+	handler := newDryRunTestHandler(t, nil, emergency, resolver)
+
+	w := replayByHashJSON(t, handler, record.MessageHash, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("remote-kill replay by hash code=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	result := decodeReplay(t, w)
+	if result.ActionKind != actionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
+		t.Fatalf("remote-kill replay by hash result=%+v, want valid remote_kill", result)
+	}
+}
+
+func TestReplayByHashFailsClosed(t *testing.T) {
+	store := mustStore(t)
+	handler := newDryRunTestHandler(t, store, nil, nil)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id: "bundle-replay-by-hash-fail", version: 1, audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	record, created, err := store.Publish(context.Background(), bundle, PublishOptions{Now: testNow})
+	if err != nil || !created {
+		t.Fatalf("seed publish created=%v err=%v, want created", created, err)
+	}
+	tests := []struct {
+		name       string
+		target     string
+		streamAuth bool
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "auth required before lookup",
+			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + record.BundleHash,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "unknown hash is not found",
+			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + strings.Repeat("b", 64),
+			streamAuth: true,
+			wantStatus: http.StatusNotFound,
+			wantBody:   ErrDecisionReplayArtifactNotFound.Error(),
+		},
+		{
+			name:       "scope mismatch is not found",
+			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=staging&artifact_hash=" + record.BundleHash,
+			streamAuth: true,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "bad artifact hash rejected",
+			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=sha256:abc123",
+			streamAuth: true,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown query parameter rejected",
+			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + record.BundleHash + "&payload=true",
+			streamAuth: true,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.target, nil)
+			if tc.streamAuth {
+				req.Header.Set("X-Pipelock-Stream", "ok")
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("code=%d body=%s, want %d", w.Code, w.Body.String(), tc.wantStatus)
+			}
+			if tc.wantBody != "" && !strings.Contains(w.Body.String(), tc.wantBody) {
+				t.Fatalf("body=%s, want %q", w.Body.String(), tc.wantBody)
+			}
+		})
+	}
 }
 
 func TestReplayPublish_RecordedMatchesRederived_NoDivergence(t *testing.T) {

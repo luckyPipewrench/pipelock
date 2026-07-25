@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 )
 
 // selfSignedTLS produces a self-signed leaf certificate for 127.0.0.1 plus its
@@ -281,6 +283,87 @@ func TestConductorReadClientListFollowersUsesGETAndBoundsBody(t *testing.T) {
 	}
 	if gotPath != "/api/v1/conductor/followers?fleet_id=prod&limit=25&org_id=org-main" {
 		t.Fatalf("path = %q", gotPath)
+	}
+}
+
+func TestConductorReadClientReplayDecisionUsesGETAndDistinguishesNotFound(t *testing.T) {
+	artifactHash := strings.Repeat("a", 64)
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		wantFound bool
+		wantErr   string
+	}{
+		{
+			name:      "found",
+			status:    http.StatusOK,
+			body:      `{"action_kind":"publish","artifact_hash":"` + artifactHash + `"}`,
+			wantFound: true,
+		},
+		{
+			name:   "not found",
+			status: http.StatusNotFound,
+			body:   `{"error":"` + controlplane.ErrDecisionReplayArtifactNotFound.Error() + `"}`,
+		},
+		{
+			name:    "generic not found is source error",
+			status:  http.StatusNotFound,
+			body:    `not found`,
+			wantErr: "status 404",
+		},
+		{
+			name:    "server error",
+			status:  http.StatusServiceUnavailable,
+			body:    `{"error":"temporarily unavailable"}`,
+			wantErr: "status 503",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotMethod, gotPath string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.RequestURI()
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			opts := newTestClientServer(t, "operator-token", handler)
+			client, err := NewReadClient(ReadClientOptions{
+				Server:         opts.server,
+				CAFile:         opts.caFile,
+				ClientCertFile: opts.clientCertFile,
+				ClientKeyFile:  opts.clientKeyFile,
+				TokenFile:      opts.tokenFile,
+				ServerName:     opts.serverName,
+			})
+			if err != nil {
+				t.Fatalf("NewReadClient() error = %v", err)
+			}
+			body, found, err := client.ReplayDecision(context.Background(), "org-main", "prod", artifactHash)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("ReplayDecision() error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReplayDecision() error = %v", err)
+			}
+			if found != tc.wantFound {
+				t.Fatalf("found=%t, want %t", found, tc.wantFound)
+			}
+			if tc.wantFound && !bytes.Contains(body, []byte(`"action_kind"`)) {
+				t.Fatalf("body = %q, want replay JSON", body)
+			}
+			if gotMethod != http.MethodGet {
+				t.Fatalf("method = %q, want GET", gotMethod)
+			}
+			wantPath := controlplane.DecisionReplayPath + "?artifact_hash=" + artifactHash + "&fleet_id=prod&org_id=org-main"
+			if gotPath != wantPath {
+				t.Fatalf("path = %q, want %q", gotPath, wantPath)
+			}
+		})
 	}
 }
 

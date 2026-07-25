@@ -22,12 +22,17 @@ import (
 )
 
 type fakeDashboardConductorClient struct {
-	body       []byte
-	err        error
-	gotOrg     string
-	gotFleet   string
-	gotLimit   int
-	calledList bool
+	body            []byte
+	err             error
+	replayBody      []byte
+	replayErr       error
+	replayFound     bool
+	gotOrg          string
+	gotFleet        string
+	gotLimit        int
+	gotArtifactHash string
+	calledList      bool
+	calledReplay    bool
 }
 
 func (f *fakeDashboardConductorClient) ListFollowers(_ context.Context, orgID, fleetID string, limit int) ([]byte, error) {
@@ -39,6 +44,17 @@ func (f *fakeDashboardConductorClient) ListFollowers(_ context.Context, orgID, f
 		return nil, f.err
 	}
 	return f.body, nil
+}
+
+func (f *fakeDashboardConductorClient) ReplayDecision(_ context.Context, orgID, fleetID, artifactHash string) ([]byte, bool, error) {
+	f.calledReplay = true
+	f.gotOrg = orgID
+	f.gotFleet = fleetID
+	f.gotArtifactHash = artifactHash
+	if f.replayErr != nil {
+		return nil, f.replayFound, f.replayErr
+	}
+	return f.replayBody, f.replayFound, nil
 }
 
 func TestDashboardConductorSourceListFleetFollowersMapsFollowers(t *testing.T) {
@@ -271,6 +287,161 @@ func TestDashboardConductorSourceFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDashboardConductorSourceReplayDecision(t *testing.T) {
+	artifactHash := strings.Repeat("a", 64)
+	recordedHash := strings.Repeat("b", 64)
+	resultHash := strings.Repeat("c", 64)
+	now := time.Date(2026, 7, 23, 14, 0, 0, 0, time.UTC)
+	recordedAt := now.Add(-time.Hour)
+	resp := controlplane.DecisionReplayResult{
+		ActionKind:        "publish",
+		ArtifactHash:      artifactHash,
+		UsedStateSnapshot: false,
+		ReplayedAt:        now,
+		PublishEvaluation: &controlplane.PublishEvaluation{
+			Valid:         true,
+			ResultVersion: 7,
+			ResultHash:    resultHash,
+		},
+		Recorded: &controlplane.RecordedDecision{
+			Present:      true,
+			Accepted:     true,
+			RecordedHash: recordedHash,
+			PublishedAt:  recordedAt,
+		},
+		Divergence:       true,
+		DivergenceReason: "recorded as accepted but re-derived decision would reject (fleet_skew)",
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	client := &fakeDashboardConductorClient{replayBody: body, replayFound: true}
+	source := &dashboardConductorSource{client: client, orgID: "org-main", fleet: "prod"}
+
+	view, found, err := source.ReplayDecision(context.Background(), dashboard.DecisionScope{
+		OrgID:        " org-main ",
+		FleetID:      " prod ",
+		ArtifactHash: " " + artifactHash + " ",
+	})
+	if err != nil {
+		t.Fatalf("ReplayDecision: %v", err)
+	}
+	if !found {
+		t.Fatal("ReplayDecision found=false, want true")
+	}
+	if !client.calledReplay || client.gotOrg != "org-main" || client.gotFleet != "prod" || client.gotArtifactHash != artifactHash {
+		t.Fatalf("client replay call = called:%t org:%q fleet:%q hash:%q", client.calledReplay, client.gotOrg, client.gotFleet, client.gotArtifactHash)
+	}
+	if view.ActionKind != "publish" || !view.Valid || view.ResultVersion != 7 || view.ResultHash != resultHash ||
+		view.RecordedHash != recordedHash || !view.RecordedPresent || !view.RecordedAccepted || !view.Divergence {
+		t.Fatalf("mapped replay view = %+v", view)
+	}
+}
+
+func TestDashboardConductorSourceReplayDecisionNotFound(t *testing.T) {
+	client := &fakeDashboardConductorClient{replayFound: false}
+	source := &dashboardConductorSource{client: client, orgID: "org-main", fleet: "prod"}
+
+	view, found, err := source.ReplayDecision(context.Background(), dashboard.DecisionScope{
+		OrgID:        "org-main",
+		FleetID:      "prod",
+		ArtifactHash: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatalf("ReplayDecision: %v", err)
+	}
+	if found {
+		t.Fatalf("ReplayDecision found=true view=%+v, want not found", view)
+	}
+}
+
+func TestDashboardConductorSourceReplayDecisionFailsClosed(t *testing.T) {
+	artifactHash := strings.Repeat("a", 64)
+	validRecorded := &controlplane.RecordedDecision{Present: true, Accepted: true, RecordedHash: artifactHash}
+	tests := []struct {
+		name    string
+		scope   dashboard.DecisionScope
+		client  *fakeDashboardConductorClient
+		wantErr string
+	}{
+		{
+			name:    "scope mismatch",
+			scope:   dashboard.DecisionScope{OrgID: "org-other", FleetID: "prod", ArtifactHash: artifactHash},
+			client:  &fakeDashboardConductorClient{replayFound: true},
+			wantErr: "not configured",
+		},
+		{
+			name:    "missing artifact",
+			scope:   dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod"},
+			client:  &fakeDashboardConductorClient{replayFound: true},
+			wantErr: "artifact hash",
+		},
+		{
+			name:    "client error",
+			scope:   dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client:  &fakeDashboardConductorClient{replayErr: errors.New("status 503"), replayFound: true},
+			wantErr: "status 503",
+		},
+		{
+			name:    "malformed json",
+			scope:   dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client:  &fakeDashboardConductorClient{replayBody: []byte(`{"action_kind":`), replayFound: true},
+			wantErr: "decode",
+		},
+		{
+			name:    "trailing json",
+			scope:   dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client:  &fakeDashboardConductorClient{replayBody: []byte(`{"action_kind":"publish","artifact_hash":"` + artifactHash + `","publish_evaluation":{"valid":true},"recorded_decision":{"present":true}}{}`), replayFound: true},
+			wantErr: "trailing",
+		},
+		{
+			name:  "hash mismatch",
+			scope: dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client: &fakeDashboardConductorClient{replayFound: true, replayBody: mustJSON(t, controlplane.DecisionReplayResult{
+				ActionKind:        "publish",
+				ArtifactHash:      strings.Repeat("b", 64),
+				PublishEvaluation: &controlplane.PublishEvaluation{Valid: true},
+				Recorded:          validRecorded,
+			})},
+			wantErr: "does not match",
+		},
+		{
+			name:  "missing recorded decision",
+			scope: dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client: &fakeDashboardConductorClient{replayFound: true, replayBody: mustJSON(t, controlplane.DecisionReplayResult{
+				ActionKind:        "publish",
+				ArtifactHash:      artifactHash,
+				PublishEvaluation: &controlplane.PublishEvaluation{Valid: true},
+			})},
+			wantErr: "recorded decision",
+		},
+		{
+			name:  "response shape mismatch",
+			scope: dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client: &fakeDashboardConductorClient{replayFound: true, replayBody: mustJSON(t, controlplane.DecisionReplayResult{
+				ActionKind:   "publish",
+				ArtifactHash: artifactHash,
+				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+				Recorded:     validRecorded,
+			})},
+			wantErr: "invalid publish evaluation shape",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			source := &dashboardConductorSource{client: tc.client, orgID: "org-main", fleet: "prod"}
+			_, _, err := source.ReplayDecision(context.Background(), tc.scope)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+			if (tc.name == "scope mismatch" || tc.name == "missing artifact") && tc.client.calledReplay {
+				t.Fatal("local validation failure reached conductor client")
+			}
+		})
+	}
+}
+
 func TestDashboardConductorSourceRejectsInvalidReturnedFollowers(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -425,4 +596,13 @@ func testConductorFollower(orgID, fleetID, instanceID string) controlplane.Follo
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	body, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return body
 }

@@ -288,6 +288,9 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	for rest := pemBytes; len(bytes.TrimSpace(rest)) > 0; {
 		block, remaining := pem.Decode(rest)
 		if block == nil {
+			if dashboardClientCABundleTrailingCommentsOnly(rest) {
+				break
+			}
 			return nil, errors.New("--client-ca-file contains malformed PEM data")
 		}
 		rest = remaining
@@ -305,6 +308,17 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 		return nil, errors.New("--client-ca-file contains no valid PEM certificates")
 	}
 	return pool, nil
+}
+
+func dashboardClientCABundleTrailingCommentsOnly(data []byte) bool {
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || bytes.HasPrefix(line, []byte("#")) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func verifyDashboardClientCertificateKeySizes(state tls.ConnectionState) error {

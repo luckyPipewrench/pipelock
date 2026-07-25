@@ -290,6 +290,22 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 	})
 
+	t.Run("valid bundle with comments CRLF and text loads", func(t *testing.T) {
+		crlfPEM := strings.ReplaceAll(string(validPEM), "\n", "\r\n")
+		bundle := []byte("# generated CA bundle\r\n" +
+			crlfPEM +
+			"Certificate:\r\n    Data:\r\n        Version: 3\r\n" +
+			crlfPEM +
+			"# end of bundle\r\n\r\n")
+		path := filepath.Join(t.TempDir(), "commented-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write commented bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err != nil {
+			t.Fatalf("commented CA bundle rejected: %v", err)
+		}
+	})
+
 	t.Run("valid bundle at exact size cap loads", func(t *testing.T) {
 		if len(validPEM) > dashboardClientCAMaxBytes {
 			t.Fatalf("test CA bundle is %d bytes, larger than cap %d", len(validPEM), dashboardClientCAMaxBytes)

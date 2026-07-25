@@ -61,6 +61,7 @@ func TestDashboardOIDCFailureCategory(t *testing.T) {
 type oidcTestProvider struct {
 	server    *httptest.Server
 	private   *rsa.PrivateKey
+	keyID     string
 	mu        sync.Mutex
 	jwksFail  bool
 	jwksBlock <-chan struct{}
@@ -74,7 +75,7 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	p := &oidcTestProvider{private: private}
+	p := &oidcTestProvider{private: private, keyID: oidcTestKeyID}
 	p.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
@@ -91,16 +92,41 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 				return
 			}
 			w.Header().Set("Cache-Control", "max-age=3600")
-			n := base64.RawURLEncoding.EncodeToString(private.N.Bytes())
-			e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(private.PublicKey.E)).Bytes())
+			keyID, public := p.jwksKey()
+			n := base64.RawURLEncoding.EncodeToString(public.N.Bytes())
+			e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(public.E)).Bytes())
 			_, _ = fmt.Fprintf(w, `{"keys":[{"kty":"RSA","kid":%q,"use":"sig","alg":"RS256","n":%q,"e":%q,"x5c":[]}]}`,
-				oidcTestKeyID, n, e)
+				keyID, n, e)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(p.server.Close)
 	return p
+}
+
+func (p *oidcTestProvider) jwksKey() (string, rsa.PublicKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.keyID, p.private.PublicKey
+}
+
+func (p *oidcTestProvider) signingKey() *rsa.PrivateKey {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.private
+}
+
+func (p *oidcTestProvider) rotateSigningKey(t *testing.T, keyID string) {
+	t.Helper()
+	private, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey(rotated): %v", err)
+	}
+	p.mu.Lock()
+	p.private = private
+	p.keyID = keyID
+	p.mu.Unlock()
 }
 
 func (p *oidcTestProvider) setJWKSFail(fail bool) {
@@ -146,7 +172,8 @@ func (p *oidcTestProvider) waitForJWKSBlock(ctx context.Context) error {
 
 func (p *oidcTestProvider) token(t *testing.T, claims map[string]any) string {
 	t.Helper()
-	return p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": oidcTestKeyID, "typ": "JWT"}, claims, true)
+	keyID, _ := p.jwksKey()
+	return p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": keyID, "typ": "JWT"}, claims, true)
 }
 
 func (p *oidcTestProvider) tokenWithHeader(t *testing.T, header, claims map[string]any, sign bool) string {
@@ -168,7 +195,7 @@ func (p *oidcTestProvider) tokenWithHeader(t *testing.T, header, claims map[stri
 func (p *oidcTestProvider) signInput(t *testing.T, signingInput string) string {
 	t.Helper()
 	digest := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, p.private, crypto.SHA256, digest[:])
+	sig, err := rsa.SignPKCS1v15(rand.Reader, p.signingKey(), crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatalf("SignPKCS1v15: %v", err)
 	}
@@ -761,6 +788,53 @@ func TestDashboardOIDC_UnknownKeyRefreshCanFindRotatedKey(t *testing.T) {
 	}
 	if got := p.jwksReads.Load(); got != 2 {
 		t.Fatalf("JWKS reads = %d, want initial fetch plus rotation refresh", got)
+	}
+}
+
+func TestDashboardOIDC_UnknownKidAttackerCannotPersistentlyStarveRotatedKey(t *testing.T) {
+	currentNow := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth, err := newDashboardOIDCAuthenticator(context.Background(), dashboardOIDCOptions{
+		Issuer:       p.server.URL,
+		Audience:     oidcTestAudience,
+		RoleClaim:    "groups",
+		RoleMapJSON:  oidcTestRoleMap(),
+		HTTPClient:   p.server.Client(),
+		Now:          func() time.Time { return currentNow },
+		JWKSCacheTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("newDashboardOIDCAuthenticator: %v", err)
+	}
+
+	attackerToken := p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": "attacker-bogus-a"}, p.validClaims(currentNow), true)
+	if principal, err := auth.authenticate(requestWithBearer(t, attackerToken)); err == nil || principal != nil {
+		t.Fatalf("attacker unknown kid authenticate = (%+v, %v), want denial", principal, err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads after attacker miss = %d, want initial fetch plus attacker-triggered refresh", got)
+	}
+
+	p.rotateSigningKey(t, "rotated-legitimate-key")
+	legitimateToken := p.token(t, p.validClaims(currentNow))
+	if principal, err := auth.authenticate(requestWithBearer(t, legitimateToken)); err == nil || principal != nil {
+		t.Fatalf("legitimate rotated kid inside attacker window = (%+v, %v), want bounded denial", principal, err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads inside attacker miss window = %d, want no throttled refresh", got)
+	}
+
+	currentNow = currentNow.Add(dashboardOIDCMinKeyRefresh)
+	nextAttackerToken := p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": "attacker-bogus-b"}, p.validClaims(currentNow), true)
+	if principal, err := auth.authenticate(requestWithBearer(t, nextAttackerToken)); err == nil || principal != nil {
+		t.Fatalf("next attacker unknown kid authenticate = (%+v, %v), want denial", principal, err)
+	}
+	if got := p.jwksReads.Load(); got != 3 {
+		t.Fatalf("JWKS reads after next attacker window = %d, want another bounded refresh", got)
+	}
+
+	if _, err := auth.authenticate(requestWithBearer(t, p.token(t, p.validClaims(currentNow)))); err != nil {
+		t.Fatalf("legitimate rotated kid after attacker-triggered refresh: %v", err)
 	}
 }
 

@@ -234,25 +234,11 @@ func newConductorClient(opts clientOptions) (*conductorClient, error) {
 // a 200 response, or a descriptive error otherwise. The body is read under a
 // hard size cap so a hostile or buggy server cannot exhaust client memory.
 func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	resp, err := c.getJSONStatus(ctx, path, http.StatusOK)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request conductor: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, readErr := readClientBody(resp.Body)
-	if readErr != nil {
-		return nil, fmt.Errorf("read conductor response: %w", readErr)
-	}
-	if err := checkClientStatus(resp, body, c.token); err != nil {
 		return nil, err
 	}
-	return body, nil
+	return resp.body, nil
 }
 
 func (c *conductorClient) getJSONMaybeNotFound(ctx context.Context, path string) ([]byte, bool, error) {

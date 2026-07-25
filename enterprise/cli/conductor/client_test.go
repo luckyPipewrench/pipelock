@@ -338,8 +338,9 @@ func TestConductorReadClientReplayDecisionUsesGETAndDistinguishesNotFound(t *tes
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotMethod, gotPath string
+			var gotAuth, gotMethod, gotPath string
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
 				gotMethod = r.Method
 				gotPath = r.URL.RequestURI()
 				w.WriteHeader(tc.status)
@@ -375,6 +376,9 @@ func TestConductorReadClientReplayDecisionUsesGETAndDistinguishesNotFound(t *tes
 			}
 			if gotMethod != http.MethodGet {
 				t.Fatalf("method = %q, want GET", gotMethod)
+			}
+			if gotAuth != "Bearer operator-token" {
+				t.Fatalf("Authorization = %q, want Bearer operator-token", gotAuth)
 			}
 			wantPath := controlplane.DecisionReplayPath + "?artifact_hash=" + artifactHash + "&fleet_id=prod&org_id=org-main"
 			if gotPath != wantPath {

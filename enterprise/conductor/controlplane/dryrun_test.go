@@ -1384,7 +1384,7 @@ func TestReplayByHashPublish_RecordedMatchesRederived_NoDivergence(t *testing.T)
 		t.Fatalf("replay by hash code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	result := decodeReplay(t, w)
-	if result.ActionKind != actionKindPublish || result.ArtifactHash != record.BundleHash {
+	if result.ActionKind != ActionKindPublish || result.ArtifactHash != record.BundleHash {
 		t.Fatalf("replay by hash action/hash = %s/%s, want publish/%s", result.ActionKind, result.ArtifactHash, record.BundleHash)
 	}
 	if result.Recorded == nil || !result.Recorded.Accepted {
@@ -1434,7 +1434,7 @@ func TestReplayByHashRemoteKill_RecordedMatchesRederived_NoAdminRequired(t *test
 		t.Fatalf("remote-kill replay by hash code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	result := decodeReplay(t, w)
-	if result.ActionKind != actionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
+	if result.ActionKind != ActionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
 		t.Fatalf("remote-kill replay by hash result=%+v, want valid remote_kill", result)
 	}
 }
@@ -1457,7 +1457,7 @@ func TestReplayByHashRemoteKill_UsesVerifiedHashLookupWithoutEnumeration(t *test
 		t.Fatalf("remote-kill replay by hash code=%d body=%s, want 200 without emergency enumeration", w.Code, w.Body.String())
 	}
 	result := decodeReplay(t, w)
-	if result.ActionKind != actionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
+	if result.ActionKind != ActionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
 		t.Fatalf("remote-kill replay by hash result=%+v, want valid remote_kill", result)
 	}
 }
@@ -1795,7 +1795,7 @@ func TestReplayPublish_RecordedMatchesRederived_NoDivergence(t *testing.T) {
 		t.Fatalf("replay code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	result := decodeReplay(t, w)
-	if result.ActionKind != actionKindPublish {
+	if result.ActionKind != ActionKindPublish {
 		t.Fatalf("replay action_kind=%q, want publish", result.ActionKind)
 	}
 	if result.Recorded == nil || !result.Recorded.Accepted {
@@ -1885,7 +1885,7 @@ func TestReplayRollback_RecordedMatchesRederived_NoDivergence(t *testing.T) {
 		t.Fatalf("rollback replay code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	result := decodeReplay(t, w)
-	if result.ActionKind != actionKindRollback {
+	if result.ActionKind != ActionKindRollback {
 		t.Fatalf("rollback replay action_kind=%q, want rollback", result.ActionKind)
 	}
 	if result.Recorded == nil || !result.Recorded.Accepted {
@@ -2069,7 +2069,7 @@ func TestReplayRemoteKill_RecordedMatchesRederived_NoDivergence(t *testing.T) {
 		t.Fatalf("remote-kill replay code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	result := decodeReplay(t, w)
-	if result.ActionKind != actionKindRemoteKill {
+	if result.ActionKind != ActionKindRemoteKill {
 		t.Fatalf("remote-kill replay action_kind=%q, want remote_kill", result.ActionKind)
 	}
 	if result.Recorded == nil || !result.Recorded.Accepted {

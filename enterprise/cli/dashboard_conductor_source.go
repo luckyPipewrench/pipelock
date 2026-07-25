@@ -40,6 +40,18 @@ type dashboardConductorFollowersResponse struct {
 	CompletenessKnown *bool                              `json:"completeness_known,omitempty"`
 }
 
+// dashboardConductorDecisionSource converts a possibly-nil conductor source into
+// the read model's interface field. Assigning a nil *dashboardConductorSource
+// directly would yield a non-nil interface holding a nil pointer, which the read
+// model reads as a configured replay source and then calls on a nil receiver. A
+// deployment with no conductor URL must report the source as unconfigured.
+func dashboardConductorDecisionSource(source *dashboardConductorSource) dashboard.ConductorDecisionSource {
+	if source == nil {
+		return nil
+	}
+	return source
+}
+
 func newDashboardConductorSource(opts dashboardServeOptions) (*dashboardConductorSource, error) {
 	if err := validateDashboardConductorConfig(opts); err != nil {
 		return nil, err
@@ -307,7 +319,7 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 		RecordedAt:        result.Recorded.PublishedAt,
 	}
 	switch result.ActionKind {
-	case "publish":
+	case controlplane.ActionKindPublish:
 		if result.PublishEvaluation == nil || result.RemoteKill != nil || result.Rollback != nil {
 			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid publish evaluation shape")
 		}
@@ -315,7 +327,7 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 		view.Conflict = result.PublishEvaluation.Conflict
 		view.ResultVersion = result.PublishEvaluation.ResultVersion
 		view.ResultHash = result.PublishEvaluation.ResultHash
-	case "remote_kill":
+	case controlplane.ActionKindRemoteKill:
 		if result.RemoteKill == nil || result.PublishEvaluation != nil || result.Rollback != nil {
 			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid remote-kill evaluation shape")
 		}
@@ -323,7 +335,7 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 		view.Conflict = result.RemoteKill.Conflict
 		view.ResultVersion = result.RemoteKill.Counter
 		view.ResultHash = result.RemoteKill.MessageHash
-	case "rollback":
+	case controlplane.ActionKindRollback:
 		if result.Rollback == nil || result.PublishEvaluation != nil || result.RemoteKill != nil {
 			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid rollback evaluation shape")
 		}

@@ -361,7 +361,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		// conductor source is configured (the view then renders its honest
 		// unconfigured empty state, unchanged).
 		DefaultFleetScope: dashboard.DecisionScope{OrgID: opts.conductorOrg, FleetID: opts.conductorFleet},
-		ConductorSource:   conductorSource,
+		ConductorSource:   dashboardConductorDecisionSource(conductorSource),
 		BudgetSource:      dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})
 	authAuditInfo := authorization.authAuditInfo

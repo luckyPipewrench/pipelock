@@ -134,9 +134,12 @@ type DecisionReplayResult struct {
 }
 
 const (
-	actionKindPublish    = "publish"
-	actionKindRemoteKill = "remote_kill"
-	actionKindRollback   = "rollback"
+	// ActionKindPublish is the decision replay action kind for policy bundle publish actions.
+	ActionKindPublish = "publish"
+	// ActionKindRemoteKill is the decision replay action kind for remote-kill authorizations.
+	ActionKindRemoteKill = "remote_kill"
+	// ActionKindRollback is the decision replay action kind for rollback authorizations.
+	ActionKindRollback = "rollback"
 )
 
 // emergencyConflictCode classifies an emergency-store publish conflict into an
@@ -565,7 +568,7 @@ func (h *Handler) replayResolvedPublish(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	result := DecisionReplayResult{
-		ActionKind:        actionKindPublish,
+		ActionKind:        ActionKindPublish,
 		ArtifactHash:      hash,
 		UsedStateSnapshot: snapshot != nil,
 		ReplayedAt:        now,
@@ -681,7 +684,7 @@ func (h *Handler) replayResolvedRemoteKill(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	result := DecisionReplayResult{
-		ActionKind:   actionKindRemoteKill,
+		ActionKind:   ActionKindRemoteKill,
 		ArtifactHash: hash,
 		ReplayedAt:   now,
 	}
@@ -809,7 +812,7 @@ func (h *Handler) replayResolvedRollback(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	result := DecisionReplayResult{
-		ActionKind:   actionKindRollback,
+		ActionKind:   ActionKindRollback,
 		ArtifactHash: hash,
 		ReplayedAt:   now,
 	}

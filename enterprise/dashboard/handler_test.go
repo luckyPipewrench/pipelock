@@ -1760,24 +1760,64 @@ func TestHandler_AuditWriterSerializesConcurrentRequests(t *testing.T) {
 func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name      string
-		page      WorkbenchPage
-		wantState string
+		name          string
+		page          WorkbenchPage
+		wantFragments []string
 	}{
 		{
-			name:      "unconfigured",
-			page:      WorkbenchPage{},
-			wantState: `decision_state="unconfigured"`,
+			name: "unconfigured",
+			page: WorkbenchPage{},
+			wantFragments: []string{
+				`decision_state="unconfigured"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=false`,
+			},
 		},
 		{
-			name:      "not found",
-			page:      WorkbenchPage{SourceConfigured: true, ReplayNotFound: true},
-			wantState: `decision_state="not_found"`,
+			name: "replay error",
+			page: WorkbenchPage{SourceConfigured: true, ReplayError: true, ReplayNotFound: true},
+			wantFragments: []string{
+				`decision_state="unavailable"`,
+				`decision_found=false`,
+				`decision_error=true`,
+				`decision_missing=true`,
+			},
 		},
 		{
-			name:      "unknown",
-			page:      WorkbenchPage{SourceConfigured: true},
-			wantState: `decision_state="unknown"`,
+			name: "not found",
+			page: WorkbenchPage{SourceConfigured: true, ReplayNotFound: true},
+			wantFragments: []string{
+				`decision_state="not_found"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=true`,
+			},
+		},
+		{
+			name: "replay found",
+			page: WorkbenchPage{SourceConfigured: true, HasReplay: true, Replay: DecisionReplayView{
+				Divergence: true,
+				Conflict:   "fleet_skew",
+			}},
+			wantFragments: []string{
+				`decision_state="found"`,
+				`decision_found=true`,
+				`decision_error=false`,
+				`decision_missing=false`,
+				`divergence=true`,
+				`conflict="fleet_skew"`,
+			},
+		},
+		{
+			name: "unknown",
+			page: WorkbenchPage{SourceConfigured: true},
+			wantFragments: []string{
+				`decision_state="unknown"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=false`,
+			},
 		},
 	}
 	for _, tc := range tests {
@@ -1790,8 +1830,11 @@ func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 				FleetID:      "prod",
 				ArtifactHash: strings.Repeat("a", 64),
 			}, tc.page)
-			if !strings.Contains(audit.String(), tc.wantState) {
-				t.Fatalf("audit = %q, want %s", audit.String(), tc.wantState)
+			log := audit.String()
+			for _, want := range tc.wantFragments {
+				if !strings.Contains(log, want) {
+					t.Fatalf("audit = %q, want %s", log, want)
+				}
 			}
 		})
 	}

@@ -222,9 +222,6 @@ func TestEvidenceDoctorDirectoryReadFailures(t *testing.T) {
 		if hasDoctorFinding(report, "directory_read_error") {
 			t.Fatalf("doctor refused an over-recorder-cap directory: %+v", report.Findings)
 		}
-		if hasDoctorFinding(report, "scan_truncated") {
-			t.Fatalf("scan truncated below the doctor budget: %+v", report.Findings)
-		}
 		if !report.Conclusive() {
 			t.Fatal("report should be conclusive below the doctor budget")
 		}
@@ -249,9 +246,6 @@ func TestEvidenceDoctorDirectoryReadFailures(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runEvidenceDoctor: %v", err)
 		}
-		if !hasDoctorFinding(report, "scan_truncated") {
-			t.Fatalf("findings = %+v, want scan_truncated", report.Findings)
-		}
 		if report.Conclusive() {
 			t.Fatal("a truncated scan must not be reported as conclusive")
 		}
@@ -262,8 +256,15 @@ func TestEvidenceDoctorDirectoryReadFailures(t *testing.T) {
 		cmd := Cmd()
 		cmd.SetOut(&buf)
 		printEvidenceDoctorReport(cmd, report)
-		if strings.Contains(buf.String(), "healthy") {
-			t.Fatalf("truncated scan reported as healthy: %q", buf.String())
+		out := buf.String()
+		if strings.Contains(out, "healthy") {
+			t.Fatalf("truncated scan reported as healthy: %q", out)
+		}
+		if !strings.Contains(out, "inconclusive") {
+			t.Fatalf("truncated clean scan should read inconclusive: %q", out)
+		}
+		if !strings.Contains(out, "absence of damage is NOT confirmed") {
+			t.Fatalf("truncated scan must state its own incompleteness: %q", out)
 		}
 	})
 
@@ -432,4 +433,181 @@ func TestEvidenceDoctorMissingDirectory(t *testing.T) {
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("runEvidenceDoctor missing dir err = %v, want not exist", err)
 	}
+}
+
+// TestEvidenceDoctorMalformedReceiptDetail covers the receipt-decode failure
+// paths. A receipt the doctor cannot parse must be reported, not skipped:
+// silently ignoring an unreadable receipt would let real damage hide behind a
+// clean verdict.
+func TestEvidenceDoctorMalformedReceiptDetail(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		entryType string
+		detail    any
+		rawDetail json.RawMessage
+		wantMsg   string
+	}{
+		{
+			name:      "v1 detail is not encodable",
+			entryType: "action_receipt",
+			detail:    make(chan int), // json.Marshal cannot encode a channel
+			wantMsg:   "action_receipt detail is not JSON",
+		},
+		{
+			name:      "v1 detail is not a receipt",
+			entryType: "action_receipt",
+			rawDetail: json.RawMessage(`{"not":"a receipt"}`),
+			wantMsg:   "decode action_receipt",
+		},
+		{
+			name:      "v2 detail is not encodable",
+			entryType: "evidence_receipt",
+			detail:    make(chan int),
+			wantMsg:   "evidence_receipt detail is not JSON",
+		},
+		{
+			name:      "v2 detail is not valid json",
+			entryType: "evidence_receipt",
+			rawDetail: json.RawMessage(`{"chain_seq":`),
+			wantMsg:   "decode evidence_receipt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := &evidenceDoctor{
+				dir:          t.TempDir(),
+				sidecarFiles: make(map[string]struct{}),
+				receiptRefs:  make(map[string][]doctorChainRef),
+				escrowRefs:   make(map[string][]doctorEntryRef),
+			}
+			d.scanReceiptEntry("evidence-proxy-0.jsonl", recorder.Entry{
+				Version:   recorder.EntryVersion,
+				Sequence:  0,
+				SessionID: "proxy",
+				Type:      tc.entryType,
+				Detail:    tc.detail,
+				RawDetail: tc.rawDetail,
+			})
+			report := evidenceDoctorReport{Findings: d.findings}
+			if !hasDoctorFinding(report, "malformed_receipt") {
+				t.Fatalf("findings = %+v, want malformed_receipt", d.findings)
+			}
+			if got := strings.Join(doctorFindingMessages(report), "\n"); !strings.Contains(got, tc.wantMsg) {
+				t.Fatalf("message = %q, want substring %q", got, tc.wantMsg)
+			}
+			// A receipt that cannot be parsed must not be silently admitted to a chain.
+			if len(d.receiptRefs) != 0 {
+				t.Fatalf("unparseable receipt was added to a chain: %+v", d.receiptRefs)
+			}
+		})
+	}
+}
+
+// TestRawEntryDetailSources covers the three ways a detail payload reaches the
+// doctor, plus the unencodable case that must report failure rather than
+// returning empty bytes that would later decode as "no receipt".
+func TestRawEntryDetailSources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("raw detail wins", func(t *testing.T) {
+		t.Parallel()
+		got, ok := rawEntryDetail(recorder.Entry{
+			RawDetail: json.RawMessage(`{"from":"raw"}`),
+			Detail:    map[string]string{"from": "struct"},
+		})
+		if !ok || !strings.Contains(string(got), `"raw"`) {
+			t.Fatalf("got %q ok=%v, want the RawDetail bytes", got, ok)
+		}
+	})
+
+	t.Run("json.RawMessage detail", func(t *testing.T) {
+		t.Parallel()
+		got, ok := rawEntryDetail(recorder.Entry{Detail: json.RawMessage(`{"a":1}`)})
+		if !ok || string(got) != `{"a":1}` {
+			t.Fatalf("got %q ok=%v", got, ok)
+		}
+	})
+
+	t.Run("marshalable struct detail", func(t *testing.T) {
+		t.Parallel()
+		got, ok := rawEntryDetail(recorder.Entry{Detail: map[string]int{"a": 1}})
+		if !ok || string(got) != `{"a":1}` {
+			t.Fatalf("got %q ok=%v", got, ok)
+		}
+	})
+
+	t.Run("unencodable detail reports failure", func(t *testing.T) {
+		t.Parallel()
+		got, ok := rawEntryDetail(recorder.Entry{Detail: make(chan int)})
+		if ok {
+			t.Fatalf("unencodable detail reported success with %q", got)
+		}
+		if got != nil {
+			t.Fatalf("got %q, want nil on failure", got)
+		}
+	})
+}
+
+// TestEvidenceDoctorCommandExitPaths covers the command-level outcomes an
+// operator or CI job actually observes. The inconclusive case matters most: a
+// partial scan must not exit zero, or a CI gate would go green on a directory
+// nobody fully read.
+func TestEvidenceDoctorCommandExitPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing directory is a config error", func(t *testing.T) {
+		t.Parallel()
+		cmd := Cmd()
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"doctor", filepath.Join(t.TempDir(), "does-not-exist")})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("missing directory should be an error")
+		}
+		if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+			t.Fatalf("exit code = %d, want ExitConfig %d", got, cliutil.ExitConfig)
+		}
+	})
+
+	t.Run("a file instead of a directory is a config error", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "not-a-dir")
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		cmd := Cmd()
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"doctor", path})
+		if err := cmd.Execute(); err == nil {
+			t.Fatal("a regular file should be rejected")
+		}
+	})
+
+	t.Run("truncated scan exits nonzero", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		for i := 0; i <= maxEvidenceDoctorFiles; i++ {
+			name := fmt.Sprintf("evidence-proxy-%d.jsonl", i)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o600); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		var out bytes.Buffer
+		cmd := Cmd()
+		cmd.SetOut(&out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"doctor", dir})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("truncated scan exited zero; output=%q", out.String())
+		}
+		if got := cliutil.ExitCodeOf(err); got != cliutil.ExitGeneral {
+			t.Fatalf("exit code = %d, want ExitGeneral %d", got, cliutil.ExitGeneral)
+		}
+	})
 }

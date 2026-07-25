@@ -169,9 +169,6 @@ func (d *evidenceDoctor) scan() {
 		// verdict cannot read healthy and the command cannot exit zero.
 		d.scanTruncated = true
 		d.filesSkipped = skipped
-		d.addFinding("scan_truncated", fmt.Sprintf(
-			"scanned %d file(s) and skipped %d beyond the %d-file doctor budget; results are incomplete and absence of damage is NOT confirmed",
-			len(dirEntries), skipped, maxEvidenceDoctorFiles))
 	}
 
 	jsonlFiles := make([]string, 0)
@@ -502,6 +499,11 @@ func printEvidenceDoctorReport(cmd *cobra.Command, report evidenceDoctorReport) 
 		verdict = "inconclusive"
 	}
 	_, _ = fmt.Fprintf(out, "evidence doctor: %s (%s, %d JSONL file(s) read)\n", verdict, report.Dir, report.FilesRead)
+	if report.ScanTruncated {
+		_, _ = fmt.Fprintf(out,
+			"scan incomplete: skipped %d file(s) beyond the %d-file budget; absence of damage is NOT confirmed\n",
+			report.FilesSkipped, maxEvidenceDoctorFiles)
+	}
 	if !report.Damaged() {
 		return
 	}

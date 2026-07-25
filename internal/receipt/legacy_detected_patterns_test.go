@@ -117,3 +117,31 @@ func mutateLegacyActionRecord(
 	}
 	return out
 }
+
+// TestUnmarshalLegacyDetectedPatternsRejectsMalformedShapes proves the legacy
+// path is narrow. It exists only to strip one known historical field from a
+// well-formed receipt; anything else must fall through to the strict error
+// rather than being quietly accepted, otherwise the compatibility path becomes
+// a general unknown-field escape hatch.
+func TestUnmarshalLegacyDetectedPatternsRejectsMalformedShapes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		data string
+	}{
+		{name: "top level is not an object", data: `["action_record"]`},
+		{name: "top level is not json", data: `{`},
+		{name: "no action_record", data: `{"signature":"ed25519:00"}`},
+		{name: "action_record is not an object", data: `{"action_record":"detected_patterns"}`},
+		{name: "action_record has no detected_patterns", data: `{"action_record":{"version":1}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := unmarshalLegacyDetectedPatterns([]byte(tc.data)); err == nil {
+				t.Fatalf("legacy path accepted %s; it must only strip detected_patterns from a well-formed receipt", tc.name)
+			}
+		})
+	}
+}

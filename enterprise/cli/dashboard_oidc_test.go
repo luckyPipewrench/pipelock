@@ -1070,9 +1070,10 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
 	authorization := newDashboardRequestAuthorization("", "", auth)
-	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		nil, authorization.metaAuthorized, authorization.authorizePermission, authorization.rawAuthorized,
-	)
+	// Drive the same helper the serve path installs, so a regression in WHICH
+	// authorization callbacks reach the composer fails here instead of passing
+	// because the test rebuilt the wiring itself.
+	metaAuthorized, authorizePermission, rawAuthorized := dashboardServeAuthorizers(nil, authorization)
 	var audit strings.Builder
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),

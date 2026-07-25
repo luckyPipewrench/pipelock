@@ -580,7 +580,7 @@ func (d *dashboardHandler) recordDecisionScopeAudit(r *http.Request, raw bool, s
 	var decisionSource, fleetSource, decisionFound, fleetFound, divergence bool
 	var decisionError, decisionMissing bool
 	conflict := "-"
-	decisionState := "unconfigured"
+	var decisionState string
 	switch p := page.(type) {
 	case WorkbenchPage:
 		decisionSource = p.SourceConfigured

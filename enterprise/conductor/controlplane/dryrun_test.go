@@ -253,6 +253,15 @@ func (s remoteKillHashOnlyStore) enumerateRemoteKills(context.Context) ([]Stored
 	return nil, errors.New("unexpected emergency enumeration during hash replay")
 }
 
+// These test doubles stand in for the real by-hash readers, so their error
+// results are required by the reader interfaces even when a given double never
+// fails. The compile-time assertions below record that contract.
+var (
+	_ rawRemoteKillByHashReader            = remoteKillHashOnlyStore{}
+	_ rawRemoteKillByHashReader            = remoteKillWrongHashStore{}
+	_ rawRollbackAuthorizationByHashReader = rollbackWrongHashStore{}
+)
+
 type remoteKillWrongHashStore struct {
 	remoteKillHashOnlyStore
 }
@@ -1204,13 +1213,11 @@ func decodeReplay(t *testing.T, w *httptest.ResponseRecorder) DecisionReplayResu
 	return result
 }
 
-func replayByHashJSON(t *testing.T, handler *Handler, artifactHash string, stream bool) *httptest.ResponseRecorder {
+func replayByHashJSON(t *testing.T, handler *Handler, artifactHash string) *httptest.ResponseRecorder {
 	t.Helper()
 	target := DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + artifactHash
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
-	if stream {
-		r.Header.Set("X-Pipelock-Stream", "ok")
-	}
+	r.Header.Set("X-Pipelock-Stream", "ok")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 	return w
@@ -1227,7 +1234,7 @@ func TestReplayByHashPublish_RecordedMatchesRederived_NoDivergence(t *testing.T)
 		t.Fatalf("seed publish created=%v err=%v, want created", created, err)
 	}
 
-	w := replayByHashJSON(t, handler, record.BundleHash, true)
+	w := replayByHashJSON(t, handler, record.BundleHash)
 	if w.Code != http.StatusOK {
 		t.Fatalf("replay by hash code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
@@ -1252,7 +1259,7 @@ func TestReplayByHashRemoteKill_RecordedMatchesRederived_NoAdminRequired(t *test
 	}
 	handler := newDryRunTestHandler(t, nil, emergency, resolver)
 
-	w := replayByHashJSON(t, handler, record.MessageHash, true)
+	w := replayByHashJSON(t, handler, record.MessageHash)
 	if w.Code != http.StatusOK {
 		t.Fatalf("remote-kill replay by hash code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
@@ -1275,7 +1282,7 @@ func TestReplayByHashRemoteKill_UsesVerifiedHashLookupWithoutEnumeration(t *test
 	}}
 	handler := newDryRunTestHandler(t, nil, emergency, resolver)
 
-	w := replayByHashJSON(t, handler, hash, true)
+	w := replayByHashJSON(t, handler, hash)
 	if w.Code != http.StatusOK {
 		t.Fatalf("remote-kill replay by hash code=%d body=%s, want 200 without emergency enumeration", w.Code, w.Body.String())
 	}
@@ -1302,7 +1309,7 @@ func TestReplayByHashRemoteKill_RejectsRawLookupHashMismatch(t *testing.T) {
 		t.Fatal("test hash collision")
 	}
 
-	w := replayByHashJSON(t, handler, otherHash, true)
+	w := replayByHashJSON(t, handler, otherHash)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("remote-kill replay wrong raw lookup code=%d body=%s, want 404", w.Code, w.Body.String())
 	}
@@ -1330,7 +1337,7 @@ func TestReplayByHashRollback_RejectsRawLookupHashMismatch(t *testing.T) {
 		t.Fatal("test hash collision")
 	}
 
-	w := replayByHashJSON(t, handler, otherHash, true)
+	w := replayByHashJSON(t, handler, otherHash)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("rollback replay wrong raw lookup code=%d body=%s, want 404", w.Code, w.Body.String())
 	}
@@ -1651,7 +1658,7 @@ func TestReplayByHashRemoteKill_RevokedRecordedSignerIsNotReplayable(t *testing.
 	}
 	handler := newDryRunTestHandler(t, nil, emergency, revokedResolver)
 
-	w := replayByHashJSON(t, handler, record.MessageHash, true)
+	w := replayByHashJSON(t, handler, record.MessageHash)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("remote-kill replay by hash revoked-key code=%d body=%s, want 404", w.Code, w.Body.String())
 	}

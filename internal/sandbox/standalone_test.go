@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // skipIfStandaloneUnavailable skips tests that require full standalone
@@ -380,11 +382,14 @@ func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T)
 		t.Fatal("proxy handler did not exit after release")
 	}
 
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if len(server.conns) != 0 {
-		t.Fatalf("timed-out proxy server leaked tracked connections: %d", len(server.conns))
-	}
+	// handlerDone closes inside the handler, while the server untracks the
+	// connection after the handler returns, so the untrack is strictly later and
+	// its timing is not ordered against this goroutine. Poll for the drain.
+	testwait.For(t, 2*time.Second, func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return len(server.conns) == 0
+	}, "timed-out proxy server leaked tracked connections")
 }
 
 func TestHandleStandaloneProxyConnection_NilHandlerFailsClosed(t *testing.T) {

@@ -8,6 +8,7 @@ package controlplane
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -407,6 +408,9 @@ func (v *verifiedEmergencyStore) RecordedRollbackAuthorizationByHash(ctx context
 		if err != nil || !found {
 			return StoredRollbackAuthorization{}, found, err
 		}
+		if !rollbackRecordMatchesHash(record, hash) {
+			return StoredRollbackAuthorization{}, false, nil
+		}
 		if !v.verifyRollback(record, rollbackRecordVerificationTime(record)) {
 			return StoredRollbackAuthorization{}, false, nil
 		}
@@ -417,7 +421,7 @@ func (v *verifiedEmergencyStore) RecordedRollbackAuthorizationByHash(ctx context
 		return StoredRollbackAuthorization{}, false, err
 	}
 	for _, record := range records {
-		if record.AuthorizationHash == hash {
+		if rollbackRecordMatchesHash(record, hash) {
 			return record, true, nil
 		}
 	}
@@ -430,6 +434,9 @@ func (v *verifiedEmergencyStore) RecordedRemoteKillByHash(ctx context.Context, h
 		if err != nil || !found {
 			return StoredRemoteKill{}, found, err
 		}
+		if !remoteKillRecordMatchesHash(record, hash) {
+			return StoredRemoteKill{}, false, nil
+		}
 		if !v.verifyRemoteKill(record, remoteKillRecordVerificationTime(record)) {
 			return StoredRemoteKill{}, false, nil
 		}
@@ -440,11 +447,27 @@ func (v *verifiedEmergencyStore) RecordedRemoteKillByHash(ctx context.Context, h
 		return StoredRemoteKill{}, false, err
 	}
 	for _, record := range records {
-		if record.MessageHash == hash {
+		if remoteKillRecordMatchesHash(record, hash) {
 			return record, true, nil
 		}
 	}
 	return StoredRemoteKill{}, false, nil
+}
+
+func rollbackRecordMatchesHash(record StoredRollbackAuthorization, hash string) bool {
+	canonical, err := record.Authorization.CanonicalHash()
+	if err != nil {
+		return false
+	}
+	return canonical == hash && strings.EqualFold(record.AuthorizationHash, hash)
+}
+
+func remoteKillRecordMatchesHash(record StoredRemoteKill, hash string) bool {
+	canonical, err := record.Message.CanonicalHash()
+	if err != nil {
+		return false
+	}
+	return canonical == hash && strings.EqualFold(record.MessageHash, hash)
 }
 
 func rollbackRecordVerificationTime(record StoredRollbackAuthorization) time.Time {

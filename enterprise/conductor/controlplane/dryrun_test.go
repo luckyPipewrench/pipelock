@@ -253,6 +253,42 @@ func (s remoteKillHashOnlyStore) enumerateRemoteKills(context.Context) ([]Stored
 	return nil, errors.New("unexpected emergency enumeration during hash replay")
 }
 
+type remoteKillWrongHashStore struct {
+	remoteKillHashOnlyStore
+}
+
+func (s remoteKillWrongHashStore) remoteKillByHash(context.Context, string) (StoredRemoteKill, bool, error) {
+	return s.record, true, nil
+}
+
+type rollbackWrongHashStore struct {
+	record StoredRollbackAuthorization
+}
+
+func (s rollbackWrongHashStore) PublishRemoteKill(context.Context, conductor.RemoteKillMessage, time.Time) (StoredRemoteKill, bool, error) {
+	return StoredRemoteKill{}, false, errors.New("unexpected PublishRemoteKill call")
+}
+
+func (s rollbackWrongHashStore) LatestRemoteKill(context.Context, FollowerIdentity, time.Time) (StoredRemoteKill, error) {
+	return StoredRemoteKill{}, errors.New("unexpected LatestRemoteKill call")
+}
+
+func (s rollbackWrongHashStore) PublishRollbackAuthorization(context.Context, conductor.RollbackAuthorization, time.Time) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{}, false, errors.New("unexpected PublishRollbackAuthorization call")
+}
+
+func (s rollbackWrongHashStore) LatestRollbackAuthorization(context.Context, FollowerIdentity, RollbackLookup, time.Time) (StoredRollbackAuthorization, error) {
+	return StoredRollbackAuthorization{}, errors.New("unexpected LatestRollbackAuthorization call")
+}
+
+func (s rollbackWrongHashStore) ActiveRollbackForFollower(context.Context, FollowerIdentity, time.Time) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{}, false, errors.New("unexpected ActiveRollbackForFollower call")
+}
+
+func (s rollbackWrongHashStore) rollbackAuthorizationByHash(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	return s.record, true, nil
+}
+
 type rollbackAuthPreviewErrorStore struct {
 	inner EmergencyStore
 	err   error
@@ -1246,6 +1282,60 @@ func TestReplayByHashRemoteKill_UsesVerifiedHashLookupWithoutEnumeration(t *test
 	result := decodeReplay(t, w)
 	if result.ActionKind != actionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
 		t.Fatalf("remote-kill replay by hash result=%+v, want valid remote_kill", result)
+	}
+}
+
+func TestReplayByHashRemoteKill_RejectsRawLookupHashMismatch(t *testing.T) {
+	msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-by-hash-mismatch", 1, conductor.KillSwitchActive, testNow)
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	emergency := remoteKillWrongHashStore{remoteKillHashOnlyStore: remoteKillHashOnlyStore{record: StoredRemoteKill{
+		Message:     msg,
+		MessageHash: hash,
+		PublishedAt: testNow,
+	}}}
+	handler := newDryRunTestHandler(t, nil, emergency, resolver)
+	otherHash := strings.Repeat("f", 64)
+	if otherHash == hash {
+		t.Fatal("test hash collision")
+	}
+
+	w := replayByHashJSON(t, handler, otherHash, true)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("remote-kill replay wrong raw lookup code=%d body=%s, want 404", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), hash) {
+		t.Fatalf("wrong-hash lookup leaked returned record hash: %s", w.Body.String())
+	}
+}
+
+func TestReplayByHashRollback_RejectsRawLookupHashMismatch(t *testing.T) {
+	store := mustStore(t)
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-by-hash-mismatch")
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-by-hash-mismatch", current, target, testNow)
+	hash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	emergency := rollbackWrongHashStore{record: StoredRollbackAuthorization{
+		Authorization:     auth,
+		AuthorizationHash: hash,
+		PublishedAt:       testNow,
+	}}
+	handler := newDryRunTestHandler(t, store, emergency, resolver)
+	otherHash := strings.Repeat("e", 64)
+	if otherHash == hash {
+		t.Fatal("test hash collision")
+	}
+
+	w := replayByHashJSON(t, handler, otherHash, true)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("rollback replay wrong raw lookup code=%d body=%s, want 404", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), hash) {
+		t.Fatalf("wrong-hash lookup leaked returned record hash: %s", w.Body.String())
 	}
 }
 

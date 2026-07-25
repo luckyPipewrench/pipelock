@@ -1438,6 +1438,44 @@ func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T)
 	}
 }
 
+func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollisionOnRerun(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write managed rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	unrelated := `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			ip daddr 203.0.113.10 accept
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), unrelated, 0, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "not attributable to Pipelock") {
+		t.Fatalf("apply error = %v, want unattributed collision refusal", err)
+	}
+	if applied {
+		t.Fatal("unattributed rerun collision must not report an applied repair")
+	}
+	for _, c := range runner.calls {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			t.Fatalf("unattributed rerun collision deleted nft chain: %v", runner.calls)
+		}
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && (c.args[1] == env.nftRulesPath || c.args[1] == managedChainReloadPath(env)) {
+			t.Fatalf("unattributed rerun collision loaded replacement rules: %v", runner.calls)
+		}
+	}
+}
+
 func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987

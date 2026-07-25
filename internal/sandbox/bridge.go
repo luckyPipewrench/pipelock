@@ -38,6 +38,7 @@ type BridgeProxy struct {
 	doneOnce        sync.Once
 	watcherDone     chan struct{}
 	watcherDoneOnce sync.Once
+	watcherStarted  bool
 	conns           map[net.Conn]struct{}
 	closeOnce       sync.Once
 }
@@ -71,6 +72,13 @@ func (bp *BridgeProxy) Addr() string {
 // Serve accepts connections and bridges them to the parent's Unix socket.
 // Blocks until ctx is cancelled or the listener is closed.
 func (bp *BridgeProxy) Serve(ctx context.Context) {
+	bp.mu.Lock()
+	if bp.closed {
+		bp.mu.Unlock()
+		return
+	}
+	bp.watcherStarted = true
+	bp.mu.Unlock()
 	go func() {
 		defer bp.watcherDoneOnce.Do(func() { close(bp.watcherDone) })
 		select {
@@ -108,12 +116,16 @@ func (bp *BridgeProxy) Close() {
 		bp.doneOnce.Do(func() { close(bp.done) })
 		bp.mu.Lock()
 		bp.closed = true
+		waitForWatcher := bp.watcherStarted
 		_ = bp.listener.Close()
 		for conn := range bp.conns {
 			_ = conn.Close()
 		}
 		bp.mu.Unlock()
 		bp.wg.Wait()
+		if waitForWatcher {
+			<-bp.watcherDone
+		}
 	})
 }
 

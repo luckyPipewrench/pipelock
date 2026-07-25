@@ -200,7 +200,6 @@ func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 			handlerEntered := make(chan struct{})
 			releaseHandler := make(chan struct{})
 			handlerDone := make(chan struct{})
-			var shared int
 			server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
 				ProxyHandler: func(conn net.Conn) {
 					defer close(handlerDone)
@@ -211,7 +210,6 @@ func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 						case <-releaseHandler:
 							return
 						default:
-							_ = shared
 							runtime.Gosched()
 						}
 					}
@@ -239,10 +237,6 @@ func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 
 			select {
 			case <-stopDone:
-				for i := 0; i < 100000; i++ {
-					shared = i
-					runtime.Gosched()
-				}
 				close(releaseHandler)
 				<-handlerDone
 				t.Fatal("stop returned before active proxy handler exited")
@@ -309,6 +303,31 @@ func TestStandaloneProxyServer_StopIsBoundedForBlockedHandler(t *testing.T) {
 	}
 }
 
+func TestStandaloneProxyServer_StopWithinReportsDrainOnlyOnFirstCall(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
+	if err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("unix listen: %v", err)
+	}
+
+	server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
+		ProxyHandler: func(conn net.Conn) {
+			_ = conn.Close()
+		},
+	})
+	if !server.stopWithin(time.Second) {
+		t.Fatal("first stopWithin call did not report clean drain")
+	}
+	if server.stopWithin(time.Second) {
+		t.Fatal("second stopWithin call reported drain status")
+	}
+}
+
 func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T) {
 	socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
 	if err != nil {
@@ -324,6 +343,11 @@ func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T)
 	handlerEntered := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	handlerDone := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseHandler) })
+	}
+	t.Cleanup(release)
 	server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
 		ProxyHandler: func(conn net.Conn) {
 			defer close(handlerDone)
@@ -349,7 +373,7 @@ func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T)
 		t.Fatal("stop reported a clean drain while proxy handler was still blocked")
 	}
 
-	close(releaseHandler)
+	release()
 	select {
 	case <-handlerDone:
 	case <-time.After(time.Second):

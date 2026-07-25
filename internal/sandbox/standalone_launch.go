@@ -310,6 +310,9 @@ func (s *standaloneProxyServer) stop() {
 	_ = s.stopWithin(standaloneProxyDrainTimeout)
 }
 
+// stopWithin performs shutdown once and reports whether that first shutdown
+// drained active handlers before timeout. Subsequent calls are no-ops and return
+// false regardless of the first shutdown's drain outcome.
 func (s *standaloneProxyServer) stopWithin(timeout time.Duration) bool {
 	stopped := false
 	s.once.Do(func() {

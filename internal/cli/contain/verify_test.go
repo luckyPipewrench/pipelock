@@ -1954,6 +1954,14 @@ func TestNFTChainTraversalRejectsCraftedNamesAndMalformedComments(t *testing.T) 
 	}
 }
 
+func TestManagedContainmentDropPacketCountFromLinesRejectsMalformedCounterLine(t *testing.T) {
+	lines := []string{`meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop comment "unterminated`}
+	if _, err := managedContainmentDropPacketCountFromLines(lines, testChain, 987); err == nil ||
+		!strings.Contains(err.Error(), "malformed quoted rule content") {
+		t.Fatalf("error = %v, want malformed quoted rule content", err)
+	}
+}
+
 func TestReadContainmentDropCounter(t *testing.T) {
 	tests := []struct {
 		name       string

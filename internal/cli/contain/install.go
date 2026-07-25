@@ -1321,11 +1321,9 @@ func stepInstallNFTRules() step {
 			body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, env.nftTableOrDefault(), env.nftChainOrDefault())
 
 			rulesMatch := false
-			existingRulesManaged := false
 			if existing, err := env.readFile(env.nftRulesPath); err == nil {
 				existingBody := string(existing)
 				rulesMatch = existingBody == body
-				existingRulesManaged = nftRulesTextHasManagedHeader(existingBody)
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 			}
@@ -1341,7 +1339,7 @@ func stepInstallNFTRules() step {
 				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
 				liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
 			}
-			if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !existingRulesManaged && !liveRulesManaged {
+			if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
 				return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
 			}
 
@@ -1493,10 +1491,6 @@ func nftTableDumpDeclaresExpectedTable(dump, table string) bool {
 	return false
 }
 
-func nftRulesTextHasManagedHeader(body string) bool {
-	return strings.Contains(body, "# Pipelock containment ruleset (managed by pipelock contain install).")
-}
-
 func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
@@ -1522,12 +1516,60 @@ func liveNFTContainmentLooksManaged(out, chainName string, operatorUID, proxyUID
 	if err != nil {
 		return false
 	}
-	return chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
-		chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
-		chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
-		chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
-		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
-		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp")
+	return chainLinesHaveManagedAgentLoopbackBeforeCatchAllDrop(lines, proxyPort) ||
+		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
+			chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
+			chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
+			chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
+			chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
+			chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp")
+}
+
+func chainLinesHaveManagedAgentLoopbackBeforeCatchAllDrop(lines []string, proxyPort int) bool {
+	loopbackUIDs := make(map[int]struct{})
+	for _, line := range lines {
+		if uid, ok := lineAgentProxyLoopbackAllowUID(line, proxyPort); ok {
+			loopbackUIDs[uid] = struct{}{}
+			continue
+		}
+		for uid := range loopbackUIDs {
+			if lineHasTerminalSkuidVerdict(line, uid, "drop") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lineAgentProxyLoopbackAllowUID(line string, proxyPort int) (int, bool) {
+	fields := nftLineFields(line)
+	wantPrefix := []string{
+		"meta", "skuid",
+	}
+	wantSuffix := []string{
+		"ip", "daddr", "127.0.0.1",
+		"tcp", "dport", strconv.Itoa(proxyPort),
+		"accept",
+	}
+	if len(fields) < len(wantPrefix)+1+len(wantSuffix) {
+		return 0, false
+	}
+	for i, field := range wantPrefix {
+		if fields[i] != field {
+			return 0, false
+		}
+	}
+	uid, err := strconv.Atoi(fields[len(wantPrefix)])
+	if err != nil {
+		return 0, false
+	}
+	suffixAt := len(wantPrefix) + 1
+	for i, field := range wantSuffix {
+		if fields[suffixAt+i] != field {
+			return 0, false
+		}
+	}
+	return uid, nftRuleTailIsCommentOnly(fields[suffixAt+len(wantSuffix):])
 }
 
 func nftRulesIncludeLine(path string) string {

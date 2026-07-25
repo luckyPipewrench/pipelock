@@ -1780,10 +1780,14 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 	var packets uint64
 	var parseErr error
 	matched := 0
-	_ = chainLinesHaveLine(lines, func(line string) bool {
+	for _, line := range lines {
+		if !nftLineHasBalancedQuotes(line) {
+			parseErr = fmt.Errorf("managed catch-all DROP rule has malformed quoted rule content: %s", oneLine(line))
+			break
+		}
 		if parseErr != nil ||
 			!strings.Contains(line, `log prefix "`+nftLogPrefix(EgressClassNotRoutingThroughPipelock)+` "`) {
-			return false
+			continue
 		}
 
 		fields := nftLineFields(line)
@@ -1793,38 +1797,40 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 		// destination/interface/etc. predicate placed before skuid; such a
 		// lookalike would not necessarily see the direct-canary packet.
 		if uidAt != 2 || fields[0] != "meta" || fields[1] != "skuid" {
-			return false
+			continue
 		}
 		dropAt := indexTokenAfter(fields, "drop", uidAt+1)
 		if dropAt == -1 || uidAt+1 >= dropAt || fields[uidAt+1] != "counter" {
-			return false
+			continue
 		}
 		packetsAt := -1
 		for i := uidAt + 1; i+2 < dropAt; i++ {
 			if fields[i] == "counter" && fields[i+1] == "packets" {
 				if packetsAt != -1 {
 					parseErr = fmt.Errorf("managed catch-all DROP rule has multiple packet counters: %s", oneLine(line))
-					return false
+					break
 				}
 				packetsAt = i + 2
 			}
 		}
+		if parseErr != nil {
+			break
+		}
 		if packetsAt == -1 {
 			parseErr = fmt.Errorf("managed catch-all DROP rule has no expanded packet counter: %s", oneLine(line))
-			return false
+			break
 		}
 		parsed, err := strconv.ParseUint(fields[packetsAt], 10, 64)
 		if err != nil {
 			parseErr = fmt.Errorf("parse managed catch-all DROP packet counter %q: %w", fields[packetsAt], err)
-			return false
+			break
 		}
 		if !fieldsAreNFTBookkeeping(fields[uidAt+1 : dropAt]) {
-			return false
+			continue
 		}
 		packets = parsed
 		matched++
-		return false
-	})
+	}
 	if parseErr != nil {
 		return 0, parseErr
 	}

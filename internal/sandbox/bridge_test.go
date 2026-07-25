@@ -237,6 +237,110 @@ func TestBridgeProxy_CloseStopsContextWatcher(t *testing.T) {
 	}
 }
 
+func TestBridgeProxy_CloseBeforeServeRejectsDial(t *testing.T) {
+	bp, err := NewBridgeProxy("/tmp/nonexistent-pipelock-parent.sock", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+	addr := bp.Addr()
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		bp.Close()
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked before Serve started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("dial to closed bridge listener succeeded")
+	}
+}
+
+func TestBridgeProxy_HandleConnAfterCloseDoesNotProxy(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := ProxySocketPath(dir)
+
+	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = parentLn.Close() }()
+
+	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+	bp.Close()
+
+	agentConn, clientConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	parentAccepted := make(chan struct{})
+	parentReadDone := make(chan error, 1)
+	go func() {
+		parentConn, acceptErr := parentLn.Accept()
+		if acceptErr != nil {
+			parentReadDone <- fmt.Errorf("accept parent: %w", acceptErr)
+			return
+		}
+		defer func() { _ = parentConn.Close() }()
+		close(parentAccepted)
+		if err := parentConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			parentReadDone <- fmt.Errorf("set parent read deadline: %w", err)
+			return
+		}
+		buf := make([]byte, 1)
+		n, readErr := parentConn.Read(buf)
+		if n > 0 {
+			parentReadDone <- fmt.Errorf("post-close bridge proxied %q to parent", string(buf[:n]))
+			return
+		}
+		if readErr == nil {
+			parentReadDone <- fmt.Errorf("parent read returned no data and no error")
+			return
+		}
+		parentReadDone <- nil
+	}()
+
+	handleDone := make(chan struct{})
+	go func() {
+		defer close(handleDone)
+		bp.handleConn(agentConn)
+	}()
+
+	select {
+	case <-parentAccepted:
+	case err := <-parentReadDone:
+		t.Fatalf("parent read completed before accept signal: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("bridge never connected to parent socket")
+	}
+	if err := clientConn.SetWriteDeadline(time.Now().Add(time.Second)); err == nil {
+		_, _ = clientConn.Write([]byte("x"))
+	}
+
+	select {
+	case err := <-parentReadDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent read did not finish after post-close bridge attempt")
+	}
+	select {
+	case <-handleDone:
+	case <-time.After(time.Second):
+		t.Fatal("handleConn did not return after post-close rejection")
+	}
+}
+
 func TestBridgeProxy_HandleConnFailsGracefully(t *testing.T) {
 	// Bridge proxy with a nonexistent socket path - connections should
 	// fail gracefully (log error, close conn) not panic.

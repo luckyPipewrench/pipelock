@@ -1898,7 +1898,7 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		"auth_subject_sha256=-",
 		"mtls_spki_sha256=" + spkiHash,
 		"auth_roles=\"metadata\"",
-		"reason=role_lacks_permission",
+		"reason=permission_denied",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("permission-denied audit missing %q: %s", want, log)
@@ -1935,7 +1935,7 @@ func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
 		"auth_subject_sha256=-",
 		"mtls_spki_sha256=-",
 		"auth_roles=\"-\"",
-		"reason=role_lacks_permission",
+		"reason=permission_denied",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("permission-denied audit missing %q: %s", want, log)

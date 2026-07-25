@@ -1332,7 +1332,10 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 		"pipelock-dashboard denied",
 		"permission=\"dashboard:exemptions:read\"",
 		"auth_method=oidc",
-		"auth_subject=\"operator-a\"",
+		// The subject is recorded hashed rather than in the clear. Derive the
+		// expected digest from the subject so this still pins WHICH principal
+		// was denied, not merely that some digest was written.
+		fmt.Sprintf("auth_subject_sha256=%x", sha256.Sum256([]byte("operator-a"))),
 		"auth_roles=\"evidence-reader\"",
 		"reason=permission_denied",
 	} {

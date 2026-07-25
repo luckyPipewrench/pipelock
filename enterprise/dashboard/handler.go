@@ -492,7 +492,10 @@ func (d *dashboardHandler) recordPermissionDeniedAudit(r *http.Request, permissi
 	auth := authAuditInfoFromRequest(r)
 	reason := auth.FailureReason
 	if reason == "-" {
-		reason = "role_lacks_permission"
+		// Keep the reason value operators already alert on. Earlier releases
+		// emitted permission_denied on this line, so renaming it would break
+		// existing SIEM rules silently.
+		reason = "permission_denied"
 	}
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()

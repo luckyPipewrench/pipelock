@@ -445,17 +445,24 @@ func TestWorkbench_ReplayNotFoundMetadataRedactsScope(t *testing.T) {
 	}
 }
 
-func TestWorkbench_SourceErrorReturnsServerError(t *testing.T) {
+func TestWorkbench_SourceErrorRendersUnavailablePanel(t *testing.T) {
 	t.Parallel()
 
-	source := &fakeConductorSource{err: errors.New("source unavailable")}
+	source := &fakeConductorSource{err: errors.New("backend exploded SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE")}
 	handler := New(Options{
 		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Decision replay unavailable") {
+		t.Fatalf("body missing unavailable panel: %s", body)
+	}
+	if strings.Contains(body, "SECRET-") || strings.Contains(body, "backend exploded") {
+		t.Fatalf("unavailable panel leaked source error detail: %s", body)
 	}
 }
 

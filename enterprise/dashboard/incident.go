@@ -33,6 +33,7 @@ type IncidentPage struct {
 
 	HasDecision     bool
 	DecisionMissing bool
+	DecisionError   bool
 	Decision        DecisionReplayView
 
 	HasFleet bool
@@ -77,7 +78,8 @@ func (m *ReadModel) Incident(ctx context.Context, scope DecisionScope, rawAllowe
 	if m.conductorSource != nil {
 		view, found, err := m.conductorSource.ReplayDecision(ctx, scope)
 		if err != nil {
-			return IncidentPage{}, fmt.Errorf("replay decision: %w", err)
+			page.DecisionError = true
+			return page, nil
 		}
 		if !found {
 			page.DecisionMissing = true

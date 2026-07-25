@@ -228,19 +228,26 @@ func TestIncident_FleetSourceErrorReturnsServerError(t *testing.T) {
 	}
 }
 
-func TestIncident_DecisionSourceErrorReturnsServerError(t *testing.T) {
+func TestIncident_DecisionSourceErrorRendersUnavailablePanel(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
 		TrustedOuterAuth:    true,
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
-		ConductorSource:     &fakeConductorSource{err: errors.New("replay unavailable")},
+		ConductorSource:     &fakeConductorSource{err: errors.New("backend exploded SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE")},
 		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, incidentTarget(), nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Decision replay unavailable") {
+		t.Fatalf("body missing unavailable panel: %s", body)
+	}
+	if strings.Contains(body, "SECRET-") || strings.Contains(body, "backend exploded") {
+		t.Fatalf("unavailable panel leaked source error detail: %s", body)
 	}
 }

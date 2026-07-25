@@ -383,14 +383,14 @@ type decisionReplayByHashQuery struct {
 }
 
 func (h *Handler) handleDecisionReplayByHash(w http.ResponseWriter, r *http.Request) {
+	streamQuery := decisionReplayByHashAuthQuery(r)
+	if err := h.authorizeStream(r, streamQuery); err != nil {
+		writeError(w, http.StatusForbidden, ErrStreamStatusForbidden)
+		return
+	}
 	query, err := parseDecisionReplayByHashQuery(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	streamQuery := StreamStatusQuery{OrgID: query.OrgID, FleetID: query.FleetID}
-	if err := h.authorizeStream(r, streamQuery); err != nil {
-		writeError(w, http.StatusForbidden, ErrStreamStatusForbidden)
 		return
 	}
 	now := h.now()
@@ -424,6 +424,14 @@ func (h *Handler) handleDecisionReplayByHash(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	writeError(w, http.StatusNotFound, ErrDecisionReplayArtifactNotFound)
+}
+
+func decisionReplayByHashAuthQuery(r *http.Request) StreamStatusQuery {
+	values := r.URL.Query()
+	return StreamStatusQuery{
+		OrgID:   values.Get("org_id"),
+		FleetID: values.Get("fleet_id"),
+	}
 }
 
 func parseDecisionReplayByHashQuery(r *http.Request) (decisionReplayByHashQuery, error) {
@@ -471,6 +479,18 @@ func decisionReplayBundleInScope(record PublishedBundle, query decisionReplayByH
 }
 
 func (h *Handler) replayRemoteKillByHash(w http.ResponseWriter, r *http.Request, query decisionReplayByHashQuery, now time.Time) (bool, error) {
+	if reader, ok := h.emergencyControls.(recordedRemoteKillByHashReader); ok {
+		record, found, err := reader.RecordedRemoteKillByHash(r.Context(), query.ArtifactHash)
+		if err != nil || !found {
+			return found, err
+		}
+		msg := record.Message
+		if msg.OrgID != query.OrgID || msg.FleetID != query.FleetID {
+			return false, nil
+		}
+		h.replayResolvedRemoteKill(w, r, msg, now)
+		return true, nil
+	}
 	lister, ok := h.emergencyControls.(recordedRemoteKillEnumerator)
 	if !ok {
 		return false, nil
@@ -490,6 +510,18 @@ func (h *Handler) replayRemoteKillByHash(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) replayRollbackByHash(w http.ResponseWriter, r *http.Request, query decisionReplayByHashQuery, now time.Time) (bool, error) {
+	if reader, ok := h.emergencyControls.(recordedRollbackAuthorizationByHashReader); ok {
+		record, found, err := reader.RecordedRollbackAuthorizationByHash(r.Context(), query.ArtifactHash)
+		if err != nil || !found {
+			return found, err
+		}
+		auth := record.Authorization
+		if auth.OrgID != query.OrgID || auth.FleetID != query.FleetID {
+			return false, nil
+		}
+		h.replayResolvedRollback(w, r, auth, now)
+		return true, nil
+	}
 	lister, ok := h.emergencyControls.(recordedRollbackAuthorizationEnumerator)
 	if !ok {
 		return false, nil
@@ -690,6 +722,18 @@ func (h *Handler) replayResolvedRemoteKill(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) recordedRemoteKill(ctx context.Context, hash string) (*RecordedDecision, error) {
+	if reader, ok := h.emergencyControls.(recordedRemoteKillByHashReader); ok {
+		record, found, err := reader.RecordedRemoteKillByHash(ctx, hash)
+		if err != nil || !found {
+			return nil, err
+		}
+		return &RecordedDecision{
+			Present:      true,
+			Accepted:     true,
+			RecordedHash: record.MessageHash,
+			PublishedAt:  record.PublishedAt,
+		}, nil
+	}
 	if lister, ok := h.emergencyControls.(recordedRemoteKillEnumerator); ok {
 		records, err := lister.RecordedRemoteKills(ctx)
 		if err != nil {
@@ -823,6 +867,18 @@ func (h *Handler) replayResolvedRollback(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) recordedRollback(ctx context.Context, hash string) (*RecordedDecision, error) {
+	if reader, ok := h.emergencyControls.(recordedRollbackAuthorizationByHashReader); ok {
+		record, found, err := reader.RecordedRollbackAuthorizationByHash(ctx, hash)
+		if err != nil || !found {
+			return nil, err
+		}
+		return &RecordedDecision{
+			Present:      true,
+			Accepted:     true,
+			RecordedHash: record.AuthorizationHash,
+			PublishedAt:  record.PublishedAt,
+		}, nil
+	}
 	if lister, ok := h.emergencyControls.(recordedRollbackAuthorizationEnumerator); ok {
 		records, err := lister.RecordedRollbackAuthorizations(ctx)
 		if err != nil {

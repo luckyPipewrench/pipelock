@@ -150,6 +150,8 @@
         <h2>Conductor decision</h2>
         {{if not .DecisionSourceConfigured}}
           <section class="absence"><h2>No conductor decision source configured</h2><p class="muted">Decision replay proves how the conductor would resolve this artifact through the read-only replay seam. No conductor decision source is connected. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span> and its required read credentials.</p></section>
+        {{else if .DecisionError}}
+          <section class="absence"><h2>Decision replay unavailable</h2><p class="muted">The replay source returned an error. No replay verdict is available for this artifact.</p></section>
         {{else if .DecisionMissing}}
           <section class="empty">No recorded decision matched this artifact hash.</section>
         {{else if .HasDecision}}

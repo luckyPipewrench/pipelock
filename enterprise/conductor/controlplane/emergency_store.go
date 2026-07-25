@@ -380,6 +380,32 @@ func (s *FileEmergencyStore) enumerateRemoteKills(_ context.Context) ([]StoredRe
 	return slices.Clone(s.remoteKills), nil
 }
 
+func (s *FileEmergencyStore) remoteKillByHash(_ context.Context, hash string) (StoredRemoteKill, bool, error) {
+	if s == nil {
+		return StoredRemoteKill{}, false, ErrEmergencyStoreRequired
+	}
+	if err := validateDecisionReplayArtifactHash(hash); err != nil {
+		return StoredRemoteKill{}, false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.remoteKillHashes[hash]
+	return record, ok, nil
+}
+
+func (s *FileEmergencyStore) rollbackAuthorizationByHash(_ context.Context, hash string) (StoredRollbackAuthorization, bool, error) {
+	if s == nil {
+		return StoredRollbackAuthorization{}, false, ErrEmergencyStoreRequired
+	}
+	if err := validateDecisionReplayArtifactHash(hash); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.rollbackHashes[hash]
+	return record, ok, nil
+}
+
 func (s *FileEmergencyStore) writeLocked() error {
 	return writeEmergencyState(s.statePath, emergencyStateRecord{
 		RemoteKills: s.remoteKills,

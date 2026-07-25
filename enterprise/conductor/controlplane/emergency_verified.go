@@ -86,6 +86,22 @@ type recordedRemoteKillEnumerator interface {
 	RecordedRemoteKills(context.Context) ([]StoredRemoteKill, error)
 }
 
+type rawRollbackAuthorizationByHashReader interface {
+	rollbackAuthorizationByHash(context.Context, string) (StoredRollbackAuthorization, bool, error)
+}
+
+type rawRemoteKillByHashReader interface {
+	remoteKillByHash(context.Context, string) (StoredRemoteKill, bool, error)
+}
+
+type recordedRollbackAuthorizationByHashReader interface {
+	RecordedRollbackAuthorizationByHash(context.Context, string) (StoredRollbackAuthorization, bool, error)
+}
+
+type recordedRemoteKillByHashReader interface {
+	RecordedRemoteKillByHash(context.Context, string) (StoredRemoteKill, bool, error)
+}
+
 // newVerifiedEmergencyStore wraps an EmergencyStore in the signature-verifying
 // view. inner==nil yields nil (the Handler treats a nil store as "no emergency
 // controls configured", same as before). resolve may be nil/empty; in that case
@@ -383,6 +399,52 @@ func (v *verifiedEmergencyStore) RecordedRemoteKills(ctx context.Context) ([]Sto
 		}
 	}
 	return verified, nil
+}
+
+func (v *verifiedEmergencyStore) RecordedRollbackAuthorizationByHash(ctx context.Context, hash string) (StoredRollbackAuthorization, bool, error) {
+	if reader, ok := v.inner.(rawRollbackAuthorizationByHashReader); ok {
+		record, found, err := reader.rollbackAuthorizationByHash(ctx, hash)
+		if err != nil || !found {
+			return StoredRollbackAuthorization{}, found, err
+		}
+		if !v.verifyRollback(record, rollbackRecordVerificationTime(record)) {
+			return StoredRollbackAuthorization{}, false, nil
+		}
+		return record, true, nil
+	}
+	records, err := v.RecordedRollbackAuthorizations(ctx)
+	if err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
+	for _, record := range records {
+		if record.AuthorizationHash == hash {
+			return record, true, nil
+		}
+	}
+	return StoredRollbackAuthorization{}, false, nil
+}
+
+func (v *verifiedEmergencyStore) RecordedRemoteKillByHash(ctx context.Context, hash string) (StoredRemoteKill, bool, error) {
+	if reader, ok := v.inner.(rawRemoteKillByHashReader); ok {
+		record, found, err := reader.remoteKillByHash(ctx, hash)
+		if err != nil || !found {
+			return StoredRemoteKill{}, found, err
+		}
+		if !v.verifyRemoteKill(record, remoteKillRecordVerificationTime(record)) {
+			return StoredRemoteKill{}, false, nil
+		}
+		return record, true, nil
+	}
+	records, err := v.RecordedRemoteKills(ctx)
+	if err != nil {
+		return StoredRemoteKill{}, false, err
+	}
+	for _, record := range records {
+		if record.MessageHash == hash {
+			return record, true, nil
+		}
+	}
+	return StoredRemoteKill{}, false, nil
 }
 
 func rollbackRecordVerificationTime(record StoredRollbackAuthorization) time.Time {

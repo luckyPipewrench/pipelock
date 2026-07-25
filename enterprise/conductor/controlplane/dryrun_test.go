@@ -213,6 +213,46 @@ func (s remoteKillEnumeratorErrorStore) RemoteKills(context.Context) ([]StoredRe
 	return nil, s.err
 }
 
+type remoteKillHashOnlyStore struct {
+	record StoredRemoteKill
+}
+
+func (s remoteKillHashOnlyStore) PublishRemoteKill(context.Context, conductor.RemoteKillMessage, time.Time) (StoredRemoteKill, bool, error) {
+	return StoredRemoteKill{}, false, errors.New("unexpected PublishRemoteKill call")
+}
+
+func (s remoteKillHashOnlyStore) LatestRemoteKill(context.Context, FollowerIdentity, time.Time) (StoredRemoteKill, error) {
+	return StoredRemoteKill{}, errors.New("unexpected LatestRemoteKill call")
+}
+
+func (s remoteKillHashOnlyStore) PublishRollbackAuthorization(context.Context, conductor.RollbackAuthorization, time.Time) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{}, false, errors.New("unexpected PublishRollbackAuthorization call")
+}
+
+func (s remoteKillHashOnlyStore) LatestRollbackAuthorization(context.Context, FollowerIdentity, RollbackLookup, time.Time) (StoredRollbackAuthorization, error) {
+	return StoredRollbackAuthorization{}, errors.New("unexpected LatestRollbackAuthorization call")
+}
+
+func (s remoteKillHashOnlyStore) ActiveRollbackForFollower(context.Context, FollowerIdentity, time.Time) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{}, false, errors.New("unexpected ActiveRollbackForFollower call")
+}
+
+func (s remoteKillHashOnlyStore) PreviewRemoteKill(_ context.Context, msg conductor.RemoteKillMessage, _ time.Time) (RemoteKillPreview, error) {
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		return RemoteKillPreview{}, err
+	}
+	return RemoteKillPreview{MessageHash: hash, Counter: msg.Counter}, nil
+}
+
+func (s remoteKillHashOnlyStore) remoteKillByHash(_ context.Context, hash string) (StoredRemoteKill, bool, error) {
+	return s.record, s.record.MessageHash == hash, nil
+}
+
+func (s remoteKillHashOnlyStore) enumerateRemoteKills(context.Context) ([]StoredRemoteKill, error) {
+	return nil, errors.New("unexpected emergency enumeration during hash replay")
+}
+
 type rollbackAuthPreviewErrorStore struct {
 	inner EmergencyStore
 	err   error
@@ -1186,6 +1226,29 @@ func TestReplayByHashRemoteKill_RecordedMatchesRederived_NoAdminRequired(t *test
 	}
 }
 
+func TestReplayByHashRemoteKill_UsesVerifiedHashLookupWithoutEnumeration(t *testing.T) {
+	msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-by-hash-direct", 1, conductor.KillSwitchActive, testNow)
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	emergency := remoteKillHashOnlyStore{record: StoredRemoteKill{
+		Message:     msg,
+		MessageHash: hash,
+		PublishedAt: testNow,
+	}}
+	handler := newDryRunTestHandler(t, nil, emergency, resolver)
+
+	w := replayByHashJSON(t, handler, hash, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("remote-kill replay by hash code=%d body=%s, want 200 without emergency enumeration", w.Code, w.Body.String())
+	}
+	result := decodeReplay(t, w)
+	if result.ActionKind != actionKindRemoteKill || result.RemoteKill == nil || !result.RemoteKill.Valid {
+		t.Fatalf("remote-kill replay by hash result=%+v, want valid remote_kill", result)
+	}
+}
+
 func TestReplayByHashFailsClosed(t *testing.T) {
 	store := mustStore(t)
 	handler := newDryRunTestHandler(t, store, nil, nil)
@@ -1206,6 +1269,11 @@ func TestReplayByHashFailsClosed(t *testing.T) {
 		{
 			name:       "auth required before lookup",
 			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + record.BundleHash,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "unauthenticated malformed query hides schema",
+			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=sha256:abc123&payload=true",
 			wantStatus: http.StatusForbidden,
 		},
 		{
@@ -1479,6 +1547,26 @@ func TestReplayRollback_HistoricalRecordedDecisionRejectsRevokedKey(t *testing.T
 	w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("rollback replay revoked-key code=%d body=%s, want 422", w.Code, w.Body.String())
+	}
+}
+
+func TestReplayByHashRemoteKill_RevokedRecordedSignerIsNotReplayable(t *testing.T) {
+	recordedAt := testNow.Add(-30 * time.Minute)
+	msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-by-hash-revoked-key", 1, conductor.KillSwitchActive, recordedAt)
+	revokedResolver := resolverWithKeyRevokedAt(t, resolver, testNow.Add(-15*time.Minute))
+	emergency := mustEmergencyStore(t)
+	record, created, err := emergency.PublishRemoteKill(context.Background(), msg, recordedAt)
+	if err != nil || !created {
+		t.Fatalf("seed remote kill created=%v err=%v, want created", created, err)
+	}
+	handler := newDryRunTestHandler(t, nil, emergency, revokedResolver)
+
+	w := replayByHashJSON(t, handler, record.MessageHash, true)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("remote-kill replay by hash revoked-key code=%d body=%s, want 404", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), ErrDecisionReplayArtifactNotFound.Error()) {
+		t.Fatalf("remote-kill replay by hash revoked-key body=%s, want replay artifact not found", w.Body.String())
 	}
 }
 

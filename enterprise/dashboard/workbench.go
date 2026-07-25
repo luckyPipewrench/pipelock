@@ -169,6 +169,7 @@ type WorkbenchPage struct {
 	HasReplay      bool
 	Replay         DecisionReplayView
 	ReplayNotFound bool
+	ReplayError    bool
 }
 
 // Workbench builds the read-only workbench view. When no conductor source is
@@ -192,7 +193,8 @@ func (m *ReadModel) Workbench(ctx context.Context, scope DecisionScope, rawAllow
 	}
 	view, found, err := m.conductorSource.ReplayDecision(ctx, scope)
 	if err != nil {
-		return WorkbenchPage{}, fmt.Errorf("replay decision: %w", err)
+		page.ReplayError = true
+		return page, nil
 	}
 	if !found {
 		page.ReplayNotFound = true

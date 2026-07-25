@@ -153,6 +153,11 @@
         </section>
       {{else if not .ScopeProvided}}
         <section class="empty">Supply <span class="mono">?org_id=&lt;org&gt;&amp;fleet_id=&lt;fleet&gt;&amp;artifact_hash=&lt;hash&gt;</span> to replay a past signed action's decision.</section>
+      {{else if .ReplayError}}
+        <section class="absence">
+          <h2>Decision replay unavailable</h2>
+          <p class="muted">The replay source returned an error. No replay verdict is available for this artifact.</p>
+        </section>
       {{else if .ReplayNotFound}}
         <section class="empty">No recorded decision matched artifact hash for org <span class="mono">{{.OrgID}}</span> / fleet <span class="mono">{{.FleetID}}</span>.</section>
       {{else if .HasReplay}}

@@ -306,8 +306,8 @@ func (s *standaloneProxyServer) untrackConn(conn net.Conn) {
 	delete(s.conns, conn)
 }
 
-func (s *standaloneProxyServer) stop() bool {
-	return s.stopWithin(standaloneProxyDrainTimeout)
+func (s *standaloneProxyServer) stop() {
+	_ = s.stopWithin(standaloneProxyDrainTimeout)
 }
 
 func (s *standaloneProxyServer) stopWithin(timeout time.Duration) bool {

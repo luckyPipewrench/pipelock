@@ -1558,15 +1558,6 @@ func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func
 	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, match)
 }
 
-// chainHasLine applies match only after exact-chain attribution succeeds.
-func chainHasLine(out, chainName string, match func(string) bool) bool {
-	lines, err := attributedNFTChainLines(out, chainName)
-	if err != nil {
-		return false
-	}
-	return chainLinesHaveLine(lines, match)
-}
-
 // ---------------------------------------------------------------------------
 // Probe 4: wrapper_scripts_installed
 // ---------------------------------------------------------------------------

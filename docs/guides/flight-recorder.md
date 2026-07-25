@@ -240,7 +240,7 @@ The hash covers all entry fields joined with null-byte separators:
 SHA256(v \0 seq \0 ts \0 session_id \0 trace_id \0 type \0 transport \0 summary \0 detail_json \0 raw_ref \0 prev_hash)
 ```
 
-The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory; run `pipelock evidence doctor DIR` when a verifier reports a `prev_hash` mismatch so you can tell fork damage from post-write tampering.
+The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory; run `pipelock evidence doctor DIR` when a verifier reports a `prev_hash` mismatch to surface the structural damage for investigation. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
 
 To verify a chain:
 

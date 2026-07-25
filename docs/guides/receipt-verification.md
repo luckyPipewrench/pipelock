@@ -203,8 +203,12 @@ the key is what proves the chain came from a signer you trust.
 If any check fails, the output reports which sequence number broke the chain.
 In a directory shared by concurrent writer processes, a `chain_prev_hash`
 mismatch can be caused by a recorder fork rather than by after-the-fact
-tampering. Run `pipelock evidence doctor DIR` to distinguish structural fork
-damage from a single-chain edit.
+tampering. Run `pipelock evidence doctor DIR` to surface the structural damage
+for investigation. The doctor reports symptoms such as duplicate sequence
+numbers, conflicting predecessor hashes, and entries whose contents no longer
+match their recorded hash. Those symptoms narrow the cause but do not by
+themselves establish it: a fork and a crafted edit can present the same
+structure.
 
 ### Completeness analysis
 

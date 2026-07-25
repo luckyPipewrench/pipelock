@@ -358,9 +358,9 @@ Filter fields:
 | `Before` | Include entries before this time. |
 | `MinSeq` | Include entries at or above this sequence number. |
 | `MaxSeq` | Include entries at or below this sequence number. |
-| `MaxEntriesRead` | Optional parsed-entry ceiling. If reached, `QueryResult.Truncated` is true. |
+| `MaxEntriesRead` | Optional parsed-entry ceiling. Positive values apply across the session query. Zero uses the default per-file parsed-entry ceiling. If reached, `QueryResult.Truncated` is true. |
 | `MaxDirectoryEntries` | Optional evidence-directory entry ceiling. Zero uses the default ceiling. |
-| `MaxBytesRead` | Optional total byte ceiling across scanned evidence files. If reached, `QueryResult.Truncated` is true. |
+| `MaxBytesRead` | Optional byte ceiling. Positive values apply across scanned evidence files. Zero uses the default per-file byte ceiling. If reached, `QueryResult.Truncated` is true. |
 
 Recorder reads are bounded. `ReadEntries` and `ReadEntriesFromReader` return an
 error if the default evidence size or entry-count ceiling is exceeded. Query

@@ -658,7 +658,7 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		if err := os.WriteFile(path, bytes.Repeat([]byte{' '}, 8<<20+1), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !strings.Contains(err.Error(), "read limit exceeded") {
+		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("oversized source error = %v, want bounded-read rejection", err)
 		}
 	})
@@ -672,7 +672,7 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !strings.Contains(err.Error(), "read limit exceeded") {
+		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("too-many-entries source error = %v, want bounded-read rejection", err)
 		}
 	})

@@ -114,6 +114,94 @@ func TestQuerySession_MaxBytesReadTruncatesSkippedLines(t *testing.T) {
 	}
 }
 
+func TestQuerySession_MaxBytesReadTruncatesAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	first := []byte(`{"v":2,"seq":0,"ts":"2026-01-01T00:00:00Z","session_id":"sess-1","type":"request","transport":"fetch","summary":"first"}` + "\n")
+	second := []byte(`{"v":2,"seq":1,"ts":"2026-01-01T00:00:01Z","session_id":"sess-1","type":"response","transport":"fetch","summary":"second"}` + "\n")
+	maxBytesRead := int64(len(first) + len(second) - 1)
+	for path, data := range map[string][]byte{
+		filepath.Join(dir, "evidence-sess-1-0.jsonl"): first,
+		filepath.Join(dir, "evidence-sess-1-1.jsonl"): second,
+	} {
+		if len(data) >= int(maxBytesRead) {
+			t.Fatalf("%s length = %d, want below aggregate cap %d", filepath.Base(path), len(data), maxBytesRead)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+		MaxBytesRead: maxBytesRead,
+	})
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("QuerySession did not report cross-file byte-limit truncation")
+	}
+	if result.TotalFiles != 2 || result.FilesRead != 2 {
+		t.Fatalf("files = total %d read %d, want second file to trigger truncation", result.TotalFiles, result.FilesRead)
+	}
+	if result.BytesRead <= maxBytesRead {
+		t.Fatalf("BytesRead = %d, want evidence that aggregate byte limit was reached", result.BytesRead)
+	}
+	if result.EntriesRead != 1 || len(result.Entries) != 1 {
+		t.Fatalf("entries = read %d returned %d, want only first file before truncation", result.EntriesRead, len(result.Entries))
+	}
+	if result.Entries[0].Sequence != 0 {
+		t.Fatalf("entry sequence = %d, want only first file entry", result.Entries[0].Sequence)
+	}
+}
+
+func TestQuerySession_ZeroReadLimitsUseDefaultPerFileCeilings(t *testing.T) {
+	t.Run("entries", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "evidence-sess-1-0.jsonl")
+		var data strings.Builder
+		for seq := range recorder.MaxEvidenceReadEntries + 1 {
+			_, _ = fmt.Fprintf(&data, `{"v":2,"seq":%d,"ts":"2026-01-01T00:00:00Z","session_id":"sess-1","type":"request"}`+"\n", seq)
+		}
+		if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+			MaxEntriesRead: 0,
+		})
+		if err != nil {
+			t.Fatalf("QuerySession: %v", err)
+		}
+		if !result.Truncated {
+			t.Fatal("QuerySession did not report default entry-limit truncation")
+		}
+		if result.EntriesRead != recorder.MaxEvidenceReadEntries {
+			t.Fatalf("EntriesRead = %d, want default ceiling %d", result.EntriesRead, recorder.MaxEvidenceReadEntries)
+		}
+	})
+
+	t.Run("bytes", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "evidence-sess-1-0.jsonl")
+		if err := os.WriteFile(path, []byte(strings.Repeat("\n", int(recorder.MaxEvidenceReadFileBytes)+1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+			MaxBytesRead: 0,
+		})
+		if err != nil {
+			t.Fatalf("QuerySession: %v", err)
+		}
+		if !result.Truncated {
+			t.Fatal("QuerySession did not report default byte-limit truncation")
+		}
+		if result.BytesRead <= recorder.MaxEvidenceReadFileBytes {
+			t.Fatalf("BytesRead = %d, want evidence that default byte limit was reached", result.BytesRead)
+		}
+	})
+}
+
 func TestQuerySession_FilterByType(t *testing.T) {
 	dir := t.TempDir()
 	writeTestEntries(t, dir, "sess-1", 6)

@@ -1090,7 +1090,11 @@ func TestEvidenceHealthFileStatsDegradesSafely(t *testing.T) {
 			t.Fatalf("remove dir: %v", err)
 		}
 
-		h := &evidenceHealthMonitor{recorder: rec}
+		// Real sinks, so a regression that drops the warning or the metric is
+		// caught rather than passing on a nil-sink no-op.
+		var logBuf bytes.Buffer
+		m := metrics.New()
+		h := &evidenceHealthMonitor{recorder: rec, metrics: m, logW: &logBuf}
 		h.selfAuditOK.Store(true)
 		got := h.fileStats(config.Defaults())
 		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
@@ -1106,5 +1110,35 @@ func TestEvidenceHealthFileStatsDegradesSafely(t *testing.T) {
 		if !h.selfAuditOK.Load() {
 			t.Fatal("a sampler read failure latched selfAuditOK off; it is a measurement failure, not an integrity finding")
 		}
+		if !strings.Contains(logBuf.String(), "file-count sampler unavailable") {
+			t.Fatalf("operator was not warned about the sampler failure: %q", logBuf.String())
+		}
+		if got := samplerErrorCount(t, m); got != 1 {
+			t.Fatalf("selfaudit_failures_total{check=sampler_error} = %v, want 1", got)
+		}
 	})
+}
+
+// samplerErrorCount reads the sampler_error self-audit counter out of the
+// metrics registry. The counter fields are unexported, so this gathers from the
+// registry the same way a scrape would.
+func samplerErrorCount(t *testing.T, m *metrics.Metrics) float64 {
+	t.Helper()
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if !strings.Contains(f.GetName(), "selfaudit_failures") {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetValue() == "sampler_error" {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }

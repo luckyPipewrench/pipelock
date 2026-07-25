@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -671,4 +672,154 @@ func TestEvidenceDoctorFlagsEmptyShard(t *testing.T) {
 	if !hasDoctorFinding(report, "empty_evidence_file") {
 		t.Fatalf("empty shard not reported; findings = %+v", report.Findings)
 	}
+}
+
+// TestEvidenceDoctorDirectoryShapes covers what the scan encounters in a real
+// recorder directory beyond a single clean session: nested directories it must
+// ignore, more than one session, and a shard it cannot read. An unreadable
+// shard in particular must be reported rather than skipped, because silently
+// passing over a file the doctor could not examine would let damage hide inside
+// it while the verdict still read clean.
+func TestEvidenceDoctorDirectoryShapes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// A nested directory must be ignored, not treated as evidence.
+	if err := os.Mkdir(filepath.Join(dir, "evidence-proxy-sub.jsonl"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Two distinct sessions exercise the cross-session ordering path.
+	writeDoctorEntries(t, dir, "evidence-alpha-0.jsonl", doctorEntryPlan{
+		{session: "alpha", seq: 0, prev: recorder.GenesisHash},
+	})
+	writeDoctorEntries(t, dir, "evidence-proxy-0.jsonl", doctorEntryPlan{
+		{session: "proxy", seq: 0, prev: recorder.GenesisHash},
+	})
+
+	report, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatalf("runEvidenceDoctor: %v", err)
+	}
+	if report.Damaged() {
+		t.Fatalf("two clean sessions plus a nested directory reported damage: %+v", report.Findings)
+	}
+	if report.FilesRead != 2 {
+		t.Fatalf("FilesRead = %d, want 2 (the nested directory must not be read)", report.FilesRead)
+	}
+
+	t.Run("unreadable shard is reported", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root can read a mode-0000 file")
+		}
+		blocked := filepath.Join(dir, "evidence-proxy-9.jsonl")
+		if err := os.WriteFile(blocked, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.Chmod(blocked, 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(blocked, 0o600) })
+
+		report, err := runEvidenceDoctor(dir)
+		if err != nil {
+			t.Fatalf("runEvidenceDoctor: %v", err)
+		}
+		if !hasDoctorFinding(report, "file_read_error") {
+			t.Fatalf("unreadable shard was silently skipped; findings = %+v", report.Findings)
+		}
+	})
+}
+
+// minimalDoctorV1Receipt builds a v1 action receipt payload. Field presence is
+// not enforced by Unmarshal, so this carries only what the doctor reads.
+func minimalDoctorV1Receipt(t *testing.T, chainSeq uint64, chainPrev, signer string) json.RawMessage {
+	t.Helper()
+	return json.RawMessage(fmt.Sprintf(`{
+		"version":1,
+		"action_record":{"version":1,"chain_seq":%d,"chain_prev_hash":%q},
+		"signer_key":%q
+	}`, chainSeq, chainPrev, signer))
+}
+
+// doctorV1ReceiptEntry builds a v1 action-receipt entry. The session is fixed:
+// these cases exercise chain handling within one writer session.
+func doctorV1ReceiptEntry(t *testing.T, seq uint64, prev string, detail json.RawMessage) recorder.Entry {
+	t.Helper()
+	entry := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  seq,
+		Timestamp: doctorTestTime(t, 1700000200, 0),
+		SessionID: "proxy",
+		Type:      "action_receipt",
+		EventKind: "proxy_decision",
+		Transport: "fetch",
+		Summary:   "v1",
+		Detail:    detail,
+		PrevHash:  prev,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	return entry
+}
+
+// TestEvidenceDoctorV1ReceiptChain covers the v1 action-receipt path, including
+// the decision to key chains on the recorder session rather than the signer. A
+// documented signing-key rotation continues one writer chain, so a signer-keyed
+// implementation would split it and report a false gap at the rotation point.
+func TestEvidenceDoctorV1ReceiptChain(t *testing.T) {
+	t.Parallel()
+
+	t.Run("clean chain across a signer rotation", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		first := doctorV1ReceiptEntry(t, 0, recorder.GenesisHash,
+			minimalDoctorV1Receipt(t, 0, recorder.GenesisHash, "signer-old"))
+		firstHash, err := doctorV1ReceiptHash(t, first)
+		if err != nil {
+			t.Fatalf("hash first receipt: %v", err)
+		}
+		// Same writer chain, new signing key: this must not read as a new chain.
+		second := doctorV1ReceiptEntry(t, 1, first.Hash,
+			minimalDoctorV1Receipt(t, 1, firstHash, "signer-new"))
+		writeDoctorRawEntries(t, dir, "evidence-proxy-0.jsonl", []recorder.Entry{first, second})
+
+		report, err := runEvidenceDoctor(dir)
+		if err != nil {
+			t.Fatalf("runEvidenceDoctor: %v", err)
+		}
+		if report.Damaged() {
+			t.Fatalf("a signer rotation was reported as damage: %+v", report.Findings)
+		}
+	})
+
+	t.Run("duplicate v1 chain seq is detected", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		a := doctorV1ReceiptEntry(t, 0, recorder.GenesisHash,
+			minimalDoctorV1Receipt(t, 0, recorder.GenesisHash, "signer-a"))
+		b := doctorV1ReceiptEntry(t, 1, a.Hash,
+			minimalDoctorV1Receipt(t, 0, "other-prev", "signer-a"))
+		writeDoctorRawEntries(t, dir, "evidence-proxy-0.jsonl", []recorder.Entry{a, b})
+
+		report, err := runEvidenceDoctor(dir)
+		if err != nil {
+			t.Fatalf("runEvidenceDoctor: %v", err)
+		}
+		if !hasDoctorFinding(report, "duplicate_receipt_chain_seq") {
+			t.Fatalf("findings = %+v, want duplicate v1 receipt chain_seq", report.Findings)
+		}
+	})
+}
+
+func doctorV1ReceiptHash(t *testing.T, entry recorder.Entry) (string, error) {
+	t.Helper()
+	raw, ok := rawEntryDetail(entry)
+	if !ok {
+		t.Fatal("entry detail is not JSON")
+	}
+	r, err := receipt.Unmarshal(raw)
+	if err != nil {
+		return "", err
+	}
+	return receipt.ReceiptHash(r)
 }

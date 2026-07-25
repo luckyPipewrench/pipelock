@@ -13,7 +13,7 @@ recorder directory formed one deployment-wide sequence. Use
 The recorder is designed for post-incident investigation, compliance evidence,
 and forensic replay.
 
-**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` and a signing key are configured, though: without them the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
+**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` is configured, and because `sign_checkpoints` defaults to `true` a signing key is required alongside it unless you opt into an unsigned recorder with `sign_checkpoints: false`. Without a `dir` the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
 
 ## What Gets Recorded
 

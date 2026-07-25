@@ -342,8 +342,16 @@ the server is running stops serving.
   subject only as `auth_subject_sha256` plus mapped roles. mTLS requests record
   the leaf certificate SPKI fingerprint as `mtls_spki_sha256` plus the mapped
   role. Denied authentication and permission checks include a bounded failure
-  category such as `no_credential`, `unknown_principal`, `role_lacks_permission`,
-  `expired`, or `invalid_token`.
+  category such as `missing_token`, `missing_client_certificate`,
+  `unmapped_client_certificate`, `permission_denied`, `expired`, or
+  `invalid_token`.
+  Audit log compatibility note: this release replaces raw `auth_subject` output
+  with `auth_subject_sha256` and adds `mtls_spki_sha256` and `permission`
+  fields on denial records. SIEM parsers that key on the old raw subject field
+  must migrate to the hashed subject field. Existing denial `reason=` values
+  for missing tokens, missing client certificates, unverified client
+  certificates, unmapped client certificates, and role permission denial remain
+  stable.
 - **Exemptions is inventory only.** `/exemptions` is GET-only and reads the
   already-loaded config snapshot. It has no POST route, no apply/remove/renew
   controls, no config write path, and no hot-reload hook.

@@ -40,13 +40,13 @@ func TestDashboardOIDCFailureCategory(t *testing.T) {
 		want string
 	}{
 		{"nil", nil, "-"},
-		{"missing bearer", errors.New("bearer token is missing"), "no_credential"},
+		{"missing bearer", errors.New("bearer token is missing"), "missing_token"},
 		{"missing issuer claim is invalid token", errors.New("OIDC issuer claim is missing or does not match"), "invalid_token"},
 		{"missing audience claim is invalid token", errors.New("OIDC audience claim is missing or does not match"), "invalid_token"},
 		{"missing subject claim is invalid token", errors.New("OIDC subject claim is missing or invalid"), "invalid_token"},
 		{"signature", errors.New("token signature is invalid"), "invalid_signature"},
 		{"expired", errors.New("token has expired"), "expired"},
-		{"unmapped role", errors.New("role claim has no mapped value"), "unknown_principal"},
+		{"unmapped role", errors.New("role claim has no mapped value"), "permission_denied"},
 		{"unknown signing key", errors.New("OIDC signing key \"kid-a\" not found"), "unknown_principal"},
 	}
 	for _, tc := range tests {
@@ -546,7 +546,7 @@ func TestDashboardRequestAuthorization_AuthAuditInfoTokenMethodsAndFailures(t *t
 			name:       "no credential",
 			setup:      func(*http.Request) {},
 			wantMethod: "none",
-			wantReason: "no_credential",
+			wantReason: "missing_token",
 		},
 	}
 	for _, tc := range tests {
@@ -764,6 +764,25 @@ func TestDashboardOIDC_UnknownKeyRefreshCanFindRotatedKey(t *testing.T) {
 	}
 }
 
+func TestDashboardOIDC_ExpiredJWKSRefreshIgnoresPriorUnknownKeyThrottle(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+
+	auth.keys.mu.Lock()
+	auth.keys.keys = map[string]*rsa.PublicKey{}
+	auth.keys.expiresAt = now.Add(-time.Second)
+	auth.keys.lastMiss = now.Add(-2 * time.Second)
+	auth.keys.mu.Unlock()
+
+	if _, err := auth.authenticate(requestWithBearer(t, p.token(t, p.validClaims(now)))); err != nil {
+		t.Fatalf("authenticate after expired cache refresh with prior unknown-kid miss: %v", err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads = %d, want initial fetch plus expired-cache refresh", got)
+	}
+}
+
 func TestDashboardOIDC_JWKSCacheMissingKeyAfterInitialRefreshFailsClosed(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
@@ -954,6 +973,7 @@ func TestParseDashboardRSAJWK(t *testing.T) {
 		{"bad modulus encoding", func(j *dashboardJWK) { j.N = "!" }, false, true},
 		{"bad exponent encoding", func(j *dashboardJWK) { j.E = "!" }, false, true},
 		{"weak modulus", func(j *dashboardJWK) { j.N = encodeInt(big.NewInt(17)) }, false, true},
+		{"oversize modulus", func(j *dashboardJWK) { j.N = encodeInt(new(big.Int).Lsh(big.NewInt(1), dashboardOIDCRSAMaxBits)) }, false, true},
 		{"even exponent", func(j *dashboardJWK) { j.E = encodeInt(big.NewInt(4)) }, false, true},
 		{"huge exponent", func(j *dashboardJWK) { j.E = encodeInt(new(big.Int).Lsh(big.NewInt(1), 80)) }, false, true},
 	}

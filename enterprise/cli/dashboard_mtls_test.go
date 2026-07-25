@@ -290,6 +290,21 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 	})
 
+	t.Run("valid bundle at exact size cap loads", func(t *testing.T) {
+		if len(validPEM) > dashboardClientCAMaxBytes {
+			t.Fatalf("test CA bundle is %d bytes, larger than cap %d", len(validPEM), dashboardClientCAMaxBytes)
+		}
+		bundle := append([]byte{}, validPEM...)
+		bundle = append(bundle, []byte(strings.Repeat(" ", dashboardClientCAMaxBytes-len(bundle)))...)
+		path := filepath.Join(t.TempDir(), "exact-cap-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write exact cap bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err != nil {
+			t.Fatalf("exact cap CA bundle rejected: %v", err)
+		}
+	})
+
 	t.Run("mixed valid and malformed bundle is rejected", func(t *testing.T) {
 		malformed := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a DER certificate")})
 		bundle := append(append([]byte{}, validPEM...), malformed...)
@@ -299,6 +314,28 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 		if _, err := loadDashboardClientCAs(path); err == nil {
 			t.Fatal("mixed valid/malformed CA bundle accepted; a malformed certificate must fail loud")
+		}
+	})
+
+	t.Run("trailing non PEM data is rejected", func(t *testing.T) {
+		bundle := append(append([]byte{}, validPEM...), []byte("not pem")...)
+		path := filepath.Join(t.TempDir(), "trailing-junk-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write trailing junk bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with trailing non-PEM data accepted")
+		}
+	})
+
+	t.Run("truncated trailing PEM is rejected", func(t *testing.T) {
+		bundle := append(append([]byte{}, validPEM...), []byte("-----BEGIN CERTIFICATE-----\ntruncated")...)
+		path := filepath.Join(t.TempDir(), "truncated-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write truncated bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with truncated trailing PEM accepted")
 		}
 	})
 
@@ -407,18 +444,18 @@ func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
 		{
 			name:       "missing certificate",
 			req:        httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil),
-			wantReason: "no_credential",
+			wantReason: "missing_client_certificate",
 		},
 		{
 			name:       "unverified certificate",
 			req:        dashboardMTLSTestRequest(t, mappedLeaf, false),
-			wantReason: "invalid_credential",
+			wantReason: "unverified_client_certificate",
 			wantSPKI:   dashboardClientCertSPKIFingerprint(mappedLeaf),
 		},
 		{
 			name:       "verified unmapped certificate",
 			req:        dashboardMTLSTestRequest(t, unmappedLeaf, true),
-			wantReason: "unknown_principal",
+			wantReason: "unmapped_client_certificate",
 			wantSPKI:   dashboardClientCertSPKIFingerprint(unmappedLeaf),
 		},
 		{

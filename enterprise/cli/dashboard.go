@@ -572,19 +572,19 @@ func dashboardAuthHandler(
 func dashboardClientCertAuthAuditInfo(auth *dashboardClientCertAuthorizer, r *http.Request) dashboard.AuthAuditInfo {
 	info := dashboard.AuthAuditInfo{
 		Method:        "mtls",
-		FailureReason: "no_credential",
+		FailureReason: "missing_client_certificate",
 	}
 	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return info
 	}
 	info.MTLSSPKISHA256 = dashboardClientCertSPKIFingerprint(r.TLS.PeerCertificates[0])
 	if len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		info.FailureReason = "invalid_credential"
+		info.FailureReason = "unverified_client_certificate"
 		return info
 	}
 	principal, ok := auth.principal(r)
 	if !ok {
-		info.FailureReason = "unknown_principal"
+		info.FailureReason = "unmapped_client_certificate"
 		return info
 	}
 	info.Roles = []string{principal.role}
@@ -596,7 +596,7 @@ func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo 
 	if auditWriter == nil {
 		return
 	}
-	info := dashboard.AuthAuditInfo{Method: "none", FailureReason: "no_credential"}
+	info := dashboard.AuthAuditInfo{Method: "none", FailureReason: "missing_token"}
 	if authInfo != nil {
 		info = authInfo(r)
 	}

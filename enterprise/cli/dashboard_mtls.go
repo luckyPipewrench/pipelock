@@ -6,6 +6,7 @@
 package entcli
 
 import (
+	"bytes"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
@@ -284,12 +285,12 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	// partial trust set. A trust anchor bundle must load completely or fail loud.
 	pool := x509.NewCertPool()
 	var added int
-	for rest := pemBytes; ; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
+	for rest := pemBytes; len(bytes.TrimSpace(rest)) > 0; {
+		block, remaining := pem.Decode(rest)
 		if block == nil {
-			break
+			return nil, errors.New("--client-ca-file contains malformed PEM data")
 		}
+		rest = remaining
 		if block.Type != "CERTIFICATE" {
 			return nil, fmt.Errorf("--client-ca-file contains a non-certificate PEM block %q", block.Type)
 		}

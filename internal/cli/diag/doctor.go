@@ -703,7 +703,7 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 				health.MaxSessionFiles,
 				health.MaxFilesPerSession,
 			),
-			Next: "run `pipelock evidence expire --config pipelock.yaml` or prune old evidence files after preserving the newest shard for each session",
+			Next: "archive and verify older JSONL shards before explicit pruning; automatic expiry preserves JSONL chain shards",
 		}
 	}
 	if health.NearSessionFileLimit {
@@ -721,7 +721,7 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 				health.MaxFilesPerSession,
 				health.WarningThreshold,
 			),
-			Next: "retention expiry now runs at startup and daily; run `pipelock evidence expire --config pipelock.yaml` for immediate cleanup",
+			Next: "archive and verify older JSONL shards before the session reaches the bounded resume cap",
 		}
 	}
 	return doctorReportCheck{

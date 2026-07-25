@@ -140,8 +140,9 @@ func expireCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "expire",
 		Short: "Expire old flight-recorder evidence files",
-		Long: `Remove flight-recorder evidence files older than retention_days.
-The newest JSONL shard for each session is preserved as a chain-resume anchor.
+		Long: `Remove raw-escrow sidecars older than retention_days.
+JSONL receipt-chain shards are preserved because deleting a shard can break
+full-history offline verification and published anchor replay.
 
 Use --config to apply flight_recorder.dir and flight_recorder.retention_days
 from the runtime config, or pass --receipt-dir and --retention-days directly.`,
@@ -179,7 +180,7 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 		return errors.New("--retention-days must be non-negative")
 	}
 	if retentionDays == 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "retention disabled for %s; expired 0 old evidence file(s)\n", filepath.Clean(dir))
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "retention disabled for %s; expired 0 old raw escrow sidecar(s)\n", filepath.Clean(dir))
 		return nil
 	}
 	rec, err := recorder.New(recorder.Config{
@@ -197,7 +198,7 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 	}
 	_, _ = fmt.Fprintf(
 		cmd.OutOrStdout(),
-		"expired %d old evidence file(s) from %s using retention_days=%d\n",
+		"expired %d old raw escrow sidecar(s) from %s using retention_days=%d\n",
 		removed,
 		filepath.Clean(dir),
 		retentionDays,

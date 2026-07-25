@@ -31,7 +31,7 @@ func runFlightRecorderExpiryOnce(rec *recorder.Recorder, logW io.Writer) {
 		return
 	}
 	if removed > 0 && logW != nil {
-		_, _ = fmt.Fprintf(logW, "pipelock: recorder retention expired %d old evidence file(s)\n", removed)
+		_, _ = fmt.Fprintf(logW, "pipelock: recorder retention expired %d old raw escrow sidecar(s)\n", removed)
 	}
 }
 

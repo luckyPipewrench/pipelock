@@ -2413,7 +2413,7 @@ dashboard_snapshot:
 | `enabled` | `true` | Enable evidence recording. **On by default**, but recording requires `dir` and a signing key — `enabled: true` with no `dir` is inert (nothing written), not an error. `pipelock init` provisions both. Set `enabled: false` to opt out. |
 | `dir` | (empty) | Directory for evidence files. Recorder is inert until set; `pipelock init` generates one. |
 | `checkpoint_interval` | `1000` | Entries between signed checkpoints |
-| `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
+| `retention_days` | `0` | Auto-expire raw-escrow sidecars after N days. JSONL receipt-chain shards are preserved for offline verification. 0 = keep forever. |
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
 | `require_receipts` | `false` | Require allow-path receipt emission before forwarding traffic. When true, signing/recorder failures block with `receipt_emission_failed`; this includes TLS-intercepted CONNECT inner HTTP requests before their upstream request. Block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |

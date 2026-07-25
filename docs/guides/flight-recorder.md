@@ -30,7 +30,7 @@ flight_recorder:
   enabled: true
   dir: /var/lib/pipelock/evidence
   checkpoint_interval: 1000      # entries between signed checkpoints
-  retention_days: 90             # auto-expire files older than 90 days (0 = forever)
+  retention_days: 90             # auto-expire raw-escrow sidecars older than 90 days (0 = forever)
   redact: true                   # DLP redaction before commit (recommended)
   require_receipts: false        # fail closed before forwarding when allow receipts cannot be emitted
   sign_checkpoints: true         # Ed25519 signed checkpoints
@@ -45,7 +45,7 @@ flight_recorder:
 | `enabled` | true | Master switch. **On by default.** Recording requires `dir` and a signing key too — `enabled: true` with no `dir` is inert (nothing is written), not an error. Set `enabled: false` to opt out. |
 | `dir` | (empty) | Directory for evidence files. The recorder stays inert until this is set; created if absent. `pipelock init` generates one. |
 | `checkpoint_interval` | 1000 | How many entries between signed checkpoints. |
-| `retention_days` | 0 | Auto-expire files after N days. 0 = never expire. |
+| `retention_days` | 0 | Auto-expire raw-escrow sidecars after N days. JSONL receipt-chain shards are preserved. 0 = never expire. |
 | `redact` | true | DLP scan each entry before writing. Replaces matched content with a redaction marker. |
 | `require_receipts` | false | Require receipt emission before allow-path traffic is forwarded. When true, missing or failed receipt emission blocks the action with `receipt_emission_failed`; block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | true | Sign each checkpoint with the agent's Ed25519 private key. |
@@ -106,7 +106,7 @@ Two operational notes:
 
 Because the recorder is on by default, two footguns are bounded by the defaults — keep them in mind if you change them:
 
-- **Disk growth.** Evidence files rotate at `max_entries_per_file` (default 10000) and can auto-expire with `retention_days`. Leave rotation on so a busy proxy cannot silently fill the disk; set `retention_days` for a hard cap.
+- **Disk growth.** Evidence files rotate at `max_entries_per_file` (default 10000). `retention_days` can trim old raw-escrow sidecars, but JSONL receipt-chain shards are preserved for offline verification; archive or explicitly prune evidence if you need a hard storage cap.
 - **Privacy.** Receipts record the *targets* of mediated traffic. `redact` (default `true`) DLP-scrubs each entry before it touches disk so secrets are not persisted in the clear. Do not disable it unless you have a separate control around the evidence directory.
 - **Sign-without-a-key.** `sign_checkpoints` defaults to `true`, so once you set a `dir` the recorder expects a signing key. Starting a persisting recorder with `sign_checkpoints: true` and no `signing_key_path` is a hard startup error (it would otherwise write checkpoints with an empty signature that `verify-receipt` later rejects as "missing signature"). Provide `signing_key_path`, or set `sign_checkpoints: false` for an explicitly unsigned hash-chained recorder. `pipelock init` sets both, so this only bites hand-written configs.
 
@@ -361,9 +361,9 @@ sessions, err := recorder.ListSessions("/var/lib/pipelock/evidence")
 
 Files rotate when a file reaches `max_entries_per_file` entries. The new file picks up where the old one left off, with the new file's first entry linking to the last entry in the previous file via `prev_hash`.
 
-Pipelock automatically expires evidence files older than `retention_days` days based on file modification time. Expiry runs once when the flight recorder starts and then periodically while the process is running. Expiry is best-effort: cleanup errors are surfaced as warnings, but they do not block proxy traffic.
+Pipelock automatically expires raw-escrow sidecars older than `retention_days` days based on file modification time. Expiry runs once when the flight recorder starts and then periodically while the process is running. Expiry is best-effort: cleanup errors are surfaced as warnings, but they do not block proxy traffic.
 
-The newest JSONL shard for each session is preserved as a chain-resume anchor, even when it is older than `retention_days`. That keeps the next receipt linked to a real prior tail instead of silently resetting the chain to genesis. Older shards can still expire normally, and encrypted raw-escrow sidecars are removed by age.
+JSONL shards are preserved even when they are older than `retention_days`. They are the hash-chain spine: deleting an older shard while retaining a newer shard can preserve append continuity, but it breaks full-history offline verification and can make a published anchor impossible to replay from local evidence.
 
 To trigger cleanup immediately, run:
 
@@ -373,7 +373,7 @@ pipelock evidence expire --config pipelock.yaml
 
 `pipelock doctor` warns when any session approaches the 256-shard bounded resume cap, using a 200-shard warning threshold so operators have headroom before receipt resume fails closed.
 
-Expired files are gone. If you need longer retention, either increase `retention_days` or copy evidence files to external storage before they expire.
+Expired raw sidecars are gone. If you need long-term raw-payload recovery, either increase `retention_days` or copy evidence files to external storage before they expire. If you need to reduce JSONL storage, archive the chain first and verify the archive before pruning local shards.
 
 ## Integration with Session Manifest and AgBOM
 
@@ -431,6 +431,7 @@ pipelock verify-receipt --chain /var/lib/pipelock/evidence \
 restarts), checks `prev_hash` linkage and sequence continuity, verifies each
 signature against the pinned key, and confirms the sealed `transcript_root`. If
 the chain rotated its signing key, pass each public key with a repeated `--key`.
-With `retention_days` enabled, this verifies the retained evidence window; copy
-evidence to external storage before expiry if you need full-history offline
-verification later.
+Because JSONL shards are preserved, this remains a full local-chain check unless
+an operator has explicitly pruned or moved shards. Copy evidence to external
+storage before manual pruning if you need full-history offline verification
+later.

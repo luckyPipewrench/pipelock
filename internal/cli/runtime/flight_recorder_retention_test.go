@@ -23,9 +23,10 @@ import (
 
 func TestNewServer_FlightRecorderRetentionRunsAtStartup(t *testing.T) {
 	dir := t.TempDir()
-	oldRemoved := writeRetentionTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
+	oldJSONL := writeRetentionTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
 	oldKept := writeRetentionTestFile(t, dir, "evidence-proxy-1.jsonl", 48*time.Hour)
-	recent := writeRetentionTestFile(t, dir, "evidence-proxy-2.raw.enc", time.Hour)
+	oldRemoved := writeRetentionTestFile(t, dir, "evidence-proxy-2.raw.enc", 48*time.Hour)
+	recent := writeRetentionTestFile(t, dir, "evidence-proxy-3.raw.enc", time.Hour)
 	cfgPath := writeServerTestConfig(t, strings.Join([]string{
 		"mode: balanced",
 		"flight_recorder:",
@@ -44,14 +45,14 @@ func TestNewServer_FlightRecorderRetentionRunsAtStartup(t *testing.T) {
 	t.Cleanup(func() { s.cleanup() })
 
 	if _, err := os.Stat(oldRemoved); !os.IsNotExist(err) {
-		t.Fatalf("old non-anchor file stat = %v, want not exist", err)
+		t.Fatalf("old raw escrow file stat = %v, want not exist", err)
 	}
-	for _, path := range []string{oldKept, recent} {
+	for _, path := range []string{oldJSONL, oldKept, recent} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("retained file %s stat: %v", filepath.Base(path), err)
 		}
 	}
-	if !buf.contains("recorder retention expired 1 old evidence file") {
+	if !buf.contains("recorder retention expired 1 old raw escrow sidecar") {
 		t.Fatalf("startup output missing retention expiry note:\n%s", buf.String())
 	}
 }
@@ -82,8 +83,9 @@ func TestNewServer_FlightRecorderRetentionDisabledKeepsOldFiles(t *testing.T) {
 
 func TestFlightRecorderRetentionPeriodicTickExpiresOldFiles(t *testing.T) {
 	dir := t.TempDir()
-	oldRemoved := writeRetentionTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
+	oldJSONL := writeRetentionTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
 	oldKept := writeRetentionTestFile(t, dir, "evidence-proxy-1.jsonl", 48*time.Hour)
+	oldRemoved := writeRetentionTestFile(t, dir, "evidence-proxy-2.raw.enc", 48*time.Hour)
 	rec, err := recorder.New(recorder.Config{
 		Enabled:       true,
 		Dir:           dir,
@@ -105,9 +107,12 @@ func TestFlightRecorderRetentionPeriodicTickExpiresOldFiles(t *testing.T) {
 	testwait.For(t, 2*time.Second, func() bool {
 		_, err := os.Stat(oldRemoved)
 		return os.IsNotExist(err)
-	}, "periodic retention expiry to remove old non-anchor shard")
+	}, "periodic retention expiry to remove old raw escrow sidecar")
 	if _, err := os.Stat(oldKept); err != nil {
 		t.Fatalf("periodic retention removed newest session shard: %v", err)
+	}
+	if _, err := os.Stat(oldJSONL); err != nil {
+		t.Fatalf("periodic retention removed JSONL chain shard: %v", err)
 	}
 }
 

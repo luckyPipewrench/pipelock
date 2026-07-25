@@ -573,8 +573,8 @@ func TestRecorder_Retention(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	// Create two old evidence files for one session. Retention removes the
-	// older shard but preserves the newest shard as the resume anchor.
+	// Create two old evidence files for one session. Retention must not remove
+	// JSONL shards because they are the verifiable hash-chain spine.
 	oldFile := filepath.Join(dir, "evidence-old-session-0.jsonl")
 	if err := os.WriteFile(oldFile, []byte(`{"v":1}`+"\n"), filePermissions); err != nil {
 		t.Fatal(err)
@@ -583,12 +583,19 @@ func TestRecorder_Retention(t *testing.T) {
 	if err := os.WriteFile(oldAnchor, []byte(`{"v":1}`+"\n"), filePermissions); err != nil {
 		t.Fatal(err)
 	}
+	singleOld := filepath.Join(dir, "evidence-single-old-session-0.jsonl")
+	if err := os.WriteFile(singleOld, []byte(`{"v":1}`+"\n"), filePermissions); err != nil {
+		t.Fatal(err)
+	}
 	// Set modification time to 2 days ago
 	old := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(oldFile, old, old); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(oldAnchor, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(singleOld, old, old); err != nil {
 		t.Fatal(err)
 	}
 
@@ -602,22 +609,174 @@ func TestRecorder_Retention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExpireOldFiles: %v", err)
 	}
-	if removed != 1 {
-		t.Errorf("expected 1 removed, got %d", removed)
+	if removed != 0 {
+		t.Errorf("expected 0 removed, got %d", removed)
 	}
 
-	// Verify old file is gone, the resume anchor remains, and recent file remains
-	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
-		t.Error("old file should be removed")
+	// Verify all JSONL evidence remains available for full-chain verification.
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Error("old JSONL shard should still exist")
 	}
 	if _, err := os.Stat(oldAnchor); err != nil {
 		t.Error("newest old session file should still exist")
+	}
+	if _, err := os.Stat(singleOld); err != nil {
+		t.Error("single old session shard should still exist")
 	}
 	if _, err := os.Stat(recentFile); err != nil {
 		t.Error("recent file should still exist")
 	}
 
 	_ = rec.Close()
+}
+
+func TestRecorder_RetentionKeepsRotatedJSONLChainVerifiable(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 100,
+		MaxEntriesPerFile:  2,
+		RetentionDays:      1,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := range 3 {
+		if err := rec.Record(recorder.Entry{
+			SessionID: "retained-chain",
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   fmt.Sprintf("entry %d", i),
+		}); err != nil {
+			t.Fatalf("Record(%d): %v", i, err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	full, err := recorder.QuerySession(dir, "retained-chain", nil)
+	if err != nil {
+		t.Fatalf("QuerySession before expiry: %v", err)
+	}
+	if full.TotalFiles != 2 {
+		t.Fatalf("total files before expiry = %d, want 2", full.TotalFiles)
+	}
+	if err := recorder.VerifyChain(full.Entries); err != nil {
+		t.Fatalf("VerifyChain before expiry: %v", err)
+	}
+
+	old := time.Now().Add(-48 * time.Hour)
+	for _, seqStart := range []string{"0", "2"} {
+		path := filepath.Join(dir, "evidence-retained-chain-"+seqStart+".jsonl")
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("Chtimes %s: %v", filepath.Base(path), err)
+		}
+	}
+
+	reopened, err := recorder.New(recorder.Config{
+		Enabled:       true,
+		Dir:           dir,
+		RetentionDays: 1,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New reopened: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	removed, err := reopened.ExpireOldFiles()
+	if err != nil {
+		t.Fatalf("ExpireOldFiles: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed JSONL chain shards = %d, want 0", removed)
+	}
+
+	retained, err := recorder.QuerySession(dir, "retained-chain", nil)
+	if err != nil {
+		t.Fatalf("QuerySession after expiry: %v", err)
+	}
+	if retained.TotalFiles != 2 {
+		t.Fatalf("total files after expiry = %d, want 2", retained.TotalFiles)
+	}
+	if err := recorder.VerifyChain(retained.Entries); err != nil {
+		t.Fatalf("VerifyChain after expiry: %v", err)
+	}
+}
+
+func TestRecorder_RetentionConcurrentPassesKeepJSONLAndDeleteRawOnce(t *testing.T) {
+	dir := t.TempDir()
+	oldJSONL := filepath.Join(dir, "evidence-concurrent-0.jsonl")
+	if err := os.WriteFile(oldJSONL, []byte(`{"v":1}`+"\n"), filePermissions); err != nil {
+		t.Fatalf("WriteFile JSONL: %v", err)
+	}
+	oldRaw := filepath.Join(dir, "evidence-concurrent-0.raw.enc")
+	if err := os.WriteFile(oldRaw, []byte("encrypted"), filePermissions); err != nil {
+		t.Fatalf("WriteFile raw: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	for _, path := range []string{oldJSONL, oldRaw} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("Chtimes %s: %v", filepath.Base(path), err)
+		}
+	}
+
+	recA, err := recorder.New(recorder.Config{
+		Enabled:       true,
+		Dir:           dir,
+		RetentionDays: 1,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New A: %v", err)
+	}
+	defer func() { _ = recA.Close() }()
+	recB, err := recorder.New(recorder.Config{
+		Enabled:       true,
+		Dir:           dir,
+		RetentionDays: 1,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New B: %v", err)
+	}
+	defer func() { _ = recB.Close() }()
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	removed := make(chan int, 2)
+	for _, rec := range []*recorder.Recorder{recA, recB} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			n, err := rec.ExpireOldFiles()
+			if err != nil {
+				errs <- err
+				return
+			}
+			removed <- n
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(removed)
+	for err := range errs {
+		t.Fatalf("ExpireOldFiles: %v", err)
+	}
+	totalRemoved := 0
+	for n := range removed {
+		totalRemoved += n
+	}
+	if totalRemoved != 1 {
+		t.Fatalf("total removed = %d, want exactly one raw sidecar", totalRemoved)
+	}
+	if _, err := os.Stat(oldJSONL); err != nil {
+		t.Fatalf("JSONL chain shard was removed: %v", err)
+	}
+	if _, err := os.Stat(oldRaw); !os.IsNotExist(err) {
+		t.Fatalf("old raw sidecar stat = %v, want not exist", err)
+	}
 }
 
 func TestRecorder_RetentionDisabled(t *testing.T) {

@@ -1477,7 +1477,7 @@ type FlightRecorder struct {
 	Enabled            bool                         `yaml:"enabled"`
 	Dir                string                       `yaml:"dir"`
 	CheckpointInterval int                          `yaml:"checkpoint_interval"`      // entries between signed checkpoints (default 1000)
-	RetentionDays      int                          `yaml:"retention_days"`           // auto-expire after N days (0=forever)
+	RetentionDays      int                          `yaml:"retention_days"`           // auto-expire raw sidecars after N days (0=forever)
 	Redact             bool                         `yaml:"redact"`                   // DLP on evidence before commit (default true)
 	SignCheckpoints    bool                         `yaml:"sign_checkpoints"`         // Ed25519 sign checkpoints (default true)
 	MaxEntriesPerFile  int                          `yaml:"max_entries_per_file"`     // rotate files (default 10000)

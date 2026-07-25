@@ -1143,8 +1143,13 @@ func (r *Recorder) waitDurableForCurrentFileLocked() {
 	}
 }
 
-// ExpireOldFiles removes evidence files older than RetentionDays.
-// Safe to call periodically. Returns the number of files removed.
+// ExpireOldFiles removes age-expired raw escrow sidecars.
+//
+// JSONL shards are the hash-chain spine. Deleting an older shard while retaining
+// a later shard preserves append continuity but breaks full-history offline
+// verification and can strand external anchors that commit to the removed
+// content. Until retention has a signed compaction/tombstone format, automatic
+// expiry must not remove JSONL chain shards.
 func (r *Recorder) ExpireOldFiles() (int, error) {
 	if r.nop {
 		return 0, nil
@@ -1161,8 +1166,6 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		return 0, fmt.Errorf("reading evidence directory: %w", err)
 	}
 
-	currentFile := r.currentFileName()
-	newestJSONL := newestEvidenceJSONLBySession(dirEntries)
 	removed := 0
 	for _, de := range dirEntries {
 		if de.IsDir() {
@@ -1172,10 +1175,7 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		if !isEvidenceFile(name) {
 			continue
 		}
-		if name == currentFile {
-			continue
-		}
-		if sessionID, _, ok := parseEvidenceFilename(name); ok && newestJSONL[sessionID] == name {
+		if strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
 		info, err := de.Info()
@@ -1192,36 +1192,6 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		}
 	}
 	return removed, nil
-}
-
-func (r *Recorder) currentFileName() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.file == nil {
-		return ""
-	}
-	return filepath.Base(r.file.Name())
-}
-
-func newestEvidenceJSONLBySession(dirEntries []os.DirEntry) map[string]string {
-	newest := make(map[string]string)
-	newestSeq := make(map[string]int)
-	for _, de := range dirEntries {
-		if de.IsDir() {
-			continue
-		}
-		name := de.Name()
-		sessionID, seqStart, ok := parseEvidenceFilename(name)
-		if !ok {
-			continue
-		}
-		currentSeq, found := newestSeq[sessionID]
-		if !found || seqStart > currentSeq || (seqStart == currentSeq && name > newest[sessionID]) {
-			newest[sessionID] = name
-			newestSeq[sessionID] = seqStart
-		}
-	}
-	return newest
 }
 
 func removeExpiredEvidenceFile(path string, cutoff time.Time) (bool, error) {
@@ -1278,8 +1248,9 @@ type EvidenceDirectoryHealth struct {
 }
 
 // EvidenceDirectoryHealthForDir returns file-count health for a recorder
-// directory. retentionDays controls the eligible-old-file count; zero preserves
-// keep-forever semantics and reports no eligible files.
+// directory. retentionDays controls the eligible-old-file count for files the
+// expirer is allowed to remove; zero preserves keep-forever semantics and
+// reports no eligible files.
 func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirectoryHealth, error) {
 	health := EvidenceDirectoryHealth{
 		WarningThreshold:   EvidenceFileWarningThreshold,
@@ -1296,7 +1267,6 @@ func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirec
 		cutoff = time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	}
 	counts := make(map[string]int)
-	newestJSONL := newestEvidenceJSONLBySession(dirEntries)
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
@@ -1318,7 +1288,7 @@ func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirec
 		if retentionDays <= 0 {
 			continue
 		}
-		if sessionID, _, ok := parseEvidenceFilename(name); ok && newestJSONL[sessionID] == name {
+		if strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
 		info, infoErr := de.Info()

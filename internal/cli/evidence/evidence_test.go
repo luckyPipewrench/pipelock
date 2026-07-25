@@ -706,8 +706,9 @@ func TestViewCmd_BadReceiptDir(t *testing.T) {
 func TestExpireCmd_UsesConfigRetention(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	oldRemoved := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
+	oldJSONL := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
 	oldKept := writeExpireTestFile(t, dir, "evidence-proxy-1.jsonl", 48*time.Hour)
+	oldRemoved := writeExpireTestFile(t, dir, "evidence-proxy-2.raw.enc", 48*time.Hour)
 	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
 	cfgYAML := strings.Join([]string{
 		"mode: balanced",
@@ -730,12 +731,14 @@ func TestExpireCmd_UsesConfigRetention(t *testing.T) {
 		t.Fatalf("expire execute: %v", err)
 	}
 	if _, err := os.Stat(oldRemoved); !os.IsNotExist(err) {
-		t.Fatalf("old non-anchor file stat = %v, want not exist", err)
+		t.Fatalf("old raw escrow file stat = %v, want not exist", err)
 	}
-	if _, err := os.Stat(oldKept); err != nil {
-		t.Fatalf("newest session shard should be retained: %v", err)
+	for _, path := range []string{oldJSONL, oldKept} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("JSONL chain shard should be retained: %v", err)
+		}
 	}
-	if !strings.Contains(buf.String(), "expired 1 old evidence file") {
+	if !strings.Contains(buf.String(), "expired 1 old raw escrow sidecar") {
 		t.Fatalf("output = %q, want expired count", buf.String())
 	}
 }

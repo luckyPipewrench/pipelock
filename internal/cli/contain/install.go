@@ -1302,9 +1302,9 @@ func stepInstallNFTRules() step {
 		desc: "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via pipelock-containment-nft.service",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			// Check nft version before generating rules. The containment
-			// ruleset requires "meta skuid" (available since nftables 0.4)
-			// and "counter log prefix ... drop" inline syntax (0.6+). Hosts
-			// with nft < 0.5 (rare but seen on AL2-era images) fail at load
+			// ruleset requires "meta skuid" (available since nftables 0.4),
+			// "counter log prefix ... drop" inline syntax (0.6+), and nft
+			// check mode (-c/--check, 0.8+). Hosts below that fail at load
 			// time with a cryptic parse error. Detect early and fail with a
 			// clear minimum-version message.
 			if err := checkNFTVersion(ctx, env); err != nil {
@@ -1372,17 +1372,14 @@ func stepInstallNFTRules() step {
 			if !tableLoaded || rulesChanged || liveRulesDrifted {
 				captureNFTPreState(ctx, env)
 			}
+			reloadedManagedChain := false
 			if tableLoaded && (rulesChanged || liveRulesDrifted) {
-				// nft -f merges into an existing table. Drop only the managed
-				// chain first so stale Pipelock rules cannot survive beside
-				// the new ruleset, while operator co-located chains in the
-				// table remain untouched.
-				if err := runOrErr(ctx, env, nftExecutable(env), "delete", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); err != nil {
-					return false, fmt.Errorf("delete stale nft chain inet %s %s: %w", env.nftTableOrDefault(), env.nftChainOrDefault(), err)
+				if err := reloadNFTManagedChain(ctx, env, body); err != nil {
+					return false, err
 				}
-				tableLoaded = false
+				reloadedManagedChain = true
 			}
-			if !tableLoaded || rulesChanged || liveRulesDrifted {
+			if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
 				if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
 					return false, fmt.Errorf("nft load failed: %w", err)
 				}
@@ -1450,6 +1447,9 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	if strings.TrimSpace(env.prevNFTTableDump) == "" {
 		return nil
 	}
+	if !nftTableDumpDeclaresExpectedTable(env.prevNFTTableDump, env.nftTableOrDefault()) {
+		return fmt.Errorf("captured nft table dump is not table inet %s", env.nftTableOrDefault())
+	}
 	restorePath := env.nftRulesPath + ".restore"
 	restoreScript := "delete table inet " + env.nftTableOrDefault() + "\n" + env.prevNFTTableDump
 	if err := env.writeFile(restorePath, []byte(restoreScript), modeConfigSecret); err != nil {
@@ -1463,6 +1463,34 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 		return fmt.Errorf("restore previous nft table: %w", err)
 	}
 	return nil
+}
+
+func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string) error {
+	reloadPath := env.nftRulesPath + ".reload"
+	reloadScript := "delete chain inet " + env.nftTableOrDefault() + " " + env.nftChainOrDefault() + "\n" + rulesBody
+	if err := env.writeFile(reloadPath, []byte(reloadScript), modeConfigSecret); err != nil {
+		return fmt.Errorf("write nft managed chain reload file %s: %w", reloadPath, err)
+	}
+	defer func() { _ = env.removeFile(reloadPath) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", reloadPath); err != nil {
+		return fmt.Errorf("validate nft managed chain reload: %w", err)
+	}
+	if err := runOrErr(ctx, env, nftExecutable(env), "-f", reloadPath); err != nil {
+		return fmt.Errorf("reload nft managed chain: %w", err)
+	}
+	return nil
+}
+
+func nftTableDumpDeclaresExpectedTable(dump, table string) bool {
+	for _, raw := range strings.Split(dump, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := nftLineFields(line)
+		return len(fields) >= 4 && fields[0] == "table" && fields[1] == "inet" && fields[2] == table && fields[3] == "{"
+	}
+	return false
 }
 
 func nftRulesTextHasManagedHeader(body string) bool {
@@ -1615,12 +1643,13 @@ func (e *installEnv) nftChainOrDefault() string {
 }
 
 // minNFTMajor and minNFTMinor define the minimum nftables version that
-// supports all syntax used by the containment ruleset: "meta skuid" (0.4+),
-// "counter log prefix ... drop" inline (0.6+), and "table inet" (0.2+).
-// We require 0.6.0 as the floor.
+// supports all syntax used by the containment ruleset and its validated
+// rollback/repair path: "meta skuid" (0.4+), "counter log prefix ... drop"
+// inline (0.6+), "table inet" (0.2+), and nft check mode (-c/--check, 0.8+).
+// We require 0.8.0 as the floor.
 const (
 	minNFTMajor = 0
-	minNFTMinor = 6
+	minNFTMinor = 8
 )
 
 // checkNFTVersion runs `nft -v` and parses the version. Returns nil when the
@@ -1645,7 +1674,7 @@ func checkNFTVersion(ctx context.Context, env *installEnv) error {
 	}
 	return fmt.Errorf(
 		"nft version %d.%d is too old; the containment ruleset requires nftables >= %d.%d "+
-			"(meta skuid + inline counter/log/drop). "+
+			"(meta skuid + inline counter/log/drop + nft check mode). "+
 			"Upgrade nftables: on RHEL/AL2 `yum install nftables`, on Debian/Ubuntu `apt install nftables`",
 		major, minor, minNFTMajor, minNFTMinor)
 }

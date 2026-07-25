@@ -126,6 +126,37 @@ func argvFor(name string, args ...string) string {
 	return name + " " + strings.Join(args, " ")
 }
 
+func managedChainReloadPath(env *installEnv) string {
+	return env.nftRulesPath + ".reload"
+}
+
+func assertManagedChainReload(t *testing.T, runner *fakeRunner, env *installEnv) {
+	t.Helper()
+	reloadPath := managedChainReloadPath(env)
+	var sawValidate, sawLoad bool
+	for _, c := range runner.calls {
+		if c.name != testNFT {
+			continue
+		}
+		args := strings.Join(c.args, " ")
+		if args == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			t.Fatalf("managed chain reload used standalone chain delete instead of validated reload script: %v", runner.calls)
+		}
+		if args == "delete table inet "+defaultNFTTable {
+			t.Fatalf("managed chain reload deleted the whole table: %v", runner.calls)
+		}
+		if len(c.args) == 3 && c.args[0] == "-c" && c.args[1] == "-f" && c.args[2] == reloadPath {
+			sawValidate = true
+		}
+		if len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == reloadPath {
+			sawLoad = true
+		}
+	}
+	if !sawValidate || !sawLoad {
+		t.Fatalf("expected validated managed chain reload script %s, got %v", reloadPath, runner.calls)
+	}
+}
+
 // newFakeEnv builds an installEnv backed by tmpdirs and fake hooks. The
 // filesystem-side fields (chown, mkdirAll, etc.) are wired to real os
 // calls operating under root, the tmpdir constructed for the test; the
@@ -1338,18 +1369,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 		t.Fatal("expected live drift repair")
 	}
 
-	var sawDelete, sawLoad bool
-	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			sawDelete = true
-		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			sawLoad = true
-		}
-	}
-	if !sawDelete || !sawLoad {
-		t.Fatalf("expected chain delete+reload for live drift, got %v", runner.calls)
-	}
+	assertManagedChainReload(t, runner, env)
 }
 
 func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.T) {
@@ -1386,18 +1406,7 @@ func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.
 		t.Fatal("expected unhooked lookalike chain to trigger rules reload")
 	}
 
-	var sawDelete, sawLoad bool
-	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			sawDelete = true
-		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			sawLoad = true
-		}
-	}
-	if !sawDelete || !sawLoad {
-		t.Fatalf("expected chain delete+reload for lookalike chain, got %v", runner.calls)
-	}
+	assertManagedChainReload(t, runner, env)
 }
 
 func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T) {
@@ -1421,9 +1430,9 @@ func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T)
 	}
 	for _, c := range runner.calls {
 		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			t.Fatalf("unattributed collision deleted nft table: %v", runner.calls)
+			t.Fatalf("unattributed collision deleted nft chain: %v", runner.calls)
 		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && (c.args[1] == env.nftRulesPath || c.args[1] == managedChainReloadPath(env)) {
 			t.Fatalf("unattributed collision loaded replacement rules: %v", runner.calls)
 		}
 	}
@@ -1463,18 +1472,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop
 		t.Fatal("expected fail-open live accept to trigger rules reload")
 	}
 
-	var sawDelete, sawLoad bool
-	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			sawDelete = true
-		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			sawLoad = true
-		}
-	}
-	if !sawDelete || !sawLoad {
-		t.Fatalf("expected chain delete+reload for unexpected accept, got %v", runner.calls)
-	}
+	assertManagedChainReload(t, runner, env)
 }
 
 func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasPreDropUnsafeVerdict(t *testing.T) {
@@ -1538,18 +1536,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasPreDropUnsafeVerdict(t *te
 				t.Fatalf("expected pre-drop %s to trigger rules reload", tc.name)
 			}
 
-			var sawDelete, sawLoad bool
-			for _, c := range runner.calls {
-				if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-					sawDelete = true
-				}
-				if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-					sawLoad = true
-				}
-			}
-			if !sawDelete || !sawLoad {
-				t.Fatalf("expected chain delete+reload for pre-drop %s, got %v", tc.name, runner.calls)
-			}
+			assertManagedChainReload(t, runner, env)
 		})
 	}
 }
@@ -1577,18 +1564,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasStaleAgentUID(t *testing.T
 		t.Fatal("expected stale live agent uid to trigger rules reload")
 	}
 
-	var sawDelete, sawLoad bool
-	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			sawDelete = true
-		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			sawLoad = true
-		}
-	}
-	if !sawDelete || !sawLoad {
-		t.Fatalf("expected chain delete+reload for stale uid, got %v", runner.calls)
-	}
+	assertManagedChainReload(t, runner, env)
 }
 
 func TestStepInstallNFTRules_RepairsMissingPersistenceUnitOnRerun(t *testing.T) {
@@ -1651,7 +1627,7 @@ func TestStepInstallNFTRules_LoadsWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestStepInstallNFTRules_DropsLoadedChainBeforeChangedReload(t *testing.T) {
+func TestStepInstallNFTRules_ReloadsLoadedChainWithValidatedScript(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("mkdir rules parent: %v", err)
@@ -1670,24 +1646,7 @@ func TestStepInstallNFTRules_DropsLoadedChainBeforeChangedReload(t *testing.T) {
 		t.Fatal("expected changed rules to apply")
 	}
 
-	deleteIdx, loadIdx := -1, -1
-	for i, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			deleteIdx = i
-		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			loadIdx = i
-		}
-	}
-	if deleteIdx == -1 {
-		t.Fatalf("expected nft delete chain before reload, got %v", runner.calls)
-	}
-	if loadIdx == -1 {
-		t.Fatalf("expected nft -f reload, got %v", runner.calls)
-	}
-	if deleteIdx > loadIdx {
-		t.Fatalf("chain delete must precede reload: delete=%d load=%d calls=%v", deleteIdx, loadIdx, runner.calls)
-	}
+	assertManagedChainReload(t, runner, env)
 }
 
 func TestStepInstallNFTRules_PersistsViaOwnedSystemdUnitAndRestores(t *testing.T) {
@@ -1798,7 +1757,7 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 func TestStepInstallNFTRules_UndoValidatesCapturedRestoreBeforeDeletingLiveTable(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.prevNFTTableStateKnown = true
-	env.prevNFTTableDump = "malformed nft dump\n"
+	env.prevNFTTableDump = "table inet " + defaultNFTTable + " {\n"
 	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
 		t.Fatalf("mkdir rules parent: %v", err)
 	}
@@ -1816,6 +1775,31 @@ func TestStepInstallNFTRules_UndoValidatesCapturedRestoreBeforeDeletingLiveTable
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
 			t.Fatalf("rollback applied restore after validation failed: %v", runner.calls)
+		}
+	}
+}
+
+func TestStepInstallNFTRules_UndoRejectsWrongCapturedTableBeforeDeletingLiveTable(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.prevNFTTableStateKnown = true
+	env.prevNFTTableDump = `table inet other_containment {
+		chain output_filter {
+			meta skuid 987 drop
+		}
+	}
+`
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+
+	s := stepInstallNFTRules()
+	err := s.undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "captured nft table dump is not table inet "+defaultNFTTable) {
+		t.Fatalf("undo error = %v, want wrong-table restore rejection", err)
+	}
+	for _, c := range runner.calls {
+		if c.name == testNFT {
+			t.Fatalf("wrong-table captured dump must not execute nft command: %v", runner.calls)
 		}
 	}
 }
@@ -1855,28 +1839,10 @@ func TestStepInstallNFTRules_ReloadDeletesOnlyManagedChain(t *testing.T) {
 		t.Fatal("expected live drift repair")
 	}
 
-	var sawDeleteChain, sawLoad bool
-	for _, c := range runner.calls {
-		if c.name != testNFT {
-			continue
-		}
-		args := strings.Join(c.args, " ")
-		if args == "delete table inet "+defaultNFTTable {
-			t.Fatalf("repair deleted the whole table despite co-located operator chain: %v", runner.calls)
-		}
-		if args == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			sawDeleteChain = true
-		}
-		if len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			sawLoad = true
-		}
-	}
-	if !sawDeleteChain || !sawLoad {
-		t.Fatalf("expected managed chain delete+reload, got %v", runner.calls)
-	}
+	assertManagedChainReload(t, runner, env)
 }
 
-func TestStepInstallNFTRules_DeleteChainFailureAbortsReload(t *testing.T) {
+func TestStepInstallNFTRules_ManagedChainReloadValidationFailureAbortsApply(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
@@ -1901,19 +1867,134 @@ func TestStepInstallNFTRules_DeleteChainFailureAbortsReload(t *testing.T) {
 	}
 `
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
-	runner.on(argvFor(testNFT, "delete", "chain", "inet", defaultNFTTable, defaultNFTChain), "busy", 1, nil)
+	runner.on(argvFor(testNFT, "-c", "-f", managedChainReloadPath(env)), "syntax error", 1, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
-	if err == nil || !strings.Contains(err.Error(), "delete stale nft chain") {
-		t.Fatalf("apply error = %v, want delete-chain failure", err)
+	if err == nil || !strings.Contains(err.Error(), "validate nft managed chain reload") {
+		t.Fatalf("apply error = %v, want managed-chain reload validation failure", err)
 	}
 	if applied {
-		t.Fatal("failed chain delete must not report applied")
+		t.Fatal("failed managed-chain reload validation must not report applied")
 	}
 	for _, c := range runner.calls {
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
-			t.Fatalf("reload continued after stale chain delete failed: %v", runner.calls)
+		if c.name != testNFT {
+			continue
+		}
+		if strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			t.Fatalf("validation failure used standalone chain delete: %v", runner.calls)
+		}
+		if len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == managedChainReloadPath(env) {
+			t.Fatalf("reload continued after managed-chain reload validation failed: %v", runner.calls)
+		}
+	}
+}
+
+func TestStepInstallNFTRules_ManagedChainReloadApplyFailureDoesNotDeleteSeparately(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	drifted := `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 accept
+			meta skuid 987 drop
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
+	runner.on(argvFor(testNFT, "-f", managedChainReloadPath(env)), "netlink apply failed", 1, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "reload nft managed chain") {
+		t.Fatalf("apply error = %v, want managed-chain reload apply failure", err)
+	}
+	if applied {
+		t.Fatal("failed managed-chain reload apply must not report applied")
+	}
+	var sawValidate bool
+	for _, c := range runner.calls {
+		if c.name != testNFT {
+			continue
+		}
+		if len(c.args) == 3 && c.args[0] == "-c" && c.args[1] == "-f" && c.args[2] == managedChainReloadPath(env) {
+			sawValidate = true
+		}
+		if strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			t.Fatalf("reload apply failure used standalone chain delete: %v", runner.calls)
+		}
+		if strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+			t.Fatalf("reload apply failure deleted table separately: %v", runner.calls)
+		}
+	}
+	if !sawValidate {
+		t.Fatalf("reload apply failure did not validate combined reload script first: %v", runner.calls)
+	}
+}
+
+func TestStepInstallNFTRules_ManagedChainReloadWriteFailureAbortsBeforeNFT(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	drifted := `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 accept
+			meta skuid 987 drop
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
+	originalWriteFile := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == managedChainReloadPath(env) {
+			return stringError("reload write denied")
+		}
+		return originalWriteFile(path, contents, mode)
+	}
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "write nft managed chain reload file") {
+		t.Fatalf("apply error = %v, want managed-chain reload write failure", err)
+	}
+	if applied {
+		t.Fatal("failed managed-chain reload write must not report applied")
+	}
+	for _, c := range runner.calls {
+		if c.name != testNFT {
+			continue
+		}
+		if len(c.args) >= 2 && c.args[len(c.args)-1] == managedChainReloadPath(env) {
+			t.Fatalf("reload write failure must not invoke nft on reload script: %v", runner.calls)
+		}
+		if strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			t.Fatalf("reload write failure used standalone chain delete: %v", runner.calls)
 		}
 	}
 }

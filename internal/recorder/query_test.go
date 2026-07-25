@@ -200,6 +200,48 @@ func TestQuerySession_ZeroReadLimitsUseDefaultPerFileCeilings(t *testing.T) {
 			t.Fatalf("BytesRead = %d, want evidence that default byte limit was reached", result.BytesRead)
 		}
 	})
+
+	// A zero limit selects the default PER FILE, not a session-wide budget. Each
+	// file here stays under BOTH default ceilings (bytes and entries) while the
+	// pair together exceeds one default byte budget, so a regression that spent a
+	// single shared budget across the session would truncate the second file.
+	t.Run("default byte ceiling applies per file, not per session", func(t *testing.T) {
+		dir := t.TempDir()
+		const entriesPerFile = 6000
+		pad := strings.Repeat("x", 700)
+		targetPerFile := int(recorder.MaxEvidenceReadFileBytes) * 2 / 3
+		for index, name := range []string{"evidence-sess-1-0.jsonl", "evidence-sess-1-1.jsonl"} {
+			var body strings.Builder
+			for n := 0; n < entriesPerFile; n++ {
+				_, _ = fmt.Fprintf(&body,
+					`{"v":2,"seq":%d,"ts":"2026-01-01T00:00:00Z","session_id":"sess-1","type":"request","transport":"fetch","summary":%q}`+"\n",
+					index*entriesPerFile+n, pad)
+			}
+			if body.Len() >= int(recorder.MaxEvidenceReadFileBytes) {
+				t.Fatalf("file %s is %d bytes, must stay under the per-file default %d", name, body.Len(), recorder.MaxEvidenceReadFileBytes)
+			}
+			if body.Len() < targetPerFile/2 {
+				t.Fatalf("file %s is only %d bytes, too small to prove the per-file budget", name, body.Len())
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if entriesPerFile >= recorder.MaxEvidenceReadEntries {
+			t.Fatalf("entriesPerFile %d must stay under the entry default %d", entriesPerFile, recorder.MaxEvidenceReadEntries)
+		}
+
+		result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{MaxBytesRead: 0})
+		if err != nil {
+			t.Fatalf("QuerySession: %v", err)
+		}
+		if result.Truncated {
+			t.Fatalf("two files each under the default ceilings were truncated: bytes=%d entries=%d", result.BytesRead, result.EntriesRead)
+		}
+		if result.BytesRead <= recorder.MaxEvidenceReadFileBytes {
+			t.Fatalf("BytesRead = %d, want the pair to exceed one default byte ceiling", result.BytesRead)
+		}
+	})
 }
 
 func TestQuerySession_FilterByType(t *testing.T) {

@@ -27,6 +27,7 @@ const (
 	LimitFsyncHonesty        LimitID = "L-FSYNC-HONESTY"
 	LimitFsyncDOS            LimitID = "L-FSYNC-DOS"
 	LimitContainmentUnproven LimitID = "L-CONTAINMENT-UNPROVEN"
+	LimitConcurrentWriters   LimitID = "L-CONCURRENT-RECORDER-WRITERS"
 )
 
 var Limits = []Limit{
@@ -41,6 +42,7 @@ var Limits = []Limit{
 	{ID: LimitFsyncHonesty, Title: "Fsync Honesty", Category: "recorder-integrity", Summary: "Hardware fsync honesty vs lying storage is unprovable.", Bound: "Attest storage config + capture the syscall return."},
 	{ID: LimitFsyncDOS, Title: "Fsync Backpressure", Category: "availability", Summary: "fsync/backpressure is a DoS surface; fail-closed blocking under storage stall can stall egress.", Bound: "fsync_errors_total SLO + alerting; a deliberate integrity-over-availability tradeoff."},
 	{ID: LimitContainmentUnproven, Title: "Containment Unproven", Category: "completeness", Summary: "\"The boundary is the witness\" holds only under attested containment; the binary alone cannot prove non-bypass.", Bound: "Containment-attestation grade (item d)."},
+	{ID: LimitConcurrentWriters, Title: "Concurrent Recorder Writers", Category: "recorder-integrity", Summary: "Concurrent pipelock processes sharing one recorder directory can fork the sequence and produce a structurally unverifiable chain; the verifier may report a prev_hash mismatch that looks like tampering.", Bound: "Single-writer guard / per-writer evidence directories (not yet enforced); detect existing damage with `pipelock evidence doctor DIR`."},
 }
 
 func ByID(id LimitID) (Limit, bool) {

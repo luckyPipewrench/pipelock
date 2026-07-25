@@ -197,6 +197,12 @@ func Unmarshal(data []byte) (Receipt, error) {
 		// ...". Wrap it with the ErrUnknownField sentinel so callers can match
 		// the strict-schema rejection with errors.Is.
 		if strings.Contains(err.Error(), "unknown field") {
+			if strings.Contains(err.Error(), `"detected_patterns"`) {
+				legacy, legacyErr := unmarshalLegacyDetectedPatterns(data)
+				if legacyErr == nil {
+					return legacy, nil
+				}
+			}
 			return Receipt{}, fmt.Errorf("unmarshal receipt: %w: %w", ErrUnknownField, err)
 		}
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
@@ -206,6 +212,48 @@ func Unmarshal(data []byte) (Receipt, error) {
 			return Receipt{}, fmt.Errorf("unmarshal receipt: %w: %w", ErrTrailingTokens, err)
 		}
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", ErrTrailingTokens)
+	}
+	return r, nil
+}
+
+func unmarshalLegacyDetectedPatterns(data []byte) (Receipt, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return Receipt{}, err
+	}
+	actionRaw, ok := top["action_record"]
+	if !ok {
+		return Receipt{}, ErrUnknownField
+	}
+	var action map[string]json.RawMessage
+	if err := json.Unmarshal(actionRaw, &action); err != nil {
+		return Receipt{}, err
+	}
+	if _, ok := action["detected_patterns"]; !ok {
+		return Receipt{}, ErrUnknownField
+	}
+	delete(action, "detected_patterns")
+	strippedAction, err := json.Marshal(action)
+	if err != nil {
+		return Receipt{}, err
+	}
+	top["action_record"] = strippedAction
+	stripped, err := json.Marshal(top)
+	if err != nil {
+		return Receipt{}, err
+	}
+
+	var r Receipt
+	dec := json.NewDecoder(bytes.NewReader(stripped))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		return Receipt{}, err
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return Receipt{}, err
+		}
+		return Receipt{}, ErrTrailingTokens
 	}
 	return r, nil
 }

@@ -706,9 +706,9 @@ func TestViewCmd_BadReceiptDir(t *testing.T) {
 func TestExpireCmd_UsesConfigRetention(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	oldJSONL := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
-	oldKept := writeExpireTestFile(t, dir, "evidence-proxy-1.jsonl", 48*time.Hour)
-	oldRemoved := writeExpireTestFile(t, dir, "evidence-proxy-2.raw.enc", 48*time.Hour)
+	oldJSONL := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl")
+	oldKept := writeExpireTestFile(t, dir, "evidence-proxy-1.jsonl")
+	oldRemoved := writeExpireTestFile(t, dir, "evidence-proxy-2.raw.enc")
 	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
 	cfgYAML := strings.Join([]string{
 		"mode: balanced",
@@ -746,7 +746,7 @@ func TestExpireCmd_UsesConfigRetention(t *testing.T) {
 func TestExpireCmd_RetentionDisabledIsNoOp(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	oldFile := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl", 48*time.Hour)
+	oldFile := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl")
 
 	var buf bytes.Buffer
 	cmd := Cmd()
@@ -764,13 +764,13 @@ func TestExpireCmd_RetentionDisabledIsNoOp(t *testing.T) {
 	}
 }
 
-func writeExpireTestFile(t *testing.T, dir, name string, age time.Duration) string {
+func writeExpireTestFile(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
-	ts := time.Now().Add(-age)
+	ts := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(path, ts, ts); err != nil {
 		t.Fatalf("chtimes %s: %v", name, err)
 	}

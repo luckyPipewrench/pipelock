@@ -136,6 +136,18 @@ These limits are not loopholes in receipt verification. They are the boundary of
 
 **How the verifier surfaces it:** Passing verification prints `L-CONTAINMENT-UNPROVEN` with this summary when the verified surface is subject to the limit.
 
+## L-CONCURRENT-RECORDER-WRITERS - Concurrent Recorder Writers
+
+**Category:** recorder-integrity
+
+**Summary:** Concurrent pipelock processes sharing one recorder directory can fork the sequence and produce a structurally unverifiable chain; the verifier may report a prev_hash mismatch that looks like tampering.
+
+**Why no rung closes it:** The receipt chain can prove byte integrity, ordering, and signer binding for records it sees. This limit describes a condition outside that in-domain proof.
+
+**Bound:** Single-writer guard / per-writer evidence directories (not yet enforced); detect existing damage with `pipelock evidence doctor DIR`.
+
+**How the verifier surfaces it:** Passing verification prints `L-CONCURRENT-RECORDER-WRITERS` with this summary when the verified surface is subject to the limit.
+
 ## What Pipelock DOES Prove
 
 Pipelock receipts prove that the verified bytes were signed by the trusted key, chained in order, and checked by the verifier without mutation. Anchors and containment evidence can narrow specific gaps, but they do not turn these hard limits into stronger claims than the evidence supports.

@@ -247,13 +247,34 @@ func (d *evidenceDoctor) scanJSONL(path string) {
 		return
 	}
 	d.filesRead++
+	if len(entries) == 0 {
+		// A named evidence shard with no records is not normal steady state.
+		// Report it rather than letting it contribute nothing: an emptied or
+		// truncated shard produces no refs, so every downstream linkage check
+		// would silently pass over it.
+		d.addFinding("empty_evidence_file", fmt.Sprintf("%s: contains no entries", filepath.Base(path)))
+		return
+	}
 	for _, entry := range entries {
+		// Recompute rather than trust the stored hash. The doctor is what an
+		// operator reaches for to tell fork damage apart from tampering, so it
+		// cannot take an entry's own claim about its hash at face value: an
+		// edited record whose hash field was left intact would otherwise be
+		// reported healthy whenever no later record happens to reference it.
+		computed := recorder.ComputeHash(entry)
+		if computed != entry.Hash {
+			d.addFinding("entry_hash_mismatch", fmt.Sprintf(
+				"%s seq %d: stored hash %s does not match contents (computed %s)",
+				filepath.Base(path), entry.Sequence, shortDoctorHash(entry.Hash), shortDoctorHash(computed)))
+		}
 		ref := doctorEntryRef{
-			Session:  entry.SessionID,
-			File:     filepath.Base(path),
-			Seq:      entry.Sequence,
+			Session: entry.SessionID,
+			File:    filepath.Base(path),
+			Seq:     entry.Sequence,
+			// Linkage is checked against the recomputed hash so a tampered
+			// record cannot present a self-consistent chain.
 			PrevHash: entry.PrevHash,
-			Hash:     entry.Hash,
+			Hash:     computed,
 			RawRef:   entry.RawRef,
 		}
 		d.recorderRefs = append(d.recorderRefs, ref)
@@ -282,14 +303,21 @@ func (d *evidenceDoctor) scanReceiptEntry(path string, entry recorder.Entry) {
 			d.addFinding("malformed_receipt", fmt.Sprintf("%s seq %d: hash action_receipt: %v", filepath.Base(path), entry.Sequence, err))
 			return
 		}
-		chain := "v1 session=" + entry.SessionID + " signer=" + shortDoctorHash(r.SignerKey)
+		// Partition by session only, never by signer identity. A documented
+		// signing-key rotation continues one writer chain, so keying on the
+		// signer would split it and manufacture false missing-genesis and gap
+		// findings in exactly the rotation case the docs say is supported. A
+		// truncated signer hash is doubly unsuitable as a map key because
+		// distinct keys can share a prefix. The signer stays an attribute on
+		// the finding instead.
+		chain := "v1 session=" + entry.SessionID
 		d.receiptRefs[chain] = append(d.receiptRefs[chain], doctorChainRef{
 			Chain:    chain,
 			File:     filepath.Base(path),
 			Seq:      r.ActionRecord.ChainSeq,
 			PrevHash: r.ActionRecord.ChainPrevHash,
 			Hash:     hash,
-			Label:    "action_receipt",
+			Label:    "action_receipt signer=" + shortDoctorHash(r.SignerKey),
 		})
 	case "evidence_receipt":
 		raw, ok := rawEntryDetail(entry)
@@ -307,14 +335,16 @@ func (d *evidenceDoctor) scanReceiptEntry(path string, entry recorder.Entry) {
 			d.addFinding("malformed_receipt", fmt.Sprintf("%s seq %d: hash evidence_receipt: %v", filepath.Base(path), entry.Sequence, err))
 			return
 		}
-		chain := "v2 session=" + entry.SessionID + " signer=" + r.Signature.SignerKeyID
+		// SignerKeyID is an untrusted self-declared label, so it is not a safe
+		// partition key either. Session only, signer as an attribute.
+		chain := "v2 session=" + entry.SessionID
 		d.receiptRefs[chain] = append(d.receiptRefs[chain], doctorChainRef{
 			Chain:    chain,
 			File:     filepath.Base(path),
 			Seq:      r.ChainSeq,
 			PrevHash: r.ChainPrevHash,
 			Hash:     hash,
-			Label:    string(r.PayloadKind),
+			Label:    string(r.PayloadKind) + " signer=" + r.Signature.SignerKeyID,
 		})
 	}
 }

@@ -209,12 +209,18 @@ func TestEvidenceDoctorDirectoryReadFailures(t *testing.T) {
 	t.Run("over recorder cap still scans", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
+		// Sidecars count toward the file budget without being parsed as JSONL,
+		// so they push the directory past the recorder cap without inventing
+		// empty chain shards that would themselves be a finding.
 		for i := 0; i <= recorder.MaxEvidenceReadDirectoryEntries; i++ {
-			name := fmt.Sprintf("evidence-proxy-%d.jsonl", i)
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o600); err != nil {
+			name := fmt.Sprintf("evidence-proxy-%d.raw.enc", i)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
 				t.Fatalf("write %s: %v", name, err)
 			}
 		}
+		writeDoctorEntries(t, dir, "evidence-proxy-0.jsonl", doctorEntryPlan{
+			{session: "proxy", seq: 0, prev: recorder.GenesisHash},
+		})
 		report, err := runEvidenceDoctor(dir)
 		if err != nil {
 			t.Fatalf("runEvidenceDoctor: %v", err)
@@ -237,8 +243,8 @@ func TestEvidenceDoctorDirectoryReadFailures(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		for i := 0; i <= maxEvidenceDoctorFiles; i++ {
-			name := fmt.Sprintf("evidence-proxy-%d.jsonl", i)
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o600); err != nil {
+			name := fmt.Sprintf("evidence-proxy-%d.raw.enc", i)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
 				t.Fatalf("write %s: %v", name, err)
 			}
 		}
@@ -592,8 +598,8 @@ func TestEvidenceDoctorCommandExitPaths(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		for i := 0; i <= maxEvidenceDoctorFiles; i++ {
-			name := fmt.Sprintf("evidence-proxy-%d.jsonl", i)
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o600); err != nil {
+			name := fmt.Sprintf("evidence-proxy-%d.raw.enc", i)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
 				t.Fatalf("write %s: %v", name, err)
 			}
 		}
@@ -610,4 +616,59 @@ func TestEvidenceDoctorCommandExitPaths(t *testing.T) {
 			t.Fatalf("exit code = %d, want ExitGeneral %d", got, cliutil.ExitGeneral)
 		}
 	})
+}
+
+// TestEvidenceDoctorDetectsTamperedEntry is the guard for the doctor's core
+// promise. Operators reach for it to tell fork damage apart from tampering, so
+// it must recompute each entry's hash rather than trusting the stored field. An
+// edited record that keeps its original hash value is exactly the case a
+// trusting implementation would report as healthy.
+func TestEvidenceDoctorDetectsTamperedEntry(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeDoctorEntries(t, dir, "evidence-proxy-0.jsonl", doctorEntryPlan{
+		{session: "proxy", seq: 0, prev: recorder.GenesisHash, summary: "original"},
+	})
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+
+	// Edit the payload while leaving the recorded hash untouched.
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	tampered := bytes.Replace(raw, []byte(`"original"`), []byte(`"tampered"`), 1)
+	if bytes.Equal(raw, tampered) {
+		t.Fatal("fixture did not contain the expected payload to tamper with")
+	}
+	if err := os.WriteFile(path, tampered, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	report, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatalf("runEvidenceDoctor: %v", err)
+	}
+	if !hasDoctorFinding(report, "entry_hash_mismatch") {
+		t.Fatalf("tampered entry not detected; findings = %+v", report.Findings)
+	}
+}
+
+// TestEvidenceDoctorFlagsEmptyShard covers the other way damage hides: a shard
+// that was emptied or truncated contributes no entries, so every linkage check
+// passes over it silently unless its emptiness is itself reported.
+func TestEvidenceDoctorFlagsEmptyShard(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte(""), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	report, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatalf("runEvidenceDoctor: %v", err)
+	}
+	if !hasDoctorFinding(report, "empty_evidence_file") {
+		t.Fatalf("empty shard not reported; findings = %+v", report.Findings)
+	}
 }

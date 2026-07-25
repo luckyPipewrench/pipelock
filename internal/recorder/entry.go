@@ -266,12 +266,12 @@ func VerifyCheckpoints(entries []Entry, pubKey ed25519.PublicKey) error {
 // ReadEntries reads and parses JSONL evidence entries from a file.
 // Accepts the versions in acceptedEntryVersions; rejects unknown versions.
 func ReadEntries(path string) ([]Entry, error) {
-	entries, truncated, _, err := readEntries(path, defaultEntryReadLimits())
+	entries, truncated, bytesRead, err := readEntries(path, defaultEntryReadLimits())
 	if err != nil {
 		return nil, err
 	}
 	if truncated {
-		return nil, readLimitExceededError(path, defaultEntryReadLimits())
+		return nil, readLimitExceededError(path, defaultEntryReadLimits(), bytesRead)
 	}
 	return entries, nil
 }
@@ -293,12 +293,12 @@ func readEntries(path string, limits entryReadLimits) ([]Entry, bool, int64, err
 // ReadEntriesFromReader reads and parses JSONL evidence entries from r.
 // It applies the same duplicate-key and version fences as ReadEntries.
 func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
-	entries, truncated, _, err := readEntriesFromReader(r, defaultEntryReadLimits())
+	entries, truncated, bytesRead, err := readEntriesFromReader(r, defaultEntryReadLimits())
 	if err != nil {
 		return nil, err
 	}
 	if truncated {
-		return nil, readLimitExceededError("reader", defaultEntryReadLimits())
+		return nil, readLimitExceededError("reader", defaultEntryReadLimits(), bytesRead)
 	}
 	return entries, nil
 }
@@ -414,14 +414,14 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 	}
 }
 
-func readLimitExceededError(path string, limits entryReadLimits) error {
+func readLimitExceededError(path string, limits entryReadLimits, bytesRead int64) error {
 	name := filepath.Base(path)
 	if name == "." || name == string(filepath.Separator) {
 		name = path
 	}
 	switch {
-	case limits.MaxEntries > 0 && limits.MaxBytes > 0:
-		return fmt.Errorf("%w: evidence file %s exceeds %d entries or %d bytes", ErrEvidenceReadLimitExceeded, name, limits.MaxEntries, limits.MaxBytes)
+	case limits.MaxBytes > 0 && bytesRead > limits.MaxBytes:
+		return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, name, limits.MaxBytes)
 	case limits.MaxEntries > 0:
 		return fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, name, limits.MaxEntries)
 	case limits.MaxBytes > 0:

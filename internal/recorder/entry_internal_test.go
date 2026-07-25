@@ -122,6 +122,9 @@ func TestReadEntriesStrictBoundaries(t *testing.T) {
 		if !errors.Is(err, ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("ReadEntries error = %v, want ErrEvidenceReadLimitExceeded", err)
 		}
+		if got := err.Error(); !strings.Contains(got, "bytes") || strings.Contains(got, "entries") {
+			t.Fatalf("ReadEntries error = %q, want byte-limit diagnosis only", got)
+		}
 	})
 
 	t.Run("file as parent", func(t *testing.T) {
@@ -160,6 +163,9 @@ func TestReadEntriesStrictBoundaries(t *testing.T) {
 		if !errors.Is(err, ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("ReadEntriesFromReader error = %v, want ErrEvidenceReadLimitExceeded", err)
 		}
+		if got := err.Error(); !strings.Contains(got, "entries") || strings.Contains(got, "bytes") {
+			t.Fatalf("ReadEntriesFromReader error = %q, want entry-limit diagnosis only", got)
+		}
 	})
 }
 
@@ -172,20 +178,26 @@ func TestReadEntriesFromReaderPropagatesReaderError(t *testing.T) {
 
 func TestReadLimitExceededErrorMessages(t *testing.T) {
 	tests := []struct {
-		name   string
-		limits entryReadLimits
-		want   string
+		name      string
+		limits    entryReadLimits
+		bytesRead int64
+		want      string
+		wantNot   string
 	}{
-		{name: "entries and bytes", limits: entryReadLimits{MaxEntries: 1, MaxBytes: 2}, want: "1 entries or 2 bytes"},
+		{name: "entry limit with byte ceiling", limits: entryReadLimits{MaxEntries: 1, MaxBytes: 2}, bytesRead: 2, want: "1 entries", wantNot: "bytes"},
+		{name: "byte limit with entry ceiling", limits: entryReadLimits{MaxEntries: 1, MaxBytes: 2}, bytesRead: 3, want: "2 bytes", wantNot: "entries"},
 		{name: "entries", limits: entryReadLimits{MaxEntries: 1}, want: "1 entries"},
-		{name: "bytes", limits: entryReadLimits{MaxBytes: 2}, want: "2 bytes"},
+		{name: "bytes", limits: entryReadLimits{MaxBytes: 2}, bytesRead: 3, want: "2 bytes"},
 		{name: "fallback", limits: entryReadLimits{}, want: "bounded read limits"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := readLimitExceededError("evidence.jsonl", test.limits)
+			err := readLimitExceededError("evidence.jsonl", test.limits, test.bytesRead)
 			if !errors.Is(err, ErrEvidenceReadLimitExceeded) || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("readLimitExceededError = %v, want ErrEvidenceReadLimitExceeded containing %q", err, test.want)
+			}
+			if test.wantNot != "" && strings.Contains(err.Error(), test.wantNot) {
+				t.Fatalf("readLimitExceededError = %v, want no %q diagnosis", err, test.wantNot)
 			}
 		})
 	}

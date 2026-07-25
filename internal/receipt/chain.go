@@ -858,6 +858,13 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 	clean := filepath.Clean(path)
 	entries, err := recorder.ReadEntries(clean)
 	if err != nil {
+		// A truncated read must not fall through to the raw-JSONL
+		// compatibility path: that path would return the receipts it managed
+		// to parse as though they were the whole chain. Mirrors
+		// ExtractReceiptsBytes.
+		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+			return nil, fmt.Errorf("reading entries: %w", err)
+		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLFile(clean)
 		if rawErr != nil {
 			return nil, rawErr

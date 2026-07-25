@@ -177,6 +177,93 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 	}
 }
 
+func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "stop waits for active handler"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
+			if err != nil {
+				t.Fatalf("mkdir socket dir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+			socketPath := filepath.Join(socketDir, "proxy.sock")
+			ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+			if err != nil {
+				t.Fatalf("unix listen: %v", err)
+			}
+
+			handlerEntered := make(chan struct{})
+			releaseHandler := make(chan struct{})
+			handlerDone := make(chan struct{})
+			var shared int
+			server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
+				ProxyHandler: func(conn net.Conn) {
+					defer close(handlerDone)
+					defer func() { _ = conn.Close() }()
+					close(handlerEntered)
+					for {
+						select {
+						case <-releaseHandler:
+							return
+						default:
+							_ = shared
+							runtime.Gosched()
+						}
+					}
+				},
+			})
+			defer server.stop()
+
+			conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", socketPath)
+			if err != nil {
+				t.Fatalf("unix dial: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+
+			select {
+			case <-handlerEntered:
+			case <-time.After(time.Second):
+				t.Fatal("proxy handler did not start")
+			}
+
+			stopDone := make(chan struct{})
+			go func() {
+				defer close(stopDone)
+				server.stop()
+			}()
+
+			select {
+			case <-stopDone:
+				for i := 0; i < 100000; i++ {
+					shared = i
+					runtime.Gosched()
+				}
+				close(releaseHandler)
+				<-handlerDone
+				t.Fatal("stop returned before active proxy handler exited")
+			case <-time.After(100 * time.Millisecond):
+				close(releaseHandler)
+			}
+
+			select {
+			case <-handlerDone:
+			case <-time.After(time.Second):
+				t.Fatal("proxy handler did not exit")
+			}
+			select {
+			case <-stopDone:
+			case <-time.After(time.Second):
+				t.Fatal("stop did not return after proxy handler exited")
+			}
+		})
+	}
+}
+
 func TestHandleStandaloneProxyConnection_NilHandlerFailsClosed(t *testing.T) {
 	tests := []struct {
 		name string

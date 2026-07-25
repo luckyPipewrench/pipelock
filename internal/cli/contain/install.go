@@ -1328,7 +1328,7 @@ func stepInstallNFTRules() step {
 			}
 			tableLoaded := false
 			liveRulesDrifted := false
-			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "list", "table", "inet", env.nftTableOrDefault()); code == 0 {
+			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); code == 0 {
 				tableLoaded = true
 				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
 			}
@@ -1443,13 +1443,18 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 }
 
 func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
-	return chainHasSkuidAcceptForUID(out, chainName, operatorUID) &&
-		chainHasSkuidAcceptForUID(out, chainName, proxyUID) &&
-		chainHasAgentCatchAllDrop(out, chainName, agentUID) &&
-		chainHasAgentProxyLoopbackAllowBeforeDrop(out, chainName, agentUID, proxyPort) &&
-		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "udp") &&
-		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "tcp") &&
-		!chainHasUnsafeVerdictBeforeAgentDrop(out, chainName, containmentUIDs{
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return false
+	}
+	return nftChainLinesHaveManagedOutputBaseChain(lines) &&
+		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
+		chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
+		chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
+		chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
+		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
+		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp") &&
+		!chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{
 			operatorUID:   operatorUID,
 			operatorKnown: true,
 			proxyUID:      proxyUID,

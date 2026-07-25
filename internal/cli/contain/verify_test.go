@@ -741,7 +741,7 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected verdict",
+			wantDetail: "not positively attributed",
 		},
 		{
 			name: "pre-drop goto is fail open",
@@ -762,7 +762,7 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected verdict",
+			wantDetail: "not positively attributed",
 		},
 		{
 			name: "pre-drop queue is fail open",
@@ -950,7 +950,7 @@ func TestProbeNFTContainment(t *testing.T) {
 `,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "skuid-drop rule missing",
+			wantDetail: "not positively attributed",
 		},
 	}
 
@@ -1841,7 +1841,7 @@ func TestManagedContainmentDropPacketCount(t *testing.T) {
 }`,
 			chain:   testChain,
 			uid:     987,
-			wantErr: "no managed catch-all DROP packet counter",
+			wantErr: "not positively attributed",
 		},
 		{
 			name: "rejects duplicate managed catch-all counters",
@@ -1986,7 +1986,7 @@ func TestReadContainmentDropCounter(t *testing.T) {
 {"drop":null}
 ]}}
 ]}`,
-			wantErr:    "not the managed output base chain",
+			wantErr:    "rule content before the chain declaration",
 			wantRunCmd: true,
 		},
 		{
@@ -2026,7 +2026,7 @@ func TestReadContainmentDropCounter(t *testing.T) {
 					if name != testNFT {
 						t.Fatalf("command = %q, want %q", name, testNFT)
 					}
-					wantArgs := []string{"-n", "list", "chain", "inet", testTable, testChain}
+					wantArgs := []string{"-n", "-a", "list", "chain", "inet", testTable, testChain}
 					if strings.Join(args, " ") != strings.Join(wantArgs, " ") {
 						t.Fatalf("args = %v, want %v", args, wantArgs)
 					}

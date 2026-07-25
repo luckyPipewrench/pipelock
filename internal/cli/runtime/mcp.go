@@ -1003,11 +1003,11 @@ Key-free evidence capture:
 				if recErr != nil {
 					return fmt.Errorf("creating flight recorder: %w", recErr)
 				}
-				runFlightRecorderExpiryOnce(rec, cmd.ErrOrStderr())
+				runFlightRecorderExpiryOnce(rec, cmd.ErrOrStderr(), defaultExpire)
 				defer func() { _ = rec.Close() }()
 				retentionCtx, retentionCancel := context.WithCancel(cmd.Context())
 				var retentionWG sync.WaitGroup
-				startFlightRecorderRetention(retentionCtx, &retentionWG, rec, cmd.ErrOrStderr(), defaultFlightRecorderRetentionInterval)
+				startFlightRecorderRetention(retentionCtx, &retentionWG, rec, cmd.ErrOrStderr(), defaultFlightRecorderRetentionInterval, defaultExpire)
 				defer func() {
 					retentionCancel()
 					retentionWG.Wait()

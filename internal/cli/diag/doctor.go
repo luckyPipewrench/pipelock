@@ -697,13 +697,8 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Configured: true,
 			Reachable:  true,
 			Enforcing:  false,
-			Detail: fmt.Sprintf(
-				"evidence session %q has %d JSONL shard(s), over the %d-file bounded resume cap",
-				health.MaxSessionID,
-				health.MaxSessionFiles,
-				health.MaxFilesPerSession,
-			),
-			Next: "archive and verify older JSONL shards before explicit pruning; automatic expiry preserves JSONL chain shards",
+			Detail:     health.FileCountVerdict(),
+			Next:       "archive and verify older JSONL shards before explicit pruning; automatic expiry preserves JSONL chain shards",
 		}
 	}
 	if health.NearSessionFileLimit {
@@ -714,14 +709,8 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Configured: true,
 			Reachable:  true,
 			Enforcing:  true,
-			Detail: fmt.Sprintf(
-				"evidence session %q has %d JSONL shard(s), nearing the %d-file bounded resume cap; warning threshold is %d",
-				health.MaxSessionID,
-				health.MaxSessionFiles,
-				health.MaxFilesPerSession,
-				health.WarningThreshold,
-			),
-			Next: "archive and verify older JSONL shards before the session reaches the bounded resume cap",
+			Detail:     health.FileCountVerdict(),
+			Next:       "archive and verify older JSONL shards before the session reaches the bounded resume cap",
 		}
 	}
 	return doctorReportCheck{

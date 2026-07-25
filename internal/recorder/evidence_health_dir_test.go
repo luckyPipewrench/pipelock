@@ -194,3 +194,42 @@ func TestRemoveExpiredEvidenceFileFailsClosed(t *testing.T) {
 		}
 	})
 }
+
+// TestExpireOldFilesContinuesPastUnremovableEntry guards availability of the
+// retention pass. Returning on the first failure let one planted symlink or one
+// unreadable sidecar stop pruning for every remaining file, leaving a directory
+// that silently stopped retaining correctly and could only be fixed by hand.
+func TestExpireOldFilesContinuesPastUnremovableEntry(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("root can open a mode-0000 file, so the unremovable case cannot be staged")
+	}
+	dir := t.TempDir()
+	// An aged but unreadable sidecar, sorted before a removable one, so a
+	// fail-fast loop would never reach the second file.
+	writeHealthShard(t, dir, "evidence-proxy-0.raw.enc", 48*time.Hour)
+	blocked := filepath.Join(dir, "evidence-proxy-0.raw.enc")
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o600) })
+	writeHealthShard(t, dir, "evidence-proxy-1.raw.enc", 48*time.Hour)
+
+	r, err := New(Config{Enabled: true, Dir: dir, RetentionDays: 1}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	removed, err := r.ExpireOldFiles()
+	if err == nil {
+		t.Fatal("the unremovable entry should still be reported")
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1: the pass must expire what it can despite one failure", removed)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "evidence-proxy-1.raw.enc")); !os.IsNotExist(statErr) {
+		t.Fatalf("the removable sidecar past the failure was not expired: %v", statErr)
+	}
+}

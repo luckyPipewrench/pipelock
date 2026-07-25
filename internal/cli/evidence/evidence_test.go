@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -705,6 +706,12 @@ func TestViewCmd_BadReceiptDir(t *testing.T) {
 
 func TestExpireCmd_UsesConfigRetention(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// Expiry refuses the exclusive lock on Windows by design, so nothing is
+		// removed there and the expired-count assertion below cannot hold. The
+		// refusal itself is covered by the recorder's Windows guard test.
+		t.Skip("expiry intentionally removes nothing on Windows until real LockFileEx locking lands")
+	}
 	dir := t.TempDir()
 	oldJSONL := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl")
 	oldKept := writeExpireTestFile(t, dir, "evidence-proxy-1.jsonl")

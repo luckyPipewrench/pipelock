@@ -15,15 +15,23 @@ import (
 
 const defaultFlightRecorderRetentionInterval = 24 * time.Hour
 
-var expireOldFlightRecorderFiles = func(rec *recorder.Recorder) (int, error) {
+// expireFunc performs one expiry pass. It is a parameter rather than a
+// package-level variable so tests substitute it per call: a mutable package
+// seam is shared state, and these tests run in parallel.
+type expireFunc func(*recorder.Recorder) (int, error)
+
+func defaultExpire(rec *recorder.Recorder) (int, error) {
 	return rec.ExpireOldFiles()
 }
 
-func runFlightRecorderExpiryOnce(rec *recorder.Recorder, logW io.Writer) {
+func runFlightRecorderExpiryOnce(rec *recorder.Recorder, logW io.Writer, expire expireFunc) {
 	if rec == nil {
 		return
 	}
-	removed, err := expireOldFlightRecorderFiles(rec)
+	if expire == nil {
+		expire = defaultExpire
+	}
+	removed, err := expire(rec)
 	if err != nil {
 		if logW != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: recorder retention expiry failed: %v\n", err)
@@ -41,6 +49,7 @@ func startFlightRecorderRetention(
 	rec *recorder.Recorder,
 	logW io.Writer,
 	interval time.Duration,
+	expire expireFunc,
 ) {
 	if wg == nil || rec == nil {
 		return
@@ -56,7 +65,7 @@ func startFlightRecorderRetention(
 		for {
 			select {
 			case <-ticker.C:
-				runFlightRecorderExpiryOnce(rec, logW)
+				runFlightRecorderExpiryOnce(rec, logW, expire)
 			case <-ctx.Done():
 				return
 			}
@@ -72,18 +81,7 @@ func flightRecorderEvidenceWarning(dir string, retentionDays int) string {
 	if !health.NearSessionFileLimit {
 		return ""
 	}
-	status := "near"
-	if health.OverSessionFileLimit {
-		status = "over"
-	}
-	return fmt.Sprintf(
-		"evidence session %q has %d JSONL shard(s), %s the %d-file bounded resume cap; warning threshold is %d",
-		health.MaxSessionID,
-		health.MaxSessionFiles,
-		status,
-		health.MaxFilesPerSession,
-		health.WarningThreshold,
-	)
+	return health.FileCountVerdict()
 }
 
 func printFlightRecorderEvidenceWarning(logW io.Writer, dir string, retentionDays int) {

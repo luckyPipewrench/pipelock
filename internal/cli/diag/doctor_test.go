@@ -302,7 +302,14 @@ func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
 			name:       "at_warning",
 			files:      recorder.EvidenceFileWarningThreshold,
 			wantStatus: doctorStatusWarn,
-			wantDetail: "warning threshold is 200",
+			wantDetail: fmt.Sprintf("warning threshold is %d", recorder.EvidenceFileWarningThreshold),
+		},
+		{
+			// Exactly at the cap is still resumable, so this must warn rather
+			// than fail. This is the boundary an off-by-one would flip.
+			name:       "at_cap",
+			files:      recorder.MaxEvidenceReadDirectoryEntries,
+			wantStatus: doctorStatusWarn,
 		},
 		{
 			// Past the bounded resume cap the chain can no longer be
@@ -310,7 +317,7 @@ func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
 			name:       "over_cap",
 			files:      recorder.MaxEvidenceReadDirectoryEntries + 1,
 			wantStatus: doctorStatusFail,
-			wantDetail: "over the 256-file bounded resume cap",
+			wantDetail: fmt.Sprintf("over the %d-file bounded resume cap", recorder.MaxEvidenceReadDirectoryEntries),
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

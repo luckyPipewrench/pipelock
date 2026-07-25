@@ -1071,7 +1071,7 @@ func TestEvidenceHealthFileStatsDegradesSafely(t *testing.T) {
 		}
 	})
 
-	t.Run("unreadable_dir_reports_sampler_error_and_keeps_thresholds", func(t *testing.T) {
+	t.Run("unreadable_dir_degrades_sampler_without_latching_self_audit", func(t *testing.T) {
 		t.Parallel()
 		// A regular file where a directory is expected makes the scan fail.
 		// Build the recorder against a real directory, then remove it so the
@@ -1091,12 +1091,20 @@ func TestEvidenceHealthFileStatsDegradesSafely(t *testing.T) {
 		}
 
 		h := &evidenceHealthMonitor{recorder: rec}
+		h.selfAuditOK.Store(true)
 		got := h.fileStats(config.Defaults())
 		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
 			t.Fatalf("thresholds lost on sampler error: %+v", got)
 		}
 		if got.TotalEvidenceFiles != 0 {
 			t.Fatalf("TotalEvidenceFiles = %d, want 0 on sampler error", got.TotalEvidenceFiles)
+		}
+		// The decision this test exists to pin: a metrics-only file-count scan
+		// failure must not latch the integrity self-audit off. Conflating the
+		// two would leave a permanently degraded integrity signal behind a
+		// transient read error, with no way to tell it from a real chain fault.
+		if !h.selfAuditOK.Load() {
+			t.Fatal("a sampler read failure latched selfAuditOK off; it is a measurement failure, not an integrity finding")
 		}
 	})
 }

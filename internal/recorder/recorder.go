@@ -1167,6 +1167,7 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 	}
 
 	removed := 0
+	var expiryErrs []error
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
@@ -1184,16 +1185,34 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		}
 		if info.ModTime().Before(cutoff) {
 			path := filepath.Join(dir, name)
-			if removedFile, removeErr := removeExpiredEvidenceFile(path, cutoff); removeErr != nil {
-				return removed, removeErr
-			} else if removedFile {
+			// Collect the failure and keep going. Returning here let a single
+			// unremovable entry, such as one planted symlink or one sidecar the
+			// service cannot read, stop retention for every remaining file in
+			// the directory. The result was a directory that silently stopped
+			// pruning and could only be recovered by hand, which is the failure
+			// this whole change set exists to prevent.
+			removedFile, removeErr := removeExpiredEvidenceFile(path, cutoff)
+			switch {
+			case removeErr != nil:
+				expiryErrs = append(expiryErrs, fmt.Errorf("%s: %w", name, removeErr))
+			case removedFile:
 				removed++
 			}
 		}
 	}
-	return removed, nil
+	return removed, errors.Join(expiryErrs...)
 }
 
+// removeExpiredEvidenceFile deletes one aged sidecar.
+//
+// The handle is opened first and re-stated after locking, so the file being
+// removed is confirmed to be the same aged regular file that was selected. That
+// narrows the window between selection and deletion; it does not close it,
+// because os.Remove unlinks by name. If another principal can rename entries in
+// the evidence directory, the name can be pointed at a different inode after
+// the check. The remaining defense is the directory itself: evidence
+// directories are created 0o750 and owned by the service, so no other
+// unprivileged principal can rename entries within them.
 func removeExpiredEvidenceFile(path string, cutoff time.Time) (bool, error) {
 	file, info, err := openRegularEvidenceFile(path, "evidence file")
 	if err != nil {
@@ -1325,4 +1344,23 @@ func safeUint64(v, fallback int) uint64 {
 		return maxCheckpointBound
 	}
 	return uv
+}
+
+// FileCountVerdict renders the operator-facing sentence for an evidence
+// directory's file-count health. Both the doctor and the runtime startup
+// warning report the same contract, and formatting it in two places had already
+// produced two different sentences pinned by two different tests. Returns an
+// empty string when the count is below the warning threshold.
+func (h EvidenceDirectoryHealth) FileCountVerdict() string {
+	if !h.NearSessionFileLimit {
+		return ""
+	}
+	if h.OverSessionFileLimit {
+		return fmt.Sprintf(
+			"evidence session %q has %d JSONL shard(s), over the %d-file bounded resume cap",
+			h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession)
+	}
+	return fmt.Sprintf(
+		"evidence session %q has %d JSONL shard(s), near the %d-file bounded resume cap; warning threshold is %d",
+		h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession, h.WarningThreshold)
 }

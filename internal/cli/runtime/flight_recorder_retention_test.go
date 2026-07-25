@@ -98,7 +98,7 @@ func TestFlightRecorderRetentionPeriodicTickExpiresOldFiles(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	startFlightRecorderRetention(ctx, &wg, rec, &syncBuffer{}, time.Millisecond)
+	startFlightRecorderRetention(ctx, &wg, rec, &syncBuffer{}, time.Millisecond, nil)
 	t.Cleanup(func() {
 		cancel()
 		wg.Wait()
@@ -128,13 +128,9 @@ func TestFlightRecorderRetentionFailureDoesNotBlockStartupOrHealth(t *testing.T)
 		"",
 	}, "\n"))
 
-	oldExpire := expireOldFlightRecorderFiles
-	expireOldFlightRecorderFiles = func(_ *recorder.Recorder) (int, error) {
+	failingExpire := func(_ *recorder.Recorder) (int, error) {
 		return 0, errors.New("forced retention failure")
 	}
-	t.Cleanup(func() {
-		expireOldFlightRecorderFiles = oldExpire
-	})
 	buf := &syncBuffer{}
 	s, err := NewServer(ServerOpts{
 		ConfigFile:                        cfgPath,
@@ -143,11 +139,11 @@ func TestFlightRecorderRetentionFailureDoesNotBlockStartupOrHealth(t *testing.T)
 		Stdout:                            buf,
 		Stderr:                            buf,
 		allowEphemeralListenersForTesting: true,
+		expireForTesting:                  failingExpire,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	expireOldFlightRecorderFiles = oldExpire
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
@@ -211,9 +207,9 @@ func startupLineURL(t *testing.T, output, prefix string) string {
 func TestFlightRecorderRetentionStartNilInputs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	startFlightRecorderRetention(ctx, nil, nil, nil, time.Millisecond)
+	startFlightRecorderRetention(ctx, nil, nil, nil, time.Millisecond, nil)
 	var wg sync.WaitGroup
-	startFlightRecorderRetention(ctx, &wg, nil, nil, time.Millisecond)
+	startFlightRecorderRetention(ctx, &wg, nil, nil, time.Millisecond, nil)
 	cancel()
 	done := make(chan struct{})
 	go func() {
@@ -237,7 +233,7 @@ func TestFlightRecorderRetentionGuards(t *testing.T) {
 	t.Run("expiry_with_nil_recorder_is_a_noop", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
-		runFlightRecorderExpiryOnce(nil, &buf)
+		runFlightRecorderExpiryOnce(nil, &buf, nil)
 		if buf.Len() != 0 {
 			t.Fatalf("nil recorder produced output %q", buf.String())
 		}
@@ -248,8 +244,8 @@ func TestFlightRecorderRetentionGuards(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		var wg sync.WaitGroup
-		startFlightRecorderRetention(ctx, nil, nil, io.Discard, time.Second)
-		startFlightRecorderRetention(ctx, &wg, nil, io.Discard, time.Second)
+		startFlightRecorderRetention(ctx, nil, nil, io.Discard, time.Second, nil)
+		startFlightRecorderRetention(ctx, &wg, nil, io.Discard, time.Second, nil)
 		// Nothing was scheduled, so Wait must return immediately.
 		wg.Wait()
 	})
@@ -270,7 +266,7 @@ func TestFlightRecorderRetentionGuards(t *testing.T) {
 			t.Fatalf("recorder.New: %v", err)
 		}
 		defer func() { _ = rec.Close() }()
-		startFlightRecorderRetention(ctx, &wg, rec, io.Discard, 0)
+		startFlightRecorderRetention(ctx, &wg, rec, io.Discard, 0, nil)
 		cancel()
 		wg.Wait()
 	})

@@ -165,6 +165,7 @@
         <section class="replay-failure">
           <h2>Decision replay unavailable: no replay verdict</h2>
           <p>The replay source returned an error. No replay verdict is available for this artifact.</p>
+          <p class="muted">Replay failure category: <span class="mono">{{.ReplayErrorReason}}</span></p>
         </section>
       {{else if .ReplayNotFound}}
         <section class="empty">No recorded decision matched artifact hash for org <span class="mono">{{.OrgID}}</span> / fleet <span class="mono">{{.FleetID}}</span>.</section>

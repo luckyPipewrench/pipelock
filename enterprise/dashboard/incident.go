@@ -34,7 +34,9 @@ type IncidentPage struct {
 	HasDecision     bool
 	DecisionMissing bool
 	DecisionError   bool
-	Decision        DecisionReplayView
+	// DecisionErrorReason is a bounded category, never raw source error text.
+	DecisionErrorReason string
+	Decision            DecisionReplayView
 
 	HasFleet bool
 	Applied  FleetAppliedSummary
@@ -79,9 +81,8 @@ func (m *ReadModel) Incident(ctx context.Context, scope DecisionScope, rawAllowe
 		view, found, err := m.conductorSource.ReplayDecision(ctx, scope)
 		if err != nil {
 			page.DecisionError = true
-			return page, nil
-		}
-		if !found {
+			page.DecisionErrorReason = decisionReplayErrorReason(err)
+		} else if !found {
 			page.DecisionMissing = true
 		} else {
 			page.HasDecision = true

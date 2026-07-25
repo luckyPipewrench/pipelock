@@ -462,6 +462,9 @@ func TestWorkbench_SourceErrorRendersUnavailablePanel(t *testing.T) {
 	if !strings.Contains(body, "Decision replay unavailable") {
 		t.Fatalf("body missing unavailable panel: %s", body)
 	}
+	if !strings.Contains(body, "Replay failure category:") || !strings.Contains(body, "source_error") {
+		t.Fatalf("body missing bounded replay failure category: %s", body)
+	}
 	if !strings.Contains(body, `class="replay-failure"`) || strings.Contains(body, `class="absence"><h2>Decision replay unavailable`) {
 		t.Fatalf("unavailable panel must render as a distinct replay failure, not ordinary absence: %s", body)
 	}
@@ -472,6 +475,7 @@ func TestWorkbench_SourceErrorRendersUnavailablePanel(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard scope",
 		`decision_state="unavailable"`,
+		`decision_error_reason="source_error"`,
 		"decision_error=true",
 		"decision_found=false",
 	} {

@@ -232,11 +232,13 @@ func TestIncident_DecisionSourceErrorRendersUnavailablePanel(t *testing.T) {
 	t.Parallel()
 
 	var audit strings.Builder
+	fleet := &fakeFleetSource{followers: testFleetFollowers()}
 	handler := New(Options{
 		TrustedOuterAuth:    true,
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     &fakeConductorSource{err: errors.New("backend exploded SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE")},
+		FleetSource:         fleet,
 		AuthorizeFleetScope: allowFleetScope,
 		AuditWriter:         &audit,
 	})
@@ -249,8 +251,19 @@ func TestIncident_DecisionSourceErrorRendersUnavailablePanel(t *testing.T) {
 	if !strings.Contains(body, "Decision replay unavailable") {
 		t.Fatalf("body missing unavailable panel: %s", body)
 	}
+	if !strings.Contains(body, "Replay failure category:") || !strings.Contains(body, "source_error") {
+		t.Fatalf("body missing bounded replay failure category: %s", body)
+	}
 	if !strings.Contains(body, `class="replay-failure"`) || strings.Contains(body, `class="absence"><h2>Decision replay unavailable`) {
 		t.Fatalf("unavailable panel must render as a distinct replay failure, not ordinary absence: %s", body)
+	}
+	if fleet.gotOrgID != wbTestOrgID || fleet.gotFleet != wbTestFleetID {
+		t.Fatalf("fleet scope = (%q,%q), want (%q,%q)", fleet.gotOrgID, fleet.gotFleet, wbTestOrgID, wbTestFleetID)
+	}
+	for _, want := range []string{"Fleet applied state", "verified applied", "signed, unverified", "unsigned/self-reported"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("incident body missing fleet summary %q after replay failure: %s", want, body)
+		}
 	}
 	if strings.Contains(body, "SECRET-") || strings.Contains(body, "backend exploded") {
 		t.Fatalf("unavailable panel leaked source error detail: %s", body)
@@ -259,8 +272,10 @@ func TestIncident_DecisionSourceErrorRendersUnavailablePanel(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard scope",
 		`decision_state="unavailable"`,
+		`decision_error_reason="source_error"`,
 		"decision_error=true",
 		"decision_found=false",
+		"fleet_found=true",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("scope audit missing %q: %s", want, log)

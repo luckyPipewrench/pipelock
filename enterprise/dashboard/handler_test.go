@@ -1776,9 +1776,10 @@ func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 		},
 		{
 			name: "replay error",
-			page: WorkbenchPage{SourceConfigured: true, ReplayError: true, ReplayNotFound: true},
+			page: WorkbenchPage{SourceConfigured: true, ReplayError: true, ReplayErrorReason: "deadline_exceeded", ReplayNotFound: true},
 			wantFragments: []string{
 				`decision_state="unavailable"`,
+				`decision_error_reason="deadline_exceeded"`,
 				`decision_found=false`,
 				`decision_error=true`,
 				`decision_missing=true`,

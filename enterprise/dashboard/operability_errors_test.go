@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type failAfterWriter struct {
@@ -658,6 +660,20 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		}
 		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !strings.Contains(err.Error(), "read limit exceeded") {
 			t.Fatalf("oversized source error = %v, want bounded-read rejection", err)
+		}
+	})
+
+	t.Run("too many source entries", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "evidence-agent-0.jsonl")
+		var data strings.Builder
+		for seq := range recorder.MaxEvidenceReadEntries + 1 {
+			data.WriteString(fmt.Sprintf(`{"v":2,"seq":%d,"ts":"2026-01-01T00:00:00Z","session_id":"agent-a","type":"request"}`+"\n", seq))
+		}
+		if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !strings.Contains(err.Error(), "read limit exceeded") {
+			t.Fatalf("too-many-entries source error = %v, want bounded-read rejection", err)
 		}
 	})
 

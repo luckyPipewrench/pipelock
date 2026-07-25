@@ -90,6 +90,30 @@ func TestQuerySession_MaxEntriesReadTruncates(t *testing.T) {
 	}
 }
 
+func TestQuerySession_MaxBytesReadTruncatesSkippedLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-sess-1-0.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Repeat("\n", 1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+		MaxBytesRead: 128,
+	})
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("QuerySession did not report byte-limit truncation")
+	}
+	if result.BytesRead <= 128 {
+		t.Fatalf("BytesRead = %d, want evidence that byte limit was reached", result.BytesRead)
+	}
+	if result.EntriesRead != 0 || len(result.Entries) != 0 {
+		t.Fatalf("entries = read %d returned %d, want empty truncated result", result.EntriesRead, len(result.Entries))
+	}
+}
+
 func TestQuerySession_FilterByType(t *testing.T) {
 	dir := t.TempDir()
 	writeTestEntries(t, dir, "sess-1", 6)

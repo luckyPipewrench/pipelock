@@ -928,7 +928,10 @@ func readEntriesForResume(path string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, truncated, err := readEntriesFromReader(bytes.NewReader(data), MaxEvidenceReadEntries)
+	entries, truncated, _, err := readEntriesFromReader(bytes.NewReader(data), entryReadLimits{
+		MaxEntries: MaxEvidenceReadEntries,
+		MaxBytes:   MaxEvidenceReadFileBytes,
+	})
 	if err != nil {
 		return nil, err
 	}

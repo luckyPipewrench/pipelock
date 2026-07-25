@@ -884,6 +884,9 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
+		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+			return nil, fmt.Errorf("reading entries: %w", err)
+		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLBytes(data)
 		if rawErr != nil {
 			return nil, rawErr
@@ -949,8 +952,14 @@ func ExtractReceiptsWithSessionID(path string) ([]Receipt, string, error) {
 // ExtractReceiptsFromSessionDir reads all evidence files for a session from a
 // recorder directory and returns the action receipts in chain order.
 func ExtractReceiptsFromSessionDir(dir, sessionID string) ([]Receipt, error) {
-	receipts, _, err := ExtractReceiptsFromSessionDirBounded(dir, sessionID, 0)
-	return receipts, err
+	receipts, truncated, err := ExtractReceiptsFromSessionDirBounded(dir, sessionID, 0)
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, fmt.Errorf("%w: evidence session %s exceeded bounded read limits", recorder.ErrEvidenceReadLimitExceeded, sessionID)
+	}
+	return receipts, nil
 }
 
 // ExtractReceiptsFromSessionDirBounded reads action receipts for a session with

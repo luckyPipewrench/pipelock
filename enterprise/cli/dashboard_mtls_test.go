@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -306,6 +307,77 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 			t.Fatal("empty --client-ca-file path accepted")
 		}
 	})
+
+	t.Run("missing file rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing-ca.pem")
+		if _, err := loadDashboardClientCAs(path); err == nil || !strings.Contains(err.Error(), "read --client-ca-file") {
+			t.Fatalf("missing CA bundle: want read error, got %v", err)
+		}
+	})
+
+	t.Run("oversize bundle rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "oversize-ca.pem")
+		data := strings.Repeat(" ", dashboardClientCAMaxBytes+1)
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatalf("write oversize bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("oversize CA bundle: want size error, got %v", err)
+		}
+	})
+}
+
+func TestVerifyDashboardClientCertificateKeySizes(t *testing.T) {
+	tests := []struct {
+		name    string
+		certs   []*x509.Certificate
+		wantErr bool
+	}{
+		{
+			name: "non RSA accepted",
+			certs: []*x509.Certificate{{
+				PublicKey: ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)),
+			}},
+		},
+		{
+			name: "bounded RSA accepted",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMaxBits-1), E: 65537},
+			}},
+		},
+		{
+			name:  "nil certificate skipped",
+			certs: []*x509.Certificate{nil},
+		},
+		{
+			name: "oversize RSA rejected",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMaxBits), E: 65537},
+			}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyDashboardClientCertificateKeySizes(tls.ConnectionState{PeerCertificates: tc.certs})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("verifyDashboardClientCertificateKeySizes = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDashboardClientCertAuthorizers_NilFallbackPermissionFailsClosed(t *testing.T) {
+	_, authorizePermission, _ := dashboardClientCertAuthorizers(
+		nil,
+		func(*http.Request) bool { return false },
+		nil,
+		func(*http.Request) bool { return false },
+	)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
+	if err := authorizePermission(req, dashboard.PermissionEvidenceRead); err == nil {
+		t.Fatal("nil fallback permission authorizer allowed a route")
+	}
 }
 
 func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
@@ -326,34 +398,34 @@ func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		req         *http.Request
-		wantReason  string
-		wantSubject string
-		wantRoles   []string
+		name       string
+		req        *http.Request
+		wantReason string
+		wantSPKI   string
+		wantRoles  []string
 	}{
 		{
 			name:       "missing certificate",
 			req:        httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil),
-			wantReason: "missing_client_certificate",
+			wantReason: "no_credential",
 		},
 		{
-			name:        "unverified certificate",
-			req:         dashboardMTLSTestRequest(t, mappedLeaf, false),
-			wantReason:  "unverified_client_certificate",
-			wantSubject: dashboardClientCertSPKIFingerprint(mappedLeaf),
+			name:       "unverified certificate",
+			req:        dashboardMTLSTestRequest(t, mappedLeaf, false),
+			wantReason: "invalid_credential",
+			wantSPKI:   dashboardClientCertSPKIFingerprint(mappedLeaf),
 		},
 		{
-			name:        "verified unmapped certificate",
-			req:         dashboardMTLSTestRequest(t, unmappedLeaf, true),
-			wantReason:  "unmapped_client_certificate",
-			wantSubject: dashboardClientCertSPKIFingerprint(unmappedLeaf),
+			name:       "verified unmapped certificate",
+			req:        dashboardMTLSTestRequest(t, unmappedLeaf, true),
+			wantReason: "unknown_principal",
+			wantSPKI:   dashboardClientCertSPKIFingerprint(unmappedLeaf),
 		},
 		{
-			name:        "verified mapped certificate",
-			req:         dashboardMTLSTestRequest(t, mappedLeaf, true),
-			wantSubject: dashboardClientCertSPKIFingerprint(mappedLeaf),
-			wantRoles:   []string{"metadata"},
+			name:      "verified mapped certificate",
+			req:       dashboardMTLSTestRequest(t, mappedLeaf, true),
+			wantSPKI:  dashboardClientCertSPKIFingerprint(mappedLeaf),
+			wantRoles: []string{"metadata"},
 		},
 	}
 	for _, tc := range tests {
@@ -365,8 +437,11 @@ func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
 			if got.FailureReason != tc.wantReason {
 				t.Fatalf("FailureReason = %q, want %q", got.FailureReason, tc.wantReason)
 			}
-			if got.Subject != tc.wantSubject {
-				t.Fatalf("Subject = %q, want %q", got.Subject, tc.wantSubject)
+			if got.Subject != "" {
+				t.Fatalf("Subject = %q, want empty raw subject", got.Subject)
+			}
+			if got.MTLSSPKISHA256 != tc.wantSPKI {
+				t.Fatalf("MTLSSPKISHA256 = %q, want %q", got.MTLSSPKISHA256, tc.wantSPKI)
 			}
 			if strings.Join(got.Roles, ",") != strings.Join(tc.wantRoles, ",") {
 				t.Fatalf("Roles = %v, want %v", got.Roles, tc.wantRoles)
@@ -638,10 +713,9 @@ func TestDashboardMTLS_RoutePermissionsAndRaw(t *testing.T) {
 
 	tokenMetaAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, dashTestToken) }
 	tokenRawAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, "raw-token") }
+	tokenAuthorizePermission := dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized)
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		authorizer, tokenMetaAuthorized,
-		dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized),
-		tokenRawAuthorized,
+		authorizer, tokenMetaAuthorized, tokenAuthorizePermission, tokenRawAuthorized,
 	)
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),

@@ -6,7 +6,9 @@
 package entcli
 
 import (
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -23,7 +25,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 )
 
-const dashboardClientCertRoleMapMaxBytes = 1 << 20
+const (
+	dashboardClientCertRoleMapMaxBytes = 1 << 20
+	dashboardClientCAMaxBytes          = 1 << 20
+	dashboardClientCertRSAMaxBits      = 8192
+)
 
 type dashboardClientCertRoleMapFile struct {
 	Version      int                                `yaml:"version"`
@@ -261,9 +267,17 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("--client-ca-file is required when --require-client-cert is set")
 	}
-	pemBytes, err := os.ReadFile(filepath.Clean(path))
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("read --client-ca-file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	pemBytes, err := io.ReadAll(io.LimitReader(file, dashboardClientCAMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read --client-ca-file: %w", err)
+	}
+	if len(pemBytes) > dashboardClientCAMaxBytes {
+		return nil, fmt.Errorf("--client-ca-file exceeds %d bytes", dashboardClientCAMaxBytes)
 	}
 	// Parse every certificate block explicitly instead of AppendCertsFromPEM,
 	// which silently skips malformed blocks and would start the dashboard with a
@@ -290,4 +304,20 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 		return nil, errors.New("--client-ca-file contains no valid PEM certificates")
 	}
 	return pool, nil
+}
+
+func verifyDashboardClientCertificateKeySizes(state tls.ConnectionState) error {
+	for _, cert := range state.PeerCertificates {
+		if cert == nil {
+			continue
+		}
+		key, ok := cert.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			continue
+		}
+		if key.N.BitLen() > dashboardClientCertRSAMaxBits {
+			return fmt.Errorf("dashboard client certificate RSA modulus is %d bits; maximum is %d", key.N.BitLen(), dashboardClientCertRSAMaxBits)
+		}
+	}
+	return nil
 }

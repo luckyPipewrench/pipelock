@@ -8,6 +8,7 @@ package dashboard
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1878,10 +1879,11 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		},
 		AuditWriter: &buf,
 	})
+	spkiHash := strings.Repeat("a", sha256.Size*2)
 	ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
-		Method:  "mtls",
-		Subject: "spki-sha256",
-		Roles:   []string{"metadata"},
+		Method:         "mtls",
+		MTLSSPKISHA256: spkiHash,
+		Roles:          []string{"metadata"},
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
@@ -1893,9 +1895,10 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		"pipelock-dashboard denied",
 		"permission=\"dashboard:evidence:read\"",
 		"auth_method=mtls",
-		"auth_subject=\"spki-sha256\"",
+		"auth_subject_sha256=-",
+		"mtls_spki_sha256=" + spkiHash,
 		"auth_roles=\"metadata\"",
-		"reason=permission_denied",
+		"reason=role_lacks_permission",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("permission-denied audit missing %q: %s", want, log)
@@ -1929,9 +1932,10 @@ func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard denied",
 		"auth_method=-",
-		"auth_subject=\"-\"",
+		"auth_subject_sha256=-",
+		"mtls_spki_sha256=-",
 		"auth_roles=\"-\"",
-		"reason=permission_denied",
+		"reason=role_lacks_permission",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("permission-denied audit missing %q: %s", want, log)
@@ -1939,6 +1943,57 @@ func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
 	}
 	if strings.Contains(log, "pipelock-dashboard access") {
 		t.Fatalf("permission-denied request must not be audited as access: %s", log)
+	}
+}
+
+func TestHandler_PermissionDeniedAuditUsesAuthFailureReason(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var buf strings.Builder
+	handler := New(Options{
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
+		AuthorizePermission: func(*http.Request, Permission) error {
+			return errors.New("permission denied")
+		},
+		AuditWriter: &buf,
+	})
+	ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
+		Method:        "oidc",
+		FailureReason: "expired",
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	log := buf.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"permission=\"dashboard:evidence:read\"",
+		"auth_method=oidc",
+		"reason=expired",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("permission-denied audit missing %q: %s", want, log)
+		}
+	}
+}
+
+func TestAuthAuditInfoFromRequestPreservesPrehashedSubject(t *testing.T) {
+	t.Parallel()
+	prehashed := strings.Repeat("b", sha256.Size*2)
+	req := httptest.NewRequestWithContext(
+		WithAuthAuditInfo(context.Background(), AuthAuditInfo{Subject: "raw-subject", SubjectSHA256: prehashed}),
+		http.MethodGet,
+		"https://dashboard.example/",
+		nil,
+	)
+	got := authAuditInfoFromRequest(req)
+	if got.SubjectSHA256 != prehashed {
+		t.Fatalf("SubjectSHA256 = %q, want prehashed %q", got.SubjectSHA256, prehashed)
 	}
 }
 

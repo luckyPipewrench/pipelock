@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,9 +113,22 @@ func (s bundleLookupErrorStore) BundleByIDVersion(context.Context, string, uint6
 	return PublishedBundle{}, s.err
 }
 
+func (s bundleLookupErrorStore) BundleByHash(context.Context, string) (PublishedBundle, bool, error) {
+	return PublishedBundle{}, false, s.err
+}
+
 func (s bundleLookupErrorStore) PreviewPublish(ctx context.Context, bundle conductor.PolicyBundle, opts PublishOptions) (PublishPreview, error) {
 	previewer := s.BundleStore.(publishPreviewer)
 	return previewer.PreviewPublish(ctx, bundle, opts)
+}
+
+type bundleByHashRecordStore struct {
+	BundleStore
+	record PublishedBundle
+}
+
+func (s bundleByHashRecordStore) BundleByHash(context.Context, string) (PublishedBundle, bool, error) {
+	return s.record, true, nil
 }
 
 type rollbackHeadPreviewErrorStore struct {
@@ -370,6 +384,86 @@ func (s rollbackAuthorizationEnumeratorErrorStore) PreviewRollbackAuthorization(
 
 func (s rollbackAuthorizationEnumeratorErrorStore) RollbackAuthorizations(context.Context) ([]StoredRollbackAuthorization, error) {
 	return nil, s.err
+}
+
+type replayByHashReaderStore struct {
+	emergencyStoreNoPreview
+	remoteRecord   StoredRemoteKill
+	remoteFound    bool
+	remoteErr      error
+	rollbackRecord StoredRollbackAuthorization
+	rollbackFound  bool
+	rollbackErr    error
+}
+
+func (s replayByHashReaderStore) RecordedRemoteKillByHash(context.Context, string) (StoredRemoteKill, bool, error) {
+	if s.remoteErr != nil {
+		return StoredRemoteKill{}, false, s.remoteErr
+	}
+	return s.remoteRecord, s.remoteFound, nil
+}
+
+func (s replayByHashReaderStore) RecordedRollbackAuthorizationByHash(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	if s.rollbackErr != nil {
+		return StoredRollbackAuthorization{}, false, s.rollbackErr
+	}
+	return s.rollbackRecord, s.rollbackFound, nil
+}
+
+func (s replayByHashReaderStore) PreviewRemoteKill(ctx context.Context, msg conductor.RemoteKillMessage, now time.Time) (RemoteKillPreview, error) {
+	previewer := s.inner.(remoteKillPreviewer)
+	return previewer.PreviewRemoteKill(ctx, msg, now)
+}
+
+func (s replayByHashReaderStore) PreviewRollbackAuthorization(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) (RollbackAuthPreview, error) {
+	previewer := s.inner.(rollbackAuthPreviewer)
+	return previewer.PreviewRollbackAuthorization(ctx, auth, now)
+}
+
+type replayRecordedEnumeratorStore struct {
+	emergencyStoreNoPreview
+	remoteRecords   []StoredRemoteKill
+	remoteErr       error
+	rollbackRecords []StoredRollbackAuthorization
+	rollbackErr     error
+}
+
+func (s replayRecordedEnumeratorStore) PreviewRemoteKill(ctx context.Context, msg conductor.RemoteKillMessage, now time.Time) (RemoteKillPreview, error) {
+	previewer := s.inner.(remoteKillPreviewer)
+	return previewer.PreviewRemoteKill(ctx, msg, now)
+}
+
+func (s replayRecordedEnumeratorStore) PreviewRollbackAuthorization(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) (RollbackAuthPreview, error) {
+	previewer := s.inner.(rollbackAuthPreviewer)
+	return previewer.PreviewRollbackAuthorization(ctx, auth, now)
+}
+
+func (s replayRecordedEnumeratorStore) RecordedRemoteKills(context.Context) ([]StoredRemoteKill, error) {
+	if s.remoteErr != nil {
+		return nil, s.remoteErr
+	}
+	return slices.Clone(s.remoteRecords), nil
+}
+
+func (s replayRecordedEnumeratorStore) RemoteKills(context.Context) ([]StoredRemoteKill, error) {
+	if s.remoteErr != nil {
+		return nil, s.remoteErr
+	}
+	return slices.Clone(s.remoteRecords), nil
+}
+
+func (s replayRecordedEnumeratorStore) RecordedRollbackAuthorizations(context.Context) ([]StoredRollbackAuthorization, error) {
+	if s.rollbackErr != nil {
+		return nil, s.rollbackErr
+	}
+	return slices.Clone(s.rollbackRecords), nil
+}
+
+func (s replayRecordedEnumeratorStore) RollbackAuthorizations(context.Context) ([]StoredRollbackAuthorization, error) {
+	if s.rollbackErr != nil {
+		return nil, s.rollbackErr
+	}
+	return slices.Clone(s.rollbackRecords), nil
 }
 
 // newSpyHandler builds a handler whose bundle + emergency stores are spies over
@@ -1223,6 +1317,57 @@ func replayByHashJSON(t *testing.T, handler *Handler, artifactHash string) *http
 	return w
 }
 
+func TestDecisionReplayMethodAndQueryValidation(t *testing.T) {
+	handler := newDryRunTestHandler(t, mustStore(t), nil, nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPut, DecisionReplayPath, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT replay code=%d body=%s, want 405", w.Code, w.Body.String())
+	}
+
+	tests := []struct {
+		name    string
+		target  string
+		wantErr string
+	}{
+		{
+			name:    "missing artifact",
+			target:  DecisionReplayPath + "?org_id=org-main&fleet_id=prod",
+			wantErr: "required",
+		},
+		{
+			name:    "invalid org identifier",
+			target:  DecisionReplayPath + "?org_id=org/main&fleet_id=prod&artifact_hash=" + strings.Repeat("a", 64),
+			wantErr: "org_id",
+		},
+		{
+			name:    "invalid fleet identifier",
+			target:  DecisionReplayPath + "?org_id=org-main&fleet_id=prod/west&artifact_hash=" + strings.Repeat("a", 64),
+			wantErr: "fleet_id",
+		},
+		{
+			name:    "non hex hash",
+			target:  DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + strings.Repeat("g", 64),
+			wantErr: "artifact_hash",
+		},
+		{
+			name:    "uppercase hash",
+			target:  DecisionReplayPath + "?org_id=org-main&fleet_id=prod&artifact_hash=" + strings.Repeat("A", 64),
+			wantErr: "artifact_hash",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.target, nil)
+			_, err := parseDecisionReplayByHashQuery(req)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("parseDecisionReplayByHashQuery() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestReplayByHashPublish_RecordedMatchesRederived_NoDivergence(t *testing.T) {
 	store := mustStore(t)
 	handler := newDryRunTestHandler(t, store, nil, nil)
@@ -1247,6 +1392,31 @@ func TestReplayByHashPublish_RecordedMatchesRederived_NoDivergence(t *testing.T)
 	}
 	if result.PublishEvaluation == nil || !result.PublishEvaluation.Valid || result.Divergence {
 		t.Fatalf("replay by hash result=%+v, eval=%+v, want valid no divergence", result, result.PublishEvaluation)
+	}
+}
+
+func TestReplayByHashPublishFailsClosedOnStoreErrorAndScopeMismatch(t *testing.T) {
+	store := mustStore(t)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id: "bundle-replay-by-hash-scope", version: 1, audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	record, created, err := store.Publish(context.Background(), bundle, PublishOptions{Now: testNow})
+	if err != nil || !created {
+		t.Fatalf("seed publish created=%v err=%v, want created", created, err)
+	}
+
+	errorHandler := newDryRunTestHandler(t, bundleLookupErrorStore{BundleStore: store, err: errDryRunTestStore}, nil, nil)
+	w := replayByHashJSON(t, errorHandler, record.BundleHash)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("replay by hash store error code=%d body=%s, want 500", w.Code, w.Body.String())
+	}
+
+	outOfScope := record
+	outOfScope.Bundle.FleetID = "staging"
+	scopeHandler := newDryRunTestHandler(t, bundleByHashRecordStore{BundleStore: store, record: outOfScope}, nil, nil)
+	w = replayByHashJSON(t, scopeHandler, record.BundleHash)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("replay by hash scope mismatch code=%d body=%s, want 404", w.Code, w.Body.String())
 	}
 }
 
@@ -1343,6 +1513,201 @@ func TestReplayByHashRollback_RejectsRawLookupHashMismatch(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), hash) {
 		t.Fatalf("wrong-hash lookup leaked returned record hash: %s", w.Body.String())
+	}
+}
+
+func TestReplayByHashDirectLookupErrorsAndScope(t *testing.T) {
+	store := mustStore(t)
+	msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-by-hash-direct-scope", 1, conductor.KillSwitchActive, testNow)
+	remoteHash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	remoteOutOfScope := msg
+	remoteOutOfScope.FleetID = "staging"
+
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-by-hash-direct-scope")
+	auth, rollbackResolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-by-hash-direct-scope", current, target, testNow)
+	rollbackHash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	rollbackOutOfScope := auth
+	rollbackOutOfScope.FleetID = "staging"
+	resolver = composeResolvers(resolver, rollbackResolver)
+	baseEmergency := mustEmergencyStore(t)
+
+	tests := []struct {
+		name       string
+		emergency  EmergencyStore
+		hash       string
+		wantStatus int
+	}{
+		{
+			name: "remote lookup error",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				remoteErr:               errDryRunTestStore,
+			},
+			hash:       remoteHash,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "rollback lookup error",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				rollbackErr:             errDryRunTestStore,
+			},
+			hash:       rollbackHash,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "remote direct record outside scope",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				remoteRecord: StoredRemoteKill{
+					Message:     remoteOutOfScope,
+					MessageHash: remoteHash,
+					PublishedAt: testNow,
+				},
+				remoteFound: true,
+			},
+			hash:       remoteHash,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "rollback direct record outside scope",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				rollbackRecord: StoredRollbackAuthorization{
+					Authorization:     rollbackOutOfScope,
+					AuthorizationHash: rollbackHash,
+					PublishedAt:       testNow,
+				},
+				rollbackFound: true,
+			},
+			hash:       rollbackHash,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "rollback direct record found",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				rollbackRecord: StoredRollbackAuthorization{
+					Authorization:     auth,
+					AuthorizationHash: rollbackHash,
+					PublishedAt:       testNow,
+				},
+				rollbackFound: true,
+			},
+			hash:       rollbackHash,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "no recorded lookup support",
+			emergency:  emergencyStoreNoPreview{inner: baseEmergency},
+			hash:       remoteHash,
+			wantStatus: http.StatusNotFound,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newDryRunTestHandler(t, store, nil, resolver)
+			handler.emergencyControls = tc.emergency
+			w := replayByHashJSON(t, handler, tc.hash)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("replay by hash code=%d body=%s, want %d", w.Code, w.Body.String(), tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestReplayByHashRecordedEnumeratorFallback(t *testing.T) {
+	store := mustStore(t)
+	msg, resolver := signedRemoteKillMessageWithResolver(t, "kill-replay-by-hash-enum", 1, conductor.KillSwitchActive, testNow)
+	remoteHash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-by-hash-enum")
+	auth, rollbackResolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-by-hash-enum", current, target, testNow)
+	rollbackHash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	resolver = composeResolvers(resolver, rollbackResolver)
+	baseEmergency := mustEmergencyStore(t)
+	remoteRecord := StoredRemoteKill{Message: msg, MessageHash: remoteHash, PublishedAt: testNow}
+	rollbackRecord := StoredRollbackAuthorization{Authorization: auth, AuthorizationHash: rollbackHash, PublishedAt: testNow}
+
+	tests := []struct {
+		name       string
+		emergency  replayRecordedEnumeratorStore
+		hash       string
+		wantStatus int
+	}{
+		{
+			name: "remote enumerator error",
+			emergency: replayRecordedEnumeratorStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				remoteErr:               errDryRunTestStore,
+			},
+			hash:       remoteHash,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "rollback enumerator error",
+			emergency: replayRecordedEnumeratorStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				rollbackErr:             errDryRunTestStore,
+			},
+			hash:       rollbackHash,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "remote enumerator found",
+			emergency: replayRecordedEnumeratorStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				remoteRecords:           []StoredRemoteKill{remoteRecord},
+			},
+			hash:       remoteHash,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "rollback enumerator found",
+			emergency: replayRecordedEnumeratorStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				rollbackRecords:         []StoredRollbackAuthorization{rollbackRecord},
+			},
+			hash:       rollbackHash,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "enumerator misses artifact",
+			emergency: replayRecordedEnumeratorStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				remoteRecords:           []StoredRemoteKill{remoteRecord},
+				rollbackRecords:         []StoredRollbackAuthorization{rollbackRecord},
+			},
+			hash:       strings.Repeat("c", 64),
+			wantStatus: http.StatusNotFound,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newDryRunTestHandler(t, store, nil, resolver)
+			handler.emergencyControls = tc.emergency
+			w := replayByHashJSON(t, handler, tc.hash)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("replay by hash code=%d body=%s, want %d", w.Code, w.Body.String(), tc.wantStatus)
+			}
+			if tc.wantStatus == http.StatusOK {
+				result := decodeReplay(t, w)
+				if result.Recorded == nil || !result.Recorded.Accepted {
+					t.Fatalf("result recorded=%+v, want accepted recorded decision", result.Recorded)
+				}
+			}
+		})
 	}
 }
 

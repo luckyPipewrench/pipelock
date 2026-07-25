@@ -410,6 +410,9 @@ func TestEmergencyStoreEdgeCases(t *testing.T) {
 	if _, err := nilStore.LatestRemoteKill(context.Background(), defaultFollowerIdentity(), testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
 		t.Fatalf("LatestRemoteKill(nil) err=%v, want ErrEmergencyStoreRequired", err)
 	}
+	if _, _, err := nilStore.remoteKillByHash(context.Background(), strings.Repeat("a", 64)); !errors.Is(err, ErrEmergencyStoreRequired) {
+		t.Fatalf("remoteKillByHash(nil) err=%v, want ErrEmergencyStoreRequired", err)
+	}
 	auth := signedRollbackAuthorization(t, "rollback-edge", 1, testNow)
 	if _, _, err := nilStore.PublishRollbackAuthorization(context.Background(), auth, testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
 		t.Fatalf("PublishRollbackAuthorization(nil) err=%v, want ErrEmergencyStoreRequired", err)
@@ -423,8 +426,17 @@ func TestEmergencyStoreEdgeCases(t *testing.T) {
 	if _, err := nilStore.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
 		t.Fatalf("LatestRollbackAuthorization(nil) err=%v, want ErrEmergencyStoreRequired", err)
 	}
+	if _, _, err := nilStore.rollbackAuthorizationByHash(context.Background(), strings.Repeat("a", 64)); !errors.Is(err, ErrEmergencyStoreRequired) {
+		t.Fatalf("rollbackAuthorizationByHash(nil) err=%v, want ErrEmergencyStoreRequired", err)
+	}
 
 	store := mustEmergencyStore(t)
+	if _, _, err := store.remoteKillByHash(context.Background(), "not-a-hash"); !errors.Is(err, conductor.ErrInvalidHash) {
+		t.Fatalf("remoteKillByHash(invalid hash) err=%v, want ErrInvalidHash", err)
+	}
+	if _, _, err := store.rollbackAuthorizationByHash(context.Background(), "not-a-hash"); !errors.Is(err, conductor.ErrInvalidHash) {
+		t.Fatalf("rollbackAuthorizationByHash(invalid hash) err=%v, want ErrInvalidHash", err)
+	}
 	badMsg := msg
 	badMsg.MessageID = ""
 	if _, _, err := store.PublishRemoteKill(context.Background(), badMsg, testNow); !errors.Is(err, conductor.ErrMissingField) {
@@ -432,6 +444,14 @@ func TestEmergencyStoreEdgeCases(t *testing.T) {
 	}
 	if _, created, err := store.PublishRemoteKill(context.Background(), msg, testNow); err != nil || !created {
 		t.Fatalf("PublishRemoteKill(edge) created=%v err=%v, want created", created, err)
+	}
+	msgHash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	gotKill, found, err := store.remoteKillByHash(context.Background(), msgHash)
+	if err != nil || !found || gotKill.Message.MessageID != msg.MessageID {
+		t.Fatalf("remoteKillByHash() record=%+v found=%t err=%v, want stored remote kill", gotKill, found, err)
 	}
 	conflict := signedRemoteKillMessage(t, msg.MessageID, 2, conductor.KillSwitchInactive, testNow.Add(time.Minute))
 	if _, _, err := store.PublishRemoteKill(context.Background(), conflict, testNow.Add(time.Minute)); !errors.Is(err, ErrEmergencyConflict) {
@@ -450,6 +470,14 @@ func TestEmergencyStoreEdgeCases(t *testing.T) {
 	}
 	if _, created, err := store.PublishRollbackAuthorization(context.Background(), auth, testNow); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization(edge) created=%v err=%v, want created", created, err)
+	}
+	authHash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	gotRollback, found, err := store.rollbackAuthorizationByHash(context.Background(), authHash)
+	if err != nil || !found || gotRollback.Authorization.AuthorizationID != auth.AuthorizationID {
+		t.Fatalf("rollbackAuthorizationByHash() record=%+v found=%t err=%v, want stored rollback", gotRollback, found, err)
 	}
 	authConflict := signedRollbackAuthorization(t, auth.AuthorizationID, 2, testNow.Add(time.Minute))
 	if _, _, err := store.PublishRollbackAuthorization(context.Background(), authConflict, testNow.Add(time.Minute)); !errors.Is(err, ErrEmergencyConflict) {

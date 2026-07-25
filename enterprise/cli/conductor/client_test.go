@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -26,6 +27,22 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 )
+
+type conductorReadRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f conductorReadRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type conductorReadErrorBody struct{}
+
+func (conductorReadErrorBody) Read([]byte) (int, error) {
+	return 0, errors.New("synthetic response read failure")
+}
+
+func (conductorReadErrorBody) Close() error {
+	return nil
+}
 
 // selfSignedTLS produces a self-signed leaf certificate for 127.0.0.1 plus its
 // PEM-encoded cert and key. Because it is self-signed, the cert PEM doubles as
@@ -365,6 +382,106 @@ func TestConductorReadClientReplayDecisionUsesGETAndDistinguishesNotFound(t *tes
 			}
 		})
 	}
+}
+
+func TestConductorReadClientReplayDecisionRejectsInvalidScope(t *testing.T) {
+	client := &ReadClient{client: &conductorClient{
+		httpClient: &http.Client{Transport: conductorReadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("unexpected transport call")
+		})},
+		baseURL: "https://conductor.example",
+		token:   "operator-token",
+	}}
+	artifactHash := strings.Repeat("a", 64)
+	tests := []struct {
+		name         string
+		client       *ReadClient
+		orgID        string
+		fleetID      string
+		artifactHash string
+		wantErr      string
+	}{
+		{name: "nil receiver", client: nil, orgID: "org-main", fleetID: "prod", artifactHash: artifactHash, wantErr: "nil"},
+		{name: "blank org", client: client, orgID: " \t", fleetID: "prod", artifactHash: artifactHash, wantErr: "required"},
+		{name: "blank fleet", client: client, orgID: "org-main", fleetID: " ", artifactHash: artifactHash, wantErr: "required"},
+		{name: "blank artifact", client: client, orgID: "org-main", fleetID: "prod", artifactHash: " ", wantErr: "required"},
+		{name: "control org", client: client, orgID: "org\nmain", fleetID: "prod", artifactHash: artifactHash, wantErr: "control characters"},
+		{name: "control fleet", client: client, orgID: "org-main", fleetID: "prod\rwest", artifactHash: artifactHash, wantErr: "control characters"},
+		{name: "control artifact", client: client, orgID: "org-main", fleetID: "prod", artifactHash: artifactHash[:32] + "\n" + artifactHash[32:], wantErr: "control characters"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := tc.client.ReplayDecision(context.Background(), tc.orgID, tc.fleetID, tc.artifactHash)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ReplayDecision() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConductorClientGetJSONStatusErrorPaths(t *testing.T) {
+	t.Run("request build failure", func(t *testing.T) {
+		client := &conductorClient{
+			httpClient: &http.Client{},
+			baseURL:    "https://conductor.example",
+			token:      "operator-token",
+		}
+		_, err := client.getJSONStatus(context.Background(), "/bad\npath", http.StatusOK)
+		if err == nil || !strings.Contains(err.Error(), "build request") {
+			t.Fatalf("getJSONStatus() error = %v, want build request error", err)
+		}
+	})
+
+	t.Run("transport failure", func(t *testing.T) {
+		client := &conductorClient{
+			httpClient: &http.Client{Transport: conductorReadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("synthetic transport failure")
+			})},
+			baseURL: "https://conductor.example",
+			token:   "operator-token",
+		}
+		_, err := client.getJSONStatus(context.Background(), controlplane.DecisionReplayPath, http.StatusOK)
+		if err == nil || !strings.Contains(err.Error(), "request conductor") {
+			t.Fatalf("getJSONStatus() error = %v, want request conductor error", err)
+		}
+	})
+
+	t.Run("body read failure", func(t *testing.T) {
+		client := &conductorClient{
+			httpClient: &http.Client{Transport: conductorReadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       conductorReadErrorBody{},
+				}, nil
+			})},
+			baseURL: "https://conductor.example",
+			token:   "operator-token",
+		}
+		_, err := client.getJSONStatus(context.Background(), controlplane.DecisionReplayPath, http.StatusOK)
+		if err == nil || !strings.Contains(err.Error(), "read conductor response") {
+			t.Fatalf("getJSONStatus() error = %v, want read conductor response error", err)
+		}
+	})
+
+	t.Run("ok status not explicitly allowed still accepted", func(t *testing.T) {
+		client := &conductorClient{
+			httpClient: &http.Client{Transport: conductorReadRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       http.NoBody,
+				}, nil
+			})},
+			baseURL: "https://conductor.example",
+			token:   "operator-token",
+		}
+		resp, err := client.getJSONStatus(context.Background(), controlplane.DecisionReplayPath, http.StatusCreated)
+		if err != nil {
+			t.Fatalf("getJSONStatus() error = %v", err)
+		}
+		if resp.status != http.StatusOK || len(resp.body) != 0 {
+			t.Fatalf("response = %+v, want empty 200 response", resp)
+		}
+	})
 }
 
 func TestConductorReadClientListFollowersRejectsUnboundedLimits(t *testing.T) {

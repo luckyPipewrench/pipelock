@@ -1757,6 +1757,46 @@ func TestHandler_AuditWriterSerializesConcurrentRequests(t *testing.T) {
 	}
 }
 
+func TestHandler_DecisionScopeAuditStates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		page      WorkbenchPage
+		wantState string
+	}{
+		{
+			name:      "unconfigured",
+			page:      WorkbenchPage{},
+			wantState: `decision_state="unconfigured"`,
+		},
+		{
+			name:      "not found",
+			page:      WorkbenchPage{SourceConfigured: true, ReplayNotFound: true},
+			wantState: `decision_state="not_found"`,
+		},
+		{
+			name:      "unknown",
+			page:      WorkbenchPage{SourceConfigured: true},
+			wantState: `decision_state="unknown"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var audit strings.Builder
+			handler := &dashboardHandler{auditWriter: &audit}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/workbench", nil)
+			handler.recordDecisionScopeAudit(req, false, DecisionScope{
+				OrgID:        "org-main",
+				FleetID:      "prod",
+				ArtifactHash: strings.Repeat("a", 64),
+			}, tc.page)
+			if !strings.Contains(audit.String(), tc.wantState) {
+				t.Fatalf("audit = %q, want %s", audit.String(), tc.wantState)
+			}
+		})
+	}
+}
+
 func TestHandler_AuditNotWrittenForUnauthorized(t *testing.T) {
 	t.Parallel()
 	dir, trusted := writeTrustedHandlerSession(t)

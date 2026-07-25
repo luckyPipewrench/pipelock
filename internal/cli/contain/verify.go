@@ -1056,40 +1056,16 @@ func probeNFTExecutable(env *probeEnv) string {
 	return "nft"
 }
 
-func chainHasAgentCatchAllDrop(out, chainName string, uid int) bool {
-	lines, err := attributedNFTChainLines(out, chainName)
-	if err != nil {
-		return false
-	}
-	return chainLinesHaveAgentCatchAllDrop(lines, uid)
-}
-
 func chainLinesHaveAgentCatchAllDrop(lines []string, uid int) bool {
 	return chainLinesHaveLine(lines, func(line string) bool {
 		return lineHasTerminalSkuidVerdict(line, uid, "drop")
 	})
 }
 
-func chainHasSkuidAcceptForUID(out, chainName string, uid int) bool {
-	lines, err := attributedNFTChainLines(out, chainName)
-	if err != nil {
-		return false
-	}
-	return chainLinesHaveSkuidAcceptForUID(lines, uid)
-}
-
 func chainLinesHaveSkuidAcceptForUID(lines []string, uid int) bool {
 	return chainLinesHaveLine(lines, func(line string) bool {
 		return lineHasTerminalSkuidVerdict(line, uid, "accept")
 	})
-}
-
-func chainHasAgentProxyLoopbackAllowBeforeDrop(out, chainName string, agentUID, port int) bool {
-	lines, err := attributedNFTChainLines(out, chainName)
-	if err != nil {
-		return false
-	}
-	return chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, port)
 }
 
 func chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines []string, agentUID, port int) bool {
@@ -1117,28 +1093,10 @@ func lineHasAgentProxyLoopbackAllow(line string, agentUID, port int) bool {
 	return nftRuleTailIsCommentOnly(fields[len(want):])
 }
 
-func chainHasAgentDNSDropBeforeCatchAll(out, chainName string, agentUID int, protocol string) bool {
-	lines, err := attributedNFTChainLines(out, chainName)
-	if err != nil {
-		return false
-	}
-	return chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, protocol)
-}
-
 func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, protocol string) bool {
 	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
 		return lineHasSkuidProtocolDPortVerdict(line, agentUID, protocol, 53, "drop")
 	})
-}
-
-// chainHasUnsafeVerdictBeforeAgentDrop detects an unmanaged verdict that can
-// bypass or intercept traffic before the contained agent's catch-all DROP.
-func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmentUIDs, proxyPort int) bool {
-	lines, err := attributedNFTChainLines(out, chainName)
-	if err != nil {
-		return true
-	}
-	return chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, proxyPort)
 }
 
 func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containmentUIDs, proxyPort int) bool {
@@ -1190,18 +1148,6 @@ func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-// lineHasSkuid reports whether an nft rule matches uid via skuid.
-func lineHasSkuid(line string, uid int) bool {
-	want := strconv.Itoa(uid)
-	fields := nftLineFields(line)
-	for i, field := range fields {
-		if field == "skuid" && i+1 < len(fields) && fields[i+1] == want {
-			return true
-		}
-	}
-	return false
 }
 
 // lineHasTerminalSkuidVerdict matches an exact UID with a terminal verdict.
@@ -1296,44 +1242,11 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 	return !inPrefix && !expectCount
 }
 
-// lineHasIPDAddr reports whether an nft rule contains an exact IPv4 destination.
-func lineHasIPDAddr(line, addr string) bool {
-	fields := nftLineFields(line)
-	for i := 0; i+2 < len(fields); i++ {
-		if fields[i] == "ip" && fields[i+1] == "daddr" && fields[i+2] == addr {
-			return true
-		}
-	}
-	return false
-}
-
-// lineHasDPort reports whether an nft rule contains an exact destination port.
-func lineHasDPort(line string, port int) bool {
-	want := strconv.Itoa(port)
-	fields := nftLineFields(line)
-	for i, field := range fields {
-		if field == "dport" && i+1 < len(fields) && fields[i+1] == want {
-			return true
-		}
-	}
-	return false
-}
-
 func nftRuleTailIsCommentOnly(fields []string) bool {
 	if len(fields) == 0 {
 		return true
 	}
 	return len(fields) == 2 && fields[0] == "comment" && strings.HasPrefix(fields[1], `"`) && strings.HasSuffix(fields[1], `"`)
-}
-
-// lineHasToken finds an exact unquoted nft syntax token.
-func lineHasToken(line, want string) bool {
-	for _, field := range nftLineFields(line) {
-		if field == want {
-			return true
-		}
-	}
-	return false
 }
 
 // lineHasAnyToken finds any requested unquoted nft syntax token.

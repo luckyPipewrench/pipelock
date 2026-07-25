@@ -667,7 +667,7 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "evidence-agent-0.jsonl")
 		var data strings.Builder
 		for seq := range recorder.MaxEvidenceReadEntries + 1 {
-			data.WriteString(fmt.Sprintf(`{"v":2,"seq":%d,"ts":"2026-01-01T00:00:00Z","session_id":"agent-a","type":"request"}`+"\n", seq))
+			_, _ = fmt.Fprintf(&data, `{"v":2,"seq":%d,"ts":"2026-01-01T00:00:00Z","session_id":"agent-a","type":"request"}`+"\n", seq)
 		}
 		if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
 			t.Fatal(err)

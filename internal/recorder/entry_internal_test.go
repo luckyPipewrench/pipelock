@@ -196,7 +196,7 @@ func testEntryLine(t *testing.T, seq uint64) string {
 	entry := Entry{
 		Version:   EntryVersion,
 		Sequence:  seq,
-		Timestamp: time.Date(2026, 7, 12, 12, 0, int(seq), 0, time.UTC),
+		Timestamp: time.Date(2026, 7, 12, 12, 0, int(seq%60), 0, time.UTC),
 		SessionID: "s1",
 		Type:      "request",
 		Transport: "fetch",

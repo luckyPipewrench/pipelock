@@ -816,7 +816,7 @@ func TestExtractReceiptsFromSessionDirRejectsTruncatedQuery(t *testing.T) {
 	_, priv := generateTestKey(t)
 	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
 	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}

@@ -34,6 +34,7 @@ type BridgeProxy struct {
 	wg         sync.WaitGroup
 	mu         sync.Mutex
 	closed     bool
+	conns      map[net.Conn]struct{}
 	closeOnce  sync.Once
 }
 
@@ -52,6 +53,7 @@ func NewBridgeProxy(socketPath string, listenAddr ...string) (*BridgeProxy, erro
 	return &BridgeProxy{
 		listener:   ln,
 		socketPath: socketPath,
+		conns:      make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -79,12 +81,14 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 			_ = conn.Close()
 			return
 		}
+		bp.trackConnLocked(conn)
 		bp.wg.Add(1)
 		bp.mu.Unlock()
-		go func() {
+		go func(conn net.Conn) {
 			defer bp.wg.Done()
+			defer bp.untrackConn(conn)
 			bp.handleConn(conn)
-		}()
+		}(conn)
 	}
 }
 
@@ -94,9 +98,32 @@ func (bp *BridgeProxy) Close() {
 		bp.mu.Lock()
 		bp.closed = true
 		_ = bp.listener.Close()
+		for conn := range bp.conns {
+			_ = conn.Close()
+		}
 		bp.mu.Unlock()
 		bp.wg.Wait()
 	})
+}
+
+func (bp *BridgeProxy) trackConn(conn net.Conn) bool {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	if bp.closed {
+		return false
+	}
+	bp.trackConnLocked(conn)
+	return true
+}
+
+func (bp *BridgeProxy) trackConnLocked(conn net.Conn) {
+	bp.conns[conn] = struct{}{}
+}
+
+func (bp *BridgeProxy) untrackConn(conn net.Conn) {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	delete(bp.conns, conn)
 }
 
 // handleConn bridges a single TCP connection from the sandbox to the
@@ -111,6 +138,11 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 		_, _ = fmt.Fprintf(os.Stderr, "[bridge] connect to parent proxy: %v\n", err)
 		return
 	}
+	if !bp.trackConn(parentConn) {
+		_ = parentConn.Close()
+		return
+	}
+	defer bp.untrackConn(parentConn)
 	defer func() { _ = parentConn.Close() }()
 
 	// Bridge data bidirectionally.

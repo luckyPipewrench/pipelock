@@ -1321,16 +1321,28 @@ func stepInstallNFTRules() step {
 			body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, env.nftTableOrDefault(), env.nftChainOrDefault())
 
 			rulesMatch := false
+			existingRulesManaged := false
 			if existing, err := env.readFile(env.nftRulesPath); err == nil {
-				rulesMatch = string(existing) == body
+				existingBody := string(existing)
+				rulesMatch = existingBody == body
+				existingRulesManaged = nftRulesTextHasManagedHeader(existingBody)
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 			}
 			tableLoaded := false
+			liveChainAttributed := false
 			liveRulesDrifted := false
+			liveRulesManaged := false
 			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); code == 0 {
 				tableLoaded = true
+				if _, err := attributedNFTChainLines(out, env.nftChainOrDefault()); err == nil {
+					liveChainAttributed = true
+				}
 				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
+				liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
+			}
+			if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !existingRulesManaged && !liveRulesManaged {
+				return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
 			}
 
 			rulesChanged := false
@@ -1442,6 +1454,10 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	return nil
 }
 
+func nftRulesTextHasManagedHeader(body string) bool {
+	return strings.Contains(body, "# Pipelock containment ruleset (managed by pipelock contain install).")
+}
+
 func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
@@ -1460,6 +1476,19 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 			proxyUID:      proxyUID,
 			agentUID:      agentUID,
 		}, proxyPort)
+}
+
+func liveNFTContainmentLooksManaged(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return false
+	}
+	return chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
+		chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
+		chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
+		chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
+		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
+		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp")
 }
 
 func nftRulesIncludeLine(path string) string {

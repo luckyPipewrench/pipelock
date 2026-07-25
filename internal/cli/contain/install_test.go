@@ -1400,6 +1400,35 @@ func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.
 	}
 }
 
+func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	unrelated := `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			ip daddr 203.0.113.10 accept
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), unrelated, 0, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "not attributable to Pipelock") {
+		t.Fatalf("apply error = %v, want unattributed collision refusal", err)
+	}
+	if applied {
+		t.Fatal("unattributed collision must not report an applied repair")
+	}
+	for _, c := range runner.calls {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+			t.Fatalf("unattributed collision deleted nft table: %v", runner.calls)
+		}
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
+			t.Fatalf("unattributed collision loaded replacement rules: %v", runner.calls)
+		}
+	}
+}
+
 func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
@@ -1703,6 +1732,13 @@ func TestStepInstallNFTRules_PersistsViaOwnedSystemdUnitAndRestores(t *testing.T
 
 func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	staleRules := renderNFTRules(1000, 988, 986, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.WriteFile(env.nftRulesPath, []byte(staleRules), 0o600); err != nil {
+		t.Fatalf("write stale managed rules: %v", err)
+	}
 	previousTable := `table inet pipelock_containment {
 	chain output_filter {
 		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept

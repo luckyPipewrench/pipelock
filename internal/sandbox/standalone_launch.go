@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
@@ -254,6 +255,8 @@ type standaloneProxyServer struct {
 	wg       sync.WaitGroup
 }
 
+const standaloneProxyDrainTimeout = 5 * time.Second
+
 func startStandaloneProxyServer(ln net.Listener, cfg standaloneProxyConnectionConfig) *standaloneProxyServer {
 	s := &standaloneProxyServer{
 		ln:    ln,
@@ -303,7 +306,12 @@ func (s *standaloneProxyServer) untrackConn(conn net.Conn) {
 	delete(s.conns, conn)
 }
 
-func (s *standaloneProxyServer) stop() {
+func (s *standaloneProxyServer) stop() bool {
+	return s.stopWithin(standaloneProxyDrainTimeout)
+}
+
+func (s *standaloneProxyServer) stopWithin(timeout time.Duration) bool {
+	stopped := false
 	s.once.Do(func() {
 		s.mu.Lock()
 		s.stopping = true
@@ -312,8 +320,26 @@ func (s *standaloneProxyServer) stop() {
 			_ = conn.Close()
 		}
 		s.mu.Unlock()
-		s.wg.Wait()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			s.wg.Wait()
+		}()
+		if timeout <= 0 {
+			<-done
+			stopped = true
+			return
+		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+			stopped = true
+		case <-timer.C:
+		}
 	})
+	return stopped
 }
 
 // handleStandaloneProxyConnection dispatches a bridge connection to the

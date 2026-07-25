@@ -633,6 +633,24 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "loopback allow",
 		},
 		{
+			name: "constrained proxy loopback allow is not canonical",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip saddr 127.0.0.2 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "loopback allow",
+		},
+		{
 			name: "agent broad accept before drop is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {

@@ -126,6 +126,75 @@ func TestBridgeProxy_Addr(t *testing.T) {
 	}
 }
 
+func TestBridgeProxy_CloseClosesIdleActiveConnections(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := ProxySocketPath(dir)
+
+	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = parentLn.Close() }()
+
+	parentAccepted := make(chan struct{})
+	releaseParent := make(chan struct{})
+	parentDone := make(chan struct{})
+	go func() {
+		defer close(parentDone)
+		conn, acceptErr := parentLn.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(parentAccepted)
+		<-releaseParent
+	}()
+
+	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		bp.Serve(ctx)
+	}()
+	defer func() {
+		cancel()
+		bp.Close()
+		_ = parentLn.Close()
+		close(releaseParent)
+		<-serveDone
+		<-parentDone
+	}()
+
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", bp.Addr())
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case <-parentAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never connected to parent socket")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		bp.Close()
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("BridgeProxy.Close blocked on idle active connection")
+	}
+}
+
 func TestBridgeProxy_HandleConnFailsGracefully(t *testing.T) {
 	// Bridge proxy with a nonexistent socket path - connections should
 	// fail gracefully (log error, close conn) not panic.

@@ -1099,11 +1099,22 @@ func chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines []string, agentUID, p
 }
 
 func lineHasAgentProxyLoopbackAllow(line string, agentUID, port int) bool {
-	return lineHasSkuid(line, agentUID) &&
-		lineHasIPDAddr(line, "127.0.0.1") &&
-		lineHasToken(line, "tcp") &&
-		lineHasDPort(line, port) &&
-		lineHasToken(line, "accept")
+	fields := nftLineFields(line)
+	want := []string{
+		"meta", "skuid", strconv.Itoa(agentUID),
+		"ip", "daddr", "127.0.0.1",
+		"tcp", "dport", strconv.Itoa(port),
+		"accept",
+	}
+	if len(fields) < len(want) {
+		return false
+	}
+	for i, field := range want {
+		if fields[i] != field {
+			return false
+		}
+	}
+	return nftRuleTailIsCommentOnly(fields[len(want):])
 }
 
 func chainHasAgentDNSDropBeforeCatchAll(out, chainName string, agentUID int, protocol string) bool {
@@ -1306,6 +1317,13 @@ func lineHasDPort(line string, port int) bool {
 		}
 	}
 	return false
+}
+
+func nftRuleTailIsCommentOnly(fields []string) bool {
+	if len(fields) == 0 {
+		return true
+	}
+	return len(fields) == 2 && fields[0] == "comment" && strings.HasPrefix(fields[1], `"`) && strings.HasSuffix(fields[1], `"`)
 }
 
 // lineHasToken finds an exact unquoted nft syntax token.

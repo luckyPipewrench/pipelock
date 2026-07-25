@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -282,31 +283,48 @@ func TestBridgeProxy_HandleConnAfterCloseDoesNotProxy(t *testing.T) {
 	agentConn, clientConn := net.Pipe()
 	defer func() { _ = clientConn.Close() }()
 
-	parentAccepted := make(chan struct{})
-	parentReadDone := make(chan error, 1)
+	// Two outcomes both satisfy the property under test, and which one occurs is
+	// not ordered: a closed bridge may never dial the parent at all, or it may
+	// dial and then proxy nothing. Only bytes actually reaching the parent is a
+	// failure, so report that directly instead of racing an accept signal
+	// against the read result.
+	type parentOutcome struct {
+		proxied string
+		err     error
+	}
+	outcome := make(chan parentOutcome, 1)
+	if deadliner, ok := parentLn.(interface{ SetDeadline(time.Time) error }); ok {
+		if err := deadliner.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("set accept deadline: %v", err)
+		}
+	}
 	go func() {
 		parentConn, acceptErr := parentLn.Accept()
 		if acceptErr != nil {
-			parentReadDone <- fmt.Errorf("accept parent: %w", acceptErr)
+			// A lapsed accept deadline means the closed bridge never dialed.
+			if errors.Is(acceptErr, os.ErrDeadlineExceeded) {
+				outcome <- parentOutcome{}
+				return
+			}
+			outcome <- parentOutcome{err: fmt.Errorf("accept parent: %w", acceptErr)}
 			return
 		}
 		defer func() { _ = parentConn.Close() }()
-		close(parentAccepted)
 		if err := parentConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			parentReadDone <- fmt.Errorf("set parent read deadline: %w", err)
+			outcome <- parentOutcome{err: fmt.Errorf("set parent read deadline: %w", err)}
 			return
 		}
 		buf := make([]byte, 1)
 		n, readErr := parentConn.Read(buf)
 		if n > 0 {
-			parentReadDone <- fmt.Errorf("post-close bridge proxied %q to parent", string(buf[:n]))
+			outcome <- parentOutcome{proxied: string(buf[:n])}
 			return
 		}
 		if readErr == nil {
-			parentReadDone <- fmt.Errorf("parent read returned no data and no error")
+			outcome <- parentOutcome{err: errors.New("parent read returned no data and no error")}
 			return
 		}
-		parentReadDone <- nil
+		outcome <- parentOutcome{}
 	}()
 
 	handleDone := make(chan struct{})
@@ -315,28 +333,24 @@ func TestBridgeProxy_HandleConnAfterCloseDoesNotProxy(t *testing.T) {
 		bp.handleConn(agentConn)
 	}()
 
-	select {
-	case <-parentAccepted:
-	case err := <-parentReadDone:
-		t.Fatalf("parent read completed before accept signal: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("bridge never connected to parent socket")
-	}
 	if err := clientConn.SetWriteDeadline(time.Now().Add(time.Second)); err == nil {
 		_, _ = clientConn.Write([]byte("x"))
 	}
 
 	select {
-	case err := <-parentReadDone:
-		if err != nil {
-			t.Fatal(err)
+	case got := <-outcome:
+		if got.err != nil {
+			t.Fatal(got.err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("parent read did not finish after post-close bridge attempt")
+		if got.proxied != "" {
+			t.Fatalf("post-close bridge proxied %q to parent", got.proxied)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("parent never reported an outcome for the post-close bridge attempt")
 	}
 	select {
 	case <-handleDone:
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("handleConn did not return after post-close rejection")
 	}
 }

@@ -743,9 +743,6 @@ func TestProbeNFTContainment(t *testing.T) {
 		{
 			name: "pre-drop jump is fail open",
 			stdout: `table inet pipelock_containment {
-		chain allow_all {
-			accept
-		}
 		chain output_filter {
 			meta skuid 1000 accept
 			meta skuid 988 accept
@@ -759,14 +756,11 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "not positively attributed",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "pre-drop goto is fail open",
 			stdout: `table inet pipelock_containment {
-		chain allow_all {
-			accept
-		}
 		chain output_filter {
 			meta skuid 1000 accept
 			meta skuid 988 accept
@@ -780,7 +774,7 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "not positively attributed",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "pre-drop queue is fail open",

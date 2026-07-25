@@ -524,6 +524,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.cleanup()
 			return nil, fmt.Errorf("creating flight recorder: %w", recErr)
 		}
+		runFlightRecorderExpiryOnce(rec, opts.Stderr)
 		s.recorder = rec
 		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
 		postureBinding, bindErr := posturebinding.LoadRuntime()
@@ -600,6 +601,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 
 		_, _ = fmt.Fprintf(opts.Stderr, "  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+		printFlightRecorderEvidenceWarning(opts.Stderr, cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
 	} else if cfg.FlightRecorder.Enabled {
 		// Flight recorder is on by default, but no dir is configured, so no
 		// recorder is built and no receipts are written. Surface this once so an

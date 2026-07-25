@@ -573,14 +573,22 @@ func TestRecorder_Retention(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	// Create an old evidence file
+	// Create two old evidence files for one session. Retention removes the
+	// older shard but preserves the newest shard as the resume anchor.
 	oldFile := filepath.Join(dir, "evidence-old-session-0.jsonl")
 	if err := os.WriteFile(oldFile, []byte(`{"v":1}`+"\n"), filePermissions); err != nil {
+		t.Fatal(err)
+	}
+	oldAnchor := filepath.Join(dir, "evidence-old-session-1.jsonl")
+	if err := os.WriteFile(oldAnchor, []byte(`{"v":1}`+"\n"), filePermissions); err != nil {
 		t.Fatal(err)
 	}
 	// Set modification time to 2 days ago
 	old := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(oldFile, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldAnchor, old, old); err != nil {
 		t.Fatal(err)
 	}
 
@@ -598,9 +606,12 @@ func TestRecorder_Retention(t *testing.T) {
 		t.Errorf("expected 1 removed, got %d", removed)
 	}
 
-	// Verify old file is gone, recent file remains
+	// Verify old file is gone, the resume anchor remains, and recent file remains
 	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
 		t.Error("old file should be removed")
+	}
+	if _, err := os.Stat(oldAnchor); err != nil {
+		t.Error("newest old session file should still exist")
 	}
 	if _, err := os.Stat(recentFile); err != nil {
 		t.Error("recent file should still exist")

@@ -361,7 +361,17 @@ sessions, err := recorder.ListSessions("/var/lib/pipelock/evidence")
 
 Files rotate when a file reaches `max_entries_per_file` entries. The new file picks up where the old one left off, with the new file's first entry linking to the last entry in the previous file via `prev_hash`.
 
-Auto-expire removes evidence files older than `retention_days` days based on file modification time. Call `recorder.ExpireOldFiles()` periodically to trigger cleanup. Expiry is not automatic. You need to call it on a schedule (a cron job, or at startup).
+Pipelock automatically expires evidence files older than `retention_days` days based on file modification time. Expiry runs once when the flight recorder starts and then periodically while the process is running. Expiry is best-effort: cleanup errors are surfaced as warnings, but they do not block proxy traffic.
+
+The newest JSONL shard for each session is preserved as a chain-resume anchor, even when it is older than `retention_days`. That keeps the next receipt linked to a real prior tail instead of silently resetting the chain to genesis. Older shards can still expire normally, and encrypted raw-escrow sidecars are removed by age.
+
+To trigger cleanup immediately, run:
+
+```bash
+pipelock evidence expire --config pipelock.yaml
+```
+
+`pipelock doctor` warns when any session approaches the 256-shard bounded resume cap, using a 200-shard warning threshold so operators have headroom before receipt resume fails closed.
 
 Expired files are gone. If you need longer retention, either increase `retention_days` or copy evidence files to external storage before they expire.
 
@@ -411,7 +421,7 @@ pipelock run --config /etc/pipelock/pipelock.yaml
 #    a transcript_root completeness anchor; a SIGKILL skips the seal and leaves
 #    the tail unsealed (verification then reports no root rather than VALID).
 
-# 4. Verify the entire chain offline with the public-key sidecar. Use the dir
+# 4. Verify the retained chain offline with the public-key sidecar. Use the dir
 #    and .pub path that step 1 wrote into your config.
 pipelock verify-receipt --chain /var/lib/pipelock/evidence \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
@@ -421,3 +431,6 @@ pipelock verify-receipt --chain /var/lib/pipelock/evidence \
 restarts), checks `prev_hash` linkage and sequence continuity, verifies each
 signature against the pinned key, and confirms the sealed `transcript_root`. If
 the chain rotated its signing key, pass each public key with a repeated `--key`.
+With `retention_days` enabled, this verifies the retained evidence window; copy
+evidence to external storage before expiry if you need full-history offline
+verification later.

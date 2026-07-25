@@ -70,6 +70,7 @@ type EvidenceHealthStats struct {
 	HeartbeatIntervalSeconds   *float64                `json:"heartbeat_interval_seconds"`
 	SequenceGaps               EvidenceGapStats        `json:"sequence_gaps"`
 	FsyncErrors                EvidenceFsyncStats      `json:"fsync_errors"`
+	Files                      EvidenceFileStats       `json:"files"`
 	DurabilityBlocks           uint64                  `json:"durability_blocks"`
 	DurabilityInvariantOK      bool                    `json:"durability_invariant_ok"`
 	Anchor                     *EvidenceAnchorStats    `json:"anchor"`
@@ -88,6 +89,19 @@ type EvidenceGapStats struct {
 type EvidenceFsyncStats struct {
 	Gated   int64 `json:"gated"`
 	Ungated int64 `json:"ungated"`
+}
+
+type EvidenceFileStats struct {
+	TotalEvidenceFiles     int    `json:"total_evidence_files"`
+	MaxSessionFiles        int    `json:"max_session_files"`
+	MaxSessionID           string `json:"max_session_id,omitempty"`
+	WarningThreshold       int    `json:"warning_threshold"`
+	MaxFilesPerSession     int    `json:"max_files_per_session"`
+	NearSessionFileLimit   bool   `json:"near_session_file_limit"`
+	OverSessionFileLimit   bool   `json:"over_session_file_limit"`
+	RetentionDays          int    `json:"retention_days"`
+	RetentionEnabled       bool   `json:"retention_enabled"`
+	RetentionEligibleFiles int    `json:"retention_eligible_files"`
 }
 
 type EvidenceAnchorStats struct {

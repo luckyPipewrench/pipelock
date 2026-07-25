@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -674,6 +675,53 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Enforcing:  false,
 			Detail:     detail,
 			Next:       next,
+		}
+	}
+	health, err := recorder.EvidenceDirectoryHealthForDir(cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
+	if err != nil {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Reachable:  true,
+			Detail:     "flight_recorder.dir is reachable but evidence file-count health could not be measured: " + err.Error(),
+			Next:       "inspect the directory permissions and rerun doctor as the service user",
+		}
+	}
+	if health.OverSessionFileLimit {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusFail,
+			Configured: true,
+			Reachable:  true,
+			Enforcing:  false,
+			Detail: fmt.Sprintf(
+				"evidence session %q has %d JSONL shard(s), over the %d-file bounded resume cap",
+				health.MaxSessionID,
+				health.MaxSessionFiles,
+				health.MaxFilesPerSession,
+			),
+			Next: "run `pipelock evidence expire --config pipelock.yaml` or prune old evidence files after preserving the newest shard for each session",
+		}
+	}
+	if health.NearSessionFileLimit {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Reachable:  true,
+			Enforcing:  true,
+			Detail: fmt.Sprintf(
+				"evidence session %q has %d JSONL shard(s), nearing the %d-file bounded resume cap; warning threshold is %d",
+				health.MaxSessionID,
+				health.MaxSessionFiles,
+				health.MaxFilesPerSession,
+				health.WarningThreshold,
+			),
+			Next: "retention expiry now runs at startup and daily; run `pipelock evidence expire --config pipelock.yaml` for immediate cleanup",
 		}
 	}
 	return doctorReportCheck{

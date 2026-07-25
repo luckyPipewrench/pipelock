@@ -304,6 +304,7 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 	gatedFsync, durabilityBlocks := h.metrics.EvidenceCountersSnapshot()
 	fsyncStats := h.fsyncStats()
 	gapStats := h.gapStats()
+	fileStats := h.fileStats(cfg)
 	in := metrics.EvidenceAELInput{
 		RecorderEnabled:  requirements[metrics.EvidenceRequirementRecorderEnabled],
 		EmitterHealthy:   requirements[metrics.EvidenceRequirementEmitterHealthy],
@@ -324,6 +325,7 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		HeartbeatIntervalSeconds:   &hbi,
 		SequenceGaps:               gapStats,
 		FsyncErrors:                fsyncStats,
+		Files:                      fileStats,
 		DurabilityBlocks:           durabilityBlocks,
 		DurabilityInvariantOK:      h.selfAuditOK.Load() && gatedFsync >= durabilityBlocks,
 		Anchor:                     anchor,
@@ -333,6 +335,35 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		AnchorLagReceipts:          anchorLag,
 		LastAnchorTimestampSeconds: lastAnchor,
 	}, true
+}
+
+func (h *evidenceHealthMonitor) fileStats(cfg *config.Config) metrics.EvidenceFileStats {
+	if h == nil || h.recorder == nil || cfg == nil {
+		return metrics.EvidenceFileStats{
+			WarningThreshold:   recorder.EvidenceFileWarningThreshold,
+			MaxFilesPerSession: recorder.MaxEvidenceReadDirectoryEntries,
+		}
+	}
+	health, err := recorder.EvidenceDirectoryHealthForDir(h.recorder.Dir(), cfg.FlightRecorder.RetentionDays)
+	if err != nil {
+		h.fail("sampler_error", err)
+		return metrics.EvidenceFileStats{
+			WarningThreshold:   recorder.EvidenceFileWarningThreshold,
+			MaxFilesPerSession: recorder.MaxEvidenceReadDirectoryEntries,
+		}
+	}
+	return metrics.EvidenceFileStats{
+		TotalEvidenceFiles:     health.TotalEvidenceFiles,
+		MaxSessionFiles:        health.MaxSessionFiles,
+		MaxSessionID:           health.MaxSessionID,
+		WarningThreshold:       health.WarningThreshold,
+		MaxFilesPerSession:     health.MaxFilesPerSession,
+		NearSessionFileLimit:   health.NearSessionFileLimit,
+		OverSessionFileLimit:   health.OverSessionFileLimit,
+		RetentionDays:          health.RetentionDays,
+		RetentionEnabled:       health.RetentionEnabled,
+		RetentionEligibleFiles: health.RetentionEligibleFiles,
+	}
 }
 
 func (h *evidenceHealthMonitor) emitter() *receipt.Emitter {

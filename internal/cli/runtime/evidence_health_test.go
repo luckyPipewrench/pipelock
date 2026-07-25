@@ -1038,3 +1038,65 @@ func metricLabelsMatch(metric *dto.Metric, labels map[string]string) bool {
 	}
 	return true
 }
+
+// TestEvidenceHealthFileStatsDegradesSafely covers the file-count sampler's
+// defensive paths. The sampler feeds metrics, not enforcement, so a nil monitor
+// or an unreadable evidence directory must still return well-formed stats
+// carrying the real thresholds. Returning zeroed thresholds would make a
+// dashboard read "0 of 0 files" and look healthy while the sampler is blind.
+func TestEvidenceHealthFileStatsDegradesSafely(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil_monitor_returns_thresholds", func(t *testing.T) {
+		t.Parallel()
+		var h *evidenceHealthMonitor
+		got := h.fileStats(config.Defaults())
+		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("MaxFilesPerSession = %d, want %d",
+				got.MaxFilesPerSession, recorder.MaxEvidenceReadDirectoryEntries)
+		}
+		if got.WarningThreshold != recorder.EvidenceFileWarningThreshold {
+			t.Fatalf("WarningThreshold = %d, want %d",
+				got.WarningThreshold, recorder.EvidenceFileWarningThreshold)
+		}
+	})
+
+	t.Run("nil_config_returns_thresholds", func(t *testing.T) {
+		t.Parallel()
+		h := &evidenceHealthMonitor{}
+		got := h.fileStats(nil)
+		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("MaxFilesPerSession = %d, want %d",
+				got.MaxFilesPerSession, recorder.MaxEvidenceReadDirectoryEntries)
+		}
+	})
+
+	t.Run("unreadable_dir_reports_sampler_error_and_keeps_thresholds", func(t *testing.T) {
+		t.Parallel()
+		// A regular file where a directory is expected makes the scan fail.
+		// Build the recorder against a real directory, then remove it so the
+		// later sampler read fails. recorder.New validates the directory up
+		// front, so the failure has to be introduced after construction.
+		dir := filepath.Join(t.TempDir(), "recorder")
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir}, nil, nil)
+		if err != nil {
+			t.Fatalf("recorder.New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("remove dir: %v", err)
+		}
+
+		h := &evidenceHealthMonitor{recorder: rec}
+		got := h.fileStats(config.Defaults())
+		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("thresholds lost on sampler error: %+v", got)
+		}
+		if got.TotalEvidenceFiles != 0 {
+			t.Fatalf("TotalEvidenceFiles = %d, want 0 on sampler error", got.TotalEvidenceFiles)
+		}
+	})
+}

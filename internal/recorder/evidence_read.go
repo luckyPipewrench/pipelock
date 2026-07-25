@@ -24,6 +24,11 @@ const (
 	// directory ceiling.
 	MaxEvidenceReadDirectoryEntries = 256
 
+	// EvidenceFileWarningThreshold warns before a recorder session reaches the
+	// fail-closed bounded resume ceiling. 200 is ~78% of the 256-file cap,
+	// leaving operational headroom while avoiding noise for small installs.
+	EvidenceFileWarningThreshold = 200
+
 	// MaxEvidenceReadEntries matches the recorder's default shard size. A
 	// healthy default shard can be resumed, while appended over-cap records fail
 	// closed instead of being silently ignored.

@@ -5,7 +5,21 @@
 
 package recorder
 
+import "os"
+
 const (
 	evidenceReadNoFollowFlag = 0
 	evidenceReadNonblockFlag = 0
 )
+
+func lockEvidenceFileForWrite(_ *os.File) error {
+	return nil
+}
+
+func unlockEvidenceFile(_ *os.File) error {
+	return nil
+}
+
+func tryLockEvidenceFileForExpiry(_ *os.File) (bool, error) {
+	return true, nil
+}

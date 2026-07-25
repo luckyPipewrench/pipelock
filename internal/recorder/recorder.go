@@ -991,6 +991,10 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	if err != nil {
 		return err
 	}
+	if err := lockEvidenceFileForWrite(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("locking evidence file: %w", err)
+	}
 	if err := f.Chmod(r.cfg.FileMode); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("setting evidence file permissions: %w", err)
@@ -1115,9 +1119,13 @@ func (r *Recorder) closeFile() error {
 		r.writer = nil
 		return err
 	}
+	unlockErr := unlockEvidenceFile(r.file)
 	err := r.file.Close()
 	r.file = nil
 	r.writer = nil
+	if unlockErr != nil {
+		return fmt.Errorf("unlocking evidence file: %w", unlockErr)
+	}
 	return err
 }
 
@@ -1153,6 +1161,8 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		return 0, fmt.Errorf("reading evidence directory: %w", err)
 	}
 
+	currentFile := r.currentFileName()
+	newestJSONL := newestEvidenceJSONLBySession(dirEntries)
 	removed := 0
 	for _, de := range dirEntries {
 		if de.IsDir() {
@@ -1162,13 +1172,21 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		if !isEvidenceFile(name) {
 			continue
 		}
+		if name == currentFile {
+			continue
+		}
+		if sessionID, _, ok := parseEvidenceFilename(name); ok && newestJSONL[sessionID] == name {
+			continue
+		}
 		info, err := de.Info()
 		if err != nil {
 			continue
 		}
 		if info.ModTime().Before(cutoff) {
 			path := filepath.Join(dir, name)
-			if err := os.Remove(path); err == nil {
+			if removedFile, removeErr := removeExpiredEvidenceFile(path, cutoff); removeErr != nil {
+				return removed, removeErr
+			} else if removedFile {
 				removed++
 			}
 		}
@@ -1176,10 +1194,141 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 	return removed, nil
 }
 
+func (r *Recorder) currentFileName() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.file == nil {
+		return ""
+	}
+	return filepath.Base(r.file.Name())
+}
+
+func newestEvidenceJSONLBySession(dirEntries []os.DirEntry) map[string]string {
+	newest := make(map[string]string)
+	newestSeq := make(map[string]int)
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		sessionID, seqStart, ok := parseEvidenceFilename(name)
+		if !ok {
+			continue
+		}
+		currentSeq, found := newestSeq[sessionID]
+		if !found || seqStart > currentSeq || (seqStart == currentSeq && name > newest[sessionID]) {
+			newest[sessionID] = name
+			newestSeq[sessionID] = seqStart
+		}
+	}
+	return newest
+}
+
+func removeExpiredEvidenceFile(path string, cutoff time.Time) (bool, error) {
+	file, info, err := openRegularEvidenceFile(path, "evidence file")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+	locked, err := tryLockEvidenceFileForExpiry(file)
+	if err != nil {
+		return false, fmt.Errorf("locking evidence file for expiry: %w", err)
+	}
+	if !locked {
+		return false, nil
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(info, after) || !after.ModTime().Before(cutoff) {
+		return false, nil
+	}
+	if err := os.Remove(filepath.Clean(path)); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // isEvidenceFile checks if a filename looks like an evidence file.
 func isEvidenceFile(name string) bool {
 	return strings.HasPrefix(name, "evidence-") &&
 		(strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".raw.enc"))
+}
+
+// EvidenceDirectoryHealth summarizes recorder file counts against bounded
+// resume limits without parsing receipt contents.
+type EvidenceDirectoryHealth struct {
+	TotalEvidenceFiles     int
+	MaxSessionFiles        int
+	MaxSessionID           string
+	WarningThreshold       int
+	MaxFilesPerSession     int
+	NearSessionFileLimit   bool
+	OverSessionFileLimit   bool
+	RetentionDays          int
+	RetentionEnabled       bool
+	RetentionEligibleFiles int
+}
+
+// EvidenceDirectoryHealthForDir returns file-count health for a recorder
+// directory. retentionDays controls the eligible-old-file count; zero preserves
+// keep-forever semantics and reports no eligible files.
+func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirectoryHealth, error) {
+	health := EvidenceDirectoryHealth{
+		WarningThreshold:   EvidenceFileWarningThreshold,
+		MaxFilesPerSession: MaxEvidenceReadDirectoryEntries,
+		RetentionDays:      retentionDays,
+		RetentionEnabled:   retentionDays > 0,
+	}
+	dirEntries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return health, fmt.Errorf("reading evidence directory: %w", err)
+	}
+	cutoff := time.Time{}
+	if retentionDays > 0 {
+		cutoff = time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	}
+	counts := make(map[string]int)
+	newestJSONL := newestEvidenceJSONLBySession(dirEntries)
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		if !isEvidenceFile(name) {
+			continue
+		}
+		health.TotalEvidenceFiles++
+		if strings.HasSuffix(name, ".jsonl") {
+			if sessionID, _, ok := parseEvidenceFilename(name); ok {
+				counts[sessionID]++
+				if counts[sessionID] > health.MaxSessionFiles {
+					health.MaxSessionFiles = counts[sessionID]
+					health.MaxSessionID = sessionID
+				}
+			}
+		}
+		if retentionDays <= 0 {
+			continue
+		}
+		if sessionID, _, ok := parseEvidenceFilename(name); ok && newestJSONL[sessionID] == name {
+			continue
+		}
+		info, infoErr := de.Info()
+		if infoErr == nil && info.ModTime().Before(cutoff) {
+			health.RetentionEligibleFiles++
+		}
+	}
+	health.NearSessionFileLimit = health.MaxSessionFiles >= health.WarningThreshold
+	health.OverSessionFileLimit = health.MaxSessionFiles > health.MaxFilesPerSession
+	return health, nil
 }
 
 // ComputeFileHash computes SHA-256 of an evidence file for external verification.

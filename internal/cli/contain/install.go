@@ -1373,10 +1373,13 @@ func stepInstallNFTRules() step {
 				captureNFTPreState(ctx, env)
 			}
 			if tableLoaded && (rulesChanged || liveRulesDrifted) {
-				// nft -f merges into an existing table. Drop our managed table
-				// first so stale rules from an older contain install cannot
-				// survive beside the new ruleset.
-				_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
+				// nft -f merges into an existing table. Drop only the managed
+				// chain first so stale Pipelock rules cannot survive beside
+				// the new ruleset, while operator co-located chains in the
+				// table remain untouched.
+				if err := runOrErr(ctx, env, nftExecutable(env), "delete", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); err != nil {
+					return false, fmt.Errorf("delete stale nft chain inet %s %s: %w", env.nftTableOrDefault(), env.nftChainOrDefault(), err)
+				}
 				tableLoaded = false
 			}
 			if !tableLoaded || rulesChanged || liveRulesDrifted {
@@ -1394,11 +1397,15 @@ func stepInstallNFTRules() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			// Drop the managed table best-effort, restore any previous live
-			// table captured during this install attempt, then restore files.
-			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
-			if err := restorePreviousNFTState(ctx, env); err != nil {
-				return err
+			// Restore any previous live table captured during this install
+			// attempt before deleting the newly installed table. If no
+			// previous table existed, drop the table created by this step.
+			if env.prevNFTTableStateKnown && strings.TrimSpace(env.prevNFTTableDump) != "" {
+				if err := restorePreviousNFTState(ctx, env); err != nil {
+					return err
+				}
+			} else {
+				_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			}
 			if err := restoreBackup(env, env.nftRulesPath); err != nil {
 				return err
@@ -1444,10 +1451,14 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 		return nil
 	}
 	restorePath := env.nftRulesPath + ".restore"
-	if err := env.writeFile(restorePath, []byte(env.prevNFTTableDump), modeConfigSecret); err != nil {
+	restoreScript := "delete table inet " + env.nftTableOrDefault() + "\n" + env.prevNFTTableDump
+	if err := env.writeFile(restorePath, []byte(restoreScript), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft restore file %s: %w", restorePath, err)
 	}
 	defer func() { _ = env.removeFile(restorePath) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", restorePath); err != nil {
+		return fmt.Errorf("validate previous nft table restore: %w", err)
+	}
 	if err := runOrErr(ctx, env, nftExecutable(env), "-f", restorePath); err != nil {
 		return fmt.Errorf("restore previous nft table: %w", err)
 	}

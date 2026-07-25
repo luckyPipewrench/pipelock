@@ -1340,7 +1340,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 
 	var sawDelete, sawLoad bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			sawDelete = true
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1348,7 +1348,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 		}
 	}
 	if !sawDelete || !sawLoad {
-		t.Fatalf("expected delete+reload for live drift, got %v", runner.calls)
+		t.Fatalf("expected chain delete+reload for live drift, got %v", runner.calls)
 	}
 }
 
@@ -1388,7 +1388,7 @@ func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.
 
 	var sawDelete, sawLoad bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			sawDelete = true
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1396,7 +1396,7 @@ func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.
 		}
 	}
 	if !sawDelete || !sawLoad {
-		t.Fatalf("expected delete+reload for lookalike chain, got %v", runner.calls)
+		t.Fatalf("expected chain delete+reload for lookalike chain, got %v", runner.calls)
 	}
 }
 
@@ -1420,7 +1420,7 @@ func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T)
 		t.Fatal("unattributed collision must not report an applied repair")
 	}
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			t.Fatalf("unattributed collision deleted nft table: %v", runner.calls)
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1465,7 +1465,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop
 
 	var sawDelete, sawLoad bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			sawDelete = true
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1473,7 +1473,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop
 		}
 	}
 	if !sawDelete || !sawLoad {
-		t.Fatalf("expected delete+reload for unexpected accept, got %v", runner.calls)
+		t.Fatalf("expected chain delete+reload for unexpected accept, got %v", runner.calls)
 	}
 }
 
@@ -1540,7 +1540,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasPreDropUnsafeVerdict(t *te
 
 			var sawDelete, sawLoad bool
 			for _, c := range runner.calls {
-				if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+				if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 					sawDelete = true
 				}
 				if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1548,7 +1548,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasPreDropUnsafeVerdict(t *te
 				}
 			}
 			if !sawDelete || !sawLoad {
-				t.Fatalf("expected delete+reload for pre-drop %s, got %v", tc.name, runner.calls)
+				t.Fatalf("expected chain delete+reload for pre-drop %s, got %v", tc.name, runner.calls)
 			}
 		})
 	}
@@ -1579,7 +1579,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasStaleAgentUID(t *testing.T
 
 	var sawDelete, sawLoad bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			sawDelete = true
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1587,7 +1587,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasStaleAgentUID(t *testing.T
 		}
 	}
 	if !sawDelete || !sawLoad {
-		t.Fatalf("expected delete+reload for stale uid, got %v", runner.calls)
+		t.Fatalf("expected chain delete+reload for stale uid, got %v", runner.calls)
 	}
 }
 
@@ -1651,7 +1651,7 @@ func TestStepInstallNFTRules_LoadsWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestStepInstallNFTRules_DropsLoadedTableBeforeChangedReload(t *testing.T) {
+func TestStepInstallNFTRules_DropsLoadedChainBeforeChangedReload(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("mkdir rules parent: %v", err)
@@ -1672,7 +1672,7 @@ func TestStepInstallNFTRules_DropsLoadedTableBeforeChangedReload(t *testing.T) {
 
 	deleteIdx, loadIdx := -1, -1
 	for i, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			deleteIdx = i
 		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
@@ -1680,13 +1680,13 @@ func TestStepInstallNFTRules_DropsLoadedTableBeforeChangedReload(t *testing.T) {
 		}
 	}
 	if deleteIdx == -1 {
-		t.Fatalf("expected nft delete table before reload, got %v", runner.calls)
+		t.Fatalf("expected nft delete chain before reload, got %v", runner.calls)
 	}
 	if loadIdx == -1 {
 		t.Fatalf("expected nft -f reload, got %v", runner.calls)
 	}
 	if deleteIdx > loadIdx {
-		t.Fatalf("delete must precede reload: delete=%d load=%d calls=%v", deleteIdx, loadIdx, runner.calls)
+		t.Fatalf("chain delete must precede reload: delete=%d load=%d calls=%v", deleteIdx, loadIdx, runner.calls)
 	}
 }
 
@@ -1772,8 +1772,11 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 	if _, err := os.Stat(restorePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restore file should be removed, stat err=%v", err)
 	}
-	var sawRestore, sawDisable bool
+	var sawValidateRestore, sawRestore, sawDisable bool
 	for _, c := range runner.calls {
+		if c.name == testNFT && len(c.args) == 3 && c.args[0] == "-c" && c.args[1] == "-f" && c.args[2] == restorePath {
+			sawValidateRestore = true
+		}
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
 			sawRestore = true
 		}
@@ -1784,8 +1787,134 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 	if !sawRestore {
 		t.Fatalf("expected nft restore from captured table, got %v", runner.calls)
 	}
+	if !sawValidateRestore {
+		t.Fatalf("expected nft restore validation before applying captured table, got %v", runner.calls)
+	}
 	if !sawDisable {
 		t.Fatalf("expected persistence unit disabled-state restore, got %v", runner.calls)
+	}
+}
+
+func TestStepInstallNFTRules_UndoValidatesCapturedRestoreBeforeDeletingLiveTable(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.prevNFTTableStateKnown = true
+	env.prevNFTTableDump = "malformed nft dump\n"
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	restorePath := env.nftRulesPath + ".restore"
+	runner.on(argvFor(testNFT, "-c", "-f", restorePath), "syntax error", 1, nil)
+
+	s := stepInstallNFTRules()
+	err := s.undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "validate previous nft table restore") {
+		t.Fatalf("undo error = %v, want restore validation failure", err)
+	}
+	for _, c := range runner.calls {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+			t.Fatalf("rollback deleted live table before proving captured restore was loadable: %v", runner.calls)
+		}
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
+			t.Fatalf("rollback applied restore after validation failed: %v", runner.calls)
+		}
+	}
+}
+
+func TestStepInstallNFTRules_ReloadDeletesOnlyManagedChain(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	drifted := `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 ip daddr 203.0.113.10 accept
+			meta skuid 987 drop
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected live drift repair")
+	}
+
+	var sawDeleteChain, sawLoad bool
+	for _, c := range runner.calls {
+		if c.name != testNFT {
+			continue
+		}
+		args := strings.Join(c.args, " ")
+		if args == "delete table inet "+defaultNFTTable {
+			t.Fatalf("repair deleted the whole table despite co-located operator chain: %v", runner.calls)
+		}
+		if args == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			sawDeleteChain = true
+		}
+		if len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
+			sawLoad = true
+		}
+	}
+	if !sawDeleteChain || !sawLoad {
+		t.Fatalf("expected managed chain delete+reload, got %v", runner.calls)
+	}
+}
+
+func TestStepInstallNFTRules_DeleteChainFailureAbortsReload(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	drifted := `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 accept
+			meta skuid 987 drop
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
+	runner.on(argvFor(testNFT, "delete", "chain", "inet", defaultNFTTable, defaultNFTChain), "busy", 1, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "delete stale nft chain") {
+		t.Fatalf("apply error = %v, want delete-chain failure", err)
+	}
+	if applied {
+		t.Fatal("failed chain delete must not report applied")
+	}
+	for _, c := range runner.calls {
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
+			t.Fatalf("reload continued after stale chain delete failed: %v", runner.calls)
+		}
 	}
 }
 

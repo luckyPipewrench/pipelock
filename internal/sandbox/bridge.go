@@ -29,13 +29,17 @@ const bridgeListenAddr = "127.0.0.1:8888"
 //	  → Parent (pipelock proxy + scanner, host namespace)
 //	  → Internet
 type BridgeProxy struct {
-	listener   net.Listener
-	socketPath string // parent's Unix domain socket path
-	wg         sync.WaitGroup
-	mu         sync.Mutex
-	closed     bool
-	conns      map[net.Conn]struct{}
-	closeOnce  sync.Once
+	listener        net.Listener
+	socketPath      string // parent's Unix domain socket path
+	wg              sync.WaitGroup
+	mu              sync.Mutex
+	closed          bool
+	done            chan struct{}
+	doneOnce        sync.Once
+	watcherDone     chan struct{}
+	watcherDoneOnce sync.Once
+	conns           map[net.Conn]struct{}
+	closeOnce       sync.Once
 }
 
 // NewBridgeProxy creates a bridge proxy inside the sandbox namespace.
@@ -51,9 +55,11 @@ func NewBridgeProxy(socketPath string, listenAddr ...string) (*BridgeProxy, erro
 		return nil, fmt.Errorf("bridge proxy listen: %w", err)
 	}
 	return &BridgeProxy{
-		listener:   ln,
-		socketPath: socketPath,
-		conns:      make(map[net.Conn]struct{}),
+		listener:    ln,
+		socketPath:  socketPath,
+		done:        make(chan struct{}),
+		watcherDone: make(chan struct{}),
+		conns:       make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -66,8 +72,12 @@ func (bp *BridgeProxy) Addr() string {
 // Blocks until ctx is cancelled or the listener is closed.
 func (bp *BridgeProxy) Serve(ctx context.Context) {
 	go func() {
-		<-ctx.Done()
-		_ = bp.listener.Close()
+		defer bp.watcherDoneOnce.Do(func() { close(bp.watcherDone) })
+		select {
+		case <-ctx.Done():
+			_ = bp.listener.Close()
+		case <-bp.done:
+		}
 	}()
 
 	for {
@@ -95,6 +105,7 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 // Close shuts down the proxy and waits for active connections.
 func (bp *BridgeProxy) Close() {
 	bp.closeOnce.Do(func() {
+		bp.doneOnce.Do(func() { close(bp.done) })
 		bp.mu.Lock()
 		bp.closed = true
 		_ = bp.listener.Close()

@@ -195,6 +195,48 @@ func TestBridgeProxy_CloseClosesIdleActiveConnections(t *testing.T) {
 	}
 }
 
+func TestBridgeProxy_CloseStopsContextWatcher(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := ProxySocketPath(dir)
+
+	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = parentLn.Close() }()
+
+	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+
+	ctx := context.Background()
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		bp.Serve(ctx)
+	}()
+
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", bp.Addr())
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	_ = conn.Close()
+
+	bp.Close()
+
+	select {
+	case <-bp.watcherDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not stop Serve context watcher")
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return after Close")
+	}
+}
+
 func TestBridgeProxy_HandleConnFailsGracefully(t *testing.T) {
 	// Bridge proxy with a nonexistent socket path - connections should
 	// fail gracefully (log error, close conn) not panic.

@@ -47,7 +47,9 @@ func TestDashboardOIDCFailureCategory(t *testing.T) {
 		{"signature", errors.New("token signature is invalid"), "invalid_signature"},
 		{"expired", errors.New("token has expired"), "expired"},
 		{"unmapped role", errors.New("role claim has no mapped value"), "permission_denied"},
-		{"unknown signing key", errors.New("OIDC signing key \"kid-a\" not found"), "unknown_principal"},
+		{"unknown signing key", dashboardOIDCSigningKeyNotFound("kid-a"), "unknown_principal"},
+		{"unknown signing key kid cannot steer expired category", dashboardOIDCSigningKeyNotFound("expired"), "unknown_principal"},
+		{"unknown signing key kid cannot steer signature category", dashboardOIDCSigningKeyNotFound("bad signature"), "unknown_principal"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

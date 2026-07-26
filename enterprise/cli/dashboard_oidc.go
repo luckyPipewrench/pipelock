@@ -428,10 +428,6 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 	// turn the dashboard into a JWKS request amplifier. Stale caches refresh
 	// before this gate so normal TTL expiry cannot skip the authorization check
 	// path that would learn a legitimate rotated key.
-	if !c.lastMiss.IsZero() && now.Before(c.lastMiss.Add(dashboardOIDCMinKeyRefresh)) {
-		c.mu.Unlock()
-		return nil, dashboardOIDCSigningKeyNotFound(keyID)
-	}
 	c.lastMiss = now
 	c.mu.Unlock()
 	if err := c.refresh(ctx); err != nil {
@@ -453,8 +449,10 @@ func (c *dashboardJWKSCache) recordMiss() {
 }
 
 func dashboardOIDCSigningKeyNotFound(keyID string) error {
-	return fmt.Errorf("OIDC signing key %q not found", keyID)
+	return fmt.Errorf("%w: OIDC signing key %q not found", errDashboardOIDCSigningKeyNotFound, keyID)
 }
+
+var errDashboardOIDCSigningKeyNotFound = errors.New("OIDC signing key not found")
 
 func (c *dashboardJWKSCache) refresh(ctx context.Context) error {
 	c.mu.Lock()
@@ -894,6 +892,8 @@ func dashboardOIDCFailureCategory(err error) string {
 	}
 	msg := err.Error()
 	switch {
+	case errors.Is(err, errDashboardOIDCSigningKeyNotFound):
+		return "unknown_principal"
 	case strings.Contains(msg, "bearer token is missing"):
 		return "missing_token"
 	case strings.Contains(msg, "signature"):
@@ -902,8 +902,6 @@ func dashboardOIDCFailureCategory(err error) string {
 		return "expired"
 	case strings.Contains(msg, "role claim has no mapped value"):
 		return "permission_denied"
-	case strings.Contains(msg, "signing key"):
-		return "unknown_principal"
 	default:
 		return "invalid_token"
 	}

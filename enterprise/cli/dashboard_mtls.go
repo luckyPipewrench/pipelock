@@ -29,6 +29,7 @@ import (
 const (
 	dashboardClientCertRoleMapMaxBytes = 1 << 20
 	dashboardClientCAMaxBytes          = 1 << 20
+	dashboardClientCertRSAMinBits      = 2048
 	dashboardClientCertRSAMaxBits      = 8192
 )
 
@@ -285,12 +286,16 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	// partial trust set. A trust anchor bundle must load completely or fail loud.
 	pool := x509.NewCertPool()
 	var added int
-	for rest := pemBytes; len(bytes.TrimSpace(rest)) > 0; {
+	for rest := pemBytes; ; {
+		rest = dashboardClientCATrimAllowedSeparators(rest)
+		if len(rest) == 0 {
+			break
+		}
+		if !bytes.HasPrefix(rest, []byte("-----BEGIN CERTIFICATE-----")) {
+			return nil, errors.New("--client-ca-file contains non-PEM data")
+		}
 		block, remaining := pem.Decode(rest)
 		if block == nil {
-			if dashboardClientCABundleTrailingCommentsOnly(rest) {
-				break
-			}
 			return nil, errors.New("--client-ca-file contains malformed PEM data")
 		}
 		rest = remaining
@@ -310,15 +315,23 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-func dashboardClientCABundleTrailingCommentsOnly(data []byte) bool {
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || bytes.HasPrefix(line, []byte("#")) {
+func dashboardClientCATrimAllowedSeparators(data []byte) []byte {
+	for len(data) > 0 {
+		switch data[0] {
+		case ' ', '\t', '\r', '\n':
+			data = data[1:]
 			continue
+		case '#':
+			if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+				data = data[idx+1:]
+				continue
+			}
+			return nil
+		default:
+			return data
 		}
-		return false
 	}
-	return true
+	return data
 }
 
 func verifyDashboardClientCertificateKeySizes(state tls.ConnectionState) error {
@@ -332,6 +345,9 @@ func verifyDashboardClientCertificateKeySizes(state tls.ConnectionState) error {
 		}
 		if key.N.BitLen() > dashboardClientCertRSAMaxBits {
 			return fmt.Errorf("dashboard client certificate RSA modulus is %d bits; maximum is %d", key.N.BitLen(), dashboardClientCertRSAMaxBits)
+		}
+		if key.N.BitLen() < dashboardClientCertRSAMinBits {
+			return fmt.Errorf("dashboard client certificate RSA modulus is %d bits; minimum is %d", key.N.BitLen(), dashboardClientCertRSAMinBits)
 		}
 	}
 	return nil

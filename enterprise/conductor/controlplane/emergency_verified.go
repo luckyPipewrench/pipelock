@@ -454,6 +454,9 @@ func (v *verifiedEmergencyStore) RecordedRemoteKillByHash(ctx context.Context, h
 	return StoredRemoteKill{}, false, nil
 }
 
+// The canonical hash is compared exactly because callers pass a lowercase
+// validated digest. The persisted hash field uses EqualFold only to tolerate
+// legacy records written with uppercase hex; do not relax the canonical check.
 func rollbackRecordMatchesHash(record StoredRollbackAuthorization, hash string) bool {
 	canonical, err := record.Authorization.CanonicalHash()
 	if err != nil {
@@ -462,6 +465,9 @@ func rollbackRecordMatchesHash(record StoredRollbackAuthorization, hash string) 
 	return canonical == hash && strings.EqualFold(record.AuthorizationHash, hash)
 }
 
+// The canonical hash is compared exactly because callers pass a lowercase
+// validated digest. The persisted hash field uses EqualFold only to tolerate
+// legacy records written with uppercase hex; do not relax the canonical check.
 func remoteKillRecordMatchesHash(record StoredRemoteKill, hash string) bool {
 	canonical, err := record.Message.CanonicalHash()
 	if err != nil {

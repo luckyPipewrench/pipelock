@@ -1762,7 +1762,7 @@ func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name          string
-		page          WorkbenchPage
+		page          any
 		wantFragments []string
 	}{
 		{
@@ -1811,6 +1811,48 @@ func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 				`decision_missing=false`,
 				`divergence=true`,
 				`conflict="fleet_skew"`,
+			},
+		},
+		{
+			name: "incident replay error",
+			page: IncidentPage{DecisionSourceConfigured: true, DecisionError: true, DecisionErrorReason: "canceled", FleetSourceConfigured: true},
+			wantFragments: []string{
+				`decision_state="unavailable"`,
+				`decision_error_reason="canceled"`,
+				`decision_found=false`,
+				`decision_error=true`,
+				`decision_missing=false`,
+				`fleet_source=true`,
+				`fleet_found=false`,
+			},
+		},
+		{
+			name: "incident not found",
+			page: IncidentPage{DecisionSourceConfigured: true, DecisionMissing: true, FleetSourceConfigured: true, HasFleet: true},
+			wantFragments: []string{
+				`decision_state="not_found"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=true`,
+				`fleet_source=true`,
+				`fleet_found=true`,
+			},
+		},
+		{
+			name: "incident replay found",
+			page: IncidentPage{DecisionSourceConfigured: true, FleetSourceConfigured: true, HasFleet: true, HasDecision: true, Decision: DecisionReplayView{
+				Divergence: true,
+				Conflict:   "stale_counter",
+			}},
+			wantFragments: []string{
+				`decision_state="found"`,
+				`decision_found=true`,
+				`decision_error=false`,
+				`decision_missing=false`,
+				`fleet_source=true`,
+				`fleet_found=true`,
+				`divergence=true`,
+				`conflict="stale_counter"`,
 			},
 		},
 		{

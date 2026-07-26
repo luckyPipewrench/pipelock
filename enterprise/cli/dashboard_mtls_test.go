@@ -290,11 +290,11 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 	})
 
-	t.Run("valid bundle with comments CRLF and text loads", func(t *testing.T) {
+	t.Run("valid bundle with comments and CRLF loads", func(t *testing.T) {
 		crlfPEM := strings.ReplaceAll(string(validPEM), "\n", "\r\n")
 		bundle := []byte("# generated CA bundle\r\n" +
 			crlfPEM +
-			"Certificate:\r\n    Data:\r\n        Version: 3\r\n" +
+			"# second certificate\r\n" +
 			crlfPEM +
 			"# end of bundle\r\n\r\n")
 		path := filepath.Join(t.TempDir(), "commented-ca.pem")
@@ -303,6 +303,29 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 		if _, err := loadDashboardClientCAs(path); err != nil {
 			t.Fatalf("commented CA bundle rejected: %v", err)
+		}
+	})
+
+	t.Run("leading non PEM data is rejected", func(t *testing.T) {
+		bundle := append([]byte("Certificate:\n    Data:\n"), validPEM...)
+		path := filepath.Join(t.TempDir(), "leading-junk-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write leading junk bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with leading non-PEM data accepted")
+		}
+	})
+
+	t.Run("interstitial non PEM data is rejected", func(t *testing.T) {
+		bundle := append(append([]byte{}, validPEM...), []byte("Certificate:\n    Data:\n")...)
+		bundle = append(bundle, validPEM...)
+		path := filepath.Join(t.TempDir(), "interstitial-junk-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write interstitial junk bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with interstitial non-PEM data accepted")
 		}
 	})
 
@@ -395,12 +418,19 @@ func TestVerifyDashboardClientCertificateKeySizes(t *testing.T) {
 		{
 			name: "bounded RSA accepted",
 			certs: []*x509.Certificate{{
-				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMaxBits-1), E: 65537},
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMinBits-1), E: 65537},
 			}},
 		},
 		{
 			name:  "nil certificate skipped",
 			certs: []*x509.Certificate{nil},
+		},
+		{
+			name: "undersize RSA rejected",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMinBits-2), E: 65537},
+			}},
+			wantErr: true,
 		},
 		{
 			name: "oversize RSA rejected",

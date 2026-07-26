@@ -478,6 +478,20 @@ func TestDashboardConductorSourceReplayDecisionFailsClosed(t *testing.T) {
 			mustNotCallClient: true,
 		},
 		{
+			name:              "uppercase artifact",
+			scope:             dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: strings.Repeat("A", 64)},
+			client:            &fakeDashboardConductorClient{replayFound: true},
+			wantErr:           "lowercase",
+			mustNotCallClient: true,
+		},
+		{
+			name:              "non hex artifact",
+			scope:             dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: strings.Repeat("g", 64)},
+			client:            &fakeDashboardConductorClient{replayFound: true},
+			wantErr:           "hex",
+			mustNotCallClient: true,
+		},
+		{
 			name:    "client error",
 			scope:   dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
 			client:  &fakeDashboardConductorClient{replayErr: errors.New("status 503"), replayFound: true},
@@ -558,6 +572,39 @@ func TestDashboardConductorSourceReplayDecisionFailsClosed(t *testing.T) {
 				Recorded:     validRecorded,
 			})},
 			wantErr: "unsupported",
+		},
+		{
+			name:  "unknown publish conflict code",
+			scope: dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client: &fakeDashboardConductorClient{replayFound: true, replayBody: mustJSON(t, controlplane.DecisionReplayResult{
+				ActionKind:        controlplane.ActionKindPublish,
+				ArtifactHash:      artifactHash,
+				PublishEvaluation: &controlplane.PublishEvaluation{Valid: false, Conflict: "surprise"},
+				Recorded:          validRecorded,
+			})},
+			wantErr: "invalid publish conflict",
+		},
+		{
+			name:  "unknown remote kill conflict code",
+			scope: dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client: &fakeDashboardConductorClient{replayFound: true, replayBody: mustJSON(t, controlplane.DecisionReplayResult{
+				ActionKind:   controlplane.ActionKindRemoteKill,
+				ArtifactHash: artifactHash,
+				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: false, Conflict: "surprise"},
+				Recorded:     validRecorded,
+			})},
+			wantErr: "invalid remote_kill conflict",
+		},
+		{
+			name:  "unknown rollback conflict code",
+			scope: dashboard.DecisionScope{OrgID: "org-main", FleetID: "prod", ArtifactHash: artifactHash},
+			client: &fakeDashboardConductorClient{replayFound: true, replayBody: mustJSON(t, controlplane.DecisionReplayResult{
+				ActionKind:   controlplane.ActionKindRollback,
+				ArtifactHash: artifactHash,
+				Rollback:     &controlplane.RollbackEvaluation{Valid: false, Conflict: "surprise"},
+				Recorded:     validRecorded,
+			})},
+			wantErr: "invalid rollback conflict",
 		},
 	}
 	for _, tc := range tests {
@@ -756,9 +803,11 @@ func TestNewDashboardConductorSource_UnconfiguredStaysNilInterface(t *testing.T)
 	}
 
 	var iface dashboard.ConductorDecisionSource
-	if assigned := dashboardConductorDecisionSource(source); assigned != nil {
+	iface = dashboardConductorDecisionSource(source)
+	if iface != nil {
 		t.Fatal("unconfigured conductor source was stored as a non-nil ConductorDecisionSource")
 	}
+	iface = nil
 	if iface != nil {
 		t.Fatal("zero ConductorDecisionSource is unexpectedly non-nil")
 	}

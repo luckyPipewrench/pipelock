@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !aix && !js && !wasip1
 
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0

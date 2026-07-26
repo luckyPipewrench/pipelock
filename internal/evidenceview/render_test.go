@@ -73,6 +73,152 @@ func TestRenderSingleAgentHTML(t *testing.T) {
 	}
 }
 
+func TestRenderSingleAgentHTML_DecisionDetailRespectsFieldApplicability(t *testing.T) {
+	fixedTime := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		record          receipt.ActionRecord
+		wantFields      []string
+		wantAbsentField string
+		notWantFields   []string
+	}{
+		{
+			name: "lifecycle receipt omits decision-only fields",
+			record: receipt.ActionRecord{
+				Version:         1,
+				ActionID:        "act-session-open",
+				ActionType:      receipt.ActionUnclassified,
+				Timestamp:       fixedTime,
+				Target:          "pipelock://session/open",
+				Verdict:         "allow",
+				Transport:       "receipt_session",
+				PolicyHash:      "policy-hash",
+				SideEffectClass: receipt.SideEffectExternalWrite,
+				Reversibility:   receipt.ReversibilityCompensatable,
+				Actor:           "agent:test",
+				Principal:       "org:test",
+				ChainSeq:        0,
+				ChainPrevHash:   receipt.GenesisHash,
+				RunNonce:        "run-nonce",
+				SessionControl: &receipt.SessionControl{
+					Kind: receipt.SessionControlOpen,
+					Open: &receipt.SessionOpen{RunNonce: "run-nonce"},
+				},
+			},
+			wantFields: []string{
+				"Transport",
+				"Policy Hash",
+				"Action Type",
+				"Side Effect Class",
+				"Reversibility",
+				"Target",
+				"Actor",
+				"Principal",
+			},
+			notWantFields: []string{
+				"Method",
+				"Layer",
+				"Pattern",
+				"Severity",
+				"Session Taint Level",
+				"Taint Decision",
+				"Taint Decision Reason",
+				"Recent Taint Sources",
+				"Defer ID",
+				"Resolution Policy",
+				"Resolution Source",
+				"Redaction",
+				"Shield",
+				"Intent",
+				"Data Classes In",
+				"Data Classes Out",
+			},
+		},
+		{
+			name: "decision receipt keeps applicable absent fields",
+			record: receipt.ActionRecord{
+				Version:             1,
+				ActionID:            "act-block",
+				ActionType:          receipt.ActionRead,
+				Timestamp:           fixedTime,
+				Target:              "https://api.vendor.example/blocked",
+				Verdict:             "block",
+				Transport:           "fetch",
+				Method:              "GET",
+				Layer:               "dlp",
+				Pattern:             "provider-token",
+				PolicyHash:          "policy-hash",
+				SideEffectClass:     receipt.SideEffectNone,
+				Reversibility:       receipt.ReversibilityFull,
+				SessionTaintLevel:   "elevated",
+				SessionContaminated: true,
+				TaintDecision:       "block",
+				TaintDecisionReason: "tainted source",
+				ChainSeq:            1,
+				ChainPrevHash:       receipt.GenesisHash,
+			},
+			wantFields: []string{
+				"Method",
+				"Layer",
+				"Pattern",
+				"Redaction",
+			},
+			wantAbsentField: "Redaction",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := SessionEvidence{
+				ID:              "sess-render-applicability",
+				Agent:           "agent:test",
+				ReceiptsEnabled: true,
+				ReceiptCount:    1,
+			}
+			exp := ExplainReceipt(receipt.Receipt{Version: 1, ActionRecord: tt.record})
+
+			var buf bytes.Buffer
+			if err := RenderSingleAgentHTML(&buf, ev, []DecisionExplanation{exp}, RenderOptions{
+				GeneratedAt: fixedTime,
+			}); err != nil {
+				t.Fatalf("RenderSingleAgentHTML error: %v", err)
+			}
+			html := buf.String()
+
+			for _, label := range tt.wantFields {
+				if !hasRenderedField(html, label) {
+					t.Fatalf("rendered HTML missing applicable field %q: %s", label, html)
+				}
+			}
+			for _, label := range tt.notWantFields {
+				if hasRenderedField(html, label) {
+					t.Fatalf("rendered HTML included inapplicable field %q: %s", label, html)
+				}
+			}
+			if tt.wantAbsentField != "" && !hasRenderedAbsentField(html, tt.wantAbsentField) {
+				t.Fatalf("rendered HTML did not keep absent applicable field %q as not reported: %s", tt.wantAbsentField, html)
+			}
+		})
+	}
+}
+
+func hasRenderedField(html, label string) bool {
+	return strings.Contains(html, `<span class="label">`+label+`:</span>`)
+}
+
+func hasRenderedAbsentField(html, label string) bool {
+	labelHTML := `<span class="label">` + label + `:</span>`
+	idx := strings.Index(html, labelHTML)
+	if idx < 0 {
+		return false
+	}
+	fieldEnd := strings.Index(html[idx:], `</div>`)
+	if fieldEnd < 0 {
+		return false
+	}
+	return strings.Contains(html[idx:idx+fieldEnd], `<span class="absent">`+notReported+`</span>`)
+}
+
 func TestRenderSingleAgentHTML_OperatorConsoleThemeAndHonestScorecard(t *testing.T) {
 	fixedTime := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 	_, priv := generateTestKey(t)

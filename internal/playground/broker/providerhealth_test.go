@@ -173,6 +173,23 @@ func TestProviderHealthBackgroundSuccessDoesNotHideCreateFailure(t *testing.T) {
 	}
 }
 
+func TestProviderHealthBackgroundFailureLogDoesNotClaimCreateFailure(t *testing.T) {
+	var log bytes.Buffer
+	health := NewProviderHealth(nil, &log)
+
+	for range providerFailingThreshold {
+		health.RecordBackgroundFailure(errors.New("provider unavailable"))
+	}
+
+	got := log.String()
+	if !strings.Contains(got, "consecutive background errors") {
+		t.Fatalf("background failure log = %q, want generic background failure", got)
+	}
+	if strings.Contains(got, "cannot create sandboxes") {
+		t.Fatalf("background failure log falsely claims create failure: %q", got)
+	}
+}
+
 func TestProviderHealthBackgroundSuccessClearsBackgroundFailure(t *testing.T) {
 	health := NewProviderHealth(func() time.Time {
 		return time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)

@@ -177,14 +177,19 @@ func (h *ProviderHealth) recordFailure(err error, provisioning bool) {
 	h.backoffUntil = h.now().Add(backoffFor(h.consecutiveFailures))
 	announce := h.consecutiveFailures >= providerFailingThreshold && !h.announcedFailing
 	failures := h.consecutiveFailures
+	provisioningFailure := h.provisioningFailure
 	if announce {
 		h.announcedFailing = true
 	}
 	h.mu.Unlock()
 	if announce {
-		h.writeLog(
-			"provider: FAILING after %d consecutive errors; broker cannot create sandboxes\n",
-			failures)
+		if provisioningFailure {
+			h.writeLog(
+				"provider: FAILING after %d consecutive errors; broker cannot create sandboxes\n",
+				failures)
+		} else {
+			h.writeLog("provider: FAILING after %d consecutive background errors\n", failures)
+		}
 	}
 }
 

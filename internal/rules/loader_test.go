@@ -909,6 +909,49 @@ func TestLoadBundles_PipelockPrefixOfficialSigner(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_SkipEmbeddedKeysDoesNotClassifyOfficial(t *testing.T) {
+	// Non-parallel: mutates keyring globals.
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setupKeyring(t, pub)
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "pipelock-core")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundle("pipelock-core", []Rule{
+		testDLPRule("dlp-core-001", confidenceHigh, StatusStable),
+	})
+	writeSignedBundle(t, bundleDir, b, pub, priv)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:    confidenceLow,
+		PipelockVersion:  testPipelockVersion,
+		SkipEmbeddedKeys: true,
+		TrustedKeys: []config.TrustedKey{
+			{Name: "private-root", PublicKey: hex.EncodeToString(pub)},
+		},
+	})
+
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 integrity error for de-trusted embedded signer, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if result.Errors[0].Class != BundleErrorClassIntegrity {
+		t.Fatalf("error class = %q, want %q", result.Errors[0].Class, BundleErrorClassIntegrity)
+	}
+	if result.Errors[0].Official {
+		t.Fatal("de-trusted embedded signer was still classified as official")
+	}
+	if len(result.DLP) != 0 {
+		t.Fatalf("expected 0 loaded DLP rules, got %d", len(result.DLP))
+	}
+}
+
 func TestLoadBundles_V2TierKeyBindingFailureIsIntegrity(t *testing.T) {
 	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -1124,6 +1167,82 @@ func TestLoadBundles_IntegrityFailure(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_UnsignedMissingSHAFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "unsigned-empty-sha")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundle("unsigned-empty-sha", []Rule{
+		testDLPRule("dlp-empty-sha-001", confidenceHigh, StatusStable),
+	})
+	data, err := yaml.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, bundleFilename), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockFile(filepath.Join(bundleDir, lockFilename), &LockFile{Unsigned: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 error for missing unsigned hash, got %d", len(result.Errors))
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("missing unsigned hash class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if !strings.Contains(result.Errors[0].Reason, "missing SHA-256") {
+		t.Fatalf("missing unsigned hash reason = %q, want missing SHA-256", result.Errors[0].Reason)
+	}
+	if len(result.Loaded) != 0 || len(result.DLP) != 0 {
+		t.Fatalf("unsigned bundle with empty hash loaded: loaded=%d dlp=%d", len(result.Loaded), len(result.DLP))
+	}
+}
+
+func TestLoadBundles_SkipEmbeddedKeysRejectsUnsignedV1(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "unsigned-private-root-only")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundle("unsigned-private-root-only", []Rule{
+		testDLPRule("dlp-unsigned-policy-001", confidenceHigh, StatusStable),
+	})
+	writeUnsignedBundle(t, bundleDir, b)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:    confidenceLow,
+		PipelockVersion:  testPipelockVersion,
+		SkipEmbeddedKeys: true,
+	})
+
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 integrity error for unsigned bundle with embedded keys disabled, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if got := result.Errors[0].ClassOrDefault(); got != BundleErrorClassIntegrity {
+		t.Fatalf("unsigned policy error class = %q, want %q", got, BundleErrorClassIntegrity)
+	}
+	if !strings.Contains(result.Errors[0].Reason, "unsigned bundles are disabled") {
+		t.Fatalf("unsigned policy reason = %q, want unsigned disabled", result.Errors[0].Reason)
+	}
+	if len(result.Loaded) != 0 || len(result.DLP) != 0 {
+		t.Fatalf("unsigned bundle loaded under private-root-only policy: loaded=%d dlp=%d", len(result.Loaded), len(result.DLP))
+	}
+}
+
 func TestLoadBundles_ExpiredV2BundleIsIntegrity(t *testing.T) {
 	t.Parallel()
 
@@ -1333,11 +1452,14 @@ func TestIsOfficialFingerprint(t *testing.T) {
 	setupKeyring(t, pub)
 
 	fp := KeyFingerprint(pub)
-	if !isOfficialFingerprint(fp) {
+	if !isOfficialFingerprint(fp, true) {
 		t.Error("expected official fingerprint to return true")
 	}
+	if isOfficialFingerprint(fp, false) {
+		t.Error("expected de-trusted official fingerprint to return false")
+	}
 
-	if isOfficialFingerprint("0000000000000000000000000000000000000000000000000000000000000000") {
+	if isOfficialFingerprint("0000000000000000000000000000000000000000000000000000000000000000", true) {
 		t.Error("expected non-official fingerprint to return false")
 	}
 }
@@ -1543,6 +1665,9 @@ func TestLoadBundles_V2UnsignedRejected(t *testing.T) {
 	// V2 bundles MUST be signed. Unsigned v2 should be rejected.
 	if len(result.Errors) == 0 {
 		t.Fatal("expected unsigned v2 bundle to be rejected")
+	}
+	if !strings.Contains(result.Errors[0].Reason, "format_version 2 bundles must be signed") {
+		t.Fatalf("unsigned v2 error reason = %q, want signed-bundle gate", result.Errors[0].Reason)
 	}
 	if len(result.Loaded) != 0 {
 		t.Errorf("expected 0 loaded bundles for unsigned v2, got %d", len(result.Loaded))

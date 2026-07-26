@@ -308,6 +308,28 @@ func TestVerifyIntegrity_UnsignedValid(t *testing.T) {
 	}
 }
 
+func TestVerifyIntegrity_UnsignedDisabledByPolicyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	bundleContent := []byte("name: unsigned-bundle\n")
+	if err := os.WriteFile(bundlePath, bundleContent, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	hash := sha256.Sum256(bundleContent)
+	expectedSHA := hex.EncodeToString(hash[:])
+
+	err := VerifyIntegrityWithPolicy(dir, true, "", expectedSHA, TrustPolicy{})
+	if err == nil {
+		t.Fatal("expected unsigned bundle to fail closed when embedded keys are disabled")
+	}
+	if !strings.Contains(err.Error(), "unsigned bundles are disabled") {
+		t.Fatalf("VerifyIntegrityWithPolicy error = %v, want unsigned disabled", err)
+	}
+}
+
 func TestVerifyIntegrity_UnsignedTampered(t *testing.T) {
 	t.Parallel()
 
@@ -339,6 +361,64 @@ func TestVerifyIntegrityBytes_UnsignedSHAMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SHA-256 mismatch") {
 		t.Errorf("error should mention SHA-256 mismatch, got: %v", err)
+	}
+}
+
+func TestVerifyIntegrityBytes_UnsignedMalformedSHAFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("name: unsigned-bundle\n")
+	hash := sha256.Sum256(data)
+	actual := hex.EncodeToString(hash[:])
+	tests := []struct {
+		name string
+		sha  string
+	}{
+		{name: "whitespace only", sha: "   "},
+		{name: "wrong length", sha: "deadbeef"},
+		{name: "non hex", sha: strings.Repeat("z", sha256.Size*2)},
+		{name: "uppercase", sha: strings.ToUpper(actual)},
+		{name: "0x prefix", sha: "0x" + actual},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := VerifyIntegrityBytes(data, t.TempDir(), true, "", tt.sha, nil)
+			if err == nil {
+				t.Fatal("expected malformed SHA-256 to fail closed")
+			}
+			if !strings.Contains(err.Error(), "SHA-256 mismatch") {
+				t.Fatalf("VerifyIntegrityBytes error = %v, want SHA-256 mismatch", err)
+			}
+		})
+	}
+}
+
+func TestVerifyIntegrityBytes_UnsignedMissingSHAFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	err := VerifyIntegrityBytes([]byte("name: unsigned-bundle\n"), t.TempDir(), true, "", "", nil)
+	if err == nil {
+		t.Fatal("expected missing SHA-256 error for unsigned bundle")
+	}
+	if !strings.Contains(err.Error(), "missing SHA-256") {
+		t.Errorf("error should mention missing SHA-256, got: %v", err)
+	}
+}
+
+func TestVerifyIntegrityBytes_UnsignedDisabledByPolicyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("name: unsigned-bundle\n")
+	hash := sha256.Sum256(data)
+	expectedSHA := hex.EncodeToString(hash[:])
+
+	err := VerifyIntegrityBytesWithPolicy(data, t.TempDir(), true, "", expectedSHA, TrustPolicy{})
+	if err == nil {
+		t.Fatal("expected unsigned bytes to fail closed when embedded keys are disabled")
+	}
+	if !strings.Contains(err.Error(), "unsigned bundles are disabled") {
+		t.Fatalf("VerifyIntegrityBytesWithPolicy error = %v, want unsigned disabled", err)
 	}
 }
 
@@ -558,7 +638,7 @@ func TestFindSigner_TrustedKeyPath(t *testing.T) {
 		{Name: "test-third-party", PublicKey: hex.EncodeToString(thirdPub)},
 	}
 
-	result, err := findSigner(data, sig, trustedKeys)
+	result, err := findSigner(data, sig, DefaultTrustPolicy(trustedKeys))
 	if err != nil {
 		t.Fatalf("findSigner() error: %v", err)
 	}
@@ -568,6 +648,44 @@ func TestFindSigner_TrustedKeyPath(t *testing.T) {
 	}
 	if result.SignerFingerprint != hex.EncodeToString(thirdPub) {
 		t.Errorf("SignerFingerprint = %q, want %q", result.SignerFingerprint, hex.EncodeToString(thirdPub))
+	}
+}
+
+func TestVerifyBundleSignatureWithPolicy_DisabledEmbeddedKeyFailsClosed(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
+
+	dir := writeSignedTestBundle(t, priv)
+	_, err = VerifyBundleSignatureWithPolicy(dir, TrustPolicy{})
+	if err == nil {
+		t.Fatal("expected de-trusted embedded key to fail closed")
+	}
+	if !strings.Contains(err.Error(), "no matching signer") {
+		t.Fatalf("VerifyBundleSignatureWithPolicy error = %v, want no matching signer", err)
+	}
+}
+
+func TestVerifyBundleSignatureWithPolicy_DisabledEmbeddedKeyCanBeExplicitlyTrustedAsThirdParty(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
+
+	dir := writeSignedTestBundle(t, priv)
+	result, err := VerifyBundleSignatureWithPolicy(dir, TrustPolicy{
+		TrustedKeys: []config.TrustedKey{
+			{Name: "private-root", PublicKey: hex.EncodeToString(pub)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("VerifyBundleSignatureWithPolicy() error: %v", err)
+	}
+	if result.Tier != TrustTierThirdParty {
+		t.Fatalf("Tier = %q, want %q", result.Tier, TrustTierThirdParty)
 	}
 }
 

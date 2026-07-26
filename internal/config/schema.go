@@ -201,6 +201,7 @@ type Rules struct {
 	MinConfidence       string       `yaml:"min_confidence"`
 	IncludeExperimental bool         `yaml:"include_experimental"`
 	AllowDegraded       bool         `yaml:"allow_degraded" json:"-"`
+	TrustEmbeddedKeys   bool         `yaml:"trust_embedded_keys"`
 	Disabled            []string     `yaml:"disabled"`
 	TrustedKeys         []TrustedKey `yaml:"trusted_keys"`
 	DegradedBundles     []string     `yaml:"-" json:"-"`

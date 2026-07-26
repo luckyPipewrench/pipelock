@@ -13032,6 +13032,91 @@ func TestLoad_RulesAllowDegraded_BooleanStates(t *testing.T) {
 	}
 }
 
+func TestLoad_RulesTrustEmbeddedKeys_BooleanStates(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantVal bool
+	}{
+		{
+			name:    "omitted (no rules section)",
+			yaml:    "mode: balanced\n",
+			wantVal: true,
+		},
+		{
+			name:    "rules section but field omitted",
+			yaml:    "mode: balanced\nrules:\n  min_confidence: medium\n",
+			wantVal: true,
+		},
+		{
+			name:    "explicit null",
+			yaml:    "mode: balanced\nrules:\n  trust_embedded_keys: null\n",
+			wantVal: true,
+		},
+		{
+			name:    "blank value",
+			yaml:    "mode: balanced\nrules:\n  trust_embedded_keys:\n",
+			wantVal: true,
+		},
+		{
+			name:    "explicit false",
+			yaml:    "mode: balanced\nrules:\n  trust_embedded_keys: false\n",
+			wantVal: false,
+		},
+		{
+			name:    "explicit true",
+			yaml:    "mode: balanced\nrules:\n  trust_embedded_keys: true\n",
+			wantVal: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("unexpected Load error: %v", err)
+			}
+			if cfg.Rules.TrustEmbeddedKeys != tt.wantVal {
+				t.Errorf("TrustEmbeddedKeys = %v, want %v", cfg.Rules.TrustEmbeddedKeys, tt.wantVal)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("mode: balanced\nrules:\n  trust_embedded_keys: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(path)
+	if err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+	if first.Rules.TrustEmbeddedKeys {
+		t.Fatal("first load with explicit false should preserve false")
+	}
+	unchanged, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload without change: %v", err)
+	}
+	if unchanged.Rules.TrustEmbeddedKeys != first.Rules.TrustEmbeddedKeys {
+		t.Fatalf("reload without change TrustEmbeddedKeys = %v, want %v", unchanged.Rules.TrustEmbeddedKeys, first.Rules.TrustEmbeddedKeys)
+	}
+	if err := os.WriteFile(path, []byte("mode: balanced\nrules:\n  trust_embedded_keys: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload with change: %v", err)
+	}
+	if !changed.Rules.TrustEmbeddedKeys {
+		t.Fatal("reload with change should observe trust_embedded_keys=true")
+	}
+}
+
 func TestValidate_RulesDisabledFormat_Tightened(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -15570,5 +15655,27 @@ func TestValidateAdaptiveEnforcementRecoveryKnobs(t *testing.T) {
 				t.Fatalf("Validate() err = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestDefaults_RulesTrustEmbeddedKeysIsTrue pins the PROGRAMMATIC default.
+//
+// The YAML paths are covered by TestLoad_RulesTrustEmbeddedKeys_BooleanStates, but
+// a config built in Go rather than parsed from YAML never reaches
+// applySecurityDefaults. Because the permissive setting is `true`, the Go ZERO
+// VALUE of this field is the restrictive one: a zero-valued Config silently means
+// private-root-only mode, which refuses official AND unsigned rule bundles.
+//
+// No production path builds a bare Config and then loads rules (verifyCfg in the
+// assess flow copies a loaded config; the presets parser only decodes YAML), but a
+// diag test did, and it failed as soon as this knob existed. Anything constructing
+// a Config programmatically must go through Defaults(), and this test makes the
+// default load-bearing so it cannot be dropped without a red test.
+func TestDefaults_RulesTrustEmbeddedKeysIsTrue(t *testing.T) {
+	t.Parallel()
+
+	if got := Defaults().Rules.TrustEmbeddedKeys; !got {
+		t.Fatalf("Defaults().Rules.TrustEmbeddedKeys = %v, want true: a programmatically "+
+			"built config must trust the embedded rules keyring unless the operator opts out", got)
 	}
 }

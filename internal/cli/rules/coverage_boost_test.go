@@ -233,7 +233,7 @@ func TestVerifyRemoteSignature_NoMatchingKey(t *testing.T) {
 	_, err := verifyRemoteSignature(
 		[]byte("data"),
 		[]byte(base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))),
-		nil,
+		domrules.DefaultTrustPolicy(nil),
 	)
 	if err == nil {
 		t.Error("expected error when no key matches")

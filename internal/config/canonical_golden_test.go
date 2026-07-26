@@ -301,7 +301,9 @@ const (
 	// handling change adaptive policy semantics when configured.
 	// Re-bumped because Defaults().Internal now exposes the enforced Azure WireServer and IPv6 unspecified SSRF floor.
 	// Re-bumped for Safety Reclassification Directive response pattern coverage.
-	goldenHashDefaults = "3bf819194c9905d3fb5ee84139a61e7277848816f74e9bc02b60c5655f474007"
+	// Re-bumped for rules.trust_embedded_keys: the rules signing trust roots are
+	// policy semantics, so removing the compiled official keyring must change ph.
+	goldenHashDefaults = "a1199db5c116d1b4a2aad07304434f0af569ff999a7d1ff39a0b5f8526d6c57a"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -445,7 +447,8 @@ const (
 	// see goldenHashDefaults note above.
 	// Re-bumped for Safety Reclassification Directive: see goldenHashDefaults
 	// note above.
-	goldenHashRichConfig = "dbd9910451382fa4a90072c7cf9246f55632ee1bc7eb8752b76979c822782ba3"
+	// Re-bumped for rules.trust_embedded_keys: see goldenHashDefaults note above.
+	goldenHashRichConfig = "fe68851ed2e1a4b695dc9df33e3a080c99acfc3222a838d84d1710976380778c"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

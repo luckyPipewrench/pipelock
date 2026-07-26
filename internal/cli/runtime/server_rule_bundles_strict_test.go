@@ -4,6 +4,10 @@
 package runtime
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // TestStrictRuleBundleIntegrityError exercises the shared fail-closed decision
@@ -121,5 +126,65 @@ func TestStrictRuleBundleIntegrityError_RealBundleLoad(t *testing.T) {
 	cfg.Rules.AllowDegraded = true
 	if err := strictRuleBundleIntegrityError(cfg, result); err != nil {
 		t.Fatalf("strict + allow_degraded must tolerate, got %v", err)
+	}
+}
+
+func TestStrictRuleBundleIntegrityError_DisabledEmbeddedKeysFailClosed(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	origDefault := rules.DefaultKeyringHex
+	origKeyring := rules.KeyringHex
+	rules.DefaultKeyringHex = ""
+	rules.KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() {
+		rules.DefaultKeyringHex = origDefault
+		rules.KeyringHex = origKeyring
+	})
+
+	rulesDir := t.TempDir()
+	bundleDir := filepath.Join(rulesDir, "private-root-only")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	bundleData := []byte(fmt.Sprintf("format_version: 2\nname: private-root-only\nversion: 2026.01.1\nauthor: test\n"+
+		"description: test bundle\n"+
+		"tier: community\nmonotonic_version: 1\npublished_at: 2026-01-01T00:00:00Z\n"+
+		"expires_at: 2036-01-01T00:00:00Z\nkey_id: %s\nrules: []\n", rules.KeyFingerprint(pub)))
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, bundleData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("SignFile: %v", err)
+	}
+	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+		t.Fatalf("SaveSignature: %v", err)
+	}
+	hash := sha256.Sum256(bundleData)
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
+		InstalledVersion:  "2026.01.1",
+		Source:            "test",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: rules.KeyFingerprint(pub),
+	}); err != nil {
+		t.Fatalf("WriteLockFile: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	cfg.Rules.RulesDir = rulesDir
+	cfg.Rules.TrustEmbeddedKeys = false
+	result := rules.MergeIntoConfig(cfg, "3.0.0")
+	if len(result.IntegrityErrors()) == 0 {
+		t.Fatalf("expected disabled embedded key to produce integrity error, got errors: %+v", result.Errors)
+	}
+	if reason := result.IntegrityErrors()[0].Reason; !strings.Contains(reason, "no matching signer") {
+		t.Fatalf("integrity error reason = %q, want no matching signer", reason)
+	}
+	if err := strictRuleBundleIntegrityError(cfg, result); err == nil {
+		t.Fatal("strict mode must refuse startup when embedded keys are disabled and no trusted key verifies the bundle")
 	}
 }

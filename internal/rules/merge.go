@@ -145,6 +145,7 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		IncludeExperimental: cfg.Rules.IncludeExperimental,
 		Disabled:            cfg.Rules.Disabled,
 		TrustedKeys:         cfg.Rules.TrustedKeys,
+		SkipEmbeddedKeys:    !cfg.Rules.TrustEmbeddedKeys,
 		PipelockVersion:     pipelockVersion,
 		TierKeyMapping:      buildTierKeyMapping(cfg.Rules.TrustedKeys),
 	})

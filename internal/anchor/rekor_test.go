@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +43,10 @@ const (
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type p256CurveWrapper struct {
+	elliptic.Curve
+}
 
 func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
 	receipts, keyHex := testReceiptChain(t, 2)
@@ -453,7 +458,7 @@ func TestRekorLogVerifyRejectsCheckpointSubstitution(t *testing.T) {
 	}
 	verifier := RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}}
 
-	proof := selfConsistentRekorProofWithAlgorithm(t, checkpoint, entryPriv, logPriv, rekorSHA512Algorithm)
+	proof := selfConsistentRekorProof(t, checkpoint, entryPriv, logPriv)
 	if err := verifier.Verify(proof, checkpoint); err != nil {
 		t.Fatalf("Verify original proof: %v", err)
 	}
@@ -808,6 +813,87 @@ func TestRekorLogVerifyRejectsMalformedVerificationArtifacts(t *testing.T) {
 	}
 }
 
+func TestVerifyRekorSetAndCheckpoint_ECDSAP256(t *testing.T) {
+	t.Parallel()
+
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, entryPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	logKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey: %v", err)
+	}
+	proof := selfConsistentRekorProof(t, checkpoint, entryPriv, logKey)
+
+	if err := verifyRekorSET(proof, []crypto.PublicKey{&logKey.PublicKey}); err != nil {
+		t.Fatalf("verifyRekorSET ECDSA P-256: %v", err)
+	}
+	if err := verifyRekorCheckpoint(proof, []crypto.PublicKey{&logKey.PublicKey}); err != nil {
+		t.Fatalf("verifyRekorCheckpoint ECDSA P-256: %v", err)
+	}
+
+	wrongKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey wrong: %v", err)
+	}
+	if err := verifyRekorSET(proof, []crypto.PublicKey{&wrongKey.PublicKey}); err == nil || !strings.Contains(err.Error(), "signed_entry_timestamp") {
+		t.Fatalf("verifyRekorSET wrong key err = %v, want signed_entry_timestamp failure", err)
+	}
+
+	tamperedNote := proof
+	tamperedNote.Rekor = cloneRekorProof(proof.Rekor)
+	tamperedNote.Rekor.InclusionProof.Checkpoint = strings.Replace(tamperedNote.Rekor.InclusionProof.Checkpoint, "fake-rekor-log\n", "other-rekor-log\n", 1)
+	if err := verifyRekorCheckpoint(tamperedNote, []crypto.PublicKey{&logKey.PublicKey}); err == nil || !strings.Contains(err.Error(), "checkpoint signature") {
+		t.Fatalf("verifyRekorCheckpoint tampered note err = %v, want checkpoint signature failure", err)
+	}
+
+	keyHashMismatch := proof
+	keyHashMismatch.Rekor = cloneRekorProof(proof.Rekor)
+	keyHashMismatch.Rekor.InclusionProof.Checkpoint = checkpointWithMismatchedKeyHashForTest(t, keyHashMismatch.Rekor.InclusionProof.Checkpoint)
+	if err := verifyRekorCheckpoint(keyHashMismatch, []crypto.PublicKey{&logKey.PublicKey}); err == nil || !strings.Contains(err.Error(), "checkpoint signature") {
+		t.Fatalf("verifyRekorCheckpoint KeyHash mismatch err = %v, want checkpoint signature failure", err)
+	}
+}
+
+func TestVerifyRekorCheckpointContinuesAfterNonMatchingCandidate(t *testing.T) {
+	t.Parallel()
+
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, entryPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	logKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey: %v", err)
+	}
+	wrongKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey wrong: %v", err)
+	}
+	proof := selfConsistentRekorProof(t, checkpoint, entryPriv, logKey)
+	proof.Rekor.InclusionProof.Checkpoint = prependCheckpointSignatureForTest(
+		t,
+		proof.Rekor.InclusionProof.Checkpoint,
+		&wrongKey.PublicKey,
+		[]byte("not a valid ecdsa signature"),
+	)
+
+	if err := verifyRekorCheckpoint(proof, []crypto.PublicKey{&wrongKey.PublicKey, &logKey.PublicKey}); err != nil {
+		t.Fatalf("verifyRekorCheckpoint should continue to later valid key: %v", err)
+	}
+}
+
 func TestVerifyRekorInclusionRejectsMalformedInputs(t *testing.T) {
 	receipts, keyHex := testReceiptChain(t, 1)
 	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
@@ -878,7 +964,7 @@ func TestParseSignedRekorCheckpointRejectsMalformedNotes(t *testing.T) {
 	}
 }
 
-func TestVerifySignature_RSAAndUnsupportedKeys(t *testing.T) {
+func TestVerifySignature_RejectsRSAAndUnsupportedKeys(t *testing.T) {
 	t.Parallel()
 	msg := []byte("rekor checkpoint bytes")
 	digest := sha256.Sum256(msg)
@@ -890,15 +976,15 @@ func TestVerifySignature_RSAAndUnsupportedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignPSS: %v", err)
 	}
-	if !verifySignature(&key.PublicKey, msg, pss) {
-		t.Fatal("rsa pss: valid signature rejected")
+	if verifySignature(&key.PublicKey, msg, pss) {
+		t.Fatal("rsa pss: valid signature accepted")
 	}
 	pkcs1, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatalf("SignPKCS1v15: %v", err)
 	}
-	if !verifySignature(&key.PublicKey, msg, pkcs1) {
-		t.Fatal("rsa pkcs1v15: valid signature rejected")
+	if verifySignature(&key.PublicKey, msg, pkcs1) {
+		t.Fatal("rsa pkcs1v15: valid signature accepted")
 	}
 	if verifySignature(&key.PublicKey, []byte("wrong message"), pss) {
 		t.Fatal("rsa: wrong-message signature accepted")
@@ -1310,11 +1396,6 @@ func encodedRekorRequestBody(t *testing.T, r *http.Request) string {
 	return base64.StdEncoding.EncodeToString(raw)
 }
 
-func selfConsistentRekorProof(t *testing.T, checkpoint Checkpoint, entrySigner, logSigner ed25519.PrivateKey) Proof {
-	t.Helper()
-	return selfConsistentRekorProofWithAlgorithm(t, checkpoint, entrySigner, logSigner, rekorDefaultSubmitHashAlgorithm)
-}
-
 func selfConsistentLegacySHA256RekorProof(t *testing.T, checkpoint Checkpoint, entrySigner, logSigner ed25519.PrivateKey) Proof {
 	t.Helper()
 	checkpointBytes, err := checkpointBytes(checkpoint)
@@ -1369,8 +1450,9 @@ func selfConsistentLegacySHA256RekorProof(t *testing.T, checkpoint Checkpoint, e
 	}
 }
 
-func selfConsistentRekorProofWithAlgorithm(t *testing.T, checkpoint Checkpoint, entrySigner, logSigner ed25519.PrivateKey, algorithm string) Proof {
+func selfConsistentRekorProof(t *testing.T, checkpoint Checkpoint, entrySigner ed25519.PrivateKey, logSigner crypto.Signer) Proof {
 	t.Helper()
+	algorithm := rekorDefaultSubmitHashAlgorithm
 	checkpointBytes, err := checkpointBytes(checkpoint)
 	if err != nil {
 		t.Fatalf("checkpointBytes: %v", err)
@@ -1424,7 +1506,7 @@ func selfConsistentRekorProofWithAlgorithm(t *testing.T, checkpoint Checkpoint, 
 	return proof
 }
 
-func signedEntryTimestampForTest(t *testing.T, logID string, logIndex uint64, body string, priv ed25519.PrivateKey) string {
+func signedEntryTimestampForTest(t *testing.T, logID string, logIndex uint64, body string, priv crypto.Signer) string {
 	t.Helper()
 	proof := Proof{
 		LogID:    logID,
@@ -1438,21 +1520,61 @@ func signedEntryTimestampForTest(t *testing.T, logID string, logIndex uint64, bo
 	if err != nil {
 		t.Fatalf("canonicalRekorSETPayload: %v", err)
 	}
-	return base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
+	return base64.StdEncoding.EncodeToString(signRekorLogPayloadForTest(t, priv, payload))
 }
 
-func signedCheckpointForTest(t *testing.T, treeSize uint64, root []byte, priv ed25519.PrivateKey) string {
+func signedCheckpointForTest(t *testing.T, treeSize uint64, root []byte, priv crypto.Signer) string {
 	t.Helper()
-	pub, ok := priv.Public().(ed25519.PublicKey)
-	if !ok {
-		t.Fatal("private key public half is not Ed25519")
-	}
+	pub := priv.Public()
 	note := fmt.Sprintf("fake-rekor-log\n%d\n%s\n", treeSize, base64.StdEncoding.EncodeToString(root))
-	sig := ed25519.Sign(priv, []byte(note))
+	sig := signRekorLogPayloadForTest(t, priv, []byte(note))
 	var prefix [4]byte
 	binary.BigEndian.PutUint32(prefix[:], publicKeyHash(pub))
 	encoded := base64.StdEncoding.EncodeToString(append(prefix[:], sig...))
 	return note + "\n\u2014 fake-rekor " + encoded + "\n"
+}
+
+func signRekorLogPayloadForTest(t *testing.T, priv crypto.Signer, payload []byte) []byte {
+	t.Helper()
+	if edPriv, ok := priv.(ed25519.PrivateKey); ok {
+		return ed25519.Sign(edPriv, payload)
+	}
+	digest := sha256.Sum256(payload)
+	sig, err := priv.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		t.Fatalf("sign Rekor log payload: %v", err)
+	}
+	return sig
+}
+
+func checkpointWithMismatchedKeyHashForTest(t *testing.T, checkpoint string) string {
+	t.Helper()
+	prefix, encoded, ok := strings.Cut(checkpoint, "\n\n\u2014 fake-rekor ")
+	if !ok {
+		t.Fatalf("checkpoint missing signature separator: %q", checkpoint)
+	}
+	encoded = strings.TrimSuffix(encoded, "\n")
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("DecodeString checkpoint signature: %v", err)
+	}
+	if len(raw) < 5 {
+		t.Fatalf("checkpoint signature too small: %d", len(raw))
+	}
+	raw[3] ^= 0x01
+	return prefix + "\n\n\u2014 fake-rekor " + base64.StdEncoding.EncodeToString(raw) + "\n"
+}
+
+func prependCheckpointSignatureForTest(t *testing.T, checkpoint string, key crypto.PublicKey, signature []byte) string {
+	t.Helper()
+	note, signatureBlock, ok := strings.Cut(checkpoint, "\n\n")
+	if !ok {
+		t.Fatalf("checkpoint missing signature separator: %q", checkpoint)
+	}
+	var prefix [4]byte
+	binary.BigEndian.PutUint32(prefix[:], publicKeyHash(key))
+	encoded := base64.StdEncoding.EncodeToString(append(prefix[:], signature...))
+	return note + "\n\n\u2014 fake-rekor " + encoded + "\n" + signatureBlock
 }
 
 // TestVerifyRFC6962Inclusion_MultiNodeTrees exercises the inclusion-proof loop
@@ -1599,5 +1721,137 @@ func TestVerifySignature_AcrossKeyTypes(t *testing.T) {
 	}
 	if verifySignature(&otherKey.PublicKey, msg, ecSig) {
 		t.Fatal("ecdsa P-256: signature accepted under wrong key")
+	}
+
+	p384Key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa P-384 GenerateKey: %v", err)
+	}
+	p384Sig, err := ecdsa.SignASN1(rand.Reader, p384Key, digest[:])
+	if err != nil {
+		t.Fatalf("ecdsa P-384 SignASN1: %v", err)
+	}
+	if verifySignature(&p384Key.PublicKey, msg, p384Sig) {
+		t.Fatal("ecdsa P-384: valid signature accepted")
+	}
+}
+
+func TestVerifySignature_ECDSAP256ParsedAndEquivalentCurves(t *testing.T) {
+	t.Parallel()
+
+	msg := []byte("rekor set or checkpoint note bytes")
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey: %v", err)
+	}
+	digest := sha256.Sum256(msg)
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatalf("ecdsa SignASN1: %v", err)
+	}
+
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+	parsed, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		t.Fatalf("ParsePKIXPublicKey: %v", err)
+	}
+	parsedKey, ok := parsed.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("parsed key type = %T, want *ecdsa.PublicKey", parsed)
+	}
+	t.Logf("x509.ParsePKIXPublicKey P-256 curve identity = %t", parsedKey.Curve == elliptic.P256())
+	if !verifySignature(parsedKey, msg, sig) {
+		t.Fatal("ecdsa P-256 parsed from DER: valid signature rejected")
+	}
+
+	wrapped := &ecdsa.PublicKey{
+		Curve: p256CurveWrapper{Curve: elliptic.P256()},
+		X:     key.X,
+		Y:     key.Y,
+	}
+	if wrapped.Curve == elliptic.P256() {
+		t.Fatal("test wrapper unexpectedly has P-256 pointer identity")
+	}
+	if !verifySignature(wrapped, msg, sig) {
+		t.Fatal("ecdsa P-256 equivalent curve: valid signature rejected")
+	}
+}
+
+func TestVerifySignature_ECDSARejectsNilAndDegenerateKeys(t *testing.T) {
+	t.Parallel()
+
+	msg := []byte("rekor set or checkpoint note bytes")
+	digest := sha256.Sum256(msg)
+	validKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey: %v", err)
+	}
+	sig, err := ecdsa.SignASN1(rand.Reader, validKey, digest[:])
+	if err != nil {
+		t.Fatalf("ecdsa SignASN1: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		key  crypto.PublicKey
+	}{
+		{name: "nil ecdsa pointer", key: (*ecdsa.PublicKey)(nil)},
+		{name: "zero ecdsa key", key: &ecdsa.PublicKey{}},
+		{name: "nil curve", key: &ecdsa.PublicKey{X: validKey.X, Y: validKey.Y}},
+		{name: "nil x", key: &ecdsa.PublicKey{Curve: elliptic.P256(), Y: validKey.Y}},
+		{name: "nil y", key: &ecdsa.PublicKey{Curve: elliptic.P256(), X: validKey.X}},
+		{name: "zero point", key: &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(0), Y: big.NewInt(0)}},
+		{name: "not on curve", key: &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(1), Y: big.NewInt(1)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("verifySignature panicked: %v", r)
+				}
+			}()
+			if verifySignature(tt.key, msg, sig) {
+				t.Fatal("degenerate ECDSA key accepted signature")
+			}
+		})
+	}
+}
+
+func TestVerifyWithAnyKeyRejectsRSAAndContinues(t *testing.T) {
+	t.Parallel()
+
+	msg := []byte("rekor set or checkpoint note bytes")
+	digest := sha256.Sum256(msg)
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa GenerateKey: %v", err)
+	}
+	rsaSig, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("SignPKCS1v15: %v", err)
+	}
+	if verifyWithAnyKey([]crypto.PublicKey{&rsaKey.PublicKey}, msg, rsaSig) {
+		t.Fatal("rsa-only keyring accepted RSA signature")
+	}
+
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa GenerateKey: %v", err)
+	}
+	ecSig, err := ecdsa.SignASN1(rand.Reader, ecKey, digest[:])
+	if err != nil {
+		t.Fatalf("ecdsa SignASN1: %v", err)
+	}
+	// Skipping the unsupported RSA key rather than erroring is safe ONLY because
+	// RekorLog.Verify pre-resolves the trust set through supportedRekorLogPublicKeys and
+	// fails closed first (see TestRekorLogVerify_UnsupportedTrustedKeyIsDistinguishable).
+	// This test deliberately calls the lower layer directly, so it pins the lenient
+	// behavior; the fail-closed behavior an operator actually gets is pinned there.
+	if !verifyWithAnyKey([]crypto.PublicKey{&rsaKey.PublicKey, &ecKey.PublicKey}, msg, ecSig) {
+		t.Fatal("keyring did not continue after unsupported RSA key")
 	}
 }

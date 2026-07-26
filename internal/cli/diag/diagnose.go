@@ -346,9 +346,10 @@ func checkForwardBlocked(proxyURL, _ string, _ *config.Config) diagnoseResult {
 func checkRules(_, _ string, cfg *config.Config) diagnoseResult {
 	rulesDir := rules.ResolveRulesDir(cfg.Rules.RulesDir)
 	result := rules.LoadBundles(rulesDir, rules.LoadOptions{
-		MinConfidence:   cfg.Rules.MinConfidence,
-		TrustedKeys:     cfg.Rules.TrustedKeys,
-		PipelockVersion: cliutil.Version,
+		MinConfidence:    cfg.Rules.MinConfidence,
+		TrustedKeys:      cfg.Rules.TrustedKeys,
+		SkipEmbeddedKeys: !cfg.Rules.TrustEmbeddedKeys,
+		PipelockVersion:  cliutil.Version,
 	})
 
 	if len(result.Loaded) == 0 && len(result.Errors) == 0 {

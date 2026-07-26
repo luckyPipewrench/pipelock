@@ -33,6 +33,7 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 		LicenseKey:           "license-token",
 		LicenseFile:          "/run/pipelock/license",
 		DefaultAgentIdentity: "builder",
+		Rules:                Rules{RulesDir: "/var/lib/pipelock/private-rules", TrustEmbeddedKeys: false},
 	}
 	newCfg := &Config{
 		FetchProxy:           FetchProxy{Listen: "127.0.0.1:28080"},
@@ -45,6 +46,7 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 		LicenseFile:          "/tmp/new-license",
 		DefaultAgentIdentity: "other",
 		Conductor:            Conductor{Enabled: true, FleetID: "fleet-from-bundle"},
+		Rules:                Rules{RulesDir: "/tmp/bundle-rules", TrustEmbeddedKeys: true},
 	}
 
 	if err := PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, "mode: strict\n"); err != nil {
@@ -74,6 +76,9 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	}
 	if !reflect.DeepEqual(newCfg.Agents, oldCfg.Agents) {
 		t.Fatalf("Agents = %#v, want %#v", newCfg.Agents, oldCfg.Agents)
+	}
+	if !reflect.DeepEqual(newCfg.Rules, oldCfg.Rules) {
+		t.Fatalf("Rules = %#v, want follower-local %#v", newCfg.Rules, oldCfg.Rules)
 	}
 	if !newCfg.Conductor.Enabled || newCfg.Conductor.FleetID != "fleet-from-bundle" {
 		t.Fatalf("Conductor should remain bundle-owned, got %#v", newCfg.Conductor)

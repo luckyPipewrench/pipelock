@@ -1310,7 +1310,7 @@ func TestVerifyRemoteSignature_TrustedKey(t *testing.T) {
 		{Name: "test-signer", PublicKey: hex.EncodeToString(pub)},
 	}
 
-	result, err := verifyRemoteSignature(bundleData, []byte(sigEncoded), trustedKeys)
+	result, err := verifyRemoteSignature(bundleData, []byte(sigEncoded), domrules.DefaultTrustPolicy(trustedKeys))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1335,7 +1335,7 @@ func TestVerifyRemoteSignature_NoMatchingSigner(t *testing.T) {
 	// Empty embedded keyring, no trusted keys.
 	setRulesKeyringHexForTest(t, "")
 
-	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), nil)
+	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), domrules.DefaultTrustPolicy(nil))
 	if err == nil {
 		t.Fatal("expected error for no matching signer")
 	}
@@ -1362,7 +1362,7 @@ func TestVerifyRemoteSignature_TrustedKeyBadHex(t *testing.T) {
 		{Name: "wrong-size", PublicKey: "aabbccdd"},
 	}
 
-	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), trustedKeys)
+	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), domrules.DefaultTrustPolicy(trustedKeys))
 	if err == nil {
 		t.Fatal("expected error for no matching signer")
 	}
@@ -2074,7 +2074,7 @@ func TestUpdateBundle_NameChangeRejected(t *testing.T) {
 	}
 
 	buf := &strings.Builder{}
-	err = updateBundle(buf, rulesDir, testBundleName, nil, false, false)
+	err = updateBundle(buf, rulesDir, testBundleName, domrules.DefaultTrustPolicy(nil), false, false)
 	if err == nil {
 		t.Fatal("expected error for name change during update")
 	}
@@ -2149,7 +2149,7 @@ func TestUpdateBundle_ReservedPrefixRecheckOnUpdate(t *testing.T) {
 	}
 
 	buf := &strings.Builder{}
-	err = updateBundle(buf, rulesDir, installedName, trustedKeys, false, true)
+	err = updateBundle(buf, rulesDir, installedName, domrules.DefaultTrustPolicy(trustedKeys), false, true)
 	if err == nil {
 		t.Fatal("expected error for reserved prefix with non-official signer on update")
 	}

@@ -505,7 +505,8 @@ func Defaults() *Config {
 			},
 		},
 		Rules: Rules{
-			MinConfidence: ConfidenceMedium,
+			MinConfidence:     ConfidenceMedium,
+			TrustEmbeddedKeys: true,
 		},
 		A2AScanning: A2AScanning{
 			Enabled:                   false,

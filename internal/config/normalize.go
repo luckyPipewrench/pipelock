@@ -91,6 +91,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.Conductor.HonorRemoteKillSwitch = true
 		cfg.FlightRecorder.Enabled = true
 		cfg.Defer.Enabled = true
+		cfg.Rules.TrustEmbeddedKeys = true
 		return
 	}
 
@@ -132,6 +133,9 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	setBoolDefault(kinds, "dlp", &cfg.ScanAPI.Kinds.DLP)
 	setBoolDefault(kinds, "prompt_injection", &cfg.ScanAPI.Kinds.PromptInjection)
 	setBoolDefault(kinds, "tool_call", &cfg.ScanAPI.Kinds.ToolCall)
+
+	rules, _ := raw["rules"].(map[string]interface{})
+	setBoolDefault(rules, "trust_embedded_keys", &cfg.Rules.TrustEmbeddedKeys)
 
 	// A2A scanning: detection booleans default to true (full scanning when enabled).
 	a2a, _ := raw["a2a_scanning"].(map[string]interface{})

@@ -2215,6 +2215,7 @@ rules:
   min_confidence: medium          # skip low-confidence (experimental) rules
   include_experimental: false     # only load stable rules by default
   allow_degraded: false           # emergency strict-mode degraded startup/reload override
+  trust_embedded_keys: true       # trust the compiled official rules keyring
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
     - name: "vendor-security"
       public_key: "64-char-hex-encoded-ed25519-public-key"
@@ -2226,6 +2227,7 @@ rules:
 | `min_confidence` | `""` (all) | Skip rules below this confidence level |
 | `include_experimental` | `false` | Include experimental rules from bundles |
 | `allow_degraded` | `false` | Explicit emergency override that lets strict mode start or reload with degraded rule-bundle integrity/coverage after emitting warnings and audit events |
+| `trust_embedded_keys` | `true` | Trust the compiled official rules keyring. Set to `false` for private-root-only deployments that trust only `trusted_keys`; unsigned local bundles are rejected in this mode. |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 
 **Hot reload:** rule directory changes are re-resolved when config reload runs. A clean uninstall that removes live bundle patterns is rejected in strict mode unless `allow_degraded` is set; non-strict modes allow it and emit degraded-state telemetry. Installing or updating bundles still normally uses the `pipelock rules` commands and a config reload or restart to re-resolve the runtime policy.

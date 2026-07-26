@@ -107,6 +107,7 @@ rules:
   min_confidence: medium                    # skip experimental rules (low confidence)
   include_experimental: false               # default: only stable rules are active
   allow_degraded: false                     # strict mode refuses installed-bundle integrity failures
+  trust_embedded_keys: true                 # default: trust the compiled official rules keyring
   # trusted_keys:                           # additional trusted public keys (beyond embedded keyring)
   #   - name: "vendor-security"
   #     public_key: "64-char-hex-encoded-ed25519-public-key"
@@ -134,6 +135,8 @@ Bundles are Ed25519-signed YAML files. Pipelock verifies signatures against a ke
 ### Official bundles
 
 Official bundles (like `pipelock-community`) are signed with the production key compiled into the source and also embedded in release binaries at build time. No additional configuration is needed.
+
+Private-root-only operators can set `rules.trust_embedded_keys: false` to remove the compiled official keyring from bundle verification. In that mode, bundles must be signed by `rules.trusted_keys`; unsigned local bundles are rejected, and strict mode treats non-matching installed bundles as integrity failures unless the operator explicitly enables `rules.allow_degraded`.
 
 ### Third-party bundles
 

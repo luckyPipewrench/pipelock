@@ -452,43 +452,19 @@ func decodeSignatureBytes(data []byte) ([]byte, error) {
 	return sig, nil
 }
 
-// verifyRemoteSignature verifies bundleData against sigData using the embedded
-// keyring and trusted keys. Returns the verification result.
-func verifyRemoteSignature(bundleData, sigData []byte, trustedKeys []config.TrustedKey) (*domrules.VerifyResult, error) {
+// verifyRemoteSignature verifies bundleData against sigData using the configured
+// rules signing trust policy. Returns the verification result.
+func verifyRemoteSignature(bundleData, sigData []byte, policy domrules.TrustPolicy) (*domrules.VerifyResult, error) {
+	// decodeSignatureBytes already labels both of its failures ("decoding signature:"
+	// for a base64 error, "invalid signature length:" for a size mismatch). Re-wrapping
+	// here produced "decoding signature: decoding signature: illegal base64 data" and
+	// mislabeled a length mismatch as a decode failure, so pass the specific error up.
 	sig, err := decodeSignatureBytes(sigData)
 	if err != nil {
-		return nil, fmt.Errorf("decoding signature: %w", err)
+		return nil, err
 	}
 
-	// Try embedded keyring first (official tier).
-	for _, key := range domrules.EmbeddedKeyring() {
-		if ed25519.Verify(key, bundleData, sig) {
-			return &domrules.VerifyResult{
-				Tier:              domrules.TrustTierOfficial,
-				SignerFingerprint: domrules.KeyFingerprint(key),
-			}, nil
-		}
-	}
-
-	// Try trusted keys (third-party tier).
-	for _, tk := range trustedKeys {
-		raw, err := hex.DecodeString(tk.PublicKey)
-		if err != nil {
-			continue
-		}
-		if len(raw) != ed25519.PublicKeySize {
-			continue
-		}
-		key := ed25519.PublicKey(raw)
-		if ed25519.Verify(key, bundleData, sig) {
-			return &domrules.VerifyResult{
-				Tier:              domrules.TrustTierThirdParty,
-				SignerFingerprint: domrules.KeyFingerprint(key),
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no matching signer found for bundle")
+	return domrules.VerifyBundleSignatureBytes(bundleData, sig, policy)
 }
 
 // sha256Hex returns the lowercase hex SHA-256 digest of data.
@@ -721,15 +697,31 @@ type installRemoteOptions struct {
 }
 
 // installRemote installs a bundle from a remote URL.
+// rulesTrustPolicy resolves the rule-bundle signing trust policy from config: the
+// operator's configured third-party keys plus whether the compiled-in official
+// keyring is trusted. Centralized so the two values cannot drift apart at a call
+// site, and so a missing config falls back to the permissive default rather than to
+// a zero value, whose TrustEmbeddedKeys=false would silently mean private-root-only.
+func rulesTrustPolicy(configFile string, stderr io.Writer) (domrules.TrustPolicy, error) {
+	policy := domrules.DefaultTrustPolicy(nil)
+	cfg, err := loadRulesConfig(configFile, stderr)
+	if err != nil {
+		return domrules.TrustPolicy{}, err
+	}
+	if cfg != nil {
+		policy.TrustedKeys = cfg.Rules.TrustedKeys
+		policy.TrustEmbeddedKeys = cfg.Rules.TrustEmbeddedKeys
+	}
+	return policy, nil
+}
+
 func installRemote(opts installRemoteOptions) error {
 	ctx := context.Background()
 
-	// Load trusted keys from config (explicit flag, env, or user/system discovery).
-	var trustedKeys []config.TrustedKey
-	if cfg, cfgErr := loadRulesConfig(opts.configFile, opts.stderr); cfgErr != nil {
-		return cfgErr
-	} else if cfg != nil {
-		trustedKeys = cfg.Rules.TrustedKeys
+	// Load the signing trust policy from config (explicit flag, env, or discovery).
+	policy, err := rulesTrustPolicy(opts.configFile, opts.stderr)
+	if err != nil {
+		return err
 	}
 
 	bundleData, sigData, err := fetchRemoteBundle(ctx, opts.bundleURL)
@@ -737,7 +729,7 @@ func installRemote(opts installRemoteOptions) error {
 		return err
 	}
 
-	result, err := verifyRemoteSignature(bundleData, sigData, trustedKeys)
+	result, err := verifyRemoteSignature(bundleData, sigData, policy)
 	if err != nil {
 		return fmt.Errorf("signature verification: %w", err)
 	}
@@ -915,15 +907,13 @@ Local (unsigned) bundles are skipped during update.`,
 			}
 			defer unlock()
 
-			var trustedKeys []config.TrustedKey
-			if cfg, cfgErr := loadRulesConfig(configFile, cmd.ErrOrStderr()); cfgErr != nil {
-				return cfgErr
-			} else if cfg != nil {
-				trustedKeys = cfg.Rules.TrustedKeys
+			policy, err := rulesTrustPolicy(configFile, cmd.ErrOrStderr())
+			if err != nil {
+				return err
 			}
 
 			if len(args) == 1 {
-				return updateBundle(out, dir, args[0], trustedKeys, force, allowKeyRotate)
+				return updateBundle(out, dir, args[0], policy, force, allowKeyRotate)
 			}
 
 			// Update all.
@@ -941,7 +931,7 @@ Local (unsigned) bundles are skipped during update.`,
 				if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), ".bak") {
 					continue
 				}
-				err := updateBundle(out, dir, e.Name(), trustedKeys, force, allowKeyRotate)
+				err := updateBundle(out, dir, e.Name(), policy, force, allowKeyRotate)
 				if err != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error updating %s: %v\n", e.Name(), err)
 					failures++
@@ -968,7 +958,7 @@ Local (unsigned) bundles are skipped during update.`,
 }
 
 // updateBundle updates a single installed bundle.
-func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.TrustedKey, force, allowKeyRotation bool) error {
+func updateBundle(out io.Writer, rulesDir, name string, policy domrules.TrustPolicy, force, allowKeyRotation bool) error {
 	bundleDir, err := validateBundlePath(rulesDir, name)
 	if err != nil {
 		return err
@@ -993,7 +983,7 @@ func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.Tru
 		return fmt.Errorf("fetching update for %s: %w", name, err)
 	}
 
-	result, err := verifyRemoteSignature(bundleData, sigData, trustedKeys)
+	result, err := verifyRemoteSignature(bundleData, sigData, policy)
 	if err != nil {
 		return fmt.Errorf("signature verification for %s: %w", name, err)
 	}
@@ -1117,11 +1107,9 @@ func rulesVerifyCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			dir := domrules.ResolveRulesDir(rulesDir)
 
-			var trustedKeys []config.TrustedKey
-			if cfg, cfgErr := loadRulesConfig(configFile, cmd.ErrOrStderr()); cfgErr != nil {
-				return cfgErr
-			} else if cfg != nil {
-				trustedKeys = cfg.Rules.TrustedKeys
+			policy, err := rulesTrustPolicy(configFile, cmd.ErrOrStderr())
+			if err != nil {
+				return err
 			}
 
 			entries, err := os.ReadDir(dir)
@@ -1150,7 +1138,7 @@ func rulesVerifyCmd() *cobra.Command {
 					continue
 				}
 
-				err = domrules.VerifyIntegrity(bundleDir, lf.Unsigned, lf.SignerFingerprint, lf.BundleSHA256, trustedKeys)
+				err = domrules.VerifyIntegrityWithPolicy(bundleDir, lf.Unsigned, lf.SignerFingerprint, lf.BundleSHA256, policy)
 				if err != nil {
 					_, _ = fmt.Fprintf(out, "FAIL  %s: %v\n", e.Name(), err)
 					failures++

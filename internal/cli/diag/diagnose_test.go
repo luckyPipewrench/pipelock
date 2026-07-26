@@ -208,7 +208,7 @@ func TestDiagnoseHintEnabled(t *testing.T) {
 func TestCheckRules_EmptyDir(t *testing.T) {
 	t.Parallel()
 
-	cfg := &config.Config{}
+	cfg := config.Defaults()
 	cfg.Rules.RulesDir = t.TempDir()
 
 	result := checkRules("", "", cfg)
@@ -226,7 +226,11 @@ func TestCheckRules_ValidBundle(t *testing.T) {
 	rulesDir := t.TempDir()
 	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
 
-	cfg := &config.Config{}
+	// Defaults(), not &config.Config{}: a zero-valued struct leaves
+	// Rules.TrustEmbeddedKeys false, which means private-root-only mode and
+	// refuses unsigned bundles. No production path builds a bare Config here, so
+	// a bare-Config test would assert a state the system never occupies.
+	cfg := config.Defaults()
 	cfg.Rules.RulesDir = rulesDir
 
 	result := checkRules("", "", cfg)
@@ -256,7 +260,7 @@ func TestCheckRules_TamperedBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{}
+	cfg := config.Defaults()
 	cfg.Rules.RulesDir = rulesDir
 
 	result := checkRules("", "", cfg)
@@ -265,6 +269,12 @@ func TestCheckRules_TamperedBundle(t *testing.T) {
 	}
 	if !strings.Contains(result.Detail, "FAILED") {
 		t.Errorf("expected FAILED in detail, got: %s", result.Detail)
+	}
+	// Assert WHY it failed. Checking only for "FAILED" let this test pass for the
+	// wrong reason: any unrelated load refusal (a trust-policy change, a missing
+	// lockfile) satisfies it while tamper detection could be entirely broken.
+	if !strings.Contains(result.Detail, "SHA-256 mismatch") {
+		t.Errorf("expected the failure to name the digest mismatch, got: %s", result.Detail)
 	}
 }
 

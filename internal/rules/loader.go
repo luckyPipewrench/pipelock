@@ -35,6 +35,7 @@ type LoadOptions struct {
 	IncludeExperimental bool                // load experimental-status rules
 	Disabled            []string            // namespaced rule IDs or glob patterns
 	TrustedKeys         []config.TrustedKey // additional trusted signing keys
+	SkipEmbeddedKeys    bool                // exclude compiled official keyring from trust
 	PipelockVersion     string              // current binary version for min_pipelock check
 	AllowStale          bool                // accept expired bundles with warning
 	TierKeyMapping      map[string]string   // tier → expected signing key fingerprint
@@ -314,7 +315,8 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	}
 
 	// Verify integrity against the exact bytes we just read (no TOCTOU).
-	if err := VerifyIntegrityBytes(data, bundleDir, lock.Unsigned, lock.SignerFingerprint, lock.BundleSHA256, opts.TrustedKeys); err != nil {
+	trustEmbeddedKeys := !opts.SkipEmbeddedKeys
+	if err := VerifyIntegrityBytesWithPolicy(data, bundleDir, lock.Unsigned, lock.SignerFingerprint, lock.BundleSHA256, TrustPolicy{TrustedKeys: opts.TrustedKeys, TrustEmbeddedKeys: trustEmbeddedKeys}); err != nil {
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("integrity check: %v", err), Class: BundleErrorClassIntegrity})
 		return
 	}
@@ -335,7 +337,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	// Check pipelock-* name reservation: only official signers allowed.
 	// Track official status for degraded-mode detection (based on verified
 	// signature, not directory name).
-	official := strings.HasPrefix(bundle.Name, reservedBundlePrefix) && isOfficialFingerprint(lock.SignerFingerprint)
+	official := strings.HasPrefix(bundle.Name, reservedBundlePrefix) && isOfficialFingerprint(lock.SignerFingerprint, trustEmbeddedKeys)
 	if strings.HasPrefix(bundle.Name, reservedBundlePrefix) && !official {
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 			Name:   dirName,
@@ -526,7 +528,10 @@ func isDisabled(nsID string, disabled []string) bool {
 // isOfficialFingerprint checks whether the given fingerprint matches any
 // key in the embedded keyring. This compares hex fingerprint strings rather
 // than raw keys, since the lock file stores the fingerprint, not the key.
-func isOfficialFingerprint(fp string) bool {
+func isOfficialFingerprint(fp string, trustEmbeddedKeys bool) bool {
+	if !trustEmbeddedKeys {
+		return false
+	}
 	for _, key := range EmbeddedKeyring() {
 		if KeyFingerprint(key) == fp {
 			return true

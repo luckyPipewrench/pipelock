@@ -7,9 +7,10 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/rsa"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
@@ -22,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -261,10 +263,18 @@ func (r RekorLog) Verify(proof Proof, checkpoint Checkpoint) error {
 	if len(r.TrustedLogKeys) == 0 {
 		return errors.New("trusted Rekor log public key required")
 	}
-	if err := verifyRekorSET(proof, r.TrustedLogKeys); err != nil {
+	// Resolve the pinned trust set through the shared acceptance policy BEFORE any
+	// signature work, so an unsupported key surfaces as itself instead of as a
+	// generic verification failure, and so no malformed key reaches the stdlib
+	// verifiers. Downstream helpers receive already-normalized keys.
+	trustedKeys, err := supportedRekorLogPublicKeys(r.TrustedLogKeys)
+	if err != nil {
 		return err
 	}
-	if err := verifyRekorCheckpoint(proof, r.TrustedLogKeys); err != nil {
+	if err := verifyRekorSET(proof, trustedKeys); err != nil {
+		return err
+	}
+	if err := verifyRekorCheckpoint(proof, trustedKeys); err != nil {
 		return err
 	}
 	if err := verifyRekorInclusion(proof); err != nil {
@@ -400,17 +410,33 @@ func LoadRekorPrivateKey(path string) (ed25519.PrivateKey, error) {
 
 func LoadRekorPublicKeys(inputs []string) ([]crypto.PublicKey, error) {
 	keys := make([]crypto.PublicKey, 0, len(inputs))
-	for _, input := range inputs {
+	for i, input := range inputs {
 		key, err := LoadRekorPublicKey(input)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("rekor log public key %d: %w", i, err)
 		}
 		keys = append(keys, key)
 	}
 	return keys, nil
 }
 
+// LoadRekorPublicKey resolves a pinned Rekor log public key from an inline PEM
+// value, a file path, or a bare encoded key, and REFUSES a key this verifier cannot
+// use. Applying the acceptance policy at load is what makes the failure actionable:
+// `pipelock-verifier independent --rekor-log-key` and dashboard startup are being
+// configured to render a trust verdict, so an unsupported key must stop them before
+// any bundle is judged rather than turning every later verification into an opaque
+// signature failure. Parsing stays separate from policy in ParseRekorPublicKey so
+// "parsed but unsupported" remains distinguishable from "unparseable".
 func LoadRekorPublicKey(pathOrValue string) (crypto.PublicKey, error) {
+	key, err := loadRekorPublicKeyRaw(pathOrValue)
+	if err != nil {
+		return nil, err
+	}
+	return supportedRekorLogPublicKey(key)
+}
+
+func loadRekorPublicKeyRaw(pathOrValue string) (crypto.PublicKey, error) {
 	input := strings.TrimSpace(pathOrValue)
 	if input == "" {
 		return nil, errors.New("rekor log public key is empty")
@@ -830,6 +856,18 @@ func rfc6962NodeHash(left, right []byte) []byte {
 	return h.Sum(nil)
 }
 
+// verifyWithAnyKey returns true if ANY key verifies the signature, skipping keys the
+// acceptance policy refuses rather than failing on them.
+//
+// That leniency is only safe because of a LAYERING CONTRACT: RekorLog.Verify resolves
+// the whole pinned trust set through supportedRekorLogPublicKeys and fails closed
+// BEFORE reaching here, so by this point every key is already known-supported and the
+// skip is unreachable in practice. A future caller that reaches verifyRekorSET or
+// verifyRekorCheckpoint directly, bypassing RekorLog.Verify, would instead verify
+// against a SILENTLY NARROWED trust set: an unsupported key would be skipped rather
+// than reported, and the operator would never learn their pinned key does nothing.
+// If such a caller is ever added, resolve the keys there too, or make this function
+// return an error on an unsupported key instead of skipping it.
 func verifyWithAnyKey(keys []crypto.PublicKey, message, signature []byte) bool {
 	for _, key := range keys {
 		if verifySignature(key, message, signature) {
@@ -839,22 +877,140 @@ func verifyWithAnyKey(keys []crypto.PublicKey, message, signature []byte) bool {
 	return false
 }
 
-func verifySignature(key crypto.PublicKey, message, signature []byte) bool {
+// ErrUnsupportedRekorLogKey marks a pinned Rekor log key that parsed correctly but
+// is not one this verifier accepts. It is distinguishable on purpose: an operator
+// who supplies an RSA or P-384 log key needs to be told the key is unsupported, not
+// handed a generic "signature verification failed" that reads like a tampered log.
+var ErrUnsupportedRekorLogKey = errors.New("unsupported rekor log public key")
+
+// supportedRekorLogPublicKey is the SINGLE acceptance policy for a pinned Rekor log
+// public key, shared by key LOAD (so the verifier CLI and the dashboard refuse a bad
+// key before rendering any verdict) and by VERIFICATION (so a caller that constructs
+// RekorLog directly still fails closed rather than silently never matching).
+//
+// Accepted: Ed25519, and ECDSA on NIST P-256. RSA in both padding modes and every
+// other curve are refused. The wire artifacts here carry NO hash-algorithm field --
+// a SET payload is canonicalized entry metadata and a checkpoint signature carries
+// only name, a 32-bit key hash, and the signature bytes -- so the digest is fixed at
+// SHA-256. Accepting another curve would mean inventing a local curve-to-hash policy
+// and calling it interoperability. Broadening this belongs to a named compatibility
+// target with fixtures from that deployment, not to a hardening change.
+//
+// Both branches also close a PANIC reachable from a caller-supplied key:
+// ed25519.Verify panics on a wrong-length key, and ECDSA verification panics on a
+// nil curve or nil coordinates. Returning a typed error here means a malformed key
+// can never reach the stdlib verifier.
+func supportedRekorLogPublicKey(key crypto.PublicKey) (crypto.PublicKey, error) {
 	switch pub := key.(type) {
+	case ed25519.PublicKey:
+		if len(pub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%w: ed25519 key is %d bytes, want %d",
+				ErrUnsupportedRekorLogKey, len(pub), ed25519.PublicKeySize)
+		}
+		return pub, nil
+	case *ecdsa.PublicKey:
+		p256Pub, ok := normalizeECDSAP256PublicKey(pub)
+		if !ok {
+			// Name the curve the operator actually supplied. "not a valid P-256 point"
+			// alone leaves someone who pinned a P-384 key with no idea what was wrong.
+			return nil, fmt.Errorf("%w: ecdsa key on curve %s is not a valid NIST P-256 point",
+				ErrUnsupportedRekorLogKey, ecdsaCurveName(pub))
+		}
+		return p256Pub, nil
+	default:
+		return nil, fmt.Errorf("%w: %T; supported Rekor log keys are Ed25519 and ECDSA P-256",
+			ErrUnsupportedRekorLogKey, key)
+	}
+}
+
+// ecdsaCurveName describes an ECDSA key's curve for an operator-facing error, without
+// assuming the key is well formed: a nil key, a nil curve, or a curve with nil params
+// all have to produce a string rather than panic on the error path.
+func ecdsaCurveName(pub *ecdsa.PublicKey) string {
+	if pub == nil || pub.Curve == nil {
+		return "unknown"
+	}
+	params := pub.Params()
+	if params == nil || params.Name == "" {
+		return "unnamed"
+	}
+	return params.Name
+}
+
+// supportedRekorLogPublicKeys resolves every pinned key through the policy above,
+// failing on the FIRST unsupported key rather than silently dropping it: a keyring
+// that quietly loses an entry would verify against fewer keys than the operator
+// configured, which is a trust-set change they never asked for.
+func supportedRekorLogPublicKeys(keys []crypto.PublicKey) ([]crypto.PublicKey, error) {
+	out := make([]crypto.PublicKey, 0, len(keys))
+	for i, key := range keys {
+		resolved, err := supportedRekorLogPublicKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("trusted rekor log key %d: %w", i, err)
+		}
+		out = append(out, resolved)
+	}
+	return out, nil
+}
+
+func verifySignature(key crypto.PublicKey, message, signature []byte) bool {
+	resolved, err := supportedRekorLogPublicKey(key)
+	if err != nil {
+		return false
+	}
+	switch pub := resolved.(type) {
 	case ed25519.PublicKey:
 		return ed25519.Verify(pub, message, signature)
 	case *ecdsa.PublicKey:
 		digest := sha256.Sum256(message)
 		return ecdsa.VerifyASN1(pub, digest[:], signature)
-	case *rsa.PublicKey:
-		digest := sha256.Sum256(message)
-		if rsa.VerifyPSS(pub, crypto.SHA256, digest[:], signature, nil) == nil {
-			return true
-		}
-		return rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], signature) == nil
 	default:
 		return false
 	}
+}
+
+func normalizeECDSAP256PublicKey(pub *ecdsa.PublicKey) (*ecdsa.PublicKey, bool) {
+	if pub == nil || pub.X == nil || pub.Y == nil || !isECDSAP256Curve(pub.Curve) {
+		return nil, false
+	}
+	p256 := elliptic.P256()
+	if !validECDHP256Point(pub) {
+		return nil, false
+	}
+	return &ecdsa.PublicKey{Curve: p256, X: pub.X, Y: pub.Y}, true
+}
+
+func validECDHP256Point(pub *ecdsa.PublicKey) bool {
+	byteLen := (elliptic.P256().Params().BitSize + 7) / 8
+	if pub.X.Sign() < 0 || pub.Y.Sign() < 0 || pub.X.BitLen() > byteLen*8 || pub.Y.BitLen() > byteLen*8 {
+		return false
+	}
+	encoded := make([]byte, 1+2*byteLen)
+	encoded[0] = 4
+	pub.X.FillBytes(encoded[1 : 1+byteLen])
+	pub.Y.FillBytes(encoded[1+byteLen:])
+	_, err := ecdh.P256().NewPublicKey(encoded)
+	return err == nil
+}
+
+func isECDSAP256Curve(curve elliptic.Curve) bool {
+	if curve == nil {
+		return false
+	}
+	params := curve.Params()
+	want := elliptic.P256().Params()
+	return params != nil &&
+		params.Name == want.Name &&
+		params.BitSize == want.BitSize &&
+		sameBigInt(params.P, want.P) &&
+		sameBigInt(params.N, want.N) &&
+		sameBigInt(params.B, want.B) &&
+		sameBigInt(params.Gx, want.Gx) &&
+		sameBigInt(params.Gy, want.Gy)
+}
+
+func sameBigInt(a, b *big.Int) bool {
+	return a != nil && b != nil && a.Cmp(b) == 0
 }
 
 func publicKeyHash(key crypto.PublicKey) uint32 {

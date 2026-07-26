@@ -138,6 +138,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "SSRFDNSRebind"
 	case blockreason.PathEntropy:
 		return "PathEntropy"
+	case blockreason.BodyEntropy:
+		return "BodyEntropy"
 	case blockreason.SubdomainEntropy:
 		return "SubdomainEntropy"
 	case blockreason.URLLength:

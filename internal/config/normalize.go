@@ -78,6 +78,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ResponseScanning.Enabled = true
 		cfg.RequestBodyScanning.Enabled = true
 		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.ContentEntropyEnabled = true
 		cfg.GitProtection.PrePushScan = true
 		cfg.Logging.IncludeAllowed = true
 		cfg.Logging.IncludeBlocked = true
@@ -115,6 +116,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	reqBody, _ := raw["request_body_scanning"].(map[string]interface{})
 	setBoolDefault(reqBody, "enabled", &cfg.RequestBodyScanning.Enabled)
 	setBoolDefault(reqBody, "scan_headers", &cfg.RequestBodyScanning.ScanHeaders)
+	setBoolDefault(reqBody, "content_entropy_enabled", &cfg.RequestBodyScanning.ContentEntropyEnabled)
 
 	git, _ := raw["git_protection"].(map[string]interface{})
 	setBoolDefault(git, "pre_push_scan", &cfg.GitProtection.PrePushScan)
@@ -584,12 +586,23 @@ func (c *Config) ApplyDefaults() {
 	}
 
 	// Request body scanning defaults
+	if c.RequestBodyScanning.MaxBodyBytes == 0 {
+		c.RequestBodyScanning.MaxBodyBytes = 5 * 1024 * 1024 // 5MB default
+	}
+	if c.RequestBodyScanning.Enabled || c.RequestBodyScanning.ContentEntropyEnabled {
+		if c.RequestBodyScanning.ContentEntropyAction == "" {
+			c.RequestBodyScanning.ContentEntropyAction = ActionWarn
+		}
+		if c.RequestBodyScanning.ContentEntropyThreshold <= 0 {
+			c.RequestBodyScanning.ContentEntropyThreshold = 4.5
+		}
+		if c.RequestBodyScanning.ContentEntropyMinLength <= 0 {
+			c.RequestBodyScanning.ContentEntropyMinLength = 32
+		}
+	}
 	if c.RequestBodyScanning.Enabled {
 		if c.RequestBodyScanning.Action == "" {
 			c.RequestBodyScanning.Action = ActionWarn
-		}
-		if c.RequestBodyScanning.MaxBodyBytes == 0 {
-			c.RequestBodyScanning.MaxBodyBytes = 5 * 1024 * 1024 // 5MB default
 		}
 		// ScanHeaders defaults to true when omitted or null in YAML; the
 		// bool-to-true coercion happens in applySecurityDefaults via

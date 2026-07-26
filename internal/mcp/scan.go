@@ -564,6 +564,11 @@ func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanV
 			PatternName: d.PatternName,
 		})
 	}
+	if result.EntropyFinding != nil {
+		matches = append(matches, scanner.ResponseMatch{
+			PatternName: scanner.AuditBodyEntropy,
+		})
+	}
 
 	return jsonrpc.ScanVerdict{
 		ID:      rpcID,

@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -37,8 +38,13 @@ type A2AScanResult struct {
 	URLFindings    []scanner.Result        // SSRF/URL scanner findings
 	DLPFindings    []scanner.TextDLPMatch  // DLP pattern matches
 	InjectFindings []scanner.ResponseMatch // injection pattern matches
+	EntropyFinding *contententropy.Finding // opaque high-entropy string leaf
 	BudgetExceeded bool                    // true if walker hit node budget
 }
+
+// A2AContentEntropyOptions carries the request-body entropy policy into A2A
+// scans when the caller has a concrete upstream destination host.
+type A2AContentEntropyOptions = contententropy.Options
 
 // rollingTailSize is the number of bytes kept across SSE events for
 // cross-event scanning. A2A and generic SSE use it for response injection and
@@ -49,11 +55,11 @@ const rollingTailSize = 4096
 // Classifies JSON leaves by field name, routes URLs through SSRF scanner,
 // text/opaque through injection + DLP. Falls back to raw DLP for split-secret
 // detection when the walker completes within budget.
-func ScanA2ARequestBody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning) A2AScanResult {
+func ScanA2ARequestBody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning, entropyOpts ...A2AContentEntropyOptions) A2AScanResult {
 	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
 	}
-	return scanA2ABody(ctx, body, sc, cfg)
+	return scanA2ABody(ctx, body, sc, cfg, firstA2AContentEntropyOptions(entropyOpts))
 }
 
 // ScanA2AResponseBody runs field-aware scanning on an A2A response body.
@@ -61,13 +67,17 @@ func ScanA2AResponseBody(ctx context.Context, body []byte, sc *scanner.Scanner, 
 	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
 	}
-	return scanA2ABody(ctx, body, sc, cfg)
+	return scanA2ABody(ctx, body, sc, cfg, nil)
 }
 
 // scanA2ABody is the shared implementation for request and response scanning.
-func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning) A2AScanResult {
+func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning, entropyOpts *A2AContentEntropyOptions) A2AScanResult {
 	result := A2AScanResult{Clean: true}
 	budgetExceeded := false
+	var entropyTexts []string
+	var entropyKeys []string
+	action := ""
+	defaultFindingAction := a2aDefaultAction(cfg)
 
 	// Reject unparseable JSON and duplicate JSON object keys before WalkA2AJSON
 	// decodes the body into a map[string]interface{}, which silently keeps only
@@ -119,16 +129,22 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				result.Clean = false
 				result.URLFindings = append(result.URLFindings, urlResult)
 				if scanner.IsHostnameExfilResult(urlResult) {
-					result.Action = config.ActionBlock
+					action = config.StrongestAction(action, config.ActionBlock)
+				} else {
+					action = config.StrongestAction(action, defaultFindingAction)
 				}
 			}
 
 		case FieldText, FieldOpaque:
+			if entropyOpts != nil {
+				entropyTexts = append(entropyTexts, value)
+			}
 			// Injection scanning
 			injectResult := sc.ScanResponse(ctx, value)
 			if !injectResult.Clean {
 				result.Clean = false
 				result.InjectFindings = append(result.InjectFindings, injectResult.Matches...)
+				action = config.StrongestAction(action, defaultFindingAction)
 			}
 			// DLP scanning
 			dlpResult := sc.ScanTextForDLP(ctx, value)
@@ -136,40 +152,61 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
 				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
-					result.Action = config.ActionBlock
+					action = config.StrongestAction(action, config.ActionBlock)
+				} else {
+					action = config.StrongestAction(action, defaultFindingAction)
 				}
 			}
 
 		case FieldSecret:
+			if entropyOpts != nil {
+				entropyTexts = append(entropyTexts, value)
+			}
 			dlpResult := sc.ScanTextForDLP(ctx, value)
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
 				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
-					result.Action = config.ActionBlock
+					action = config.StrongestAction(action, config.ActionBlock)
+				} else {
+					action = config.StrongestAction(action, defaultFindingAction)
 				}
+			}
+
+		case FieldKeyEntropy:
+			if entropyOpts != nil {
+				entropyKeys = append(entropyKeys, value)
 			}
 		}
 	})
 
-	// Budget exceeded: use configured action, skip raw fallback.
-	// Operators who set action=warn get a warning, not a silent override to block.
+	if entropyOpts != nil {
+		if finding := contententropy.ScanTexts(entropyTexts, *entropyOpts); finding != nil && result.EntropyFinding == nil {
+			result.Clean = false
+			result.EntropyFinding = finding
+			action = config.StrongestAction(action, entropyOpts.Action)
+		}
+		if !budgetExceeded {
+			if finding := contententropy.ScanTexts(entropyKeys, *entropyOpts); finding != nil && result.EntropyFinding == nil {
+				result.Clean = false
+				result.EntropyFinding = finding
+				action = config.StrongestAction(action, entropyOpts.Action)
+			}
+		}
+	}
+
+	// Budget exceeded participates in the same strongest-action resolution as
+	// scanner findings, then skips raw fallback because the payload is too wide
+	// for another complete pass.
 	if budgetExceeded {
-		action := cfg.Action
-		if action == "" {
-			action = config.ActionWarn
-		}
-		return A2AScanResult{
-			Clean:          false,
-			Action:         action,
-			Reason:         "a2a: payload exceeded node budget",
-			BudgetExceeded: true,
-		}
+		result.Clean = false
+		result.BudgetExceeded = true
+		action = config.StrongestAction(action, defaultFindingAction)
 	}
 
 	// Pass 2: raw DLP fallback for split-secret detection.
 	// Only runs when walker completed within budget.
-	if result.Clean {
+	if result.Clean && !budgetExceeded {
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
@@ -186,20 +223,37 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
 				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
-					result.Action = config.ActionBlock
+					action = config.StrongestAction(action, config.ActionBlock)
+				} else {
+					action = config.StrongestAction(action, defaultFindingAction)
 				}
 			}
 		}
 	}
 
 	if !result.Clean {
+		result.Action = action
 		if result.Action == "" {
-			result.Action = cfg.Action
+			result.Action = defaultFindingAction
 		}
 		result.Reason = buildA2AReason(result)
 	}
 
 	return result
+}
+
+func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentEntropyOptions {
+	if len(opts) == 0 {
+		return nil
+	}
+	return &opts[0]
+}
+
+func a2aDefaultAction(cfg *config.A2AScanning) string {
+	if cfg == nil || cfg.Action == "" {
+		return config.ActionWarn
+	}
+	return cfg.Action
 }
 
 // ScanA2AHeaders scans A2A service parameter headers.
@@ -382,7 +436,7 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	if err := json.Unmarshal(body, &card); err != nil {
 		// Unparseable card: fail closed for card-specific checks,
 		// but still run generic field scanning.
-		findings := scanA2ABody(ctx, body, sc, cfg)
+		findings := scanA2ABody(ctx, body, sc, cfg, nil)
 		unparseable := AgentCardScanResult{
 			Clean:    findings.Clean,
 			Action:   findings.Action,
@@ -401,7 +455,7 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 
 	// Card content scanning via field walker.
 	if cfg.ScanAgentCards {
-		result.Findings = scanA2ABody(ctx, body, sc, cfg)
+		result.Findings = scanA2ABody(ctx, body, sc, cfg, nil)
 		if !result.Findings.Clean {
 			result.Clean = false
 			result.Action = result.Findings.Action
@@ -663,7 +717,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		}
 
 		// Field-walk the event data payload.
-		eventResult := scanA2ABody(ctx, event, sc, cfg)
+		eventResult := scanA2ABody(ctx, event, sc, cfg, nil)
 		if !eventResult.Clean {
 			return fmt.Errorf("%w: %s", ErrA2AStreamFinding, eventResult.Reason)
 		}
@@ -860,6 +914,12 @@ func buildA2AReason(result A2AScanResult) string {
 			names = append(names, m.PatternName)
 		}
 		parts = append(parts, "DLP: "+strings.Join(names, ", "))
+	}
+	if result.EntropyFinding != nil {
+		parts = append(parts, contententropy.Reason(result.EntropyFinding))
+	}
+	if result.BudgetExceeded {
+		parts = append(parts, "payload exceeded node budget")
 	}
 	if len(parts) == 0 {
 		return "a2a: finding detected"

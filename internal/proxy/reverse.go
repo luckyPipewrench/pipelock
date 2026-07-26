@@ -1146,6 +1146,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:  cfg.RequestBodyScanning.PatternActions,
 	}
+	applyContentEntropyConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 
@@ -1219,6 +1220,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if reason == "" && len(patternNames) > 0 {
 		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
 	}
+	if reason == "" && result.EntropyFinding != nil {
+		reason = contentEntropyReason(result.EntropyFinding)
+	}
 	if reason == "" {
 		reason = "request body contains secret patterns"
 	}
@@ -1232,6 +1236,10 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if len(patternNames) > 0 {
 		rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil)
 	}
+	if result.EntropyFinding != nil {
+		rp.metrics.RecordBodyEntropy(action, "")
+		rp.logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(result.EntropyFinding)})
+	}
 
 	// Fail-closed transport errors (consumed-but-unreplayable body) and
 	// redaction gate failures must block regardless of enforce mode.
@@ -1240,12 +1248,16 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		layer = scannerLabelRedaction
 	} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
 		layer = scannerLabelBodyPromptInjection
+	} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
+		layer = scannerLabelBodyEntropy
 	}
 	bodyBlockReason := blockreason.DLPMatch
 	if result.RedactionBlockReason != "" {
 		bodyBlockReason = blockreason.RedactionFailure
 	} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
 		bodyBlockReason = blockreason.PromptInjection
+	} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
+		bodyBlockReason = blockreason.BodyEntropy
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")

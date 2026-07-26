@@ -354,6 +354,49 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		}
 	}
 
+	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ContentEntropyEnabled {
+		for _, domain := range cfg.RequestBodyScanning.ContentEntropyExclusions {
+			detail := "request_body_scanning.content_entropy_exclusions is set but request_body_scanning.enabled=false; this body/frame entropy exemption is inert"
+			next := "enable request_body_scanning and request_body_scanning.content_entropy_enabled to make the exemption effective, or remove the content_entropy_exclusions entry"
+			if cfg.RequestBodyScanning.Enabled {
+				detail = "request_body_scanning.content_entropy_exclusions is set but request_body_scanning.content_entropy_enabled=false; this body/frame entropy exemption is inert"
+				next = "enable request_body_scanning.content_entropy_enabled to make the exemption effective, or remove the content_entropy_exclusions entry"
+			}
+			findings = append(findings, newConfigSemanticFinding(
+				ConfigSemanticKindInert,
+				ConfigScopeBodyEntropyExclusions,
+				domain,
+				detail,
+				next,
+			))
+		}
+	}
+	wsTextScanEnabled := cfg.WebSocketProxy.ScanTextFrames == nil || *cfg.WebSocketProxy.ScanTextFrames
+	if !cfg.WebSocketProxy.Enabled || !wsTextScanEnabled || !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ContentEntropyEnabled {
+		for _, domain := range cfg.WebSocketProxy.ContentEntropyExclusions {
+			detail := "websocket_proxy.content_entropy_exclusions is set but websocket_proxy.enabled=false; this WebSocket entropy exemption is inert"
+			next := "enable websocket_proxy, websocket_proxy.scan_text_frames, request_body_scanning, and request_body_scanning.content_entropy_enabled to make the exemption effective, or remove the content_entropy_exclusions entry"
+			switch {
+			case cfg.WebSocketProxy.Enabled && !wsTextScanEnabled:
+				detail = "websocket_proxy.content_entropy_exclusions is set but websocket_proxy.scan_text_frames=false; this WebSocket entropy exemption is inert"
+				next = "enable websocket_proxy.scan_text_frames to make the exemption effective, or remove the content_entropy_exclusions entry"
+			case cfg.WebSocketProxy.Enabled && !cfg.RequestBodyScanning.Enabled:
+				detail = "websocket_proxy.content_entropy_exclusions is set but request_body_scanning.enabled=false; WebSocket text-frame body scanning is inactive"
+				next = "enable request_body_scanning to make the exemption effective, or remove the content_entropy_exclusions entry"
+			case cfg.WebSocketProxy.Enabled && cfg.RequestBodyScanning.Enabled && !cfg.RequestBodyScanning.ContentEntropyEnabled:
+				detail = "websocket_proxy.content_entropy_exclusions is set but request_body_scanning.content_entropy_enabled=false; this WebSocket entropy exemption is inert"
+				next = "enable request_body_scanning.content_entropy_enabled to make the exemption effective, or remove the content_entropy_exclusions entry"
+			}
+			findings = append(findings, newConfigSemanticFinding(
+				ConfigSemanticKindInert,
+				ConfigScopeWSEntropyExclusions,
+				domain,
+				detail,
+				next,
+			))
+		}
+	}
+
 	browserShieldDefaultExemptDomains := configDefaults().BrowserShield.ExemptDomains
 	for _, domain := range operatorAddedStrings(cfg.BrowserShield.ExemptDomains, browserShieldDefaultExemptDomains) {
 		if cfg.BrowserShield.Enabled {

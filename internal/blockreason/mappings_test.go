@@ -22,6 +22,7 @@ func TestSeverityFor_FullVocabulary(t *testing.T) {
 		// warn
 		blockreason.SchemeBlocked:         blockreason.SeverityWarn,
 		blockreason.PathEntropy:           blockreason.SeverityWarn,
+		blockreason.BodyEntropy:           blockreason.SeverityWarn,
 		blockreason.SubdomainEntropy:      blockreason.SeverityWarn,
 		blockreason.URLLength:             blockreason.SeverityWarn,
 		blockreason.RateLimit:             blockreason.SeverityWarn,
@@ -85,6 +86,7 @@ func TestRetryFor_FullVocabulary(t *testing.T) {
 		// policy
 		blockreason.DomainBlocklist:       blockreason.RetryPolicy,
 		blockreason.PathEntropy:           blockreason.RetryPolicy,
+		blockreason.BodyEntropy:           blockreason.RetryPolicy,
 		blockreason.SubdomainEntropy:      blockreason.RetryPolicy,
 		blockreason.URLLength:             blockreason.RetryPolicy,
 		blockreason.DataBudget:            blockreason.RetryPolicy,

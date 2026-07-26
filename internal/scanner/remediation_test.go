@@ -32,6 +32,7 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		ScannerCoreSSRF,
 		ScannerCoreResponse,
 		ScannerBodyDLP,
+		AuditBodyEntropy,
 		ScannerDenialOfWallet,
 		AuditResponseScan,
 		AuditHeaderDLP,

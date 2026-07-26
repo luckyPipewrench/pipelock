@@ -28,6 +28,10 @@ const (
 	// FieldOpaque routes through scanner.ScanResponse() (injection) + ScanTextForDLP().
 	// Same scanners as FieldText but lower classification confidence.
 	FieldOpaque
+	// FieldKeyEntropy emits JSON object keys for content-entropy scanning only.
+	// The A2A scanner intentionally does not run prompt-injection or DLP on
+	// every structural key, but opaque data can be hidden in keys.
+	FieldKeyEntropy
 	// FieldBudgetExceeded signals the walker hit its node budget. Caller should
 	// fail closed - the payload is too wide for classified scanning.
 	FieldBudgetExceeded
@@ -221,6 +225,9 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 			}
 
 			// Emit the key itself as a leaf - keys can be URLs or secrets.
+			// Also emit every key to the entropy-only class so A2A content
+			// entropy covers key surfaces without a second JSON parse.
+			emit(childPath+"@key", k, FieldKeyEntropy)
 			keyClass := classifyKeyAsLeaf(k)
 			if keyClass >= 0 {
 				emit(childPath+"@key", k, keyClass)

@@ -62,6 +62,7 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 
 		// Request body/header DLP
 		{"body_dlp", "T1048"},
+		{"body_entropy", "T1048"},
 		{"body_prompt_injection", "T1059"},
 		{"header_dlp", "T1048"},
 
@@ -147,7 +148,7 @@ func TestTechniqueMap_NoDuplicateKeys(t *testing.T) {
 	// This test is a compile-time guarantee in Go (duplicate map keys are a
 	// compile error), but we verify the map has the expected number of entries
 	// to catch accidental deletions during refactoring.
-	const expectedEntries = 35
+	const expectedEntries = 36
 	if len(techniqueMap) != expectedEntries {
 		t.Errorf("techniqueMap has %d entries, expected %d (was an entry added or removed?)", len(techniqueMap), expectedEntries)
 	}

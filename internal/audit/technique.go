@@ -58,6 +58,7 @@ var techniqueMap = map[string]string{
 
 	// Request body/header DLP (forward proxy + TLS interception)
 	"body_dlp":              "T1048", // Exfiltration Over Alternative Protocol
+	"body_entropy":          "T1048", // Opaque body/frame content exfiltration
 	"body_prompt_injection": "T1059", // Command and Scripting Interpreter
 	"header_dlp":            "T1048", // Exfiltration via HTTP headers
 

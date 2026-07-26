@@ -160,8 +160,10 @@ func TestWalkA2AJSON_DepthLimit(t *testing.T) {
 		nested = `{"a":` + nested + `}`
 	}
 	var count int
-	WalkA2AJSON(json.RawMessage(nested), func(_, _ string, _ FieldClass) {
-		count++
+	WalkA2AJSON(json.RawMessage(nested), func(_, _ string, class FieldClass) {
+		if class != FieldKeyEntropy {
+			count++
+		}
 	})
 	// The leaf string sits at depth 25 which exceeds maxWalkDepth=20, so the
 	// emit callback should never fire (keys named "a" are not classified).
@@ -215,7 +217,7 @@ func TestWalkA2AJSON_SortedKeyOrder(t *testing.T) {
 	data := `{"z":"last","a":"first","m":"middle"}`
 	var order []string
 	WalkA2AJSON(json.RawMessage(data), func(path, value string, class FieldClass) {
-		if value != "" {
+		if value != "" && class != FieldKeyEntropy {
 			order = append(order, value)
 		}
 	})

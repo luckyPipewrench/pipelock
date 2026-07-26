@@ -1059,3 +1059,62 @@ func TestDashboardOIDCAudienceAlias(t *testing.T) {
 		t.Fatalf("client-id alias = %q", got)
 	}
 }
+
+// TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions guards the
+// serve-path composition: an OIDC principal must receive exactly the permissions
+// its mapped role grants. Deriving the permission authorizer from the
+// metadata/raw booleans alone granted every metadata-tier permission to any
+// authenticated principal, ignoring the role map entirely.
+func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	authorization := newDashboardRequestAuthorization("", "", auth)
+	// Drive the same helper the serve path installs, so a regression in WHICH
+	// authorization callbacks reach the composer fails here instead of passing
+	// because the test rebuilt the wiring itself.
+	metaAuthorized, authorizePermission, rawAuthorized := dashboardServeAuthorizers(nil, authorization)
+	var audit strings.Builder
+	inner := dashboard.New(dashboard.Options{
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          func(string) bool { return true },
+		Authorize:           dashboardAuthorizeFunc(metaAuthorized),
+		AuthorizePermission: authorizePermission,
+		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
+		AuditWriter:         &audit,
+	})
+	handler := auth.middleware(dashboardAuthHandler(metaAuthorized, authorization.authAuditInfo, &audit, inner))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, requestWithBearer(t, p.token(t, p.validClaims(now))))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mapped evidence status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if strings.Contains(audit.String(), "permission=\"dashboard:exemptions:read\"") {
+		t.Fatalf("evidence route unexpectedly audited exemptions permission: %s", audit.String())
+	}
+
+	req := requestWithBearer(t, p.token(t, p.validClaims(now)))
+	req.URL.Path = "/exemptions"
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("unmapped exemptions status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	log := audit.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"permission=\"dashboard:exemptions:read\"",
+		"auth_method=oidc",
+		"auth_subject=\"operator-a\"",
+		"auth_roles=\"evidence-reader\"",
+		"reason=permission_denied",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("permission-denied audit missing %q: %s", want, log)
+		}
+	}
+	if rawAuthorized(req) {
+		t.Fatal("mapped OIDC principal unexpectedly received raw permission")
+	}
+}

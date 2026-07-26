@@ -459,6 +459,10 @@ func TestDashboardClientCertAuthorizers_VerifiedChainCannotFallThroughToRawToken
 	_, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
 		authorizer,
 		func(*http.Request) bool { return true },
+		func(*http.Request, dashboard.Permission) error {
+			t.Fatal("mTLS route permission fell through to token authorizer")
+			return nil
+		},
 		func(*http.Request) bool { return true },
 	)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
@@ -492,6 +496,10 @@ func TestDashboardClientCertAuthorizers_NoTokenFallbackWhenMTLSEnabled(t *testin
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
 		authorizer,
 		func(*http.Request) bool { return true },
+		func(*http.Request, dashboard.Permission) error {
+			t.Fatal("mTLS route permission fell through to token authorizer")
+			return nil
+		},
 		func(*http.Request) bool { return true },
 	)
 	// A request carrying a matching operator token but NO client certificate:
@@ -508,6 +516,101 @@ func TestDashboardClientCertAuthorizers_NoTokenFallbackWhenMTLSEnabled(t *testin
 	}
 	if err := authorizePermission(req, dashboard.PermissionEvidenceRead); err == nil {
 		t.Fatal("mTLS mode granted route permission to a certificate-less request via token fallback")
+	}
+}
+
+func TestDashboardClientCertAuthorizers_TokenOnlyPermissionBehavior(t *testing.T) {
+	reqWithBearer := func(token string) *http.Request {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		return req
+	}
+
+	tests := []struct {
+		name         string
+		metadata     string
+		raw          string
+		token        string
+		wantMeta     bool
+		wantRaw      bool
+		wantEvidence bool
+		wantRawPerm  bool
+		wantTrust    bool
+	}{
+		{
+			name:         "metadata token grants metadata route permissions only",
+			metadata:     dashTestToken,
+			raw:          "raw-token",
+			token:        dashTestToken,
+			wantMeta:     true,
+			wantEvidence: true,
+		},
+		{
+			name:         "raw token grants metadata and raw permissions",
+			metadata:     dashTestToken,
+			raw:          "raw-token",
+			token:        "raw-token",
+			wantMeta:     true,
+			wantRaw:      true,
+			wantEvidence: true,
+			wantRawPerm:  true,
+			wantTrust:    true,
+		},
+		{
+			name:         "raw-only deployment still treats raw token as metadata-capable",
+			raw:          "raw-token",
+			token:        "raw-token",
+			wantMeta:     true,
+			wantRaw:      true,
+			wantEvidence: true,
+			wantRawPerm:  true,
+			wantTrust:    true,
+		},
+		{
+			name:     "unmatched token denied",
+			metadata: dashTestToken,
+			raw:      "raw-token",
+			token:    "wrong-token",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			authorization := newDashboardRequestAuthorization(tc.metadata, tc.raw, nil)
+			metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
+				nil, authorization.metaAuthorized, authorization.authorizePermission, authorization.rawAuthorized,
+			)
+			req := reqWithBearer(tc.token)
+			if got := metaAuthorized(req); got != tc.wantMeta {
+				t.Fatalf("metaAuthorized = %v, want %v", got, tc.wantMeta)
+			}
+			if got := rawAuthorized(req); got != tc.wantRaw {
+				t.Fatalf("rawAuthorized = %v, want %v", got, tc.wantRaw)
+			}
+			if got := authorizePermission(req, dashboard.PermissionEvidenceRead) == nil; got != tc.wantEvidence {
+				t.Fatalf("evidence permission = %v, want %v", got, tc.wantEvidence)
+			}
+			if got := authorizePermission(req, dashboard.PermissionRawRead) == nil; got != tc.wantRawPerm {
+				t.Fatalf("raw permission = %v, want %v", got, tc.wantRawPerm)
+			}
+			if got := authorizePermission(req, dashboard.PermissionTrustKeysRead) == nil; got != tc.wantTrust {
+				t.Fatalf("trust keys permission = %v, want %v", got, tc.wantTrust)
+			}
+		})
+	}
+}
+
+func TestDashboardClientCertAuthorizers_MissingTokenPermissionAuthorizerFailsClosed(t *testing.T) {
+	_, authorizePermission, _ := dashboardClientCertAuthorizers(
+		nil,
+		func(*http.Request) bool { return true },
+		nil,
+		func(*http.Request) bool { return true },
+	)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
+	if err := authorizePermission(req, dashboard.PermissionEvidenceRead); err == nil ||
+		!strings.Contains(err.Error(), "permission authorizer is not configured") {
+		t.Fatalf("authorizePermission error = %v, want fail-closed configuration error", err)
 	}
 }
 
@@ -536,7 +639,9 @@ func TestDashboardMTLS_RoutePermissionsAndRaw(t *testing.T) {
 	tokenMetaAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, dashTestToken) }
 	tokenRawAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, "raw-token") }
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		authorizer, tokenMetaAuthorized, tokenRawAuthorized,
+		authorizer, tokenMetaAuthorized,
+		dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized),
+		tokenRawAuthorized,
 	)
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),

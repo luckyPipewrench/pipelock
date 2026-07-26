@@ -85,6 +85,9 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 	totalDropped := 0
 	metaDir := filepath.Join(sessionsDir, metaSessionID)
 	if metaResult, metaErr := recorder.QuerySession(metaDir, metaSessionID, &recorder.QueryFilter{Type: EntryTypeCaptureDrop}); metaErr == nil {
+		if metaResult.Truncated {
+			return nil, 0, 0, "", fmt.Errorf("%w: capture metadata evidence exceeded bounded read limits", recorder.ErrEvidenceReadLimitExceeded)
+		}
 		for _, entry := range metaResult.Entries {
 			detailJSON, marshalErr := json.Marshal(entry.Detail)
 			if marshalErr != nil {
@@ -145,6 +148,10 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 			if queryErr != nil {
 				sc.Close()
 				return nil, 0, 0, "", fmt.Errorf("querying session %s/%s: %w", sessionName, sessionID, queryErr)
+			}
+			if result.Truncated {
+				sc.Close()
+				return nil, 0, 0, "", fmt.Errorf("%w: capture evidence for session %s/%s exceeded bounded read limits", recorder.ErrEvidenceReadLimitExceeded, sessionName, sessionID)
 			}
 
 			for _, entry := range result.Entries {

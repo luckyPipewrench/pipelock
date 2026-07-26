@@ -762,6 +762,77 @@ func TestLoadAndReplay(t *testing.T) {
 	}
 }
 
+func TestLoadAndReplayRejectsTruncatedCaptureEvidence(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, loadReplaySessionID)
+	rec, err := recorder.New(recorder.Config{
+		Enabled:           true,
+		Dir:               sessionDir,
+		MaxEntriesPerFile: recorder.MaxEvidenceReadEntries + 1,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	summary := CaptureSummary{
+		CaptureSchemaVersion: CaptureSchemaV1,
+		Surface:              SurfaceURL,
+		ConfigHash:           loadReplayOriginalHash,
+		EffectiveAction:      config.ActionAllow,
+		Request: CaptureRequest{
+			URL: "https://safe.example.com/page",
+		},
+	}
+	for range recorder.MaxEvidenceReadEntries + 1 {
+		if err := rec.Record(recorder.Entry{
+			SessionID: loadReplaySessionID,
+			Type:      EntryTypeCapture,
+			Summary:   "fixture",
+			Detail:    summary,
+		}); err != nil {
+			t.Fatalf("rec.Record: %v", err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("rec.Close: %v", err)
+	}
+
+	_, _, _, _, err = LoadAndReplay(config.Defaults(), dir)
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("LoadAndReplay error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
+func TestLoadAndReplayRejectsTruncatedCaptureMetadata(t *testing.T) {
+	dir := t.TempDir()
+	metaDir := filepath.Join(dir, metaSessionID)
+	rec, err := recorder.New(recorder.Config{
+		Enabled:           true,
+		Dir:               metaDir,
+		MaxEntriesPerFile: recorder.MaxEvidenceReadEntries + 1,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	for count := range recorder.MaxEvidenceReadEntries + 1 {
+		if err := rec.Record(recorder.Entry{
+			SessionID: metaSessionID,
+			Type:      EntryTypeCaptureDrop,
+			Summary:   DropSummaryCaptureOverflow,
+			Detail:    CaptureDropDetail{Count: count + 1, Reason: "backpressure"},
+		}); err != nil {
+			t.Fatalf("rec.Record: %v", err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("rec.Close: %v", err)
+	}
+
+	_, _, _, _, err = LoadAndReplay(config.Defaults(), dir)
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("LoadAndReplay error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
 func TestLoadAndReplay_ScannerConstructionFailureIsReturned(t *testing.T) {
 	dir := t.TempDir()
 	writeFixtureSession(t, dir, CaptureSummary{

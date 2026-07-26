@@ -190,9 +190,33 @@ func (a *dashboardClientCertAuthorizer) authorizeRaw(r *http.Request) error {
 	return a.authorizePermission(r, dashboard.PermissionRawRead)
 }
 
+// dashboardServeAuthorizers builds the authorizers the serve path installs. It
+// owns WHICH authorization callbacks reach the composer, which is the part that
+// regressed once: deriving route permissions from the metadata and raw booleans
+// grants every metadata-tier permission to any authenticated principal and
+// ignores its mapped role. Route permissions must come from
+// authorization.authorizePermission, which consults the principal's mapped
+// permissions before falling back to the token tier.
+func dashboardServeAuthorizers(
+	clientCertAuth *dashboardClientCertAuthorizer,
+	authorization *dashboardRequestAuthorization,
+) (
+	func(*http.Request) bool,
+	func(*http.Request, dashboard.Permission) error,
+	func(*http.Request) bool,
+) {
+	return dashboardClientCertAuthorizers(
+		clientCertAuth,
+		authorization.metaAuthorized,
+		authorization.authorizePermission,
+		authorization.rawAuthorized,
+	)
+}
+
 func dashboardClientCertAuthorizers(
 	clientCertAuth *dashboardClientCertAuthorizer,
 	tokenMetaAuthorized func(*http.Request) bool,
+	tokenAuthorizePermission func(*http.Request, dashboard.Permission) error,
 	tokenRawAuthorized func(*http.Request) bool,
 ) (
 	func(*http.Request) bool,
@@ -217,10 +241,16 @@ func dashboardClientCertAuthorizers(
 		}
 		return tokenRawAuthorized(r)
 	}
-	tokenAuthorizePermission := dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized)
+	// The caller supplies the permission authorizer so an OIDC principal's mapped
+	// role decides route permissions. Deriving it here from the metadata/raw
+	// booleans alone would grant every metadata-tier permission to any
+	// authenticated principal, ignoring the configured role map.
 	authorizePermission := func(r *http.Request, permission dashboard.Permission) error {
 		if clientCertAuth != nil {
 			return clientCertAuth.authorizePermission(r, permission)
+		}
+		if tokenAuthorizePermission == nil {
+			return errors.New("dashboard permission authorizer is not configured")
 		}
 		return tokenAuthorizePermission(r, permission)
 	}

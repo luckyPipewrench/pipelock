@@ -257,7 +257,20 @@ Example OIDC role map:
 }
 ```
 
-### License resolution
+#### Upgrade note: OIDC route permissions are now enforced
+
+Earlier releases derived dashboard route permissions from the operator-token
+tier alone, so any authenticated OIDC principal reached every metadata-tier
+view regardless of the permissions its mapped role granted. Only raw-view
+access consulted the role map. Route permissions now come from the mapped
+role, which is the behavior this page has always described.
+
+If an OIDC role map was written against the earlier behavior it may be
+narrower than the access its users actually had, and those users will lose
+views they previously reached. Before upgrading, confirm each role in
+`--oidc-role-map` lists every permission its holders need. A principal that
+reaches a view it is not mapped for is denied, and the denial names the
+missing permission in the audit log.
 
 `dashboard serve` loads `--config` only when the flag is provided, using the
 normal Pipelock config loader. The loaded config feeds the `/exemptions` view;

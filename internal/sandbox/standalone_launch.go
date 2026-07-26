@@ -142,22 +142,10 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 
 	// Accept connections from the bridge proxy in the child.
-	var proxyWg sync.WaitGroup
-	go func() {
-		for {
-			conn, err := unixLn.Accept()
-			if err != nil {
-				return // listener closed
-			}
-			proxyWg.Add(1)
-			go func() {
-				defer proxyWg.Done()
-				handleStandaloneProxyConnection(conn, standaloneProxyConnectionConfig{
-					ProxyHandler: cfg.ProxyHandler,
-				})
-			}()
-		}
-	}()
+	proxyServer := startStandaloneProxyServer(unixLn, standaloneProxyConnectionConfig{
+		ProxyHandler: cfg.ProxyHandler,
+	})
+	defer proxyServer.stop()
 
 	// Fork child in sandbox with standalone init mode.
 	selfExe, err := os.Readlink("/proc/self/exe")
@@ -239,25 +227,14 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 
 	// Strict mode: reap orphaned descendants adopted by subreaper.
-	// Best-effort: use timeout-based drain (existing behavior).
+	// Best-effort relies on process-group termination plus proxy server stop.
 	if cfg.Strict {
 		ReapOrphans()
 	}
 
-	// Close listener to prevent new connections.
-	_ = unixLn.Close()
-
-	// Wait for proxy goroutines to drain.
-	const proxyDrainTimeout = 5 * time.Second
-	done := make(chan struct{})
-	go func() {
-		proxyWg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(proxyDrainTimeout):
-	}
+	// Stop accepting, close active bridge connections, and join the accept
+	// loop plus all proxy handlers before sandbox directory cleanup.
+	proxyServer.stop()
 
 	// Clean up child's sandbox temp dir.
 	if cmd.Process != nil {
@@ -265,6 +242,107 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 
 	return waitErr
+}
+
+type standaloneProxyServer struct {
+	ln   net.Listener
+	cfg  standaloneProxyConnectionConfig
+	once sync.Once
+
+	mu       sync.Mutex
+	stopping bool
+	conns    map[net.Conn]struct{}
+	wg       sync.WaitGroup
+}
+
+const standaloneProxyDrainTimeout = 5 * time.Second
+
+func startStandaloneProxyServer(ln net.Listener, cfg standaloneProxyConnectionConfig) *standaloneProxyServer {
+	s := &standaloneProxyServer{
+		ln:    ln,
+		cfg:   cfg,
+		conns: make(map[net.Conn]struct{}),
+	}
+	s.wg.Add(1)
+	go s.acceptLoop()
+	return s
+}
+
+func (s *standaloneProxyServer) acceptLoop() {
+	defer s.wg.Done()
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		if !s.trackConn(conn) {
+			_ = conn.Close()
+			continue
+		}
+		go s.handleConn(conn)
+	}
+}
+
+func (s *standaloneProxyServer) trackConn(conn net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopping {
+		return false
+	}
+	s.conns[conn] = struct{}{}
+	s.wg.Add(1)
+	return true
+}
+
+func (s *standaloneProxyServer) handleConn(conn net.Conn) {
+	defer s.wg.Done()
+	defer s.untrackConn(conn)
+	handleStandaloneProxyConnection(conn, s.cfg)
+}
+
+func (s *standaloneProxyServer) untrackConn(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, conn)
+}
+
+func (s *standaloneProxyServer) stop() {
+	_ = s.stopWithin(standaloneProxyDrainTimeout)
+}
+
+// stopWithin performs shutdown once and reports whether that first shutdown
+// drained active handlers before timeout. Subsequent calls are no-ops and return
+// false regardless of the first shutdown's drain outcome.
+func (s *standaloneProxyServer) stopWithin(timeout time.Duration) bool {
+	stopped := false
+	s.once.Do(func() {
+		s.mu.Lock()
+		s.stopping = true
+		_ = s.ln.Close()
+		for conn := range s.conns {
+			_ = conn.Close()
+		}
+		s.mu.Unlock()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			s.wg.Wait()
+		}()
+		if timeout <= 0 {
+			<-done
+			stopped = true
+			return
+		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+			stopped = true
+		case <-timer.C:
+		}
+	})
+	return stopped
 }
 
 // handleStandaloneProxyConnection dispatches a bridge connection to the

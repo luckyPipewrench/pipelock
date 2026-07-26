@@ -532,11 +532,8 @@ func parseDashboardRSAJWK(jwk dashboardJWK) (*rsa.PublicKey, bool, error) {
 	}
 	n := new(big.Int).SetBytes(nBytes)
 	eBig := new(big.Int).SetBytes(eBytes)
-	if n.BitLen() < 2048 {
-		return nil, false, fmt.Errorf("OIDC JWK %q RSA modulus is smaller than 2048 bits", jwk.KeyID)
-	}
-	if n.BitLen() > dashboardOIDCRSAMaxBits {
-		return nil, false, fmt.Errorf("OIDC JWK %q RSA modulus is %d bits; maximum is %d", jwk.KeyID, n.BitLen(), dashboardOIDCRSAMaxBits)
+	if err := validateRSAModulusBits(n, dashboardTrustedRSAMinBits, dashboardOIDCRSAMaxBits); err != nil {
+		return nil, false, fmt.Errorf("OIDC JWK %q RSA modulus: %w", jwk.KeyID, err)
 	}
 	if !eBig.IsInt64() {
 		return nil, false, fmt.Errorf("OIDC JWK %q exponent is out of range", jwk.KeyID)

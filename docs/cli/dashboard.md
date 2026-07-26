@@ -152,9 +152,10 @@ renewed with the same key. Role permissions must come from the dashboard's
 bounded permission vocabulary. Grant `dashboard:raw:read` only to roles that
 may view raw destinations and signed payloads.
 
-Client certificates with RSA public keys larger than 8192 bits are rejected
-after normal TLS verification and before the request reaches dashboard route
-authorization. EC and Ed25519 client certificates are unaffected.
+Client certificates with RSA public keys smaller than 2048 bits or larger than
+8192 bits are rejected after normal TLS verification and before the request
+reaches dashboard route authorization. EC and Ed25519 client certificates are
+unaffected.
 
 <!-- dashboard-mtls-role-map-start -->
 ```yaml

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,8 @@ import (
 const (
 	dashboardClientCertRoleMapMaxBytes = 1 << 20
 	dashboardClientCAMaxBytes          = 1 << 20
-	dashboardClientCertRSAMinBits      = 2048
+	dashboardTrustedRSAMinBits         = 2048
+	dashboardClientCertRSAMinBits      = dashboardTrustedRSAMinBits
 	dashboardClientCertRSAMaxBits      = 8192
 )
 
@@ -343,12 +345,23 @@ func verifyDashboardClientCertificateKeySizes(state tls.ConnectionState) error {
 		if !ok {
 			continue
 		}
-		if key.N.BitLen() > dashboardClientCertRSAMaxBits {
-			return fmt.Errorf("dashboard client certificate RSA modulus is %d bits; maximum is %d", key.N.BitLen(), dashboardClientCertRSAMaxBits)
+		if err := validateRSAModulusBits(key.N, dashboardClientCertRSAMinBits, dashboardClientCertRSAMaxBits); err != nil {
+			return fmt.Errorf("dashboard client certificate RSA modulus: %w", err)
 		}
-		if key.N.BitLen() < dashboardClientCertRSAMinBits {
-			return fmt.Errorf("dashboard client certificate RSA modulus is %d bits; minimum is %d", key.N.BitLen(), dashboardClientCertRSAMinBits)
-		}
+	}
+	return nil
+}
+
+func validateRSAModulusBits(n *big.Int, minBits, maxBits int) error {
+	if n == nil {
+		return errors.New("missing modulus")
+	}
+	bits := n.BitLen()
+	if bits < minBits {
+		return fmt.Errorf("is %d bits; minimum is %d", bits, minBits)
+	}
+	if bits > maxBits {
+		return fmt.Errorf("is %d bits; maximum is %d", bits, maxBits)
 	}
 	return nil
 }

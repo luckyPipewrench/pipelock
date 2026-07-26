@@ -298,9 +298,10 @@ func TestNewHealthTrackingProviderNilHealthReturnsInner(t *testing.T) {
 }
 
 func TestProviderHealthConcurrentAccessRace(t *testing.T) {
+	var log bytes.Buffer
 	health := NewProviderHealth(func() time.Time {
 		return time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
-	}, nil)
+	}, &log)
 
 	var wg sync.WaitGroup
 	for range 8 {

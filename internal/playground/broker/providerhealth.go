@@ -73,7 +73,9 @@ type ProviderHealth struct {
 	now func() time.Time
 	log io.Writer
 
-	mu                  sync.Mutex
+	mu    sync.Mutex
+	logMu sync.Mutex
+
 	consecutiveFailures int
 	lastErr             string
 	lastErrAt           time.Time
@@ -180,7 +182,7 @@ func (h *ProviderHealth) recordFailure(err error, provisioning bool) {
 	}
 	h.mu.Unlock()
 	if announce {
-		_, _ = fmt.Fprintf(h.log,
+		h.writeLog(
 			"provider: FAILING after %d consecutive errors; broker cannot create sandboxes\n",
 			failures)
 	}
@@ -188,7 +190,13 @@ func (h *ProviderHealth) recordFailure(err error, provisioning bool) {
 
 // logRecovered emits the shared recovery transition after the state lock is released.
 func (h *ProviderHealth) logRecovered() {
-	_, _ = fmt.Fprint(h.log, "provider: recovered; machine provider reachable again\n")
+	h.writeLog("provider: recovered; machine provider reachable again\n")
+}
+
+func (h *ProviderHealth) writeLog(format string, args ...any) {
+	h.logMu.Lock()
+	defer h.logMu.Unlock()
+	_, _ = fmt.Fprintf(h.log, format, args...)
 }
 
 // BackoffActive reports whether the caller should skip this round of background

@@ -5,6 +5,9 @@ package evidenceview
 
 import (
 	"bytes"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +84,10 @@ func TestRenderSingleAgentHTML_DecisionDetailRespectsFieldApplicability(t *testi
 		wantFields      []string
 		wantAbsentField string
 		notWantFields   []string
+		// wantExactFields asserts wantFields is the COMPLETE rendered set, so a
+		// field newly excluded from the lifecycle list cannot silently escape
+		// coverage by being absent from notWantFields.
+		wantExactFields bool
 	}{
 		{
 			name: "lifecycle receipt omits decision-only fields",
@@ -115,12 +122,14 @@ func TestRenderSingleAgentHTML_DecisionDetailRespectsFieldApplicability(t *testi
 				"Actor",
 				"Principal",
 			},
+			wantExactFields: true,
 			notWantFields: []string{
 				"Method",
 				"Layer",
 				"Pattern",
 				"Severity",
 				"Session Taint Level",
+				"Session Contaminated",
 				"Taint Decision",
 				"Taint Decision Reason",
 				"Recent Taint Sources",
@@ -198,6 +207,15 @@ func TestRenderSingleAgentHTML_DecisionDetailRespectsFieldApplicability(t *testi
 			if tt.wantAbsentField != "" && !hasRenderedAbsentField(html, tt.wantAbsentField) {
 				t.Fatalf("rendered HTML did not keep absent applicable field %q as not reported: %s", tt.wantAbsentField, html)
 			}
+			if tt.wantExactFields {
+				got := renderedFieldLabels(html)
+				want := append([]string(nil), tt.wantFields...)
+				sort.Strings(got)
+				sort.Strings(want)
+				if !slices.Equal(got, want) {
+					t.Fatalf("rendered field set mismatch:\n got: %v\nwant: %v", got, want)
+				}
+			}
 		})
 	}
 }
@@ -205,6 +223,19 @@ func TestRenderSingleAgentHTML_DecisionDetailRespectsFieldApplicability(t *testi
 func hasRenderedField(html, label string) bool {
 	return strings.Contains(html, `<span class="label">`+label+`:</span>`)
 }
+
+// renderedFieldLabels returns every decision-detail label the template emitted.
+// The label span appears only inside the Fields loop, so this is exactly the
+// set Fields() produced.
+func renderedFieldLabels(html string) []string {
+	var labels []string
+	for _, m := range renderedLabelRE.FindAllStringSubmatch(html, -1) {
+		labels = append(labels, m[1])
+	}
+	return labels
+}
+
+var renderedLabelRE = regexp.MustCompile(`<span class="label">([^<]+):</span>`)
 
 func hasRenderedAbsentField(html, label string) bool {
 	labelHTML := `<span class="label">` + label + `:</span>`

@@ -28,11 +28,15 @@ type QueryFilter struct {
 	HasMaxSeq bool // Distinguishes MaxSeq=0 from unset
 
 	// MaxEntriesRead is a hard ceiling on parsed recorder entries for callers
-	// that render evidence in an online UI. Zero means unbounded.
+	// that render evidence in an online UI. Zero uses the default per-file
+	// evidence ceiling.
 	MaxEntriesRead int
 	// MaxDirectoryEntries is a hard ceiling on evidence directory entries read
-	// before filtering to one session. Zero means unbounded.
+	// before filtering to one session. Zero uses the default ceiling.
 	MaxDirectoryEntries int
+	// MaxBytesRead is a hard ceiling on recorder bytes scanned before filtering.
+	// Zero uses the default per-file evidence ceiling.
+	MaxBytesRead int64
 }
 
 // QueryResult holds the results of an evidence query.
@@ -41,13 +45,14 @@ type QueryResult struct {
 	TotalFiles  int
 	FilesRead   int
 	EntriesRead int
+	BytesRead   int64
 	Truncated   bool
 }
 
 // QuerySession reads evidence files for a session and applies filters.
 func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, error) {
 	dir = filepath.Clean(dir)
-	dirEntries, err := readDirectoryEntries(dir, maxDirectoryEntries(filter))
+	dirEntries, dirTruncated, err := readDirectoryEntries(dir, maxDirectoryEntries(filter))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
@@ -70,10 +75,11 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 
 	result := &QueryResult{
 		TotalFiles: len(files),
+		Truncated:  dirTruncated,
 	}
 
 	for _, f := range files {
-		maxEntries := 0
+		maxEntries := MaxEvidenceReadEntries
 		if filter != nil && filter.MaxEntriesRead > 0 {
 			remaining := filter.MaxEntriesRead - result.EntriesRead
 			if remaining <= 0 {
@@ -82,13 +88,23 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 			}
 			maxEntries = remaining
 		}
+		maxBytes := MaxEvidenceReadFileBytes
+		if filter != nil && filter.MaxBytesRead > 0 {
+			remaining := filter.MaxBytesRead - result.BytesRead
+			if remaining <= 0 {
+				result.Truncated = true
+				break
+			}
+			maxBytes = remaining
+		}
 
-		entries, truncated, err := readEntries(f, maxEntries)
+		entries, truncated, bytesRead, err := readEntries(f, entryReadLimits{MaxEntries: maxEntries, MaxBytes: maxBytes})
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
 		}
 		result.FilesRead++
 		result.EntriesRead += len(entries)
+		result.BytesRead += bytesRead
 		if truncated {
 			result.Truncated = true
 		}
@@ -112,16 +128,35 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 
 // ListSessions returns the unique session IDs found in evidence files.
 func ListSessions(dir string) ([]string, error) {
-	return ListSessionsBounded(dir, 0)
+	return ListSessionsBounded(dir, MaxEvidenceReadDirectoryEntries)
+}
+
+type SessionListResult struct {
+	Sessions  []string
+	Truncated bool
 }
 
 // ListSessionsBounded returns unique session IDs while enforcing a hard ceiling
 // on directory entries read. Zero means unbounded.
 func ListSessionsBounded(dir string, maxEntries int) ([]string, error) {
-	dir = filepath.Clean(dir)
-	dirEntries, err := readDirectoryEntries(dir, maxEntries)
+	result, err := ListSessionsBoundedResult(dir, maxEntries)
 	if err != nil {
-		return nil, fmt.Errorf("reading evidence directory: %w", err)
+		return nil, err
+	}
+	if result.Truncated {
+		return nil, fmt.Errorf("%w: evidence directory exceeds %d entries", ErrEvidenceReadLimitExceeded, maxEntries)
+	}
+	return result.Sessions, nil
+}
+
+// ListSessionsBoundedResult returns unique session IDs and an explicit
+// truncation signal when the directory-entry ceiling is reached. Zero means
+// unbounded.
+func ListSessionsBoundedResult(dir string, maxEntries int) (SessionListResult, error) {
+	dir = filepath.Clean(dir)
+	dirEntries, truncated, err := readDirectoryEntries(dir, maxEntries)
+	if err != nil {
+		return SessionListResult{}, fmt.Errorf("reading evidence directory: %w", err)
 	}
 
 	seen := make(map[string]struct{})
@@ -144,23 +179,24 @@ func ListSessionsBounded(dir string, maxEntries int) ([]string, error) {
 		sessions = append(sessions, s)
 	}
 	sort.Strings(sessions)
-	return sessions, nil
+	return SessionListResult{Sessions: sessions, Truncated: truncated}, nil
 }
 
 func maxDirectoryEntries(filter *QueryFilter) int {
-	if filter == nil {
-		return 0
+	if filter != nil && filter.MaxDirectoryEntries > 0 {
+		return filter.MaxDirectoryEntries
 	}
-	return filter.MaxDirectoryEntries
+	return MaxEvidenceReadDirectoryEntries
 }
 
-func readDirectoryEntries(dir string, maxEntries int) ([]os.DirEntry, error) {
+func readDirectoryEntries(dir string, maxEntries int) ([]os.DirEntry, bool, error) {
 	if maxEntries <= 0 {
-		return os.ReadDir(dir)
+		entries, err := os.ReadDir(dir)
+		return entries, false, err
 	}
 	directory, err := os.Open(filepath.Clean(dir))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = directory.Close() }()
 	// maxEntries+1 would overflow to a negative value at math.MaxInt, and a
@@ -171,12 +207,12 @@ func readDirectoryEntries(dir string, maxEntries int) ([]os.DirEntry, error) {
 	}
 	entries, err := directory.ReadDir(readLimit)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+		return nil, false, err
 	}
 	if len(entries) > maxEntries {
-		return nil, fmt.Errorf("directory entry count exceeds %d", maxEntries)
+		return entries[:maxEntries], true, nil
 	}
-	return entries, nil
+	return entries, false, nil
 }
 
 func evidenceFileSessionID(name string) (string, bool) {

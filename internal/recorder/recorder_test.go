@@ -1033,6 +1033,63 @@ func TestRecorder_ResumeRejectsOverCapTailRead(t *testing.T) {
 	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("Record error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
+	if got := err.Error(); !strings.Contains(got, "bytes") || strings.Contains(got, "entries") {
+		t.Fatalf("Record error = %q, want byte-limit diagnosis only", got)
+	}
+}
+
+func TestRecorder_ResumeRejectsOverCapTailEntriesReportsEntryLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-resume-entry-cap-0.jsonl")
+
+	var input strings.Builder
+	for seq := uint64(0); seq <= recorder.MaxEvidenceReadEntries; seq++ {
+		entry := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  seq,
+			Timestamp: time.Unix(1712345678, 0).UTC(),
+			SessionID: "resume-entry-cap",
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   "tail entry cap",
+			Detail:    map[string]string{"safe": "value"},
+			PrevHash:  recorder.GenesisHash,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("Marshal entry: %v", err)
+		}
+		input.Write(line)
+		input.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(input.String()), filePermissions); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	err = rec.Record(recorder.Entry{
+		SessionID: "resume-entry-cap",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "must fail closed on over-cap tail entries",
+		Detail:    map[string]string{"safe": "value"},
+	})
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("Record error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "entries") || strings.Contains(got, "bytes") {
+		t.Fatalf("Record error = %q, want entry-limit diagnosis only", got)
+	}
 }
 
 func TestComputeFileHash(t *testing.T) {

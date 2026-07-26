@@ -739,6 +739,30 @@ func TestExtractReceiptsBytes_RejectsUnreadableEvidence(t *testing.T) {
 	}
 }
 
+func TestExtractReceiptsBytes_RejectsRecorderReadLimitBeforeRawFallback(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	raw, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var data strings.Builder
+	for data.Len() <= int(recorder.MaxEvidenceReadFileBytes) {
+		data.WriteString(strings.Repeat(" ", recorder.MaxEntryLineBytes))
+		data.WriteByte('\n')
+	}
+	data.Write(raw)
+	data.WriteByte('\n')
+
+	_, err = ExtractReceiptsBytes([]byte(data.String()))
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ExtractReceiptsBytes error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
 func TestExtractReceipts_RawJSONLRejectsMissingFieldsTail(t *testing.T) {
 	t.Parallel()
 
@@ -782,6 +806,77 @@ func TestExtractReceipts_RawJSONLRejectsOverCapFile(t *testing.T) {
 	_, err = ExtractReceipts(path)
 	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("ExtractReceipts error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
+func TestExtractReceipts_RejectsRecorderReadLimitBeforeRawFileFallback(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	raw, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var data strings.Builder
+	for data.Len() <= int(recorder.MaxEvidenceReadFileBytes) {
+		data.WriteByte('\n')
+	}
+	data.Write(raw)
+	data.WriteByte('\n')
+
+	path := filepath.Join(t.TempDir(), "receipts.jsonl")
+	if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err = ExtractReceipts(path)
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ExtractReceipts error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "reading entries") || strings.Contains(got, "raw receipts") {
+		t.Fatalf("ExtractReceipts error = %q, want recorder read-limit rejection before raw fallback", got)
+	}
+}
+
+func TestExtractReceiptsFromSessionDirRejectsTruncatedQuery(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	for seq := range recorder.MaxEvidenceReadEntries + 1 {
+		entry := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  uint64(seq),
+			Timestamp: time.Now().UTC(),
+			SessionID: "proxy",
+			Type:      recorderEntryType,
+			Transport: chainTestTransport,
+			Summary:   "signed receipt",
+			Detail:    r,
+			PrevHash:  recorder.GenesisHash,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		if err := enc.Encode(entry); err != nil {
+			_ = f.Close()
+			t.Fatalf("Encode: %v", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = ExtractReceiptsFromSessionDir(dir, "proxy")
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ExtractReceiptsFromSessionDir error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
 }
 

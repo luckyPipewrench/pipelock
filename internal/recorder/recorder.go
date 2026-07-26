@@ -924,16 +924,17 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 }
 
 func readEntriesForResume(path string) ([]Entry, error) {
-	data, err := ReadEvidenceFileBounded(path, MaxEvidenceReadFileBytes)
+	limits := defaultEntryReadLimits()
+	data, err := ReadEvidenceFileBounded(path, limits.MaxBytes)
 	if err != nil {
 		return nil, err
 	}
-	entries, truncated, err := readEntriesFromReader(bytes.NewReader(data), MaxEvidenceReadEntries)
+	entries, truncated, bytesRead, err := readEntriesFromReader(bytes.NewReader(data), limits)
 	if err != nil {
 		return nil, err
 	}
 	if truncated {
-		return nil, fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, filepath.Base(path), MaxEvidenceReadEntries)
+		return nil, readLimitExceededError(path, limits, bytesRead)
 	}
 	return entries, nil
 }

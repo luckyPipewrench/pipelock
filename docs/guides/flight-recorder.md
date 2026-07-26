@@ -242,7 +242,12 @@ The first entry in a chain has `prev_hash: "genesis"`. Each subsequent entry's `
 To verify a chain:
 
 ```go
-entries, _ := recorder.ReadEntries("evidence-abc123-0.jsonl")
+entries, err := recorder.ReadEntries("evidence-abc123-0.jsonl")
+if err != nil {
+    // Treat ErrEvidenceReadLimitExceeded as incomplete evidence, not as a
+    // successful partial read.
+    return err
+}
 err := recorder.VerifyChain(entries)
 ```
 
@@ -270,7 +275,10 @@ The signature covers the `prev_hash` of the checkpoint entry, which represents t
 To verify checkpoints independently:
 
 ```go
-entries, _ := recorder.ReadEntries(path)
+entries, err := recorder.ReadEntries(path)
+if err != nil {
+    return err
+}
 err := recorder.VerifyCheckpoints(entries, pubKey)
 ```
 
@@ -350,12 +358,24 @@ Filter fields:
 | `Before` | Include entries before this time. |
 | `MinSeq` | Include entries at or above this sequence number. |
 | `MaxSeq` | Include entries at or below this sequence number. |
+| `MaxEntriesRead` | Optional parsed-entry ceiling. Positive values apply across the session query. Zero uses the default per-file parsed-entry ceiling. If reached, `QueryResult.Truncated` is true. |
+| `MaxDirectoryEntries` | Optional evidence-directory entry ceiling. Zero uses the default ceiling. |
+| `MaxBytesRead` | Optional byte ceiling. Positive values apply across scanned evidence files. Zero uses the default per-file byte ceiling. If reached, `QueryResult.Truncated` is true. |
+
+Recorder reads are bounded. `ReadEntries` and `ReadEntriesFromReader` return an
+error if the default evidence size or entry-count ceiling is exceeded. Query
+APIs that can return read metadata set `QueryResult.Truncated` instead of
+silently returning a partial session as complete.
 
 List sessions with recorded evidence:
 
 ```go
 sessions, err := recorder.ListSessions("/var/lib/pipelock/evidence")
 ```
+
+Session listing is also bounded by default. Use `ListSessionsBoundedResult` when
+a UI can display an explicit truncation warning; strict helpers return an error
+when the directory entry cap is exceeded.
 
 ## File Rotation and Retention
 

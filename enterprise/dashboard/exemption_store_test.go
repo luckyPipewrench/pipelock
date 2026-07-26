@@ -725,7 +725,11 @@ func TestExemptions_OverlayJoinsStoreRecords(t *testing.T) {
 		TrustedDomains: []string{"internal.vendor.example"},
 	}
 
-	inventory := NewReadModel(Options{Config: cfg, ExemptionStore: store}).Exemptions()
+	inventory := NewReadModel(Options{
+		Config:         cfg,
+		ExemptionStore: store,
+		Now:            func() time.Time { return now },
+	}).Exemptions()
 	if !inventory.ConfigLoaded {
 		t.Fatal("ConfigLoaded = false, want true")
 	}

@@ -1038,3 +1038,107 @@ func metricLabelsMatch(metric *dto.Metric, labels map[string]string) bool {
 	}
 	return true
 }
+
+// TestEvidenceHealthFileStatsDegradesSafely covers the file-count sampler's
+// defensive paths. The sampler feeds metrics, not enforcement, so a nil monitor
+// or an unreadable evidence directory must still return well-formed stats
+// carrying the real thresholds. Returning zeroed thresholds would make a
+// dashboard read "0 of 0 files" and look healthy while the sampler is blind.
+func TestEvidenceHealthFileStatsDegradesSafely(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil_monitor_returns_thresholds", func(t *testing.T) {
+		t.Parallel()
+		var h *evidenceHealthMonitor
+		got := h.fileStats(config.Defaults())
+		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("MaxFilesPerSession = %d, want %d",
+				got.MaxFilesPerSession, recorder.MaxEvidenceReadDirectoryEntries)
+		}
+		if got.WarningThreshold != recorder.EvidenceFileWarningThreshold {
+			t.Fatalf("WarningThreshold = %d, want %d",
+				got.WarningThreshold, recorder.EvidenceFileWarningThreshold)
+		}
+	})
+
+	t.Run("nil_config_returns_thresholds", func(t *testing.T) {
+		t.Parallel()
+		h := &evidenceHealthMonitor{}
+		got := h.fileStats(nil)
+		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("MaxFilesPerSession = %d, want %d",
+				got.MaxFilesPerSession, recorder.MaxEvidenceReadDirectoryEntries)
+		}
+	})
+
+	t.Run("unreadable_dir_degrades_sampler_without_latching_self_audit", func(t *testing.T) {
+		t.Parallel()
+		// A regular file where a directory is expected makes the scan fail.
+		// Build the recorder against a real directory, then remove it so the
+		// later sampler read fails. recorder.New validates the directory up
+		// front, so the failure has to be introduced after construction.
+		dir := filepath.Join(t.TempDir(), "recorder")
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir}, nil, nil)
+		if err != nil {
+			t.Fatalf("recorder.New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("remove dir: %v", err)
+		}
+
+		// Real sinks, so a regression that drops the warning or the metric is
+		// caught rather than passing on a nil-sink no-op.
+		var logBuf bytes.Buffer
+		m := metrics.New()
+		h := &evidenceHealthMonitor{recorder: rec, metrics: m, logW: &logBuf}
+		h.selfAuditOK.Store(true)
+		got := h.fileStats(config.Defaults())
+		if got.MaxFilesPerSession != recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("thresholds lost on sampler error: %+v", got)
+		}
+		if got.TotalEvidenceFiles != 0 {
+			t.Fatalf("TotalEvidenceFiles = %d, want 0 on sampler error", got.TotalEvidenceFiles)
+		}
+		// The decision this test exists to pin: a metrics-only file-count scan
+		// failure must not latch the integrity self-audit off. Conflating the
+		// two would leave a permanently degraded integrity signal behind a
+		// transient read error, with no way to tell it from a real chain fault.
+		if !h.selfAuditOK.Load() {
+			t.Fatal("a sampler read failure latched selfAuditOK off; it is a measurement failure, not an integrity finding")
+		}
+		if !strings.Contains(logBuf.String(), "file-count sampler unavailable") {
+			t.Fatalf("operator was not warned about the sampler failure: %q", logBuf.String())
+		}
+		if got := samplerErrorCount(t, m); got != 1 {
+			t.Fatalf("selfaudit_failures_total{check=sampler_error} = %v, want 1", got)
+		}
+	})
+}
+
+// samplerErrorCount reads the sampler_error self-audit counter out of the
+// metrics registry. The counter fields are unexported, so this gathers from the
+// registry the same way a scrape would.
+func samplerErrorCount(t *testing.T, m *metrics.Metrics) float64 {
+	t.Helper()
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if !strings.Contains(f.GetName(), "selfaudit_failures") {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetValue() == "sampler_error" {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}

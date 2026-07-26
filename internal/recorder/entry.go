@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,24 @@ import (
 // reject versions outside acceptedEntryVersions; v1 chains continue to
 // verify with the v1 hash projection so pre-upgrade audit logs stay valid.
 const EntryVersion = 2
+
+// MaxEntryLineBytes is the maximum JSONL line payload accepted by recorder
+// entry readers.
+const MaxEntryLineBytes = 1 << 20
+
+const maxEntryWireLineBytes = MaxEntryLineBytes + len("\r\n")
+
+type entryReadLimits struct {
+	MaxEntries int
+	MaxBytes   int64
+}
+
+func defaultEntryReadLimits() entryReadLimits {
+	return entryReadLimits{
+		MaxEntries: MaxEvidenceReadEntries,
+		MaxBytes:   MaxEvidenceReadFileBytes,
+	}
+}
 
 // acceptedEntryVersions is the inclusive set of schema versions ReadEntries
 // and VerifyChain will load. New writes always use EntryVersion; v1 entries
@@ -247,56 +266,102 @@ func VerifyCheckpoints(entries []Entry, pubKey ed25519.PublicKey) error {
 // ReadEntries reads and parses JSONL evidence entries from a file.
 // Accepts the versions in acceptedEntryVersions; rejects unknown versions.
 func ReadEntries(path string) ([]Entry, error) {
-	entries, _, err := readEntries(path, 0)
-	return entries, err
+	entries, truncated, bytesRead, err := readEntries(path, defaultEntryReadLimits())
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, readLimitExceededError(path, defaultEntryReadLimits(), bytesRead)
+	}
+	return entries, nil
 }
 
-func readEntries(path string, maxEntries int) ([]Entry, bool, error) {
+func readEntries(path string, limits entryReadLimits) ([]Entry, bool, int64, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
-		return nil, false, fmt.Errorf("opening evidence file: %w", err)
+		return nil, false, 0, fmt.Errorf("opening evidence file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	entries, truncated, err := readEntriesFromReader(f, maxEntries)
+	entries, truncated, bytesRead, err := readEntriesFromReader(f, limits)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading evidence file: %w", err)
+		return nil, false, bytesRead, fmt.Errorf("reading evidence file: %w", err)
 	}
-	return entries, truncated, nil
+	return entries, truncated, bytesRead, nil
 }
 
 // ReadEntriesFromReader reads and parses JSONL evidence entries from r.
 // It applies the same duplicate-key and version fences as ReadEntries.
 func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
-	entries, _, err := readEntriesFromReader(r, 0)
-	return entries, err
+	entries, truncated, bytesRead, err := readEntriesFromReader(r, defaultEntryReadLimits())
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, readLimitExceededError("reader", defaultEntryReadLimits(), bytesRead)
+	}
+	return entries, nil
 }
 
-func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
+func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, int64, error) {
 	var entries []Entry
-	sc := bufio.NewScanner(r)
+	reader := bufio.NewReader(r)
 
-	// 1MB max line size for entries with large Detail payloads
-	const maxLineSize = 1 << 20
-	sc.Buffer(make([]byte, 0, maxLineSize), maxLineSize)
-
-	lineNum := 0
-	for sc.Scan() {
-		if maxEntries > 0 && len(entries) >= maxEntries {
-			return entries, true, nil
+	var (
+		lineNum   int
+		bytesRead int64
+		line      []byte
+	)
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			bytesRead += int64(len(fragment))
+			if limits.MaxBytes > 0 && bytesRead > limits.MaxBytes {
+				return entries, true, bytesRead, nil
+			}
+			if len(line)+len(fragment) > maxEntryWireLineBytes {
+				return nil, false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum+1, MaxEntryLineBytes)
+			}
+			line = append(line, fragment...)
 		}
-
-		lineNum++
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
+		if err == nil {
+			// Complete line.
+		} else if errors.Is(err, bufio.ErrBufferFull) {
 			continue
+		} else if errors.Is(err, io.EOF) {
+			if len(line) == 0 {
+				return entries, false, bytesRead, nil
+			}
+		} else {
+			return nil, false, bytesRead, fmt.Errorf("scanning evidence entries: %w", err)
+		}
+		lineNum++
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			line = line[:len(line)-1]
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+		}
+		if len(line) > MaxEntryLineBytes {
+			return nil, false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum, MaxEntryLineBytes)
+		}
+		trimmed := strings.TrimSpace(string(line))
+		line = line[:0]
+		if trimmed == "" {
+			if errors.Is(err, io.EOF) {
+				return entries, false, bytesRead, nil
+			}
+			continue
+		}
+		if limits.MaxEntries > 0 && len(entries) >= limits.MaxEntries {
+			return entries, true, bytesRead, nil
 		}
 
 		// Reject duplicate object keys before json.Unmarshal collapses them
 		// last-wins (a parser-differential smuggling vector); shared with the
 		// receipt verify path via internal/jsonscan.
-		if err := jsonscan.RejectDuplicateKeys([]byte(line)); err != nil {
-			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+		if err := jsonscan.RejectDuplicateKeys([]byte(trimmed)); err != nil {
+			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 
 		var raw struct {
@@ -314,8 +379,8 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 			PrevHash  string          `json:"prev_hash"`
 			Hash      string          `json:"hash"`
 		}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
+			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 		e := Entry{
 			Version:   raw.Version,
@@ -333,27 +398,35 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 		}
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
-			detail, err := decodeEntryDetail(raw.Detail)
-			if err != nil {
-				return nil, false, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
+			var detail any
+			if err := json.Unmarshal(raw.Detail, &detail); err != nil {
+				return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
 			}
 			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {
-			return nil, false, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
+			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
 		}
 		entries = append(entries, e)
+		if errors.Is(err, io.EOF) {
+			return entries, false, bytesRead, nil
+		}
 	}
-	if err := sc.Err(); err != nil {
-		return nil, false, fmt.Errorf("scanning evidence entries: %w", err)
-	}
-	return entries, false, nil
 }
 
-func decodeEntryDetail(raw json.RawMessage) (any, error) {
-	var detail any
-	if err := json.Unmarshal(raw, &detail); err != nil {
-		return nil, err
+func readLimitExceededError(path string, limits entryReadLimits, bytesRead int64) error {
+	name := filepath.Base(path)
+	if name == "." || name == string(filepath.Separator) {
+		name = path
 	}
-	return detail, nil
+	switch {
+	case limits.MaxBytes > 0 && bytesRead > limits.MaxBytes:
+		return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, name, limits.MaxBytes)
+	case limits.MaxEntries > 0:
+		return fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, name, limits.MaxEntries)
+	case limits.MaxBytes > 0:
+		return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, name, limits.MaxBytes)
+	default:
+		return fmt.Errorf("%w: evidence file %s exceeded bounded read limits", ErrEvidenceReadLimitExceeded, name)
+	}
 }

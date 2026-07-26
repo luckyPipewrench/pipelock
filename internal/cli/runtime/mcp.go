@@ -1003,7 +1003,15 @@ Key-free evidence capture:
 				if recErr != nil {
 					return fmt.Errorf("creating flight recorder: %w", recErr)
 				}
+				runFlightRecorderExpiryOnce(rec, cmd.ErrOrStderr(), defaultExpire)
 				defer func() { _ = rec.Close() }()
+				retentionCtx, retentionCancel := context.WithCancel(cmd.Context())
+				var retentionWG sync.WaitGroup
+				startFlightRecorderRetention(retentionCtx, &retentionWG, rec, cmd.ErrOrStderr(), defaultFlightRecorderRetentionInterval, defaultExpire)
+				defer func() {
+					retentionCancel()
+					retentionWG.Wait()
+				}()
 				postureBinding, bindErr := posturebinding.LoadRuntime()
 				if bindErr != nil {
 					return fmt.Errorf("loading posture binding: %w", bindErr)
@@ -1033,6 +1041,7 @@ Key-free evidence capture:
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+				printFlightRecorderEvidenceWarning(cmd.ErrOrStderr(), cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
 				// Loud, one-time startup signal when the chain could not be
 				// resumed (corrupt/tampered tail or an evidence read error).
 				// A legitimate key rotation no longer lands here - it opens a

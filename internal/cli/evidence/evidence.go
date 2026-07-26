@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -36,6 +37,8 @@ func Cmd() *cobra.Command {
 	}
 	cmd.AddCommand(viewCmd())
 	cmd.AddCommand(serveCmd())
+	cmd.AddCommand(expireCmd())
+	cmd.AddCommand(doctorCmd())
 	cmd.AddCommand(verifyCertCmd())
 	return cmd
 }
@@ -125,6 +128,83 @@ type serveOptions struct {
 	receiptDir string
 	sessionID  string
 	listen     string
+}
+
+type expireOptions struct {
+	configFile    string
+	receiptDir    string
+	retentionDays int
+}
+
+func expireCmd() *cobra.Command {
+	opts := expireOptions{}
+	cmd := &cobra.Command{
+		Use:   "expire",
+		Short: "Expire old flight-recorder evidence files",
+		Long: `Remove raw-escrow sidecars older than retention_days.
+JSONL receipt-chain shards are preserved because deleting a shard can break
+full-history offline verification and published anchor replay.
+
+Use --config to apply flight_recorder.dir and flight_recorder.retention_days
+from the runtime config, or pass --receipt-dir and --retention-days directly.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			retentionChanged := cmd.Flags().Changed("retention-days")
+			return runExpire(cmd, opts, retentionChanged)
+		},
+	}
+	cmd.Flags().StringVarP(&opts.configFile, "config", "c", "", "config file with flight_recorder settings")
+	cmd.Flags().StringVar(&opts.receiptDir, "receipt-dir", "", "flight-recorder evidence directory")
+	cmd.Flags().IntVar(&opts.retentionDays, "retention-days", 0, "retention window in days; 0 keeps evidence forever")
+	return cmd
+}
+
+func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) error {
+	dir := opts.receiptDir
+	retentionDays := opts.retentionDays
+	if opts.configFile != "" {
+		cfg, err := config.Load(opts.configFile)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		if dir == "" {
+			dir = cfg.FlightRecorder.Dir
+		}
+		if !retentionChanged {
+			retentionDays = cfg.FlightRecorder.RetentionDays
+		}
+	}
+	if dir == "" {
+		return errors.New("set --config with flight_recorder.dir or pass --receipt-dir")
+	}
+	if retentionDays < 0 {
+		return errors.New("--retention-days must be non-negative")
+	}
+	if retentionDays == 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "retention disabled for %s; expired 0 old raw escrow sidecar(s)\n", filepath.Clean(dir))
+		return nil
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:       true,
+		Dir:           dir,
+		RetentionDays: retentionDays,
+	}, nil, nil)
+	if err != nil {
+		return fmt.Errorf("open flight recorder: %w", err)
+	}
+	defer func() { _ = rec.Close() }()
+	removed, err := rec.ExpireOldFiles()
+	if err != nil {
+		return fmt.Errorf("expire evidence files: %w", err)
+	}
+	_, _ = fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"expired %d old raw escrow sidecar(s) from %s using retention_days=%d\n",
+		removed,
+		filepath.Clean(dir),
+		retentionDays,
+	)
+	return nil
 }
 
 func serveCmd() *cobra.Command {

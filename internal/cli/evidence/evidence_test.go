@@ -17,6 +17,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -702,6 +704,86 @@ func TestViewCmd_BadReceiptDir(t *testing.T) {
 	})
 }
 
+func TestExpireCmd_UsesConfigRetention(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// Expiry refuses the exclusive lock on Windows by design, so nothing is
+		// removed there and the expired-count assertion below cannot hold. The
+		// refusal itself is covered by the recorder's Windows guard test.
+		t.Skip("expiry intentionally removes nothing on Windows until real LockFileEx locking lands")
+	}
+	dir := t.TempDir()
+	oldJSONL := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl")
+	oldKept := writeExpireTestFile(t, dir, "evidence-proxy-1.jsonl")
+	oldRemoved := writeExpireTestFile(t, dir, "evidence-proxy-2.raw.enc")
+	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	cfgYAML := strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  dir: " + strconv.Quote(dir),
+		"  retention_days: 1",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"expire", "--config", cfgPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expire execute: %v", err)
+	}
+	if _, err := os.Stat(oldRemoved); !os.IsNotExist(err) {
+		t.Fatalf("old raw escrow file stat = %v, want not exist", err)
+	}
+	for _, path := range []string{oldJSONL, oldKept} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("JSONL chain shard should be retained: %v", err)
+		}
+	}
+	if !strings.Contains(buf.String(), "expired 1 old raw escrow sidecar") {
+		t.Fatalf("output = %q, want expired count", buf.String())
+	}
+}
+
+func TestExpireCmd_RetentionDisabledIsNoOp(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldFile := writeExpireTestFile(t, dir, "evidence-proxy-0.jsonl")
+
+	var buf bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"expire", "--receipt-dir", dir, "--retention-days", "0"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expire execute: %v", err)
+	}
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Fatalf("retention disabled should keep old file: %v", err)
+	}
+	if !strings.Contains(buf.String(), "retention disabled") {
+		t.Fatalf("output = %q, want disabled note", buf.String())
+	}
+}
+
+func writeExpireTestFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	ts := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, ts, ts); err != nil {
+		t.Fatalf("chtimes %s: %v", name, err)
+	}
+	return path
+}
+
 func TestViewCmd_BadTrustedSigner(t *testing.T) {
 	t.Parallel()
 	_, priv := genKey(t)
@@ -1172,4 +1254,67 @@ func TestVerifyCertCmd_BadCertFile(t *testing.T) {
 			t.Fatal("expected error for invalid JSON cert file")
 		}
 	})
+}
+
+// TestExpireCmd_ErrorPaths covers the operator-input rejections on expire.
+// Each must fail closed with an actionable message rather than silently
+// expiring nothing, which would read as a successful prune.
+func TestExpireCmd_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		args    func(t *testing.T) []string
+		wantErr string
+	}{
+		{
+			name:    "no_dir_and_no_config",
+			args:    func(*testing.T) []string { return []string{"expire"} },
+			wantErr: "--receipt-dir",
+		},
+		{
+			name: "negative_retention",
+			args: func(t *testing.T) []string {
+				return []string{"expire", "--receipt-dir", t.TempDir(), "--retention-days", "-1"}
+			},
+			wantErr: "must be non-negative",
+		},
+		{
+			name: "unreadable_config",
+			args: func(t *testing.T) []string {
+				return []string{"expire", "--config", filepath.Join(t.TempDir(), "missing.yaml")}
+			},
+			wantErr: "load config",
+		},
+		{
+			// A regular file where the evidence directory should be must be
+			// rejected at open, not treated as an empty directory that
+			// silently expires nothing.
+			name: "receipt_dir_is_a_file",
+			args: func(t *testing.T) []string {
+				f := filepath.Join(t.TempDir(), "not-a-dir")
+				if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+				return []string{"expire", "--receipt-dir", f, "--retention-days", "1"}
+			},
+			wantErr: "flight recorder",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			cmd := Cmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs(tt.args(t))
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error, got nil; output=%q", buf.String())
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
 }

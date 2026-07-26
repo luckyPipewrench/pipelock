@@ -29,12 +29,18 @@ const bridgeListenAddr = "127.0.0.1:8888"
 //	  → Parent (pipelock proxy + scanner, host namespace)
 //	  → Internet
 type BridgeProxy struct {
-	listener   net.Listener
-	socketPath string // parent's Unix domain socket path
-	wg         sync.WaitGroup
-	mu         sync.Mutex
-	closed     bool
-	closeOnce  sync.Once
+	listener        net.Listener
+	socketPath      string // parent's Unix domain socket path
+	wg              sync.WaitGroup
+	mu              sync.Mutex
+	closed          bool
+	done            chan struct{}
+	doneOnce        sync.Once
+	watcherDone     chan struct{}
+	watcherDoneOnce sync.Once
+	watcherStarted  bool
+	conns           map[net.Conn]struct{}
+	closeOnce       sync.Once
 }
 
 // NewBridgeProxy creates a bridge proxy inside the sandbox namespace.
@@ -50,8 +56,11 @@ func NewBridgeProxy(socketPath string, listenAddr ...string) (*BridgeProxy, erro
 		return nil, fmt.Errorf("bridge proxy listen: %w", err)
 	}
 	return &BridgeProxy{
-		listener:   ln,
-		socketPath: socketPath,
+		listener:    ln,
+		socketPath:  socketPath,
+		done:        make(chan struct{}),
+		watcherDone: make(chan struct{}),
+		conns:       make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -63,9 +72,20 @@ func (bp *BridgeProxy) Addr() string {
 // Serve accepts connections and bridges them to the parent's Unix socket.
 // Blocks until ctx is cancelled or the listener is closed.
 func (bp *BridgeProxy) Serve(ctx context.Context) {
+	bp.mu.Lock()
+	if bp.closed {
+		bp.mu.Unlock()
+		return
+	}
+	bp.watcherStarted = true
+	bp.mu.Unlock()
 	go func() {
-		<-ctx.Done()
-		_ = bp.listener.Close()
+		defer bp.watcherDoneOnce.Do(func() { close(bp.watcherDone) })
+		select {
+		case <-ctx.Done():
+			_ = bp.listener.Close()
+		case <-bp.done:
+		}
 	}()
 
 	for {
@@ -79,24 +99,54 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 			_ = conn.Close()
 			return
 		}
+		bp.trackConnLocked(conn)
 		bp.wg.Add(1)
 		bp.mu.Unlock()
-		go func() {
+		go func(conn net.Conn) {
 			defer bp.wg.Done()
+			defer bp.untrackConn(conn)
 			bp.handleConn(conn)
-		}()
+		}(conn)
 	}
 }
 
 // Close shuts down the proxy and waits for active connections.
 func (bp *BridgeProxy) Close() {
 	bp.closeOnce.Do(func() {
+		bp.doneOnce.Do(func() { close(bp.done) })
 		bp.mu.Lock()
 		bp.closed = true
+		waitForWatcher := bp.watcherStarted
 		_ = bp.listener.Close()
+		for conn := range bp.conns {
+			_ = conn.Close()
+		}
 		bp.mu.Unlock()
 		bp.wg.Wait()
+		if waitForWatcher {
+			<-bp.watcherDone
+		}
 	})
+}
+
+func (bp *BridgeProxy) trackConn(conn net.Conn) bool {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	if bp.closed {
+		return false
+	}
+	bp.trackConnLocked(conn)
+	return true
+}
+
+func (bp *BridgeProxy) trackConnLocked(conn net.Conn) {
+	bp.conns[conn] = struct{}{}
+}
+
+func (bp *BridgeProxy) untrackConn(conn net.Conn) {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	delete(bp.conns, conn)
 }
 
 // handleConn bridges a single TCP connection from the sandbox to the
@@ -111,6 +161,11 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 		_, _ = fmt.Fprintf(os.Stderr, "[bridge] connect to parent proxy: %v\n", err)
 		return
 	}
+	if !bp.trackConn(parentConn) {
+		_ = parentConn.Close()
+		return
+	}
+	defer bp.untrackConn(parentConn)
 	defer func() { _ = parentConn.Close() }()
 
 	// Bridge data bidirectionally.

@@ -171,3 +171,36 @@ func TestReadEvidenceFileBounded_UnreadableFileRejected(t *testing.T) {
 		t.Fatal("computeEvidenceFileHashBounded on unreadable file = nil error, want error")
 	}
 }
+
+// TestEvidenceReadBoundsAreNotWidened pins the bounded-resume ceilings.
+//
+// These caps exist so an oversized evidence directory or shard fails CLOSED
+// during chain resume rather than being silently truncated, which would let a
+// partial read masquerade as a verified chain. Automatic retention expiry keeps
+// a healthy directory under the ceiling, so a future change that raises these
+// bounds would be papering over accumulation by making the failure quieter
+// instead of preventing it.
+//
+// Tightening a bound is allowed and does not fail this test. Widening one does,
+// so that it can only happen as a deliberate, reviewed decision. The behavioural
+// over-cap tests scale with these constants and therefore cannot detect widening
+// on their own.
+func TestEvidenceReadBoundsAreNotWidened(t *testing.T) {
+	t.Parallel()
+
+	const (
+		reviewedMaxDirectoryEntries = 256
+		reviewedMaxFileBytes        = int64(8 << 20)
+	)
+
+	if MaxEvidenceReadDirectoryEntries > reviewedMaxDirectoryEntries {
+		t.Fatalf("MaxEvidenceReadDirectoryEntries widened to %d, reviewed ceiling is %d: "+
+			"raising this cap weakens fail-closed chain resume; fix accumulation via retention instead",
+			MaxEvidenceReadDirectoryEntries, reviewedMaxDirectoryEntries)
+	}
+	if MaxEvidenceReadFileBytes > reviewedMaxFileBytes {
+		t.Fatalf("MaxEvidenceReadFileBytes widened to %d, reviewed ceiling is %d: "+
+			"raising this cap weakens fail-closed chain resume",
+			MaxEvidenceReadFileBytes, reviewedMaxFileBytes)
+	}
+}

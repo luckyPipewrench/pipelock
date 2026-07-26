@@ -861,51 +861,52 @@ func parseSystemdShow(out string) map[string]string {
 // probeNFTContainment verifies the installed nftables boundary structure,
 // ordering, UID ownership, and persistence wiring.
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
-	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "list", "table", "inet", env.nftTable)
+	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("nft unavailable: %v", err)
 	}
 	if code != 0 {
 		low := strings.ToLower(out)
 		if strings.Contains(low, "operation not permitted") || strings.Contains(low, "permission denied") {
-			return statusSkip, "nft list table requires root; rerun as root"
+			return statusSkip, "nft list chain requires root; rerun as root"
 		}
 		if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
-			return statusFail, fmt.Sprintf("table inet %s not loaded", env.nftTable)
+			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable)
 		}
 		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out))
 	}
 
-	if !outputHasNFTChainDeclaration(out, env.nftChain) {
-		return statusFail, fmt.Sprintf("chain %s missing from table", env.nftChain)
+	lines, err := attributedNFTChainLines(out, env.nftChain)
+	if err != nil {
+		return statusFail, err.Error()
 	}
 
 	current, err := containmentUIDsFromProbeEnv(env)
 	if err != nil {
 		return statusFail, err.Error()
 	}
-	if current.operatorKnown && !chainHasSkuidAcceptForUID(out, env.nftChain, current.operatorUID) {
+	if current.operatorKnown && !chainLinesHaveSkuidAcceptForUID(lines, current.operatorUID) {
 		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID)
 	}
-	if !chainHasSkuidAcceptForUID(out, env.nftChain, current.proxyUID) {
+	if !chainLinesHaveSkuidAcceptForUID(lines, current.proxyUID) {
 		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID)
 	}
-	if !chainHasAgentCatchAllDrop(out, env.nftChain, current.agentUID) {
+	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
 	}
-	if !chainHasAgentProxyLoopbackAllowBeforeDrop(out, env.nftChain, current.agentUID, env.port) {
+	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
 	}
-	if !chainHasAgentDNSDropBeforeCatchAll(out, env.nftChain, current.agentUID, "udp") {
+	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
-	if !chainHasAgentDNSDropBeforeCatchAll(out, env.nftChain, current.agentUID, "tcp") {
+	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "tcp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
-	if chainHasUnsafeVerdictBeforeAgentDrop(out, env.nftChain, current, env.port) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
 	}
-	if !chainHasManagedOutputBaseChain(out, env.nftChain) {
+	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
 		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
@@ -1055,42 +1056,51 @@ func probeNFTExecutable(env *probeEnv) string {
 	return "nft"
 }
 
-func chainHasAgentCatchAllDrop(out, chainName string, uid int) bool {
-	return chainHasLine(out, chainName, func(line string) bool {
+func chainLinesHaveAgentCatchAllDrop(lines []string, uid int) bool {
+	return chainLinesHaveLine(lines, func(line string) bool {
 		return lineHasTerminalSkuidVerdict(line, uid, "drop")
 	})
 }
 
-func chainHasSkuidAcceptForUID(out, chainName string, uid int) bool {
-	return chainHasLine(out, chainName, func(line string) bool {
+func chainLinesHaveSkuidAcceptForUID(lines []string, uid int) bool {
+	return chainLinesHaveLine(lines, func(line string) bool {
 		return lineHasTerminalSkuidVerdict(line, uid, "accept")
 	})
 }
 
-func chainHasAgentProxyLoopbackAllowBeforeDrop(out, chainName string, agentUID, port int) bool {
-	return chainHasLineBeforeAgentDrop(out, chainName, agentUID, func(line string) bool {
+func chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines []string, agentUID, port int) bool {
+	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
 		return lineHasAgentProxyLoopbackAllow(line, agentUID, port)
 	})
 }
 
 func lineHasAgentProxyLoopbackAllow(line string, agentUID, port int) bool {
-	return lineHasSkuid(line, agentUID) &&
-		lineHasIPDAddr(line, "127.0.0.1") &&
-		lineHasToken(line, "tcp") &&
-		lineHasDPort(line, port) &&
-		lineHasToken(line, "accept")
+	fields := nftLineFields(line)
+	want := []string{
+		"meta", "skuid", strconv.Itoa(agentUID),
+		"ip", "daddr", "127.0.0.1",
+		"tcp", "dport", strconv.Itoa(port),
+		"accept",
+	}
+	if len(fields) < len(want) {
+		return false
+	}
+	for i, field := range want {
+		if fields[i] != field {
+			return false
+		}
+	}
+	return nftRuleTailIsCommentOnly(fields[len(want):])
 }
 
-func chainHasAgentDNSDropBeforeCatchAll(out, chainName string, agentUID int, protocol string) bool {
-	return chainHasLineBeforeAgentDrop(out, chainName, agentUID, func(line string) bool {
+func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, protocol string) bool {
+	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
 		return lineHasSkuidProtocolDPortVerdict(line, agentUID, protocol, 53, "drop")
 	})
 }
 
-// chainHasUnsafeVerdictBeforeAgentDrop detects an unmanaged verdict that can
-// bypass or intercept traffic before the contained agent's catch-all DROP.
-func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmentUIDs, proxyPort int) bool {
-	return chainHasLineBeforeAgentDrop(out, chainName, uids.agentUID, func(line string) bool {
+func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containmentUIDs, proxyPort int) bool {
+	return chainLinesHaveLineBeforeAgentDrop(lines, uids.agentUID, func(line string) bool {
 		// Before the agent catch-all drop, only the managed operator/proxy
 		// accepts, the agent's proxy loopback allow, and DNS drops are safe.
 		// Any other terminal/control-flow verdict can bypass containment under
@@ -1138,18 +1148,6 @@ func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-// lineHasSkuid reports whether an nft rule matches uid via skuid.
-func lineHasSkuid(line string, uid int) bool {
-	want := strconv.Itoa(uid)
-	fields := nftLineFields(line)
-	for i, field := range fields {
-		if field == "skuid" && i+1 < len(fields) && fields[i+1] == want {
-			return true
-		}
-	}
-	return false
 }
 
 // lineHasTerminalSkuidVerdict matches an exact UID with a terminal verdict.
@@ -1244,37 +1242,11 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 	return !inPrefix && !expectCount
 }
 
-// lineHasIPDAddr reports whether an nft rule contains an exact IPv4 destination.
-func lineHasIPDAddr(line, addr string) bool {
-	fields := nftLineFields(line)
-	for i := 0; i+2 < len(fields); i++ {
-		if fields[i] == "ip" && fields[i+1] == "daddr" && fields[i+2] == addr {
-			return true
-		}
+func nftRuleTailIsCommentOnly(fields []string) bool {
+	if len(fields) == 0 {
+		return true
 	}
-	return false
-}
-
-// lineHasDPort reports whether an nft rule contains an exact destination port.
-func lineHasDPort(line string, port int) bool {
-	want := strconv.Itoa(port)
-	fields := nftLineFields(line)
-	for i, field := range fields {
-		if field == "dport" && i+1 < len(fields) && fields[i+1] == want {
-			return true
-		}
-	}
-	return false
-}
-
-// lineHasToken finds an exact unquoted nft syntax token.
-func lineHasToken(line, want string) bool {
-	for _, field := range nftLineFields(line) {
-		if field == want {
-			return true
-		}
-	}
-	return false
+	return len(fields) == 2 && fields[0] == "comment" && strings.HasPrefix(fields[1], `"`) && strings.HasSuffix(fields[1], `"`)
 }
 
 // lineHasAnyToken finds any requested unquoted nft syntax token.
@@ -1422,67 +1394,81 @@ func outputHasNFTChainDeclaration(out, chainName string) bool {
 	return false
 }
 
-// chainHasLineBeforeAgentDrop applies match only before the managed agent DROP.
-func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func(string) bool) bool {
-	inChain := false
-	depth := 0
+// attributedNFTChainLines accepts only output from an exact
+// `nft list chain inet <table> <chain>` query. The command itself attributes
+// the following rules to the requested chain; this parser rejects ambiguous
+// table-wide output that includes a different chain and never searches later
+// chains for missing evidence.
+func attributedNFTChainLines(out, chainName string) ([]string, error) {
+	var lines []string
+	declared := false
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(raw)
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "table ") || line == "}" {
 			continue
 		}
-		if !inChain && isNFTChainDeclaration(line, chainName) {
-			inChain = true
-		}
-		if !inChain {
+		if strings.HasPrefix(line, "chain ") {
+			if !isNFTChainDeclaration(line, chainName) {
+				return nil, fmt.Errorf("nft output is not positively attributed to chain %s", chainName)
+			}
+			if declared {
+				return nil, fmt.Errorf("nft output declares chain %s more than once", chainName)
+			}
+			declared = true
 			continue
 		}
+		if !declared {
+			return nil, fmt.Errorf("nft output for chain %s has rule content before the chain declaration", chainName)
+		}
+		if !nftLineHasBalancedQuotes(line) {
+			return nil, fmt.Errorf("nft output for chain %s contains malformed quoted rule content", chainName)
+		}
+		lines = append(lines, line)
+	}
+	if !declared {
+		return nil, fmt.Errorf("chain %s missing from nft output", chainName)
+	}
+	return lines, nil
+}
+
+// chainLinesHaveLine applies match only to nft lines already attributed by an
+// exact list-chain command. A malformed line fails closed by not matching.
+func chainLinesHaveLine(lines []string, match func(string) bool) bool {
+	for _, line := range lines {
 		if !nftLineHasBalancedQuotes(line) {
 			return false
 		}
-		depth += nftLineBraceDelta(line)
+		if match(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// chainLinesHaveLineBeforeAgentDrop applies match only before the managed
+// agent DROP in nft lines already attributed to the exact live chain.
+func chainLinesHaveLineBeforeAgentDrop(lines []string, agentUID int, match func(string) bool) bool {
+	for _, line := range lines {
+		if !nftLineHasBalancedQuotes(line) {
+			return false
+		}
 		if lineHasTerminalSkuidVerdict(line, agentUID, "drop") {
 			return false
 		}
 		if match(line) {
 			return true
 		}
-		if depth <= 0 {
-			inChain = false
-			depth = 0
-		}
 	}
 	return false
 }
 
-// chainHasLine applies match only within the requested, structurally valid chain.
-func chainHasLine(out, chainName string, match func(string) bool) bool {
-	inChain := false
-	depth := 0
-	for _, raw := range strings.Split(out, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		if !inChain && isNFTChainDeclaration(line, chainName) {
-			inChain = true
-		}
-		if !inChain {
-			continue
-		}
-		if !nftLineHasBalancedQuotes(line) {
-			return false
-		}
-		depth += nftLineBraceDelta(line)
-		if match(line) {
-			return true
-		}
-		if depth <= 0 {
-			inChain = false
-			depth = 0
-		}
+// chainHasLineBeforeAgentDrop applies match only before the managed agent DROP.
+func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func(string) bool) bool {
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return false
 	}
-	return false
+	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, match)
 }
 
 // ---------------------------------------------------------------------------
@@ -1728,20 +1714,24 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if err != nil {
 		return 0, err
 	}
-	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "list", "chain", "inet", env.nftTable, env.nftChain)
+	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
 		return 0, fmt.Errorf("list nft chain: %w", err)
 	}
 	if code != 0 {
 		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
 	}
-	if !chainHasManagedOutputBaseChain(out, env.nftChain) {
+	lines, err := attributedNFTChainLines(out, env.nftChain)
+	if err != nil {
+		return 0, err
+	}
+	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
 		return 0, fmt.Errorf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
 	}
-	if chainHasUnsafeVerdictBeforeAgentDrop(out, env.nftChain, current, env.port) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", env.nftChain)
 	}
-	return managedContainmentDropPacketCount(out, env.nftChain, current.agentUID)
+	return managedContainmentDropPacketCountFromLines(lines, env.nftChain, current.agentUID)
 }
 
 // chainHasManagedOutputBaseChain confirms the requested chain is attached to
@@ -1750,7 +1740,15 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 // Without this check, a regular/unhooked lookalike chain could provide a benign
 // counter that the direct-canary packet never traverses.
 func chainHasManagedOutputBaseChain(out, chainName string) bool {
-	return chainHasLine(out, chainName, func(line string) bool {
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return false
+	}
+	return nftChainLinesHaveManagedOutputBaseChain(lines)
+}
+
+func nftChainLinesHaveManagedOutputBaseChain(lines []string) bool {
+	return chainLinesHaveLine(lines, func(line string) bool {
 		fields := nftLineFields(strings.ReplaceAll(line, ";", " "))
 		if len(fields) != 8 {
 			return false
@@ -1771,13 +1769,24 @@ func chainHasManagedOutputBaseChain(out, chainName string) bool {
 // lookalikes, wrong-chain rules, DNS counters, and rules with extra predicates
 // are rejected rather than accepted as attribution evidence.
 func managedContainmentDropPacketCount(out, chainName string, agentUID int) (uint64, error) {
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return 0, err
+	}
+	return managedContainmentDropPacketCountFromLines(lines, chainName, agentUID)
+}
+
+func managedContainmentDropPacketCountFromLines(lines []string, chainName string, agentUID int) (uint64, error) {
 	var packets uint64
 	var parseErr error
 	matched := 0
-	_ = chainHasLine(out, chainName, func(line string) bool {
-		if parseErr != nil ||
-			!strings.Contains(line, `log prefix "`+nftLogPrefix(EgressClassNotRoutingThroughPipelock)+` "`) {
-			return false
+	for _, line := range lines {
+		if !nftLineHasBalancedQuotes(line) {
+			parseErr = fmt.Errorf("managed catch-all DROP rule has malformed quoted rule content: %s", oneLine(line))
+			break
+		}
+		if !strings.Contains(line, `log prefix "`+nftLogPrefix(EgressClassNotRoutingThroughPipelock)+` "`) {
+			continue
 		}
 
 		fields := nftLineFields(line)
@@ -1787,38 +1796,40 @@ func managedContainmentDropPacketCount(out, chainName string, agentUID int) (uin
 		// destination/interface/etc. predicate placed before skuid; such a
 		// lookalike would not necessarily see the direct-canary packet.
 		if uidAt != 2 || fields[0] != "meta" || fields[1] != "skuid" {
-			return false
+			continue
 		}
 		dropAt := indexTokenAfter(fields, "drop", uidAt+1)
 		if dropAt == -1 || uidAt+1 >= dropAt || fields[uidAt+1] != "counter" {
-			return false
+			continue
 		}
 		packetsAt := -1
 		for i := uidAt + 1; i+2 < dropAt; i++ {
 			if fields[i] == "counter" && fields[i+1] == "packets" {
 				if packetsAt != -1 {
 					parseErr = fmt.Errorf("managed catch-all DROP rule has multiple packet counters: %s", oneLine(line))
-					return false
+					break
 				}
 				packetsAt = i + 2
 			}
 		}
+		if parseErr != nil {
+			break
+		}
 		if packetsAt == -1 {
 			parseErr = fmt.Errorf("managed catch-all DROP rule has no expanded packet counter: %s", oneLine(line))
-			return false
+			break
 		}
 		parsed, err := strconv.ParseUint(fields[packetsAt], 10, 64)
 		if err != nil {
 			parseErr = fmt.Errorf("parse managed catch-all DROP packet counter %q: %w", fields[packetsAt], err)
-			return false
+			break
 		}
 		if !fieldsAreNFTBookkeeping(fields[uidAt+1 : dropAt]) {
-			return false
+			continue
 		}
 		packets = parsed
 		matched++
-		return false
-	})
+	}
 	if parseErr != nil {
 		return 0, parseErr
 	}

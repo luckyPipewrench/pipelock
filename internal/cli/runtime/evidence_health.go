@@ -304,6 +304,7 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 	gatedFsync, durabilityBlocks := h.metrics.EvidenceCountersSnapshot()
 	fsyncStats := h.fsyncStats()
 	gapStats := h.gapStats()
+	fileStats := h.fileStats(cfg)
 	in := metrics.EvidenceAELInput{
 		RecorderEnabled:  requirements[metrics.EvidenceRequirementRecorderEnabled],
 		EmitterHealthy:   requirements[metrics.EvidenceRequirementEmitterHealthy],
@@ -324,6 +325,7 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		HeartbeatIntervalSeconds:   &hbi,
 		SequenceGaps:               gapStats,
 		FsyncErrors:                fsyncStats,
+		Files:                      fileStats,
 		DurabilityBlocks:           durabilityBlocks,
 		DurabilityInvariantOK:      h.selfAuditOK.Load() && gatedFsync >= durabilityBlocks,
 		Anchor:                     anchor,
@@ -333,6 +335,41 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		AnchorLagReceipts:          anchorLag,
 		LastAnchorTimestampSeconds: lastAnchor,
 	}, true
+}
+
+func (h *evidenceHealthMonitor) fileStats(cfg *config.Config) metrics.EvidenceFileStats {
+	if h == nil || h.recorder == nil || cfg == nil {
+		return metrics.EvidenceFileStats{
+			WarningThreshold:   recorder.EvidenceFileWarningThreshold,
+			MaxFilesPerSession: recorder.MaxEvidenceReadDirectoryEntries,
+		}
+	}
+	health, err := recorder.EvidenceDirectoryHealthForDir(h.recorder.Dir(), cfg.FlightRecorder.RetentionDays)
+	if err != nil {
+		// Deliberately NOT routed through fail(). That path latches
+		// selfAuditOK off permanently with no re-arm, and this is a
+		// metrics-only file-count scan: a transient directory read error would
+		// otherwise masquerade as a permanent evidence-integrity failure and
+		// never clear. Report zeroed counts alongside the real thresholds so a
+		// dashboard cannot read the gap as a healthy empty directory.
+		h.recordSamplerDegraded(err)
+		return metrics.EvidenceFileStats{
+			WarningThreshold:   recorder.EvidenceFileWarningThreshold,
+			MaxFilesPerSession: recorder.MaxEvidenceReadDirectoryEntries,
+		}
+	}
+	return metrics.EvidenceFileStats{
+		TotalEvidenceFiles:     health.TotalEvidenceFiles,
+		MaxSessionFiles:        health.MaxSessionFiles,
+		MaxSessionID:           health.MaxSessionID,
+		WarningThreshold:       health.WarningThreshold,
+		MaxFilesPerSession:     health.MaxFilesPerSession,
+		NearSessionFileLimit:   health.NearSessionFileLimit,
+		OverSessionFileLimit:   health.OverSessionFileLimit,
+		RetentionDays:          health.RetentionDays,
+		RetentionEnabled:       health.RetentionEnabled,
+		RetentionEligibleFiles: health.RetentionEligibleFiles,
+	}
 }
 
 func (h *evidenceHealthMonitor) emitter() *receipt.Emitter {
@@ -394,6 +431,20 @@ func (h *evidenceHealthMonitor) fail(check string, err error) {
 	}
 	if h.logW != nil && err != nil {
 		_, _ = fmt.Fprintf(h.logW, "CRITICAL: evidence self-audit %s failed: %v\n", check, err)
+	}
+}
+
+// recordSamplerDegraded reports that the file-count sampler could not read the
+// evidence directory. This is a measurement failure, not an integrity finding,
+// so it must stay off the latching self-audit path: conflating the two would
+// leave a permanently degraded integrity signal behind a transient read error,
+// and an operator cannot tell a real chain problem from a momentary EIO.
+func (h *evidenceHealthMonitor) recordSamplerDegraded(err error) {
+	if h.metrics != nil {
+		h.metrics.RecordSelfAuditFailure("sampler_error")
+	}
+	if h.logW != nil && err != nil {
+		_, _ = fmt.Fprintf(h.logW, "WARNING: evidence file-count sampler unavailable: %v\n", err)
 	}
 }
 

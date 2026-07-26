@@ -1302,9 +1302,9 @@ func stepInstallNFTRules() step {
 		desc: "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via pipelock-containment-nft.service",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			// Check nft version before generating rules. The containment
-			// ruleset requires "meta skuid" (available since nftables 0.4)
-			// and "counter log prefix ... drop" inline syntax (0.6+). Hosts
-			// with nft < 0.5 (rare but seen on AL2-era images) fail at load
+			// ruleset requires "meta skuid" (available since nftables 0.4),
+			// "counter log prefix ... drop" inline syntax (0.6+), and nft
+			// check mode (-c/--check, 0.8+). Hosts below that fail at load
 			// time with a cryptic parse error. Detect early and fail with a
 			// clear minimum-version message.
 			if err := checkNFTVersion(ctx, env); err != nil {
@@ -1322,15 +1322,25 @@ func stepInstallNFTRules() step {
 
 			rulesMatch := false
 			if existing, err := env.readFile(env.nftRulesPath); err == nil {
-				rulesMatch = string(existing) == body
+				existingBody := string(existing)
+				rulesMatch = existingBody == body
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 			}
 			tableLoaded := false
+			liveChainAttributed := false
 			liveRulesDrifted := false
-			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "list", "table", "inet", env.nftTableOrDefault()); code == 0 {
+			liveRulesManaged := false
+			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); code == 0 {
 				tableLoaded = true
+				if _, err := attributedNFTChainLines(out, env.nftChainOrDefault()); err == nil {
+					liveChainAttributed = true
+				}
 				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
+				liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
+			}
+			if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
+				return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
 			}
 
 			rulesChanged := false
@@ -1360,14 +1370,14 @@ func stepInstallNFTRules() step {
 			if !tableLoaded || rulesChanged || liveRulesDrifted {
 				captureNFTPreState(ctx, env)
 			}
+			reloadedManagedChain := false
 			if tableLoaded && (rulesChanged || liveRulesDrifted) {
-				// nft -f merges into an existing table. Drop our managed table
-				// first so stale rules from an older contain install cannot
-				// survive beside the new ruleset.
-				_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
-				tableLoaded = false
+				if err := reloadNFTManagedChain(ctx, env, body); err != nil {
+					return false, err
+				}
+				reloadedManagedChain = true
 			}
-			if !tableLoaded || rulesChanged || liveRulesDrifted {
+			if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
 				if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
 					return false, fmt.Errorf("nft load failed: %w", err)
 				}
@@ -1382,11 +1392,15 @@ func stepInstallNFTRules() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			// Drop the managed table best-effort, restore any previous live
-			// table captured during this install attempt, then restore files.
-			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
-			if err := restorePreviousNFTState(ctx, env); err != nil {
-				return err
+			// Restore any previous live table captured during this install
+			// attempt before deleting the newly installed table. If no
+			// previous table existed, drop the table created by this step.
+			if env.prevNFTTableStateKnown && strings.TrimSpace(env.prevNFTTableDump) != "" {
+				if err := restorePreviousNFTState(ctx, env); err != nil {
+					return err
+				}
+			} else {
+				_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			}
 			if err := restoreBackup(env, env.nftRulesPath); err != nil {
 				return err
@@ -1431,30 +1445,131 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	if strings.TrimSpace(env.prevNFTTableDump) == "" {
 		return nil
 	}
+	if !nftTableDumpDeclaresExpectedTable(env.prevNFTTableDump, env.nftTableOrDefault()) {
+		return fmt.Errorf("captured nft table dump is not table inet %s", env.nftTableOrDefault())
+	}
 	restorePath := env.nftRulesPath + ".restore"
-	if err := env.writeFile(restorePath, []byte(env.prevNFTTableDump), modeConfigSecret); err != nil {
+	restoreScript := "delete table inet " + env.nftTableOrDefault() + "\n" + env.prevNFTTableDump
+	if err := env.writeFile(restorePath, []byte(restoreScript), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft restore file %s: %w", restorePath, err)
 	}
 	defer func() { _ = env.removeFile(restorePath) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", restorePath); err != nil {
+		return fmt.Errorf("validate previous nft table restore: %w", err)
+	}
 	if err := runOrErr(ctx, env, nftExecutable(env), "-f", restorePath); err != nil {
 		return fmt.Errorf("restore previous nft table: %w", err)
 	}
 	return nil
 }
 
+func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string) error {
+	reloadPath := env.nftRulesPath + ".reload"
+	reloadScript := "delete chain inet " + env.nftTableOrDefault() + " " + env.nftChainOrDefault() + "\n" + rulesBody
+	if err := env.writeFile(reloadPath, []byte(reloadScript), modeConfigSecret); err != nil {
+		return fmt.Errorf("write nft managed chain reload file %s: %w", reloadPath, err)
+	}
+	defer func() { _ = env.removeFile(reloadPath) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", reloadPath); err != nil {
+		return fmt.Errorf("validate nft managed chain reload: %w", err)
+	}
+	if err := runOrErr(ctx, env, nftExecutable(env), "-f", reloadPath); err != nil {
+		return fmt.Errorf("reload nft managed chain: %w", err)
+	}
+	return nil
+}
+
+func nftTableDumpDeclaresExpectedTable(dump, table string) bool {
+	for _, raw := range strings.Split(dump, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := nftLineFields(line)
+		return len(fields) >= 4 && fields[0] == "table" && fields[1] == "inet" && fields[2] == table && fields[3] == "{"
+	}
+	return false
+}
+
 func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
-	return chainHasSkuidAcceptForUID(out, chainName, operatorUID) &&
-		chainHasSkuidAcceptForUID(out, chainName, proxyUID) &&
-		chainHasAgentCatchAllDrop(out, chainName, agentUID) &&
-		chainHasAgentProxyLoopbackAllowBeforeDrop(out, chainName, agentUID, proxyPort) &&
-		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "udp") &&
-		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "tcp") &&
-		!chainHasUnsafeVerdictBeforeAgentDrop(out, chainName, containmentUIDs{
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return false
+	}
+	return nftChainLinesHaveManagedOutputBaseChain(lines) &&
+		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
+		chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
+		chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
+		chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
+		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
+		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp") &&
+		!chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{
 			operatorUID:   operatorUID,
 			operatorKnown: true,
 			proxyUID:      proxyUID,
 			agentUID:      agentUID,
 		}, proxyPort)
+}
+
+func liveNFTContainmentLooksManaged(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
+	lines, err := attributedNFTChainLines(out, chainName)
+	if err != nil {
+		return false
+	}
+	return chainLinesHaveManagedAgentLoopbackBeforeCatchAllDrop(lines, proxyPort) ||
+		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
+			chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
+			chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
+			chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
+			chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
+			chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp")
+}
+
+func chainLinesHaveManagedAgentLoopbackBeforeCatchAllDrop(lines []string, proxyPort int) bool {
+	loopbackUIDs := make(map[int]struct{})
+	for _, line := range lines {
+		if uid, ok := lineAgentProxyLoopbackAllowUID(line, proxyPort); ok {
+			loopbackUIDs[uid] = struct{}{}
+			continue
+		}
+		for uid := range loopbackUIDs {
+			if lineHasTerminalSkuidVerdict(line, uid, "drop") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lineAgentProxyLoopbackAllowUID(line string, proxyPort int) (int, bool) {
+	fields := nftLineFields(line)
+	wantPrefix := []string{
+		"meta", "skuid",
+	}
+	wantSuffix := []string{
+		"ip", "daddr", "127.0.0.1",
+		"tcp", "dport", strconv.Itoa(proxyPort),
+		"accept",
+	}
+	if len(fields) < len(wantPrefix)+1+len(wantSuffix) {
+		return 0, false
+	}
+	for i, field := range wantPrefix {
+		if fields[i] != field {
+			return 0, false
+		}
+	}
+	uid, err := strconv.Atoi(fields[len(wantPrefix)])
+	if err != nil {
+		return 0, false
+	}
+	suffixAt := len(wantPrefix) + 1
+	for i, field := range wantSuffix {
+		if fields[suffixAt+i] != field {
+			return 0, false
+		}
+	}
+	return uid, nftRuleTailIsCommentOnly(fields[suffixAt+len(wantSuffix):])
 }
 
 func nftRulesIncludeLine(path string) string {
@@ -1570,12 +1685,13 @@ func (e *installEnv) nftChainOrDefault() string {
 }
 
 // minNFTMajor and minNFTMinor define the minimum nftables version that
-// supports all syntax used by the containment ruleset: "meta skuid" (0.4+),
-// "counter log prefix ... drop" inline (0.6+), and "table inet" (0.2+).
-// We require 0.6.0 as the floor.
+// supports all syntax used by the containment ruleset and its validated
+// rollback/repair path: "meta skuid" (0.4+), "counter log prefix ... drop"
+// inline (0.6+), "table inet" (0.2+), and nft check mode (-c/--check, 0.8+).
+// We require 0.8.0 as the floor.
 const (
 	minNFTMajor = 0
-	minNFTMinor = 6
+	minNFTMinor = 8
 )
 
 // checkNFTVersion runs `nft -v` and parses the version. Returns nil when the
@@ -1600,7 +1716,7 @@ func checkNFTVersion(ctx context.Context, env *installEnv) error {
 	}
 	return fmt.Errorf(
 		"nft version %d.%d is too old; the containment ruleset requires nftables >= %d.%d "+
-			"(meta skuid + inline counter/log/drop). "+
+			"(meta skuid + inline counter/log/drop + nft check mode). "+
 			"Upgrade nftables: on RHEL/AL2 `yum install nftables`, on Debian/Ubuntu `apt install nftables`",
 		major, minor, minNFTMajor, minNFTMinor)
 }

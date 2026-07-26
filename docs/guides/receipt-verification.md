@@ -5,11 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Receipt verification
 
-Pipelock's flight recorder generates Ed25519-signed action receipts -- one per
-proxied request. Each receipt links to the previous one via a SHA-256 hash
-chain, forming a tamper-evident log of every security decision. This guide
-covers how to verify receipts, check chain integrity, and use the
-cross-implementation conformance suite.
+Pipelock's flight recorder generates Ed25519-signed action receipts for
+mediated actions. Each writer process links its receipts to the previous
+receipt it wrote via a SHA-256 hash chain. That makes the records in one writer
+stream tamper-evident, but it is not a guarantee that several pipelock
+processes sharing one recorder directory produced a single deployment-wide
+sequence. This guide covers how to verify receipts, check chain integrity, and
+use the cross-implementation conformance suite.
 
 ## When to verify
 
@@ -162,7 +164,8 @@ format.
 ## Verifying a receipt chain
 
 Pass a flight recorder JSONL file (or `--chain DIR` for a multi-file chain that
-spans restarts or rotations) and pin the trusted key:
+spans restarts or rotations for one recorder session/writer stream) and pin the
+trusted key:
 
 ```bash
 pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
@@ -198,6 +201,14 @@ As with a single receipt, an unpinned chain run (no `--key`) prints
 the key is what proves the chain came from a signer you trust.
 
 If any check fails, the output reports which sequence number broke the chain.
+In a directory shared by concurrent writer processes, a `chain_prev_hash`
+mismatch can be caused by a recorder fork rather than by after-the-fact
+tampering. Run `pipelock evidence doctor DIR` to surface the structural damage
+for investigation. The doctor reports symptoms such as duplicate sequence
+numbers, conflicting predecessor hashes, and entries whose contents no longer
+match their recorded hash. Those symptoms narrow the cause but do not by
+themselves establish it: a fork and a crafted edit can present the same
+structure.
 
 ### Completeness analysis
 
@@ -212,7 +223,7 @@ pipelock-verifier completeness /var/lib/pipelock/evidence \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
 ```
 
-Exit code 0 means the analysis ran and the chain was not classified BROKEN;
+Exit code 0 means the analysis ran and the per-writer chain was not classified BROKEN;
 LIMITED and UNVERIFIED are successful analyses. Exit code 1 means broken
 completeness evidence, an unpinned non-empty chain without
 `--allow-unpinned`, or another verifier failure.
@@ -247,8 +258,8 @@ linked; only the operator knows whether every key is one of theirs.
 
 ## Computing a transcript root
 
-The transcript root is the hash of the final receipt in the chain, serving as
-a tamper-evident summary of the entire session:
+The transcript root is the hash of the final receipt in the verified writer
+chain, serving as a tamper-evident summary of the records in that chain:
 
 ```bash
 pipelock transcript-root evidence-proxy-0.jsonl --key 70b991eb...
@@ -265,14 +276,16 @@ Transcript Root: evidence-proxy-0.jsonl
 ```
 
 The `--key` flag is required for transcript roots: the root is only
-meaningful if every receipt in the chain was verified against a trusted key.
+meaningful if every receipt in the selected writer chain was verified against a
+trusted key.
 
 When verifying a file-based evidence capture, `transcript-root` derives the
 `SessionID` from the first entry in the file rather than the `--session`
 flag (which still controls the session ID for directory-based chain scans).
 An empty evidence file — zero receipts — fails with a non-zero exit code
-rather than silently printing a valid-looking root, so scripts can trust
-an exit-0 status to mean "receipts were present and the chain verified."
+rather than silently printing a valid-looking root, so scripts can trust an
+exit-0 status to mean receipts were present and the selected writer chain
+verified.
 
 ## Anchoring receipts
 
@@ -392,7 +405,7 @@ Bundle v1 specification](../specs/anchor-bundle-v1.md). The published shape is
 not an anchor-backend plugin API and does not make an external proof verifiable
 by `pipelock-verifier`.
 
-## How the chain works
+## How the per-writer chain works
 
 Each receipt contains:
 
@@ -406,7 +419,7 @@ Each receipt contains:
   `SHA-256(canonical JSON of action_record)`.
 - **signer_key**: Hex-encoded Ed25519 public key of the signer.
 
-The chain links receipts via `chain_prev_hash`:
+Within one writer stream, the chain links receipts via `chain_prev_hash`:
 
 ```
 Receipt 0:  chain_seq=0, chain_prev_hash="genesis" (legacy) or "g1:<sha256>"
@@ -415,12 +428,18 @@ Receipt 2:  chain_seq=2, chain_prev_hash=sha256(receipt_1)
 ...
 ```
 
-Inserting, removing, or modifying any receipt breaks the chain at that point.
+Inserting, removing, or modifying any receipt in that writer stream breaks the
+chain at that point. Current releases do not reject a deployment where multiple
+pipelock processes share one recorder directory; if they race and choose the
+same next sequence, the directory can fork and become structurally
+unverifiable. `pipelock evidence doctor DIR` reports duplicate sequence values,
+conflicting `prev_hash` values, receipt-chain collisions, missing genesis, and
+gaps without modifying the directory.
 
 ## Resume and rotation integrity
 
-When pipelock restarts or rotates the evidence file, the receipt emitter
-resumes the chain from the last persisted receipt. v2.2.0 hardens the
+When one pipelock writer process restarts or rotates the evidence file, the
+receipt emitter resumes its chain from the last persisted receipt. v2.2.0 hardens the
 resume path in three ways:
 
 - **Tail signature verification:** the resume code verifies the Ed25519
@@ -431,7 +450,7 @@ resume path in three ways:
 - **Atomic resume:** the recorder computes the resumed sequence number,
   previous hash, and first-sequence-in-span into local temporaries and
   only mutates its internal state after all filesystem reads succeed.
-  A transient read error no longer leaves a half-initialised chain
+  A transient read error no longer leaves a half-initialised writer chain
   that restarts from genesis.
 - **uint64 sequence parsing:** file ordering during resume uses
   `strconv.ParseUint` so evidence filenames with sequence numbers
@@ -439,16 +458,17 @@ resume path in three ways:
 
 These restart hardenings are transparent to verifiers — the wire format is
 unchanged. They protect the emitter side from bugs and tampering that
-would have produced broken or forgeable chains at restart.
+would have produced broken or forgeable per-writer chains at restart.
 
-**Signing-key rotation no longer bricks the chain.** Earlier builds resumed by
-hard-verifying the persisted tail against the *current* signing key, so any
-legitimate operator key rotation orphaned the chain and failed every subsequent
-emit. The emitter now recognizes a tail that is self-valid under a *different*
-embedded key as a rotation and opens a new chain segment: its first receipt
-links to the prior tail hash and carries a `KeyTransition` marker, so the
-boundary is provable and the chain stays offline-verifiable across the switch
-(see [Chains that rotated the signing key](#chains-that-rotated-the-signing-key)).
+**Signing-key rotation no longer bricks a writer chain.** Earlier builds
+resumed by hard-verifying the persisted tail against the *current* signing key,
+so any legitimate operator key rotation orphaned that writer chain and failed
+every subsequent emit. The emitter now recognizes a tail that is self-valid
+under a *different* embedded key as a rotation and opens a new chain segment for
+that writer: its first receipt links to the prior tail hash and carries a
+`KeyTransition` marker, so the boundary is provable and that writer chain stays
+offline-verifiable across the switch (see
+[Chains that rotated the signing key](#chains-that-rotated-the-signing-key)).
 A tail whose own signature is invalid still fails closed, so a forged tail
 cannot force a silent chain reset that hides history.
 

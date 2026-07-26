@@ -1,16 +1,19 @@
 # Flight Recorder Guide
 
-The flight recorder writes configured enforcement evidence to a hash-chained,
-tamper-evident log. Blocks produce receipts; allow receipts require
+The flight recorder writes configured enforcement evidence to a per-writer
+hash-chained, tamper-evident log. Blocks produce receipts; allow receipts require
 `flight_recorder.require_receipts: true`, and clean stream frames are summarized
 rather than individually receipted. Each recorded entry is cryptographically
-linked to the one before it, so deletion or modification within an observed
-chain breaks verification. Signed checkpoints prove the chain state observed at
-specific points; they do not prove that traffic which bypassed Pipelock was
-recorded. The recorder is designed for post-incident investigation, compliance
-evidence, and forensic replay.
+linked to the one before it in that writer stream, so deletion or modification
+within an observed chain breaks verification. Signed checkpoints prove the chain
+state observed by one writer at specific points; they do not prove that traffic
+which bypassed Pipelock was recorded, or that several processes sharing one
+recorder directory formed one deployment-wide sequence. Use
+`pipelock evidence doctor DIR` to detect structural fork damage in a directory.
+The recorder is designed for post-incident investigation, compliance evidence,
+and forensic replay.
 
-**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` and a signing key are configured, though: without them the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
+**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` is configured, and because `sign_checkpoints` defaults to `true` a signing key is required alongside it unless you opt into an unsigned recorder with `sign_checkpoints: false`. Without a `dir` the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
 
 ## What Gets Recorded
 
@@ -30,7 +33,7 @@ flight_recorder:
   enabled: true
   dir: /var/lib/pipelock/evidence
   checkpoint_interval: 1000      # entries between signed checkpoints
-  retention_days: 90             # auto-expire files older than 90 days (0 = forever)
+  retention_days: 90             # auto-expire raw-escrow sidecars older than 90 days (0 = forever)
   redact: true                   # DLP redaction before commit (recommended)
   require_receipts: false        # fail closed before forwarding when allow receipts cannot be emitted
   sign_checkpoints: true         # Ed25519 signed checkpoints
@@ -45,7 +48,7 @@ flight_recorder:
 | `enabled` | true | Master switch. **On by default.** Recording requires `dir` and a signing key too — `enabled: true` with no `dir` is inert (nothing is written), not an error. Set `enabled: false` to opt out. |
 | `dir` | (empty) | Directory for evidence files. The recorder stays inert until this is set; created if absent. `pipelock init` generates one. |
 | `checkpoint_interval` | 1000 | How many entries between signed checkpoints. |
-| `retention_days` | 0 | Auto-expire files after N days. 0 = never expire. |
+| `retention_days` | 0 | Auto-expire raw-escrow sidecars after N days. JSONL receipt-chain shards are preserved. 0 = never expire. |
 | `redact` | true | DLP scan each entry before writing. Replaces matched content with a redaction marker. |
 | `require_receipts` | false | Require receipt emission before allow-path traffic is forwarded. When true, missing or failed receipt emission blocks the action with `receipt_emission_failed`; block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | true | Sign each checkpoint with the agent's Ed25519 private key. |
@@ -106,18 +109,18 @@ Two operational notes:
 
 Because the recorder is on by default, two footguns are bounded by the defaults — keep them in mind if you change them:
 
-- **Disk growth.** Evidence files rotate at `max_entries_per_file` (default 10000) and can auto-expire with `retention_days`. Leave rotation on so a busy proxy cannot silently fill the disk; set `retention_days` for a hard cap.
+- **Disk growth.** Evidence files rotate at `max_entries_per_file` (default 10000). `retention_days` can trim old raw-escrow sidecars, but JSONL receipt-chain shards are preserved for offline verification; archive or explicitly prune evidence if you need a hard storage cap.
 - **Privacy.** Receipts record the *targets* of mediated traffic. `redact` (default `true`) DLP-scrubs each entry before it touches disk so secrets are not persisted in the clear. Do not disable it unless you have a separate control around the evidence directory.
 - **Sign-without-a-key.** `sign_checkpoints` defaults to `true`, so once you set a `dir` the recorder expects a signing key. Starting a persisting recorder with `sign_checkpoints: true` and no `signing_key_path` is a hard startup error (it would otherwise write checkpoints with an empty signature that `verify-receipt` later rejects as "missing signature"). Provide `signing_key_path`, or set `sign_checkpoints: false` for an explicitly unsigned hash-chained recorder. `pipelock init` sets both, so this only bites hand-written configs.
 
 ### Completeness anchor (transcript root)
 
-On a **clean shutdown** the recorder seals the chain with a `transcript_root` entry: a single record naming the final sequence number and the chain's root hash. This is the completeness anchor — `verify-receipt --chain` can confirm the chain reached the sealed root rather than reporting a chain that was silently truncated at the tail as VALID.
+On a **clean shutdown** the recorder seals that writer's chain with a `transcript_root` entry: a single record naming the final sequence number and the chain's root hash. This is the per-writer completeness anchor — `verify-receipt --chain` can confirm the selected chain reached the sealed root rather than reporting a chain that was silently truncated at the tail as VALID.
 
 Scope and limits:
 
 - **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). A `SIGKILL` (or power loss) terminates the process before the seal runs, so the tail is truncated with no root. Detecting that case requires an external/periodic anchor and is not closed here.
-- **Restart resumes cleanly.** A transcript root is a per-run checkpoint, not a permanent seal. The next start resumes emission into the same hash-linked chain (a continuous chain still verifies), so receipts are never silently bricked by a prior clean shutdown.
+- **Restart resumes cleanly.** A transcript root is a per-run checkpoint, not a permanent seal. The next start by the same writer resumes emission into the same hash-linked chain (a continuous per-writer chain still verifies), so receipts are never silently bricked by a prior clean shutdown.
 
 ### Key-free evidence capture (`--capture-output`)
 
@@ -237,12 +240,17 @@ The hash covers all entry fields joined with null-byte separators:
 SHA256(v \0 seq \0 ts \0 session_id \0 trace_id \0 type \0 transport \0 summary \0 detail_json \0 raw_ref \0 prev_hash)
 ```
 
-The first entry in a chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry. Any gap, deletion, or modification breaks the chain.
+The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory; run `pipelock evidence doctor DIR` when a verifier reports a `prev_hash` mismatch to surface the structural damage for investigation. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
 
 To verify a chain:
 
 ```go
-entries, _ := recorder.ReadEntries("evidence-abc123-0.jsonl")
+entries, err := recorder.ReadEntries("evidence-abc123-0.jsonl")
+if err != nil {
+    // Treat ErrEvidenceReadLimitExceeded as incomplete evidence, not as a
+    // successful partial read.
+    return err
+}
 err := recorder.VerifyChain(entries)
 ```
 
@@ -270,7 +278,10 @@ The signature covers the `prev_hash` of the checkpoint entry, which represents t
 To verify checkpoints independently:
 
 ```go
-entries, _ := recorder.ReadEntries(path)
+entries, err := recorder.ReadEntries(path)
+if err != nil {
+    return err
+}
 err := recorder.VerifyCheckpoints(entries, pubKey)
 ```
 
@@ -350,6 +361,14 @@ Filter fields:
 | `Before` | Include entries before this time. |
 | `MinSeq` | Include entries at or above this sequence number. |
 | `MaxSeq` | Include entries at or below this sequence number. |
+| `MaxEntriesRead` | Optional parsed-entry ceiling. Positive values apply across the session query. Zero uses the default per-file parsed-entry ceiling. If reached, `QueryResult.Truncated` is true. |
+| `MaxDirectoryEntries` | Optional evidence-directory entry ceiling. Zero uses the default ceiling. |
+| `MaxBytesRead` | Optional byte ceiling. Positive values apply across scanned evidence files. Zero uses the default per-file byte ceiling. If reached, `QueryResult.Truncated` is true. |
+
+Recorder reads are bounded. `ReadEntries` and `ReadEntriesFromReader` return an
+error if the default evidence size or entry-count ceiling is exceeded. Query
+APIs that can return read metadata set `QueryResult.Truncated` instead of
+silently returning a partial session as complete.
 
 List sessions with recorded evidence:
 
@@ -357,13 +376,27 @@ List sessions with recorded evidence:
 sessions, err := recorder.ListSessions("/var/lib/pipelock/evidence")
 ```
 
+Session listing is also bounded by default. Use `ListSessionsBoundedResult` when
+a UI can display an explicit truncation warning; strict helpers return an error
+when the directory entry cap is exceeded.
+
 ## File Rotation and Retention
 
 Files rotate when a file reaches `max_entries_per_file` entries. The new file picks up where the old one left off, with the new file's first entry linking to the last entry in the previous file via `prev_hash`.
 
-Auto-expire removes evidence files older than `retention_days` days based on file modification time. Call `recorder.ExpireOldFiles()` periodically to trigger cleanup. Expiry is not automatic. You need to call it on a schedule (a cron job, or at startup).
+Pipelock automatically expires raw-escrow sidecars older than `retention_days` days based on file modification time. Expiry runs once when the flight recorder starts and then periodically while the process is running. Expiry is best-effort: cleanup errors are surfaced as warnings, but they do not block proxy traffic.
 
-Expired files are gone. If you need longer retention, either increase `retention_days` or copy evidence files to external storage before they expire.
+JSONL shards are preserved even when they are older than `retention_days`. They are the hash-chain spine: deleting an older shard while retaining a newer shard can preserve append continuity, but it breaks full-history offline verification and can make a published anchor impossible to replay from local evidence.
+
+To trigger cleanup immediately, run:
+
+```bash
+pipelock evidence expire --config pipelock.yaml
+```
+
+`pipelock doctor` warns when any session approaches the 256-shard bounded resume cap, using a 200-shard warning threshold so operators have headroom before receipt resume fails closed.
+
+Expired raw sidecars are gone. If you need long-term raw-payload recovery, either increase `retention_days` or copy evidence files to external storage before they expire. If you need to reduce JSONL storage, archive the chain first and verify the archive before pruning local shards.
 
 ## Integration with Session Manifest and AgBOM
 
@@ -403,21 +436,26 @@ key — no server, no account:
 #    writes the shareable public-key sidecar at <signing_key_path>.pub.
 pipelock init
 
-# 2. Run the proxy. Every mediated allow/block decision is signed into the
-#    hash-linked chain under flight_recorder.dir.
+# 2. Run one proxy writer. Mediated allow/block decisions are signed into that
+#    writer's hash-linked chain under flight_recorder.dir.
 pipelock run --config /etc/pipelock/pipelock.yaml
 
-# 3. Stop it cleanly (Ctrl-C / SIGTERM). Graceful shutdown seals the chain with
-#    a transcript_root completeness anchor; a SIGKILL skips the seal and leaves
-#    the tail unsealed (verification then reports no root rather than VALID).
+# 3. Stop it cleanly (Ctrl-C / SIGTERM). Graceful shutdown seals that writer's
+#    chain with a transcript_root completeness anchor; a SIGKILL skips the seal
+#    and leaves the tail unsealed (verification then reports no root rather
+#    than VALID).
 
-# 4. Verify the entire chain offline with the public-key sidecar. Use the dir
-#    and .pub path that step 1 wrote into your config.
+# 4. Verify the retained writer chain offline with the public-key sidecar. Use
+#    the dir and .pub path that step 1 wrote into your config.
 pipelock verify-receipt --chain /var/lib/pipelock/evidence \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
 ```
 
-`--chain` walks every evidence file in the directory (across rotations and
-restarts), checks `prev_hash` linkage and sequence continuity, verifies each
-signature against the pinned key, and confirms the sealed `transcript_root`. If
-the chain rotated its signing key, pass each public key with a repeated `--key`.
+`--chain` walks the selected session's evidence files in the directory (across
+rotations and restarts), checks `prev_hash` linkage and sequence continuity,
+verifies each signature against the pinned key, and confirms the sealed
+`transcript_root`. If the writer chain rotated its signing key, pass each public
+key with a repeated `--key`. Because JSONL shards are preserved, this remains a
+full local writer-chain check unless an operator has explicitly pruned or moved
+shards. Copy evidence to external storage before manual pruning if you need
+full-history offline verification later.

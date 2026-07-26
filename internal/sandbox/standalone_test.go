@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // skipIfStandaloneUnavailable skips tests that require full standalone
@@ -175,6 +177,219 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LaunchStandalone: %v", err)
 	}
+}
+
+func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "stop waits for active handler"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
+			if err != nil {
+				t.Fatalf("mkdir socket dir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+			socketPath := filepath.Join(socketDir, "proxy.sock")
+			ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+			if err != nil {
+				t.Fatalf("unix listen: %v", err)
+			}
+
+			handlerEntered := make(chan struct{})
+			releaseHandler := make(chan struct{})
+			handlerDone := make(chan struct{})
+			server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
+				ProxyHandler: func(conn net.Conn) {
+					defer close(handlerDone)
+					defer func() { _ = conn.Close() }()
+					close(handlerEntered)
+					for {
+						select {
+						case <-releaseHandler:
+							return
+						default:
+							runtime.Gosched()
+						}
+					}
+				},
+			})
+			defer server.stop()
+
+			conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", socketPath)
+			if err != nil {
+				t.Fatalf("unix dial: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+
+			select {
+			case <-handlerEntered:
+			case <-time.After(time.Second):
+				t.Fatal("proxy handler did not start")
+			}
+
+			stopDone := make(chan struct{})
+			go func() {
+				defer close(stopDone)
+				server.stop()
+			}()
+
+			select {
+			case <-stopDone:
+				close(releaseHandler)
+				<-handlerDone
+				t.Fatal("stop returned before active proxy handler exited")
+			case <-time.After(100 * time.Millisecond):
+				close(releaseHandler)
+			}
+
+			select {
+			case <-handlerDone:
+			case <-time.After(time.Second):
+				t.Fatal("proxy handler did not exit")
+			}
+			select {
+			case <-stopDone:
+			case <-time.After(time.Second):
+				t.Fatal("stop did not return after proxy handler exited")
+			}
+		})
+	}
+}
+
+func TestStandaloneProxyServer_StopIsBoundedForBlockedHandler(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
+	if err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("unix listen: %v", err)
+	}
+
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	handlerDone := make(chan struct{})
+	server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
+		ProxyHandler: func(conn net.Conn) {
+			defer close(handlerDone)
+			defer func() { _ = conn.Close() }()
+			close(handlerEntered)
+			<-releaseHandler
+		},
+	})
+	defer func() {
+		close(releaseHandler)
+		<-handlerDone
+	}()
+
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("unix dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case <-handlerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("proxy handler did not start")
+	}
+
+	if server.stopWithin(50 * time.Millisecond) {
+		t.Fatal("stop reported a clean drain while proxy handler was still blocked")
+	}
+}
+
+func TestStandaloneProxyServer_StopWithinReportsDrainOnlyOnFirstCall(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
+	if err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("unix listen: %v", err)
+	}
+
+	server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
+		ProxyHandler: func(conn net.Conn) {
+			_ = conn.Close()
+		},
+	})
+	if !server.stopWithin(time.Second) {
+		t.Fatal("first stopWithin call did not report clean drain")
+	}
+	if server.stopWithin(time.Second) {
+		t.Fatal("second stopWithin call reported drain status")
+	}
+}
+
+func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "plk-proxy-*")
+	if err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("unix listen: %v", err)
+	}
+
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	handlerDone := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseHandler) })
+	}
+	t.Cleanup(release)
+	server := startStandaloneProxyServer(ln, standaloneProxyConnectionConfig{
+		ProxyHandler: func(conn net.Conn) {
+			defer close(handlerDone)
+			defer func() { _ = conn.Close() }()
+			close(handlerEntered)
+			<-releaseHandler
+		},
+	})
+
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("unix dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case <-handlerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("proxy handler did not start")
+	}
+
+	if server.stopWithin(time.Millisecond) {
+		t.Fatal("stop reported a clean drain while proxy handler was still blocked")
+	}
+
+	release()
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("proxy handler did not exit after release")
+	}
+
+	// handlerDone closes inside the handler, while the server untracks the
+	// connection after the handler returns, so the untrack is strictly later and
+	// its timing is not ordered against this goroutine. Poll for the drain.
+	testwait.For(t, 2*time.Second, func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return len(server.conns) == 0
+	}, "timed-out proxy server leaked tracked connections")
 }
 
 func TestHandleStandaloneProxyConnection_NilHandlerFailsClosed(t *testing.T) {

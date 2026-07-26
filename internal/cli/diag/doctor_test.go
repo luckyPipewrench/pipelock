@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func TestDoctorJSONReportsWarningsForDefaultTopology(t *testing.T) {
@@ -279,6 +281,71 @@ func TestCheckDoctorFlightRecorderWarnsForUnverifiedMissingDir(t *testing.T) {
 	}
 	if !strings.Contains(check.Detail, "not verified") {
 		t.Fatalf("detail = %q, want unverified warning", check.Detail)
+	}
+}
+
+func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name       string
+		files      int
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name:       "below_warning",
+			files:      recorder.EvidenceFileWarningThreshold - 1,
+			wantStatus: doctorStatusOK,
+		},
+		{
+			name:       "at_warning",
+			files:      recorder.EvidenceFileWarningThreshold,
+			wantStatus: doctorStatusWarn,
+			wantDetail: fmt.Sprintf("warning threshold is %d", recorder.EvidenceFileWarningThreshold),
+		},
+		{
+			// Exactly at the cap is still resumable, so this must warn rather
+			// than fail. This is the boundary an off-by-one would flip.
+			name:       "at_cap",
+			files:      recorder.MaxEvidenceReadDirectoryEntries,
+			wantStatus: doctorStatusWarn,
+		},
+		{
+			// Past the bounded resume cap the chain can no longer be
+			// resumed, so doctor must fail rather than warn.
+			name:       "over_cap",
+			files:      recorder.MaxEvidenceReadDirectoryEntries + 1,
+			wantStatus: doctorStatusFail,
+			wantDetail: fmt.Sprintf("over the %d-file bounded resume cap", recorder.MaxEvidenceReadDirectoryEntries),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeDoctorEvidenceShards(t, dir, "proxy", tt.files)
+			cfg := config.Defaults()
+			cfg.FlightRecorder.Enabled = true
+			cfg.FlightRecorder.Dir = dir
+
+			check := checkDoctorFlightRecorder(cfg)
+			if check.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q; check=%+v", check.Status, tt.wantStatus, check)
+			}
+			if tt.wantDetail != "" && !strings.Contains(check.Detail, tt.wantDetail) {
+				t.Fatalf("detail = %q, want substring %q", check.Detail, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func writeDoctorEvidenceShards(t *testing.T, dir, sessionID string, count int) {
+	t.Helper()
+	for i := range count {
+		path := filepath.Join(dir, fmt.Sprintf("evidence-%s-%d.jsonl", sessionID, i))
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write evidence shard %d: %v", i, err)
+		}
 	}
 }
 

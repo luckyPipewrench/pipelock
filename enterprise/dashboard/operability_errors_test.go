@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type failAfterWriter struct {
@@ -656,8 +658,32 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		if err := os.WriteFile(path, bytes.Repeat([]byte{' '}, 8<<20+1), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC()); err == nil || !strings.Contains(err.Error(), "read limit exceeded") {
+		_, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC())
+		if err == nil || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("oversized source error = %v, want bounded-read rejection", err)
+		}
+		// Pin WHICH bound tripped: the sentinel alone passes even if the wrong
+		// cap fires, which would misdiagnose the truncation for an operator.
+		if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d bytes", recorder.MaxEvidenceReadFileBytes)) || strings.Contains(err.Error(), "entries") {
+			t.Fatalf("oversized source error = %v, want the byte limit named", err)
+		}
+	})
+
+	t.Run("too many source entries", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "evidence-agent-0.jsonl")
+		var data strings.Builder
+		for seq := range recorder.MaxEvidenceReadEntries + 1 {
+			_, _ = fmt.Fprintf(&data, `{"v":2,"seq":%d,"ts":"2026-01-01T00:00:00Z","session_id":"agent-a","type":"request"}`+"\n", seq)
+		}
+		if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := buildReadModelIndex([]string{path}, time.Unix(100, 0).UTC())
+		if err == nil || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+			t.Fatalf("too-many-entries source error = %v, want bounded-read rejection", err)
+		}
+		if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d entries", recorder.MaxEvidenceReadEntries)) || strings.Contains(err.Error(), "bytes") {
+			t.Fatalf("too-many-entries source error = %v, want the entry limit named", err)
 		}
 	})
 

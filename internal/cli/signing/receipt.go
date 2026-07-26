@@ -714,6 +714,7 @@ func printReceiptLimits(out io.Writer) {
 		evidence.LimitRecorderDisabled,
 		evidence.LimitVerifierDrift,
 		evidence.LimitContainmentUnproven,
+		evidence.LimitConcurrentWriters,
 	} {
 		limit, _ := evidence.ByID(id)
 		_, _ = fmt.Fprintf(out, "  Limit:      %s: %s\n", limit.ID, limit.Summary)

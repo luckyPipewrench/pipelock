@@ -129,7 +129,7 @@ pipelock contain verify
 |---|---|---|
 | 1 | `system_users_exist` | `pipelock-proxy` and `pipelock-agent` UIDs exist. |
 | 2 | `pipelock_systemd_unit` | `pipelock.service` is running as `pipelock-proxy`. |
-| 3 | `nftables_containment_ruleset` | The containment ruleset is loaded and matches the expected shape. |
+| 3 | `nftables_containment_ruleset` | The exact managed nftables chain is loaded as the active output base chain and contains the required attributed owner-match rules. |
 | 4 | `wrapper_scripts_installed` | `plk-launch` plus the registered tool wrappers exist with correct mode. |
 | 5 | `ca_bundle_present` | `/etc/pipelock/combined-ca.pem` is readable by the agent user. |
 | 6 | `pipelock_listening_loopback` | Pipelock is accepting connections on `127.0.0.1:<proxy-port>`. |
@@ -139,6 +139,11 @@ pipelock contain verify
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
+
+The nftables probes fail closed when attribution is ambiguous. A regular
+lookalike chain, a table-wide listing that happens to contain matching-looking
+rules, or an unreadable managed DROP counter is reported as not enforced rather
+than treated as probable containment.
 
 Flags:
 
@@ -205,7 +210,7 @@ Checks:
 | 3 | `python_through_proxy` | `python` reaches an allowed host via the `pipelock-python` wrapper. |
 | 4 | `node_through_proxy` | node's `fetch()` reaches an allowed host via the `pipelock-node` wrapper + undici shim. |
 | 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error — no hang, no bypass. |
-| 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
+| 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the positively attributed managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 

@@ -73,6 +73,11 @@ type ServerOpts struct {
 	// harnesses. It is unexported so CLI/operator input cannot enable it.
 	allowEphemeralListenersForTesting bool
 
+	// expireForTesting overrides the retention pass. Unexported and threaded
+	// through opts rather than a package-level variable so parallel tests do
+	// not share mutable state.
+	expireForTesting expireFunc
+
 	// AgentArgs is the command+args that followed "--" on the CLI, or nil
 	// when "--" was absent. Used only for the Phase 2 "Agent: ..." note
 	// emitted during startup.
@@ -524,6 +529,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.cleanup()
 			return nil, fmt.Errorf("creating flight recorder: %w", recErr)
 		}
+		runFlightRecorderExpiryOnce(rec, opts.Stderr, opts.expiry())
 		s.recorder = rec
 		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
 		postureBinding, bindErr := posturebinding.LoadRuntime()
@@ -600,6 +606,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 
 		_, _ = fmt.Fprintf(opts.Stderr, "  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+		printFlightRecorderEvidenceWarning(opts.Stderr, cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
 	} else if cfg.FlightRecorder.Enabled {
 		// Flight recorder is on by default, but no dir is configured, so no
 		// recorder is built and no receipts are written. Surface this once so an
@@ -672,4 +679,13 @@ func (s *Server) Shutdown(_ context.Context) error {
 		cancel()
 	}
 	return nil
+}
+
+// expiry returns the retention pass to run: the test override when set,
+// otherwise the real one.
+func (o ServerOpts) expiry() expireFunc {
+	if o.expireForTesting != nil {
+		return o.expireForTesting
+	}
+	return defaultExpire
 }

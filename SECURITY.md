@@ -124,7 +124,7 @@ For mediated decisions, Pipelock can emit signed, hash-chained, offline-verifiab
 
 The receipt record includes identity fields such as `action_id`, `principal`, `actor`, and `delegation_chain`; policy and taint fields such as `policy_hash`, `verdict`, `session_taint_level`, and `recent_taint_sources`; and chain fields such as `chain_prev_hash`, `chain_seq`, and `run_nonce`. The implementation is in [internal/receipt/action.go](internal/receipt/action.go).
 
-Chain verification is implemented in [internal/receipt/chain.go](internal/receipt/chain.go). Verifiers check signatures, sequence numbers, previous-hash linkage, and trusted signer keys. A valid chain is tamper-evident for the receipts it contains; it is not proof that no unmediated action happened outside Pipelock.
+Chain verification is implemented in [internal/receipt/chain.go](internal/receipt/chain.go). Verifiers check signatures, sequence numbers, previous-hash linkage, and trusted signer keys. A valid chain is tamper-evident for the receipts it contains from one writer stream; it is not proof that no unmediated action happened outside Pipelock or that multiple processes sharing a recorder directory produced one linear deployment-wide chain.
 
 Offline verification uses `pipelock verify-receipt`, implemented in [internal/cli/signing/receipt.go](internal/cli/signing/receipt.go). Verification reads receipt files or evidence directories from disk and does not require the Pipelock process that emitted them to be running. Verification without a trusted signer key is structural-only and exits non-zero unless the operator explicitly passes `--allow-unpinned`.
 

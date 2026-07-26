@@ -924,16 +924,17 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 }
 
 func readEntriesForResume(path string) ([]Entry, error) {
-	data, err := ReadEvidenceFileBounded(path, MaxEvidenceReadFileBytes)
+	limits := defaultEntryReadLimits()
+	data, err := ReadEvidenceFileBounded(path, limits.MaxBytes)
 	if err != nil {
 		return nil, err
 	}
-	entries, truncated, err := readEntriesFromReader(bytes.NewReader(data), MaxEvidenceReadEntries)
+	entries, truncated, bytesRead, err := readEntriesFromReader(bytes.NewReader(data), limits)
 	if err != nil {
 		return nil, err
 	}
 	if truncated {
-		return nil, fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, filepath.Base(path), MaxEvidenceReadEntries)
+		return nil, readLimitExceededError(path, limits, bytesRead)
 	}
 	return entries, nil
 }
@@ -990,6 +991,10 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, r.cfg.FileMode)
 	if err != nil {
 		return err
+	}
+	if err := lockEvidenceFileForWrite(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("locking evidence file: %w", err)
 	}
 	if err := f.Chmod(r.cfg.FileMode); err != nil {
 		_ = f.Close()
@@ -1115,9 +1120,13 @@ func (r *Recorder) closeFile() error {
 		r.writer = nil
 		return err
 	}
+	unlockErr := unlockEvidenceFile(r.file)
 	err := r.file.Close()
 	r.file = nil
 	r.writer = nil
+	if unlockErr != nil {
+		return fmt.Errorf("unlocking evidence file: %w", unlockErr)
+	}
 	return err
 }
 
@@ -1135,8 +1144,13 @@ func (r *Recorder) waitDurableForCurrentFileLocked() {
 	}
 }
 
-// ExpireOldFiles removes evidence files older than RetentionDays.
-// Safe to call periodically. Returns the number of files removed.
+// ExpireOldFiles removes age-expired raw escrow sidecars.
+//
+// JSONL shards are the hash-chain spine. Deleting an older shard while retaining
+// a later shard preserves append continuity but breaks full-history offline
+// verification and can strand external anchors that commit to the removed
+// content. Until retention has a signed compaction/tombstone format, automatic
+// expiry must not remove JSONL chain shards.
 func (r *Recorder) ExpireOldFiles() (int, error) {
 	if r.nop {
 		return 0, nil
@@ -1154,6 +1168,7 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 	}
 
 	removed := 0
+	var expiryErrs []error
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
@@ -1162,24 +1177,148 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 		if !isEvidenceFile(name) {
 			continue
 		}
+		if strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
 		info, err := de.Info()
 		if err != nil {
 			continue
 		}
 		if info.ModTime().Before(cutoff) {
 			path := filepath.Join(dir, name)
-			if err := os.Remove(path); err == nil {
+			// Collect the failure and keep going. Returning here let a single
+			// unremovable entry, such as one planted symlink or one sidecar the
+			// service cannot read, stop retention for every remaining file in
+			// the directory. The result was a directory that silently stopped
+			// pruning and could only be recovered by hand, which is the failure
+			// this whole change set exists to prevent.
+			removedFile, removeErr := removeExpiredEvidenceFile(path, cutoff)
+			switch {
+			case removeErr != nil:
+				expiryErrs = append(expiryErrs, fmt.Errorf("%s: %w", name, removeErr))
+			case removedFile:
 				removed++
 			}
 		}
 	}
-	return removed, nil
+	return removed, errors.Join(expiryErrs...)
+}
+
+// removeExpiredEvidenceFile deletes one aged sidecar.
+//
+// The handle is opened first and re-stated after locking, so the file being
+// removed is confirmed to be the same aged regular file that was selected. That
+// narrows the window between selection and deletion; it does not close it,
+// because os.Remove unlinks by name. If another principal can rename entries in
+// the evidence directory, the name can be pointed at a different inode after
+// the check. The remaining defense is the directory itself: evidence
+// directories are created 0o750 and owned by the service, so no other
+// unprivileged principal can rename entries within them.
+func removeExpiredEvidenceFile(path string, cutoff time.Time) (bool, error) {
+	file, info, err := openRegularEvidenceFile(path, "evidence file")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+	locked, err := tryLockEvidenceFileForExpiry(file)
+	if err != nil {
+		return false, fmt.Errorf("locking evidence file for expiry: %w", err)
+	}
+	if !locked {
+		return false, nil
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(info, after) || !after.ModTime().Before(cutoff) {
+		return false, nil
+	}
+	if err := os.Remove(filepath.Clean(path)); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // isEvidenceFile checks if a filename looks like an evidence file.
 func isEvidenceFile(name string) bool {
 	return strings.HasPrefix(name, "evidence-") &&
 		(strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".raw.enc"))
+}
+
+// EvidenceDirectoryHealth summarizes recorder file counts against bounded
+// resume limits without parsing receipt contents.
+type EvidenceDirectoryHealth struct {
+	TotalEvidenceFiles     int
+	MaxSessionFiles        int
+	MaxSessionID           string
+	WarningThreshold       int
+	MaxFilesPerSession     int
+	NearSessionFileLimit   bool
+	OverSessionFileLimit   bool
+	RetentionDays          int
+	RetentionEnabled       bool
+	RetentionEligibleFiles int
+}
+
+// EvidenceDirectoryHealthForDir returns file-count health for a recorder
+// directory. retentionDays controls the eligible-old-file count for files the
+// expirer is allowed to remove; zero preserves keep-forever semantics and
+// reports no eligible files.
+func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirectoryHealth, error) {
+	health := EvidenceDirectoryHealth{
+		WarningThreshold:   EvidenceFileWarningThreshold,
+		MaxFilesPerSession: MaxEvidenceReadDirectoryEntries,
+		RetentionDays:      retentionDays,
+		RetentionEnabled:   retentionDays > 0,
+	}
+	dirEntries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return health, fmt.Errorf("reading evidence directory: %w", err)
+	}
+	cutoff := time.Time{}
+	if retentionDays > 0 {
+		cutoff = time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	}
+	counts := make(map[string]int)
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		if !isEvidenceFile(name) {
+			continue
+		}
+		health.TotalEvidenceFiles++
+		if strings.HasSuffix(name, ".jsonl") {
+			if sessionID, _, ok := parseEvidenceFilename(name); ok {
+				counts[sessionID]++
+				if counts[sessionID] > health.MaxSessionFiles {
+					health.MaxSessionFiles = counts[sessionID]
+					health.MaxSessionID = sessionID
+				}
+			}
+		}
+		if retentionDays <= 0 {
+			continue
+		}
+		if strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		info, infoErr := de.Info()
+		if infoErr == nil && info.ModTime().Before(cutoff) {
+			health.RetentionEligibleFiles++
+		}
+	}
+	health.NearSessionFileLimit = health.MaxSessionFiles >= health.WarningThreshold
+	health.OverSessionFileLimit = health.MaxSessionFiles > health.MaxFilesPerSession
+	return health, nil
 }
 
 // ComputeFileHash computes SHA-256 of an evidence file for external verification.
@@ -1206,4 +1345,23 @@ func safeUint64(v, fallback int) uint64 {
 		return maxCheckpointBound
 	}
 	return uv
+}
+
+// FileCountVerdict renders the operator-facing sentence for an evidence
+// directory's file-count health. Both the doctor and the runtime startup
+// warning report the same contract, and formatting it in two places had already
+// produced two different sentences pinned by two different tests. Returns an
+// empty string when the count is below the warning threshold.
+func (h EvidenceDirectoryHealth) FileCountVerdict() string {
+	if !h.NearSessionFileLimit {
+		return ""
+	}
+	if h.OverSessionFileLimit {
+		return fmt.Sprintf(
+			"evidence session %q has %d JSONL shard(s), over the %d-file bounded resume cap",
+			h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession)
+	}
+	return fmt.Sprintf(
+		"evidence session %q has %d JSONL shard(s), near the %d-file bounded resume cap; warning threshold is %d",
+		h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession, h.WarningThreshold)
 }

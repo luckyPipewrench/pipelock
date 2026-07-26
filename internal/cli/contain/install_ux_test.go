@@ -254,8 +254,8 @@ func TestCheckNFTVersion_TooOld(t *testing.T) {
 	if !strings.Contains(err.Error(), "too old") {
 		t.Errorf("error should mention 'too old': %v", err)
 	}
-	if !strings.Contains(err.Error(), "0.6") {
-		t.Errorf("error should mention minimum version 0.6: %v", err)
+	if !strings.Contains(err.Error(), "0.8") {
+		t.Errorf("error should mention minimum version 0.8: %v", err)
 	}
 	if !strings.Contains(err.Error(), "Upgrade nftables") {
 		t.Errorf("error should include upgrade guidance: %v", err)
@@ -274,11 +274,24 @@ func TestCheckNFTVersion_V1Passes(t *testing.T) {
 
 func TestCheckNFTVersion_ExactMinimum(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	runner.on(argvFor("nft", "-v"), "nftables v0.6.0 (Flux)", 0, nil)
+	runner.on(argvFor("nft", "-v"), "nftables v0.8.0 (Joe Btfsplk)", 0, nil)
 
 	err := checkNFTVersion(context.Background(), env)
 	if err != nil {
-		t.Fatalf("expected nil error at exact minimum version 0.6, got: %v", err)
+		t.Fatalf("expected nil error at exact minimum version 0.8, got: %v", err)
+	}
+}
+
+func TestCheckNFTVersion_RejectsVersionWithoutCheckMode(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on(argvFor("nft", "-v"), "nftables v0.7 (Scrooge McDuck)", 0, nil)
+
+	err := checkNFTVersion(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected error for version without nft -c check mode")
+	}
+	if !strings.Contains(err.Error(), "0.8") {
+		t.Errorf("error should mention minimum version 0.8: %v", err)
 	}
 }
 

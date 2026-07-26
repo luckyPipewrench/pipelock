@@ -162,16 +162,31 @@ To allow a legitimate service that uses hex/base32 subdomains by design, add it 
 
 Response injection patterns can flag legitimate content: documentation about AI safety, security research pages, or sites that discuss prompt engineering.
 
-Exempt trusted content domains:
+There are two knobs here and they are not interchangeable. Start with the narrow one.
+
+**One pattern firing on one destination: use `suppress`.** This drops only the named pattern for URLs matching the path glob, and leaves every other response control on that host intact. It is the right fix for the common case of a single injection or solicitation pattern matching legitimate prose.
+
+```yaml
+suppress:
+  - rule: "Prompt Injection"
+    path: "*docs.vendor.example*"
+    reason: "vendor docs explain injection defenses in prose"
+```
+
+Suppressions apply per normalization pass, including the compiled-in core patterns, so a suppressed match cannot mask a later encoded finding on the same body. Suppressed findings still appear in logs with `suppressed: true`.
+
+**Whole-host trust: use `exempt_domains`, and know what it costs.** This is the broadest response-side control. For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched: no injection scan, and also no media metadata strip, no Browser Shield rewrite, and no response scan-cap block. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. Reach for it when you trust the host wholesale or need large downloads byte-intact, not to silence one pattern.
 
 ```yaml
 response_scanning:
   enabled: true
   action: warn
   exempt_domains:
-    - "docs.example.com"
-    - "*.readthedocs.io"
+    - "docs.vendor.example"
+    - "*.docs.vendor.example"
 ```
+
+`exempt_domains` only takes effect while `response_scanning.enabled` is true. With response scanning off the list goes dormant and responses take the buffered path, which still applies media policy and Browser Shield. If a host cannot be intercepted at all, for example because of certificate pinning, prefer `tls_interception.passthrough_domains` instead. See [configuration.md](configuration.md) for the full response-scanning reference.
 
 Switching from `block` to `warn` for response scanning gives visibility without interrupting the agent. This is useful during initial deployment when you're learning what your agent fetches.
 
@@ -223,16 +238,17 @@ cross_request_detection:
 
 | Scenario | Scanner | Pattern | Fix |
 |----------|---------|---------|-----|
-| API returns docs about prompt injection | response | Prompt Injection | Exempt the docs domain via `response_scanning.exempt_domains` |
+| API returns docs about prompt injection | response | Prompt Injection | Add a `suppress` entry for `Prompt Injection` scoped to that host's URLs. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
 | URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
 | Base64-encoded JWT in Authorization header | dlp | JWT Token | Add per-pattern `exempt_domains` for the auth provider |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
 | Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
-| Internal API keys matching AWS format | dlp | AWS Access ID | Add to `suppress` with path and reason |
+| Internal API keys matching AWS format, in a URL or query | dlp | AWS Access ID | Add `exempt_domains` to the `AWS Access ID` pattern, copying the built-in `regex` and `severity` into the override: a same-name entry REPLACES the built-in, so an override that omits them silently disables the detection instead of narrowing it. See [per-pattern domain exemptions](#per-pattern-domain-exemptions) for the complete form. URL scanning does not consult top-level `suppress`, so a `suppress` entry is inert for this case |
+| Internal API keys matching AWS format, in a request body or header | dlp | AWS Access ID | Add a `suppress` entry with the rule name, a path glob, and a reason |
 | GET to an AWS S3 presigned URL (issuer's bucket) | dlp | AWS Access ID | None required — handled automatically. The scanner detects a structurally valid SigV4 query set (all five parameters required exactly once: `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential=<KeyID>/<YYYYMMDD>/<region>/<service>/aws4_request`, `X-Amz-Date`, `X-Amz-Signature`, `X-Amz-Expires` as a positive integer) hosted on an `amazonaws.com` (or `amazonaws.com.cn`) endpoint, and exempts only the access-key component inside the credential value. The same access-key elsewhere in the URL — path, hostname, other query params, ordered subsequence concatenation — still blocks. Duplicate fields, mismatched scope dates, overlong key prefixes, non-AWS hosts, and bogus algorithms all fall back to normal DLP. SigV4 carve-outs are adaptive-neutral: they neither poison the threat score nor earn clean-decay. An `X-Amz-Expires` above 24h attaches an info-tier `SigV4 Long Expiry` warn finding for audit visibility but does not block. |
-| WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Exempt the WebSocket upstream domain |
+| WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Add `exempt_domains` to the `Environment Variable Secret` pattern for the WebSocket upstream host, or a `suppress` entry scoped to that upstream URL |
 | Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments |
-| Security research site with injection examples | response | Credential Solicitation | Exempt via `response_scanning.exempt_domains` |
+| Security research site with injection examples | response | Credential Solicitation | Add a `suppress` entry for `Credential Solicitation` scoped to that host's URLs. Suppression reaches the core patterns, so overriding the pattern in `response_scanning.patterns` is not required and does not work on its own |
 | Hash-based object storage paths | entropy | (path entropy) | Add storage domain to `subdomain_entropy_exclusions` |
 
 ## Transitioning from Audit to Enforcement

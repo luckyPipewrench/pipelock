@@ -341,7 +341,7 @@ pipelock contain run -- claude-code
 
 ### Evidence And Receipts
 
-- **Flight recorder:** hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. `pipelock init` provisions a recorder directory and signing key for stock installs, while the recorder stays inert until a directory and key exist. See [Flight Recorder](docs/guides/flight-recorder.md).
+- **Flight recorder:** per-writer hash-chained JSONL evidence with Ed25519-signed checkpoints and DLP redaction. `pipelock init` provisions a recorder directory and signing key for stock installs. Recording needs a directory, and because checkpoint signing is on by default it also needs a signing key; set `sign_checkpoints: false` for an explicitly unsigned hash-chained recorder. Use `pipelock evidence doctor DIR` to detect structural damage in an evidence directory. See [Flight Recorder](docs/guides/flight-recorder.md).
 - **Action receipts:** signed records emitted for mediated actions, carrying verdict, policy hash, transport, and scanner layer. Blocks produce receipts; allow-path receipt enforcement requires `flight_recorder.require_receipts`. Verify with `pipelock verify-receipt --key <signer.pub>`. Unpinned runs are structural-only and exit non-zero unless `--allow-unpinned` is passed.
 - **Mediation envelope:** RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, with action type, verdict, actor identity, policy hash, taint context, and receipt correlation ID. See [federation guide](docs/guides/federation.md).
 - **Receipt conformance:** four independent cross-language verifier implementations

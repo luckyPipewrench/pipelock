@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
 
@@ -113,5 +114,31 @@ func TestValidatePacketEnvelopePublicSafe_Rejections(t *testing.T) {
 				t.Fatalf("expected errEnvelope, got %v", err)
 			}
 		})
+	}
+}
+
+func TestAssemblePacketRejectsOverCapEvidenceRead(t *testing.T) {
+	t.Parallel()
+
+	eng := newTestEngine(t)
+	cs, err := eng.Capture(DefaultScenarios()[0])
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	f, err := os.OpenFile(cs.EvidenceFile, os.O_WRONLY|os.O_APPEND, filePerm)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := f.Write(make([]byte, recorder.MaxEvidenceReadFileBytes+1)); err != nil {
+		_ = f.Close()
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = AssemblePacket(cs, t.TempDir(), fixedStamp())
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("AssemblePacket error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
 }

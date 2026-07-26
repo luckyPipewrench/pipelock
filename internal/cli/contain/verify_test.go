@@ -633,6 +633,24 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "loopback allow",
 		},
 		{
+			name: "constrained proxy loopback allow is not canonical",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip saddr 127.0.0.2 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "loopback allow",
+		},
+		{
 			name: "agent broad accept before drop is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
@@ -725,9 +743,6 @@ func TestProbeNFTContainment(t *testing.T) {
 		{
 			name: "pre-drop jump is fail open",
 			stdout: `table inet pipelock_containment {
-		chain allow_all {
-			accept
-		}
 		chain output_filter {
 			meta skuid 1000 accept
 			meta skuid 988 accept
@@ -746,9 +761,6 @@ func TestProbeNFTContainment(t *testing.T) {
 		{
 			name: "pre-drop goto is fail open",
 			stdout: `table inet pipelock_containment {
-		chain allow_all {
-			accept
-		}
 		chain output_filter {
 			meta skuid 1000 accept
 			meta skuid 988 accept
@@ -950,7 +962,7 @@ func TestProbeNFTContainment(t *testing.T) {
 `,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "skuid-drop rule missing",
+			wantDetail: "not positively attributed",
 		},
 	}
 
@@ -1841,7 +1853,7 @@ func TestManagedContainmentDropPacketCount(t *testing.T) {
 }`,
 			chain:   testChain,
 			uid:     987,
-			wantErr: "no managed catch-all DROP packet counter",
+			wantErr: "not positively attributed",
 		},
 		{
 			name: "rejects duplicate managed catch-all counters",
@@ -1936,6 +1948,14 @@ func TestNFTChainTraversalRejectsCraftedNamesAndMalformedComments(t *testing.T) 
 	}
 }
 
+func TestManagedContainmentDropPacketCountFromLinesRejectsMalformedCounterLine(t *testing.T) {
+	lines := []string{`meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop comment "unterminated`}
+	if _, err := managedContainmentDropPacketCountFromLines(lines, testChain, 987); err == nil ||
+		!strings.Contains(err.Error(), "malformed quoted rule content") {
+		t.Fatalf("error = %v, want malformed quoted rule content", err)
+	}
+}
+
 func TestReadContainmentDropCounter(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1986,7 +2006,7 @@ func TestReadContainmentDropCounter(t *testing.T) {
 {"drop":null}
 ]}}
 ]}`,
-			wantErr:    "not the managed output base chain",
+			wantErr:    "rule content before the chain declaration",
 			wantRunCmd: true,
 		},
 		{
@@ -2026,7 +2046,7 @@ func TestReadContainmentDropCounter(t *testing.T) {
 					if name != testNFT {
 						t.Fatalf("command = %q, want %q", name, testNFT)
 					}
-					wantArgs := []string{"-n", "list", "chain", "inet", testTable, testChain}
+					wantArgs := []string{"-n", "-a", "list", "chain", "inet", testTable, testChain}
 					if strings.Join(args, " ") != strings.Join(wantArgs, " ") {
 						t.Fatalf("args = %v, want %v", args, wantArgs)
 					}

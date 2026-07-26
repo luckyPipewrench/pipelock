@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
 
@@ -276,7 +277,7 @@ func validateSafeHost(host string) error {
 // writePacketFiles writes packet.json, evidence.jsonl (the signed chain),
 // verifier.txt, and summary.md into the packet directory.
 func writePacketFiles(packetDir string, cs *CapturedScenario, pkt *auditpacket.Packet) error {
-	evidenceBytes, err := os.ReadFile(filepath.Clean(cs.EvidenceFile))
+	evidenceBytes, err := recorder.ReadEvidenceFileBounded(filepath.Clean(cs.EvidenceFile), recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
 		return fmt.Errorf("reading evidence: %w", err)
 	}

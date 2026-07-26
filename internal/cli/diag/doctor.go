@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -674,6 +675,42 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Enforcing:  false,
 			Detail:     detail,
 			Next:       next,
+		}
+	}
+	health, err := recorder.EvidenceDirectoryHealthForDir(cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
+	if err != nil {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Reachable:  true,
+			Detail:     "flight_recorder.dir is reachable but evidence file-count health could not be measured: " + err.Error(),
+			Next:       "inspect the directory permissions and rerun doctor as the service user",
+		}
+	}
+	if health.OverSessionFileLimit {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusFail,
+			Configured: true,
+			Reachable:  true,
+			Enforcing:  false,
+			Detail:     health.FileCountVerdict(),
+			Next:       "archive and verify older JSONL shards before explicit pruning; automatic expiry preserves JSONL chain shards",
+		}
+	}
+	if health.NearSessionFileLimit {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Reachable:  true,
+			Enforcing:  true,
+			Detail:     health.FileCountVerdict(),
+			Next:       "archive and verify older JSONL shards before the session reaches the bounded resume cap",
 		}
 	}
 	return doctorReportCheck{

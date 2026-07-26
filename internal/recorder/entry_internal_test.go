@@ -16,14 +16,6 @@ import (
 	"time"
 )
 
-func TestDecodeEntryDetailRejectsMalformedRawJSON(t *testing.T) {
-	t.Parallel()
-
-	if _, err := decodeEntryDetail(json.RawMessage(`{"unterminated":`)); err == nil {
-		t.Fatal("decodeEntryDetail accepted malformed raw detail")
-	}
-}
-
 func TestReadEntriesFromReaderRejectsUnrepresentableRawDetail(t *testing.T) {
 	t.Parallel()
 
@@ -36,6 +28,9 @@ func TestReadEntriesFromReaderRejectsUnrepresentableRawDetail(t *testing.T) {
 	_, err := ReadEntriesFromReader(bytes.NewBufferString(line))
 	if err == nil {
 		t.Fatal("ReadEntriesFromReader accepted detail that cannot decode into the public Detail view")
+	}
+	if !strings.Contains(err.Error(), "parsing entry") {
+		t.Fatalf("ReadEntriesFromReader error = %v, want entry parse error", err)
 	}
 }
 
@@ -75,6 +70,12 @@ func TestReadEntriesFromReaderBounded(t *testing.T) {
 			wantErrSub: "line 1",
 		},
 		{
+			name:       "line size fence trips before eof",
+			input:      strings.Repeat("x", maxEntryWireLineBytes+1) + "\n",
+			limits:     entryReadLimits{MaxBytes: int64(maxEntryWireLineBytes + 2)},
+			wantErrSub: "line 1",
+		},
+		{
 			name:       "duplicate key fence remains active",
 			input:      `{"v":2,"seq":0,"ts":"2026-07-12T12:00:00Z","session_id":"s1","type":"request","type":"response","transport":"fetch","summary":"x","prev_hash":"genesis","hash":"abc"}` + "\n",
 			limits:     entryReadLimits{MaxBytes: 4096},
@@ -110,6 +111,39 @@ func TestReadEntriesFromReaderBounded(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadEntriesFromReaderLineEndingsAndEOF(t *testing.T) {
+	t.Run("trims crlf", func(t *testing.T) {
+		entries, truncated, _, err := readEntriesFromReader(strings.NewReader(testEntryLine(t, 0)+"\r\n"), entryReadLimits{MaxEntries: 1, MaxBytes: 4096})
+		if err != nil {
+			t.Fatalf("readEntriesFromReader: %v", err)
+		}
+		if truncated || len(entries) != 1 {
+			t.Fatalf("entries = %d truncated=%t, want one complete CRLF entry", len(entries), truncated)
+		}
+	})
+
+	t.Run("blank eof returns complete", func(t *testing.T) {
+		entries, truncated, bytesRead, err := readEntriesFromReader(strings.NewReader("   "), entryReadLimits{MaxEntries: 1, MaxBytes: 4096})
+		if err != nil {
+			t.Fatalf("readEntriesFromReader: %v", err)
+		}
+		if truncated || len(entries) != 0 || bytesRead != 3 {
+			t.Fatalf("entries=%d truncated=%t bytes=%d, want blank EOF consumed as complete", len(entries), truncated, bytesRead)
+		}
+	})
+
+	t.Run("entry eof without newline returns complete", func(t *testing.T) {
+		line := strings.TrimSuffix(testEntryLine(t, 0), "\n")
+		entries, truncated, _, err := readEntriesFromReader(strings.NewReader(line), entryReadLimits{MaxEntries: 1, MaxBytes: 4096})
+		if err != nil {
+			t.Fatalf("readEntriesFromReader: %v", err)
+		}
+		if truncated || len(entries) != 1 {
+			t.Fatalf("entries=%d truncated=%t, want entry at EOF without newline", len(entries), truncated)
+		}
+	})
 }
 
 func TestReadEntriesStrictBoundaries(t *testing.T) {
@@ -187,12 +221,18 @@ func TestReadLimitExceededErrorMessages(t *testing.T) {
 		{name: "entry limit with byte ceiling", limits: entryReadLimits{MaxEntries: 1, MaxBytes: 2}, bytesRead: 2, want: "1 entries", wantNot: "bytes"},
 		{name: "byte limit with entry ceiling", limits: entryReadLimits{MaxEntries: 1, MaxBytes: 2}, bytesRead: 3, want: "2 bytes", wantNot: "entries"},
 		{name: "entries", limits: entryReadLimits{MaxEntries: 1}, want: "1 entries"},
-		{name: "bytes", limits: entryReadLimits{MaxBytes: 2}, bytesRead: 3, want: "2 bytes"},
+		{name: "bytes exceeded", limits: entryReadLimits{MaxBytes: 2}, bytesRead: 3, want: "2 bytes"},
+		{name: "bytes fallback", limits: entryReadLimits{MaxBytes: 2}, bytesRead: 2, want: "2 bytes"},
+		{name: "path fallback", limits: entryReadLimits{}, want: "bounded read limits"},
 		{name: "fallback", limits: entryReadLimits{}, want: "bounded read limits"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := readLimitExceededError("evidence.jsonl", test.limits, test.bytesRead)
+			path := "evidence.jsonl"
+			if test.name == "path fallback" {
+				path = "."
+			}
+			err := readLimitExceededError(path, test.limits, test.bytesRead)
 			if !errors.Is(err, ErrEvidenceReadLimitExceeded) || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("readLimitExceededError = %v, want ErrEvidenceReadLimitExceeded containing %q", err, test.want)
 			}

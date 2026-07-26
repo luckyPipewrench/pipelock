@@ -46,6 +46,14 @@ func TestReadDirectoryEntriesBounded(t *testing.T) {
 	if _, _, err := readDirectoryEntries(filepath.Join(dir, "missing"), 1); err == nil {
 		t.Fatal("readDirectoryEntries accepted a missing directory")
 	}
+
+	regularFile := filepath.Join(dir, "regular-file")
+	if err := os.WriteFile(regularFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readDirectoryEntries(regularFile, 1); err == nil {
+		t.Fatal("readDirectoryEntries accepted a regular file as a directory")
+	}
 }
 
 func TestReadDirectoryEntriesMaxIntNoOverflow(t *testing.T) {
@@ -85,5 +93,14 @@ func TestListSessionsBoundedResultReportsTruncation(t *testing.T) {
 
 	if _, err := ListSessionsBounded(dir, 2); !errors.Is(err, ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("ListSessionsBounded error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
+func TestMaxDirectoryEntriesUsesExplicitFilterLimit(t *testing.T) {
+	t.Parallel()
+
+	got := maxDirectoryEntries(&QueryFilter{MaxDirectoryEntries: 7})
+	if got != 7 {
+		t.Fatalf("maxDirectoryEntries = %d, want explicit filter limit", got)
 	}
 }

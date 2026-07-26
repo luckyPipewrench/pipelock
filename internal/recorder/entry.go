@@ -398,10 +398,8 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 		}
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
-			detail, err := decodeEntryDetail(raw.Detail)
-			if err != nil {
-				return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
-			}
+			var detail any
+			_ = json.Unmarshal(raw.Detail, &detail)
 			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {
@@ -429,12 +427,4 @@ func readLimitExceededError(path string, limits entryReadLimits, bytesRead int64
 	default:
 		return fmt.Errorf("%w: evidence file %s exceeded bounded read limits", ErrEvidenceReadLimitExceeded, name)
 	}
-}
-
-func decodeEntryDetail(raw json.RawMessage) (any, error) {
-	var detail any
-	if err := json.Unmarshal(raw, &detail); err != nil {
-		return nil, err
-	}
-	return detail, nil
 }

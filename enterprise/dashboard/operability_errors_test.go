@@ -664,7 +664,7 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		}
 		// Pin WHICH bound tripped: the sentinel alone passes even if the wrong
 		// cap fires, which would misdiagnose the truncation for an operator.
-		if !strings.Contains(err.Error(), "bytes") || strings.Contains(err.Error(), "entries") {
+		if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d bytes", recorder.MaxEvidenceReadFileBytes)) || strings.Contains(err.Error(), "entries") {
 			t.Fatalf("oversized source error = %v, want the byte limit named", err)
 		}
 	})
@@ -682,7 +682,7 @@ func TestBuildReadModelIndex_ErrorPaths(t *testing.T) {
 		if err == nil || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("too-many-entries source error = %v, want bounded-read rejection", err)
 		}
-		if !strings.Contains(err.Error(), "entries") || strings.Contains(err.Error(), "bytes") {
+		if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d entries", recorder.MaxEvidenceReadEntries)) || strings.Contains(err.Error(), "bytes") {
 			t.Fatalf("too-many-entries source error = %v, want the entry limit named", err)
 		}
 	})

@@ -154,6 +154,36 @@ func TestQuerySession_MaxBytesReadTruncatesAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestQuerySession_MaxBytesReadStopsBeforeNextFile(t *testing.T) {
+	dir := t.TempDir()
+	first := []byte(`{"v":2,"seq":0,"ts":"2026-01-01T00:00:00Z","session_id":"sess-1","type":"request","transport":"fetch","summary":"first"}` + "\n")
+	second := []byte(`{"v":2,"seq":1,"ts":"2026-01-01T00:00:01Z","session_id":"sess-1","type":"response","transport":"fetch","summary":"second"}` + "\n")
+	for path, data := range map[string][]byte{
+		filepath.Join(dir, "evidence-sess-1-0.jsonl"): first,
+		filepath.Join(dir, "evidence-sess-1-1.jsonl"): second,
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+		MaxBytesRead: int64(len(first)),
+	})
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("QuerySession did not report truncation before reading the next file")
+	}
+	if result.FilesRead != 1 || result.EntriesRead != 1 || len(result.Entries) != 1 {
+		t.Fatalf("files=%d entriesRead=%d returned=%d, want only first file read", result.FilesRead, result.EntriesRead, len(result.Entries))
+	}
+	if result.BytesRead != int64(len(first)) {
+		t.Fatalf("BytesRead = %d, want exact first file size %d", result.BytesRead, len(first))
+	}
+}
+
 func TestQuerySession_ZeroReadLimitsUseDefaultPerFileCeilings(t *testing.T) {
 	t.Run("entries", func(t *testing.T) {
 		dir := t.TempDir()

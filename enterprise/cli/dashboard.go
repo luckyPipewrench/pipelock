@@ -325,9 +325,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	// verified certificate's mapped role supplies both route and raw-view
 	// permissions and takes precedence over any token or OIDC principal on the
 	// same request.
-	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		clientCertAuth, authorization.metaAuthorized, authorization.rawAuthorized,
-	)
+	metaAuthorized, authorizePermission, rawAuthorized := dashboardServeAuthorizers(clientCertAuth, authorization)
 	authenticated := metaAuthorized
 
 	auditWriter := cmd.ErrOrStderr()

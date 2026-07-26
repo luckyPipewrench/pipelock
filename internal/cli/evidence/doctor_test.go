@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -709,6 +710,9 @@ func TestEvidenceDoctorDirectoryShapes(t *testing.T) {
 	}
 
 	t.Run("unreadable shard is reported", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("chmod does not restrict reads on Windows, so the file stays readable")
+		}
 		if os.Geteuid() == 0 {
 			t.Skip("root can read a mode-0000 file")
 		}

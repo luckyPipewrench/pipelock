@@ -325,6 +325,8 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	providerHealth := broker.NewProviderHealth(nil, out)
+	provider = broker.NewHealthTrackingProvider(provider, providerHealth)
 	sessionEnv, err := resolveSessionEnv(f)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -371,8 +373,9 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 					InternalPort: f.internalPort,
 				}
 			},
-			Size: f.warmPoolSize,
-			Log:  out,
+			Size:   f.warmPoolSize,
+			Log:    out,
+			Health: providerHealth,
 		})
 		if poolErr != nil {
 			return nil, nil, nil, nil, poolErr
@@ -398,6 +401,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		DeadlineGrace:      f.deadlineGrace,
 		TrustForwardedFor:  f.trustForwardedFor,
 		AllowOrigin:        f.allowOrigin,
+		ProviderHealth:     providerHealth,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err

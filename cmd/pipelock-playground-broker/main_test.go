@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +46,75 @@ func (fakeProvider) DestroyMachine(_ context.Context, _ string) error {
 
 func (fakeProvider) ListManagedMachines(_ context.Context) ([]broker.Machine, error) {
 	return nil, nil
+}
+
+type trackingProvider struct {
+	mu          sync.Mutex
+	createErr   error
+	listErr     error
+	createCalls int
+	listCalls   int
+	createCh    chan struct{}
+	listCh      chan struct{}
+}
+
+func (p *trackingProvider) CreateMachine(_ context.Context, _ broker.MachineSpec) (*broker.Machine, error) {
+	p.mu.Lock()
+	p.createCalls++
+	ch := p.createCh
+	err := p.createErr
+	p.mu.Unlock()
+	signalTestCall(ch)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Machine{ID: "tracked-create", State: "started", PrivateIP: "fdaa::1"}, nil
+}
+
+func (p *trackingProvider) WaitReady(_ context.Context, _ string) error {
+	return nil
+}
+
+func (p *trackingProvider) DestroyMachine(_ context.Context, _ string) error {
+	return nil
+}
+
+func (p *trackingProvider) ListManagedMachines(_ context.Context) ([]broker.Machine, error) {
+	p.mu.Lock()
+	p.listCalls++
+	ch := p.listCh
+	err := p.listErr
+	p.mu.Unlock()
+	signalTestCall(ch)
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (p *trackingProvider) setListErr(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listErr = err
+}
+
+func signalTestCall(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func waitTestCall(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
 }
 
 type lockedBuffer struct {
@@ -161,6 +231,105 @@ func TestMergeSessionAndBaseEnvLayersSessionOverBase(t *testing.T) {
 	}
 	if _, ok := baseEnv["PLAYGROUND_CODE"]; ok {
 		t.Fatal("base env mutated with PLAYGROUND_CODE")
+	}
+}
+
+func TestBuildServerWiresProviderHealthToWarmPoolAndHealthEndpoint(t *testing.T) {
+	provider := &trackingProvider{
+		createErr: errors.New("provider rejected credential"),
+		createCh:  make(chan struct{}, 1),
+	}
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return provider, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	var out bytes.Buffer
+	srv, handler, _, pool, err := buildServer(context.Background(), &out, testServeFlags(t, 1))
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	if pool == nil {
+		t.Fatal("warm pool is nil, want enabled pool")
+	}
+	poolHealth := reflect.ValueOf(pool).Elem().FieldByName("health")
+	if !poolHealth.IsValid() || poolHealth.IsNil() {
+		t.Fatal("warm pool health is nil; PoolConfig.Health must share provider backoff state")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Run(ctx)
+	}()
+	waitTestCall(t, provider.createCh, "warm-pool create")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for warm pool maintainer to exit")
+	}
+
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	health := getMainHealth(t, ts)
+	if health["provider_state"] != string(broker.ProviderStateDegraded) {
+		t.Fatalf("provider_state = %v, want degraded", health["provider_state"])
+	}
+	if health["provider_failures"] != float64(1) {
+		t.Fatalf("provider_failures = %v, want 1", health["provider_failures"])
+	}
+	if strings.Contains(out.String(), "fly-file-token") {
+		t.Fatalf("operator output leaked token: %q", out.String())
+	}
+}
+
+func TestBuildServerWarmPoolDisabledReaperFeedsProviderHealth(t *testing.T) {
+	provider := &trackingProvider{
+		listErr: errors.New("provider rejected credential"),
+		listCh:  make(chan struct{}, 4),
+	}
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return provider, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	srv, handler, startReaper, pool, err := buildServer(context.Background(), io.Discard, testServeFlags(t, 0))
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	if pool != nil {
+		t.Fatal("warm pool should be disabled for this test")
+	}
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	if health := getMainHealth(t, ts); health["provider_state"] != string(broker.ProviderStateUnknown) {
+		t.Fatalf("initial provider_state = %v, want unknown", health["provider_state"])
+	}
+
+	runReaperStartupOnce(t, startReaper, provider.listCh)
+	health := getMainHealth(t, ts)
+	if health["provider_state"] != string(broker.ProviderStateDegraded) {
+		t.Fatalf("provider_state after reaper failure = %v, want degraded", health["provider_state"])
+	}
+	if health["provider_failures"] != float64(1) {
+		t.Fatalf("provider_failures after reaper failure = %v, want 1", health["provider_failures"])
+	}
+
+	provider.setListErr(nil)
+	runReaperStartupOnce(t, startReaper, provider.listCh)
+	health = getMainHealth(t, ts)
+	if health["provider_state"] != string(broker.ProviderStateOK) {
+		t.Fatalf("provider_state after reaper recovery = %v, want ok", health["provider_state"])
+	}
+	if health["provider_failures"] != float64(0) {
+		t.Fatalf("provider_failures after reaper recovery = %v, want 0", health["provider_failures"])
 	}
 }
 
@@ -591,6 +760,67 @@ func httpGetStatus(t *testing.T, rawURL string) (string, int) {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b), resp.StatusCode
+}
+
+func getMainHealth(t *testing.T, ts *httptest.Server) map[string]any {
+	t.Helper()
+	body, status := httpGetStatus(t, ts.URL+livechat.RouteHealth)
+	if status != http.StatusOK {
+		t.Fatalf("health status = %d, want 200; body=%q", status, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	return out
+}
+
+func runReaperStartupOnce(t *testing.T, startReaper func(context.Context), listCh <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		startReaper(ctx)
+	}()
+	waitTestCall(t, listCh, "reaper list")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reaper to exit")
+	}
+}
+
+func testServeFlags(t *testing.T, warmPoolSize int) *serveFlags {
+	t.Helper()
+	dir := t.TempDir()
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+	return &serveFlags{
+		listen:                defaultListen,
+		provider:              "fake",
+		flyApp:                "playground-test",
+		flyTokenFile:          flyTokenFile,
+		image:                 "registry.example/playground:test",
+		internalPort:          8080,
+		concurrency:           2,
+		codes:                 []string{"outer-code"},
+		maxPerCode:            defaultMaxPerCode,
+		gateSecretFile:        gateSecretFile,
+		ipRate:                defaultIPRate,
+		ipBurst:               defaultIPBurst,
+		codeRate:              defaultCodeRate,
+		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		unsafeNoHumanGate:     true,
+		sessionTTL:            defaultSessionTTL,
+		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
+		requireSessionSecrets: false,
+		warmPoolSize:          warmPoolSize,
+	}
 }
 
 func TestBuildServerValidation(t *testing.T) {

@@ -67,6 +67,10 @@ type PoolConfig struct {
 	Now func() time.Time
 	// Log receives one-line audit messages. Nil discards.
 	Log io.Writer
+	// Health, when non-nil, is consulted before each maintain round so a
+	// persistently failing provider is retried with exponential backoff instead
+	// of every poolMaintainInterval. Nil disables backoff (retry every tick).
+	Health *ProviderHealth
 }
 
 // ConcurrencyAcquirer is the interface the pool needs from the shared
@@ -86,6 +90,7 @@ type Pool struct {
 	maxWarmAge time.Duration
 	now        func() time.Time
 	log        io.Writer
+	health     *ProviderHealth
 
 	mu      sync.Mutex
 	entries []warmEntry
@@ -145,6 +150,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		maxWarmAge: maxWarmAge,
 		now:        now,
 		log:        log,
+		health:     cfg.Health,
 		quarantine: make(map[string]warmEntry),
 		handoff:    make(map[string]struct{}),
 	}, nil
@@ -307,7 +313,18 @@ func (p *Pool) Resume() {
 }
 
 // maintain recycles stale entries and fills the pool up to Size.
+//
+// While the provider is in backoff this round is skipped entirely. That is safe
+// in BOTH directions: skipping only defers warm-VM housekeeping (a cost and
+// start-latency optimisation). It never denies a visitor a session — the
+// visitor's cold-lease path does not consult backoff — and it never skips a
+// security control. A deferred quarantine retry leaves an already-stuck VM stuck
+// slightly longer; the orphan reaper still reclaims it once the provider
+// recovers.
 func (p *Pool) maintain(ctx context.Context) {
+	if _, active := p.health.BackoffActive(); active {
+		return
+	}
 	p.retryQuarantine(ctx)
 	p.recycleStale(ctx)
 	p.fill(ctx)

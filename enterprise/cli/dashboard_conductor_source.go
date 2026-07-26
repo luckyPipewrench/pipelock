@@ -8,8 +8,6 @@ package entcli
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -171,7 +169,7 @@ func (s *dashboardConductorSource) ReplayDecision(ctx context.Context, scope das
 	if scope.ArtifactHash == "" {
 		return dashboard.DecisionReplayView{}, false, errors.New("artifact hash is required")
 	}
-	if err := validateDashboardReplayArtifactHash(scope.ArtifactHash); err != nil {
+	if err := conductorcli.ValidateCanonicalSHA256Hex("artifact hash", scope.ArtifactHash); err != nil {
 		return dashboard.DecisionReplayView{}, false, err
 	}
 	body, found, err := s.client.ReplayDecision(ctx, scope.OrgID, scope.FleetID, scope.ArtifactHash)
@@ -209,19 +207,6 @@ func applyConductorCompleteness(page *dashboard.FleetFollowerPage, resp dashboar
 	}
 	if !page.CompletenessKnown {
 		page.HasMore = false
-	}
-	return nil
-}
-
-func validateDashboardReplayArtifactHash(artifactHash string) error {
-	if len(artifactHash) != sha256.Size*2 {
-		return errors.New("artifact hash must be a 64-character lowercase sha256 hex string")
-	}
-	if strings.ToLower(artifactHash) != artifactHash {
-		return errors.New("artifact hash must be lowercase")
-	}
-	if _, err := hex.DecodeString(artifactHash); err != nil {
-		return fmt.Errorf("artifact hash must be hex: %w", err)
 	}
 	return nil
 }

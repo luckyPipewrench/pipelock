@@ -441,7 +441,7 @@ func validateDecisionReplayResultForArtifact(result controlplane.DecisionReplayR
 	if result.ActionKind != expectedAction {
 		return fmt.Errorf("replay response action_kind=%q does not match requested action %q", result.ActionKind, expectedAction)
 	}
-	if !strings.EqualFold(result.ArtifactHash, expectedHash) {
+	if result.ArtifactHash != expectedHash {
 		return fmt.Errorf("replay response artifact_hash=%q does not match submitted artifact hash %q", result.ArtifactHash, expectedHash)
 	}
 	switch expectedAction {

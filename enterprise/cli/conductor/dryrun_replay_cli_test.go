@@ -1032,6 +1032,33 @@ func TestPostDecisionReplayRejectsArtifactHashMismatch(t *testing.T) {
 	}
 }
 
+func TestPostDecisionReplayRejectsUppercaseArtifactHashResponse(t *testing.T) {
+	msg := conductorcore.RemoteKillMessage{MessageID: "kill-uppercase"}
+	expectedHash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	uppercaseHash := strings.ToUpper(expectedHash)
+	if uppercaseHash == expectedHash {
+		t.Fatalf("test fixture hash %q has no lowercase hex letters", expectedHash)
+	}
+	result := controlplane.DecisionReplayResult{
+		ActionKind:   replayActionRemoteKill,
+		ArtifactHash: uppercaseHash,
+		ReplayedAt:   testFixedNow(t),
+		RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	client := &staticEmergencyTransport{status: http.StatusOK, body: string(body)}
+	_, err = postDecisionReplay(t.Context(), client, "https://conductor.example", testAdminToken, decisionReplayArtifact{RemoteKill: &msg})
+	if err == nil || !strings.Contains(err.Error(), "artifact_hash") {
+		t.Fatalf("postDecisionReplay() error = %v, want artifact_hash mismatch", err)
+	}
+}
+
 func TestRunReplayBundleArtifactPostsExactBundle(t *testing.T) {
 	dir := t.TempDir()
 	buildOpts := publishDryRunTestOptions(t, dir)

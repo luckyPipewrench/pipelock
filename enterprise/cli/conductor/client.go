@@ -138,7 +138,7 @@ func (c *ReadClient) ReplayDecision(ctx context.Context, orgID, fleetID, artifac
 		strings.IndexFunc(artifactHash, unicode.IsControl) >= 0 {
 		return nil, false, errors.New("org_id, fleet_id, and artifact_hash must not contain control characters")
 	}
-	if err := validateCanonicalSHA256Hex("artifact_hash", artifactHash); err != nil {
+	if err := ValidateCanonicalSHA256Hex("artifact_hash", artifactHash); err != nil {
 		return nil, false, err
 	}
 	params := map[string]string{
@@ -149,7 +149,9 @@ func (c *ReadClient) ReplayDecision(ctx context.Context, orgID, fleetID, artifac
 	return c.client.getJSONMaybeNotFound(ctx, controlplane.DecisionReplayPath+encodeQuery(params))
 }
 
-func validateCanonicalSHA256Hex(name, value string) error {
+// ValidateCanonicalSHA256Hex requires value to be the canonical lowercase hex
+// representation of a SHA-256 digest.
+func ValidateCanonicalSHA256Hex(name, value string) error {
 	if len(value) != sha256.Size*2 {
 		return fmt.Errorf("%s must be a 64-character lowercase sha256 hex string", name)
 	}

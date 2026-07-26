@@ -246,6 +246,50 @@ func TestHealthTrackingProviderWaitReadyFailureDoesNotAffectHealth(t *testing.T)
 	}
 }
 
+func TestHealthTrackingProviderDestroyMachineTracksAndPropagates(t *testing.T) {
+	health := NewProviderHealth(nil, nil)
+	destroyErr := errors.New("destroy denied")
+	inner := &destroyErrProvider{fakeProvider: &fakeProvider{}, destroyErr: destroyErr}
+	provider := NewHealthTrackingProvider(inner, health)
+
+	if err := provider.DestroyMachine(context.Background(), "vm-1"); !errors.Is(err, destroyErr) {
+		t.Fatalf("DestroyMachine error = %v, want %v", err, destroyErr)
+	}
+	if snap := health.Snapshot(); snap.State != ProviderStateDegraded || snap.ConsecutiveFailures != 1 {
+		t.Fatalf("snapshot after destroy failure = %+v, want degraded/one failure", snap)
+	}
+
+	inner.destroyErr = nil
+	if err := provider.DestroyMachine(context.Background(), "vm-1"); err != nil {
+		t.Fatalf("DestroyMachine recovery: %v", err)
+	}
+	if snap := health.Snapshot(); snap.State != ProviderStateOK || snap.ConsecutiveFailures != 0 {
+		t.Fatalf("snapshot after destroy recovery = %+v, want ok/no failures", snap)
+	}
+}
+
+func TestHealthTrackingProviderListMachinesTracksAndPropagates(t *testing.T) {
+	health := NewProviderHealth(nil, nil)
+	listErr := errors.New("list denied")
+	inner := &fakeProvider{listErr: listErr}
+	provider := NewHealthTrackingProvider(inner, health)
+
+	if _, err := provider.ListManagedMachines(context.Background()); !errors.Is(err, listErr) {
+		t.Fatalf("ListManagedMachines error = %v, want %v", err, listErr)
+	}
+	if snap := health.Snapshot(); snap.State != ProviderStateDegraded || snap.ConsecutiveFailures != 1 {
+		t.Fatalf("snapshot after list failure = %+v, want degraded/one failure", snap)
+	}
+
+	inner.listErr = nil
+	if _, err := provider.ListManagedMachines(context.Background()); err != nil {
+		t.Fatalf("ListManagedMachines recovery: %v", err)
+	}
+	if snap := health.Snapshot(); snap.State != ProviderStateOK || snap.ConsecutiveFailures != 0 {
+		t.Fatalf("snapshot after list recovery = %+v, want ok/no failures", snap)
+	}
+}
+
 func TestNewHealthTrackingProviderNilHealthReturnsInner(t *testing.T) {
 	inner := &fakeProvider{}
 	if got := NewHealthTrackingProvider(inner, nil); got != inner {

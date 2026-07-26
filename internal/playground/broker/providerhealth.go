@@ -186,6 +186,7 @@ func (h *ProviderHealth) recordFailure(err error, provisioning bool) {
 	}
 }
 
+// logRecovered emits the shared recovery transition after the state lock is released.
 func (h *ProviderHealth) logRecovered() {
 	_, _ = fmt.Fprint(h.log, "provider: recovered; machine provider reachable again\n")
 }

@@ -169,7 +169,7 @@ There are two knobs here and they are not interchangeable. Start with the narrow
 ```yaml
 suppress:
   - rule: "Prompt Injection"
-    path: "*docs.example.com*"
+    path: "*docs.vendor.example*"
     reason: "vendor docs explain injection defenses in prose"
 ```
 
@@ -182,8 +182,8 @@ response_scanning:
   enabled: true
   action: warn
   exempt_domains:
-    - "docs.example.com"
-    - "*.readthedocs.io"
+    - "docs.vendor.example"
+    - "*.docs.vendor.example"
 ```
 
 `exempt_domains` only takes effect while `response_scanning.enabled` is true. With response scanning off the list goes dormant and responses take the buffered path, which still applies media policy and Browser Shield. If a host cannot be intercepted at all, for example because of certificate pinning, prefer `tls_interception.passthrough_domains` instead. See [configuration.md](configuration.md) for the full response-scanning reference.
@@ -243,7 +243,8 @@ cross_request_detection:
 | Base64-encoded JWT in Authorization header | dlp | JWT Token | Add per-pattern `exempt_domains` for the auth provider |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
 | Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
-| Internal API keys matching AWS format | dlp | AWS Access ID | Add to `suppress` with path and reason |
+| Internal API keys matching AWS format, in a URL or query | dlp | AWS Access ID | Add `exempt_domains` to the `AWS Access ID` pattern. URL scanning does not consult top-level `suppress`, so a `suppress` entry is inert for this case |
+| Internal API keys matching AWS format, in a request body or header | dlp | AWS Access ID | Add a `suppress` entry with the rule name, a path glob, and a reason |
 | GET to an AWS S3 presigned URL (issuer's bucket) | dlp | AWS Access ID | None required — handled automatically. The scanner detects a structurally valid SigV4 query set (all five parameters required exactly once: `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential=<KeyID>/<YYYYMMDD>/<region>/<service>/aws4_request`, `X-Amz-Date`, `X-Amz-Signature`, `X-Amz-Expires` as a positive integer) hosted on an `amazonaws.com` (or `amazonaws.com.cn`) endpoint, and exempts only the access-key component inside the credential value. The same access-key elsewhere in the URL — path, hostname, other query params, ordered subsequence concatenation — still blocks. Duplicate fields, mismatched scope dates, overlong key prefixes, non-AWS hosts, and bogus algorithms all fall back to normal DLP. SigV4 carve-outs are adaptive-neutral: they neither poison the threat score nor earn clean-decay. An `X-Amz-Expires` above 24h attaches an info-tier `SigV4 Long Expiry` warn finding for audit visibility but does not block. |
 | WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Add `exempt_domains` to the `Environment Variable Secret` pattern for the WebSocket upstream host, or a `suppress` entry scoped to that upstream URL |
 | Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments |

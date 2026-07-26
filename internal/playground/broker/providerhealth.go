@@ -115,7 +115,7 @@ func (h *ProviderHealth) RecordSuccess() {
 	h.provisioningFailure = false
 	h.mu.Unlock()
 	if recovered {
-		_, _ = fmt.Fprintf(h.log, "provider: recovered; machine provider reachable again\n")
+		h.logRecovered()
 	}
 }
 
@@ -138,15 +138,16 @@ func (h *ProviderHealth) RecordBackgroundSuccess() {
 	h.announcedFailing = false
 	h.mu.Unlock()
 	if recovered {
-		_, _ = fmt.Fprint(h.log, "provider: recovered; machine provider reachable again\n")
+		h.logRecovered()
 	}
 }
 
 // RecordFailure counts a failed provider call and extends the backoff window.
 //
 // Context cancellation is NOT counted: a cancelled call is the broker shutting
-// down or a caller timing out, not evidence that the provider is unusable.
-// Counting it would mark a healthy provider as failing during every shutdown.
+// down, not evidence that the provider is unusable. DeadlineExceeded IS counted:
+// a provider operation that cannot finish inside its bounded deadline is an
+// availability failure and must not leave provider health looking OK.
 func (h *ProviderHealth) RecordFailure(err error) {
 	h.recordFailure(err, true)
 }
@@ -183,6 +184,10 @@ func (h *ProviderHealth) recordFailure(err error, provisioning bool) {
 			"provider: FAILING after %d consecutive errors; broker cannot create sandboxes\n",
 			failures)
 	}
+}
+
+func (h *ProviderHealth) logRecovered() {
+	_, _ = fmt.Fprint(h.log, "provider: recovered; machine provider reachable again\n")
 }
 
 // BackoffActive reports whether the caller should skip this round of background

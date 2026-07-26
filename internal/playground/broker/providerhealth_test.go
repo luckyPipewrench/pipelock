@@ -209,6 +209,22 @@ func TestProviderHealthContextCanceledDoesNotCount(t *testing.T) {
 	}
 }
 
+func TestProviderHealthDeadlineExceededCounts(t *testing.T) {
+	health := NewProviderHealth(func() time.Time {
+		return time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	}, nil)
+
+	health.RecordFailure(context.DeadlineExceeded)
+
+	snap := health.Snapshot()
+	if snap.State != ProviderStateDegraded || !snap.OK || snap.ConsecutiveFailures != 1 {
+		t.Fatalf("snapshot after deadline exceeded = %+v, want degraded/ok/one failure", snap)
+	}
+	if _, active := health.BackoffActive(); !active {
+		t.Fatal("deadline exceeded did not activate backoff")
+	}
+}
+
 func TestHealthTrackingProviderWaitReadyFailureDoesNotAffectHealth(t *testing.T) {
 	health := NewProviderHealth(func() time.Time {
 		return time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)

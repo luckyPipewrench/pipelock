@@ -399,7 +399,9 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
 			var detail any
-			_ = json.Unmarshal(raw.Detail, &detail)
+			if err := json.Unmarshal(raw.Detail, &detail); err != nil {
+				return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
+			}
 			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {

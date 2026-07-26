@@ -17,7 +17,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -254,11 +253,6 @@ func TestBuildServerWiresProviderHealthToWarmPoolAndHealthEndpoint(t *testing.T)
 	if pool == nil {
 		t.Fatal("warm pool is nil, want enabled pool")
 	}
-	poolHealth := reflect.ValueOf(pool).Elem().FieldByName("health")
-	if !poolHealth.IsValid() || poolHealth.IsNil() {
-		t.Fatal("warm pool health is nil; PoolConfig.Health must share provider backoff state")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

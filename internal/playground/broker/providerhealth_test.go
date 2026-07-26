@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+type blockingProviderLog struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingProviderLog) Write(p []byte) (int, error) {
+	close(w.entered)
+	<-w.release
+	return len(p), nil
+}
+
 func TestProviderHealthPersistentFailureLogsOnce(t *testing.T) {
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	var log bytes.Buffer
@@ -57,6 +68,33 @@ func TestProviderHealthFailingLogOmitsRawProviderError(t *testing.T) {
 	if strings.Contains(got, errText) || strings.Contains(got, "secret-token-value") || strings.Contains(got, "outer-code") {
 		t.Fatalf("failure log exposed raw provider error: %q", got)
 	}
+}
+
+func TestProviderHealthLoggingDoesNotHoldStateMutex(t *testing.T) {
+	log := &blockingProviderLog{entered: make(chan struct{}), release: make(chan struct{})}
+	health := NewProviderHealth(nil, log)
+	for range providerFailingThreshold - 1 {
+		health.RecordFailure(errors.New("provider unavailable"))
+	}
+	done := make(chan struct{})
+	go func() {
+		health.RecordFailure(errors.New("provider unavailable"))
+		close(done)
+	}()
+	<-log.entered
+
+	snapshotDone := make(chan struct{})
+	go func() {
+		_ = health.Snapshot()
+		close(snapshotDone)
+	}()
+	select {
+	case <-snapshotDone:
+	case <-time.After(time.Second):
+		t.Fatal("Snapshot blocked behind provider log write")
+	}
+	close(log.release)
+	<-done
 }
 
 func TestProviderHealthBackoffGrowthAndCap(t *testing.T) {
@@ -113,6 +151,44 @@ func TestProviderHealthRecoveryResetsBackoffAndLogsOnce(t *testing.T) {
 	}
 	if got := strings.Count(log.String(), "machine provider reachable again"); got != 1 {
 		t.Fatalf("recovery log count = %d, want 1; log=%q", got, log.String())
+	}
+}
+
+func TestProviderHealthBackgroundSuccessDoesNotHideCreateFailure(t *testing.T) {
+	health := NewProviderHealth(func() time.Time {
+		return time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	}, nil)
+	provider := NewHealthTrackingProvider(&fakeProvider{createErr: errors.New("create denied")}, health)
+
+	for range providerFailingThreshold {
+		_, _ = provider.CreateMachine(context.Background(), MachineSpec{Image: testImage})
+	}
+	if _, err := provider.ListManagedMachines(context.Background()); err != nil {
+		t.Fatalf("ListManagedMachines: %v", err)
+	}
+
+	snap := health.Snapshot()
+	if snap.OK || snap.State != ProviderStateFailing || snap.ConsecutiveFailures != providerFailingThreshold {
+		t.Fatalf("background success hid create failure: %+v", snap)
+	}
+}
+
+func TestProviderHealthBackgroundSuccessClearsBackgroundFailure(t *testing.T) {
+	health := NewProviderHealth(func() time.Time {
+		return time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	}, nil)
+	inner := &fakeProvider{listErr: errors.New("list denied")}
+	provider := NewHealthTrackingProvider(inner, health)
+
+	_, _ = provider.ListManagedMachines(context.Background())
+	inner.listErr = nil
+	if _, err := provider.ListManagedMachines(context.Background()); err != nil {
+		t.Fatalf("ListManagedMachines recovery: %v", err)
+	}
+
+	snap := health.Snapshot()
+	if !snap.OK || snap.State != ProviderStateOK || snap.ConsecutiveFailures != 0 {
+		t.Fatalf("background recovery did not clear background failure: %+v", snap)
 	}
 }
 
@@ -173,6 +249,8 @@ func TestProviderHealthConcurrentAccessRace(t *testing.T) {
 			defer wg.Done()
 			for range 100 {
 				health.RecordFailure(errors.New("provider unavailable"))
+				health.RecordBackgroundFailure(errors.New("provider unavailable"))
+				health.RecordBackgroundSuccess()
 				health.RecordSuccess()
 				_, _ = health.BackoffActive()
 				_ = health.Snapshot()

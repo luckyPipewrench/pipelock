@@ -719,6 +719,40 @@ func TestPoolMaintainSkipsProviderCallsWhileBackedOffAndResumes(t *testing.T) {
 	}
 }
 
+func TestPoolMaintainNeverHandsOutStaleVMWhileBackedOff(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	health := NewProviderHealth(func() time.Time { return now }, nil)
+	counter := &poolCountingProvider{inner: &fakeProvider{}}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool, err := NewPool(PoolConfig{
+		Provider:    counter,
+		Concurrency: limiter,
+		NewVMCode:   testVMCode(),
+		BuildSpec:   testBuildSpec,
+		Size:        1,
+		MaxWarmAge:  time.Minute,
+		Now:         func() time.Time { return now },
+		Health:      health,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	pool.maintain(context.Background())
+	for range 6 {
+		health.RecordFailure(errors.New("provider rejected credential"))
+	}
+	now = now.Add(2 * time.Minute)
+	pool.maintain(context.Background())
+
+	if _, _, _, ok := pool.Acquire(); ok {
+		t.Fatal("stale warm VM was handed out while provider was backed off")
+	}
+	if _, _, destroy, _ := counter.calls(); destroy != 1 {
+		t.Fatalf("stale destroy attempts = %d, want 1", destroy)
+	}
+}
+
 func TestPoolNilHealthRetriesEveryMaintainTick(t *testing.T) {
 	counter := &poolCountingProvider{inner: &fakeProvider{createErr: errors.New("provider rejected credential")}}
 	limiter := livechat.NewConcurrencyLimiter(1)

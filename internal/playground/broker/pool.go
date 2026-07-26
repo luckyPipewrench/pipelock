@@ -314,19 +314,19 @@ func (p *Pool) Resume() {
 
 // maintain recycles stale entries and fills the pool up to Size.
 //
-// While the provider is in backoff this round is skipped entirely. That is safe
-// in BOTH directions: skipping only defers warm-VM housekeeping (a cost and
-// start-latency optimisation). It never denies a visitor a session — the
-// visitor's cold-lease path does not consult backoff — and it never skips a
-// security control. A deferred quarantine retry leaves an already-stuck VM stuck
-// slightly longer; the orphan reaper still reclaims it once the provider
-// recovers.
+// Stale entries are removed before consulting provider backoff so Acquire can
+// never hand out an expired VM. Their destruction is attempted once; a failure
+// quarantines the VM and retains its limiter slot until a later retry proves the
+// machine is gone. Backoff skips only quarantine retries and pool refills.
 func (p *Pool) maintain(ctx context.Context) {
+	_, backedOff := p.health.BackoffActive()
+	if !backedOff {
+		p.retryQuarantine(ctx)
+	}
+	p.recycleStale(ctx)
 	if _, active := p.health.BackoffActive(); active {
 		return
 	}
-	p.retryQuarantine(ctx)
-	p.recycleStale(ctx)
 	p.fill(ctx)
 }
 

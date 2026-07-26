@@ -79,6 +79,10 @@ type ProviderHealth struct {
 	lastErrAt           time.Time
 	lastOKAt            time.Time
 	backoffUntil        time.Time
+	// provisioningFailure is set when CreateMachine failed. A successful
+	// list/destroy proves API reachability, but it does not prove the provider
+	// can create a visitor sandbox, so background success must not clear it.
+	provisioningFailure bool
 	// announcedFailing ensures the transition into "failing" is logged once,
 	// not on every retry. Without this the loud signal is itself the log spam.
 	announcedFailing bool
@@ -102,15 +106,39 @@ func (h *ProviderHealth) RecordSuccess() {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	recovered := h.announcedFailing
 	h.consecutiveFailures = 0
 	h.lastErr = ""
 	h.backoffUntil = time.Time{}
 	h.lastOKAt = h.now()
 	h.announcedFailing = false
+	h.provisioningFailure = false
+	h.mu.Unlock()
 	if recovered {
 		_, _ = fmt.Fprintf(h.log, "provider: recovered; machine provider reachable again\n")
+	}
+}
+
+// RecordBackgroundSuccess clears failures caused by background provider work,
+// but never lets list/destroy success hide a failed sandbox creation.
+func (h *ProviderHealth) RecordBackgroundSuccess() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.provisioningFailure {
+		h.mu.Unlock()
+		return
+	}
+	recovered := h.announcedFailing
+	h.consecutiveFailures = 0
+	h.lastErr = ""
+	h.backoffUntil = time.Time{}
+	h.lastOKAt = h.now()
+	h.announcedFailing = false
+	h.mu.Unlock()
+	if recovered {
+		_, _ = fmt.Fprint(h.log, "provider: recovered; machine provider reachable again\n")
 	}
 }
 
@@ -120,6 +148,16 @@ func (h *ProviderHealth) RecordSuccess() {
 // down or a caller timing out, not evidence that the provider is unusable.
 // Counting it would mark a healthy provider as failing during every shutdown.
 func (h *ProviderHealth) RecordFailure(err error) {
+	h.recordFailure(err, true)
+}
+
+// RecordBackgroundFailure records list/destroy failures without classifying
+// them as a failed provisioning attempt.
+func (h *ProviderHealth) RecordBackgroundFailure(err error) {
+	h.recordFailure(err, false)
+}
+
+func (h *ProviderHealth) recordFailure(err error, provisioning bool) {
 	if h == nil || err == nil {
 		return
 	}
@@ -127,18 +165,23 @@ func (h *ProviderHealth) RecordFailure(err error) {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.consecutiveFailures++
+	if provisioning {
+		h.provisioningFailure = true
+	}
 	h.lastErr = truncateProviderErr(err.Error())
 	h.lastErrAt = h.now()
 	h.backoffUntil = h.now().Add(backoffFor(h.consecutiveFailures))
-	if h.consecutiveFailures >= providerFailingThreshold && !h.announcedFailing {
+	announce := h.consecutiveFailures >= providerFailingThreshold && !h.announcedFailing
+	failures := h.consecutiveFailures
+	if announce {
 		h.announcedFailing = true
-		// Loud, once. This is the signal whose absence let a five-day outage
-		// stay invisible.
+	}
+	h.mu.Unlock()
+	if announce {
 		_, _ = fmt.Fprintf(h.log,
 			"provider: FAILING after %d consecutive errors; broker cannot create sandboxes\n",
-			h.consecutiveFailures)
+			failures)
 	}
 }
 
@@ -249,19 +292,23 @@ func NewHealthTrackingProvider(inner MachineProvider, health *ProviderHealth) Ma
 
 func (p *healthTrackingProvider) CreateMachine(ctx context.Context, spec MachineSpec) (*Machine, error) {
 	m, err := p.inner.CreateMachine(ctx, spec)
-	p.record(err)
+	if err != nil {
+		p.health.RecordFailure(err)
+	} else {
+		p.health.RecordSuccess()
+	}
 	return m, err
 }
 
 func (p *healthTrackingProvider) DestroyMachine(ctx context.Context, id string) error {
 	err := p.inner.DestroyMachine(ctx, id)
-	p.record(err)
+	p.recordBackground(err)
 	return err
 }
 
 func (p *healthTrackingProvider) ListManagedMachines(ctx context.Context) ([]Machine, error) {
 	ms, err := p.inner.ListManagedMachines(ctx)
-	p.record(err)
+	p.recordBackground(err)
 	return ms, err
 }
 
@@ -274,10 +321,10 @@ func (p *healthTrackingProvider) WaitReady(ctx context.Context, id string) error
 	return p.inner.WaitReady(ctx, id)
 }
 
-func (p *healthTrackingProvider) record(err error) {
+func (p *healthTrackingProvider) recordBackground(err error) {
 	if err != nil {
-		p.health.RecordFailure(err)
+		p.health.RecordBackgroundFailure(err)
 		return
 	}
-	p.health.RecordSuccess()
+	p.health.RecordBackgroundSuccess()
 }

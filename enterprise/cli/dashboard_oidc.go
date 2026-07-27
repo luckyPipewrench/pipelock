@@ -39,6 +39,7 @@ const (
 	dashboardOIDCMaxRoleLength   = 256
 	dashboardOIDCMaxJSONDepth    = 64
 	dashboardOIDCMinKeyRefresh   = 30 * time.Second
+	dashboardOIDCRSAMaxBits      = 8192
 )
 
 type dashboardOIDCOptions struct {
@@ -388,25 +389,46 @@ type dashboardJWK struct {
 
 func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.PublicKey, error) {
 	c.mu.Lock()
-	if c.keys == nil || !c.now().Before(c.expiresAt) {
+	now := c.now()
+	if key := c.keys[keyID]; key != nil && now.Before(c.expiresAt) {
+		c.mu.Unlock()
+		return key, nil
+	}
+	cacheExpired := c.keys == nil || !now.Before(c.expiresAt)
+	keyUnknown := c.keys != nil && c.keys[keyID] == nil
+	recentMiss := !c.lastMiss.IsZero() && now.Before(c.lastMiss.Add(dashboardOIDCMinKeyRefresh))
+	missSinceExpiry := !c.lastMiss.IsZero() && !c.lastMiss.Before(c.expiresAt)
+	if keyUnknown && recentMiss && (!cacheExpired || missSinceExpiry) {
+		c.mu.Unlock()
+		return nil, dashboardOIDCSigningKeyNotFound(keyID)
+	}
+	if cacheExpired {
 		c.mu.Unlock()
 		if err := c.refresh(ctx); err != nil {
+			if keyUnknown {
+				c.recordMiss()
+			}
 			return nil, err
 		}
 		c.mu.Lock()
+		if key := c.keys[keyID]; key != nil {
+			c.mu.Unlock()
+			return key, nil
+		}
+		c.lastMiss = c.now()
+		c.mu.Unlock()
+		return nil, dashboardOIDCSigningKeyNotFound(keyID)
 	}
 	if key := c.keys[keyID]; key != nil {
 		c.mu.Unlock()
 		return key, nil
 	}
-	// An unknown kid commonly means the provider rotated keys before this
-	// cache entry expired. Refresh at a bounded rate; attacker-chosen kids must
-	// not turn the dashboard into a JWKS request amplifier.
-	if !c.lastMiss.IsZero() && c.now().Before(c.lastMiss.Add(dashboardOIDCMinKeyRefresh)) {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("OIDC signing key %q not found", keyID)
-	}
-	c.lastMiss = c.now()
+	// An unknown kid commonly means the provider rotated keys before this cache
+	// entry expired. Refresh at a bounded rate; attacker-chosen kids must not
+	// turn the dashboard into a JWKS request amplifier. Stale caches refresh
+	// before this gate so normal TTL expiry cannot skip the authorization check
+	// path that would learn a legitimate rotated key.
+	c.lastMiss = now
 	c.mu.Unlock()
 	if err := c.refresh(ctx); err != nil {
 		return nil, err
@@ -415,10 +437,22 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 	key := c.keys[keyID]
 	c.mu.Unlock()
 	if key == nil {
-		return nil, fmt.Errorf("OIDC signing key %q not found", keyID)
+		return nil, dashboardOIDCSigningKeyNotFound(keyID)
 	}
 	return key, nil
 }
+
+func (c *dashboardJWKSCache) recordMiss() {
+	c.mu.Lock()
+	c.lastMiss = c.now()
+	c.mu.Unlock()
+}
+
+func dashboardOIDCSigningKeyNotFound(keyID string) error {
+	return fmt.Errorf("%w: OIDC signing key %q not found", errDashboardOIDCSigningKeyNotFound, keyID)
+}
+
+var errDashboardOIDCSigningKeyNotFound = errors.New("OIDC signing key not found")
 
 func (c *dashboardJWKSCache) refresh(ctx context.Context) error {
 	c.mu.Lock()
@@ -498,8 +532,8 @@ func parseDashboardRSAJWK(jwk dashboardJWK) (*rsa.PublicKey, bool, error) {
 	}
 	n := new(big.Int).SetBytes(nBytes)
 	eBig := new(big.Int).SetBytes(eBytes)
-	if n.BitLen() < 2048 {
-		return nil, false, fmt.Errorf("OIDC JWK %q RSA modulus is smaller than 2048 bits", jwk.KeyID)
+	if err := validateRSAModulusBits(n, dashboardTrustedRSAMinBits, dashboardOIDCRSAMaxBits); err != nil {
+		return nil, false, fmt.Errorf("OIDC JWK %q RSA modulus: %w", jwk.KeyID, err)
 	}
 	if !eBig.IsInt64() {
 		return nil, false, fmt.Errorf("OIDC JWK %q exponent is out of range", jwk.KeyID)
@@ -855,6 +889,8 @@ func dashboardOIDCFailureCategory(err error) string {
 	}
 	msg := err.Error()
 	switch {
+	case errors.Is(err, errDashboardOIDCSigningKeyNotFound):
+		return "unknown_principal"
 	case strings.Contains(msg, "bearer token is missing"):
 		return "missing_token"
 	case strings.Contains(msg, "signature"):
@@ -925,14 +961,27 @@ func (a *dashboardRequestAuthorization) authAuditInfo(r *http.Request) dashboard
 	}
 	switch {
 	case dashboardConfiguredTokenMatches(r, a.rawToken):
-		return dashboard.AuthAuditInfo{Method: "static-raw-token"}
+		return dashboard.AuthAuditInfo{Method: "raw-access-token", Roles: []string{"raw"}}
 	case dashboardConfiguredTokenMatches(r, a.metadataToken):
-		return dashboard.AuthAuditInfo{Method: "static-metadata-token"}
+		return dashboard.AuthAuditInfo{Method: "token", Roles: []string{"metadata"}}
 	case dashboardOIDCFailureReasonFromRequest(r) != "":
 		return dashboard.AuthAuditInfo{Method: "oidc", FailureReason: dashboardOIDCFailureReasonFromRequest(r)}
+	case dashboardCredentialAttempted(r):
+		return dashboard.AuthAuditInfo{Method: "token", FailureReason: "unknown_principal"}
 	default:
 		return dashboard.AuthAuditInfo{Method: "none", FailureReason: "missing_token"}
 	}
+}
+
+func dashboardCredentialAttempted(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		return true
+	}
+	_, _, ok := r.BasicAuth()
+	return ok
 }
 
 func (a *dashboardRequestAuthorization) wrap(next http.Handler, auditWriter io.Writer) http.Handler {

@@ -6,13 +6,17 @@
 package entcli
 
 import (
+	"bytes"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +27,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 )
 
-const dashboardClientCertRoleMapMaxBytes = 1 << 20
+const (
+	dashboardClientCertRoleMapMaxBytes = 1 << 20
+	dashboardClientCAMaxBytes          = 1 << 20
+	dashboardTrustedRSAMinBits         = 2048
+	dashboardClientCertRSAMinBits      = dashboardTrustedRSAMinBits
+	dashboardClientCertRSAMaxBits      = 8192
+)
 
 type dashboardClientCertRoleMapFile struct {
 	Version      int                                `yaml:"version"`
@@ -261,9 +271,17 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("--client-ca-file is required when --require-client-cert is set")
 	}
-	pemBytes, err := os.ReadFile(filepath.Clean(path))
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("read --client-ca-file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	pemBytes, err := io.ReadAll(io.LimitReader(file, dashboardClientCAMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read --client-ca-file: %w", err)
+	}
+	if len(pemBytes) > dashboardClientCAMaxBytes {
+		return nil, fmt.Errorf("--client-ca-file exceeds %d bytes", dashboardClientCAMaxBytes)
 	}
 	// Parse every certificate block explicitly instead of AppendCertsFromPEM,
 	// which silently skips malformed blocks and would start the dashboard with a
@@ -271,11 +289,18 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	var added int
 	for rest := pemBytes; ; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
+		rest = dashboardClientCATrimAllowedSeparators(rest)
+		if len(rest) == 0 {
 			break
 		}
+		if !bytes.HasPrefix(rest, []byte("-----BEGIN CERTIFICATE-----")) {
+			return nil, errors.New("--client-ca-file contains non-PEM data")
+		}
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			return nil, errors.New("--client-ca-file contains malformed PEM data")
+		}
+		rest = remaining
 		if block.Type != "CERTIFICATE" {
 			return nil, fmt.Errorf("--client-ca-file contains a non-certificate PEM block %q", block.Type)
 		}
@@ -290,4 +315,53 @@ func loadDashboardClientCAs(path string) (*x509.CertPool, error) {
 		return nil, errors.New("--client-ca-file contains no valid PEM certificates")
 	}
 	return pool, nil
+}
+
+func dashboardClientCATrimAllowedSeparators(data []byte) []byte {
+	for len(data) > 0 {
+		switch data[0] {
+		case ' ', '\t', '\r', '\n':
+			data = data[1:]
+			continue
+		case '#':
+			if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+				data = data[idx+1:]
+				continue
+			}
+			return nil
+		default:
+			return data
+		}
+	}
+	return data
+}
+
+func verifyDashboardClientCertificateKeySizes(state tls.ConnectionState) error {
+	for _, cert := range state.PeerCertificates {
+		if cert == nil {
+			continue
+		}
+		key, ok := cert.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			continue
+		}
+		if err := validateRSAModulusBits(key.N, dashboardClientCertRSAMinBits, dashboardClientCertRSAMaxBits); err != nil {
+			return fmt.Errorf("dashboard client certificate RSA modulus: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateRSAModulusBits(n *big.Int, minBits, maxBits int) error {
+	if n == nil {
+		return errors.New("missing modulus")
+	}
+	bits := n.BitLen()
+	if bits < minBits {
+		return fmt.Errorf("is %d bits; minimum is %d", bits, minBits)
+	}
+	if bits > maxBits {
+		return fmt.Errorf("is %d bits; maximum is %d", bits, maxBits)
+	}
+	return nil
 }

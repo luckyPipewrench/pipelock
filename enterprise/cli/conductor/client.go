@@ -8,8 +8,10 @@ package conductor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,12 +138,30 @@ func (c *ReadClient) ReplayDecision(ctx context.Context, orgID, fleetID, artifac
 		strings.IndexFunc(artifactHash, unicode.IsControl) >= 0 {
 		return nil, false, errors.New("org_id, fleet_id, and artifact_hash must not contain control characters")
 	}
+	if err := ValidateCanonicalSHA256Hex("artifact_hash", artifactHash); err != nil {
+		return nil, false, err
+	}
 	params := map[string]string{
 		"org_id":        orgID,
 		"fleet_id":      fleetID,
 		"artifact_hash": artifactHash,
 	}
 	return c.client.getJSONMaybeNotFound(ctx, controlplane.DecisionReplayPath+encodeQuery(params))
+}
+
+// ValidateCanonicalSHA256Hex requires value to be the canonical lowercase hex
+// representation of a SHA-256 digest.
+func ValidateCanonicalSHA256Hex(name, value string) error {
+	if len(value) != sha256.Size*2 {
+		return fmt.Errorf("%s must be a 64-character lowercase sha256 hex string", name)
+	}
+	if strings.ToLower(value) != value {
+		return fmt.Errorf("%s must be lowercase", name)
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return fmt.Errorf("%s must be hex: %w", name, err)
+	}
+	return nil
 }
 
 func (o *clientOptions) bindFlags(cmd *cobra.Command) {
@@ -290,6 +310,9 @@ func (c *conductorClient) getJSONStatus(ctx context.Context, path string, allowe
 		if resp.StatusCode == status {
 			return conductorClientResponse{status: resp.StatusCode, body: body}, nil
 		}
+	}
+	if len(allowed) > 0 {
+		return conductorClientResponse{}, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body, c.token))
 	}
 	if err := checkClientStatus(resp, body, c.token); err != nil {
 		return conductorClientResponse{}, err

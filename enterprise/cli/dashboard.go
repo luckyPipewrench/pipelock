@@ -437,6 +437,7 @@ func dashboardTLSConfig(opts dashboardServeOptions) (*tls.Config, error) {
 		}
 		config.ClientAuth = tls.RequireAndVerifyClientCert
 		config.ClientCAs = clientCAs
+		config.VerifyConnection = verifyDashboardClientCertificateKeySizes
 	}
 	return config, nil
 }
@@ -576,7 +577,7 @@ func dashboardClientCertAuthAuditInfo(auth *dashboardClientCertAuthorizer, r *ht
 	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return info
 	}
-	info.Subject = dashboardClientCertSPKIFingerprint(r.TLS.PeerCertificates[0])
+	info.MTLSSPKISHA256 = dashboardClientCertSPKIFingerprint(r.TLS.PeerCertificates[0])
 	if len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
 		info.FailureReason = "unverified_client_certificate"
 		return info
@@ -602,9 +603,10 @@ func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo 
 	if info.FailureReason == "" {
 		info.FailureReason = "unauthorized"
 	}
-	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied method=%s path=%q auth_method=%s auth_subject=%q auth_roles=%q reason=%s remote=%s\n",
-		time.Now().UTC().Format(time.RFC3339), r.Method, r.URL.Path,
-		dashboard.AuditLogValue(info.Method), dashboard.AuditLogValue(info.Subject),
+	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q auth_method=%s auth_subject_sha256=%q mtls_spki_sha256=%q auth_roles=%q reason=%s remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), "-", r.Method, r.URL.Path,
+		dashboard.AuditLogValue(info.Method), dashboard.AuditLogValue(info.SubjectSHA256),
+		dashboard.AuditLogValue(info.MTLSSPKISHA256),
 		strings.Join(dashboardAuditLogValues(info.Roles), ","), dashboard.AuditLogValue(info.FailureReason), r.RemoteAddr)
 }
 

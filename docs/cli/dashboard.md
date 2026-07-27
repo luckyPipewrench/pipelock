@@ -125,7 +125,7 @@ startup error.
 | `--oidc-role-claim` | none | Verified token claim containing role or group values. Required with `--oidc-issuer`. |
 | `--oidc-role-map` | none | JSON mapping of verified claim values to bounded dashboard permissions. Required with `--oidc-issuer`. |
 | `--require-client-cert` | `false` | Require a verified client certificate on every TLS connection and authorize it through the role map. Requires all three mTLS file flags below. |
-| `--client-ca-file` | none | PEM bundle of trust anchors used by TLS to verify client certificates. |
+| `--client-ca-file` | none | PEM bundle of trust anchors used by TLS to verify client certificates. The bundle is capped at 1 MiB at startup. |
 | `--client-cert-role-map` | none | YAML file mapping client-certificate SPKI SHA-256 fingerprints to roles and bounded dashboard permissions. |
 | `--conductor-url` | none | Optional Conductor HTTPS base URL for read-only live fleet status. When omitted, live fleet panels render the explicit "no conductor source configured" state. |
 | `--conductor-token-file` | none | File containing the Conductor read bearer token. Required with `--conductor-url`; must authorize the configured org/fleet read. |
@@ -151,6 +151,11 @@ SubjectPublicKeyInfo (SPKI). This identity remains stable when a certificate is
 renewed with the same key. Role permissions must come from the dashboard's
 bounded permission vocabulary. Grant `dashboard:raw:read` only to roles that
 may view raw destinations and signed payloads.
+
+Client certificates with RSA public keys smaller than 2048 bits or larger than
+8192 bits are rejected after normal TLS verification and before the request
+reaches dashboard route authorization. EC and Ed25519 client certificates are
+unaffected.
 
 <!-- dashboard-mtls-role-map-start -->
 ```yaml
@@ -231,6 +236,13 @@ sets, such as `account`), so the "aud contains `--oidc-audience`" check passes.
 A token that then carries multiple audiences must also set `azp` to the client
 ID, which Keycloak does for the client that obtained the token; the dashboard
 requires that `azp` match when more than one audience is present.
+
+Discovery and JWKS documents are size-bounded, duplicate JSON members are
+rejected, only RS256 signing keys are accepted, and token claims are decoded
+only after the signature verifies. An unknown JWT `kid` triggers at most one
+bounded JWKS refresh per refresh window. Additional unknown-key requests inside
+that window fail closed without refetching the JWKS endpoint; a throttled
+refresh never authenticates the request.
 
 Pick a role source with `--oidc-role-claim` and map it to bounded dashboard
 permissions with `--oidc-role-map`. The role claim can be `azp` (the client ID,
@@ -324,8 +336,23 @@ the server is running stops serving.
   metadata-view response. The scorecard — the actual proof — does not depend
   on the raw fields.
 - **Access is audited.** Every authenticated request is written to an access log
-  on stderr (role `metadata` or `raw`, method, path, session, remote address).
-  Viewing evidence is itself a recorded action.
+  on stderr (role `metadata` or `raw`, dashboard permission, method, path,
+  session, remote address, auth method, mapped roles, and redacted principal
+  attribution). Token requests record `auth_method=token` or
+  `auth_method=raw-access-token` without token bytes. OIDC requests record the
+  subject only as `auth_subject_sha256` plus mapped roles. mTLS requests record
+  the leaf certificate SPKI fingerprint as `mtls_spki_sha256` plus the mapped
+  role. Denied authentication and permission checks include a bounded failure
+  category such as `missing_token`, `missing_client_certificate`,
+  `unmapped_client_certificate`, `permission_denied`, `expired`, or
+  `invalid_token`.
+  Audit log compatibility note: this release replaces raw `auth_subject` output
+  with `auth_subject_sha256` and adds `mtls_spki_sha256` and `permission`
+  fields on denial records. SIEM parsers that key on the old raw subject field
+  must migrate to the hashed subject field. Existing denial `reason=` values
+  for missing tokens, missing client certificates, unverified client
+  certificates, unmapped client certificates, and role permission denial remain
+  stable.
 - **Exemptions is inventory only.** `/exemptions` is GET-only and reads the
   already-loaded config snapshot. It has no POST route, no apply/remove/renew
   controls, no config write path, and no hot-reload hook.

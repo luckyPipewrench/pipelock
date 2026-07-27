@@ -1576,12 +1576,40 @@ func TestReplayByHashDirectLookupErrorsAndScope(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 		},
 		{
+			name: "remote direct record hash mismatch",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				remoteRecord: StoredRemoteKill{
+					Message:     msg,
+					MessageHash: strings.Repeat("f", 64),
+					PublishedAt: testNow,
+				},
+				remoteFound: true,
+			},
+			hash:       remoteHash,
+			wantStatus: http.StatusNotFound,
+		},
+		{
 			name: "rollback direct record outside scope",
 			emergency: replayByHashReaderStore{
 				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
 				rollbackRecord: StoredRollbackAuthorization{
 					Authorization:     rollbackOutOfScope,
 					AuthorizationHash: rollbackHash,
+					PublishedAt:       testNow,
+				},
+				rollbackFound: true,
+			},
+			hash:       rollbackHash,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "rollback direct record hash mismatch",
+			emergency: replayByHashReaderStore{
+				emergencyStoreNoPreview: emergencyStoreNoPreview{inner: baseEmergency},
+				rollbackRecord: StoredRollbackAuthorization{
+					Authorization:     auth,
+					AuthorizationHash: strings.Repeat("e", 64),
 					PublishedAt:       testNow,
 				},
 				rollbackFound: true,
@@ -1746,7 +1774,7 @@ func TestReplayByHashFailsClosed(t *testing.T) {
 			wantBody:   ErrDecisionReplayArtifactNotFound.Error(),
 		},
 		{
-			name:       "scope mismatch is not found",
+			name:       "out-of-scope fleet rejected by stream authorization",
 			target:     DecisionReplayPath + "?org_id=org-main&fleet_id=staging&artifact_hash=" + record.BundleHash,
 			streamAuth: true,
 			wantStatus: http.StatusForbidden,

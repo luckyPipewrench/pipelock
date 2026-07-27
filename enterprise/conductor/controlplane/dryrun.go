@@ -488,6 +488,9 @@ func (h *Handler) replayRemoteKillByHash(w http.ResponseWriter, r *http.Request,
 			return found, err
 		}
 		msg := record.Message
+		if !remoteKillRecordMatchesHash(record, query.ArtifactHash) {
+			return false, nil
+		}
 		if msg.OrgID != query.OrgID || msg.FleetID != query.FleetID {
 			return false, nil
 		}
@@ -504,7 +507,7 @@ func (h *Handler) replayRemoteKillByHash(w http.ResponseWriter, r *http.Request,
 	}
 	for _, record := range records {
 		msg := record.Message
-		if record.MessageHash == query.ArtifactHash && msg.OrgID == query.OrgID && msg.FleetID == query.FleetID {
+		if remoteKillRecordMatchesHash(record, query.ArtifactHash) && msg.OrgID == query.OrgID && msg.FleetID == query.FleetID {
 			h.replayResolvedRemoteKill(w, r, msg, now)
 			return true, nil
 		}
@@ -519,6 +522,9 @@ func (h *Handler) replayRollbackByHash(w http.ResponseWriter, r *http.Request, q
 			return found, err
 		}
 		auth := record.Authorization
+		if !rollbackRecordMatchesHash(record, query.ArtifactHash) {
+			return false, nil
+		}
 		if auth.OrgID != query.OrgID || auth.FleetID != query.FleetID {
 			return false, nil
 		}
@@ -535,7 +541,7 @@ func (h *Handler) replayRollbackByHash(w http.ResponseWriter, r *http.Request, q
 	}
 	for _, record := range records {
 		auth := record.Authorization
-		if record.AuthorizationHash == query.ArtifactHash && auth.OrgID == query.OrgID && auth.FleetID == query.FleetID {
+		if rollbackRecordMatchesHash(record, query.ArtifactHash) && auth.OrgID == query.OrgID && auth.FleetID == query.FleetID {
 			h.replayResolvedRollback(w, r, auth, now)
 			return true, nil
 		}
@@ -730,6 +736,9 @@ func (h *Handler) recordedRemoteKill(ctx context.Context, hash string) (*Recorde
 		if err != nil || !found {
 			return nil, err
 		}
+		if !remoteKillRecordMatchesHash(record, hash) {
+			return nil, nil
+		}
 		return &RecordedDecision{
 			Present:      true,
 			Accepted:     true,
@@ -743,7 +752,7 @@ func (h *Handler) recordedRemoteKill(ctx context.Context, hash string) (*Recorde
 			return nil, err
 		}
 		for _, record := range records {
-			if record.MessageHash == hash {
+			if remoteKillRecordMatchesHash(record, hash) {
 				return &RecordedDecision{
 					Present:      true,
 					Accepted:     true,
@@ -763,7 +772,7 @@ func (h *Handler) recordedRemoteKill(ctx context.Context, hash string) (*Recorde
 		return nil, err
 	}
 	for _, record := range records {
-		if record.MessageHash == hash {
+		if remoteKillRecordMatchesHash(record, hash) {
 			return &RecordedDecision{
 				Present:      true,
 				Accepted:     true,
@@ -875,6 +884,9 @@ func (h *Handler) recordedRollback(ctx context.Context, hash string) (*RecordedD
 		if err != nil || !found {
 			return nil, err
 		}
+		if !rollbackRecordMatchesHash(record, hash) {
+			return nil, nil
+		}
 		return &RecordedDecision{
 			Present:      true,
 			Accepted:     true,
@@ -888,7 +900,7 @@ func (h *Handler) recordedRollback(ctx context.Context, hash string) (*RecordedD
 			return nil, err
 		}
 		for _, record := range records {
-			if record.AuthorizationHash == hash {
+			if rollbackRecordMatchesHash(record, hash) {
 				return &RecordedDecision{
 					Present:      true,
 					Accepted:     true,
@@ -908,7 +920,7 @@ func (h *Handler) recordedRollback(ctx context.Context, hash string) (*RecordedD
 		return nil, err
 	}
 	for _, record := range records {
-		if record.AuthorizationHash == hash {
+		if rollbackRecordMatchesHash(record, hash) {
 			return &RecordedDecision{
 				Present:      true,
 				Accepted:     true,

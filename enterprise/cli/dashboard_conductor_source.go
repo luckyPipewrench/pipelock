@@ -169,6 +169,9 @@ func (s *dashboardConductorSource) ReplayDecision(ctx context.Context, scope das
 	if scope.ArtifactHash == "" {
 		return dashboard.DecisionReplayView{}, false, errors.New("artifact hash is required")
 	}
+	if err := conductorcli.ValidateCanonicalSHA256Hex("artifact hash", scope.ArtifactHash); err != nil {
+		return dashboard.DecisionReplayView{}, false, err
+	}
 	body, found, err := s.client.ReplayDecision(ctx, scope.OrgID, scope.FleetID, scope.ArtifactHash)
 	if err != nil || !found {
 		return dashboard.DecisionReplayView{}, found, err
@@ -300,7 +303,7 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 	if err := dec.Decode(&extra); err != io.EOF {
 		return dashboard.DecisionReplayView{}, errors.New("decode conductor decision replay response: trailing JSON data")
 	}
-	if !strings.EqualFold(result.ArtifactHash, strings.TrimSpace(requestedHash)) {
+	if result.ArtifactHash != strings.TrimSpace(requestedHash) {
 		return dashboard.DecisionReplayView{}, fmt.Errorf("conductor replay response artifact_hash=%q does not match requested artifact hash", result.ArtifactHash)
 	}
 	if result.Recorded == nil || !result.Recorded.Present {
@@ -323,6 +326,9 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 		if result.PublishEvaluation == nil || result.RemoteKill != nil || result.Rollback != nil {
 			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid publish evaluation shape")
 		}
+		if err := validateDashboardReplayConflict(controlplane.ActionKindPublish, result.PublishEvaluation.Conflict); err != nil {
+			return dashboard.DecisionReplayView{}, err
+		}
 		view.Valid = result.PublishEvaluation.Valid
 		view.Conflict = result.PublishEvaluation.Conflict
 		view.ResultVersion = result.PublishEvaluation.ResultVersion
@@ -330,6 +336,9 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 	case controlplane.ActionKindRemoteKill:
 		if result.RemoteKill == nil || result.PublishEvaluation != nil || result.Rollback != nil {
 			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid remote-kill evaluation shape")
+		}
+		if err := validateDashboardReplayConflict(controlplane.ActionKindRemoteKill, result.RemoteKill.Conflict); err != nil {
+			return dashboard.DecisionReplayView{}, err
 		}
 		view.Valid = result.RemoteKill.Valid
 		view.Conflict = result.RemoteKill.Conflict
@@ -339,6 +348,9 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 		if result.Rollback == nil || result.PublishEvaluation != nil || result.RemoteKill != nil {
 			return dashboard.DecisionReplayView{}, errors.New("conductor replay response has invalid rollback evaluation shape")
 		}
+		if err := validateDashboardReplayConflict(controlplane.ActionKindRollback, result.Rollback.Conflict); err != nil {
+			return dashboard.DecisionReplayView{}, err
+		}
 		view.Valid = result.Rollback.Valid
 		view.Conflict = result.Rollback.Conflict
 		view.ResultVersion = result.Rollback.WouldRollToVersion
@@ -347,6 +359,37 @@ func dashboardDecisionReplayView(body []byte, requestedHash string) (dashboard.D
 		return dashboard.DecisionReplayView{}, fmt.Errorf("conductor replay response action_kind=%q is unsupported", result.ActionKind)
 	}
 	return view, nil
+}
+
+func validateDashboardReplayConflict(actionKind, conflict string) error {
+	if strings.TrimSpace(conflict) == "" {
+		return nil
+	}
+	switch actionKind {
+	case controlplane.ActionKindPublish:
+		switch conflict {
+		case controlplane.PublishConflictRollbackAttempt,
+			controlplane.PublishConflictVersionBelowStreamMax,
+			controlplane.PublishConflictPreviousHashMismatch,
+			controlplane.PublishConflictOther,
+			controlplane.PublishConflictFleetSkew:
+			return nil
+		}
+	case controlplane.ActionKindRemoteKill:
+		switch conflict {
+		case controlplane.EmergencyConflictIDConflict,
+			controlplane.EmergencyConflictStaleCounter:
+			return nil
+		}
+	case controlplane.ActionKindRollback:
+		switch conflict {
+		case controlplane.EmergencyConflictIDConflict,
+			controlplane.EmergencyConflictStaleCounter,
+			controlplane.RollbackConflictHeadPreviewFailed:
+			return nil
+		}
+	}
+	return fmt.Errorf("conductor replay response has invalid %s conflict code %q", actionKind, conflict)
 }
 
 func dashboardConductorFleetScopeAuthorizer(orgID, fleetID string) func(*http.Request, dashboard.DecisionScope, bool) error {

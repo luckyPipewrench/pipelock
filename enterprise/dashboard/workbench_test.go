@@ -445,17 +445,47 @@ func TestWorkbench_ReplayNotFoundMetadataRedactsScope(t *testing.T) {
 	}
 }
 
-func TestWorkbench_SourceErrorReturnsServerError(t *testing.T) {
+func TestWorkbench_SourceErrorRendersUnavailablePanel(t *testing.T) {
 	t.Parallel()
 
-	source := &fakeConductorSource{err: errors.New("source unavailable")}
+	var audit strings.Builder
+	source := &fakeConductorSource{err: errors.New("backend exploded SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE")}
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
+		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope, AuditWriter: &audit,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Decision replay unavailable") {
+		t.Fatalf("body missing unavailable panel: %s", body)
+	}
+	if !strings.Contains(body, "Replay failure category:") || !strings.Contains(body, "source_error") {
+		t.Fatalf("body missing bounded replay failure category: %s", body)
+	}
+	if !strings.Contains(body, `class="replay-failure"`) || strings.Contains(body, `class="absence"><h2>Decision replay unavailable`) {
+		t.Fatalf("unavailable panel must render as a distinct replay failure, not ordinary absence: %s", body)
+	}
+	if strings.Contains(body, "SECRET-") || strings.Contains(body, "backend exploded") {
+		t.Fatalf("unavailable panel leaked source error detail: %s", body)
+	}
+	log := audit.String()
+	for _, want := range []string{
+		"pipelock-dashboard scope",
+		`decision_state="unavailable"`,
+		`decision_error_reason="source_error"`,
+		"decision_error=true",
+		"decision_found=false",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("scope audit missing %q: %s", want, log)
+		}
+	}
+	if strings.Contains(log, "SECRET-") || strings.Contains(log, "backend exploded") ||
+		strings.Contains(log, wbTestOrgID) || strings.Contains(log, wbTestFleetID) || strings.Contains(log, wbTestArtifactHash) {
+		t.Fatalf("scope audit leaked source detail or raw scope: %s", log)
 	}
 }
 

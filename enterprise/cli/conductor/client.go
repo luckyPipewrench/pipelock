@@ -117,6 +117,33 @@ func (c *ReadClient) ListFollowers(ctx context.Context, orgID, fleetID string, l
 	return c.client.getJSON(ctx, controlplane.FollowersPath+encodeQuery(params))
 }
 
+// ReplayDecision reads a recorded decision by canonical artifact hash and asks
+// the Conductor to re-derive the read-only replay result server-side. It only
+// issues GET against the allowlisted replay endpoint and returns found=false for
+// a 404 response.
+func (c *ReadClient) ReplayDecision(ctx context.Context, orgID, fleetID, artifactHash string) ([]byte, bool, error) {
+	if c == nil || c.client == nil {
+		return nil, false, errors.New("conductor read client is nil")
+	}
+	orgID = strings.TrimSpace(orgID)
+	fleetID = strings.TrimSpace(fleetID)
+	artifactHash = strings.TrimSpace(artifactHash)
+	if orgID == "" || fleetID == "" || artifactHash == "" {
+		return nil, false, errors.New("org_id, fleet_id, and artifact_hash are required")
+	}
+	if strings.IndexFunc(orgID, unicode.IsControl) >= 0 ||
+		strings.IndexFunc(fleetID, unicode.IsControl) >= 0 ||
+		strings.IndexFunc(artifactHash, unicode.IsControl) >= 0 {
+		return nil, false, errors.New("org_id, fleet_id, and artifact_hash must not contain control characters")
+	}
+	params := map[string]string{
+		"org_id":        orgID,
+		"fleet_id":      fleetID,
+		"artifact_hash": artifactHash,
+	}
+	return c.client.getJSONMaybeNotFound(ctx, controlplane.DecisionReplayPath+encodeQuery(params))
+}
+
 func (o *clientOptions) bindFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.server, "server", defaultClientServer, "Conductor HTTPS base URL")
 	cmd.Flags().StringVar(&o.caFile, "ca-file", "", "PEM CA bundle that signed the Conductor server certificate (required)")
@@ -207,25 +234,67 @@ func newConductorClient(opts clientOptions) (*conductorClient, error) {
 // a 200 response, or a descriptive error otherwise. The body is read under a
 // hard size cap so a hostile or buggy server cannot exhaust client memory.
 func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, error) {
+	resp, err := c.getJSONStatus(ctx, path, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	return resp.body, nil
+}
+
+func (c *conductorClient) getJSONMaybeNotFound(ctx context.Context, path string) ([]byte, bool, error) {
+	body, err := c.getJSONStatus(ctx, path, http.StatusOK, http.StatusNotFound)
+	if err != nil {
+		return nil, false, err
+	}
+	if body.status == http.StatusNotFound {
+		if !isDecisionReplayNotFoundBody(body.body) {
+			return nil, false, fmt.Errorf("conductor returned status %d: %s", body.status, clientSnippet(body.body, c.token))
+		}
+		return nil, false, nil
+	}
+	return body.body, true, nil
+}
+
+func isDecisionReplayNotFoundBody(body []byte) bool {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return strings.TrimSpace(payload.Error) == controlplane.ErrDecisionReplayArtifactNotFound.Error()
+}
+
+type conductorClientResponse struct {
+	status int
+	body   []byte
+}
+
+func (c *conductorClient) getJSONStatus(ctx context.Context, path string, allowed ...int) (conductorClientResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return conductorClientResponse{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request conductor: %w", err)
+		return conductorClientResponse{}, fmt.Errorf("request conductor: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := readClientBody(resp.Body)
 	if readErr != nil {
-		return nil, fmt.Errorf("read conductor response: %w", readErr)
+		return conductorClientResponse{}, fmt.Errorf("read conductor response: %w", readErr)
+	}
+	for _, status := range allowed {
+		if resp.StatusCode == status {
+			return conductorClientResponse{status: resp.StatusCode, body: body}, nil
+		}
 	}
 	if err := checkClientStatus(resp, body, c.token); err != nil {
-		return nil, err
+		return conductorClientResponse{}, err
 	}
-	return body, nil
+	return conductorClientResponse{status: resp.StatusCode, body: body}, nil
 }
 
 // getStreamStatus performs the authenticated GET for the conductor stream

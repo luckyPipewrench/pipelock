@@ -7,10 +7,13 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -20,6 +23,14 @@ import (
 // conductor decision for a signed action under the current or a caller-supplied
 // fleet/policy state. It is read-only: it mutates no store.
 const DecisionReplayPath = "/api/v1/conductor/decision-replay"
+
+// ErrDecisionReplayArtifactNotFound is returned by the replay-by-hash endpoint
+// when no recorded conductor decision artifact exists in the authorized scope.
+var ErrDecisionReplayArtifactNotFound = errors.New("conductor decision replay artifact not found")
+
+type bundleByHashReader interface {
+	BundleByHash(context.Context, string) (PublishedBundle, bool, error)
+}
 
 // Emergency-control conflict codes, the emergency-store analogue of the
 // publish-conflict codes. A dry-run/replay reports one of these when a
@@ -123,9 +134,12 @@ type DecisionReplayResult struct {
 }
 
 const (
-	actionKindPublish    = "publish"
-	actionKindRemoteKill = "remote_kill"
-	actionKindRollback   = "rollback"
+	// ActionKindPublish is the decision replay action kind for policy bundle publish actions.
+	ActionKindPublish = "publish"
+	// ActionKindRemoteKill is the decision replay action kind for remote-kill authorizations.
+	ActionKindRemoteKill = "remote_kill"
+	// ActionKindRollback is the decision replay action kind for rollback authorizations.
+	ActionKindRollback = "rollback"
 )
 
 // emergencyConflictCode classifies an emergency-store publish conflict into an
@@ -315,8 +329,12 @@ type decisionReplayRequest struct {
 }
 
 func (h *Handler) handleDecisionReplay(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		h.handleDecisionReplayByHash(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w, http.MethodPost)
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
 		return
 	}
 	var req decisionReplayRequest
@@ -361,6 +379,170 @@ func (h *Handler) handleDecisionReplay(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type decisionReplayByHashQuery struct {
+	OrgID        string
+	FleetID      string
+	ArtifactHash string
+}
+
+func (h *Handler) handleDecisionReplayByHash(w http.ResponseWriter, r *http.Request) {
+	streamQuery := decisionReplayByHashAuthQuery(r)
+	if err := h.authorizeStream(r, streamQuery); err != nil {
+		writeError(w, http.StatusForbidden, ErrStreamStatusForbidden)
+		return
+	}
+	query, err := parseDecisionReplayByHashQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	now := h.now()
+	if reader, ok := h.store.(bundleByHashReader); ok {
+		record, found, err := reader.BundleByHash(r.Context(), query.ArtifactHash)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		if found {
+			if !decisionReplayBundleInScope(record, query) {
+				writeError(w, http.StatusNotFound, ErrDecisionReplayArtifactNotFound)
+				return
+			}
+			h.replayResolvedPublish(w, r, record.Bundle, nil, now)
+			return
+		}
+	}
+	if h.emergencyControls != nil {
+		if found, err := h.replayRemoteKillByHash(w, r, query, now); err != nil {
+			writeStoreError(w, err)
+			return
+		} else if found {
+			return
+		}
+		if found, err := h.replayRollbackByHash(w, r, query, now); err != nil {
+			writeStoreError(w, err)
+			return
+		} else if found {
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, ErrDecisionReplayArtifactNotFound)
+}
+
+func decisionReplayByHashAuthQuery(r *http.Request) StreamStatusQuery {
+	values := r.URL.Query()
+	return StreamStatusQuery{
+		OrgID:   values.Get("org_id"),
+		FleetID: values.Get("fleet_id"),
+	}
+}
+
+func parseDecisionReplayByHashQuery(r *http.Request) (decisionReplayByHashQuery, error) {
+	values := r.URL.Query()
+	if err := validateStreamStatusValues(values, "org_id", "fleet_id", "artifact_hash"); err != nil {
+		return decisionReplayByHashQuery{}, err
+	}
+	query := decisionReplayByHashQuery{
+		OrgID:        values.Get("org_id"),
+		FleetID:      values.Get("fleet_id"),
+		ArtifactHash: strings.TrimSpace(values.Get("artifact_hash")),
+	}
+	if query.OrgID == "" || query.FleetID == "" || query.ArtifactHash == "" {
+		return decisionReplayByHashQuery{}, errors.New("org_id, fleet_id, and artifact_hash query parameters required")
+	}
+	if err := conductor.ValidateIdentifier("org_id", query.OrgID); err != nil {
+		return decisionReplayByHashQuery{}, err
+	}
+	if err := conductor.ValidateIdentifier("fleet_id", query.FleetID); err != nil {
+		return decisionReplayByHashQuery{}, err
+	}
+	if err := validateDecisionReplayArtifactHash(query.ArtifactHash); err != nil {
+		return decisionReplayByHashQuery{}, err
+	}
+	return query, nil
+}
+
+func validateDecisionReplayArtifactHash(hash string) error {
+	if len(hash) != sha256.Size*2 {
+		return fmt.Errorf("%w: artifact_hash must be a 64-character lowercase hex sha256", conductor.ErrInvalidHash)
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return fmt.Errorf("%w: artifact_hash must be a 64-character lowercase hex sha256", conductor.ErrInvalidHash)
+	}
+	if strings.ToLower(hash) != hash {
+		return fmt.Errorf("%w: artifact_hash must be a 64-character lowercase hex sha256", conductor.ErrInvalidHash)
+	}
+	return nil
+}
+
+func decisionReplayBundleInScope(record PublishedBundle, query decisionReplayByHashQuery) bool {
+	return record.BundleHash == query.ArtifactHash &&
+		record.Bundle.OrgID == query.OrgID &&
+		record.Bundle.FleetID == query.FleetID
+}
+
+func (h *Handler) replayRemoteKillByHash(w http.ResponseWriter, r *http.Request, query decisionReplayByHashQuery, now time.Time) (bool, error) {
+	if reader, ok := h.emergencyControls.(recordedRemoteKillByHashReader); ok {
+		record, found, err := reader.RecordedRemoteKillByHash(r.Context(), query.ArtifactHash)
+		if err != nil || !found {
+			return found, err
+		}
+		msg := record.Message
+		if msg.OrgID != query.OrgID || msg.FleetID != query.FleetID {
+			return false, nil
+		}
+		h.replayResolvedRemoteKill(w, r, msg, now)
+		return true, nil
+	}
+	lister, ok := h.emergencyControls.(recordedRemoteKillEnumerator)
+	if !ok {
+		return false, nil
+	}
+	records, err := lister.RecordedRemoteKills(r.Context())
+	if err != nil {
+		return false, err
+	}
+	for _, record := range records {
+		msg := record.Message
+		if record.MessageHash == query.ArtifactHash && msg.OrgID == query.OrgID && msg.FleetID == query.FleetID {
+			h.replayResolvedRemoteKill(w, r, msg, now)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *Handler) replayRollbackByHash(w http.ResponseWriter, r *http.Request, query decisionReplayByHashQuery, now time.Time) (bool, error) {
+	if reader, ok := h.emergencyControls.(recordedRollbackAuthorizationByHashReader); ok {
+		record, found, err := reader.RecordedRollbackAuthorizationByHash(r.Context(), query.ArtifactHash)
+		if err != nil || !found {
+			return found, err
+		}
+		auth := record.Authorization
+		if auth.OrgID != query.OrgID || auth.FleetID != query.FleetID {
+			return false, nil
+		}
+		h.replayResolvedRollback(w, r, auth, now)
+		return true, nil
+	}
+	lister, ok := h.emergencyControls.(recordedRollbackAuthorizationEnumerator)
+	if !ok {
+		return false, nil
+	}
+	records, err := lister.RecordedRollbackAuthorizations(r.Context())
+	if err != nil {
+		return false, err
+	}
+	for _, record := range records {
+		auth := record.Authorization
+		if record.AuthorizationHash == query.ArtifactHash && auth.OrgID == query.OrgID && auth.FleetID == query.FleetID {
+			h.replayResolvedRollback(w, r, auth, now)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (h *Handler) replayPublish(w http.ResponseWriter, r *http.Request, bundle conductor.PolicyBundle, snapshot *decisionReplaySnapshot, now time.Time) {
 	// Same authorizer as a real publish: publisher + bundle-scoped authorizer.
 	if err := h.authorizePublisher(r); err != nil {
@@ -371,6 +553,10 @@ func (h *Handler) replayPublish(w http.ResponseWriter, r *http.Request, bundle c
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
+	h.replayResolvedPublish(w, r, bundle, snapshot, now)
+}
+
+func (h *Handler) replayResolvedPublish(w http.ResponseWriter, r *http.Request, bundle conductor.PolicyBundle, snapshot *decisionReplaySnapshot, now time.Time) {
 	previewer, ok := h.store.(publishPreviewer)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, ErrDryRunUnsupported)
@@ -382,7 +568,7 @@ func (h *Handler) replayPublish(w http.ResponseWriter, r *http.Request, bundle c
 		return
 	}
 	result := DecisionReplayResult{
-		ActionKind:        actionKindPublish,
+		ActionKind:        ActionKindPublish,
 		ArtifactHash:      hash,
 		UsedStateSnapshot: snapshot != nil,
 		ReplayedAt:        now,
@@ -479,6 +665,10 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		writeError(w, http.StatusNotImplemented, ErrEmergencyKeyRequired)
 		return
 	}
+	h.replayResolvedRemoteKill(w, r, msg, now)
+}
+
+func (h *Handler) replayResolvedRemoteKill(w http.ResponseWriter, r *http.Request, msg conductor.RemoteKillMessage, now time.Time) {
 	previewer, ok := h.emergencyControls.(remoteKillPreviewer)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, ErrEmergencyPreviewUnsupported)
@@ -494,7 +684,7 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		return
 	}
 	result := DecisionReplayResult{
-		ActionKind:   actionKindRemoteKill,
+		ActionKind:   ActionKindRemoteKill,
 		ArtifactHash: hash,
 		ReplayedAt:   now,
 	}
@@ -535,6 +725,18 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 }
 
 func (h *Handler) recordedRemoteKill(ctx context.Context, hash string) (*RecordedDecision, error) {
+	if reader, ok := h.emergencyControls.(recordedRemoteKillByHashReader); ok {
+		record, found, err := reader.RecordedRemoteKillByHash(ctx, hash)
+		if err != nil || !found {
+			return nil, err
+		}
+		return &RecordedDecision{
+			Present:      true,
+			Accepted:     true,
+			RecordedHash: record.MessageHash,
+			PublishedAt:  record.PublishedAt,
+		}, nil
+	}
 	if lister, ok := h.emergencyControls.(recordedRemoteKillEnumerator); ok {
 		records, err := lister.RecordedRemoteKills(ctx)
 		if err != nil {
@@ -586,6 +788,10 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		writeError(w, http.StatusNotImplemented, ErrEmergencyKeyRequired)
 		return
 	}
+	h.replayResolvedRollback(w, r, auth, now)
+}
+
+func (h *Handler) replayResolvedRollback(w http.ResponseWriter, r *http.Request, auth conductor.RollbackAuthorization, now time.Time) {
 	authPreviewer, ok := h.emergencyControls.(rollbackAuthPreviewer)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, ErrEmergencyPreviewUnsupported)
@@ -606,7 +812,7 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		return
 	}
 	result := DecisionReplayResult{
-		ActionKind:   actionKindRollback,
+		ActionKind:   ActionKindRollback,
 		ArtifactHash: hash,
 		ReplayedAt:   now,
 	}
@@ -664,6 +870,18 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 }
 
 func (h *Handler) recordedRollback(ctx context.Context, hash string) (*RecordedDecision, error) {
+	if reader, ok := h.emergencyControls.(recordedRollbackAuthorizationByHashReader); ok {
+		record, found, err := reader.RecordedRollbackAuthorizationByHash(ctx, hash)
+		if err != nil || !found {
+			return nil, err
+		}
+		return &RecordedDecision{
+			Present:      true,
+			Accepted:     true,
+			RecordedHash: record.AuthorizationHash,
+			PublishedAt:  record.PublishedAt,
+		}, nil
+	}
 	if lister, ok := h.emergencyControls.(recordedRollbackAuthorizationEnumerator); ok {
 		records, err := lister.RecordedRollbackAuthorizations(ctx)
 		if err != nil {

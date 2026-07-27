@@ -532,6 +532,37 @@ func TestVerifiedEmergencyStore_NilResolverQuarantinesAll(t *testing.T) {
 	}
 }
 
+func TestVerifiedEmergencyStoreRecordedByHashUsesEnumeratorFallback(t *testing.T) {
+	msg, remoteResolver := signedRemoteKillMessageWithResolver(t, "verified-by-hash-kill", 1, conductor.KillSwitchActive, testNow)
+	remoteRecord := storedRemoteKill(t, msg, testNow)
+	rollbackRecord, rollbackResolver := trustedRollbackRecord(t, "verified-by-hash-rollback", 1, testNow)
+	resolver := composeResolvers(remoteResolver, rollbackResolver)
+	inner := replayRecordedEnumeratorStore{
+		emergencyStoreNoPreview: emergencyStoreNoPreview{inner: mustEmergencyStore(t)},
+		remoteRecords:           []StoredRemoteKill{remoteRecord},
+		rollbackRecords:         []StoredRollbackAuthorization{rollbackRecord},
+	}
+	verified := newVerifiedEmergencyStore(inner, resolver, nil, nil).(*verifiedEmergencyStore)
+
+	gotKill, found, err := verified.RecordedRemoteKillByHash(context.Background(), remoteRecord.MessageHash)
+	if err != nil || !found || gotKill.MessageHash != remoteRecord.MessageHash {
+		t.Fatalf("RecordedRemoteKillByHash() record=%+v found=%t err=%v, want remote record", gotKill, found, err)
+	}
+	gotRollback, found, err := verified.RecordedRollbackAuthorizationByHash(context.Background(), rollbackRecord.AuthorizationHash)
+	if err != nil || !found || gotRollback.AuthorizationHash != rollbackRecord.AuthorizationHash {
+		t.Fatalf("RecordedRollbackAuthorizationByHash() record=%+v found=%t err=%v, want rollback record", gotRollback, found, err)
+	}
+}
+
+func TestVerifiedEmergencyStoreRecordHashHelpersRejectMalformedRecords(t *testing.T) {
+	if rollbackRecordMatchesHash(StoredRollbackAuthorization{}, strings.Repeat("a", 64)) {
+		t.Fatal("rollbackRecordMatchesHash(empty) = true, want false")
+	}
+	if remoteKillRecordMatchesHash(StoredRemoteKill{}, strings.Repeat("a", 64)) {
+		t.Fatal("remoteKillRecordMatchesHash(empty) = true, want false")
+	}
+}
+
 // 8. Idempotency: a second Handler/verified-view open over the same dir
 // re-quarantines deterministically (same drop, same head).
 func TestVerifiedEmergencyStore_IdempotentReQuarantine(t *testing.T) {

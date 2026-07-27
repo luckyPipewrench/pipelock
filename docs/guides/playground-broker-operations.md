@@ -58,6 +58,8 @@ pipelock-playground-broker serve \
   --admin-listen 127.0.0.1:8101 \
   --admin-token-env PLAYGROUND_ADMIN_TOKEN \
   --turnstile-secret-env PLAYGROUND_TURNSTILE_SECRET \
+  --turnstile-sitekey 1x00000000000000000000AA \
+  --turnstile-origin https://challenges.cloudflare.com \
   --turnstile-expected-hostname playground.example.com \
   --turnstile-action playground-session \
   --vm-model-base-url https://api.provider.example/v1 \
@@ -217,8 +219,13 @@ visitor to a broker that does not recognize its token.
 
 Deploy sequence:
 
-1. Build and publish the VM image.
-2. Start the broker with explicit budgets and Turnstile enabled.
+1. Build both images with `deploy/fly-playground/build-images.sh`. The build
+   runs `serve --check-config` inside the broker image and refuses to publish
+   when the baked viewer is incompatible with its CSP or the non-secret
+   configuration is invalid.
+2. Start the broker with explicit budgets, `--turnstile-sitekey`, and Turnstile
+   enabled. The viewer is fixed to Cloudflare's
+   `https://challenges.cloudflare.com` origin.
 3. Check `/api/live/health`.
 4. Run one valid session through the public hostname.
 5. Run one invalid Turnstile/session request and confirm it fails closed.
@@ -227,7 +234,9 @@ Deploy sequence:
 Rollback sequence:
 
 1. Pause the current broker with `SIGUSR1`.
-2. Redeploy the prior broker image or config.
+2. Redeploy the prior broker image and its matching argument configuration
+   together. An old binary can reject flags introduced by a newer config, and
+   a new binary can require settings absent from an older config.
 3. Confirm health and budget values.
 4. Run the invalid-token and pause/resume checks again before sending traffic
    back.

@@ -67,6 +67,10 @@ type PoolConfig struct {
 	Now func() time.Time
 	// Log receives one-line audit messages. Nil discards.
 	Log io.Writer
+	// Health, when non-nil, is consulted before each maintain round so a
+	// persistently failing provider is retried with exponential backoff instead
+	// of every poolMaintainInterval. Nil disables backoff (retry every tick).
+	Health *ProviderHealth
 }
 
 // ConcurrencyAcquirer is the interface the pool needs from the shared
@@ -86,6 +90,7 @@ type Pool struct {
 	maxWarmAge time.Duration
 	now        func() time.Time
 	log        io.Writer
+	health     *ProviderHealth
 
 	mu      sync.Mutex
 	entries []warmEntry
@@ -145,6 +150,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		maxWarmAge: maxWarmAge,
 		now:        now,
 		log:        log,
+		health:     cfg.Health,
 		quarantine: make(map[string]warmEntry),
 		handoff:    make(map[string]struct{}),
 	}, nil
@@ -307,9 +313,20 @@ func (p *Pool) Resume() {
 }
 
 // maintain recycles stale entries and fills the pool up to Size.
+//
+// Stale entries are removed before consulting provider backoff so Acquire can
+// never hand out an expired VM. Their destruction is attempted once; a failure
+// quarantines the VM and retains its limiter slot until a later retry proves the
+// machine is gone. Backoff skips only quarantine retries and pool refills.
 func (p *Pool) maintain(ctx context.Context) {
-	p.retryQuarantine(ctx)
+	_, backedOff := p.health.BackoffActive()
+	if !backedOff {
+		p.retryQuarantine(ctx)
+	}
 	p.recycleStale(ctx)
+	if _, active := p.health.BackoffActive(); active {
+		return
+	}
 	p.fill(ctx)
 }
 

@@ -31,10 +31,10 @@ const (
 	replayMaxBundleArtifactBytes = conductorcore.MaxConfigYAMLBytes * 2
 
 	replayModePolicyBundle = "policy_bundle"
-	replayModeRemoteKill   = "remote_kill"
-	replayModeRollback     = "rollback"
+	replayModeRemoteKill   = controlplane.ActionKindRemoteKill
+	replayModeRollback     = controlplane.ActionKindRollback
 
-	replayActionPublish = "publish"
+	replayActionPublish = controlplane.ActionKindPublish
 )
 
 type replayOptions struct {
@@ -105,7 +105,7 @@ func replayRemoteKillCmd() *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:     "remote-kill",
-		Aliases: []string{"remote_kill"},
+		Aliases: []string{controlplane.ActionKindRemoteKill},
 		Short:   "Replay a signed Conductor remote-kill decision without applying it",
 		Long: `remote-kill builds and signs a remote-kill message from the same inputs
 as conductor kill/resume, then posts it to the decision-replay endpoint as a

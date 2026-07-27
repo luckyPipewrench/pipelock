@@ -231,6 +231,19 @@ func TestFileBundleStoreBundleByIDVersion(t *testing.T) {
 	if _, err := store.BundleByIDVersion(t.Context(), "bundle-missing", 1); !errors.Is(err, ErrBundleNotFound) {
 		t.Fatalf("BundleByIDVersion(missing id) err=%v, want ErrBundleNotFound", err)
 	}
+	if got, found, err := store.BundleByHash(t.Context(), published.BundleHash); err != nil || !found || got.BundleHash != published.BundleHash {
+		t.Fatalf("BundleByHash() record=%+v found=%t err=%v, want published record", got, found, err)
+	}
+	if _, found, err := store.BundleByHash(t.Context(), strings.Repeat("b", 64)); err != nil || found {
+		t.Fatalf("BundleByHash(missing) found=%t err=%v, want not found", found, err)
+	}
+	if _, _, err := store.BundleByHash(t.Context(), "not-a-hash"); !errors.Is(err, conductor.ErrInvalidHash) {
+		t.Fatalf("BundleByHash(invalid hash) err=%v, want ErrInvalidHash", err)
+	}
+	var nilStore *FileBundleStore
+	if _, _, err := nilStore.BundleByHash(t.Context(), strings.Repeat("a", 64)); !errors.Is(err, ErrStoreRequired) {
+		t.Fatalf("BundleByHash(nil) err=%v, want ErrStoreRequired", err)
+	}
 }
 
 func TestFileBundleStoreRejectsDuplicateBundleIDVersionGlobally(t *testing.T) {

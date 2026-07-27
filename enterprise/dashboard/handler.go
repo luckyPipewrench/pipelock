@@ -578,11 +578,17 @@ func (d *dashboardHandler) recordDecisionScopeAudit(r *http.Request, raw bool, s
 		role = "raw"
 	}
 	var decisionSource, fleetSource, decisionFound, fleetFound, divergence bool
+	var decisionError, decisionMissing bool
 	conflict := "-"
+	decisionErrorReason := "-"
+	var decisionState string
 	switch p := page.(type) {
 	case WorkbenchPage:
 		decisionSource = p.SourceConfigured
 		decisionFound = p.HasReplay
+		decisionError = p.ReplayError
+		decisionErrorReason = p.ReplayErrorReason
+		decisionMissing = p.ReplayNotFound
 		divergence = p.HasReplay && p.Replay.Divergence
 		if p.HasReplay && p.Replay.Conflict != "" {
 			conflict = p.Replay.Conflict
@@ -591,18 +597,34 @@ func (d *dashboardHandler) recordDecisionScopeAudit(r *http.Request, raw bool, s
 		decisionSource = p.DecisionSourceConfigured
 		fleetSource = p.FleetSourceConfigured
 		decisionFound = p.HasDecision
+		decisionError = p.DecisionError
+		decisionErrorReason = p.DecisionErrorReason
+		decisionMissing = p.DecisionMissing
 		fleetFound = p.HasFleet
 		divergence = p.HasDecision && p.Decision.Divergence
 		if p.HasDecision && p.Decision.Conflict != "" {
 			conflict = p.Decision.Conflict
 		}
 	}
+	switch {
+	case !decisionSource:
+		decisionState = "unconfigured"
+	case decisionError:
+		decisionState = "unavailable"
+	case decisionMissing:
+		decisionState = "not_found"
+	case decisionFound:
+		decisionState = "found"
+	default:
+		decisionState = "unknown"
+	}
+	decisionErrorReason = AuditLogValue(decisionErrorReason)
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()
-	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard scope role=%s method=%s path=%q org_sha256=%s fleet_sha256=%s artifact_sha256=%s decision_source=%t fleet_source=%t decision_found=%t fleet_found=%t divergence=%t conflict=%q remote=%s\n",
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard scope role=%s method=%s path=%q org_sha256=%s fleet_sha256=%s artifact_sha256=%s decision_source=%t fleet_source=%t decision_state=%q decision_error_reason=%q decision_found=%t decision_error=%t decision_missing=%t fleet_found=%t divergence=%t conflict=%q remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path,
 		auditHashField(scope.OrgID), auditHashField(scope.FleetID), auditHashField(scope.ArtifactHash),
-		decisionSource, fleetSource, decisionFound, fleetFound, divergence, conflict, r.RemoteAddr)
+		decisionSource, fleetSource, decisionState, decisionErrorReason, decisionFound, decisionError, decisionMissing, fleetFound, divergence, conflict, r.RemoteAddr)
 }
 
 func (d *dashboardHandler) authorizeFleetScopeRequest(w http.ResponseWriter, r *http.Request, scope DecisionScope, sourceConfigured bool, raw bool) bool {

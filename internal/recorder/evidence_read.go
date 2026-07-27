@@ -38,7 +38,12 @@ const (
 // ErrEvidenceReadLimitExceeded marks a fail-closed evidence read cap hit.
 var ErrEvidenceReadLimitExceeded = errors.New("evidence read limit exceeded")
 
-func openRegularEvidenceFile(path, label string) (*os.File, os.FileInfo, error) {
+// openRegularEvidenceFile opens an unchanged regular evidence file after the
+// platform access policy has accepted the operation.
+func openRegularEvidenceFile(path, label string, accessErr error) (*os.File, os.FileInfo, error) {
+	if accessErr != nil {
+		return nil, nil, accessErr
+	}
 	cleanPath := filepath.Clean(path)
 	before, err := os.Lstat(cleanPath)
 	if err != nil {
@@ -73,7 +78,7 @@ func readBoundedEvidence(path string, maxBytes int64, sink io.Writer) error {
 	if maxBytes <= 0 {
 		maxBytes = MaxEvidenceReadFileBytes
 	}
-	file, info, err := openRegularEvidenceFile(path, "evidence file")
+	file, info, err := openRegularEvidenceFile(path, "evidence file", validateEvidenceFileAccess())
 	if err != nil {
 		return err
 	}

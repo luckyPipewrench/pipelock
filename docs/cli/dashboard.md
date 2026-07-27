@@ -330,9 +330,9 @@ the server is running stops serving.
   already-loaded config snapshot. It has no POST route, no apply/remove/renew
   controls, no config write path, and no hot-reload hook.
 - **Conductor reads are scoped and read-only.** When `--conductor-url` is set,
-  the dashboard uses mutual TLS plus a bearer token to issue GET requests to
-  the Conductor followers roster read endpoint, enriched with runtime status,
-  for the configured
+  the dashboard uses mutual TLS plus a bearer token to issue GET requests to the
+  Conductor followers roster, stream metadata, and decision replay-by-hash read
+  endpoints for the configured
   `--conductor-org` / `--conductor-fleet`. It never holds a signing key and has
   no publish, kill, resume, rollback, enroll, revoke, or delete method.
 - **Sensitive by design.** Even the metadata view exposes reasons, signer
@@ -518,11 +518,13 @@ conductor authorization and effect decision for a past signed action under the
 current fleet and policy state. The panel surfaces the re-derived verdict and a
 loud **Divergence** flag when the re-derived decision no longer matches what was
 recorded. Replay does not re-derive proxy content-scan verdicts, and does not
-prove any action executed or was prevented outside the conductor decision. Until
-the dashboard can resolve the supplied artifact hash to the signed artifact the
-Conductor replay endpoint requires, the replay panel renders an explicit "no
-conductor decision source configured" state; the prepare guidance and the other
-views do not depend on that source.
+prove any action executed or was prevented outside the conductor decision. The
+dashboard sends only the configured org/fleet and canonical artifact hash to
+Conductor; Conductor resolves the recorded signed artifact server-side and
+returns only the replay projection, never bundle payloads, signature bytes, or
+signing material. If no recorded decision matches, the page says no decision was
+found. If Conductor cannot complete the replay, the page fails closed with an
+error instead of rendering a clean or no-divergence verdict.
 
 ### Incident Cockpit (`/incident`)
 
@@ -537,8 +539,9 @@ outside enrolled followers, or outside the report window.
 
 With `--conductor-url` configured, the fleet applied-state summary reads the
 configured Conductor follower roster and runtime/applied-state status for the
-single configured org/fleet. Decision replay remains unavailable until the
-dashboard has a read source for the signed artifact behind an artifact hash.
+single configured org/fleet. The decision panel uses the same configured
+Conductor read source to replay by artifact hash. A missing source, a missing
+recorded decision, and a failed replay are rendered as distinct states.
 
 ### Redaction on these pages
 

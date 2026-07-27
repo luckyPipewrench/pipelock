@@ -543,6 +543,19 @@ func (s *FileBundleStore) BundleByIDVersion(_ context.Context, bundleID string, 
 	return s.bundleByIDVersionLocked(bundleID, version)
 }
 
+func (s *FileBundleStore) BundleByHash(_ context.Context, hash string) (PublishedBundle, bool, error) {
+	if s == nil {
+		return PublishedBundle{}, false, ErrStoreRequired
+	}
+	if err := validateDecisionReplayArtifactHash(hash); err != nil {
+		return PublishedBundle{}, false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.records[hash]
+	return record, ok, nil
+}
+
 // RollbackReconcileSkip records a persisted rollback authorization that startup
 // reconciliation could not re-apply. It is informational, not fatal: the caller
 // logs it and continues so one stale authorization never bricks the control

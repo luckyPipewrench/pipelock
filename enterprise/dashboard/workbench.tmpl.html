@@ -113,6 +113,14 @@
       border-radius: 8px;
     }
     .absence h2 { color: #fde68a; font-size: 18px; margin-top: 0; }
+    .replay-failure {
+      border: 2px solid rgba(239,68,68,0.95);
+      background: rgba(239,68,68,0.16);
+      color: #fee2e2;
+      padding: 16px;
+      border-radius: 8px;
+    }
+    .replay-failure h2 { color: #fecaca; font-size: 18px; margin-top: 0; }
   </style>
 </head>
 <body>
@@ -153,6 +161,12 @@
         </section>
       {{else if not .ScopeProvided}}
         <section class="empty">Supply <span class="mono">?org_id=&lt;org&gt;&amp;fleet_id=&lt;fleet&gt;&amp;artifact_hash=&lt;hash&gt;</span> to replay a past signed action's decision.</section>
+      {{else if .ReplayError}}
+        <section class="replay-failure">
+          <h2>Decision replay unavailable: no replay verdict</h2>
+          <p>The replay source returned an error. No replay verdict is available for this artifact.</p>
+          <p class="muted">Replay failure category: <span class="mono">{{.ReplayErrorReason}}</span></p>
+        </section>
       {{else if .ReplayNotFound}}
         <section class="empty">No recorded decision matched artifact hash for org <span class="mono">{{.OrgID}}</span> / fleet <span class="mono">{{.FleetID}}</span>.</section>
       {{else if .HasReplay}}

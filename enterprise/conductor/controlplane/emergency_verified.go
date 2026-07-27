@@ -8,6 +8,7 @@ package controlplane
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -84,6 +85,22 @@ type recordedRollbackAuthorizationEnumerator interface {
 
 type recordedRemoteKillEnumerator interface {
 	RecordedRemoteKills(context.Context) ([]StoredRemoteKill, error)
+}
+
+type rawRollbackAuthorizationByHashReader interface {
+	rollbackAuthorizationByHash(context.Context, string) (StoredRollbackAuthorization, bool, error)
+}
+
+type rawRemoteKillByHashReader interface {
+	remoteKillByHash(context.Context, string) (StoredRemoteKill, bool, error)
+}
+
+type recordedRollbackAuthorizationByHashReader interface {
+	RecordedRollbackAuthorizationByHash(context.Context, string) (StoredRollbackAuthorization, bool, error)
+}
+
+type recordedRemoteKillByHashReader interface {
+	RecordedRemoteKillByHash(context.Context, string) (StoredRemoteKill, bool, error)
 }
 
 // newVerifiedEmergencyStore wraps an EmergencyStore in the signature-verifying
@@ -383,6 +400,74 @@ func (v *verifiedEmergencyStore) RecordedRemoteKills(ctx context.Context) ([]Sto
 		}
 	}
 	return verified, nil
+}
+
+func (v *verifiedEmergencyStore) RecordedRollbackAuthorizationByHash(ctx context.Context, hash string) (StoredRollbackAuthorization, bool, error) {
+	if reader, ok := v.inner.(rawRollbackAuthorizationByHashReader); ok {
+		record, found, err := reader.rollbackAuthorizationByHash(ctx, hash)
+		if err != nil || !found {
+			return StoredRollbackAuthorization{}, found, err
+		}
+		if !rollbackRecordMatchesHash(record, hash) {
+			return StoredRollbackAuthorization{}, false, nil
+		}
+		if !v.verifyRollback(record, rollbackRecordVerificationTime(record)) {
+			return StoredRollbackAuthorization{}, false, nil
+		}
+		return record, true, nil
+	}
+	records, err := v.RecordedRollbackAuthorizations(ctx)
+	if err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
+	for _, record := range records {
+		if rollbackRecordMatchesHash(record, hash) {
+			return record, true, nil
+		}
+	}
+	return StoredRollbackAuthorization{}, false, nil
+}
+
+func (v *verifiedEmergencyStore) RecordedRemoteKillByHash(ctx context.Context, hash string) (StoredRemoteKill, bool, error) {
+	if reader, ok := v.inner.(rawRemoteKillByHashReader); ok {
+		record, found, err := reader.remoteKillByHash(ctx, hash)
+		if err != nil || !found {
+			return StoredRemoteKill{}, found, err
+		}
+		if !remoteKillRecordMatchesHash(record, hash) {
+			return StoredRemoteKill{}, false, nil
+		}
+		if !v.verifyRemoteKill(record, remoteKillRecordVerificationTime(record)) {
+			return StoredRemoteKill{}, false, nil
+		}
+		return record, true, nil
+	}
+	records, err := v.RecordedRemoteKills(ctx)
+	if err != nil {
+		return StoredRemoteKill{}, false, err
+	}
+	for _, record := range records {
+		if remoteKillRecordMatchesHash(record, hash) {
+			return record, true, nil
+		}
+	}
+	return StoredRemoteKill{}, false, nil
+}
+
+func rollbackRecordMatchesHash(record StoredRollbackAuthorization, hash string) bool {
+	canonical, err := record.Authorization.CanonicalHash()
+	if err != nil {
+		return false
+	}
+	return canonical == hash && strings.EqualFold(record.AuthorizationHash, hash)
+}
+
+func remoteKillRecordMatchesHash(record StoredRemoteKill, hash string) bool {
+	canonical, err := record.Message.CanonicalHash()
+	if err != nil {
+		return false
+	}
+	return canonical == hash && strings.EqualFold(record.MessageHash, hash)
 }
 
 func rollbackRecordVerificationTime(record StoredRollbackAuthorization) time.Time {

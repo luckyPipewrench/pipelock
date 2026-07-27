@@ -106,6 +106,8 @@
     .empty { color: var(--text-muted); padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); }
     .absence { border: 1px solid rgba(245,158,11,0.7); background: rgba(245,158,11,0.10); padding: 16px; border-radius: 8px; }
     .absence h2 { color: #fde68a; font-size: 18px; margin-top: 0; }
+    .replay-failure { border: 2px solid rgba(239,68,68,0.95); background: rgba(239,68,68,0.16); color: #fee2e2; padding: 16px; border-radius: 8px; }
+    .replay-failure h2 { color: #fecaca; font-size: 18px; margin-top: 0; }
   </style>
 </head>
 <body>
@@ -150,6 +152,8 @@
         <h2>Conductor decision</h2>
         {{if not .DecisionSourceConfigured}}
           <section class="absence"><h2>No conductor decision source configured</h2><p class="muted">Decision replay proves how the conductor would resolve this artifact through the read-only replay seam. No conductor decision source is connected. Start <span class="mono">pipelock dashboard serve</span> with <span class="mono">--conductor-url</span> and its required read credentials.</p></section>
+        {{else if .DecisionError}}
+          <section class="replay-failure"><h2>Decision replay unavailable: no replay verdict</h2><p>The replay source returned an error. No replay verdict is available for this artifact.</p><p class="muted">Replay failure category: <span class="mono">{{.DecisionErrorReason}}</span></p></section>
         {{else if .DecisionMissing}}
           <section class="empty">No recorded decision matched this artifact hash.</section>
         {{else if .HasDecision}}

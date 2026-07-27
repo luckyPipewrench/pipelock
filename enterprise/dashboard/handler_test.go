@@ -1757,6 +1757,92 @@ func TestHandler_AuditWriterSerializesConcurrentRequests(t *testing.T) {
 	}
 }
 
+func TestHandler_DecisionScopeAuditStates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		page          WorkbenchPage
+		wantFragments []string
+	}{
+		{
+			name: "unconfigured",
+			page: WorkbenchPage{},
+			wantFragments: []string{
+				`decision_state="unconfigured"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=false`,
+			},
+		},
+		{
+			name: "replay error",
+			// Workbench returns as soon as replay errors, so a replay-error page
+			// never also carries ReplayNotFound. Pin the reachable shape.
+			page: WorkbenchPage{SourceConfigured: true, ReplayError: true, ReplayErrorReason: "deadline_exceeded"},
+			wantFragments: []string{
+				`decision_state="unavailable"`,
+				`decision_error_reason="deadline_exceeded"`,
+				`decision_found=false`,
+				`decision_error=true`,
+				`decision_missing=false`,
+			},
+		},
+		{
+			name: "not found",
+			page: WorkbenchPage{SourceConfigured: true, ReplayNotFound: true},
+			wantFragments: []string{
+				`decision_state="not_found"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=true`,
+			},
+		},
+		{
+			name: "replay found",
+			page: WorkbenchPage{SourceConfigured: true, HasReplay: true, Replay: DecisionReplayView{
+				Divergence: true,
+				Conflict:   "fleet_skew",
+			}},
+			wantFragments: []string{
+				`decision_state="found"`,
+				`decision_found=true`,
+				`decision_error=false`,
+				`decision_missing=false`,
+				`divergence=true`,
+				`conflict="fleet_skew"`,
+			},
+		},
+		{
+			name: "unknown",
+			page: WorkbenchPage{SourceConfigured: true},
+			wantFragments: []string{
+				`decision_state="unknown"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=false`,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var audit strings.Builder
+			handler := &dashboardHandler{auditWriter: &audit}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/workbench", nil)
+			handler.recordDecisionScopeAudit(req, false, DecisionScope{
+				OrgID:        "org-main",
+				FleetID:      "prod",
+				ArtifactHash: strings.Repeat("a", 64),
+			}, tc.page)
+			log := audit.String()
+			for _, want := range tc.wantFragments {
+				if !strings.Contains(log, want) {
+					t.Fatalf("audit = %q, want %s", log, want)
+				}
+			}
+		})
+	}
+}
+
 func TestHandler_AuditNotWrittenForUnauthorized(t *testing.T) {
 	t.Parallel()
 	dir, trusted := writeTrustedHandlerSession(t)

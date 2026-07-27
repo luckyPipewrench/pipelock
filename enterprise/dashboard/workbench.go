@@ -7,6 +7,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -169,6 +170,9 @@ type WorkbenchPage struct {
 	HasReplay      bool
 	Replay         DecisionReplayView
 	ReplayNotFound bool
+	ReplayError    bool
+	// ReplayErrorReason is a bounded category, never raw source error text.
+	ReplayErrorReason string
 }
 
 // Workbench builds the read-only workbench view. When no conductor source is
@@ -192,7 +196,9 @@ func (m *ReadModel) Workbench(ctx context.Context, scope DecisionScope, rawAllow
 	}
 	view, found, err := m.conductorSource.ReplayDecision(ctx, scope)
 	if err != nil {
-		return WorkbenchPage{}, fmt.Errorf("replay decision: %w", err)
+		page.ReplayError = true
+		page.ReplayErrorReason = decisionReplayErrorReason(err)
+		return page, nil
 	}
 	if !found {
 		page.ReplayNotFound = true
@@ -204,6 +210,19 @@ func (m *ReadModel) Workbench(ctx context.Context, scope DecisionScope, rawAllow
 		page.Replay = redactReplayView(page.Replay)
 	}
 	return page, nil
+}
+
+func decisionReplayErrorReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case err != nil:
+		return "source_error"
+	default:
+		return "-"
+	}
 }
 
 func normalizeDecisionScope(scope DecisionScope) DecisionScope {

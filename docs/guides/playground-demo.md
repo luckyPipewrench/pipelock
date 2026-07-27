@@ -99,7 +99,10 @@ restore_pipelock() {
 }
 trap restore_pipelock EXIT
 if [ "${was_active}" -eq 1 ]; then
-  sudo systemctl stop pipelock
+  if ! sudo systemctl stop pipelock; then
+    echo "failed to stop pipelock; aborting contained capture" >&2
+    exit 1
+  fi
 fi
 sudo pipelock-playground-demo run --contained --self-managed-containment \
   --toyagent-bin /usr/local/bin/pipelock-playground-toyagent \
@@ -110,12 +113,12 @@ sudo pipelock-playground-demo run --contained --self-managed-containment \
 Contained capture mode requires root, the `pipelock-agent` OS user, and a
 deployment-managed canonical owner-match boundary. The stock workstation
 service already owns its authorized proxy port. Stop it for the duration of a
-deterministic contained capture and always restart it afterward; self-managed
-mode verifies the live deployment-owned boundary but does not free an occupied
-port. `--operator-uid` and `--proxy-uid` identify the UIDs accepted by that
-live boundary; their root defaults are for single-process microVMs, so a stock
-workstation capture must pass the installed operator and proxy UIDs explicitly.
-Under the **split-proof** model the mediated steps
+deterministic contained capture and restore its prior state afterward;
+self-managed mode verifies the live deployment-owned boundary but does not free
+an occupied port. `--operator-uid` and `--proxy-uid` identify the UIDs accepted
+by that live boundary; their root defaults are for single-process microVMs, so a
+stock workstation capture must pass the installed operator and proxy UIDs
+explicitly. Under the **split-proof** model the mediated steps
 (allow, block) run as the operator through the lab proxy — exactly as in uncontained mode — and
 a separate probe phase drops to the `pipelock-agent` uid to build the signed host-containment
 witness. This split is deliberate: the proxy's allow/block decision does not depend on the

@@ -29,6 +29,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spf13/cobra"
+	"golang.org/x/net/html"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -76,10 +77,11 @@ const (
 	// connect, and frame sources. Third-party browser origins are never compiled
 	// into the binary. Framing defaults to 'none' and widens only for origins an
 	// operator passes with --embed-origin.
-	brokerCSPTemplate       = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors %s; script-src 'self' blob: 'wasm-unsafe-eval'%s; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'%s; frame-src %s; form-action 'self'"
+	brokerCSPTemplate       = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors %s; script-src 'self' blob: 'wasm-unsafe-eval'%s; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'%s; frame-src %s; form-action 'self'"
 	brokerHSTS              = "max-age=31536000; includeSubDomains"
 	brokerReferrerPolicy    = "strict-origin-when-cross-origin"
 	brokerPermissionsPolicy = "camera=(), microphone=(), geolocation=()"
+	defaultTurnstileOrigin  = "https://challenges.cloudflare.com"
 )
 
 type serveFlags struct {
@@ -120,6 +122,7 @@ type serveFlags struct {
 	turnstileMaxAge           time.Duration
 	turnstileSitekey          string
 	turnstileOrigin           string
+	checkConfig               bool
 	sessionTTL                time.Duration
 	deadlineGrace             time.Duration
 	allowOrigin               string
@@ -216,6 +219,7 @@ func newServeCmd() *cobra.Command {
 	fl.DurationVar(&f.turnstileMaxAge, "turnstile-max-age", broker.DefaultTurnstileMaxAge, "max age for a Turnstile challenge_ts before it is rejected (0 disables)")
 	fl.StringVar(&f.turnstileSitekey, "turnstile-sitekey", "", "public Cloudflare Turnstile site key; reported via /health so the viewer renders the widget (the secret is set separately via --turnstile-secret-*)")
 	fl.StringVar(&f.turnstileOrigin, "turnstile-origin", "", "validated browser origin used by the Turnstile widget and added to CSP only when configured")
+	fl.BoolVar(&f.checkConfig, "check-config", false, "validate flags and static UI compatibility, then exit without resolving secrets or contacting providers")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
@@ -246,6 +250,25 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := validateFlags(f); err != nil {
+		return err
+	}
+	if err := validateStaticUI(f.staticDir); err != nil {
+		return err
+	}
+	if f.checkConfig {
+		if _, err := resolveCodes(f.codes, f.maxPerCode); err != nil {
+			return err
+		}
+		if _, err := brokerPublicHosts(f); err != nil {
+			return err
+		}
+		if _, err := newCFAccessVerifier(f); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "broker flags, invite codes, public hosts, access policy, and static UI valid; secrets and provider not contacted")
+		return nil
 	}
 	srv, handler, startReaper, pool, err := buildServer(ctx, cmd.OutOrStdout(), f)
 	if err != nil {
@@ -299,6 +322,9 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 
 func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), *broker.Pool, error) {
 	if err := validateFlags(f); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if err := validateStaticUI(f.staticDir); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	secret, err := resolveGateSecret(f.gateSecretFile, f.gateSecretEnv)
@@ -492,7 +518,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		handler = cfAccessGuard(handler, cfAccess)
 		_, _ = fmt.Fprintf(out, "broker Cloudflare Access JWT guard enabled for %s\n", cfAccess.issuer)
 	}
-	handler = securityHeaders(handler, f.embedOrigins, f.turnstileOrigin)
+	handler = securityHeaders(handler, f.embedOrigins, effectiveTurnstileOrigin(f))
 	return srv, handler, reaper.Run, warmPool, nil
 }
 
@@ -561,8 +587,14 @@ func validateFlags(f *serveFlags) error {
 		return err
 	}
 	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
-	if hasTurnstile && strings.TrimSpace(f.turnstileOrigin) == "" {
-		return errors.New("--turnstile-origin is required when Turnstile is enabled")
+	if hasTurnstile && strings.TrimSpace(f.turnstileSitekey) == "" {
+		return errors.New("--turnstile-sitekey is required when Turnstile is enabled")
+	}
+	if !hasTurnstile && strings.TrimSpace(f.turnstileSitekey) != "" {
+		return errors.New("--turnstile-sitekey requires --turnstile-secret-file or --turnstile-secret-env")
+	}
+	if origin := effectiveTurnstileOrigin(f); origin != "" && origin != defaultTurnstileOrigin {
+		return fmt.Errorf("--turnstile-origin must be %s", defaultTurnstileOrigin)
 	}
 	if f.deadlineGrace < 0 {
 		return errors.New("--deadline-grace must be >= 0")
@@ -575,7 +607,7 @@ func validateFlags(f *serveFlags) error {
 			return fmt.Errorf("--embed-origin %q: %w", origin, err)
 		}
 	}
-	if err := validateAllowOrigin(f.turnstileOrigin); err != nil {
+	if err := validateAllowOrigin(effectiveTurnstileOrigin(f)); err != nil {
 		return fmt.Errorf("--turnstile-origin: %w", err)
 	}
 	if err := validateCFAccessFlags(f); err != nil {
@@ -585,6 +617,15 @@ func validateFlags(f *serveFlags) error {
 		return err
 	}
 	return nil
+}
+
+func effectiveTurnstileOrigin(f *serveFlags) string {
+	if strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != "" {
+		if strings.TrimSpace(f.turnstileOrigin) == "" {
+			return defaultTurnstileOrigin
+		}
+	}
+	return strings.TrimSpace(f.turnstileOrigin)
 }
 
 // effectiveDefaultCode is the server-side invite code auto-applied when a
@@ -946,6 +987,80 @@ func validateAllowOrigin(raw string) error {
 		u.RawQuery != "" || u.Fragment != "" || u.Path != "" ||
 		strings.Contains(raw, "?") || strings.HasSuffix(raw, "#") {
 		return errors.New("must be an origin only, like https://site.example")
+	}
+	return nil
+}
+
+// validateStaticUI rejects markup that cannot execute under the broker's
+// no-inline-script CSP. The broker owns both the policy and the served static
+// directory, so it must refuse an incompatible pair before binding a listener.
+func validateStaticUI(staticDir string) error {
+	if strings.TrimSpace(staticDir) == "" {
+		return nil
+	}
+	path := filepath.Join(filepath.Clean(staticDir), "index.html")
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open static UI index: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	doc, err := html.Parse(file)
+	if err != nil {
+		return fmt.Errorf("parse static UI index: %w", err)
+	}
+	var walk func(*html.Node) error
+	walk = func(node *html.Node) error {
+		if node.Type == html.ElementNode {
+			for _, attr := range node.Attr {
+				if strings.HasPrefix(strings.ToLower(attr.Key), "on") {
+					return fmt.Errorf("static UI contains inline event handler %q", attr.Key)
+				}
+			}
+			if node.Data == "base" {
+				return errors.New("static UI contains base element blocked by broker CSP")
+			}
+			if node.Data == "script" {
+				source := ""
+				scriptType := ""
+				for _, attr := range node.Attr {
+					switch {
+					case strings.EqualFold(attr.Key, "src"):
+						source = strings.TrimSpace(attr.Val)
+					case strings.EqualFold(attr.Key, "type"):
+						scriptType = strings.ToLower(strings.TrimSpace(attr.Val))
+					}
+				}
+				if source != "" {
+					if err := validateStaticScriptSource(source); err != nil {
+						return err
+					}
+				} else if scriptType != "application/json" && scriptType != "application/ld+json" {
+					return errors.New("static UI contains inline script blocked by broker CSP")
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(doc)
+}
+
+func validateStaticScriptSource(source string) error {
+	if strings.HasPrefix(source, "/") || strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../") ||
+		(!strings.Contains(source, ":") && !strings.HasPrefix(source, "//")) {
+		return nil
+	}
+	parsed, err := url.Parse(source)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
+	}
+	origin := parsed.Scheme + "://" + parsed.Host
+	if origin != defaultTurnstileOrigin {
+		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 	}
 	return nil
 }

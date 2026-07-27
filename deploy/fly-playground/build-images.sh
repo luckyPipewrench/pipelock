@@ -74,7 +74,8 @@ docker run --rm "${BROKER_TAG}" serve \
 	--code preflight \
 	--global-daily-budget 1 \
 	--vm-daily-turn-budget 1 \
-	--unsafe-no-human-gate
+	--unsafe-no-human-gate \
+	--static-dir /srv/ui
 
 if [ "${PLAYGROUND_PUSH:-}" = "1" ]; then
 	echo "[build-images] pushing ${VM_TAG}"

@@ -254,7 +254,7 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	if err := validateFlags(f); err != nil {
 		return err
 	}
-	if err := validateStaticUI(f.staticDir); err != nil {
+	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f)); err != nil {
 		return err
 	}
 	if f.checkConfig {
@@ -324,7 +324,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	if err := validateFlags(f); err != nil {
 		return nil, nil, nil, nil, err
 	}
-	if err := validateStaticUI(f.staticDir); err != nil {
+	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f)); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	secret, err := resolveGateSecret(f.gateSecretFile, f.gateSecretEnv)
@@ -592,6 +592,9 @@ func validateFlags(f *serveFlags) error {
 	}
 	if !hasTurnstile && strings.TrimSpace(f.turnstileSitekey) != "" {
 		return errors.New("--turnstile-sitekey requires --turnstile-secret-file or --turnstile-secret-env")
+	}
+	if !hasTurnstile && strings.TrimSpace(f.turnstileOrigin) != "" {
+		return errors.New("--turnstile-origin requires --turnstile-secret-file or --turnstile-secret-env")
 	}
 	if origin := effectiveTurnstileOrigin(f); origin != "" && origin != defaultTurnstileOrigin {
 		return fmt.Errorf("--turnstile-origin must be %s", defaultTurnstileOrigin)
@@ -994,7 +997,7 @@ func validateAllowOrigin(raw string) error {
 // validateStaticUI rejects markup that cannot execute under the broker's
 // no-inline-script CSP. The broker owns both the policy and the served static
 // directory, so it must refuse an incompatible pair before binding a listener.
-func validateStaticUI(staticDir string) error {
+func validateStaticUI(staticDir, turnstileOrigin string) error {
 	if strings.TrimSpace(staticDir) == "" {
 		return nil
 	}
@@ -1031,7 +1034,7 @@ func validateStaticUI(staticDir string) error {
 					}
 				}
 				if source != "" {
-					if err := validateStaticScriptSource(source); err != nil {
+					if err := validateStaticScriptSource(source, turnstileOrigin); err != nil {
 						return err
 					}
 				} else if scriptType != "application/json" && scriptType != "application/ld+json" {
@@ -1049,9 +1052,12 @@ func validateStaticUI(staticDir string) error {
 	return walk(doc)
 }
 
-func validateStaticScriptSource(source string) error {
+func validateStaticScriptSource(source, turnstileOrigin string) error {
+	if strings.HasPrefix(source, "//") {
+		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
+	}
 	if strings.HasPrefix(source, "/") || strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../") ||
-		(!strings.Contains(source, ":") && !strings.HasPrefix(source, "//")) {
+		!strings.Contains(source, ":") {
 		return nil
 	}
 	parsed, err := url.Parse(source)
@@ -1059,7 +1065,7 @@ func validateStaticScriptSource(source string) error {
 		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 	}
 	origin := parsed.Scheme + "://" + parsed.Host
-	if origin != defaultTurnstileOrigin {
+	if origin != turnstileOrigin {
 		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 	}
 	return nil

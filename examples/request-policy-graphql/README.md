@@ -39,12 +39,15 @@ From the repository root:
 Start the stub API and pipelock (see `verify.sh`), then:
 
 ```bash
-# --noproxy '' clears env no_proxy so 127.0.0.1 traffic still goes via pipelock
-curl -sS --noproxy '' -x "http://127.0.0.1:PROXY" -X POST "http://127.0.0.1:API/graphql" \
+# --noproxy '' clears env no_proxy so loopback traffic still goes via pipelock.
+# dns.host_overrides maps api.vendor.example -> 127.0.0.1 for offline dialing.
+curl -sS --noproxy '' -x "http://127.0.0.1:PROXY" \
+  -X POST "http://api.vendor.example:API/graphql" \
   -H 'Content-Type: application/json' \
   -d '{"query":"query { record { id } }"}'
 
-curl -sS --noproxy '' -D - -x "http://127.0.0.1:PROXY" -X POST "http://127.0.0.1:API/graphql" \
+curl -sS --noproxy '' -D - -x "http://127.0.0.1:PROXY" \
+  -X POST "http://api.vendor.example:API/graphql" \
   -H 'Content-Type: application/json' \
   -d '{"query":"mutation { deleteRecord { id } }"}'
 # expect X-Pipelock-Block-Reason: request_policy_deny
@@ -53,7 +56,8 @@ curl -sS --noproxy '' -D - -x "http://127.0.0.1:PROXY" -X POST "http://127.0.0.1
 ## Config Notes
 
 - `forward_proxy.enabled: true` is required for absolute-URI inspection.
-- Route `hosts` must match the URL host exactly (`127.0.0.1` ≠ `localhost`).
+- Route `hosts` must match the URL host exactly (`api.vendor.example`).
+- `dns.host_overrides` pins that hostname to loopback so the stub is reachable offline.
 - See `../../docs/guides/request-policy.md`.
 
 ## Contributing

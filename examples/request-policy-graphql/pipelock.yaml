@@ -1,6 +1,7 @@
 # Request-policy GraphQL example.
 # verify.sh rewrites fetch_proxy.listen; forward_proxy is required so absolute-URI
 # POSTs (HTTP_PROXY) are inspected. /fetch is GET-only and does not cover this path.
+# dns.host_overrides maps api.vendor.example -> 127.0.0.1 for offline dialing.
 
 version: 1
 mode: balanced
@@ -13,6 +14,11 @@ forward_proxy:
   enabled: true
 
 internal: []
+
+dns:
+  host_overrides:
+    api.vendor.example:
+      - "127.0.0.1"
 
 ssrf:
   ip_allowlist:
@@ -39,7 +45,7 @@ request_policy:
       action: block
       reason: "deleteRecord mutations require operator approval"
       route:
-        hosts: ["127.0.0.1"]
+        hosts: ["api.vendor.example"]
         methods: ["POST"]
         path_prefixes: ["/graphql"]
         content_types: ["application/json"]

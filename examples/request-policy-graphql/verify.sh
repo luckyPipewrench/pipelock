@@ -140,8 +140,9 @@ proxy_post() {
   local out="$5"
   # --noproxy '' is required: many environments set no_proxy=127.0.0.1 and
   # would silently bypass pipelock, making request_policy look like a no-op.
+  # Target hostname is the neutral placeholder; dns.host_overrides dials loopback.
   curl -sS --max-time 5 --noproxy '' -D "$hdr" -o "$out" -x "http://127.0.0.1:${proxy}" \
-    -X POST "http://127.0.0.1:${api}/graphql" \
+    -X POST "http://api.vendor.example:${api}/graphql" \
     -H 'Content-Type: application/json' \
     -d "$body" -w '%{http_code}'
 }
@@ -166,9 +167,9 @@ fi
 
 # -- Test 2 -------------------------------------------------------------------
 step "Test 2: start GraphQL stub and pipelock"
+# Bind the API first, then pick the proxy port so the two pick_port calls
+# cannot collide on the same free port.
 API_PORT="$(pick_port)"
-PROXY_PORT="$(pick_port)"
-write_config "$PROXY_PORT"
 
 if start_api "$API_PORT"; then
   pass "GraphQL stub on 127.0.0.1:$API_PORT"
@@ -178,6 +179,9 @@ else
   printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
   exit 1
 fi
+
+PROXY_PORT="$(pick_port)"
+write_config "$PROXY_PORT"
 
 "$PIPELOCK" run --config "$CONFIG" >"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!

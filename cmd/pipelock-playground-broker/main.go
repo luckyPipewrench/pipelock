@@ -1061,14 +1061,39 @@ func validateStaticScriptSource(source, turnstileOrigin string) error {
 		return nil
 	}
 	parsed, err := url.Parse(source)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+	if err != nil {
 		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 	}
-	origin := parsed.Scheme + "://" + parsed.Host
-	if origin != turnstileOrigin {
+	origin, err := canonicalHTTPSOrigin(parsed)
+	if err != nil {
+		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
+	}
+	allowed, err := url.Parse(turnstileOrigin)
+	if err != nil {
+		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
+	}
+	allowedOrigin, err := canonicalHTTPSOrigin(allowed)
+	if err != nil || origin != allowedOrigin {
 		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 	}
 	return nil
+}
+
+func canonicalHTTPSOrigin(parsed *url.URL) (string, error) {
+	if parsed == nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("invalid HTTPS origin")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if port == "443" {
+		port = ""
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return "https://" + host, nil
 }
 
 func brokerPublicHosts(f *serveFlags) ([]string, error) {

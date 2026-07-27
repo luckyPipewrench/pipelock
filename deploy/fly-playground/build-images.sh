@@ -74,7 +74,10 @@ docker run --rm "${BROKER_TAG}" serve \
 	--code preflight \
 	--global-daily-budget 1 \
 	--vm-daily-turn-budget 1 \
-	--unsafe-no-human-gate \
+	--turnstile-secret-env PREFLIGHT_TURNSTILE_SECRET \
+	--turnstile-sitekey 1x00000000000000000000AA \
+	--turnstile-expected-hostname preflight.invalid \
+	--turnstile-action preflight-session \
 	--static-dir /srv/ui
 
 if [ "${PLAYGROUND_PUSH:-}" = "1" ]; then

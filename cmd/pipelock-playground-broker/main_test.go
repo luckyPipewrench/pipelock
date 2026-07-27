@@ -1924,12 +1924,14 @@ func TestValidateStaticUIRejectsCSPIncompatibleMarkup(t *testing.T) {
 		want string
 	}{
 		{name: "external script", body: `<script src="viewer.js"></script>`},
-		{name: "Turnstile script", body: `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>`},
+		{name: "Turnstile script", body: `<script src="` + defaultTurnstileOrigin + `/turnstile/v0/api.js"></script>`},
+		{name: "Turnstile script explicit HTTPS port", body: `<script src="` + defaultTurnstileOrigin + `:443/turnstile/v0/api.js"></script>`},
+		{name: "Turnstile script mixed case", body: `<script src="` + strings.ToUpper(defaultTurnstileOrigin) + `/turnstile/v0/api.js"></script>`},
 		{name: "JSON data block", body: `<script type="application/json">{"safe":true}</script>`},
 		{name: "inline script", body: `<script>window.bad = true</script>`, want: "inline script"},
 		{name: "inline handler", body: `<button onclick="bad()">go</button>`, want: "inline event handler"},
 		{name: "third-party script", body: `<script src="https://analytics.example/array.js"></script>`, want: "not permitted"},
-		{name: "protocol-relative script", body: `<script src="//challenges.cloudflare.com/x.js"></script>`, want: "not permitted"},
+		{name: "protocol-relative script", body: `<script src="` + strings.TrimPrefix(defaultTurnstileOrigin, "https:") + `/x.js"></script>`, want: "not permitted"},
 		{name: "base element", body: `<base href="/">`, want: "base element"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1955,7 +1957,7 @@ func TestValidateStaticUIRejectsCSPIncompatibleMarkup(t *testing.T) {
 func TestValidateStaticUIUsesRuntimeScriptOrigins(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(
-		`<script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>`,
+		`<script src="`+defaultTurnstileOrigin+`/turnstile/v0/api.js"></script>`,
 	), 0o600); err != nil {
 		t.Fatalf("write index: %v", err)
 	}

@@ -8999,6 +8999,34 @@ func TestValidate_RequestBodyScanning_InvalidMaxBodyBytes(t *testing.T) {
 	}
 }
 
+func TestValidate_RequestBodyScanning_ContentEntropyInvalid(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"threshold negative", func(c *Config) { c.RequestBodyScanning.ContentEntropyThreshold = -1 }},
+		{"threshold above 8", func(c *Config) { c.RequestBodyScanning.ContentEntropyThreshold = 9 }},
+		{"invalid action", func(c *Config) { c.RequestBodyScanning.ContentEntropyAction = "strip" }},
+		{"enabled without action", func(c *Config) { c.RequestBodyScanning.ContentEntropyAction = "" }},
+		{"enabled with zero threshold", func(c *Config) { c.RequestBodyScanning.ContentEntropyThreshold = 0 }},
+		{"enabled with zero min length", func(c *Config) { c.RequestBodyScanning.ContentEntropyMinLength = 0 }},
+		{"min length negative", func(c *Config) { c.RequestBodyScanning.ContentEntropyMinLength = -1 }},
+		{"disabled with negative min length", func(c *Config) {
+			c.RequestBodyScanning.ContentEntropyEnabled = false
+			c.RequestBodyScanning.ContentEntropyMinLength = -1
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults() // fully defaulted and valid; content entropy enabled+warn
+			tt.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected validation error for %s", tt.name)
+			}
+		})
+	}
+}
+
 func TestValidate_RequestBodyScanning_InvalidHeaderMode(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBodyScanning.Enabled = true
@@ -9140,6 +9168,15 @@ func TestApplyDefaults_RequestBodyScanning_ConditionalDefaults(t *testing.T) {
 	if len(cfg.RequestBodyScanning.IgnoreHeaders) == 0 {
 		t.Fatal("expected default ignore_headers to be populated")
 	}
+	if cfg.RequestBodyScanning.ContentEntropyAction != ActionWarn {
+		t.Fatalf("expected default content entropy action %q, got %q", ActionWarn, cfg.RequestBodyScanning.ContentEntropyAction)
+	}
+	if cfg.RequestBodyScanning.ContentEntropyThreshold != 4.5 {
+		t.Fatalf("expected default content entropy threshold 4.5, got %f", cfg.RequestBodyScanning.ContentEntropyThreshold)
+	}
+	if cfg.RequestBodyScanning.ContentEntropyMinLength != 32 {
+		t.Fatalf("expected default content entropy min length 32, got %d", cfg.RequestBodyScanning.ContentEntropyMinLength)
+	}
 }
 
 func TestApplyDefaults_RequestBodyScanning_DisabledSkipsDefaults(t *testing.T) {
@@ -9174,6 +9211,181 @@ func TestReloadWarnings_RequestBodyScanning_DisabledWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected reload warning when request_body_scanning is disabled")
+	}
+}
+
+func TestLoad_RequestBodyContentEntropySecurityBoolean(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "omitted defaults true", yaml: `{}`, want: true},
+		{name: "partial section defaults true", yaml: "request_body_scanning: {}\n", want: true},
+		{name: "null defaults true", yaml: "request_body_scanning:\n  content_entropy_enabled:\n", want: true},
+		{name: "explicit false preserved", yaml: "request_body_scanning:\n  content_entropy_enabled: false\n", want: false},
+		{name: "explicit true preserved", yaml: "request_body_scanning:\n  content_entropy_enabled: true\n", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("LoadBytes() error = %v", err)
+			}
+			if cfg.RequestBodyScanning.ContentEntropyEnabled != tt.want {
+				t.Fatalf("content_entropy_enabled = %v, want %v", cfg.RequestBodyScanning.ContentEntropyEnabled, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_RequestBodyContentEntropy(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "invalid action",
+			modify: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyAction = ActionAsk
+			},
+			wantErr: "content_entropy_action",
+		},
+		{
+			name: "enabled requires positive threshold",
+			modify: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyThreshold = 0
+			},
+			wantErr: "content_entropy_threshold must be positive",
+		},
+		{
+			name: "threshold cannot exceed byte entropy ceiling",
+			modify: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyThreshold = 9
+			},
+			wantErr: "content_entropy_threshold must not exceed 8",
+		},
+		{
+			name: "enabled requires positive min length",
+			modify: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyMinLength = 0
+			},
+			wantErr: "content_entropy_min_length must be positive",
+		},
+		{
+			name: "invalid body exclusion",
+			modify: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"https://vendor.example/path"}
+			},
+			wantErr: "content_entropy_exclusions",
+		},
+		{
+			name: "invalid websocket exclusion",
+			modify: func(cfg *Config) {
+				cfg.WebSocketProxy.ContentEntropyExclusions = []string{"api.*.example.com"}
+			},
+			wantErr: "websocket_proxy.content_entropy_exclusions",
+		},
+		{
+			name: "request body disabled still rejects enabled content entropy zero threshold",
+			modify: func(cfg *Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.ContentEntropyEnabled = true
+				cfg.RequestBodyScanning.ContentEntropyThreshold = 0
+			},
+			wantErr: "content_entropy_threshold",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			tt.modify(cfg)
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReloadWarnings_RequestBodyContentEntropy(t *testing.T) {
+	tests := []struct {
+		name   string
+		update func(*Config)
+		field  string
+	}{
+		{
+			name: "disabled",
+			update: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyEnabled = false
+			},
+			field: "request_body_scanning.content_entropy_enabled",
+		},
+		{
+			name: "action downgrade",
+			update: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyAction = ActionWarn
+			},
+			field: "request_body_scanning.content_entropy_action",
+		},
+		{
+			name: "threshold raised",
+			update: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyThreshold = 5.5
+			},
+			field: "request_body_scanning.content_entropy_threshold",
+		},
+		{
+			name: "body exclusion added",
+			update: func(cfg *Config) {
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example"}
+			},
+			field: "request_body_scanning.content_entropy_exclusions",
+		},
+		{
+			name: "websocket exclusion added",
+			update: func(cfg *Config) {
+				cfg.WebSocketProxy.ContentEntropyExclusions = []string{"ws.vendor.example"}
+			},
+			field: "websocket_proxy.content_entropy_exclusions",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := Defaults()
+			updated := Defaults()
+			// content_entropy_action defaults to warn; pin BOTH sides to block so
+			// each case isolates its own warning and only the "action downgrade"
+			// case (which sets updated back to warn) exercises a real downgrade.
+			old.RequestBodyScanning.ContentEntropyAction = ActionBlock
+			updated.RequestBodyScanning.ContentEntropyAction = ActionBlock
+			tt.update(updated)
+			warnings := ValidateReload(old, updated)
+			for _, w := range warnings {
+				if w.Field == tt.field {
+					return
+				}
+			}
+			t.Fatalf("expected reload warning for %s, got %v", tt.field, warnings)
+		})
+	}
+}
+
+func TestReloadWarnings_RequestBodyContentEntropyNoChange(t *testing.T) {
+	cfg := Defaults()
+	warnings := ValidateReload(cfg, cfg)
+	for _, w := range warnings {
+		if strings.HasPrefix(w.Field, "request_body_scanning.content_entropy") ||
+			strings.HasPrefix(w.Field, "websocket_proxy.content_entropy") {
+			t.Fatalf("unexpected content-entropy warning on no-op reload: %+v", w)
+		}
 	}
 }
 

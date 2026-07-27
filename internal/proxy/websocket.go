@@ -1224,6 +1224,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		DisablePatterns: r.cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:  r.cfg.RequestBodyScanning.PatternActions,
 	}
+	applyContentEntropyConfig(&bodyReq, r.cfg, r.cfg.WebSocketProxy.ContentEntropyExclusions)
 	applyBodyScanRedaction(&bodyReq, r.redaction)
 	return scanRequestBody(ctx, bodyReq)
 }
@@ -1637,6 +1638,12 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		closeReason = "prompt injection detected"
 		closeBlockReason = blockreason.PromptInjection
 	}
+	if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && len(result.AddressFindings) == 0 {
+		scannerLabel = scannerLabelBodyEntropy
+		receiptLayer = scannerLabelBodyEntropy
+		closeReason = "high entropy content detected"
+		closeBlockReason = blockreason.BodyEntropy
+	}
 	if result.RedactionBlockReason != "" {
 		scannerLabel = scannerLabelRedaction
 		receiptLayer = scannerLabelRedaction
@@ -1656,6 +1663,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 	if reason == "" && len(result.InjectionMatches) > 0 {
 		reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(responseMatchNames(result.InjectionMatches), ", "))
+	}
+	if reason == "" && result.EntropyFinding != nil {
+		reason = contentEntropyReason(result.EntropyFinding)
 	}
 	if reason == "" && result.RedactionBlockReason != "" {
 		reason = "redaction blocked request: " + string(result.RedactionBlockReason)
@@ -1785,6 +1795,19 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
 				PatternNames: names,
+			})
+		}
+		if result.EntropyFinding != nil {
+			r.proxy.metrics.RecordBodyEntropy(config.ActionWarn, r.metricAgent)
+			log.LogWSScan(audit.WSScanEvent{
+				Target:       r.targetURL,
+				Direction:    audit.DirectionClientToServer,
+				ClientIP:     r.clientIP,
+				RequestID:    r.requestID,
+				Action:       config.ActionWarn,
+				Scanner:      scannerLabelBodyEntropy,
+				MatchCount:   1,
+				PatternNames: []string{contentEntropyReason(result.EntropyFinding)},
 			})
 		}
 	}

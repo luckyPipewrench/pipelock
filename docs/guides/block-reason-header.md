@@ -41,6 +41,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | Reason | When |
 |---|---|
 | `dlp_match` | DLP pattern matched in body, header, or URL. |
+| `body_entropy` | Body, WebSocket frame, or A2A payload content triggers the opaque high-entropy detector. |
 | `prompt_injection` | Response body matched an injection pattern. |
 | `request_policy_deny` | A `request_policy` rule denied a named-dangerous outbound API operation. |
 | `redaction_failure` | Body could not be redacted safely; fail-closed. |

@@ -862,53 +862,16 @@ func (c *Config) validateFetchProxy() error {
 		}
 	}
 
-	// Validate subdomain entropy exclusions are well-formed hostname patterns.
-	// Accepted formats: exact hostnames ("runpod.net") and wildcard prefixes
-	// ("*.runpod.net"). Reject URLs, host:port, and over-broad patterns.
-	for i, raw := range c.FetchProxy.Monitoring.SubdomainEntropyExclusions {
-		d := strings.TrimSpace(strings.ToLower(raw))
-		if d == "" {
-			return fmt.Errorf("subdomain_entropy_exclusions[%d] is empty", i)
-		}
-		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-			return fmt.Errorf("subdomain_entropy_exclusions[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
-		}
-		if strings.HasPrefix(d, "*.") {
-			// Wildcard must target a concrete domain (*.com is too broad)
-			if strings.Count(d[2:], ".") < 1 {
-				return fmt.Errorf("subdomain_entropy_exclusions[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
-			}
-		} else if strings.ContainsAny(d, "*?[]") {
-			return fmt.Errorf("subdomain_entropy_exclusions[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
-		}
-		// Normalize: store lowercase, trimmed, trailing-dot-stripped version
-		c.FetchProxy.Monitoring.SubdomainEntropyExclusions[i] = strings.TrimSuffix(d, ".")
+	if err := validateHostnamePatternList("subdomain_entropy_exclusions", c.FetchProxy.Monitoring.SubdomainEntropyExclusions); err != nil {
+		return err
 	}
 
 	// Validate query entropy exclusions with the same hostname-pattern rules
 	// as subdomain entropy exclusions. Kept as a separate list so operators
 	// can grant per-host bypass for the query stage (S3 pre-signed URLs)
 	// without weakening the subdomain or path entropy gates on that host.
-	for i, raw := range c.FetchProxy.Monitoring.QueryEntropyExclusions {
-		// Normalize the trailing dot BEFORE the breadth check so a
-		// trailing-dot input like "*.com." cannot pass the breadth check as
-		// "*.com." (one dot after "*.") and then normalize down to the
-		// over-broad "*.com".
-		d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-		if d == "" {
-			return fmt.Errorf("query_entropy_exclusions[%d] is empty", i)
-		}
-		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-			return fmt.Errorf("query_entropy_exclusions[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
-		}
-		if strings.HasPrefix(d, "*.") {
-			if strings.Count(d[2:], ".") < 1 {
-				return fmt.Errorf("query_entropy_exclusions[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
-			}
-		} else if strings.ContainsAny(d, "*?[]") {
-			return fmt.Errorf("query_entropy_exclusions[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
-		}
-		c.FetchProxy.Monitoring.QueryEntropyExclusions[i] = d
+	if err := validateHostnamePatternList("query_entropy_exclusions", c.FetchProxy.Monitoring.QueryEntropyExclusions); err != nil {
+		return err
 	}
 	if err := validateQueryEntropyParamExclusions(c.FetchProxy.Monitoring.QueryEntropyParamExclusions); err != nil {
 		return err
@@ -920,6 +883,30 @@ func (c *Config) validateFetchProxy() error {
 	}
 	if c.FetchProxy.Monitoring.MaxDataPerMinute < 0 {
 		return fmt.Errorf("fetch_proxy.monitoring.max_data_per_minute must be >= 0")
+	}
+	return nil
+}
+
+func validateHostnamePatternList(field string, entries []string) error {
+	for i, raw := range entries {
+		// Normalize the trailing dot BEFORE the breadth check so a
+		// trailing-dot input like "*.com." cannot pass as "*.com." and then
+		// normalize down to the over-broad "*.com".
+		d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+		if d == "" {
+			return fmt.Errorf("%s[%d] is empty", field, i)
+		}
+		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+			return fmt.Errorf("%s[%d] %q: use a hostname pattern, not a URL or host:port", field, i, raw)
+		}
+		if strings.HasPrefix(d, "*.") {
+			if strings.Count(d[2:], ".") < 1 {
+				return fmt.Errorf("%s[%d] %q: wildcard must target a concrete domain like *.example.com", field, i, raw)
+			}
+		} else if strings.ContainsAny(d, "*?[]") {
+			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", field, i, raw)
+		}
+		entries[i] = d
 	}
 	return nil
 }
@@ -1872,6 +1859,9 @@ func (c *Config) validateForwardProxy() error {
 
 func (c *Config) validateWebSocketProxy(warnings *[]Warning) error {
 	// Validate WebSocket proxy config
+	if err := validateHostnamePatternList("websocket_proxy.content_entropy_exclusions", c.WebSocketProxy.ContentEntropyExclusions); err != nil {
+		return err
+	}
 	if !c.WebSocketProxy.Enabled {
 		return nil
 	}
@@ -2202,6 +2192,37 @@ func (c *Config) validateRequestBodyScanning() error {
 		default:
 			return fmt.Errorf("invalid request_body_scanning.action %q: must be warn or block", c.RequestBodyScanning.Action)
 		}
+	}
+	if c.RequestBodyScanning.ContentEntropyThreshold < 0 {
+		return fmt.Errorf("request_body_scanning.content_entropy_threshold must be non-negative")
+	}
+	if c.RequestBodyScanning.ContentEntropyThreshold > 8 {
+		return fmt.Errorf("request_body_scanning.content_entropy_threshold must not exceed 8")
+	}
+	if c.RequestBodyScanning.ContentEntropyAction != "" {
+		switch c.RequestBodyScanning.ContentEntropyAction {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid request_body_scanning.content_entropy_action %q: must be warn or block", c.RequestBodyScanning.ContentEntropyAction)
+		}
+	}
+	if c.RequestBodyScanning.ContentEntropyEnabled {
+		if c.RequestBodyScanning.ContentEntropyAction == "" {
+			return fmt.Errorf("request_body_scanning.content_entropy_action must be set when content entropy is enabled")
+		}
+		if c.RequestBodyScanning.ContentEntropyThreshold <= 0 {
+			return fmt.Errorf("request_body_scanning.content_entropy_threshold must be positive when content entropy is enabled")
+		}
+		if c.RequestBodyScanning.ContentEntropyMinLength <= 0 {
+			return fmt.Errorf("request_body_scanning.content_entropy_min_length must be positive when content entropy is enabled")
+		}
+	}
+	if c.RequestBodyScanning.ContentEntropyMinLength < 0 {
+		return fmt.Errorf("request_body_scanning.content_entropy_min_length must be non-negative")
+	}
+	if err := validateHostnamePatternList("request_body_scanning.content_entropy_exclusions", c.RequestBodyScanning.ContentEntropyExclusions); err != nil {
+		return err
 	}
 	if !c.RequestBodyScanning.Enabled {
 		return nil

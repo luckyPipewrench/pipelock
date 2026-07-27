@@ -1,0 +1,54 @@
+# Request-policy GraphQL example.
+# verify.sh rewrites fetch_proxy.listen; forward_proxy is required so absolute-URI
+# POSTs (HTTP_PROXY) are inspected. /fetch is GET-only and does not cover this path.
+# dns.host_overrides maps api.vendor.example -> 127.0.0.1 for offline dialing.
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+
+forward_proxy:
+  enabled: true
+
+internal: []
+
+dns:
+  host_overrides:
+    api.vendor.example:
+      - "127.0.0.1"
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"
+    - "::1/128"
+
+dlp:
+  include_defaults: false
+  scan_env: false
+
+response_scanning:
+  enabled: false
+  action: warn
+
+request_body_scanning:
+  enabled: false
+
+request_policy:
+  enabled: true
+  on_parse_error: block
+  on_opaque_operation: block
+  rules:
+    - name: block-delete-record-mutation
+      action: block
+      reason: "deleteRecord mutations require operator approval"
+      route:
+        hosts: ["api.vendor.example"]
+        methods: ["POST"]
+        path_prefixes: ["/graphql"]
+        content_types: ["application/json"]
+      graphql:
+        operation_types: ["mutation"]
+        root_field_patterns: ["^deleteRecord$"]

@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -54,6 +55,10 @@ const (
 	// scannerLabelBodyPromptInjection is the scanner label for prompt
 	// injection findings in outbound request bodies.
 	scannerLabelBodyPromptInjection = "body_prompt_injection"
+
+	// scannerLabelBodyEntropy is the scanner label for opaque high-entropy
+	// content in request bodies and client-to-server WebSocket frames.
+	scannerLabelBodyEntropy = "body_entropy"
 
 	// scannerLabelAddressProtection is the scanner label for address poisoning
 	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
@@ -449,6 +454,8 @@ type BodyScanResult struct {
 	DLPMatches       []scanner.TextDLPMatch
 	InjectionMatches []scanner.ResponseMatch
 	AddressFindings  []addressprotect.Finding // crypto address poisoning findings
+	EntropyFinding   *ContentEntropyFinding
+	EntropyAction    string
 	// RedactedDLPOnly is true when DLP matched the original body but the
 	// post-redaction body scanned clean. Callers can use this to distinguish
 	// "raw residual secret remains" from "secret was removed before forward".
@@ -464,6 +471,9 @@ type BodyScanResult struct {
 	// fail-closed redaction path triggered a block. Empty otherwise.
 	RedactionBlockReason redact.BlockReason
 }
+
+// ContentEntropyFinding describes an opaque high-entropy body/frame value.
+type ContentEntropyFinding = contententropy.Finding
 
 // BodyScanRequest groups the parameters for scanRequestBody, keeping the
 // function signature under the 6-parameter guideline (ctx is passed separately).
@@ -515,6 +525,15 @@ type BodyScanRequest struct {
 	DisablePatterns []string
 	// PatternActions maps DLP pattern names to body/header-specific actions.
 	PatternActions map[string]string
+	// Content entropy checks catch opaque non-credential-shaped exfiltration.
+	// Destination trust/exclusions are supplied from the parsed upstream
+	// authority, not from user-controlled Host headers.
+	ContentEntropyEnabled    bool
+	ContentEntropyAction     string
+	ContentEntropyThreshold  float64
+	ContentEntropyMinLength  int
+	ContentEntropyTrusted    []string
+	ContentEntropyExclusions []string
 }
 
 // scanRequestBody reads, buffers, and scans an HTTP request body for
@@ -633,32 +652,31 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
 	}
 
+	var result BodyScanResult
+	var action string
+
 	// Scan each extracted string individually (catches per-field encoded secrets).
-	if matches := scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress, bodyDLPDisabledSet(req.DisablePatterns)); len(matches) > 0 {
-		return buf, BodyScanResult{
-			Clean:           false,
-			Action:          requestBodyDLPAction(matches, req.Action, req.PatternActions),
-			DLPMatches:      matches,
-			RedactionReport: redactReport,
-		}
+	matches := scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress, bodyDLPDisabledSet(req.DisablePatterns))
+	if len(matches) > 0 {
+		result.DLPMatches = matches
+		action = config.StrongestAction(action, requestBodyDLPAction(matches, req.Action, req.PatternActions))
 	}
 	if len(preRedactionDLP) > 0 {
-		return buf, BodyScanResult{
-			Clean:           false,
-			Action:          requestBodyDLPAction(preRedactionDLP, req.Action, req.PatternActions),
-			DLPMatches:      preRedactionDLP,
-			RedactedDLPOnly: redactReport != nil && redactReport.Applied,
-			RedactionReport: redactReport,
+		if len(result.DLPMatches) == 0 {
+			result.DLPMatches = preRedactionDLP
+			result.RedactedDLPOnly = redactReport != nil && redactReport.Applied
+			action = config.StrongestAction(action, requestBodyDLPAction(preRedactionDLP, req.Action, req.PatternActions))
 		}
+	}
+	if finding := scanBodyTextsForContentEntropy(texts, req); finding != nil {
+		result.EntropyFinding = finding
+		result.EntropyAction = req.ContentEntropyAction
+		action = config.StrongestAction(action, req.ContentEntropyAction)
 	}
 	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponse(ctx, text)
 		if !injectionResult.Clean {
-			return buf, BodyScanResult{
-				Clean:            false,
-				InjectionMatches: injectionResult.Matches,
-				RedactionReport:  redactReport,
-			}
+			result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 		}
 	}
 
@@ -669,11 +687,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	joinedInOrder := strings.Join(texts, "\n")
 	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
 	if !injectionResult.Clean {
-		return buf, BodyScanResult{
-			Clean:            false,
-			InjectionMatches: injectionResult.Matches,
-			RedactionReport:  redactReport,
-		}
+		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 	}
 
 	// Sort to ensure deterministic ordering for DLP (Go map iteration in
@@ -682,11 +696,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	joined := strings.Join(sorted, "\n")
 	injectionResult = req.Scanner.ScanResponse(ctx, joined)
 	if !injectionResult.Clean {
-		return buf, BodyScanResult{
-			Clean:            false,
-			InjectionMatches: injectionResult.Matches,
-			RedactionReport:  redactReport,
-		}
+		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 	}
 
 	// Address poisoning detection alongside DLP.
@@ -696,17 +706,57 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	if checker := req.Scanner.AddressChecker(); checker != nil {
 		addrResult := checker.CheckText(joined, req.AgentID)
 		if len(addrResult.Findings) > 0 {
-			return buf, BodyScanResult{
-				Clean:           false,
-				Action:          addressprotect.StrictestAction(addrResult.Findings),
-				AddressFindings: addrResult.Findings,
-				Reason:          fmt.Sprintf("address poisoning detected: %s", addrResult.Findings[0].Explanation),
-				RedactionReport: redactReport,
-			}
+			result.AddressFindings = addrResult.Findings
+			action = config.StrongestAction(action, addressprotect.StrictestAction(addrResult.Findings))
 		}
 	}
 
+	if len(result.DLPMatches) > 0 || len(result.InjectionMatches) > 0 || len(result.AddressFindings) > 0 || result.EntropyFinding != nil {
+		result.Clean = false
+		result.Action = action
+		result.RedactionReport = redactReport
+		if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
+			result.Reason = fmt.Sprintf("address poisoning detected: %s", result.AddressFindings[0].Explanation)
+		}
+		if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && len(result.AddressFindings) == 0 {
+			result.Reason = contentEntropyReason(result.EntropyFinding)
+		}
+		return buf, result
+	}
+
 	return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
+}
+
+func scanBodyTextsForContentEntropy(texts []string, req BodyScanRequest) *ContentEntropyFinding {
+	return contententropy.ScanTexts(texts, contententropy.Options{
+		Enabled:    req.ContentEntropyEnabled,
+		Action:     req.ContentEntropyAction,
+		Threshold:  req.ContentEntropyThreshold,
+		MinLength:  req.ContentEntropyMinLength,
+		Host:       req.Host,
+		Trusted:    req.ContentEntropyTrusted,
+		Exclusions: req.ContentEntropyExclusions,
+		Separator:  bodyDLPJoinSeparator,
+	})
+}
+
+func contentEntropyReason(f *ContentEntropyFinding) string {
+	return contententropy.Reason(f)
+}
+
+func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraExclusions ...[]string) {
+	if req == nil || cfg == nil {
+		return
+	}
+	req.ContentEntropyEnabled = cfg.RequestBodyScanning.ContentEntropyEnabled
+	req.ContentEntropyAction = cfg.RequestBodyScanning.ContentEntropyAction
+	req.ContentEntropyThreshold = cfg.RequestBodyScanning.ContentEntropyThreshold
+	req.ContentEntropyMinLength = cfg.RequestBodyScanning.ContentEntropyMinLength
+	req.ContentEntropyTrusted = cfg.TrustedDomains
+	req.ContentEntropyExclusions = append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...)
+	for _, exclusions := range extraExclusions {
+		req.ContentEntropyExclusions = append(req.ContentEntropyExclusions, exclusions...)
+	}
 }
 
 func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}) []scanner.TextDLPMatch {

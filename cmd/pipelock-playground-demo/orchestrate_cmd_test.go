@@ -120,6 +120,66 @@ func TestRunCmd_SelfManagedContainmentRejectsExplicitZeroProxyPort(t *testing.T)
 	}
 }
 
+func TestRunCmd_SelfManagedContainmentRejectsNegativeUIDs(t *testing.T) {
+	for _, flag := range []string{"--operator-uid", "--proxy-uid"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{
+				"run", "--run-dir", t.TempDir(), "--contained", "--self-managed-containment",
+				"--toyagent-bin", "/tmp/probe", flag, "-1",
+			})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "must be non-negative") {
+				t.Fatalf("error = %v, want uid range error", err)
+			}
+		})
+	}
+}
+
+func TestRunCmd_UIDFlagsRequireSelfManagedContainment(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, value string
+	}{
+		{name: "operator uid", flag: "--operator-uid", value: "1000"},
+		{name: "proxy uid", flag: "--proxy-uid", value: "967"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"run", "--run-dir", t.TempDir(), tc.flag, tc.value})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "require --self-managed-containment") {
+				t.Fatalf("error = %v, want mode requirement", err)
+			}
+		})
+	}
+}
+
+func TestRunCmd_ForwardsSelfManagedUIDFlags(t *testing.T) {
+	original := newDemoContainmentHook
+	t.Cleanup(func() { newDemoContainmentHook = original })
+	t.Cleanup(func() { playground.SetContainmentHook(nil) })
+	var gotOperator, gotProxy int
+	newDemoContainmentHook = func(selfManaged bool, toyAgentBin string, operatorUID, proxyUID int) playground.ContainmentHook {
+		if !selfManaged || toyAgentBin != "/nonexistent/toyagent" {
+			t.Fatalf("factory args: selfManaged=%v toyAgentBin=%q", selfManaged, toyAgentBin)
+		}
+		gotOperator, gotProxy = operatorUID, proxyUID
+		return demoContainmentHook(selfManaged, toyAgentBin, operatorUID, proxyUID)
+	}
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"run", "--run-dir", t.TempDir(), "--contained", "--self-managed-containment",
+		"--toyagent-bin", "/nonexistent/toyagent", "--operator-uid", "1000", "--proxy-uid", "967",
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("unproven containment should fail closed")
+	}
+	if gotOperator != 1000 || gotProxy != 967 {
+		t.Fatalf("factory received operator=%d proxy=%d", gotOperator, gotProxy)
+	}
+}
+
 func TestRunCmd_SelfManagedContainmentSelectsHookBeforeFailingProbe(t *testing.T) {
 	playground.SetContainmentHook(nil)
 	t.Cleanup(func() { playground.SetContainmentHook(nil) })
@@ -162,11 +222,11 @@ func TestDemoProxyPort(t *testing.T) {
 func TestDemoContainmentHookSelection(t *testing.T) {
 	t.Parallel()
 	const probe = "/usr/local/bin/probe"
-	self, ok := demoContainmentHook(true, probe).(*playground.InVMContainmentHook)
-	if !ok || self.ToyAgentBin != probe {
+	self, ok := demoContainmentHook(true, probe, 1000, 967).(*playground.InVMContainmentHook)
+	if !ok || self.ToyAgentBin != probe || self.OperatorUID != 1000 || self.ProxyUID != 967 {
 		t.Fatalf("self-managed hook = %#v", self)
 	}
-	if _, ok := demoContainmentHook(false, probe).(*playground.RealContainmentHook); !ok {
+	if _, ok := demoContainmentHook(false, probe, 1000, 967).(*playground.RealContainmentHook); !ok {
 		t.Fatal("stock mode did not select RealContainmentHook")
 	}
 }

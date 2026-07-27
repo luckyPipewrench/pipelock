@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -1150,7 +1151,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// would lose deterministic bookkeeping about byte counts.
 	var forwardBodyBytes []byte
 	scanA2AForwardBody := func(buf []byte) bool {
-		a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), buf, sc, &cfg.A2AScanning)
+		a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), buf, sc, &cfg.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), cfg))
 		if a2aBodyResult.Clean {
 			return false
 		}
@@ -1165,6 +1166,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if reason == "" {
 			reason = "a2a: request body finding"
 		}
+		recordA2AContentEntropyTelemetry(p.logger, p.metrics, agentLabel, actx, action, a2aBodyResult)
 		if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
 			blockReason := a2aBodyBlockReason(a2aBodyResult)
@@ -1256,6 +1258,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
 			PatternActions:  cfg.RequestBodyScanning.PatternActions,
 		}
+		applyContentEntropyConfig(&bodyReq, cfg)
+		if isA2A {
+			bodyReq.ContentEntropyEnabled = false
+		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
 
@@ -1308,6 +1314,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if len(bodyResult.InjectionMatches) > 0 && len(bodyResult.DLPMatches) == 0 && len(bodyResult.AddressFindings) == 0 {
 				scannerLabel = scannerLabelBodyPromptInjection
 			}
+			if bodyResult.EntropyFinding != nil && len(bodyResult.DLPMatches) == 0 && len(bodyResult.InjectionMatches) == 0 && len(bodyResult.AddressFindings) == 0 {
+				scannerLabel = scannerLabelBodyEntropy
+			}
 			if bodyResult.RedactionBlockReason != "" {
 				scannerLabel = scannerLabelRedaction
 			}
@@ -1322,6 +1331,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
 				case len(patternNames) > 0:
 					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+				case bodyResult.EntropyFinding != nil:
+					reason = contentEntropyReason(bodyResult.EntropyFinding)
 				}
 			}
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
@@ -1356,6 +1367,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if len(bodyResult.InjectionMatches) > 0 {
 				p.metrics.RecordBodyPromptInjection(action, agentLabel)
 				p.logger.LogBodyScan(actx, audit.EventBodyPromptInjection, action, len(bodyResult.InjectionMatches), injectionNames)
+			}
+			if bodyResult.EntropyFinding != nil {
+				p.metrics.RecordBodyEntropy(action, agentLabel)
+				p.logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(bodyResult.EntropyFinding)})
 			}
 
 			// Fail-closed: if the body cannot be replayed or redaction explicitly
@@ -2689,7 +2704,36 @@ func a2aBodyBlockReason(result mcp.A2AScanResult) blockreason.Reason {
 	if len(result.DLPFindings) > 0 {
 		return blockreason.DLPMatch
 	}
+	if result.EntropyFinding != nil {
+		return blockreason.BodyEntropy
+	}
 	return blockreason.ParseError
+}
+
+func a2aContentEntropyOptions(host string, cfg *config.Config) mcp.A2AContentEntropyOptions {
+	if cfg == nil {
+		return mcp.A2AContentEntropyOptions{}
+	}
+	return mcp.A2AContentEntropyOptions{
+		Enabled:    cfg.RequestBodyScanning.ContentEntropyEnabled,
+		Action:     cfg.RequestBodyScanning.ContentEntropyAction,
+		Threshold:  cfg.RequestBodyScanning.ContentEntropyThreshold,
+		MinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
+		Host:       host,
+		Trusted:    cfg.TrustedDomains,
+		Exclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		Separator:  bodyDLPJoinSeparator,
+	}
+}
+
+func recordA2AContentEntropyTelemetry(logger *audit.Logger, m *metrics.Metrics, agent string, actx audit.LogContext, action string, result mcp.A2AScanResult) {
+	if m != nil && result.EntropyFinding != nil {
+		m.RecordBodyEntropy(action, agent)
+	}
+	if logger == nil || result.EntropyFinding == nil {
+		return
+	}
+	logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(result.EntropyFinding)})
 }
 
 func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxBytes int) ([]byte, error) {

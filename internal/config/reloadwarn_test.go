@@ -39,6 +39,12 @@ func TestValidateReload_ForwarderDestinationAllowlistExpanded(t *testing.T) {
 	}
 }
 
+func TestContentEntropyReloadConsumedNil(t *testing.T) {
+	if contentEntropyReloadConsumed(nil) {
+		t.Fatal("nil config must not consume content entropy reload warnings")
+	}
+}
+
 func TestValidateReload_ForwarderInsecureHTTPEnabled(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

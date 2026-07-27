@@ -224,6 +224,8 @@ func (c *Config) policySemanticView() Config {
 	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
+	view.RequestBodyScanning.ContentEntropyExclusions = sortedCopy(view.RequestBodyScanning.ContentEntropyExclusions)
+	view.WebSocketProxy.ContentEntropyExclusions = sortedCopy(view.WebSocketProxy.ContentEntropyExclusions)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
 	} else {

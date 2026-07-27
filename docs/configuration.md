@@ -334,6 +334,11 @@ request_body_scanning:
     - X-Token
     - Proxy-Authorization
     - X-Goog-Api-Key
+  content_entropy_enabled: true       # detect opaque high-entropy body content (exfil with no credential signature)
+  content_entropy_action: warn        # warn or block; general presets default warn, strict/hostile default block
+  content_entropy_threshold: 4.5      # Shannon bits/char above which a body/frame value is flagged
+  content_entropy_min_length: 32      # ignore values shorter than this (limits false positives on short opaque IDs)
+  content_entropy_exclusions: []      # destination hosts whose bodies legitimately carry opaque content
 ```
 
 | Field | Default | Description |
@@ -347,6 +352,11 @@ request_body_scanning:
 | `header_mode` | `sensitive` | `sensitive`: scan only listed headers. `all`: scan all headers except ignore list |
 | `sensitive_headers` | (see above) | Headers to scan in `sensitive` mode |
 | `ignore_headers` | (hop-by-hop + structural) | Headers to skip in `all` mode |
+| `content_entropy_enabled` | `true` | Flag opaque high-entropy body content that matches no credential pattern (data exfiltration with no signature). Applies to request bodies, WebSocket client-to-server frames, and A2A message bodies. |
+| `content_entropy_action` | `warn` | `warn` audits, `block` rejects (requires enforce mode). General presets ship `warn` (observe-first); `strict` and `hostile-model` ship `block`. |
+| `content_entropy_threshold` | `4.5` | Shannon entropy (bits/char) above which a value is flagged. A long all-hex value below this is still flagged as opaque-hex content. |
+| `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
+| `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 
@@ -366,6 +376,13 @@ request_body_scanning:
 **Security hard-blocks:** In enforce mode, immutable core DLP findings in request bodies and headers hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`; they cannot be disabled or downgraded by `pattern_actions`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected non-core critical body-DLP patterns can set those exact names under `request_body_scanning.pattern_actions` with `warn`, or run the deployment with `enforce: false`.
 
 **Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
+
+**Opaque content entropy (`content_entropy_*`):** DLP catches secrets that match a known pattern. A stolen canary-file value, an opaque token, or a hex-encoded blob has no signature, so a pattern scanner misses it. Content entropy closes that gap: a high-entropy value leaving in a request body, a WebSocket client-to-server frame, or an A2A message body to a destination that is not trusted is flagged, regardless of pattern. Destination trust comes from the parsed upstream authority (not a request-supplied `Host` header), and hosts in `trusted_domains` or `content_entropy_exclusions` are skipped. Entropy suppression never suppresses a DLP match in the same body. The shipped default is `warn` so the detector observes before it enforces; `strict` and `hostile-model` presets use `block`.
+
+Known limits, by design:
+- **Content-addressed uploads look like exfil.** A SHA-256 hash and a hex-encoded 32-byte secret are the same shape, so length alone cannot separate them. In `warn` mode this is a low-cost audit line; in `block` mode (strict/hostile presets), add legitimate upload/hash endpoints to `content_entropy_exclusions` or `trusted_domains`.
+- **WebSocket detection is per-message.** A blob split across separate WebSocket messages, each under `content_entropy_min_length`, is not aggregated here; the cross-request data budget (`cross_request_detection`) is the net for sustained multi-message exfiltration.
+- **MCP-transport A2A** (stdio/HTTP MCP gateways) does not yet apply content entropy; those paths lack a parsed upstream authority to gate destination trust on. HTTP/CONNECT-proxied A2A message bodies are covered.
 
 **Note on security defaults:** Omitting `request_body_scanning.enabled` or `request_body_scanning.scan_headers` defaults both to `true`. Set either field to `false` explicitly only when you intend to disable that protection.
 

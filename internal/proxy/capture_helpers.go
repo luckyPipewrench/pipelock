@@ -109,6 +109,17 @@ func bodyScanToFindings(r BodyScanResult) []capture.Finding {
 			Action:      config.ActionBlock,
 		})
 	}
+	if r.EntropyFinding != nil {
+		action := r.EntropyAction
+		if action == "" {
+			action = r.Action
+		}
+		findings = append(findings, capture.Finding{
+			Kind:        capture.KindContentEntropy,
+			PatternName: scannerLabelBodyEntropy,
+			Action:      action,
+		})
+	}
 	return findings
 }
 

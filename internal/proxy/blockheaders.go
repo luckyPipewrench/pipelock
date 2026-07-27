@@ -40,6 +40,8 @@ func reasonFromScanner(label string) blockreason.Reason {
 		return blockreason.DataBudget
 	case scanner.ScannerDLP, scanner.ScannerCoreDLP, scannerLabelBodyDLP, scannerLabelAddressProtection:
 		return blockreason.DLPMatch
+	case scannerLabelBodyEntropy:
+		return blockreason.BodyEntropy
 	case scannerLabelBodyPromptInjection:
 		return blockreason.PromptInjection
 	case scannerLabelRedaction:

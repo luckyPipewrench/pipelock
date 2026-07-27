@@ -67,6 +67,7 @@ const (
 	SSRFMetadata     Reason = "ssrf_metadata"
 	SSRFDNSRebind    Reason = "ssrf_dns_rebind"
 	PathEntropy      Reason = "path_entropy"
+	BodyEntropy      Reason = "body_entropy"
 	SubdomainEntropy Reason = "subdomain_entropy"
 	URLLength        Reason = "url_length"
 	RateLimit        Reason = "rate_limit"
@@ -144,6 +145,7 @@ var validReasons = map[Reason]struct{}{
 	SSRFMetadata:           {},
 	SSRFDNSRebind:          {},
 	PathEntropy:            {},
+	BodyEntropy:            {},
 	SubdomainEntropy:       {},
 	URLLength:              {},
 	RateLimit:              {},
@@ -528,6 +530,7 @@ func SeverityFor(reason Reason) Severity {
 		return SeverityInfo
 	case SchemeBlocked,
 		PathEntropy,
+		BodyEntropy,
 		SubdomainEntropy,
 		URLLength,
 		RateLimit,
@@ -569,6 +572,7 @@ func RetryFor(reason Reason) Retry {
 		return RetryTransient
 	case DomainBlocklist,
 		PathEntropy,
+		BodyEntropy,
 		SubdomainEntropy,
 		URLLength,
 		DataBudget,

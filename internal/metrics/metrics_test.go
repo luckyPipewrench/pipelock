@@ -1027,6 +1027,26 @@ func TestRecordBodyDLP(t *testing.T) {
 	}
 }
 
+func TestRecordBodyEntropy(t *testing.T) {
+	m := New()
+	m.RecordBodyEntropy("block", testAgent)
+	m.RecordBodyEntropy("warn", testAgent)
+	m.RecordBodyEntropy("warn", testAgent)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_body_entropy_hits_total{action="block",agent="test-agent"} 1`) {
+		t.Errorf("expected body entropy block hit:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_body_entropy_hits_total{action="warn",agent="test-agent"} 2`) {
+		t.Errorf("expected 2 body entropy warn hits:\n%s", text)
+	}
+}
+
 func TestRecordBodyPromptInjection(t *testing.T) {
 	m := New()
 	m.RecordBodyPromptInjection("block", testAgent)

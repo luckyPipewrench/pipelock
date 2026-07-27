@@ -894,6 +894,81 @@ func newInterceptHandler(
 		// hand the already-buffered bytes to InjectAndSign for
 		// content-digest computation without a second drain pass.
 		var interceptBodyBytes []byte
+		if !ic.Config.RequestBodyScanning.Enabled && isA2A && ic.Config.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
+			bodyBytes, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), ic.Config.RequestBodyScanning.MaxBodyBytes)
+			if err != nil {
+				reason := "a2a: " + err.Error()
+				ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)
+				ic.Metrics.RecordTLSRequestBlocked(scannerLabelA2A)
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     scannerLabelA2A,
+					Pattern:   reason,
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ParseError, scannerLabelA2A),
+					"blocked: "+reason, http.StatusForbidden)
+				return
+			}
+			if decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest).ShouldEscalate {
+				interceptRecordSignal(ic, session.SignalCrossAgentContamination)
+			}
+			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
+			if !a2aBodyResult.Clean {
+				if !a2aBodyResult.IsInfrastructureError() {
+					hasFinding = true
+				}
+				action := a2aBodyResult.Action
+				if action == "" {
+					action = ic.Config.A2AScanning.Action
+				}
+				reason := a2aBodyResult.Reason
+				if reason == "" {
+					reason = "a2a: request body finding"
+				}
+				recordA2AContentEntropyTelemetry(ic.Logger, ic.Metrics, ic.Profile, actx, action, a2aBodyResult)
+				if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+					switch {
+					case a2aBodyResult.IsAdaptiveNeutral():
+					case a2aBodyResult.IsConfigMismatch():
+						interceptRecordSignal(ic, session.SignalNearMiss)
+					default:
+						interceptRecordSignal(ic, session.SignalBlock)
+					}
+					ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)
+					ic.Metrics.RecordTLSRequestBlocked(scannerLabelA2A)
+					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     scannerLabelA2A,
+						Pattern:   reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					}))
+					writeBlockedError(w,
+						blockInfoFor(a2aBodyBlockReason(a2aBodyResult), scannerLabelA2A),
+						"blocked: "+reason, http.StatusForbidden)
+					return
+				}
+				ic.Logger.LogAnomaly(actx, scannerLabelA2A, reason, 0.8)
+			}
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			r.ContentLength = int64(len(bodyBytes))
+			bodyBytesCopy := bodyBytes
+			r.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
+			}
+			interceptBodyBytes = bodyBytes
+		}
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 			redaction := ic.Redaction
 			if redaction == nil {
@@ -918,6 +993,10 @@ func newInterceptHandler(
 				Action:          ic.Config.RequestBodyScanning.Action,
 				DisablePatterns: ic.Config.RequestBodyScanning.DisablePatterns,
 				PatternActions:  ic.Config.RequestBodyScanning.PatternActions,
+			}
+			applyContentEntropyConfig(&bodyReq, ic.Config)
+			if isA2A {
+				bodyReq.ContentEntropyEnabled = false
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
@@ -984,6 +1063,8 @@ func newInterceptHandler(
 					scannerLabel = scannerLabelAddressProtection
 				} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
 					scannerLabel = scannerLabelBodyPromptInjection
+				} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && len(result.AddressFindings) == 0 {
+					scannerLabel = scannerLabelBodyEntropy
 				}
 
 				reason := result.Reason
@@ -992,6 +1073,8 @@ func newInterceptHandler(
 					switch {
 					case len(injectionNames) > 0:
 						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
+					case result.EntropyFinding != nil:
+						reason = contentEntropyReason(result.EntropyFinding)
 					default:
 						patternNames := dlpMatchNames(result.DLPMatches)
 						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
@@ -1028,6 +1111,9 @@ func newInterceptHandler(
 						m = ic.Proxy.metrics
 					}
 					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: originalBodyAction, ToAction: action, Scanner: scannerLabel, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+				}
+				if result.EntropyFinding != nil {
+					ic.Metrics.RecordBodyEntropy(action, ic.Profile)
 				}
 
 				// Fail-closed transport errors (consumed-but-unreplayable body)
@@ -1092,7 +1178,7 @@ func newInterceptHandler(
 			// (Cross-agent contamination for this emit was already observed
 			// right after the body was buffered, before the generic DLP block.)
 			if isA2A && bodyBytes != nil {
-				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning)
+				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
 				if !a2aBodyResult.Clean {
 					// Consistency with URL-scan path: infrastructure errors are
 					// score-neutral and must not set the finding flag.
@@ -1107,6 +1193,7 @@ func newInterceptHandler(
 					if reason == "" {
 						reason = "a2a: request body finding"
 					}
+					recordA2AContentEntropyTelemetry(ic.Logger, ic.Metrics, ic.Profile, actx, action, a2aBodyResult)
 					// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 					if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 						switch {
@@ -1131,7 +1218,7 @@ func newInterceptHandler(
 							Agent:     ic.Agent,
 						}))
 						writeBlockedError(w,
-							blockInfoFor(blockreason.DLPMatch, scannerLabelA2A),
+							blockInfoFor(a2aBodyBlockReason(a2aBodyResult), scannerLabelA2A),
 							"blocked: "+reason, http.StatusForbidden)
 						return
 					}

@@ -1929,6 +1929,18 @@ func testHTTPGet(t *testing.T, rawURL string) *http.Response {
 // so no deployment hostname is pinned into the repo.
 const testEmbedOrigin = "https://site.example"
 
+func cspDirective(t *testing.T, policy, name string) string {
+	t.Helper()
+	for directive := range strings.SplitSeq(policy, ";") {
+		directive = strings.TrimSpace(directive)
+		if directive == name || strings.HasPrefix(directive, name+" ") {
+			return directive
+		}
+	}
+	t.Fatalf("CSP = %q, missing %s directive", policy, name)
+	return ""
+}
+
 // A broker with no configured embed origin must forbid framing outright. The
 // default has to be the closed one: an operator who never thought about
 // embedding should not ship a frameable page.
@@ -1955,6 +1967,14 @@ func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
 		if !strings.Contains(withOrigin, want) {
 			t.Fatalf("CSP = %q, missing %q", withOrigin, want)
 		}
+	}
+	scriptDirective := cspDirective(t, withOrigin, "script-src")
+	connectDirective := cspDirective(t, withOrigin, "connect-src")
+	if strings.Contains(scriptDirective, "https://events.vendor.example") {
+		t.Fatalf("script-src = %q, must not contain the connection-only origin", scriptDirective)
+	}
+	if strings.Contains(connectDirective, "https://scripts.vendor.example") {
+		t.Fatalf("connect-src = %q, must not contain the script-only origin", connectDirective)
 	}
 	connectOnly := brokerContentSecurityPolicy(nil, "", nil, []string{
 		"https://events-a.vendor.example",

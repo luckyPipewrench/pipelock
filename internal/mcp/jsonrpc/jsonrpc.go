@@ -61,16 +61,26 @@ type RPCResponse struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
-// ScanVerdict describes the outcome of scanning a single MCP response.
+// ScanScopeResponseInjection names the MCP response prompt-injection scanner.
+const ScanScopeResponseInjection = "response_injection"
+
+// ScanVerdict describes the outcome of scanning a single MCP response for MCP
+// response prompt-injection only. Clean means no response-injection finding in
+// the scanned response text; it does not mean DLP, secrets, tool policy, or
+// input scanning ran.
 //
 // Three states:
-//   - Clean:     Clean=true, other fields zero/empty.
+//   - Clean:     Clean=true, Scanned names the response-injection scope.
 //   - Error:     Clean=false, Error set (parse/protocol failure). Not injection.
 //   - Injection: Clean=false, Error empty, Matches and Action set.
 type ScanVerdict struct {
-	Line    int                     `json:"line"`
-	ID      json.RawMessage         `json:"id"`
-	Clean   bool                    `json:"clean"`
+	Line  int             `json:"line"`
+	ID    json.RawMessage `json:"id"`
+	Clean bool            `json:"clean"`
+	// Scanned is stamped by the surface that emits the verdict, not by each
+	// ScanVerdict constructor. A new surface that marshals a verdict must set
+	// it, otherwise the scope is silently absent from operator-facing output.
+	Scanned []string                `json:"scanned,omitempty"`
 	Action  string                  `json:"action,omitempty"`
 	Matches []scanner.ResponseMatch `json:"matches,omitempty"`
 	Error   string                  `json:"error,omitempty"`

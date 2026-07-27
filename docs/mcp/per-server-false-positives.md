@@ -109,15 +109,17 @@ pipelock explain mcp-response [--config <file>] [--server-name <name>] [--json]
 ```
 
 `explain mcp-response` reads a single JSON-RPC 2.0 MCP response from **stdin**,
-scans it with the same response scanner the MCP proxy uses, and for a block prints the
-scanner, the blocking pattern name(s), and the exact `suppress:` entry to add
-(rule + path + reason) plus a caution. It performs no network access.
+scans it for MCP response prompt-injection with the same response scanner the MCP
+proxy uses, and for a block prints the scanner, the blocking pattern name(s), and
+the exact `suppress:` entry to add (rule + path + reason) plus a caution. It
+performs no network access. It does not run DLP, secret scanning, tool policy, or
+input scanning.
 
 Exit codes:
 
 | Exit | Meaning |
 |---|---|
-| `0` | Clean - the response was not blocked. |
+| `0` | Clean for MCP response prompt-injection - the response was not blocked by this scanner. |
 | `2` | Invalid response - the input was not a parseable JSON-RPC line. |
 | `3` | Blocked - the response was blocked; the remediation block names the suppress entry. |
 
@@ -163,8 +165,10 @@ matching how the proxy is launched. Run `explain` with the same `--server-name`
 you pass to `mcp proxy` so the printed `path` is the one that will actually take
 effect.
 
-`--json` emits the same report as a structured object (`scanner`, `patterns`,
-and a `remediation.suppress_entries` array) for scripting.
+`--json` emits the same report as a structured object (`scanned`,
+`scanner`, `patterns`, and a `remediation.suppress_entries` array) for scripting.
+The `scanned` field is `["response_injection"]`, including on clean reports, so
+scripts do not treat `allowed: true` as a full DLP/secret/tool-policy verdict.
 
 ## Security model
 

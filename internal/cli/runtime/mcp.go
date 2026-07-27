@@ -542,9 +542,14 @@ func mcpScanCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan",
-		Short: "Scan MCP responses from stdin for prompt injection",
+		Short: "Scan MCP responses from stdin for response prompt-injection only",
 		Long: `Reads newline-delimited MCP JSON-RPC 2.0 responses from stdin and scans
-text content blocks for prompt injection patterns.
+text content blocks for response prompt-injection patterns.
+
+This command does not perform DLP or secret scanning. For bidirectional MCP
+protection, use pipelock mcp proxy: responses are scanned for prompt injection
+before forwarding, and requests are scanned for DLP leaks and injection in tool
+arguments.
 
 Exit code 0 if all responses are clean, 1 if any injection is detected.
 In text mode, only findings are printed. In JSON mode, every line produces a verdict.

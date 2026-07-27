@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
@@ -215,8 +216,16 @@ func TestLocalEscapeProbe_DeviceTargets(t *testing.T) {
 	}
 
 	missing := playground.ProbeLocalEscape(t.Context(), "device:"+filepath.Join(t.TempDir(), "missing"))
-	if missing.Open || !missing.Blocked {
-		t.Fatalf("missing local path should classify as blocked/unavailable, got: %+v", missing)
+	if missing.Open || missing.Blocked || !missing.Absent {
+		t.Fatalf("missing local path should classify as absent, got: %+v", missing)
+	}
+}
+
+func TestLocalEscapeProbe_MissingUnixSocket(t *testing.T) {
+	t.Parallel()
+	result := playground.ProbeLocalEscape(t.Context(), "unix:"+filepath.Join(t.TempDir(), "missing.sock"))
+	if result.Open || result.Blocked || !result.Absent {
+		t.Fatalf("missing unix socket should be absent: %+v", result)
 	}
 }
 
@@ -290,6 +299,17 @@ func TestDirectEgressTargets_CoversRequiredCategories(t *testing.T) {
 	}
 }
 
+func TestDirectEgressTargets_V2ExactOrder(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"169.254.169.254:80", "10.0.0.1:443", "8.8.8.8:53",
+		"1.1.1.1:853", "93.184.216.34:443",
+	}
+	if got := playground.DirectEgressTargets(); !slices.Equal(got, want) {
+		t.Fatalf("v2 direct-egress suite = %v, want %v; bump the suite version for changes", got, want)
+	}
+}
+
 func TestLocalEscapeTargets_UserNamespaceMountProbeLast(t *testing.T) {
 	t.Parallel()
 
@@ -305,6 +325,35 @@ func TestLocalEscapeTargets_UserNamespaceMountProbeLast(t *testing.T) {
 		if target == mutatingProbe {
 			t.Fatalf("%s must not appear before final position, found at %d", mutatingProbe, i)
 		}
+	}
+}
+
+func TestLocalEscapeTargets_ProbeCapabilitiesNotFuseReadability(t *testing.T) {
+	t.Parallel()
+
+	found := map[string]bool{}
+	for _, target := range playground.LocalEscapeTargets() {
+		found[target] = true
+	}
+	if found["device:/dev/fuse"] {
+		t.Fatal("opening /dev/fuse does not prove a mount or host escape")
+	}
+	for _, want := range []string{"cap:mount", "cap:userns-mount"} {
+		if !found[want] {
+			t.Fatalf("LocalEscapeTargets missing real mount capability probe %q", want)
+		}
+	}
+}
+
+func TestLocalEscapeTargets_V2ExactOrder(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"unix:/.fly/api", "unix:/var/run/docker.sock", "device:/dev/vda",
+		"device:/dev/vdb", "device:/dev/root", "device:/dev/nvme0n1",
+		"device:/dev/sda", "cap:mknod", "cap:mount", "cap:userns-mount",
+	}
+	if got := playground.LocalEscapeTargets(); !slices.Equal(got, want) {
+		t.Fatalf("v2 local escape suite = %v, want %v; bump the suite version for changes", got, want)
 	}
 }
 

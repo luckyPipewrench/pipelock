@@ -165,10 +165,11 @@ func TestHydrateAgentActs(t *testing.T) {
 
 func bundleTestHCW() HostContainmentWitness {
 	return HostContainmentWitness{
-		RunNonce:    "n",
-		AgentProbes: []ProbeResult{{Target: "169.254.169.254:80", Blocked: true}, {Target: "10.0.0.1:443", Blocked: true}},
-		ProbedAt:    time.Unix(testFixtureTS, 0).UTC(),
-		Signature:   "hcw-sig",
+		ProbeSuiteVersion: currentContainmentProbeSuite,
+		RunNonce:          "n",
+		AgentProbes:       []ProbeResult{{Target: "169.254.169.254:80", Blocked: true}, {Target: "10.0.0.1:443", Blocked: true}},
+		ProbedAt:          time.Unix(testFixtureTS, 0).UTC(),
+		Signature:         "hcw-sig",
 	}
 }
 
@@ -217,7 +218,7 @@ func TestBuildDecisions(t *testing.T) {
 	if got := strings.Join(dc[2].Envelope, "\n"); !strings.Contains(got, "hcw-sig") || !strings.Contains(got, "agent_probes") {
 		t.Fatalf("host-containment decision must carry the signed witness envelope:\n%s", got)
 	}
-	if !strings.Contains(dc[2].Body, "2 direct-egress routes and 0 local escape surfaces") {
+	if !strings.Contains(dc[2].Body, "2 direct-egress routes blocked; 0 local escape operations denied and 0 host-specific surfaces absent") {
 		t.Fatalf("containment body should reflect probe count: %q", dc[2].Body)
 	}
 }

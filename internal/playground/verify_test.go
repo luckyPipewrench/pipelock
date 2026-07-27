@@ -197,6 +197,7 @@ func validHostContainmentWitness(nonce, manifestHash string) playground.HostCont
 		proxy = "127.0.0.1:8888"
 	)
 	return playground.HostContainmentWitness{
+		ProbeSuiteVersion:    "v2",
 		RunNonce:             nonce,
 		LaunchManifestHash:   manifestHash,
 		AgentUser:            "pipelock-agent",

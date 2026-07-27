@@ -39,6 +39,19 @@ func allBlockedLocal() []ProbeResult {
 	return out
 }
 
+func TestInVMContainmentHookLifecycle(t *testing.T) {
+	hook := NewInVMContainmentHook("/nonexistent/toyagent")
+	if hook.ToyAgentBin != "/nonexistent/toyagent" {
+		t.Fatalf("toy agent = %q", hook.ToyAgentBin)
+	}
+	if err := hook.Setup(t.Context(), DemoOpts{ProxyPort: DefaultContainedProxyPort}); err == nil {
+		t.Fatal("setup without a proven boundary should fail closed")
+	}
+	if err := hook.Teardown(t.TempDir()); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+}
+
 func TestEvalStartContainment(t *testing.T) {
 	const ctrl = "127.0.0.1:5005"
 
@@ -142,6 +155,32 @@ func TestEvalStartContainment(t *testing.T) {
 			}(),
 			wantErr: true,
 		},
+		{
+			name:        "absent surface plus real denials passes honestly",
+			operator:    openProbe(ctrl),
+			agentCtrl:   blockedProbe(ctrl),
+			agentDirect: allBlockedDirect(),
+			agentLocal: func() []ProbeResult {
+				l := allBlockedLocal()
+				l[0] = ProbeResult{Target: l[0].Target, Absent: true, Detail: "absent"}
+				return l
+			}(),
+			wantErr: false,
+		},
+		{
+			name:        "all local surfaces absent proves no denial",
+			operator:    openProbe(ctrl),
+			agentCtrl:   blockedProbe(ctrl),
+			agentDirect: allBlockedDirect(),
+			agentLocal: func() []ProbeResult {
+				l := allBlockedLocal()
+				for i := range l {
+					l[i] = ProbeResult{Target: l[i].Target, Absent: true, Detail: "absent"}
+				}
+				return l
+			}(),
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -163,11 +202,28 @@ func TestEvalStartContainment(t *testing.T) {
 	}
 }
 
+func TestEvalProxyStartContract(t *testing.T) {
+	t.Parallel()
+	target := "127.0.0.1:8888"
+	if err := evalProxyStartContract(target, ProbeResult{Target: target, Open: true}); err != nil {
+		t.Fatalf("reachable configured proxy rejected: %v", err)
+	}
+	for _, probe := range []ProbeResult{
+		{Target: target, Blocked: true, Detail: "timeout"},
+		{Target: "127.0.0.1:8899", Open: true},
+		{Target: target},
+	} {
+		if err := evalProxyStartContract(target, probe); err == nil {
+			t.Fatalf("invalid proxy probe accepted: %+v", probe)
+		}
+	}
+}
+
 func TestVerifyInVMContainment_FailsClosedWithoutRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("requires non-root to exercise the euid!=0 fail-closed path")
 	}
-	err := VerifyInVMContainment(context.Background(), "/nonexistent/toyagent", "pipelock-agent")
+	err := VerifyInVMContainment(context.Background(), "/nonexistent/toyagent", "pipelock-agent", DefaultContainedProxyPort)
 	if !errors.Is(err, ErrInVMContainmentNotProven) {
 		t.Fatalf("VerifyInVMContainment without root: want ErrInVMContainmentNotProven, got %v", err)
 	}
@@ -177,7 +233,7 @@ func TestVerifyInVMContainment_FailsClosedWithoutProbeBin(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("the empty-bin check is reached only after the root check passes")
 	}
-	err := VerifyInVMContainment(context.Background(), "", "pipelock-agent")
+	err := VerifyInVMContainment(context.Background(), "", "pipelock-agent", DefaultContainedProxyPort)
 	if !errors.Is(err, ErrInVMContainmentNotProven) {
 		t.Fatalf("VerifyInVMContainment without probe bin: want ErrInVMContainmentNotProven, got %v", err)
 	}

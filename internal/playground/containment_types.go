@@ -3,6 +3,8 @@
 
 package playground
 
+const currentContainmentProbeSuite = "v2"
+
 // ProbeResult holds the outcome of a single direct-egress probe. It is
 // serialized into the signed HostContainmentWitness, so its JSON shape is part
 // of the evidence model: the field tags must stay stable for SignedBytes
@@ -17,6 +19,9 @@ type ProbeResult struct {
 	// refused) are NOT blocked: they prove packets escaped far enough to get a
 	// response.
 	Blocked bool `json:"blocked"`
+	// Absent is true when a local escape surface does not exist on this host.
+	// Absence is acceptable coverage but is not misreported as an enforced deny.
+	Absent bool `json:"absent,omitempty"`
 	// Detail is a human-readable classification (e.g. "connected", "connection refused").
 	Detail string `json:"detail"`
 }
@@ -33,6 +38,16 @@ func DirectEgressTargets() []string {
 	}
 }
 
+func legacyDirectEgressTargets() []string {
+	return []string{
+		"169.254.169.254:80",
+		"10.0.0.1:443",
+		"8.8.8.8:53",
+		"1.1.1.1:853",
+		"93.184.216.34:443",
+	}
+}
+
 // LocalEscapeTargets returns local, non-network surfaces the contained agent
 // must not be able to use.
 func LocalEscapeTargets() []string {
@@ -44,9 +59,24 @@ func LocalEscapeTargets() []string {
 		"device:/dev/root",          // root block-device alias
 		"device:/dev/nvme0n1",       // common NVMe block device
 		"device:/dev/sda",           // common virt/SCSI block device
-		"device:/dev/fuse",          // unmediated FUSE mount surface
 		"cap:mknod",                 // create new device nodes
 		"cap:mount",                 // mount a filesystem
 		"cap:userns-mount",          // create user namespace root and mount
+	}
+}
+
+func legacyLocalEscapeTargets() []string {
+	return []string{
+		"unix:/.fly/api",
+		"unix:/var/run/docker.sock",
+		"device:/dev/vda",
+		"device:/dev/vdb",
+		"device:/dev/root",
+		"device:/dev/nvme0n1",
+		"device:/dev/sda",
+		"device:/dev/fuse",
+		"cap:mknod",
+		"cap:mount",
+		"cap:userns-mount",
 	}
 }

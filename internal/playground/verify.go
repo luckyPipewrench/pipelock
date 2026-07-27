@@ -587,6 +587,9 @@ func verifyHostContainmentData(data []byte, lm LaunchManifest, orchestratorPubHe
 }
 
 func hostContainmentEnforcedReason(hcw HostContainmentWitness) string {
+	if hcw.ProbeSuiteVersion != "" && hcw.ProbeSuiteVersion != currentContainmentProbeSuite {
+		return fmt.Sprintf("unsupported host-containment probe suite version %q", hcw.ProbeSuiteVersion)
+	}
 	if hcw.ProxyTarget == "" || hcw.ProxyAgentProbe.Target == "" {
 		return "host-containment witness uses an older format without proxy-contract proof; regenerate the bundle with this release"
 	}

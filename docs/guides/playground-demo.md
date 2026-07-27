@@ -56,7 +56,10 @@ contained. The tool's contribution is to *attest* that property for a specific r
 offline-verifiable host-containment witness records what was probed from the contained position
 and proves the operator-vs-agent differential. Verifying the witness confirms the attestation;
 the underlying egress block remains host-enforced, not something this binary can guarantee on its
-own.
+own. In self-managed deployments, startup additionally validates the live nftables chain against
+the canonical Pipelock boundary before any agent runs. That structural startup check is a
+fail-closed execution gate; the signed witness records the run-specific empirical probes, not a
+copy or digest of the nftables ruleset.
 
 ## Run it
 
@@ -78,11 +81,16 @@ kernel boundary to attest, and the tool says so rather than implying one.
 ### Contained (the real demo — requires a prepared host)
 
 ```bash
-sudo pipelock-playground-demo run --contained --run-dir ./demo-run --scenario secret-exfil-body-blocked
+sudo pipelock-playground-demo run --contained --self-managed-containment \
+  --toyagent-bin /usr/local/bin/pipelock-playground-toyagent \
+  --proxy-port 8888 --run-dir ./demo-run --scenario secret-exfil-body-blocked
 ```
 
-Contained mode requires root, the `pipelock-agent` OS user, and a host where
-`pipelock contain install` has been run. Under the **split-proof** model the mediated steps
+Contained capture mode requires root, the `pipelock-agent` OS user, and a
+deployment-managed canonical owner-match boundary. The stock workstation
+service already owns its authorized proxy port, so deterministic contained
+capture uses `--self-managed-containment` rather than colliding with that
+listener. Under the **split-proof** model the mediated steps
 (allow, block) run as the operator through the lab proxy — exactly as in uncontained mode — and
 a separate probe phase drops to the `pipelock-agent` uid to build the signed host-containment
 witness. This split is deliberate: the proxy's allow/block decision does not depend on the
@@ -90,6 +98,15 @@ agent's uid, and on a host with global owner-match containment the contained use
 the demo's ephemeral lab proxy at all, so running the mediated steps contained would simply
 time out. Off a prepared host, the contained run fails loudly — it never silently falls back to
 uncontained while claiming containment.
+
+Deployments that manage an equivalent owner-match boundary themselves can use
+`--self-managed-containment --toyagent-bin /path/to/pipelock-playground-toyagent`.
+That mode does not require the stock installer, but it does require the live
+canonical `inet` owner-match ruleset and independently proves it empirically.
+It confirms the agent UID cannot reach a non-proxy loopback control port, the
+direct-egress suite, or local escape surfaces. Pass `--proxy-port` when the deployment
+authorizes a port other than the stock `8888`; the signed witness requires the
+contained agent to reach that exact proxy port and rejects every other route.
 
 ## Verify it yourself
 

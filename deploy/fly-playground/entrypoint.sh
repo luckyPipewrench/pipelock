@@ -27,8 +27,16 @@ LLM_AGENT_BIN=/usr/local/bin/pipelock-playground-llm-agent
 VERIFIER_LINUX=/usr/local/bin/pipelock-verifier-linux
 VERIFIER_MACOS=/usr/local/bin/pipelock-verifier-macos
 VERIFIER_WINDOWS=/usr/local/bin/pipelock-verifier-windows.exe
+NFT_BIN=/usr/sbin/nft
+[ -x "${NFT_BIN}" ] || NFT_BIN=/usr/bin/nft
 
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
+
+ACTUAL_AGENT_UID="$(id -u "${AGENT_USER}")"
+if [ "${AGENT_USER}" != "pipelock-agent" ] || [ "${AGENT_UID}" != "${ACTUAL_AGENT_UID}" ]; then
+	log "agent identity mismatch: deployment requires pipelock-agent uid 10001 (got ${AGENT_USER} uid ${ACTUAL_AGENT_UID}, configured uid ${AGENT_UID})"
+	exit 1
+fi
 
 # --- 0. Disable unprivileged user namespaces when the kernel exposes the knob ---
 # The LLM agent has a real shell. It does not need user namespaces, and a visitor
@@ -65,11 +73,13 @@ fi
 
 # --- 1. Load the proven owner-match egress rule (shipped renderer) --------------
 log "loading containment nft rule (agent uid ${AGENT_UID} -> only 127.0.0.1:${PROXY_PORT})"
-"${BIN}" print-containment-nft --agent-uid "${AGENT_UID}" --proxy-port "${PROXY_PORT}" | nft -f -
+RULES_FILE="${SECRET_DIR}/containment.nft"
+"${BIN}" print-containment-nft --agent-uid "${AGENT_UID}" --proxy-port "${PROXY_PORT}" >"${RULES_FILE}"
+"${NFT_BIN}" -f "${RULES_FILE}"
 
 # --- 2. Prove the drop is live BEFORE serving (fail-closed boot gate) ------------
-log "proving containment (aborts the VM if the agent uid can still egress or use local escape surfaces)"
-"${BIN}" verify-containment --toyagent-bin "${TOYAGENT_BIN}" --agent-user "${AGENT_USER}"
+log "proving containment (aborts the VM if egress or local escape checks fail)"
+"${BIN}" verify-containment --toyagent-bin "${TOYAGENT_BIN}" --agent-user "${AGENT_USER}" --proxy-port "${PROXY_PORT}"
 
 # --- 3. Per-session serve flags from broker-provided env ------------------------
 # The broker sets these PLAYGROUND_* env vars per machine; map the ones present to
@@ -104,6 +114,8 @@ exec "${BIN}" serve \
 	--require-model \
 	--listen "${LISTEN}" \
 	--proxy-port "${PROXY_PORT}" \
+	--operator-uid 0 \
+	--proxy-uid 0 \
 	--concurrency 1 \
 	--toyagent-bin "${TOYAGENT_BIN}" \
 	--webtool-bin "${WEBTOOL_BIN}" \

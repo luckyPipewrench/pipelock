@@ -3,7 +3,18 @@
 
 package playground
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+func TestGoBuildArgs_DisablesVCSStamping(t *testing.T) {
+	t.Parallel()
+	args := goBuildArgs("./cmd/helper", "/tmp/helper")
+	if !slices.Contains(args, "-buildvcs=false") {
+		t.Fatalf("go build args must avoid mutable Git metadata: %v", args)
+	}
+}
 
 func TestDecodeProbeResults(t *testing.T) {
 	t.Parallel()
@@ -80,6 +91,7 @@ func TestDecodeProbeResults(t *testing.T) {
 func TestAllAgentBlocked_HappyAndEmpty(t *testing.T) {
 	t.Parallel()
 	w := HostContainmentWitness{
+		ProbeSuiteVersion: currentContainmentProbeSuite,
 		ControlAgentProbe: ProbeResult{Open: false, Blocked: true},
 		AgentProbes:       []ProbeResult{{Open: false, Blocked: true}, {Open: false, Blocked: true}},
 		LocalAgentProbes:  []ProbeResult{{Open: false, Blocked: true}},

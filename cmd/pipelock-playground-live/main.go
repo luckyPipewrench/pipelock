@@ -69,6 +69,8 @@ type serveFlags struct {
 	toyAgentBin            string
 	webToolBin             string
 	proxyPort              int
+	operatorUID            int
+	proxyUID               int
 	sessionTTL             time.Duration
 	maxInputBytes          int
 	ipRate                 float64
@@ -98,7 +100,10 @@ type serveFlags struct {
 // defaultMaxPerCode is the safe default lifetime session budget per invite code.
 // Unlimited reuse (0) must be opted into explicitly so a leaked code cannot mint
 // sessions forever.
-const defaultMaxPerCode = 25
+const (
+	defaultMaxPerCode = 25
+	defaultAgentUser  = "pipelock-agent"
+)
 
 func newServeCmd() *cobra.Command {
 	f := &serveFlags{}
@@ -122,6 +127,8 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.toyAgentBin, "toyagent-bin", "", "toy-agent binary path (needed for the contained host-containment witness)")
 	fl.StringVar(&f.webToolBin, "webtool-bin", "", "web-tool binary path (needed for the contained host-containment witness)")
 	fl.IntVar(&f.proxyPort, "proxy-port", 0, "fixed loopback port the in-process proxy binds; must match `pipelock contain install --proxy-port` (defaults to 8888 in contained mode). 0 = ephemeral, dev/test only")
+	fl.IntVar(&f.operatorUID, "operator-uid", 0, "operator uid accepted by a self-managed containment ruleset")
+	fl.IntVar(&f.proxyUID, "proxy-uid", 0, "proxy uid accepted by a self-managed containment ruleset")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", 600*time.Second, "per-session wall-clock cap")
 	fl.IntVar(&f.maxInputBytes, "max-input-bytes", 2048, "per-message input size cap")
 	fl.Float64Var(&f.ipRate, "ip-rate", 0.5, "per-IP sustained request rate (tokens/sec)")
@@ -184,6 +191,9 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		requireContainment = false
 		_, _ = fmt.Fprintln(out, "WARNING: --dev set: running UNCONTAINED. Visitors are not kernel-isolated. Never use for public exposure.")
 	}
+	if requireContainment {
+		f.proxyPort = containedProxyPort(f.proxyPort)
+	}
 
 	secret, err := resolveSecret(f.secretB64, f.secretFile)
 	if err != nil {
@@ -211,7 +221,7 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 			// owner-match rule; verify the egress drop empirically rather than
 			// asking `pipelock contain verify` whether `pipelock contain install`
 			// ran on this host.
-			verifier = inVMContainVerifier{toyAgentBin: f.toyAgentBin}
+			verifier = selfManagedContainmentVerifier(f)
 		} else {
 			verifier = containVerifier{}
 		}
@@ -230,16 +240,6 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		}
 		if err := validateModelAgentRuntime(llmAgent); err != nil {
 			return nil, nil, err
-		}
-		// Contained serve binds a fixed proxy port to match the kernel owner-match
-		// rule. Default it to the stock `pipelock contain install` port; an
-		// operator who installed containment on a custom port passes --proxy-port.
-		f.proxyPort = containedProxyPort(f.proxyPort)
-		if f.concurrency != 1 {
-			// One fixed proxy port can host one contained session at a time; the
-			// second concurrent session fails its bind and returns 503. Warn rather
-			// than block (the runtime is fail-safe), and point at the fix.
-			_, _ = fmt.Fprintf(out, "warning: contained serve binds one fixed proxy port (%d); concurrent sessions past the first fail to start. Set --concurrency 1 to avoid 503s.\n", f.proxyPort)
 		}
 	}
 
@@ -325,12 +325,18 @@ func validateServeSafety(f *serveFlags, modelBacked bool) error {
 	if !f.dev && !f.requireContainment {
 		return errors.New("non-dev serve requires containment; use --dev for local uncontained testing")
 	}
+	if !f.dev && f.concurrency != 1 {
+		return errors.New("contained serve requires --concurrency 1 because one fixed proxy port can host only one session")
+	}
 	if f.selfManagedContainment {
 		if f.dev {
 			return errors.New("--self-managed-containment cannot be combined with --dev (it IS a contained mode)")
 		}
 		if strings.TrimSpace(f.toyAgentBin) == "" {
 			return errors.New("--self-managed-containment requires --toyagent-bin (the start-gate egress probe binary)")
+		}
+		if f.operatorUID < 0 || f.proxyUID < 0 {
+			return errors.New("--operator-uid and --proxy-uid must be non-negative")
 		}
 	}
 	if f.proxyPort < 0 || f.proxyPort > 65535 {
@@ -550,7 +556,7 @@ func newPrintNFTCmd() *cobra.Command {
 	return cmd
 }
 
-// newVerifyContainmentCmd runs the install-agnostic in-VM containment start gate
+// newVerifyContainmentCmd runs the installer-independent in-VM containment start gate
 // (playground.VerifyInVMContainment) and exits non-zero if the contained agent
 // uid's direct egress is not proven blocked. A per-visitor microVM boot
 // entrypoint runs this AFTER loading the nft rule and BEFORE starting the
@@ -561,20 +567,26 @@ func newVerifyContainmentCmd() *cobra.Command {
 	var (
 		toyAgentBin string
 		agentUser   string
+		proxyPort   int
+		operatorUID int
+		proxyUID    int
 	)
 	cmd := &cobra.Command{
 		Use:   "verify-containment",
 		Short: "Prove the contained agent uid's egress/local escape surfaces are blocked (fail-closed boot gate for self-managed containment)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := playground.VerifyInVMContainment(cmd.Context(), toyAgentBin, agentUser); err != nil {
+			if err := playground.VerifyInVMContainmentWithUIDs(cmd.Context(), toyAgentBin, agentUser, proxyPort, operatorUID, proxyUID); err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "containment verified: contained agent egress/local escape surfaces are blocked; operator + proxy paths intact")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "containment verified: contained agent egress and local escape checks passed; operator + proxy paths intact")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&toyAgentBin, "toyagent-bin", "", "probe binary (the pipelock-playground-toyagent path); required")
 	cmd.Flags().StringVar(&agentUser, "agent-user", "pipelock-agent", "contained agent username")
+	cmd.Flags().IntVar(&proxyPort, "proxy-port", playground.DefaultContainedProxyPort, "fixed loopback proxy port authorized by the loaded owner-match rule")
+	cmd.Flags().IntVar(&operatorUID, "operator-uid", 0, "operator uid accepted by the loaded owner-match rule")
+	cmd.Flags().IntVar(&proxyUID, "proxy-uid", 0, "proxy uid accepted by the loaded owner-match rule")
 	return cmd
 }
 
@@ -622,8 +634,21 @@ func (containVerifier) Verify(_ context.Context) error {
 type inVMContainVerifier struct {
 	toyAgentBin string
 	agentUser   string
+	proxyPort   int
+	operatorUID int
+	proxyUID    int
+}
+
+func selfManagedContainmentVerifier(f *serveFlags) inVMContainVerifier {
+	return inVMContainVerifier{
+		toyAgentBin: f.toyAgentBin,
+		agentUser:   defaultAgentUser,
+		proxyPort:   f.proxyPort,
+		operatorUID: f.operatorUID,
+		proxyUID:    f.proxyUID,
+	}
 }
 
 func (v inVMContainVerifier) Verify(ctx context.Context) error {
-	return playground.VerifyInVMContainment(ctx, v.toyAgentBin, v.agentUser)
+	return playground.VerifyInVMContainmentWithUIDs(ctx, v.toyAgentBin, v.agentUser, v.proxyPort, v.operatorUID, v.proxyUID)
 }

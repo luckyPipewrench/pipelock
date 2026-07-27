@@ -40,6 +40,9 @@ import (
 type HostContainmentWitness struct {
 	RunNonce           string `json:"run_nonce"`
 	LaunchManifestHash string `json:"launch_manifest_hash"`
+	// ProbeSuiteVersion identifies the exact target-suite semantics. Empty is
+	// the legacy v1 suite so previously signed witnesses retain identical bytes.
+	ProbeSuiteVersion string `json:"probe_suite_version,omitempty"`
 
 	AgentUser string `json:"agent_user"`
 	AgentUID  int    `json:"agent_uid"`
@@ -106,7 +109,10 @@ func (w HostContainmentWitness) SignedBytes() []byte {
 // weaker statement by signing one easy blocked route while omitting the harder
 // categories.
 func (w HostContainmentWitness) DirectSuiteProven() bool {
-	expected := DirectEgressTargets()
+	expected, ok := expectedProbeTargets(w.ProbeSuiteVersion, legacyDirectEgressTargets, DirectEgressTargets)
+	if !ok {
+		return false
+	}
 	if len(w.AgentProbes) != len(expected) {
 		return false
 	}
@@ -123,7 +129,10 @@ func (w HostContainmentWitness) DirectSuiteProven() bool {
 // known local surface (for example the Fly control socket or raw block device)
 // while still claiming host containment.
 func (w HostContainmentWitness) LocalEscapeSuiteProven() bool {
-	expected := LocalEscapeTargets()
+	expected, ok := expectedProbeTargets(w.ProbeSuiteVersion, legacyLocalEscapeTargets, LocalEscapeTargets)
+	if !ok {
+		return false
+	}
 	if len(w.LocalAgentProbes) != len(expected) {
 		return false
 	}
@@ -133,6 +142,17 @@ func (w HostContainmentWitness) LocalEscapeSuiteProven() bool {
 		}
 	}
 	return true
+}
+
+func expectedProbeTargets(version string, legacy, current func() []string) ([]string, bool) {
+	switch version {
+	case "":
+		return legacy(), true
+	case currentContainmentProbeSuite:
+		return current(), true
+	default:
+		return nil, false
+	}
 }
 
 // AllAgentBlocked reports whether every contained-agent probe -- the control
@@ -154,12 +174,36 @@ func (w HostContainmentWitness) AllAgentBlocked() bool {
 			return false
 		}
 	}
+	deniedLocal := 0
 	for _, p := range w.LocalAgentProbes {
-		if p.Open || !p.Blocked {
+		if p.Blocked && p.Absent {
 			return false
 		}
+		if p.Open || (!p.Blocked && !p.Absent) {
+			return false
+		}
+		if p.Blocked {
+			deniedLocal++
+		}
 	}
-	return true
+	return deniedLocal > 0
+}
+
+// LocalProbeCounts separates enforced denials from surfaces absent on this
+// host so public renderers do not overstate absence as a kernel block.
+func (w HostContainmentWitness) LocalProbeCounts() (denied, absent int) {
+	for _, probe := range w.LocalAgentProbes {
+		if probe.Blocked && probe.Absent {
+			continue
+		}
+		if probe.Blocked {
+			denied++
+		}
+		if probe.Absent {
+			absent++
+		}
+	}
+	return denied, absent
 }
 
 // DifferentialProven reports whether the control differential holds: the SAME

@@ -103,7 +103,10 @@ func probeUnixSocket(ctx context.Context, target, path string) ProbeResult {
 
 	conn, err := (&net.Dialer{Timeout: probeTimeout}).DialContext(dialCtx, "unix", path)
 	if err != nil {
-		blocked := !isConnectionRefusedError(err)
+		if errors.Is(err, os.ErrNotExist) {
+			return ProbeResult{Target: target, Absent: true, Detail: fmt.Sprintf("absent: %v", err)}
+		}
+		blocked := errors.Is(err, os.ErrPermission)
 		return ProbeResult{
 			Target:  target,
 			Open:    false,
@@ -137,11 +140,15 @@ func isConnectionRefusedError(err error) bool {
 func probeDeviceNode(target, path string) ProbeResult {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ProbeResult{Target: target, Absent: true, Detail: fmt.Sprintf("absent: %v", err)}
+		}
+		blocked := errors.Is(err, os.ErrPermission)
 		return ProbeResult{
 			Target:  target,
 			Open:    false,
-			Blocked: true,
-			Detail:  fmt.Sprintf("blocked/unavailable: %v", err),
+			Blocked: blocked,
+			Detail:  localProbeErrorDetail(err, blocked),
 		}
 	}
 	_ = f.Close()

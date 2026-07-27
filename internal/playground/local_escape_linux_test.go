@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestProbeLocalCapability_Unknown(t *testing.T) {
@@ -80,7 +82,7 @@ func TestProbeUserNamespaceMountCapabilityWithOps(t *testing.T) {
 
 	t.Run("unshare failure unlocks thread and blocks", func(t *testing.T) {
 		ops, locked, unlocked := newOps()
-		ops.unshare = func(int) error { return errors.New("denied") }
+		ops.unshare = func(int) error { return unix.EPERM }
 
 		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
 		if !*locked || !*unlocked {
@@ -88,6 +90,16 @@ func TestProbeUserNamespaceMountCapabilityWithOps(t *testing.T) {
 		}
 		if result.Open || !result.Blocked || !strings.Contains(result.Detail, "unshare") {
 			t.Fatalf("unexpected result: %+v", result)
+		}
+	})
+
+	t.Run("unsupported user namespaces are absent", func(t *testing.T) {
+		ops, _, unlocked := newOps()
+		ops.unshare = func(int) error { return unix.EINVAL }
+
+		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
+		if !*unlocked || result.Open || result.Blocked || !result.Absent || !strings.Contains(result.Detail, "unsupported") {
+			t.Fatalf("unexpected result: %+v unlocked=%v", result, *unlocked)
 		}
 	})
 
@@ -109,7 +121,7 @@ func TestProbeUserNamespaceMountCapabilityWithOps(t *testing.T) {
 		}
 	})
 
-	t.Run("uid map failure blocks", func(t *testing.T) {
+	t.Run("uid map failure after unshare stays open", func(t *testing.T) {
 		ops, _, _ := newOps()
 		ops.writeFile = func(name string, _ []byte, _ fs.FileMode) error {
 			if name == "/proc/self/uid_map" {
@@ -119,12 +131,12 @@ func TestProbeUserNamespaceMountCapabilityWithOps(t *testing.T) {
 		}
 
 		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
-		if result.Open || !result.Blocked || !strings.Contains(result.Detail, "uid map") {
+		if !result.Open || result.Blocked || !strings.Contains(result.Detail, "uid map") {
 			t.Fatalf("unexpected result: %+v", result)
 		}
 	})
 
-	t.Run("gid map failure blocks", func(t *testing.T) {
+	t.Run("gid map failure after unshare stays open", func(t *testing.T) {
 		ops, _, _ := newOps()
 		ops.writeFile = func(name string, _ []byte, _ fs.FileMode) error {
 			if name == "/proc/self/gid_map" {
@@ -134,34 +146,34 @@ func TestProbeUserNamespaceMountCapabilityWithOps(t *testing.T) {
 		}
 
 		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
-		if result.Open || !result.Blocked || !strings.Contains(result.Detail, "gid map") {
+		if !result.Open || result.Blocked || !strings.Contains(result.Detail, "gid map") {
 			t.Fatalf("unexpected result: %+v", result)
 		}
 	})
 
-	t.Run("setresgid failure blocks", func(t *testing.T) {
+	t.Run("setresgid failure after unshare stays open", func(t *testing.T) {
 		ops, _, _ := newOps()
 		ops.setresgid = func(int, int, int) error { return errors.New("setresgid denied") }
 
 		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
-		if result.Open || !result.Blocked || !strings.Contains(result.Detail, "setresgid") {
+		if !result.Open || result.Blocked || !strings.Contains(result.Detail, "setresgid") {
 			t.Fatalf("unexpected result: %+v", result)
 		}
 	})
 
-	t.Run("setresuid failure blocks", func(t *testing.T) {
+	t.Run("setresuid failure after unshare stays open", func(t *testing.T) {
 		ops, _, _ := newOps()
 		ops.setresuid = func(int, int, int) error { return errors.New("setresuid denied") }
 
 		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
-		if result.Open || !result.Blocked || !strings.Contains(result.Detail, "setresuid") {
+		if !result.Open || result.Blocked || !strings.Contains(result.Detail, "setresuid") {
 			t.Fatalf("unexpected result: %+v", result)
 		}
 	})
 
 	t.Run("mount failure blocks", func(t *testing.T) {
 		ops, _, _ := newOps()
-		ops.mount = func(string, string, string, uintptr, string) error { return errors.New("mount denied") }
+		ops.mount = func(string, string, string, uintptr, string) error { return unix.EPERM }
 
 		result := probeUserNamespaceMountCapabilityWithOps("cap:userns-mount", *ops)
 		if result.Open || !result.Blocked || !strings.Contains(result.Detail, "mount after userns") {

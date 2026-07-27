@@ -317,6 +317,13 @@ func TestBuildServer_SelfManagedContainmentSelectsInVMVerifier(t *testing.T) {
 	f.toyAgentBin = "/usr/local/bin/pipelock-playground-toyagent"
 	f.orchestratorKey = testOrchestratorKeyPath(t)
 	f.concurrency = 1
+	f.proxyPort = playground.DefaultContainedProxyPort
+	f.operatorUID = 1000
+	f.proxyUID = 1001
+	selected := selfManagedContainmentVerifier(f)
+	if selected.toyAgentBin != f.toyAgentBin || selected.agentUser != defaultAgentUser || selected.proxyPort != f.proxyPort || selected.operatorUID != 1000 || selected.proxyUID != 1001 {
+		t.Fatalf("self-managed verifier wiring = %+v", selected)
+	}
 	var out bytes.Buffer
 	srv, handler, err := buildServer(&out, f)
 	if err != nil {
@@ -365,6 +372,7 @@ func TestBuildServer_PublicModelRequiresDailyBudget(t *testing.T) {
 	f := devServeFlags()
 	f.dev = false
 	f.requireContainment = true
+	f.concurrency = 1
 	f.codes = []string{"good"}
 	f.llmAgentBin = testExecutablePath(t)
 	f.modelBaseURL = "http://provider.example/v1"
@@ -393,6 +401,7 @@ func TestBuildServer_RequireModelFailsClosedWithoutModelConfig(t *testing.T) {
 	f := devServeFlags()
 	f.dev = false
 	f.requireContainment = true
+	f.concurrency = 1
 	f.requireModel = true
 	f.codes = []string{"good"}
 	f.orchestratorKey = testOrchestratorKeyPath(t)
@@ -408,6 +417,7 @@ func TestBuildServer_PublicModelValidatesRuntimeFiles(t *testing.T) {
 	f := devServeFlags()
 	f.dev = false
 	f.requireContainment = true
+	f.concurrency = 1
 	f.codes = []string{"good"}
 	f.llmAgentBin = testExecutablePath(t)
 	f.modelBaseURL = "http://provider.example/v1"
@@ -445,6 +455,7 @@ func TestBuildServer_NonDevValidatesOrchestratorKey(t *testing.T) {
 	f := devServeFlags()
 	f.dev = false
 	f.requireContainment = true
+	f.concurrency = 1
 	f.codes = []string{"good"}
 	f.orchestratorKey = filepath.Join(t.TempDir(), "missing.key")
 	var out bytes.Buffer
@@ -455,7 +466,7 @@ func TestBuildServer_NonDevValidatesOrchestratorKey(t *testing.T) {
 
 func TestValidateServeSafety_NonDevRequiresOrchestratorKey(t *testing.T) {
 	t.Parallel()
-	f := serveFlags{requireContainment: true}
+	f := serveFlags{requireContainment: true, concurrency: 1}
 	if err := validateServeSafety(&f, false); err == nil {
 		t.Fatal("non-dev server without orchestrator key should fail closed")
 	}
@@ -491,6 +502,9 @@ func TestValidateServeSafety_SelfManagedContainment(t *testing.T) {
 	}{
 		{name: "dev_conflict", f: serveFlags{dev: true, selfManagedContainment: true}},
 		{name: "missing_toyagent", f: serveFlags{requireContainment: true, selfManagedContainment: true}},
+		{name: "multiple_sessions_share_one_proxy_port", f: serveFlags{requireContainment: true, selfManagedContainment: true, toyAgentBin: "/agent", concurrency: 2}},
+		{name: "stock_containment_multiple_sessions_share_one_proxy_port", f: serveFlags{requireContainment: true, concurrency: 2}},
+		{name: "negative_self_managed_uid", f: serveFlags{requireContainment: true, selfManagedContainment: true, toyAgentBin: "/agent", concurrency: 1, operatorUID: -1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateServeSafety(&tc.f, false); err == nil {

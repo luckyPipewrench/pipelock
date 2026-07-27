@@ -11,7 +11,7 @@ func probeLocalCapability(target, capability string) ProbeResult {
 	return ProbeResult{
 		Target:  target,
 		Open:    false,
-		Blocked: true,
-		Detail:  fmt.Sprintf("blocked/unavailable: %s capability probe is Linux-only", capability),
+		Blocked: false,
+		Detail:  fmt.Sprintf("unknown: %s capability probe is Linux-only", capability),
 	}
 }

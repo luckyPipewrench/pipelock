@@ -4,6 +4,7 @@
 package playground_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -55,6 +56,8 @@ func blockedLocalProbes() []playground.ProbeResult {
 // validWitness returns a fully-enforced, unsigned witness for the happy path.
 func validWitness() playground.HostContainmentWitness {
 	return playground.HostContainmentWitness{
+		// Keep synchronized with the unexported currentContainmentProbeSuite.
+		ProbeSuiteVersion:    "v2",
 		RunNonce:             testRunNonce,
 		LaunchManifestHash:   testManHash,
 		AgentUser:            "pipelock-agent",
@@ -300,6 +303,32 @@ func TestHostContainmentWitness_Enforced(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "absent local surface with other denials",
+			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
+				w.LocalAgentProbes[0] = playground.ProbeResult{Target: w.LocalAgentProbes[0].Target, Absent: true}
+				return w
+			},
+			want: true,
+		},
+		{
+			name: "all local surfaces absent proves no denial",
+			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
+				for i := range w.LocalAgentProbes {
+					w.LocalAgentProbes[i] = playground.ProbeResult{Target: w.LocalAgentProbes[i].Target, Absent: true}
+				}
+				return w
+			},
+			want: false,
+		},
+		{
+			name: "local surface cannot be both denied and absent",
+			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
+				w.LocalAgentProbes[0].Absent = true
+				return w
+			},
+			want: false,
+		},
+		{
 			name: "substituted local escape suite target",
 			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
 				w.LocalAgentProbes[0].Target = "unix:/tmp/not-the-fly-api.sock"
@@ -387,6 +416,31 @@ func TestHostContainmentWitness_Enforced(t *testing.T) {
 				t.Fatalf("Enforced()=%v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestHostContainmentWitness_LegacyProbeSuiteRemainsVerifiable(t *testing.T) {
+	t.Parallel()
+
+	w := validWitness()
+	w.ProbeSuiteVersion = ""
+	fuse := playground.ProbeResult{Target: "device:/dev/fuse", Blocked: true, Detail: "blocked/unavailable"}
+	w.LocalAgentProbes = append(w.LocalAgentProbes[:7], append([]playground.ProbeResult{fuse}, w.LocalAgentProbes[7:]...)...)
+	if !w.Enforced() {
+		t.Fatal("legacy v1 target suite should remain verifiable")
+	}
+	if bytes.Contains(w.SignedBytes(), []byte("probe_suite_version")) {
+		t.Fatal("legacy signed bytes must omit the version field")
+	}
+}
+
+func TestHostContainmentWitness_UnknownProbeSuiteFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	w := validWitness()
+	w.ProbeSuiteVersion = "future"
+	if w.Enforced() {
+		t.Fatal("unknown probe suite version verified")
 	}
 }
 

@@ -129,8 +129,8 @@ func TestRunLocalProbe_UnavailableUnixSocket(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	if results[0].Target != target || results[0].Open || !results[0].Blocked {
-		t.Fatalf("local probe = %+v, want unavailable socket classified as blocked", results[0])
+	if results[0].Target != target || results[0].Open || results[0].Blocked || !results[0].Absent {
+		t.Fatalf("local probe = %+v, want missing socket classified as absent", results[0])
 	}
 }
 

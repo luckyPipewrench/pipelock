@@ -682,6 +682,7 @@ func (lr *LiveRun) buildHostContainmentWitness(ctx context.Context) (HostContain
 	w := HostContainmentWitness{
 		RunNonce:             lr.opts.RunNonce,
 		LaunchManifestHash:   lr.manifest.Hash(),
+		ProbeSuiteVersion:    currentContainmentProbeSuite,
 		AgentUser:            containedAgentUserName(lr.opts.AgentUser),
 		AgentUID:             containedAgentUID(lr.opts.AgentUser),
 		ControlTarget:        ctrlTarget,

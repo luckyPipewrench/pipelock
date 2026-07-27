@@ -21,15 +21,13 @@ import (
 )
 
 // ErrContainmentNotWired is returned when Contained=true but no containment
-// hook has been registered via SetContainmentHook. Task 7 will wire the real
-// implementation; until then, contained mode visibly refuses to run rather
-// than silently falling back to uncontained.
+// hook has been registered. Contained mode visibly refuses to run rather than
+// silently falling back to uncontained.
 var ErrContainmentNotWired = errors.New(
-	"playground: containment mode requested but no containment hook is wired " +
-		"(Task 7 will provide the kernel-containment implementation)")
+	"playground: containment mode requested but no containment hook is wired")
 
-// ContainmentHook is the interface Task 7 must implement to wire kernel
-// containment into the demo orchestrator. The orchestrator calls Setup before
+// ContainmentHook wires a deployment's kernel containment into the demo
+// orchestrator. The orchestrator calls Setup before
 // the live run starts and Teardown during Reset/Close.
 //
 //	Setup: prepare nft chains, agent user, proxy routing. Returns nil on success.
@@ -69,6 +67,17 @@ type DemoOpts struct {
 	// true, the containment hook must be wired via SetContainmentHook.
 	Contained bool
 
+	// ProxyPort is the fixed loopback port used by the in-process proxy. A
+	// contained run must select a port explicitly authorized by its kernel
+	// containment policy so the signed witness can prove the proxy contract.
+	// Zero requests an ephemeral port and is valid only for uncontained runs.
+	ProxyPort int
+
+	// ToyAgentBin, when set, is used for both the self-managed start gate and
+	// the final signed containment witness so mixed probe versions cannot
+	// silently attest different behavior.
+	ToyAgentBin string
+
 	// ScenarioID selects the scenario from DefaultScenarios.
 	ScenarioID string
 
@@ -104,7 +113,7 @@ const defaultScenarioID = LiveDemoScenarioID
 //
 // In uncontained mode (the default, fully working today), the demo runs the
 // toy agent through the proxy without kernel containment. In contained mode,
-// it delegates to the containment hook (Task 7) for nft/agent-user setup.
+// it delegates to the selected containment hook for boundary setup and proof.
 //
 // Returns the VerifyReport so the caller can check .OK and set the exit code.
 func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, error) {
@@ -148,6 +157,9 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("build binaries: %w", err)
 	}
+	if opts.ToyAgentBin != "" {
+		agentBin = filepath.Clean(opts.ToyAgentBin)
+	}
 
 	// --- Timeline events (narration first) ---
 	var timeline []MediatorEvent
@@ -159,6 +171,7 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	// --- Start live run ---
 	lr, err := StartLiveRun(ctx, LiveRunOpts{
 		Contained:           opts.Contained,
+		ProxyPort:           opts.ProxyPort,
 		ScenarioID:          opts.ScenarioID,
 		RunNonce:            opts.RunNonce,
 		ToyAgentBin:         agentBin,
@@ -229,8 +242,9 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 		if hcwData, hcwErr := os.ReadFile(hcwPath); hcwErr == nil {
 			var hcw HostContainmentWitness
 			if json.Unmarshal(hcwData, &hcw) == nil && verified {
-				detail = fmt.Sprintf("%d direct-egress routes and %d local escape surfaces blocked for %s; control target reachable for operator",
-					len(hcw.AgentProbes), len(hcw.LocalAgentProbes), hcw.AgentUser)
+				localDenied, localAbsent := hcw.LocalProbeCounts()
+				detail = fmt.Sprintf("%d direct-egress routes blocked; %d local operations denied and %d surfaces absent for %s; control target reachable for operator",
+					len(hcw.AgentProbes), localDenied, localAbsent, hcw.AgentUser)
 			}
 		}
 		timeline = append(timeline, ContainmentEvent(verified, detail))
@@ -298,8 +312,8 @@ func renderVerifySummary(out io.Writer, rep VerifyReport, runDir string) {
 // nonexistent dir succeeds. Calling it 3x in a row before new runs must
 // produce 3 clean runs.
 //
-// Containment teardown (nft chains, agent processes) is a Task 7 concern;
-// a marked hook is called when wired.
+// A marked containment hook is called when wired so deployment-owned teardown
+// can run before the directory is removed.
 func Reset(runDir string) error {
 	cleanDir := filepath.Clean(runDir)
 
@@ -419,10 +433,13 @@ func findRepoRoot() (string, error) {
 	}
 }
 
-// goBuild runs `go build -o outPath pkg` in the given dir.
+// goBuild runs `go build -buildvcs=false -o outPath pkg` in the given dir.
+// These are ephemeral demo helpers whose exact bytes are pinned in the signed
+// launch manifest. Disabling VCS stamping avoids coupling a live capture to
+// concurrently changing Git worktree metadata.
 func goBuild(ctx context.Context, dir, pkg, outPath string) error {
 	// All arguments are operator-controlled paths from DemoOpts, not untrusted input.
-	args := []string{"build", "-o", outPath, pkg}
+	args := goBuildArgs(pkg, outPath)
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
@@ -430,6 +447,10 @@ func goBuild(ctx context.Context, dir, pkg, outPath string) error {
 		return fmt.Errorf("%s: %w\n%s", pkg, err, out)
 	}
 	return nil
+}
+
+func goBuildArgs(pkg, outPath string) []string {
+	return []string{"build", "-buildvcs=false", "-o", outPath, pkg}
 }
 
 // hashDir computes a sha256 hash over the concatenated contents of all files

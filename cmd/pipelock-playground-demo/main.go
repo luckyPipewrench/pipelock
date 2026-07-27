@@ -17,9 +17,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -167,12 +169,15 @@ Output goes to --out (default: stdout).`,
 
 func newRunCmd() *cobra.Command {
 	var (
-		contained   bool
-		runDir      string
-		scenario    string
-		color       bool
-		runNonce    string
-		orchKeyFile string
+		contained              bool
+		selfManagedContainment bool
+		toyAgentBin            string
+		proxyPort              int
+		runDir                 string
+		scenario               string
+		color                  bool
+		runNonce               string
+		orchKeyFile            string
 	)
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -184,16 +189,27 @@ an offline-verifiable Audit Packet, and renders the mediator timeline.
 Exit 0 = run verified successfully. Non-zero = verification failed or run error.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := cmd.OutOrStdout()
+			if contained && !selfManagedContainment {
+				return errors.New("--contained requires --self-managed-containment; the stock contain service already owns its authorized proxy port")
+			}
+			if selfManagedContainment && !contained {
+				return errors.New("--self-managed-containment requires --contained")
+			}
+			if selfManagedContainment && strings.TrimSpace(toyAgentBin) == "" {
+				return errors.New("--self-managed-containment requires --toyagent-bin")
+			}
+			if selfManagedContainment && (proxyPort < 1 || proxyPort > 65535) &&
+				cmd.Flags().Changed("proxy-port") {
+				return errors.New("--proxy-port must be 1-65535")
+			}
+			effectiveProxyPort := demoProxyPort(contained, selfManagedContainment, proxyPort, cmd.Flags().Changed("proxy-port"))
 			if contained {
-				// Register the real (host-only) containment hook. Its Setup
-				// requires root + an installed `pipelock contain`; the
-				// host-containment witness probe runs as the contained agent
-				// user and fails loudly rather than silently running
-				// uncontained.
-				playground.SetContainmentHook(playground.NewRealContainmentHook(""))
+				playground.SetContainmentHook(demoContainmentHook(selfManagedContainment, toyAgentBin))
 			}
 			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{
 				Contained:           contained,
+				ProxyPort:           effectiveProxyPort,
+				ToyAgentBin:         toyAgentBin,
 				ScenarioID:          scenario,
 				RunNonce:            runNonce,
 				RunDir:              runDir,
@@ -209,7 +225,10 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&contained, "contained", false, "run in kernel-containment mode (requires Task 7 hook)")
+	cmd.Flags().BoolVar(&contained, "contained", false, "run in kernel-containment mode")
+	cmd.Flags().BoolVar(&selfManagedContainment, "self-managed-containment", false, "prove a deployment-managed canonical containment ruleset without requiring `pipelock contain install` (requires --contained and --toyagent-bin)")
+	cmd.Flags().StringVar(&toyAgentBin, "toyagent-bin", "", "toy-agent probe binary used by --self-managed-containment")
+	cmd.Flags().IntVar(&proxyPort, "proxy-port", 0, "fixed loopback proxy port authorized by the containment policy (contained default 8888; ignored when uncontained)")
 	cmd.Flags().StringVar(&orchKeyFile, "orchestrator-key-file", "", "path to the stable orchestrator signing key (default: the installed published demo key, else an ephemeral per-run key)")
 	cmd.Flags().StringVar(&runDir, "run-dir", "", "directory for run artifacts (required)")
 	cmd.Flags().StringVar(&scenario, "scenario", playground.LiveDemoScenarioID, "scenario ID to run")
@@ -217,6 +236,23 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 	cmd.Flags().StringVar(&runNonce, "run-nonce", "", "unique run identifier (default: generated)")
 	_ = cmd.MarkFlagRequired("run-dir")
 	return cmd
+}
+
+func demoContainmentHook(selfManaged bool, toyAgentBin string) playground.ContainmentHook {
+	if selfManaged {
+		return playground.NewInVMContainmentHook(toyAgentBin)
+	}
+	return playground.NewRealContainmentHook("")
+}
+
+func demoProxyPort(contained, selfManaged bool, configured int, explicitlySet bool) int {
+	if !contained || !selfManaged {
+		return 0
+	}
+	if explicitlySet {
+		return configured
+	}
+	return playground.DefaultContainedProxyPort
 }
 
 func newResetCmd() *cobra.Command {

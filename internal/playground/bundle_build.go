@@ -127,13 +127,14 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 
 	// --- HOST CONTAINMENT (contained runs only) ---
 	if hcw != nil {
+		localDenied, localAbsent := hcw.LocalProbeCounts()
 		decisions = append(decisions, BundleDecision{
 			Beat:     narr.containDecision.beat,
 			Class:    string(ClassHostContainment),
 			Color:    narr.containDecision.color,
 			Headline: narr.containDecision.headline,
-			Body: fmt.Sprintf("%d direct-egress routes and %d local escape surfaces blocked for the contained agent; the same control target stayed reachable for the operator.",
-				len(hcw.AgentProbes), len(hcw.LocalAgentProbes)),
+			Body: fmt.Sprintf("%d direct-egress routes blocked; %d local escape operations denied and %d host-specific surfaces absent for the contained agent; the same control target stayed reachable for the operator.",
+				len(hcw.AgentProbes), localDenied, localAbsent),
 			Meta:     "owner-match drop · local hardening · enforced by the host kernel",
 			Signer:   bundleSignerOrch,
 			Key:      shortKey(rep.OrchestratorKey),

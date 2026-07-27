@@ -173,6 +173,8 @@ func newRunCmd() *cobra.Command {
 		selfManagedContainment bool
 		toyAgentBin            string
 		proxyPort              int
+		operatorUID            int
+		proxyUID               int
 		runDir                 string
 		scenario               string
 		color                  bool
@@ -202,9 +204,18 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 				cmd.Flags().Changed("proxy-port") {
 				return errors.New("--proxy-port must be 1-65535")
 			}
+			if selfManagedContainment && (operatorUID < 0 || proxyUID < 0) {
+				return errors.New("--operator-uid and --proxy-uid must be non-negative")
+			}
+			if !selfManagedContainment &&
+				(cmd.Flags().Changed("operator-uid") || cmd.Flags().Changed("proxy-uid")) {
+				return errors.New("--operator-uid and --proxy-uid require --self-managed-containment")
+			}
 			effectiveProxyPort := demoProxyPort(contained, selfManagedContainment, proxyPort, cmd.Flags().Changed("proxy-port"))
 			if contained {
-				playground.SetContainmentHook(demoContainmentHook(selfManagedContainment, toyAgentBin))
+				playground.SetContainmentHook(newDemoContainmentHook(
+					selfManagedContainment, toyAgentBin, operatorUID, proxyUID,
+				))
 			}
 			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{
 				Contained:           contained,
@@ -229,6 +240,8 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 	cmd.Flags().BoolVar(&selfManagedContainment, "self-managed-containment", false, "prove a deployment-managed canonical containment ruleset without requiring `pipelock contain install` (requires --contained and --toyagent-bin)")
 	cmd.Flags().StringVar(&toyAgentBin, "toyagent-bin", "", "toy-agent probe binary used by --self-managed-containment")
 	cmd.Flags().IntVar(&proxyPort, "proxy-port", 0, "fixed loopback proxy port authorized by the containment policy (contained default 8888; ignored when uncontained)")
+	cmd.Flags().IntVar(&operatorUID, "operator-uid", 0, "operator uid accepted by the self-managed containment rules (default 0/root)")
+	cmd.Flags().IntVar(&proxyUID, "proxy-uid", 0, "proxy uid accepted by the self-managed containment rules (default 0/root)")
 	cmd.Flags().StringVar(&orchKeyFile, "orchestrator-key-file", "", "path to the stable orchestrator signing key (default: the installed published demo key, else an ephemeral per-run key)")
 	cmd.Flags().StringVar(&runDir, "run-dir", "", "directory for run artifacts (required)")
 	cmd.Flags().StringVar(&scenario, "scenario", playground.LiveDemoScenarioID, "scenario ID to run")
@@ -238,12 +251,17 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 	return cmd
 }
 
-func demoContainmentHook(selfManaged bool, toyAgentBin string) playground.ContainmentHook {
+func demoContainmentHook(selfManaged bool, toyAgentBin string, operatorUID, proxyUID int) playground.ContainmentHook {
 	if selfManaged {
-		return playground.NewInVMContainmentHook(toyAgentBin)
+		hook := playground.NewInVMContainmentHook(toyAgentBin)
+		hook.OperatorUID = operatorUID
+		hook.ProxyUID = proxyUID
+		return hook
 	}
 	return playground.NewRealContainmentHook("")
 }
+
+var newDemoContainmentHook = demoContainmentHook
 
 func demoProxyPort(contained, selfManaged bool, configured int, explicitlySet bool) int {
 	if !contained || !selfManaged {

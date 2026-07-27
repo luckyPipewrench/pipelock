@@ -9,6 +9,7 @@ import "strings"
 // URL scanner pipeline.
 const (
 	ScannerBodyDLP        = "body_dlp"
+	AuditBodyEntropy      = "body_entropy"
 	ScannerDenialOfWallet = "denial_of_wallet"
 
 	// Audit* labels identify enforcement and warning families emitted outside
@@ -68,6 +69,8 @@ const (
 
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."
+	bodyEntropyOperatorKnob    = "If this destination is trusted to receive opaque body or WebSocket-frame content, add only that host to `request_body_scanning.content_entropy_exclusions`; for a WebSocket-only endpoint, prefer `websocket_proxy.content_entropy_exclusions`. `trusted_domains` is broader because it also affects SSRF trust."
+	bodyEntropyOperatorBroader = "Raising `request_body_scanning.content_entropy_threshold` or setting `request_body_scanning.content_entropy_action: warn` affects opaque body/frame entropy for every destination; prefer a per-host exclusion first."
 	denialOfWalletOperatorKnob = "Correct the denial-of-wallet condition named by the reason. `runaway expansion` and alternating `cycle detected` use fixed detector thresholds and have no per-detector limit knob. " +
 		"To audit instead of block, set the matched `agents._default.budget.dow_action` (or `agents.<name>.budget.dow_action`) to `warn`; this changes enforcement for every denial-of-wallet finding."
 	denialOfWalletToolCallsOperatorKnob = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the session's tool-call budget is intentionally higher."
@@ -270,6 +273,11 @@ var remediationGuidance = map[string]RemediationGuidance{
 	ScannerBodyDLP: {
 		OperatorKnob: bodyDLPOperatorKnob,
 		AgentReason:  secretAgentReason,
+	},
+	AuditBodyEntropy: {
+		OperatorKnob:    bodyEntropyOperatorKnob,
+		OperatorBroader: bodyEntropyOperatorBroader,
+		AgentReason:     highEntropyAgentReason,
 	},
 	ScannerDenialOfWallet: {
 		OperatorKnob: denialOfWalletOperatorKnob,

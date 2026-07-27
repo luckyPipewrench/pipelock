@@ -4342,6 +4342,174 @@ func TestInterceptTunnel_A2ARequestBodyBlocked(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_A2AEntropyBlocksWhenRequestBodyScanningDisabled(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	a2aReqBody := `{"message":{"parts":[{"kind":"data","data":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}]}}`
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/message:send", strings.NewReader(a2aReqBody))
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 403; body=%q", resp.StatusCode, string(body))
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 for blocked A2A entropy", got)
+	}
+	assertInterceptMetric(t, m, `pipelock_body_entropy_hits_total{action="block",agent=""} 1`)
+	assertInterceptMetric(t, m, `pipelock_tls_request_blocked_total{reason="a2a_scan"} 1`)
+}
+
+func TestInterceptTunnel_A2AOversizeFailsClosedWhenRequestBodyScanningDisabled(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.MaxBodyBytes = 16
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	a2aReqBody := `{"message":{"parts":[{"kind":"text","text":"this body exceeds the tiny protocol scan limit"}]}}`
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/message:send", strings.NewReader(a2aReqBody))
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 403; body=%q", resp.StatusCode, string(body))
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 for oversize A2A body", got)
+	}
+	assertInterceptMetric(t, m, `pipelock_tls_request_blocked_total{reason="a2a_scan"} 1`)
+}
+
+func TestInterceptTunnel_A2AEntropyWarnForwardsWhenRequestBodyScanningDisabled(t *testing.T) {
+	var gotBody atomic.Value
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		gotBody.Store(string(body))
+		w.Header().Set("Content-Type", "application/a2a+json")
+		_, _ = fmt.Fprint(w, `{"result":{"message":{"parts":[{"kind":"text","text":"ok"}]}}}`)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	a2aReqBody := `{"message":{"parts":[{"kind":"data","data":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}]}}`
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/message:send", strings.NewReader(a2aReqBody))
+	req.Header.Set("Content-Type", "application/a2a+json")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%q", resp.StatusCode, string(body))
+	}
+	if got, ok := gotBody.Load().(string); !ok || got != a2aReqBody {
+		t.Fatalf("upstream body = %q, want %q", got, a2aReqBody)
+	}
+	assertInterceptMetric(t, m, `pipelock_body_entropy_hits_total{action="warn",agent=""} 1`)
+}
+
+func TestInterceptTunnel_BodyEntropyWarnRecordsMetricAndForwards(t *testing.T) {
+	var gotBody atomic.Value
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		gotBody.Store(string(body))
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	body := `{"blob":"` + opaqueHighEntropyBodyValue() + `"}`
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/upload", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%q", resp.StatusCode, string(respBody))
+	}
+	if got, ok := gotBody.Load().(string); !ok || got != body {
+		t.Fatalf("upstream body = %q, want %q", got, body)
+	}
+	assertInterceptMetric(t, m, `pipelock_body_entropy_hits_total{action="warn",agent=""} 1`)
+}
+
+func assertInterceptMetric(t *testing.T, m *metrics.Metrics, want string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	m.PrometheusHandler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("metrics missing %q:\n%s", want, rec.Body.String())
+	}
+}
+
 // TestInterceptTunnel_ResponseScanExemptDomainWarnPath verifies that response
 // injection on an exempt domain pins action to warn and forwards the response.
 // Exercises ~lines 867-869 (LogResponseScanExempt) and ~lines 900-904 (exempt

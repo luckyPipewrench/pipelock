@@ -29,6 +29,7 @@ The optional `X-Pipelock-Block-Reason-Layer` header reuses `internal/scanner/` `
 | `blocklist` | `scanner.ScannerBlocklist` | `domain_blocklist` |
 | `dlp` | `scanner.ScannerDLP` | `dlp_match`, `redaction_failure` |
 | `entropy` | `scanner.ScannerEntropy` | `path_entropy` |
+| `body_entropy` | `scanner.AuditBodyEntropy` / proxy body layer | `body_entropy` |
 | `subdomain_entropy` | `scanner.ScannerSubdomainEntropy` | `subdomain_entropy` |
 | `ssrf` | `scanner.ScannerSSRF` | `ssrf_private_ip`, `ssrf_metadata`, `ssrf_dns_rebind` |
 | `ratelimit` | `scanner.ScannerRateLimit` | `rate_limit` |
@@ -63,6 +64,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | Code | When | Severity | Retry |
 |---|---|---|---|
 | `dlp_match` | Outbound payload matched a DLP pattern (secret, credential, PII). | `critical` | `none` |
+| `body_entropy` | Body, WebSocket frame, or A2A payload matched the opaque-content detector: entropy exceeded the configured ceiling or a long all-hex value was observed. | `warn` | `policy` |
 | `prompt_injection` | Inbound response matched an injection pattern. | `critical` | `none` |
 | `redaction_failure` | Outbound redaction stage encountered an unrecoverable parse error and fail-closed. | `critical` | `transient` |
 | `media_policy` | Image / audio / video policy block (size, type, count). | `warn` | `policy` |

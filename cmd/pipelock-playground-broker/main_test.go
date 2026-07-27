@@ -406,7 +406,8 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	var out bytes.Buffer
+	srv, handler, _, _, err := buildServer(context.Background(), &out, &serveFlags{
 		listen: defaultListen, provider: "fake", flyApp: "playground-test",
 		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
 		staticDir: uiDir, internalPort: 8080, concurrency: 2,
@@ -416,12 +417,22 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 		globalDailyBudget: 10,
 		unsafeNoHumanGate: true,
 		sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
-		vmDailyTurnBudget:     10,
-		requireSessionSecrets: false,
-		embedOrigins:          []string{testEmbedOrigin},
+		vmDailyTurnBudget:      10,
+		requireSessionSecrets:  false,
+		embedOrigins:           []string{testEmbedOrigin},
+		externalScriptOrigins:  []string{"https://scripts.vendor.example"},
+		externalConnectOrigins: []string{"https://events.vendor.example"},
 	})
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
+	}
+	for _, want := range []string{
+		"trusting external script origin(s): https://scripts.vendor.example",
+		"allowing external browser connection origin(s): https://events.vendor.example",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("broker startup output = %q, missing %q", out.String(), want)
+		}
 	}
 	t.Cleanup(srv.Close)
 	baseURL := startHTTPTestServer(t, handler)
@@ -440,7 +451,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("GET %s status = %d, want 200", tc.path, resp.StatusCode)
 			}
-			assertBrokerSecurityHeaders(t, resp.Header, "")
+			assertBrokerSecurityHeaders(t, resp.Header, "", []string{"https://scripts.vendor.example"}, []string{"https://events.vendor.example"})
 		})
 	}
 }
@@ -1373,6 +1384,32 @@ func TestValidateFlagsBranches(t *testing.T) {
 	if err := validateAllowOrigin("https://site.example:65535"); err != nil {
 		t.Fatalf("maximum valid origin port should validate: %v", err)
 	}
+	externalOrigins := turnstileGate
+	externalOrigins.externalScriptOrigins = []string{"https://scripts.vendor.example"}
+	externalOrigins.externalConnectOrigins = []string{"https://events.vendor.example"}
+	if err := validateFlags(&externalOrigins); err != nil {
+		t.Fatalf("external CSP origins should validate: %v", err)
+	}
+	invalidExternalOrigin := externalOrigins
+	invalidExternalOrigin.externalConnectOrigins = []string{"http://events.vendor.example"}
+	if err := validateFlags(&invalidExternalOrigin); err == nil || !strings.Contains(err.Error(), "--external-connect-origin") {
+		t.Fatalf("invalid external connect origin error = %v, want flag-specific error", err)
+	}
+	invalidExternalScriptOrigin := externalOrigins
+	invalidExternalScriptOrigin.externalScriptOrigins = []string{"http://scripts.vendor.example"}
+	if err := validateFlags(&invalidExternalScriptOrigin); err == nil || !strings.Contains(err.Error(), "--external-script-origin") {
+		t.Fatalf("invalid external script origin error = %v, want flag-specific error", err)
+	}
+	invalidExternalConnectShape := externalOrigins
+	invalidExternalConnectShape.externalConnectOrigins = []string{"https://events.vendor.example/path"}
+	if err := validateFlags(&invalidExternalConnectShape); err == nil || !strings.Contains(err.Error(), "--external-connect-origin") {
+		t.Fatalf("invalid external connect origin shape error = %v, want flag-specific error", err)
+	}
+	invalidExternalScriptShape := externalOrigins
+	invalidExternalScriptShape.externalScriptOrigins = []string{"https://*.vendor.example"}
+	if err := validateFlags(&invalidExternalScriptShape); err == nil || !strings.Contains(err.Error(), "--external-script-origin") {
+		t.Fatalf("invalid external script origin shape error = %v, want flag-specific error", err)
+	}
 	cfAccessGate := noHumanGate
 	cfAccessGate.cfAccessTeamDomain = "team.cloudflareaccess.com"
 	cfAccessGate.cfAccessAUD = "aud"
@@ -1892,27 +1929,59 @@ func testHTTPGet(t *testing.T, rawURL string) *http.Response {
 // so no deployment hostname is pinned into the repo.
 const testEmbedOrigin = "https://site.example"
 
+func cspDirective(t *testing.T, policy, name string) string {
+	t.Helper()
+	for directive := range strings.SplitSeq(policy, ";") {
+		directive = strings.TrimSpace(directive)
+		if directive == name || strings.HasPrefix(directive, name+" ") {
+			return directive
+		}
+	}
+	t.Fatalf("CSP = %q, missing %s directive", policy, name)
+	return ""
+}
+
 // A broker with no configured embed origin must forbid framing outright. The
 // default has to be the closed one: an operator who never thought about
 // embedding should not ship a frameable page.
 func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
-	got := brokerContentSecurityPolicy(nil, "")
+	got := brokerContentSecurityPolicy(nil, "", nil, nil)
 	if !strings.Contains(got, "frame-ancestors 'none'") {
 		t.Fatalf("CSP with no embed origins = %q, want frame-ancestors 'none'", got)
 	}
-	withOrigin := brokerContentSecurityPolicy([]string{testEmbedOrigin, "https://www.site.example"}, "https://challenge.vendor.example")
+	withOrigin := brokerContentSecurityPolicy(
+		[]string{testEmbedOrigin, "https://www.site.example"},
+		"https://challenge.vendor.example",
+		[]string{"https://scripts.vendor.example"},
+		[]string{"https://events.vendor.example"},
+	)
 	if !strings.Contains(withOrigin, "frame-ancestors https://site.example https://www.site.example;") {
 		t.Fatalf("CSP with embed origins = %q, want both origins in frame-ancestors", withOrigin)
 	}
 	for _, want := range []string{
-		"script-src 'self' blob: 'wasm-unsafe-eval' https://challenge.vendor.example;",
+		"script-src 'self' blob: 'wasm-unsafe-eval' https://challenge.vendor.example https://scripts.vendor.example;",
 		"script-src-attr 'none';",
-		"connect-src 'self' https://challenge.vendor.example;",
+		"connect-src 'self' https://challenge.vendor.example https://events.vendor.example;",
 		"frame-src https://challenge.vendor.example;",
 	} {
 		if !strings.Contains(withOrigin, want) {
 			t.Fatalf("CSP = %q, missing %q", withOrigin, want)
 		}
+	}
+	scriptDirective := cspDirective(t, withOrigin, "script-src")
+	connectDirective := cspDirective(t, withOrigin, "connect-src")
+	if strings.Contains(scriptDirective, "https://events.vendor.example") {
+		t.Fatalf("script-src = %q, must not contain the connection-only origin", scriptDirective)
+	}
+	if strings.Contains(connectDirective, "https://scripts.vendor.example") {
+		t.Fatalf("connect-src = %q, must not contain the script-only origin", connectDirective)
+	}
+	connectOnly := brokerContentSecurityPolicy(nil, "", nil, []string{
+		"https://events-a.vendor.example",
+		"https://events-b.vendor.example",
+	})
+	if !strings.Contains(connectOnly, "connect-src 'self' https://events-a.vendor.example https://events-b.vendor.example;") {
+		t.Fatalf("connect-only CSP = %q, want both external connection origins", connectOnly)
 	}
 }
 
@@ -1932,6 +2001,8 @@ func TestValidateStaticUIRejectsCSPIncompatibleMarkup(t *testing.T) {
 		{name: "inline handler", body: `<button onclick="bad()">go</button>`, want: "inline event handler"},
 		{name: "third-party script", body: `<script src="https://analytics.example/array.js"></script>`, want: "not permitted"},
 		{name: "protocol-relative script", body: `<script src="` + strings.TrimPrefix(defaultTurnstileOrigin, "https:") + `/x.js"></script>`, want: "not permitted"},
+		{name: "backslash authority script", body: `<script src="\\analytics.example\x.js"></script>`, want: "not permitted"},
+		{name: "slash backslash authority script", body: `<script src="/\analytics.example/x.js"></script>`, want: "not permitted"},
 		{name: "base element", body: `<base href="/">`, want: "base element"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1940,7 +2011,7 @@ func TestValidateStaticUIRejectsCSPIncompatibleMarkup(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(tc.body), 0o600); err != nil {
 				t.Fatalf("write index: %v", err)
 			}
-			err := validateStaticUI(dir, defaultTurnstileOrigin)
+			err := validateStaticUI(dir, defaultTurnstileOrigin, nil)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("validateStaticUI: %v", err)
@@ -1961,18 +2032,40 @@ func TestValidateStaticUIUsesRuntimeScriptOrigins(t *testing.T) {
 	), 0o600); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	if err := validateStaticUI(dir, ""); err == nil || !strings.Contains(err.Error(), "not permitted") {
+	if err := validateStaticUI(dir, "", nil); err == nil || !strings.Contains(err.Error(), "not permitted") {
 		t.Fatalf("validateStaticUI without Turnstile origin error = %v, want not permitted", err)
 	}
-	if err := validateStaticUI(dir, defaultTurnstileOrigin); err != nil {
+	if err := validateStaticUI(dir, defaultTurnstileOrigin, nil); err != nil {
 		t.Fatalf("validateStaticUI with Turnstile origin: %v", err)
+	}
+	externalOrigin := "https://scripts.vendor.example"
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(
+		`<script src="`+externalOrigin+`/viewer.js"></script>`,
+	), 0o600); err != nil {
+		t.Fatalf("write external index: %v", err)
+	}
+	if err := validateStaticUI(dir, defaultTurnstileOrigin, nil); err == nil || !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("validateStaticUI without external origin error = %v, want not permitted", err)
+	}
+	if err := validateStaticUI(dir, defaultTurnstileOrigin, []string{externalOrigin}); err != nil {
+		t.Fatalf("validateStaticUI with external origin: %v", err)
 	}
 }
 
-func assertBrokerSecurityHeaders(t *testing.T, h http.Header, turnstileOrigin string) {
+func assertBrokerSecurityHeaders(
+	t *testing.T,
+	h http.Header,
+	turnstileOrigin string,
+	externalScriptOrigins, externalConnectOrigins []string,
+) {
 	t.Helper()
 	want := map[string]string{
-		"Content-Security-Policy":   brokerContentSecurityPolicy([]string{testEmbedOrigin}, turnstileOrigin),
+		"Content-Security-Policy": brokerContentSecurityPolicy(
+			[]string{testEmbedOrigin},
+			turnstileOrigin,
+			externalScriptOrigins,
+			externalConnectOrigins,
+		),
 		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 		"X-Content-Type-Options":    "nosniff",
 		"Referrer-Policy":           "strict-origin-when-cross-origin",

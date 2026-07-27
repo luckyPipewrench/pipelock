@@ -342,6 +342,35 @@ func TestReverseLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	}
 }
 
+func TestReverseLiveLock_ContentEntropyBlockReason(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetupWithConfig(t, cfg, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("unexpected"))
+		})
+
+	body := fmt.Sprintf(`{"blob":%q}`, opaqueHighEntropyBodyValue())
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", body)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.BodyEntropy) {
+		t.Fatalf("block reason = %q, want %s; layer=%q", got, blockreason.BodyEntropy, resp.Header.Get(blockreason.HeaderLayer))
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
 func TestReverseLiveLock_AuditScannerBlockContinuesAsWarn(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()

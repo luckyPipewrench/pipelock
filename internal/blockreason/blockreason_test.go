@@ -508,6 +508,7 @@ var specCanonicalPairs = map[Reason]struct {
 	SSRFMetadata:     {SeverityCritical, RetryNone},
 	SSRFDNSRebind:    {SeverityCritical, RetryTransient},
 	PathEntropy:      {SeverityWarn, RetryPolicy},
+	BodyEntropy:      {SeverityWarn, RetryPolicy},
 	SubdomainEntropy: {SeverityWarn, RetryPolicy},
 	URLLength:        {SeverityWarn, RetryPolicy},
 	RateLimit:        {SeverityWarn, RetryTransient},

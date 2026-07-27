@@ -41,6 +41,8 @@ func allBlockedLocal() []ProbeResult {
 
 func TestInVMContainmentHookLifecycle(t *testing.T) {
 	hook := NewInVMContainmentHook("/nonexistent/toyagent")
+	hook.OperatorUID = 1000
+	hook.ProxyUID = 967
 	if hook.ToyAgentBin != "/nonexistent/toyagent" {
 		t.Fatalf("toy agent = %q", hook.ToyAgentBin)
 	}
@@ -49,6 +51,47 @@ func TestInVMContainmentHookLifecycle(t *testing.T) {
 	}
 	if err := hook.Teardown(t.TempDir()); err != nil {
 		t.Fatalf("teardown: %v", err)
+	}
+}
+
+func TestInVMContainmentHookForwardsUIDs(t *testing.T) {
+	hook := NewInVMContainmentHook("/usr/local/bin/probe")
+	hook.OperatorUID = 1000
+	hook.ProxyUID = 967
+	hook.verify = func(_ context.Context, bin, user string, port, operatorUID, proxyUID int) error {
+		if bin != hook.ToyAgentBin || user != defaultContainedAgentUser ||
+			port != DefaultContainedProxyPort || operatorUID != 1000 || proxyUID != 967 {
+			t.Fatalf("forwarded values: bin=%q user=%q port=%d operator=%d proxy=%d",
+				bin, user, port, operatorUID, proxyUID)
+		}
+		return nil
+	}
+	if err := hook.Setup(t.Context(), DemoOpts{ProxyPort: DefaultContainedProxyPort}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+}
+
+func TestValidateContainmentUIDRoles(t *testing.T) {
+	t.Parallel()
+	if err := validateContainmentUIDRoles(1000, 967, 966); err != nil {
+		t.Fatalf("distinct roles rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name            string
+		operator, proxy int
+		agent           int
+	}{
+		{name: "negative operator", operator: -1, proxy: 967, agent: 966},
+		{name: "negative proxy", operator: 1000, proxy: -1, agent: 966},
+		{name: "operator is agent", operator: 966, proxy: 967, agent: 966},
+		{name: "proxy is agent", operator: 1000, proxy: 966, agent: 966},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := validateContainmentUIDRoles(tc.operator, tc.proxy, tc.agent); err == nil {
+				t.Fatal("unsafe uid roles accepted")
+			}
+		})
 	}
 }
 

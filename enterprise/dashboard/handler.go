@@ -477,7 +477,7 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool, permission Per
 	auth := authAuditInfoFromRequest(r)
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()
-	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s permission=%q method=%s path=%q session=%q session_sha256=%s org_sha256=%s fleet_sha256=%s artifact_sha256=%s auth_method=%s auth_subject_sha256=%s mtls_spki_sha256=%s auth_roles=%q remote=%s\n",
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s permission=%q method=%s path=%q session=%q session_sha256=%s org_sha256=%s fleet_sha256=%s artifact_sha256=%s auth_method=%s auth_subject_sha256=%q mtls_spki_sha256=%q auth_roles=%q remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), role, permission, r.Method, r.URL.Path, sessionDisplay, sessionHash,
 		auditHashField(r.URL.Query().Get("org_id")), auditHashField(r.URL.Query().Get("fleet_id")),
 		auditHashField(r.URL.Query().Get("artifact_hash")), auth.Method, auth.SubjectSHA256, auth.MTLSSPKISHA256, strings.Join(auth.Roles, ","), r.RemoteAddr)
@@ -499,7 +499,7 @@ func (d *dashboardHandler) recordPermissionDeniedAudit(r *http.Request, permissi
 	}
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()
-	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q session=%q session_sha256=%s auth_method=%s auth_subject_sha256=%s mtls_spki_sha256=%s auth_roles=%q reason=%s remote=%s\n",
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q session=%q session_sha256=%s auth_method=%s auth_subject_sha256=%q mtls_spki_sha256=%q auth_roles=%q reason=%s remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), permission, r.Method, r.URL.Path,
 		sessionDisplay, sessionHash, auth.Method, auth.SubjectSHA256, auth.MTLSSPKISHA256, strings.Join(auth.Roles, ","), reason, r.RemoteAddr)
 }

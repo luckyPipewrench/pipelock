@@ -678,8 +678,8 @@ func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
 		"pipelock-dashboard access",
 		"permission=\"dashboard:evidence:read\"",
 		"auth_method=oidc",
-		"auth_subject_sha256=" + oidcTestAuditHash("operator-a"),
-		"mtls_spki_sha256=-",
+		fmt.Sprintf("auth_subject_sha256=%q", oidcTestAuditHash("operator-a")),
+		`mtls_spki_sha256="-"`,
 		"auth_roles=\"evidence-reader\"",
 	} {
 		if !strings.Contains(log, want) {
@@ -702,7 +702,7 @@ func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard denied",
 		"auth_method=oidc",
-		"auth_subject_sha256=-",
+		`auth_subject_sha256="-"`,
 		"reason=invalid_token",
 	} {
 		if !strings.Contains(log, want) {
@@ -1049,6 +1049,7 @@ func TestParseDashboardRSAJWK(t *testing.T) {
 		{"bad modulus encoding", func(j *dashboardJWK) { j.N = "!" }, false, true},
 		{"bad exponent encoding", func(j *dashboardJWK) { j.E = "!" }, false, true},
 		{"weak modulus", func(j *dashboardJWK) { j.N = encodeInt(big.NewInt(17)) }, false, true},
+		{"maximum modulus", func(j *dashboardJWK) { j.N = encodeInt(new(big.Int).Lsh(big.NewInt(1), dashboardOIDCRSAMaxBits-1)) }, true, false},
 		{"oversize modulus", func(j *dashboardJWK) { j.N = encodeInt(new(big.Int).Lsh(big.NewInt(1), dashboardOIDCRSAMaxBits)) }, false, true},
 		{"even exponent", func(j *dashboardJWK) { j.E = encodeInt(big.NewInt(4)) }, false, true},
 		{"huge exponent", func(j *dashboardJWK) { j.E = encodeInt(new(big.Int).Lsh(big.NewInt(1), 80)) }, false, true},
@@ -1337,7 +1338,7 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 		// The subject is recorded hashed rather than in the clear. Derive the
 		// expected digest from the subject so this still pins WHICH principal
 		// was denied, not merely that some digest was written.
-		fmt.Sprintf("auth_subject_sha256=%x", sha256.Sum256([]byte("operator-a"))),
+		fmt.Sprintf("auth_subject_sha256=%q", fmt.Sprintf("%x", sha256.Sum256([]byte("operator-a")))),
 		"auth_roles=\"evidence-reader\"",
 		"reason=permission_denied",
 	} {

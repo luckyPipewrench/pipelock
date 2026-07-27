@@ -802,13 +802,8 @@ func TestNewDashboardConductorSource_UnconfiguredStaysNilInterface(t *testing.T)
 		t.Fatalf("source = %v, want nil for an unset conductor URL", source)
 	}
 
-	var iface dashboard.ConductorDecisionSource
-	iface = dashboardConductorDecisionSource(source)
+	iface := dashboardConductorDecisionSource(source)
 	if iface != nil {
 		t.Fatal("unconfigured conductor source was stored as a non-nil ConductorDecisionSource")
-	}
-	iface = nil
-	if iface != nil {
-		t.Fatal("zero ConductorDecisionSource is unexpectedly non-nil")
 	}
 }

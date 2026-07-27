@@ -760,8 +760,8 @@ func TestDashboardAuthDeniedAuditPreservesMissingTokenReason(t *testing.T) {
 		"pipelock-dashboard denied",
 		"permission=\"-\"",
 		"auth_method=none",
-		"auth_subject_sha256=-",
-		"mtls_spki_sha256=-",
+		`auth_subject_sha256="-"`,
+		`mtls_spki_sha256="-"`,
 		"reason=missing_token",
 	} {
 		if !strings.Contains(log, want) {

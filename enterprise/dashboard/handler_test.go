@@ -1694,6 +1694,30 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 			t.Errorf("audit log should record raw role; got %q", raw.String())
 		}
 	})
+
+	t.Run("auth_digest_fields_are_quoted", func(t *testing.T) {
+		var audit strings.Builder
+		handler := New(Options{
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			AuditWriter: &audit,
+		})
+		ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
+			Method:         "oidc",
+			SubjectSHA256:  "subject injected=value",
+			MTLSSPKISHA256: "spki extra=field",
+		})
+		handler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
+		for _, want := range []string{
+			`auth_subject_sha256="subject injected=value"`,
+			`mtls_spki_sha256="spki extra=field"`,
+		} {
+			if !strings.Contains(audit.String(), want) {
+				t.Errorf("audit log should quote auth digest field %q; got %q", want, audit.String())
+			}
+		}
+	})
 }
 
 func TestAuditSessionFieldNormalizesAndBoundsDisplay(t *testing.T) {
@@ -1937,8 +1961,8 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		"pipelock-dashboard denied",
 		"permission=\"dashboard:evidence:read\"",
 		"auth_method=mtls",
-		"auth_subject_sha256=-",
-		"mtls_spki_sha256=" + spkiHash,
+		`auth_subject_sha256="-"`,
+		fmt.Sprintf("mtls_spki_sha256=%q", spkiHash),
 		"auth_roles=\"metadata\"",
 		"reason=permission_denied",
 	} {
@@ -1974,8 +1998,8 @@ func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard denied",
 		"auth_method=-",
-		"auth_subject_sha256=-",
-		"mtls_spki_sha256=-",
+		`auth_subject_sha256="-"`,
+		`mtls_spki_sha256="-"`,
 		"auth_roles=\"-\"",
 		"reason=permission_denied",
 	} {

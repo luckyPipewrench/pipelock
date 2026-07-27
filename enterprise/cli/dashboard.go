@@ -603,7 +603,7 @@ func recordDashboardAuthDenied(auditWriter io.Writer, r *http.Request, authInfo 
 	if info.FailureReason == "" {
 		info.FailureReason = "unauthorized"
 	}
-	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q auth_method=%s auth_subject_sha256=%s mtls_spki_sha256=%s auth_roles=%q reason=%s remote=%s\n",
+	_, _ = fmt.Fprintf(auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q auth_method=%s auth_subject_sha256=%q mtls_spki_sha256=%q auth_roles=%q reason=%s remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), "-", r.Method, r.URL.Path,
 		dashboard.AuditLogValue(info.Method), dashboard.AuditLogValue(info.SubjectSHA256),
 		dashboard.AuditLogValue(info.MTLSSPKISHA256),

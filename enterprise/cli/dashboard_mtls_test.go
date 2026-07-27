@@ -422,6 +422,12 @@ func TestVerifyDashboardClientCertificateKeySizes(t *testing.T) {
 			}},
 		},
 		{
+			name: "maximum RSA accepted",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMaxBits-1), E: 65537},
+			}},
+		},
+		{
 			name:  "nil certificate skipped",
 			certs: []*x509.Certificate{nil},
 		},

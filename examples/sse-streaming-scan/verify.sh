@@ -44,13 +44,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-pick_port() {
-  python3 - <<'PY'
+pick_ports() {
+  local count="$1"
+  python3 - <<PY
 import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-print(s.getsockname()[1])
-s.close()
+socks = []
+ports = []
+for _ in range($count):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    ports.append(str(s.getsockname()[1]))
+    socks.append(s)
+for s in socks:
+    s.close()
+print(" ".join(ports))
 PY
 }
 
@@ -136,12 +143,10 @@ else
 fi
 
 # -- Start upstream + proxy ---------------------------------------------------
-FETCH_PORT="$(pick_port)"
-REVERSE_PORT="$(pick_port)"
-UPSTREAM_PORT="$(pick_port)"
-write_config "$FETCH_PORT" "$REVERSE_PORT" "$UPSTREAM_PORT"
-
+# Bind upstream first; then reserve fetch+reverse ports together so they cannot
+# collide with each other or with the upstream listener.
 step "Test 2: start SSE upstream + reverse proxy"
+read -r UPSTREAM_PORT < <(pick_ports 1)
 python3 "$UPSTREAM_PY" "$UPSTREAM_PORT" >"$UPSTREAM_LOG" 2>&1 &
 UPSTREAM_PID=$!
 if ! wait_for_upstream "$UPSTREAM_PORT"; then
@@ -150,6 +155,9 @@ if ! wait_for_upstream "$UPSTREAM_PORT"; then
   printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
   exit 1
 fi
+
+read -r FETCH_PORT REVERSE_PORT < <(pick_ports 2)
+write_config "$FETCH_PORT" "$REVERSE_PORT" "$UPSTREAM_PORT"
 
 "$PIPELOCK" run --config "$CONFIG" >"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
@@ -163,7 +171,7 @@ pass "upstream + reverse proxy ready (reverse :${REVERSE_PORT})"
 
 # -- Test 3: clean stream -----------------------------------------------------
 step "Test 3: clean SSE events pass through"
-CLEAN_BODY="$(curl -sS --max-time 10 "http://127.0.0.1:${REVERSE_PORT}/clean" || true)"
+CLEAN_BODY="$(curl -sS --max-time 10 "http://127.0.0.1:${REVERSE_PORT}/clean" 2>/dev/null || true)"
 if printf '%s' "$CLEAN_BODY" | grep -q 'hello-token' \
   && printf '%s' "$CLEAN_BODY" | grep -q 'world-token'; then
   pass "clean stream delivered both events"
@@ -175,7 +183,8 @@ fi
 
 # -- Test 4: injection truncates ----------------------------------------------
 step "Test 4: injection event terminates stream"
-INJECT_BODY="$(curl -sS --max-time 10 "http://127.0.0.1:${REVERSE_PORT}/inject" || true)"
+# Truncation closes the connection mid-transfer; curl may exit 18 — body is what matters.
+INJECT_BODY="$(curl -sS --max-time 10 "http://127.0.0.1:${REVERSE_PORT}/inject" 2>/dev/null || true)"
 if printf '%s' "$INJECT_BODY" | grep -q 'clean-prefix' \
   && ! printf '%s' "$INJECT_BODY" | grep -q 'never reached'; then
   pass "stream truncated before post-detection event"

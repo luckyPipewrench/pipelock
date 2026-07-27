@@ -93,7 +93,11 @@ func TestVerifySelfManagedNFTRulesWithDependencies(t *testing.T) {
 		}
 		return []byte(canonical), nil
 	}
-	if err := verifySelfManagedNFTRules(context.Background(), 1000, 1001, 10001, 8888, statSecondPath, run); err != nil {
+	baseOpts := selfManagedNFTVerifyOptions{
+		ctx: context.Background(), operatorUID: 1000, proxyUID: 1001,
+		agentUID: 10001, proxyPort: 8888, statFn: statSecondPath, run: run,
+	}
+	if err := verifySelfManagedNFTRules(baseOpts); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	if gotPath != "/usr/bin/nft" {
@@ -104,7 +108,9 @@ func TestVerifySelfManagedNFTRulesWithDependencies(t *testing.T) {
 		runErr := func(context.Context, string, ...string) ([]byte, error) {
 			return []byte("permission denied\n"), errors.New("exit 1")
 		}
-		err := verifySelfManagedNFTRules(context.Background(), 1000, 1001, 10001, 8888, statSecondPath, runErr)
+		opts := baseOpts
+		opts.run = runErr
+		err := verifySelfManagedNFTRules(opts)
 		if err == nil || !strings.Contains(err.Error(), "permission denied") {
 			t.Fatalf("error = %v", err)
 		}
@@ -112,15 +118,33 @@ func TestVerifySelfManagedNFTRulesWithDependencies(t *testing.T) {
 
 	t.Run("trusted executable absent", func(t *testing.T) {
 		missing := func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }
-		if err := verifySelfManagedNFTRules(context.Background(), 0, 0, 10001, 8888, missing, run); err == nil {
+		opts := baseOpts
+		opts.statFn = missing
+		if err := verifySelfManagedNFTRules(opts); err == nil {
 			t.Fatal("missing nft executable accepted")
 		}
 	})
 
 	t.Run("untrusted executable rejected", func(t *testing.T) {
 		writable := func(string) (fs.FileInfo, error) { return rootFileInfo{mode: 0o777}, nil }
-		if err := verifySelfManagedNFTRules(context.Background(), 0, 0, 10001, 8888, writable, run); err == nil {
+		opts := baseOpts
+		opts.statFn = writable
+		if err := verifySelfManagedNFTRules(opts); err == nil {
 			t.Fatal("world-writable nft executable accepted")
+		}
+	})
+
+	t.Run("command receives bounded context", func(t *testing.T) {
+		opts := baseOpts
+		opts.run = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) > selfManagedNFTTimeout {
+				t.Fatalf("bounded deadline missing or too long: %v, %v", deadline, ok)
+			}
+			return []byte(canonical), nil
+		}
+		if err := verifySelfManagedNFTRules(opts); err != nil {
+			t.Fatalf("verify with bounded context: %v", err)
 		}
 	})
 }

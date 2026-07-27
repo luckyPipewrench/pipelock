@@ -209,20 +209,24 @@ func VerifyInVMContainmentWithUIDs(ctx context.Context, toyAgentBin, agentUser s
 	defer func() { _ = proxyLn.Close() }()
 	go acceptProbeConnections(proxyLn)
 
-	// Operator probe of the control target (current process is the operator):
-	// proves the probe can detect a reachable target.
-	operatorProbes, err := spawnEgressProbe(ctx, toyAgentBin, agentUser, []string{ctrlTarget}, false)
-	if err != nil {
-		return fmt.Errorf("%w: operator control probe: %w", ErrInVMContainmentNotProven, err)
-	}
+	// Probe the control target in-process as the operator. Never execute the
+	// configured helper binary with root credentials; only contained-agent
+	// probes cross the subprocess boundary and they always drop privileges.
+	operatorControl := ProbeDirectEgress(ctx, ctrlTarget)
 
-	// Contained-agent probes, in order: the control target (must be blocked) then
-	// the real direct-egress suite (all must be blocked).
+	// Contained-agent probes, in order: the permitted proxy target (must be open),
+	// the different loopback control target (must be blocked), then the exact
+	// DirectEgressTargets suite (all must be blocked). decodeProbeResults enforces
+	// this count and order before these index-based partitions are reachable.
 	proxyTarget := proxyLn.Addr().String()
 	agentTargets := append([]string{proxyTarget, ctrlTarget}, DirectEgressTargets()...)
 	agentProbes, err := spawnAgentEgressProbe(ctx, toyAgentBin, agentUser, agentTargets)
 	if err != nil {
 		return fmt.Errorf("%w: contained agent probe: %w", ErrInVMContainmentNotProven, err)
+	}
+	if len(agentProbes) != len(agentTargets) {
+		return fmt.Errorf("%w: contained agent probe returned %d results, want %d",
+			ErrInVMContainmentNotProven, len(agentProbes), len(agentTargets))
 	}
 	localProbes, err := spawnAgentLocalEscapeProbe(ctx, toyAgentBin, agentUser)
 	if err != nil {
@@ -232,7 +236,7 @@ func VerifyInVMContainmentWithUIDs(ctx context.Context, toyAgentBin, agentUser s
 	if err := evalProxyStartContract(proxyTarget, agentProbes[0]); err != nil {
 		return err
 	}
-	return evalStartContainment(operatorProbes[0], agentProbes[1], agentProbes[2:], localProbes)
+	return evalStartContainment(operatorControl, agentProbes[1], agentProbes[2:], localProbes)
 }
 
 func acceptProbeConnections(ln net.Listener) {
@@ -261,17 +265,15 @@ func spawnAgentEgressProbe(ctx context.Context, toyAgentBin, agentUser string, t
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("contained egress probe requires root (euid=%d)", os.Geteuid())
 	}
-	return spawnEgressProbe(ctx, toyAgentBin, agentUser, targets, true)
+	return spawnEgressProbe(ctx, toyAgentBin, agentUser, targets)
 }
 
-func spawnEgressProbe(ctx context.Context, toyAgentBin, agentUser string, targets []string, asAgent bool) ([]ProbeResult, error) {
+func spawnEgressProbe(ctx context.Context, toyAgentBin, agentUser string, targets []string) ([]ProbeResult, error) {
 	args := []string{"--probe-targets", strings.Join(targets, ",")}
 	cmd := exec.CommandContext(ctx, toyAgentBin, args...)
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
-	if asAgent {
-		if err := configureContainedCommand(cmd, agentUser); err != nil {
-			return nil, fmt.Errorf("configure contained egress probe: %w", err)
-		}
+	if err := configureContainedCommand(cmd, agentUser); err != nil {
+		return nil, fmt.Errorf("configure contained egress probe: %w", err)
 	}
 
 	var stdout bytes.Buffer

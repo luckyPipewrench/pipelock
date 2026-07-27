@@ -56,6 +56,7 @@ func blockedLocalProbes() []playground.ProbeResult {
 // validWitness returns a fully-enforced, unsigned witness for the happy path.
 func validWitness() playground.HostContainmentWitness {
 	return playground.HostContainmentWitness{
+		// Keep synchronized with the unexported currentContainmentProbeSuite.
 		ProbeSuiteVersion:    "v2",
 		RunNonce:             testRunNonce,
 		LaunchManifestHash:   testManHash,

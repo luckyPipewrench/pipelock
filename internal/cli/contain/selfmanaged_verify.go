@@ -9,31 +9,44 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"time"
 )
 
 type nftCommandOutput func(context.Context, string, ...string) ([]byte, error)
 
+const selfManagedNFTTimeout = 5 * time.Second
+
+type selfManagedNFTVerifyOptions struct {
+	ctx         context.Context
+	operatorUID int
+	proxyUID    int
+	agentUID    int
+	proxyPort   int
+	statFn      func(string) (fs.FileInfo, error)
+	run         nftCommandOutput
+}
+
 // VerifySelfManagedNFTRules confirms that live kernel state contains the
 // canonical inet owner-match boundary for the supplied identities and port.
 func VerifySelfManagedNFTRules(ctx context.Context, operatorUID, proxyUID, agentUID, proxyPort int) error {
-	return verifySelfManagedNFTRules(ctx, operatorUID, proxyUID, agentUID, proxyPort, os.Stat, runNFTCommand)
+	return verifySelfManagedNFTRules(selfManagedNFTVerifyOptions{
+		ctx: ctx, operatorUID: operatorUID, proxyUID: proxyUID,
+		agentUID: agentUID, proxyPort: proxyPort, statFn: os.Stat, run: runNFTCommand,
+	})
 }
 
-func verifySelfManagedNFTRules(
-	ctx context.Context,
-	operatorUID, proxyUID, agentUID, proxyPort int,
-	statFn func(string) (fs.FileInfo, error),
-	run nftCommandOutput,
-) error {
-	nftPath, err := trustedNFTPath(statFn)
+func verifySelfManagedNFTRules(opts selfManagedNFTVerifyOptions) error {
+	nftPath, err := trustedNFTPath(opts.statFn)
 	if err != nil {
 		return err
 	}
-	out, err := run(ctx, nftPath, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain)
+	ctx, cancel := context.WithTimeout(opts.ctx, selfManagedNFTTimeout)
+	defer cancel()
+	out, err := opts.run(ctx, nftPath, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain)
 	if err != nil {
 		return fmt.Errorf("read live containment nft chain: %w: %s", err, oneLine(string(out)))
 	}
-	return validateSelfManagedNFTRules(string(out), operatorUID, proxyUID, agentUID, proxyPort)
+	return validateSelfManagedNFTRules(string(out), opts.operatorUID, opts.proxyUID, opts.agentUID, opts.proxyPort)
 }
 
 func runNFTCommand(ctx context.Context, nftPath string, args ...string) ([]byte, error) {

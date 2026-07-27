@@ -109,13 +109,8 @@ func (w HostContainmentWitness) SignedBytes() []byte {
 // weaker statement by signing one easy blocked route while omitting the harder
 // categories.
 func (w HostContainmentWitness) DirectSuiteProven() bool {
-	var expected []string
-	switch w.ProbeSuiteVersion {
-	case "":
-		expected = legacyDirectEgressTargets()
-	case currentContainmentProbeSuite:
-		expected = DirectEgressTargets()
-	default:
+	expected, ok := expectedProbeTargets(w.ProbeSuiteVersion, legacyDirectEgressTargets, DirectEgressTargets)
+	if !ok {
 		return false
 	}
 	if len(w.AgentProbes) != len(expected) {
@@ -134,13 +129,8 @@ func (w HostContainmentWitness) DirectSuiteProven() bool {
 // known local surface (for example the Fly control socket or raw block device)
 // while still claiming host containment.
 func (w HostContainmentWitness) LocalEscapeSuiteProven() bool {
-	var expected []string
-	switch w.ProbeSuiteVersion {
-	case "":
-		expected = legacyLocalEscapeTargets()
-	case currentContainmentProbeSuite:
-		expected = LocalEscapeTargets()
-	default:
+	expected, ok := expectedProbeTargets(w.ProbeSuiteVersion, legacyLocalEscapeTargets, LocalEscapeTargets)
+	if !ok {
 		return false
 	}
 	if len(w.LocalAgentProbes) != len(expected) {
@@ -152,6 +142,17 @@ func (w HostContainmentWitness) LocalEscapeSuiteProven() bool {
 		}
 	}
 	return true
+}
+
+func expectedProbeTargets(version string, legacy, current func() []string) ([]string, bool) {
+	switch version {
+	case "":
+		return legacy(), true
+	case currentContainmentProbeSuite:
+		return current(), true
+	default:
+		return nil, false
+	}
 }
 
 // AllAgentBlocked reports whether every contained-agent probe -- the control

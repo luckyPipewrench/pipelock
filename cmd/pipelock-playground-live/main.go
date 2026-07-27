@@ -241,9 +241,6 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		if err := validateModelAgentRuntime(llmAgent); err != nil {
 			return nil, nil, err
 		}
-		// Contained serve binds a fixed proxy port to match the kernel owner-match
-		// rule. Default it to the stock `pipelock contain install` port; an
-		// operator who installed containment on a custom port passes --proxy-port.
 	}
 
 	srv, err := livechat.NewServer(livechat.ServerConfig{

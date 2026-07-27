@@ -32,6 +32,7 @@ func TestReasonFromScanner_AllMappedLayers(t *testing.T) {
 		scanner.ScannerParser:           blockreason.ParseError,
 		scannerLabelBodyDLP:             blockreason.DLPMatch,
 		scannerLabelBodyPromptInjection: blockreason.PromptInjection,
+		scannerLabelBodyEntropy:         blockreason.BodyEntropy,
 		scannerLabelAddressProtection:   blockreason.DLPMatch,
 		scannerLabelRedaction:           blockreason.RedactionFailure,
 		scannerLabelUnavailable:         blockreason.PatternUnavailable,

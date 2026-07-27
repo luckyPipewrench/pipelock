@@ -77,6 +77,7 @@ const (
 const (
 	KindDLP               = "dlp"
 	KindURL               = "url"
+	KindContentEntropy    = "content_entropy"
 	KindAddressProtection = "address_protection"
 	KindInjection         = "injection"
 	KindCEE               = "cee"

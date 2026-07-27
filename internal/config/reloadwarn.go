@@ -463,6 +463,33 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "request body scanning disabled",
 		})
 	}
+	if contentEntropyReloadConsumed(old) && contentEntropyReloadConsumed(updated) {
+		if old.RequestBodyScanning.ContentEntropyEnabled && !updated.RequestBodyScanning.ContentEntropyEnabled {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "request_body_scanning.content_entropy_enabled",
+				Message: "request body content entropy detection disabled",
+			})
+		}
+		if old.RequestBodyScanning.ContentEntropyEnabled && updated.RequestBodyScanning.ContentEntropyEnabled &&
+			updated.RequestBodyScanning.ContentEntropyThreshold > old.RequestBodyScanning.ContentEntropyThreshold {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "request_body_scanning.content_entropy_threshold",
+				Message: fmt.Sprintf("request body content entropy threshold raised from %.2f to %.2f", old.RequestBodyScanning.ContentEntropyThreshold, updated.RequestBodyScanning.ContentEntropyThreshold),
+			})
+		}
+	}
+	if added := passthroughDomainsAdded(old.RequestBodyScanning.ContentEntropyExclusions, updated.RequestBodyScanning.ContentEntropyExclusions); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "request_body_scanning.content_entropy_exclusions",
+			Message: fmt.Sprintf("request body content entropy exclusions added: %s — per-message body/frame entropy bypassed for these hosts", strings.Join(added, ", ")),
+		})
+	}
+	if added := passthroughDomainsAdded(old.WebSocketProxy.ContentEntropyExclusions, updated.WebSocketProxy.ContentEntropyExclusions); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "websocket_proxy.content_entropy_exclusions",
+			Message: fmt.Sprintf("WebSocket content entropy exclusions added: %s — per-message WebSocket entropy bypassed for these hosts", strings.Join(added, ", ")),
+		})
+	}
 
 	// Tool chain detection disabled
 	if old.ToolChainDetection.Enabled && !updated.ToolChainDetection.Enabled {
@@ -832,6 +859,17 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	return warnings
 }
 
+func contentEntropyReloadConsumed(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	if c.RequestBodyScanning.Enabled || c.A2AScanning.Enabled {
+		return true
+	}
+	wsTextScanEnabled := c.WebSocketProxy.ScanTextFrames == nil || *c.WebSocketProxy.ScanTextFrames
+	return c.WebSocketProxy.Enabled && wsTextScanEnabled
+}
+
 func queryEntropyParamExclusionsAdded(old, updated []QueryEntropyParamExclusion) []string {
 	oldSet := make(map[string]struct{}, len(old))
 	for _, entry := range canonicalQueryEntropyParamExclusions(old) {
@@ -883,6 +921,10 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	}
 	if old.RequestBodyScanning.Enabled && updated.RequestBodyScanning.Enabled {
 		appendActionDowngradeWarning(warnings, "request_body_scanning.action", old.RequestBodyScanning.Action, updated.RequestBodyScanning.Action)
+	}
+	if contentEntropyReloadConsumed(old) && contentEntropyReloadConsumed(updated) &&
+		old.RequestBodyScanning.ContentEntropyEnabled && updated.RequestBodyScanning.ContentEntropyEnabled {
+		appendActionDowngradeWarning(warnings, "request_body_scanning.content_entropy_action", old.RequestBodyScanning.ContentEntropyAction, updated.RequestBodyScanning.ContentEntropyAction)
 	}
 	if old.MCPInputScanning.Enabled && updated.MCPInputScanning.Enabled {
 		appendActionDowngradeWarning(warnings, "mcp_input_scanning.action", old.MCPInputScanning.Action, updated.MCPInputScanning.Action)

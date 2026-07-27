@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -208,6 +209,50 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 	}
 	if !found {
 		t.Fatal("intercept A2A body path must record cross_agent a2a_request evidence")
+	}
+}
+
+func TestInterceptHandler_A2AEntropyRunsWhenRequestBodyScanningDisabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "peer.example",
+		TargetPort: "443",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     audit.NewNop(),
+		Metrics:    metrics.New(),
+		ClientIP:   testLoopbackIP,
+		RequestID:  "a2a-entropy-body-disabled",
+		Agent:      agentAnonymous,
+	}, roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("A2A entropy block should happen before upstream round trip")
+		return nil, nil
+	}))
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"data","data":{"blob":"` + opaqueHighEntropyBodyValue() + `"}}]}}}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "https://peer.example/message:send", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/a2a+json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(blockreason.HeaderReason); got != string(blockreason.BodyEntropy) {
+		t.Fatalf("block reason = %q, want %s; layer=%q", got, blockreason.BodyEntropy, w.Header().Get(blockreason.HeaderLayer))
 	}
 }
 

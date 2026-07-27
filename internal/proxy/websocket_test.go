@@ -98,6 +98,87 @@ func wsEchoServer(t *testing.T) (string, func()) {
 	return ln.Addr().String(), func() { _ = srv.Close() }
 }
 
+func TestWebSocketClientMessageBody_ContentEntropy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		host        string
+		action      string
+		wsExclusion []string
+		trusted     []string
+		wantHit     bool
+		wantAction  string
+	}{
+		{
+			name:       "blocks opaque high entropy frame to untrusted destination",
+			host:       "exfil.vendor.example",
+			action:     config.ActionBlock,
+			wantHit:    true,
+			wantAction: config.ActionBlock,
+		},
+		{
+			name:       "warns on opaque high entropy frame to untrusted destination",
+			host:       "exfil.vendor.example",
+			action:     config.ActionWarn,
+			wantHit:    true,
+			wantAction: config.ActionWarn,
+		},
+		{
+			name:    "allows opaque high entropy frame to trusted destination",
+			host:    "trusted.vendor.example",
+			action:  config.ActionBlock,
+			trusted: []string{"trusted.vendor.example"},
+		},
+		{
+			name:        "allows opaque high entropy frame to websocket excluded destination",
+			host:        "ws-upload.vendor.example",
+			action:      config.ActionBlock,
+			wsExclusion: []string{"ws-upload.vendor.example"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.WebSocketProxy.Enabled = true
+			cfg.WebSocketProxy.ContentEntropyExclusions = tt.wsExclusion
+			cfg.TrustedDomains = tt.trusted
+			cfg.RequestBodyScanning.ContentEntropyEnabled = true
+			cfg.RequestBodyScanning.ContentEntropyAction = tt.action
+			cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+			cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+			sc, err := scanner.New(cfg)
+			if err != nil {
+				t.Fatalf("scanner.New: %v", err)
+			}
+			relay := &wsRelay{
+				cfg:       cfg,
+				maxMsg:    cfg.WebSocketProxy.MaxMessageBytes,
+				scanner:   sc,
+				hostname:  tt.host,
+				path:      "/ws",
+				targetURL: "wss://" + tt.host + "/ws",
+			}
+			msg := []byte(fmt.Sprintf(`{"payload":%q}`, opaqueHighEntropyBodyValue()))
+
+			_, result := relay.scanClientMessageBody(context.Background(), msg)
+			if tt.wantHit {
+				if result.Clean || result.EntropyFinding == nil {
+					t.Fatalf("expected WebSocket content entropy hit, got %+v", result)
+				}
+				if result.Action != tt.wantAction {
+					t.Fatalf("WebSocket content entropy action = %q, want %q", result.Action, tt.wantAction)
+				}
+				return
+			}
+			if !result.Clean {
+				t.Fatalf("expected clean WebSocket frame, got %+v", result)
+			}
+		})
+	}
+}
+
 // wsAckServer reads one client message and replies with a clean acknowledgement.
 func wsAckServer(t *testing.T) (string, func()) {
 	t.Helper()
@@ -1274,6 +1355,90 @@ func TestWSRelay_HandleClientMessageBodyResult_BlockAfterRedactionCarriesSummary
 	}
 	if got := receipts[0].ActionRecord.Redaction.ByClass[string(redact.ClassAWSAccessKey)]; got != 1 {
 		t.Fatalf("aws-access-key redactions = %d, want 1", got)
+	}
+}
+
+func TestWSRelay_HandleClientMessageBodyResult_ContentEntropyWarnAudits(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer logger.Close()
+
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	cfg := config.Defaults()
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	relay := &wsRelay{
+		proxy:     p,
+		cfg:       cfg,
+		agent:     agentAnonymous,
+		clientIP:  "127.0.0.1",
+		requestID: "req-ws-entropy-warn",
+		targetURL: "wss://socket.vendor.example/socket",
+	}
+
+	blocked := relay.handleClientMessageBodyResult(logger, []byte(`{"payload":"opaque"}`), BodyScanResult{
+		Clean:  false,
+		Action: config.ActionWarn,
+		EntropyFinding: &ContentEntropyFinding{
+			Entropy:   4.8,
+			Threshold: 4.5,
+			Length:    64,
+		},
+	})
+	if blocked {
+		t.Fatal("warn-mode entropy finding should not block")
+	}
+	logger.Close()
+	logBytes, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, `"event":"ws_scan"`) || !strings.Contains(logText, `"scanner":"body_entropy"`) || !strings.Contains(logText, `"action":"warn"`) {
+		t.Fatalf("expected ws_scan body_entropy warn audit event, got:\n%s", logText)
+	}
+}
+
+func TestWSRelay_HandleClientMessageBodyResult_ContentEntropyBlock(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		proxy:        p,
+		cfg:          cfg,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-ws-entropy-block",
+		targetURL:    "wss://socket.vendor.example/socket",
+	}
+
+	blocked := relay.handleClientMessageBodyResult(audit.NewNop(), []byte(`{"payload":"opaque"}`), BodyScanResult{
+		Clean:  false,
+		Action: config.ActionBlock,
+		EntropyFinding: &ContentEntropyFinding{
+			Encoding:  "hex",
+			Entropy:   3.92,
+			Threshold: 4.5,
+			Length:    64,
+		},
+	})
+	if !blocked {
+		t.Fatal("block-mode entropy finding should block")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Layer != scannerLabelBodyEntropy {
+		t.Fatalf("receipt layer = %q, want %q", receipts[0].ActionRecord.Layer, scannerLabelBodyEntropy)
 	}
 }
 

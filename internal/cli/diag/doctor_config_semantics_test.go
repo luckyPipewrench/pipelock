@@ -306,6 +306,75 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantWarn: 0,
 		},
 		{
+			name: "body content entropy exemption inert when body scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.ContentEntropyEnabled = true
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.enabled=false",
+			wantNextSubstr:   "enable request_body_scanning",
+		},
+		{
+			name: "body content entropy exemption inert when content entropy disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ContentEntropyEnabled = false
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.content_entropy_enabled=false",
+			wantNextSubstr:   "enable request_body_scanning.content_entropy_enabled",
+		},
+		{
+			name: "websocket content entropy exemption inert when websocket text scanning disabled",
+			mutate: func(cfg *config.Config) {
+				off := false
+				cfg.WebSocketProxy.Enabled = true
+				cfg.WebSocketProxy.ScanTextFrames = &off
+				cfg.WebSocketProxy.ContentEntropyExclusions = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "websocket_proxy.scan_text_frames=false",
+			wantNextSubstr:   "enable websocket_proxy.scan_text_frames",
+		},
+		{
+			name: "websocket content entropy exemption inert when request body scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.WebSocketProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.ContentEntropyEnabled = true
+				cfg.WebSocketProxy.ContentEntropyExclusions = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.enabled=false",
+			wantNextSubstr:   "enable request_body_scanning",
+		},
+		{
+			name: "websocket content entropy exemption inert when content entropy disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.WebSocketProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ContentEntropyEnabled = false
+				cfg.WebSocketProxy.ContentEntropyExclusions = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.content_entropy_enabled=false",
+			wantNextSubstr:   "enable request_body_scanning.content_entropy_enabled",
+		},
+		{
+			name: "content entropy exemptions NOT flagged when active",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ContentEntropyEnabled = true
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.WebSocketProxy.Enabled = true
+				cfg.WebSocketProxy.ContentEntropyExclusions = []string{"ws." + testExemptHost}
+			},
+			wantWarn: 0,
+		},
+		{
 			name: "browser shield exemption inert when shield disabled",
 			mutate: func(cfg *config.Config) {
 				cfg.BrowserShield.Enabled = false
@@ -906,6 +975,7 @@ func TestDoctorConfigSemanticsSuppressesDefaultHeaderSubsetWhenInert(t *testing.
 	const body = `mode: balanced
 request_body_scanning:
   enabled: false
+  content_entropy_enabled: false
   scan_headers: true
   header_mode: all
   ignore_headers:

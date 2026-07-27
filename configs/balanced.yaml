@@ -53,6 +53,11 @@ forward_proxy:
 request_body_scanning:
   enabled: true
   action: warn
+  content_entropy_enabled: true
+  content_entropy_action: warn
+  content_entropy_threshold: 4.5
+  content_entropy_min_length: 32
+  content_entropy_exclusions: []
   max_body_bytes: 5242880
   scan_headers: true
   header_mode: sensitive
@@ -89,6 +94,7 @@ websocket_proxy:
   max_connection_seconds: 3600
   idle_timeout_seconds: 300
   origin_policy: rewrite
+  content_entropy_exclusions: []
 
 dlp:
   scan_env: true

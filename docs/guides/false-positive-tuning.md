@@ -106,3 +106,27 @@ dlp:
 
 The `suppress` configuration section lets you suppress specific scanner
 findings by scanner name and pattern. See the [suppression guide](suppression.md).
+
+### Opaque content entropy
+
+The `content_entropy` detector (`request_body_scanning.content_entropy_*`) flags
+high-entropy body, WebSocket, and A2A content that matches no credential pattern.
+Because a content-addressed hash or an encrypted upload has the same shape as a
+hex-encoded secret, it can false-positive on legitimate opaque traffic.
+
+The detector ships `warn` in the general presets, so out of the box a false
+positive is an audit line, not a block. Tune before setting
+`request_body_scanning.content_entropy_action: block` for the deployment or
+selecting a blocking preset (strict/hostile presets already block):
+
+- **Narrowest first:** add the specific upload or hash endpoint host to
+  `request_body_scanning.content_entropy_exclusions` (or
+  `websocket_proxy.content_entropy_exclusions` for a WebSocket-only endpoint).
+  This lifts only the entropy check for that host; DLP still applies.
+- **Broader:** if the host is fully trusted, `trusted_domains` covers it for
+  entropy and other destination-trust checks at once.
+- **Global (last resort):** raising `request_body_scanning.content_entropy_threshold`
+  lowers sensitivity for every destination. Prefer a per-host exclusion.
+
+Raising `content_entropy_min_length` also reduces flags on short opaque
+identifiers without exempting a whole host.

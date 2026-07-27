@@ -226,6 +226,14 @@ Deploy sequence:
 2. Start the broker with explicit budgets, `--turnstile-sitekey`, and Turnstile
    enabled. The viewer is fixed to Cloudflare's
    `https://challenges.cloudflare.com` origin.
+   If the first-party viewer JavaScript intentionally loads a third-party
+   script at runtime or sends browser telemetry to another origin, allow each
+   exact HTTPS origin with `--external-script-origin` or
+   `--external-connect-origin`. Treat a script origin as fully trusted: its
+   code can read the live page's session data and tokens. Keep these runtime
+   flags with the deployed broker configuration; they are not image-build
+   settings. A third-party `<script src>` baked directly into `index.html`
+   remains unsupported by the standard image preflight.
 3. Check `/api/live/health`.
 4. Run one valid session through the public hostname.
 5. Run one invalid Turnstile/session request and confirm it fails closed.

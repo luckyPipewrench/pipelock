@@ -127,6 +127,8 @@ type serveFlags struct {
 	deadlineGrace             time.Duration
 	allowOrigin               string
 	embedOrigins              []string
+	externalScriptOrigins     []string
+	externalConnectOrigins    []string
 	publicHosts               []string
 	cfAccessTeamDomain        string
 	cfAccessAUD               string
@@ -224,6 +226,8 @@ func newServeCmd() *cobra.Command {
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
 	fl.StringArrayVar(&f.embedOrigins, "embed-origin", nil, "origin permitted to embed the broker in an iframe, as CSP frame-ancestors (repeatable); framing is forbidden when unset")
+	fl.StringArrayVar(&f.externalScriptOrigins, "external-script-origin", nil, "trusted HTTPS origin permitted by CSP script-src (repeatable); scripts from this origin can access live session data and tokens")
+	fl.StringArrayVar(&f.externalConnectOrigins, "external-connect-origin", nil, "HTTPS origin permitted as a browser network destination by CSP connect-src (repeatable)")
 	fl.StringArrayVar(&f.publicHosts, "public-host", nil, "allowed public Host header for the broker (repeatable); defaults to the --allow-origin host when set")
 	fl.StringVar(&f.cfAccessTeamDomain, "cf-access-team-domain", "", "Cloudflare Access team domain, e.g. https://team.cloudflareaccess.com; enables origin-side Access JWT validation when set with --cf-access-aud")
 	fl.StringVar(&f.cfAccessAUD, "cf-access-aud", "", "Cloudflare Access application AUD tag expected in Cf-Access-Jwt-Assertion")
@@ -254,7 +258,7 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	if err := validateFlags(f); err != nil {
 		return err
 	}
-	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f)); err != nil {
+	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f), f.externalScriptOrigins); err != nil {
 		return err
 	}
 	if f.checkConfig {
@@ -324,7 +328,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	if err := validateFlags(f); err != nil {
 		return nil, nil, nil, nil, err
 	}
-	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f)); err != nil {
+	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f), f.externalScriptOrigins); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	secret, err := resolveGateSecret(f.gateSecretFile, f.gateSecretEnv)
@@ -482,6 +486,12 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving static UI from %s at /\n", f.staticDir)
 	}
+	if len(f.externalScriptOrigins) > 0 {
+		_, _ = fmt.Fprintf(out, "trusting external script origin(s): %s\n", strings.Join(f.externalScriptOrigins, ", "))
+	}
+	if len(f.externalConnectOrigins) > 0 {
+		_, _ = fmt.Fprintf(out, "allowing external browser connection origin(s): %s\n", strings.Join(f.externalConnectOrigins, ", "))
+	}
 	// Per-route write deadlines. Stream writes indefinitely and the message route
 	// is held open for the whole model turn, so both are exempt (deadline 0).
 	// Session-create synchronously boots and proves a fresh per-visitor microVM;
@@ -518,7 +528,13 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		handler = cfAccessGuard(handler, cfAccess)
 		_, _ = fmt.Fprintf(out, "broker Cloudflare Access JWT guard enabled for %s\n", cfAccess.issuer)
 	}
-	handler = securityHeaders(handler, f.embedOrigins, effectiveTurnstileOrigin(f))
+	handler = securityHeaders(
+		handler,
+		f.embedOrigins,
+		effectiveTurnstileOrigin(f),
+		f.externalScriptOrigins,
+		f.externalConnectOrigins,
+	)
 	return srv, handler, reaper.Run, warmPool, nil
 }
 
@@ -608,6 +624,16 @@ func validateFlags(f *serveFlags) error {
 	for _, origin := range f.embedOrigins {
 		if err := validateAllowOrigin(origin); err != nil {
 			return fmt.Errorf("--embed-origin %q: %w", origin, err)
+		}
+	}
+	for _, origin := range f.externalScriptOrigins {
+		if err := validateExternalCSPOrigin(origin); err != nil {
+			return fmt.Errorf("--external-script-origin %q: %w", origin, err)
+		}
+	}
+	for _, origin := range f.externalConnectOrigins {
+		if err := validateExternalCSPOrigin(origin); err != nil {
+			return fmt.Errorf("--external-connect-origin %q: %w", origin, err)
 		}
 	}
 	if err := validateAllowOrigin(effectiveTurnstileOrigin(f)); err != nil {
@@ -994,10 +1020,24 @@ func validateAllowOrigin(raw string) error {
 	return nil
 }
 
+func validateExternalCSPOrigin(raw string) error {
+	if err := validateAllowOrigin(raw); err != nil {
+		return err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	if u.Scheme != "https" {
+		return errors.New("must use https")
+	}
+	return nil
+}
+
 // validateStaticUI rejects markup that cannot execute under the broker's
 // no-inline-script CSP. The broker owns both the policy and the served static
 // directory, so it must refuse an incompatible pair before binding a listener.
-func validateStaticUI(staticDir, turnstileOrigin string) error {
+func validateStaticUI(staticDir, turnstileOrigin string, externalScriptOrigins []string) error {
 	if strings.TrimSpace(staticDir) == "" {
 		return nil
 	}
@@ -1034,7 +1074,7 @@ func validateStaticUI(staticDir, turnstileOrigin string) error {
 					}
 				}
 				if source != "" {
-					if err := validateStaticScriptSource(source, turnstileOrigin); err != nil {
+					if err := validateStaticScriptSource(source, turnstileOrigin, externalScriptOrigins); err != nil {
 						return err
 					}
 				} else if scriptType != "application/json" && scriptType != "application/ld+json" {
@@ -1052,9 +1092,9 @@ func validateStaticUI(staticDir, turnstileOrigin string) error {
 	return walk(doc)
 }
 
-func validateStaticScriptSource(source, turnstileOrigin string) error {
-	if strings.HasPrefix(source, "//") {
-		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
+func validateStaticScriptSource(source, turnstileOrigin string, externalScriptOrigins []string) error {
+	if strings.Contains(source, `\`) || strings.HasPrefix(source, "//") {
+		return fmt.Errorf("static UI script source %q is not permitted by broker CSP: protocol-relative and backslash paths are forbidden", source)
 	}
 	if strings.HasPrefix(source, "/") || strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../") ||
 		!strings.Contains(source, ":") {
@@ -1068,15 +1108,18 @@ func validateStaticScriptSource(source, turnstileOrigin string) error {
 	if err != nil {
 		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 	}
-	allowed, err := url.Parse(turnstileOrigin)
-	if err != nil {
-		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
+	allowedOrigins := append([]string{turnstileOrigin}, externalScriptOrigins...)
+	for _, candidate := range allowedOrigins {
+		allowed, parseErr := url.Parse(candidate)
+		if parseErr != nil {
+			continue
+		}
+		allowedOrigin, canonicalErr := canonicalHTTPSOrigin(allowed)
+		if canonicalErr == nil && origin == allowedOrigin {
+			return nil
+		}
 	}
-	allowedOrigin, err := canonicalHTTPSOrigin(allowed)
-	if err != nil || origin != allowedOrigin {
-		return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
-	}
-	return nil
+	return fmt.Errorf("static UI script source %q is not permitted by broker CSP", source)
 }
 
 func canonicalHTTPSOrigin(parsed *url.URL) (string, error) {
@@ -1180,7 +1223,7 @@ func noCacheStatic(next http.Handler) http.Handler {
 
 // brokerContentSecurityPolicy renders the CSP for the configured embed origins.
 // With none configured the policy forbids framing entirely.
-func brokerContentSecurityPolicy(embedOrigins []string, turnstileOrigin string) string {
+func brokerContentSecurityPolicy(embedOrigins []string, turnstileOrigin string, externalScriptOrigins, externalConnectOrigins []string) string {
 	sources := "'none'"
 	if len(embedOrigins) > 0 {
 		sources = strings.Join(embedOrigins, " ")
@@ -1191,11 +1234,19 @@ func brokerContentSecurityPolicy(embedOrigins []string, turnstileOrigin string) 
 		thirdPartySource = " " + turnstileOrigin
 		frameSource = turnstileOrigin
 	}
-	return fmt.Sprintf(brokerCSPTemplate, sources, thirdPartySource, thirdPartySource, frameSource)
+	scriptSources := thirdPartySource
+	if len(externalScriptOrigins) > 0 {
+		scriptSources += " " + strings.Join(externalScriptOrigins, " ")
+	}
+	connectSources := thirdPartySource
+	if len(externalConnectOrigins) > 0 {
+		connectSources += " " + strings.Join(externalConnectOrigins, " ")
+	}
+	return fmt.Sprintf(brokerCSPTemplate, sources, scriptSources, connectSources, frameSource)
 }
 
-func securityHeaders(next http.Handler, embedOrigins []string, turnstileOrigin string) http.Handler {
-	csp := brokerContentSecurityPolicy(embedOrigins, turnstileOrigin)
+func securityHeaders(next http.Handler, embedOrigins []string, turnstileOrigin string, externalScriptOrigins, externalConnectOrigins []string) http.Handler {
+	csp := brokerContentSecurityPolicy(embedOrigins, turnstileOrigin, externalScriptOrigins, externalConnectOrigins)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", csp)

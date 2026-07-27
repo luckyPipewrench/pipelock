@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -735,6 +736,40 @@ func TestDashboardAuthorizeFunc(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+dashTestToken)
 	if err := authorize(req); err != nil {
 		t.Fatalf("authenticated request: want nil, got %v", err)
+	}
+}
+
+func TestDashboardAuthDeniedAuditPreservesMissingTokenReason(t *testing.T) {
+	var audit strings.Builder
+	handler := dashboardAuthHandler(
+		func(*http.Request) bool { return false },
+		nil,
+		&audit,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/evidence", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	log := audit.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"permission=\"-\"",
+		"auth_method=none",
+		`auth_subject_sha256="-"`,
+		`mtls_spki_sha256="-"`,
+		"reason=missing_token",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("auth-denied audit missing %q: %s", want, log)
+		}
+	}
+	if strings.Contains(log, "reason=no_credential") {
+		t.Fatalf("auth-denied audit used collapsed reason: %s", log)
 	}
 }
 

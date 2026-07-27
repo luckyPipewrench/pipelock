@@ -489,6 +489,27 @@ func TestWorkbench_SourceErrorRendersUnavailablePanel(t *testing.T) {
 	}
 }
 
+func TestDecisionReplayErrorReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: "deadline_exceeded"},
+		{name: "canceled", err: context.Canceled, want: "canceled"},
+		{name: "source", err: errors.New("backend failure"), want: "source_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decisionReplayErrorReason(tc.err); got != tc.want {
+				t.Fatalf("reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWorkbench_RejectsInvalidScope(t *testing.T) {
 	t.Parallel()
 

@@ -412,6 +412,9 @@ func TestConductorReadClientReplayDecisionRejectsInvalidScope(t *testing.T) {
 		{name: "control org", client: client, orgID: "org\nmain", fleetID: "prod", artifactHash: artifactHash, wantErr: "control characters"},
 		{name: "control fleet", client: client, orgID: "org-main", fleetID: "prod\rwest", artifactHash: artifactHash, wantErr: "control characters"},
 		{name: "control artifact", client: client, orgID: "org-main", fleetID: "prod", artifactHash: artifactHash[:32] + "\n" + artifactHash[32:], wantErr: "control characters"},
+		{name: "short artifact", client: client, orgID: "org-main", fleetID: "prod", artifactHash: strings.Repeat("a", 63), wantErr: "64-character"},
+		{name: "uppercase artifact", client: client, orgID: "org-main", fleetID: "prod", artifactHash: strings.Repeat("A", 64), wantErr: "lowercase"},
+		{name: "non hex artifact", client: client, orgID: "org-main", fleetID: "prod", artifactHash: strings.Repeat("g", 64), wantErr: "hex"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -467,7 +470,7 @@ func TestConductorClientGetJSONStatusErrorPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("ok status not explicitly allowed still accepted", func(t *testing.T) {
+	t.Run("ok status not explicitly allowed is rejected", func(t *testing.T) {
 		client := &conductorClient{
 			httpClient: &http.Client{Transport: conductorReadRoundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
@@ -478,12 +481,9 @@ func TestConductorClientGetJSONStatusErrorPaths(t *testing.T) {
 			baseURL: "https://conductor.example",
 			token:   "operator-token",
 		}
-		resp, err := client.getJSONStatus(context.Background(), controlplane.DecisionReplayPath, http.StatusCreated)
-		if err != nil {
-			t.Fatalf("getJSONStatus() error = %v", err)
-		}
-		if resp.status != http.StatusOK || len(resp.body) != 0 {
-			t.Fatalf("response = %+v, want empty 200 response", resp)
+		_, err := client.getJSONStatus(context.Background(), controlplane.DecisionReplayPath, http.StatusCreated)
+		if err == nil || !strings.Contains(err.Error(), "status 200") {
+			t.Fatalf("getJSONStatus() error = %v, want status 200 rejection", err)
 		}
 	})
 }

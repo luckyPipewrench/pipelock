@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -289,6 +290,60 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 	})
 
+	t.Run("valid bundle with comments and CRLF loads", func(t *testing.T) {
+		crlfPEM := strings.ReplaceAll(string(validPEM), "\n", "\r\n")
+		bundle := []byte("# generated CA bundle\r\n" +
+			crlfPEM +
+			"# second certificate\r\n" +
+			crlfPEM +
+			"# end of bundle\r\n\r\n")
+		path := filepath.Join(t.TempDir(), "commented-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write commented bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err != nil {
+			t.Fatalf("commented CA bundle rejected: %v", err)
+		}
+	})
+
+	t.Run("leading non PEM data is rejected", func(t *testing.T) {
+		bundle := append([]byte("Certificate:\n    Data:\n"), validPEM...)
+		path := filepath.Join(t.TempDir(), "leading-junk-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write leading junk bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with leading non-PEM data accepted")
+		}
+	})
+
+	t.Run("interstitial non PEM data is rejected", func(t *testing.T) {
+		bundle := append(append([]byte{}, validPEM...), []byte("Certificate:\n    Data:\n")...)
+		bundle = append(bundle, validPEM...)
+		path := filepath.Join(t.TempDir(), "interstitial-junk-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write interstitial junk bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with interstitial non-PEM data accepted")
+		}
+	})
+
+	t.Run("valid bundle at exact size cap loads", func(t *testing.T) {
+		if len(validPEM) > dashboardClientCAMaxBytes {
+			t.Fatalf("test CA bundle is %d bytes, larger than cap %d", len(validPEM), dashboardClientCAMaxBytes)
+		}
+		bundle := append([]byte{}, validPEM...)
+		bundle = append(bundle, []byte(strings.Repeat(" ", dashboardClientCAMaxBytes-len(bundle)))...)
+		path := filepath.Join(t.TempDir(), "exact-cap-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write exact cap bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err != nil {
+			t.Fatalf("exact cap CA bundle rejected: %v", err)
+		}
+	})
+
 	t.Run("mixed valid and malformed bundle is rejected", func(t *testing.T) {
 		malformed := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a DER certificate")})
 		bundle := append(append([]byte{}, validPEM...), malformed...)
@@ -301,11 +356,117 @@ func TestLoadDashboardClientCAs(t *testing.T) {
 		}
 	})
 
+	t.Run("trailing non PEM data is rejected", func(t *testing.T) {
+		bundle := append(append([]byte{}, validPEM...), []byte("not pem")...)
+		path := filepath.Join(t.TempDir(), "trailing-junk-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write trailing junk bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with trailing non-PEM data accepted")
+		}
+	})
+
+	t.Run("truncated trailing PEM is rejected", func(t *testing.T) {
+		bundle := append(append([]byte{}, validPEM...), []byte("-----BEGIN CERTIFICATE-----\ntruncated")...)
+		path := filepath.Join(t.TempDir(), "truncated-ca.pem")
+		if err := os.WriteFile(path, bundle, 0o600); err != nil {
+			t.Fatalf("write truncated bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil {
+			t.Fatal("CA bundle with truncated trailing PEM accepted")
+		}
+	})
+
 	t.Run("empty path rejected", func(t *testing.T) {
 		if _, err := loadDashboardClientCAs("  "); err == nil {
 			t.Fatal("empty --client-ca-file path accepted")
 		}
 	})
+
+	t.Run("missing file rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing-ca.pem")
+		if _, err := loadDashboardClientCAs(path); err == nil || !strings.Contains(err.Error(), "read --client-ca-file") {
+			t.Fatalf("missing CA bundle: want read error, got %v", err)
+		}
+	})
+
+	t.Run("oversize bundle rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "oversize-ca.pem")
+		data := strings.Repeat(" ", dashboardClientCAMaxBytes+1)
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatalf("write oversize bundle: %v", err)
+		}
+		if _, err := loadDashboardClientCAs(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("oversize CA bundle: want size error, got %v", err)
+		}
+	})
+}
+
+func TestVerifyDashboardClientCertificateKeySizes(t *testing.T) {
+	tests := []struct {
+		name    string
+		certs   []*x509.Certificate
+		wantErr bool
+	}{
+		{
+			name: "non RSA accepted",
+			certs: []*x509.Certificate{{
+				PublicKey: ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)),
+			}},
+		},
+		{
+			name: "bounded RSA accepted",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMinBits-1), E: 65537},
+			}},
+		},
+		{
+			name: "maximum RSA accepted",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMaxBits-1), E: 65537},
+			}},
+		},
+		{
+			name:  "nil certificate skipped",
+			certs: []*x509.Certificate{nil},
+		},
+		{
+			name: "undersize RSA rejected",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMinBits-2), E: 65537},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "oversize RSA rejected",
+			certs: []*x509.Certificate{{
+				PublicKey: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), dashboardClientCertRSAMaxBits), E: 65537},
+			}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyDashboardClientCertificateKeySizes(tls.ConnectionState{PeerCertificates: tc.certs})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("verifyDashboardClientCertificateKeySizes = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDashboardClientCertAuthorizers_NilFallbackPermissionFailsClosed(t *testing.T) {
+	_, authorizePermission, _ := dashboardClientCertAuthorizers(
+		nil,
+		func(*http.Request) bool { return false },
+		nil,
+		func(*http.Request) bool { return false },
+	)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
+	if err := authorizePermission(req, dashboard.PermissionEvidenceRead); err == nil {
+		t.Fatal("nil fallback permission authorizer allowed a route")
+	}
 }
 
 func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
@@ -326,11 +487,11 @@ func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		req         *http.Request
-		wantReason  string
-		wantSubject string
-		wantRoles   []string
+		name       string
+		req        *http.Request
+		wantReason string
+		wantSPKI   string
+		wantRoles  []string
 	}{
 		{
 			name:       "missing certificate",
@@ -338,22 +499,22 @@ func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
 			wantReason: "missing_client_certificate",
 		},
 		{
-			name:        "unverified certificate",
-			req:         dashboardMTLSTestRequest(t, mappedLeaf, false),
-			wantReason:  "unverified_client_certificate",
-			wantSubject: dashboardClientCertSPKIFingerprint(mappedLeaf),
+			name:       "unverified certificate",
+			req:        dashboardMTLSTestRequest(t, mappedLeaf, false),
+			wantReason: "unverified_client_certificate",
+			wantSPKI:   dashboardClientCertSPKIFingerprint(mappedLeaf),
 		},
 		{
-			name:        "verified unmapped certificate",
-			req:         dashboardMTLSTestRequest(t, unmappedLeaf, true),
-			wantReason:  "unmapped_client_certificate",
-			wantSubject: dashboardClientCertSPKIFingerprint(unmappedLeaf),
+			name:       "verified unmapped certificate",
+			req:        dashboardMTLSTestRequest(t, unmappedLeaf, true),
+			wantReason: "unmapped_client_certificate",
+			wantSPKI:   dashboardClientCertSPKIFingerprint(unmappedLeaf),
 		},
 		{
-			name:        "verified mapped certificate",
-			req:         dashboardMTLSTestRequest(t, mappedLeaf, true),
-			wantSubject: dashboardClientCertSPKIFingerprint(mappedLeaf),
-			wantRoles:   []string{"metadata"},
+			name:      "verified mapped certificate",
+			req:       dashboardMTLSTestRequest(t, mappedLeaf, true),
+			wantSPKI:  dashboardClientCertSPKIFingerprint(mappedLeaf),
+			wantRoles: []string{"metadata"},
 		},
 	}
 	for _, tc := range tests {
@@ -365,8 +526,11 @@ func TestDashboardClientCertAuthAuditInfo(t *testing.T) {
 			if got.FailureReason != tc.wantReason {
 				t.Fatalf("FailureReason = %q, want %q", got.FailureReason, tc.wantReason)
 			}
-			if got.Subject != tc.wantSubject {
-				t.Fatalf("Subject = %q, want %q", got.Subject, tc.wantSubject)
+			if got.Subject != "" {
+				t.Fatalf("Subject = %q, want empty raw subject", got.Subject)
+			}
+			if got.MTLSSPKISHA256 != tc.wantSPKI {
+				t.Fatalf("MTLSSPKISHA256 = %q, want %q", got.MTLSSPKISHA256, tc.wantSPKI)
 			}
 			if strings.Join(got.Roles, ",") != strings.Join(tc.wantRoles, ",") {
 				t.Fatalf("Roles = %v, want %v", got.Roles, tc.wantRoles)
@@ -638,10 +802,9 @@ func TestDashboardMTLS_RoutePermissionsAndRaw(t *testing.T) {
 
 	tokenMetaAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, dashTestToken) }
 	tokenRawAuthorized := func(r *http.Request) bool { return dashboardTokenMatches(r, "raw-token") }
+	tokenAuthorizePermission := dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized)
 	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
-		authorizer, tokenMetaAuthorized,
-		dashboardAuthorizePermissionFunc(tokenMetaAuthorized, tokenRawAuthorized),
-		tokenRawAuthorized,
+		authorizer, tokenMetaAuthorized, tokenAuthorizePermission, tokenRawAuthorized,
 	)
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),

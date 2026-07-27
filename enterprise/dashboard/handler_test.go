@@ -8,6 +8,7 @@ package dashboard
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1693,6 +1694,30 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 			t.Errorf("audit log should record raw role; got %q", raw.String())
 		}
 	})
+
+	t.Run("auth_digest_fields_are_quoted", func(t *testing.T) {
+		var audit strings.Builder
+		handler := New(Options{
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			AuditWriter: &audit,
+		})
+		ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
+			Method:         "oidc",
+			SubjectSHA256:  "subject injected=value",
+			MTLSSPKISHA256: "spki extra=field",
+		})
+		handler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
+		for _, want := range []string{
+			`auth_subject_sha256="subject injected=value"`,
+			`mtls_spki_sha256="spki extra=field"`,
+		} {
+			if !strings.Contains(audit.String(), want) {
+				t.Errorf("audit log should quote auth digest field %q; got %q", want, audit.String())
+			}
+		}
+	})
 }
 
 func TestAuditSessionFieldNormalizesAndBoundsDisplay(t *testing.T) {
@@ -1761,7 +1786,7 @@ func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name          string
-		page          WorkbenchPage
+		page          any
 		wantFragments []string
 	}{
 		{
@@ -1810,6 +1835,48 @@ func TestHandler_DecisionScopeAuditStates(t *testing.T) {
 				`decision_missing=false`,
 				`divergence=true`,
 				`conflict="fleet_skew"`,
+			},
+		},
+		{
+			name: "incident replay error",
+			page: IncidentPage{DecisionSourceConfigured: true, DecisionError: true, DecisionErrorReason: "canceled", FleetSourceConfigured: true},
+			wantFragments: []string{
+				`decision_state="unavailable"`,
+				`decision_error_reason="canceled"`,
+				`decision_found=false`,
+				`decision_error=true`,
+				`decision_missing=false`,
+				`fleet_source=true`,
+				`fleet_found=false`,
+			},
+		},
+		{
+			name: "incident not found",
+			page: IncidentPage{DecisionSourceConfigured: true, DecisionMissing: true, FleetSourceConfigured: true, HasFleet: true},
+			wantFragments: []string{
+				`decision_state="not_found"`,
+				`decision_found=false`,
+				`decision_error=false`,
+				`decision_missing=true`,
+				`fleet_source=true`,
+				`fleet_found=true`,
+			},
+		},
+		{
+			name: "incident replay found",
+			page: IncidentPage{DecisionSourceConfigured: true, FleetSourceConfigured: true, HasFleet: true, HasDecision: true, Decision: DecisionReplayView{
+				Divergence: true,
+				Conflict:   "stale_counter",
+			}},
+			wantFragments: []string{
+				`decision_state="found"`,
+				`decision_found=true`,
+				`decision_error=false`,
+				`decision_missing=false`,
+				`fleet_source=true`,
+				`fleet_found=true`,
+				`divergence=true`,
+				`conflict="stale_counter"`,
 			},
 		},
 		{
@@ -1878,10 +1945,11 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		},
 		AuditWriter: &buf,
 	})
+	spkiHash := strings.Repeat("a", sha256.Size*2)
 	ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
-		Method:  "mtls",
-		Subject: "spki-sha256",
-		Roles:   []string{"metadata"},
+		Method:         "mtls",
+		MTLSSPKISHA256: spkiHash,
+		Roles:          []string{"metadata"},
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
@@ -1893,7 +1961,8 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		"pipelock-dashboard denied",
 		"permission=\"dashboard:evidence:read\"",
 		"auth_method=mtls",
-		"auth_subject=\"spki-sha256\"",
+		`auth_subject_sha256="-"`,
+		fmt.Sprintf("mtls_spki_sha256=%q", spkiHash),
 		"auth_roles=\"metadata\"",
 		"reason=permission_denied",
 	} {
@@ -1929,7 +1998,8 @@ func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard denied",
 		"auth_method=-",
-		"auth_subject=\"-\"",
+		`auth_subject_sha256="-"`,
+		`mtls_spki_sha256="-"`,
 		"auth_roles=\"-\"",
 		"reason=permission_denied",
 	} {
@@ -1939,6 +2009,57 @@ func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
 	}
 	if strings.Contains(log, "pipelock-dashboard access") {
 		t.Fatalf("permission-denied request must not be audited as access: %s", log)
+	}
+}
+
+func TestHandler_PermissionDeniedAuditUsesAuthFailureReason(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var buf strings.Builder
+	handler := New(Options{
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
+		AuthorizePermission: func(*http.Request, Permission) error {
+			return errors.New("permission denied")
+		},
+		AuditWriter: &buf,
+	})
+	ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
+		Method:        "oidc",
+		FailureReason: "expired",
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	log := buf.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"permission=\"dashboard:evidence:read\"",
+		"auth_method=oidc",
+		"reason=expired",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("permission-denied audit missing %q: %s", want, log)
+		}
+	}
+}
+
+func TestAuthAuditInfoFromRequestPreservesPrehashedSubject(t *testing.T) {
+	t.Parallel()
+	prehashed := strings.Repeat("b", sha256.Size*2)
+	req := httptest.NewRequestWithContext(
+		WithAuthAuditInfo(context.Background(), AuthAuditInfo{Subject: "raw-subject", SubjectSHA256: prehashed}),
+		http.MethodGet,
+		"https://dashboard.example/",
+		nil,
+	)
+	got := authAuditInfoFromRequest(req)
+	if got.SubjectSHA256 != prehashed {
+		t.Fatalf("SubjectSHA256 = %q, want prehashed %q", got.SubjectSHA256, prehashed)
 	}
 }
 

@@ -46,7 +46,10 @@ func TestDashboardOIDCFailureCategory(t *testing.T) {
 		{"missing subject claim is invalid token", errors.New("OIDC subject claim is missing or invalid"), "invalid_token"},
 		{"signature", errors.New("token signature is invalid"), "invalid_signature"},
 		{"expired", errors.New("token has expired"), "expired"},
-		{"permission denied", errors.New("role claim has no mapped value"), "permission_denied"},
+		{"unmapped role", errors.New("role claim has no mapped value"), "permission_denied"},
+		{"unknown signing key", dashboardOIDCSigningKeyNotFound("kid-a"), "unknown_principal"},
+		{"unknown signing key kid cannot steer expired category", dashboardOIDCSigningKeyNotFound("expired"), "unknown_principal"},
+		{"unknown signing key kid cannot steer signature category", dashboardOIDCSigningKeyNotFound("bad signature"), "unknown_principal"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,7 +63,9 @@ func TestDashboardOIDCFailureCategory(t *testing.T) {
 type oidcTestProvider struct {
 	server    *httptest.Server
 	private   *rsa.PrivateKey
+	keyID     string
 	mu        sync.Mutex
+	jwksFail  bool
 	jwksBlock <-chan struct{}
 	jwksStart chan<- struct{}
 	jwksReads atomic.Int32
@@ -72,7 +77,7 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	p := &oidcTestProvider{private: private}
+	p := &oidcTestProvider{private: private, keyID: oidcTestKeyID}
 	p.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
@@ -80,21 +85,62 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 				p.server.URL, p.server.URL+"/jwks", p.server.URL+"/authorize")
 		case "/jwks":
 			p.jwksReads.Add(1)
+			if p.jwksShouldFail() {
+				http.Error(w, "JWKS unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			if err := p.waitForJWKSBlock(r.Context()); err != nil {
 				http.Error(w, err.Error(), http.StatusGatewayTimeout)
 				return
 			}
 			w.Header().Set("Cache-Control", "max-age=3600")
-			n := base64.RawURLEncoding.EncodeToString(private.N.Bytes())
-			e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(private.PublicKey.E)).Bytes())
+			keyID, public := p.jwksKey()
+			n := base64.RawURLEncoding.EncodeToString(public.N.Bytes())
+			e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(public.E)).Bytes())
 			_, _ = fmt.Fprintf(w, `{"keys":[{"kty":"RSA","kid":%q,"use":"sig","alg":"RS256","n":%q,"e":%q,"x5c":[]}]}`,
-				oidcTestKeyID, n, e)
+				keyID, n, e)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(p.server.Close)
 	return p
+}
+
+func (p *oidcTestProvider) jwksKey() (string, rsa.PublicKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.keyID, p.private.PublicKey
+}
+
+func (p *oidcTestProvider) signingKey() *rsa.PrivateKey {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.private
+}
+
+func (p *oidcTestProvider) rotateSigningKey(t *testing.T, keyID string) {
+	t.Helper()
+	private, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey(rotated): %v", err)
+	}
+	p.mu.Lock()
+	p.private = private
+	p.keyID = keyID
+	p.mu.Unlock()
+}
+
+func (p *oidcTestProvider) setJWKSFail(fail bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.jwksFail = fail
+}
+
+func (p *oidcTestProvider) jwksShouldFail() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.jwksFail
 }
 
 func (p *oidcTestProvider) setJWKSBlock(block <-chan struct{}, start chan<- struct{}) {
@@ -128,7 +174,8 @@ func (p *oidcTestProvider) waitForJWKSBlock(ctx context.Context) error {
 
 func (p *oidcTestProvider) token(t *testing.T, claims map[string]any) string {
 	t.Helper()
-	return p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": oidcTestKeyID, "typ": "JWT"}, claims, true)
+	keyID, _ := p.jwksKey()
+	return p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": keyID, "typ": "JWT"}, claims, true)
 }
 
 func (p *oidcTestProvider) tokenWithHeader(t *testing.T, header, claims map[string]any, sign bool) string {
@@ -150,7 +197,7 @@ func (p *oidcTestProvider) tokenWithHeader(t *testing.T, header, claims map[stri
 func (p *oidcTestProvider) signInput(t *testing.T, signingInput string) string {
 	t.Helper()
 	digest := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, p.private, crypto.SHA256, digest[:])
+	sig, err := rsa.SignPKCS1v15(rand.Reader, p.signingKey(), crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatalf("SignPKCS1v15: %v", err)
 	}
@@ -173,6 +220,11 @@ func oidcTestRoleMap() string {
 	return `{"claim_values":{"evidence-team":"evidence-reader","raw-team":"raw-reader"},` +
 		`"roles":{"evidence-reader":["dashboard:evidence:read"],` +
 		`"raw-reader":["dashboard:evidence:read","dashboard:raw:read"]}}`
+}
+
+func oidcTestAuditHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func newOIDCTestAuthenticator(t *testing.T, p *oidcTestProvider, now time.Time) *dashboardOIDCAuthenticator {
@@ -485,6 +537,71 @@ func TestDashboardOIDC_RoutePermissionsOnly(t *testing.T) {
 	}
 }
 
+func TestDashboardRequestAuthorization_AuthAuditInfoTokenMethodsAndFailures(t *testing.T) {
+	authorization := newDashboardRequestAuthorization("metadata-token", "raw-token", nil)
+
+	tests := []struct {
+		name       string
+		setup      func(*http.Request)
+		wantMethod string
+		wantRoles  []string
+		wantReason string
+	}{
+		{
+			name: "metadata token",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer metadata-token")
+			},
+			wantMethod: "token",
+			wantRoles:  []string{"metadata"},
+		},
+		{
+			name: "raw access token",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer raw-token")
+			},
+			wantMethod: "raw-access-token",
+			wantRoles:  []string{"raw"},
+		},
+		{
+			name: "wrong token attempted",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer wrong-token")
+			},
+			wantMethod: "token",
+			wantReason: "unknown_principal",
+		},
+		{
+			name:       "no credential",
+			setup:      func(*http.Request) {},
+			wantMethod: "none",
+			wantReason: "missing_token",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://dashboard.example/", nil)
+			tc.setup(req)
+			got := authorization.authAuditInfo(req)
+			if got.Method != tc.wantMethod {
+				t.Fatalf("Method = %q, want %q", got.Method, tc.wantMethod)
+			}
+			if strings.Join(got.Roles, ",") != strings.Join(tc.wantRoles, ",") {
+				t.Fatalf("Roles = %v, want %v", got.Roles, tc.wantRoles)
+			}
+			if got.FailureReason != tc.wantReason {
+				t.Fatalf("FailureReason = %q, want %q", got.FailureReason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestDashboardCredentialAttemptedNilRequest(t *testing.T) {
+	if dashboardCredentialAttempted(nil) {
+		t.Fatal("nil request reported a credential attempt")
+	}
+}
+
 func TestDashboardOIDC_OIDCOnlyModeRejectsEmptyCredentials(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
@@ -561,7 +678,8 @@ func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
 		"pipelock-dashboard access",
 		"permission=\"dashboard:evidence:read\"",
 		"auth_method=oidc",
-		"auth_subject=\"operator-a\"",
+		fmt.Sprintf("auth_subject_sha256=%q", oidcTestAuditHash("operator-a")),
+		`mtls_spki_sha256="-"`,
 		"auth_roles=\"evidence-reader\"",
 	} {
 		if !strings.Contains(log, want) {
@@ -570,6 +688,9 @@ func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
 	}
 	if strings.Contains(log, p.token(t, p.validClaims(now))) {
 		t.Fatalf("audit log leaked bearer token: %s", log)
+	}
+	if strings.Contains(log, "auth_subject=\"operator-a\"") {
+		t.Fatalf("audit log leaked raw OIDC subject: %s", log)
 	}
 
 	rr = httptest.NewRecorder()
@@ -581,6 +702,7 @@ func TestDashboardOIDC_AuditRecordsPrincipalAndDeniedOIDCFailure(t *testing.T) {
 	for _, want := range []string{
 		"pipelock-dashboard denied",
 		"auth_method=oidc",
+		`auth_subject_sha256="-"`,
 		"reason=invalid_token",
 	} {
 		if !strings.Contains(log, want) {
@@ -637,15 +759,120 @@ func TestDashboardOIDC_UnknownKeyRefreshIsRateLimited(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	token := p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": "unknown-key"}, p.validClaims(now), true)
+	p.setJWKSFail(true)
+	auth.keys.mu.Lock()
+	auth.keys.expiresAt = now.Add(-time.Second)
+	auth.keys.mu.Unlock()
 
-	for range 2 {
+	for _, kid := range []string{"unknown-key-a", "unknown-key-b", "unknown-key-c"} {
+		token := p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": kid}, p.validClaims(now), true)
 		if principal, err := auth.authenticate(requestWithBearer(t, token)); err == nil || principal != nil {
 			t.Fatalf("unknown signing key authenticate = (%+v, %v), want denial", principal, err)
 		}
 	}
 	if got := p.jwksReads.Load(); got != 2 {
-		t.Fatalf("JWKS reads = %d, want initial fetch plus one rate-limited miss refresh", got)
+		t.Fatalf("JWKS reads = %d, want initial fetch plus one gated unknown-kid refresh", got)
+	}
+}
+
+func TestDashboardOIDC_UnknownKeyRefreshCanFindRotatedKey(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+
+	auth.keys.mu.Lock()
+	auth.keys.keys = map[string]*rsa.PublicKey{}
+	auth.keys.expiresAt = now.Add(time.Hour)
+	auth.keys.mu.Unlock()
+
+	if _, err := auth.authenticate(requestWithBearer(t, p.token(t, p.validClaims(now)))); err != nil {
+		t.Fatalf("authenticate after refresh restored key: %v", err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads = %d, want initial fetch plus rotation refresh", got)
+	}
+}
+
+func TestDashboardOIDC_UnknownKidAttackerCannotPersistentlyStarveRotatedKey(t *testing.T) {
+	currentNow := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth, err := newDashboardOIDCAuthenticator(context.Background(), dashboardOIDCOptions{
+		Issuer:       p.server.URL,
+		Audience:     oidcTestAudience,
+		RoleClaim:    "groups",
+		RoleMapJSON:  oidcTestRoleMap(),
+		HTTPClient:   p.server.Client(),
+		Now:          func() time.Time { return currentNow },
+		JWKSCacheTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("newDashboardOIDCAuthenticator: %v", err)
+	}
+
+	attackerToken := p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": "attacker-bogus-a"}, p.validClaims(currentNow), true)
+	if principal, err := auth.authenticate(requestWithBearer(t, attackerToken)); err == nil || principal != nil {
+		t.Fatalf("attacker unknown kid authenticate = (%+v, %v), want denial", principal, err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads after attacker miss = %d, want initial fetch plus attacker-triggered refresh", got)
+	}
+
+	p.rotateSigningKey(t, "rotated-legitimate-key")
+	legitimateToken := p.token(t, p.validClaims(currentNow))
+	if principal, err := auth.authenticate(requestWithBearer(t, legitimateToken)); err == nil || principal != nil {
+		t.Fatalf("legitimate rotated kid inside attacker window = (%+v, %v), want bounded denial", principal, err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads inside attacker miss window = %d, want no throttled refresh", got)
+	}
+
+	currentNow = currentNow.Add(dashboardOIDCMinKeyRefresh)
+	nextAttackerToken := p.tokenWithHeader(t, map[string]any{"alg": "RS256", "kid": "attacker-bogus-b"}, p.validClaims(currentNow), true)
+	if principal, err := auth.authenticate(requestWithBearer(t, nextAttackerToken)); err == nil || principal != nil {
+		t.Fatalf("next attacker unknown kid authenticate = (%+v, %v), want denial", principal, err)
+	}
+	if got := p.jwksReads.Load(); got != 3 {
+		t.Fatalf("JWKS reads after next attacker window = %d, want another bounded refresh", got)
+	}
+
+	if _, err := auth.authenticate(requestWithBearer(t, p.token(t, p.validClaims(currentNow)))); err != nil {
+		t.Fatalf("legitimate rotated kid after attacker-triggered refresh: %v", err)
+	}
+}
+
+func TestDashboardOIDC_ExpiredJWKSRefreshIgnoresPriorUnknownKeyThrottle(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+
+	auth.keys.mu.Lock()
+	auth.keys.keys = map[string]*rsa.PublicKey{}
+	auth.keys.expiresAt = now.Add(-time.Second)
+	auth.keys.lastMiss = now.Add(-2 * time.Second)
+	auth.keys.mu.Unlock()
+
+	if _, err := auth.authenticate(requestWithBearer(t, p.token(t, p.validClaims(now)))); err != nil {
+		t.Fatalf("authenticate after expired cache refresh with prior unknown-kid miss: %v", err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads = %d, want initial fetch plus expired-cache refresh", got)
+	}
+}
+
+func TestDashboardOIDC_JWKSCacheMissingKeyAfterInitialRefreshFailsClosed(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	cache := &dashboardJWKSCache{
+		uri:    p.server.URL + "/jwks",
+		client: p.server.Client(),
+		now:    func() time.Time { return now },
+		ttl:    time.Hour,
+	}
+	if key, err := cache.key(context.Background(), "missing-key"); err == nil || key != nil {
+		t.Fatalf("cache.key missing key = (%v, %v), want fail-closed miss", key, err)
+	}
+	if got := p.jwksReads.Load(); got != 1 {
+		t.Fatalf("JWKS reads = %d, want one initial refresh", got)
 	}
 }
 
@@ -822,6 +1049,8 @@ func TestParseDashboardRSAJWK(t *testing.T) {
 		{"bad modulus encoding", func(j *dashboardJWK) { j.N = "!" }, false, true},
 		{"bad exponent encoding", func(j *dashboardJWK) { j.E = "!" }, false, true},
 		{"weak modulus", func(j *dashboardJWK) { j.N = encodeInt(big.NewInt(17)) }, false, true},
+		{"maximum modulus", func(j *dashboardJWK) { j.N = encodeInt(new(big.Int).Lsh(big.NewInt(1), dashboardOIDCRSAMaxBits-1)) }, true, false},
+		{"oversize modulus", func(j *dashboardJWK) { j.N = encodeInt(new(big.Int).Lsh(big.NewInt(1), dashboardOIDCRSAMaxBits)) }, false, true},
 		{"even exponent", func(j *dashboardJWK) { j.E = encodeInt(big.NewInt(4)) }, false, true},
 		{"huge exponent", func(j *dashboardJWK) { j.E = encodeInt(new(big.Int).Lsh(big.NewInt(1), 80)) }, false, true},
 	}
@@ -1106,7 +1335,10 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 		"pipelock-dashboard denied",
 		"permission=\"dashboard:exemptions:read\"",
 		"auth_method=oidc",
-		"auth_subject=\"operator-a\"",
+		// The subject is recorded hashed rather than in the clear. Derive the
+		// expected digest from the subject so this still pins WHICH principal
+		// was denied, not merely that some digest was written.
+		fmt.Sprintf("auth_subject_sha256=%q", fmt.Sprintf("%x", sha256.Sum256([]byte("operator-a")))),
 		"auth_roles=\"evidence-reader\"",
 		"reason=permission_denied",
 	} {

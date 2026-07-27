@@ -676,7 +676,7 @@ func TestRunReplayRemoteKillPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	rig.opts.transport = recorder
 
 	opts := replayOptions{
-		mode:            replayModeRemoteKill,
+		mode:            replayActionRemoteKill,
 		kill:            rig.opts,
 		remoteKillState: string(conductorcore.KillSwitchActive),
 	}
@@ -730,7 +730,7 @@ func TestRunReplayRemoteKillPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 func TestRunReplayRemoteKillRequiresExplicitState(t *testing.T) {
 	rig := newKillRig(t, 0)
 	opts := replayOptions{
-		mode: replayModeRemoteKill,
+		mode: replayActionRemoteKill,
 		kill: rig.opts,
 	}
 	cmd, _ := replayCobra(t)
@@ -782,7 +782,7 @@ func TestRunReplayRollbackPostsEndpointShapeAndDoesNotApply(t *testing.T) {
 	rb.transport = recorder
 
 	opts := replayOptions{
-		mode:     replayModeRollback,
+		mode:     replayActionRollback,
 		rollback: rb,
 	}
 	cmd, out := replayCobra(t)
@@ -851,7 +851,7 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			name:     "publish action mismatch",
 			artifact: decisionReplayArtifact{Bundle: &conductorcore.PolicyBundle{}},
 			result: controlplane.DecisionReplayResult{
-				ActionKind:   replayModeRemoteKill,
+				ActionKind:   replayActionRemoteKill,
 				ArtifactHash: strings.Repeat("a", 64),
 				ReplayedAt:   resultTime,
 				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
@@ -883,7 +883,7 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			name:     "remote kill missing evaluation",
 			artifact: decisionReplayArtifact{RemoteKill: &conductorcore.RemoteKillMessage{}},
 			result: controlplane.DecisionReplayResult{
-				ActionKind:   replayModeRemoteKill,
+				ActionKind:   replayActionRemoteKill,
 				ArtifactHash: strings.Repeat("d", 64),
 				ReplayedAt:   resultTime,
 			},
@@ -893,7 +893,7 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			name:     "rollback action mismatch",
 			artifact: decisionReplayArtifact{Rollback: &conductorcore.RollbackAuthorization{}},
 			result: controlplane.DecisionReplayResult{
-				ActionKind:   replayModeRemoteKill,
+				ActionKind:   replayActionRemoteKill,
 				ArtifactHash: strings.Repeat("e", 64),
 				ReplayedAt:   resultTime,
 				RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
@@ -904,7 +904,7 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			name:     "rollback missing evaluation",
 			artifact: decisionReplayArtifact{Rollback: &conductorcore.RollbackAuthorization{}},
 			result: controlplane.DecisionReplayResult{
-				ActionKind:   replayModeRollback,
+				ActionKind:   replayActionRollback,
 				ArtifactHash: strings.Repeat("f", 64),
 				ReplayedAt:   resultTime,
 			},
@@ -926,7 +926,7 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			name:     "remote kill response included extra publish evaluation",
 			artifact: decisionReplayArtifact{RemoteKill: &conductorcore.RemoteKillMessage{}},
 			result: controlplane.DecisionReplayResult{
-				ActionKind:        replayModeRemoteKill,
+				ActionKind:        replayActionRemoteKill,
 				ArtifactHash:      strings.Repeat("h", 64),
 				ReplayedAt:        resultTime,
 				RemoteKill:        &controlplane.RemoteKillEvaluation{Valid: true},
@@ -938,7 +938,7 @@ func TestPostDecisionReplayRejectsResponseModeMismatches(t *testing.T) {
 			name:     "rollback response included extra emergency evaluation",
 			artifact: decisionReplayArtifact{Rollback: &conductorcore.RollbackAuthorization{}},
 			result: controlplane.DecisionReplayResult{
-				ActionKind:   replayModeRollback,
+				ActionKind:   replayActionRollback,
 				ArtifactHash: strings.Repeat("i", 64),
 				ReplayedAt:   resultTime,
 				Rollback:     &controlplane.RollbackEvaluation{Valid: true},
@@ -1016,8 +1016,35 @@ func TestPostDecisionReplayRejectsArtifactHashMismatch(t *testing.T) {
 		t.Fatal("test fixture unexpectedly matched mismatch hash")
 	}
 	result := controlplane.DecisionReplayResult{
-		ActionKind:   replayModeRemoteKill,
+		ActionKind:   replayActionRemoteKill,
 		ArtifactHash: strings.Repeat("0", 64),
+		ReplayedAt:   testFixedNow(t),
+		RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	client := &staticEmergencyTransport{status: http.StatusOK, body: string(body)}
+	_, err = postDecisionReplay(t.Context(), client, "https://conductor.example", testAdminToken, decisionReplayArtifact{RemoteKill: &msg})
+	if err == nil || !strings.Contains(err.Error(), "artifact_hash") {
+		t.Fatalf("postDecisionReplay() error = %v, want artifact_hash mismatch", err)
+	}
+}
+
+func TestPostDecisionReplayRejectsUppercaseArtifactHashResponse(t *testing.T) {
+	msg := conductorcore.RemoteKillMessage{MessageID: "kill-uppercase"}
+	expectedHash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	uppercaseHash := strings.ToUpper(expectedHash)
+	if uppercaseHash == expectedHash {
+		t.Fatalf("test fixture hash %q has no lowercase hex letters", expectedHash)
+	}
+	result := controlplane.DecisionReplayResult{
+		ActionKind:   replayActionRemoteKill,
+		ArtifactHash: uppercaseHash,
 		ReplayedAt:   testFixedNow(t),
 		RemoteKill:   &controlplane.RemoteKillEvaluation{Valid: true},
 	}

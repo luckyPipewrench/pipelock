@@ -30,11 +30,10 @@ const (
 	replayMaxStateSnapshotBytes  = conductorcore.MaxConfigYAMLBytes
 	replayMaxBundleArtifactBytes = conductorcore.MaxConfigYAMLBytes * 2
 
-	replayModePolicyBundle = "policy_bundle"
-	replayModeRemoteKill   = controlplane.ActionKindRemoteKill
-	replayModeRollback     = controlplane.ActionKindRollback
-
-	replayActionPublish = controlplane.ActionKindPublish
+	replayActionPolicyBundle = "policy_bundle"
+	replayActionRemoteKill   = controlplane.ActionKindRemoteKill
+	replayActionRollback     = controlplane.ActionKindRollback
+	replayActionPublish      = controlplane.ActionKindPublish
 )
 
 type replayOptions struct {
@@ -49,7 +48,7 @@ type replayOptions struct {
 
 func replayCmd() *cobra.Command {
 	opts := replayOptions{
-		mode:    replayModePolicyBundle,
+		mode:    replayActionPolicyBundle,
 		publish: publishOptions{validity: defaultPublishValidity},
 	}
 	cmd := &cobra.Command{
@@ -84,14 +83,14 @@ decisions against the same decision-replay endpoint without applying them.`,
 func runReplay(cmd *cobra.Command, opts replayOptions) error {
 	mode := strings.TrimSpace(opts.mode)
 	if mode == "" {
-		mode = replayModePolicyBundle
+		mode = replayActionPolicyBundle
 	}
 	switch mode {
-	case replayModePolicyBundle:
+	case replayActionPolicyBundle:
 		return runPolicyBundleReplay(cmd, opts)
-	case replayModeRemoteKill:
+	case replayActionRemoteKill:
 		return runRemoteKillReplay(cmd, opts)
-	case replayModeRollback:
+	case replayActionRollback:
 		return runRollbackReplay(cmd, opts)
 	default:
 		return fmt.Errorf("unsupported replay mode %q", opts.mode)
@@ -100,7 +99,7 @@ func runReplay(cmd *cobra.Command, opts replayOptions) error {
 
 func replayRemoteKillCmd() *cobra.Command {
 	opts := replayOptions{
-		mode: replayModeRemoteKill,
+		mode: replayActionRemoteKill,
 		kill: killOptions{ttl: remoteKillDefaultTTL},
 	}
 	cmd := &cobra.Command{
@@ -125,7 +124,7 @@ publishing or applying the message.`,
 
 func replayRollbackCmd() *cobra.Command {
 	opts := replayOptions{
-		mode:     replayModeRollback,
+		mode:     replayActionRollback,
 		rollback: rollbackOptions{ttl: rollbackDefaultTTL},
 	}
 	cmd := &cobra.Command{
@@ -417,13 +416,13 @@ func validateDecisionReplayArtifact(artifact decisionReplayArtifact) (string, er
 			return "", fmt.Errorf("hash replay bundle artifact: %w", err)
 		}
 		return hash, nil
-	case replayModeRemoteKill:
+	case replayActionRemoteKill:
 		hash, err := artifact.RemoteKill.CanonicalHash()
 		if err != nil {
 			return "", fmt.Errorf("hash replay remote-kill artifact: %w", err)
 		}
 		return hash, nil
-	case replayModeRollback:
+	case replayActionRollback:
 		hash, err := artifact.Rollback.CanonicalHash()
 		if err != nil {
 			return "", fmt.Errorf("hash replay rollback artifact: %w", err)
@@ -442,7 +441,7 @@ func validateDecisionReplayResultForArtifact(result controlplane.DecisionReplayR
 	if result.ActionKind != expectedAction {
 		return fmt.Errorf("replay response action_kind=%q does not match requested action %q", result.ActionKind, expectedAction)
 	}
-	if !strings.EqualFold(result.ArtifactHash, expectedHash) {
+	if result.ArtifactHash != expectedHash {
 		return fmt.Errorf("replay response artifact_hash=%q does not match submitted artifact hash %q", result.ArtifactHash, expectedHash)
 	}
 	switch expectedAction {
@@ -453,14 +452,14 @@ func validateDecisionReplayResultForArtifact(result controlplane.DecisionReplayR
 		if result.RemoteKill != nil || result.Rollback != nil {
 			return errors.New("replay response for publish included an emergency evaluation")
 		}
-	case replayModeRemoteKill:
+	case replayActionRemoteKill:
 		if result.RemoteKill == nil {
 			return errors.New("replay response missing remote_kill_evaluation")
 		}
 		if result.PublishEvaluation != nil || result.Rollback != nil {
 			return errors.New("replay response for remote_kill included a different evaluation")
 		}
-	case replayModeRollback:
+	case replayActionRollback:
 		if result.Rollback == nil {
 			return errors.New("replay response missing rollback_evaluation")
 		}
@@ -481,11 +480,11 @@ func replayResponseActionForArtifact(artifact decisionReplayArtifact) (string, e
 		seen++
 	}
 	if artifact.RemoteKill != nil {
-		expected = replayModeRemoteKill
+		expected = replayActionRemoteKill
 		seen++
 	}
 	if artifact.Rollback != nil {
-		expected = replayModeRollback
+		expected = replayActionRollback
 		seen++
 	}
 	if seen != 1 {

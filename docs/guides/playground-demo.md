@@ -86,9 +86,16 @@ proxy_uid="$(id -u pipelock-proxy)"
 
 # The capture's in-process proxy must temporarily own the policy-authorized port.
 was_active=0
-if sudo systemctl is-active --quiet pipelock; then
-  was_active=1
-fi
+service_state_rc=0
+service_state="$(sudo systemctl is-active pipelock 2>/dev/null)" || service_state_rc=$?
+case "${service_state}:${service_state_rc}" in
+  active:0) was_active=1 ;;
+  inactive:3) ;;
+  *)
+    echo "cannot determine pipelock service state; aborting contained capture" >&2
+    exit 1
+    ;;
+esac
 restore_pipelock() {
   capture_status=$?
   trap - EXIT

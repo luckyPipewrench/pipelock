@@ -47,6 +47,9 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 	if err := validateSelfManagedNFTRules(nonDefault, 1000, 1001, agentUID, proxyPort); err != nil {
 		t.Fatalf("non-default operator/proxy UIDs rejected: %v", err)
 	}
+	if err := validateSelfManagedNFTRules(canonical, 1000, 1001, agentUID, proxyPort); err == nil {
+		t.Fatal("root/root chain accepted for non-root operator/proxy UIDs")
+	}
 
 	t.Run("wrong proxy port", func(t *testing.T) {
 		t.Parallel()

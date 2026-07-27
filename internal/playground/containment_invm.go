@@ -62,12 +62,18 @@ var ErrInVMContainmentNotProven = errors.New(
 type InVMContainmentHook struct {
 	ToyAgentBin string
 	AgentUser   string
+	OperatorUID int
+	ProxyUID    int
+	verify      func(context.Context, string, string, int, int, int) error
 }
 
 // NewInVMContainmentHook creates a containment hook that proves the boundary
 // with the supplied toy-agent probe binary.
 func NewInVMContainmentHook(toyAgentBin string) *InVMContainmentHook {
-	return &InVMContainmentHook{ToyAgentBin: toyAgentBin}
+	return &InVMContainmentHook{
+		ToyAgentBin: toyAgentBin,
+		verify:      VerifyInVMContainmentWithUIDs,
+	}
 }
 
 // Setup proves the configured contained uid cannot escape through direct
@@ -77,7 +83,13 @@ func (h *InVMContainmentHook) Setup(ctx context.Context, opts DemoOpts) error {
 	if agentUser == "" {
 		agentUser = defaultContainedAgentUser
 	}
-	return VerifyInVMContainment(ctx, h.ToyAgentBin, agentUser, opts.ProxyPort)
+	verify := h.verify
+	if verify == nil {
+		verify = VerifyInVMContainmentWithUIDs
+	}
+	return verify(
+		ctx, h.ToyAgentBin, agentUser, opts.ProxyPort, h.OperatorUID, h.ProxyUID,
+	)
 }
 
 // Teardown is a no-op because the deployment owns the persistent containment
@@ -180,8 +192,8 @@ func VerifyInVMContainmentWithUIDs(ctx context.Context, toyAgentBin, agentUser s
 	if err != nil || agentUID <= 0 {
 		return fmt.Errorf("%w: invalid agent uid %q", ErrInVMContainmentNotProven, agent.Uid)
 	}
-	if operatorUID < 0 || proxyUID < 0 {
-		return fmt.Errorf("%w: operator and proxy UIDs must be non-negative", ErrInVMContainmentNotProven)
+	if err := validateContainmentUIDRoles(operatorUID, proxyUID, agentUID); err != nil {
+		return err
 	}
 	if err := contain.VerifySelfManagedNFTRules(ctx, operatorUID, proxyUID, agentUID, proxyPort); err != nil {
 		return fmt.Errorf("%w: %w", ErrInVMContainmentNotProven, err)
@@ -237,6 +249,17 @@ func VerifyInVMContainmentWithUIDs(ctx context.Context, toyAgentBin, agentUser s
 		return err
 	}
 	return evalStartContainment(operatorControl, agentProbes[1], agentProbes[2:], localProbes)
+}
+
+func validateContainmentUIDRoles(operatorUID, proxyUID, agentUID int) error {
+	if operatorUID < 0 || proxyUID < 0 {
+		return fmt.Errorf("%w: operator and proxy UIDs must be non-negative", ErrInVMContainmentNotProven)
+	}
+	if operatorUID == agentUID || proxyUID == agentUID {
+		return fmt.Errorf("%w: operator uid %d and proxy uid %d must differ from contained agent uid %d",
+			ErrInVMContainmentNotProven, operatorUID, proxyUID, agentUID)
+	}
+	return nil
 }
 
 func acceptProbeConnections(ln net.Listener) {

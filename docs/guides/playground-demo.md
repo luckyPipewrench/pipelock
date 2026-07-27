@@ -81,16 +81,31 @@ kernel boundary to attest, and the tool says so rather than implying one.
 ### Contained (the real demo — requires a prepared host)
 
 ```bash
+operator_uid="$(id -u)"
+proxy_uid="$(id -u pipelock-proxy)"
+
+# The capture's in-process proxy must temporarily own the policy-authorized port.
+sudo systemctl stop pipelock
+trap 'sudo systemctl start pipelock' EXIT
 sudo pipelock-playground-demo run --contained --self-managed-containment \
   --toyagent-bin /usr/local/bin/pipelock-playground-toyagent \
+  --operator-uid "${operator_uid}" --proxy-uid "${proxy_uid}" \
   --proxy-port 8888 --run-dir ./demo-run --scenario secret-exfil-body-blocked
+capture_rc=$?
+sudo systemctl start pipelock
+trap - EXIT
+test "${capture_rc}" -eq 0
 ```
 
 Contained capture mode requires root, the `pipelock-agent` OS user, and a
 deployment-managed canonical owner-match boundary. The stock workstation
-service already owns its authorized proxy port, so deterministic contained
-capture uses `--self-managed-containment` rather than colliding with that
-listener. Under the **split-proof** model the mediated steps
+service already owns its authorized proxy port. Stop it for the duration of a
+deterministic contained capture and always restart it afterward; self-managed
+mode verifies the live deployment-owned boundary but does not free an occupied
+port. `--operator-uid` and `--proxy-uid` identify the UIDs accepted by that
+live boundary; their root defaults are for single-process microVMs, so a stock
+workstation capture must pass the installed operator and proxy UIDs explicitly.
+Under the **split-proof** model the mediated steps
 (allow, block) run as the operator through the lab proxy — exactly as in uncontained mode — and
 a separate probe phase drops to the `pipelock-agent` uid to build the signed host-containment
 witness. This split is deliberate: the proxy's allow/block decision does not depend on the

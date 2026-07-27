@@ -515,6 +515,124 @@ func TestServerHealthCORSKillAndResume(t *testing.T) {
 	}
 }
 
+func TestServerHealthProviderFieldsByState(t *testing.T) {
+	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		mutate      func(*ProviderHealth)
+		wantOK      bool
+		wantState   string
+		wantFails   float64
+		wantErrAt   any
+		wantOKAt    any
+		wantBackoff any
+	}{
+		{
+			name:        "first_boot_unknown",
+			wantOK:      true,
+			wantState:   string(ProviderStateUnknown),
+			wantFails:   0,
+			wantErrAt:   nil,
+			wantOKAt:    nil,
+			wantBackoff: nil,
+		},
+		{
+			name: "reachable_ok",
+			mutate: func(h *ProviderHealth) {
+				h.RecordSuccess()
+			},
+			wantOK:      true,
+			wantState:   string(ProviderStateOK),
+			wantFails:   0,
+			wantErrAt:   nil,
+			wantOKAt:    base.Format(time.RFC3339),
+			wantBackoff: nil,
+		},
+		{
+			name: "intermittently_failing_degraded",
+			mutate: func(h *ProviderHealth) {
+				h.RecordFailure(errors.New("provider rejected credential"))
+			},
+			wantOK:      true,
+			wantState:   string(ProviderStateDegraded),
+			wantFails:   1,
+			wantErrAt:   base.Format(time.RFC3339),
+			wantOKAt:    nil,
+			wantBackoff: base.Add(providerBackoffBase).Format(time.RFC3339),
+		},
+		{
+			name: "persistently_rejecting_failing",
+			mutate: func(h *ProviderHealth) {
+				for range providerFailingThreshold {
+					h.RecordFailure(errors.New("provider rejected credential"))
+				}
+			},
+			wantOK:      false,
+			wantState:   string(ProviderStateFailing),
+			wantFails:   providerFailingThreshold,
+			wantErrAt:   base.Format(time.RFC3339),
+			wantOKAt:    nil,
+			wantBackoff: base.Add(20 * time.Second).Format(time.RFC3339),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			health := NewProviderHealth(func() time.Time { return base }, nil)
+			if tt.mutate != nil {
+				tt.mutate(health)
+			}
+			_, ts := newBrokerTestServer(t, &serverFakeProvider{}, ServerConfig{ProviderHealth: health})
+
+			body := getBrokerHealth(t, ts)
+			if body["ok"] != true {
+				t.Fatalf("ok = %v, want true; provider state must not change original ok meaning", body["ok"])
+			}
+			if body["provider_ok"] != tt.wantOK {
+				t.Fatalf("provider_ok = %v, want %v", body["provider_ok"], tt.wantOK)
+			}
+			if body["provider_state"] != tt.wantState {
+				t.Fatalf("provider_state = %v, want %s", body["provider_state"], tt.wantState)
+			}
+			if body["provider_failures"] != tt.wantFails {
+				t.Fatalf("provider_failures = %v, want %v", body["provider_failures"], tt.wantFails)
+			}
+			if body["last_provider_error_at"] != tt.wantErrAt {
+				t.Fatalf("last_provider_error_at = %#v, want %#v", body["last_provider_error_at"], tt.wantErrAt)
+			}
+			if body["last_provider_success_at"] != tt.wantOKAt {
+				t.Fatalf("last_provider_success_at = %#v, want %#v", body["last_provider_success_at"], tt.wantOKAt)
+			}
+			if body["pool_backoff_until"] != tt.wantBackoff {
+				t.Fatalf("pool_backoff_until = %#v, want %#v", body["pool_backoff_until"], tt.wantBackoff)
+			}
+		})
+	}
+}
+
+func TestServerProviderBackoffDoesNotBlockColdLease(t *testing.T) {
+	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	health := NewProviderHealth(func() time.Time { return base }, nil)
+	for range providerFailingThreshold {
+		health.RecordFailure(errors.New("previous background provider failure"))
+	}
+	if _, active := health.BackoffActive(); !active {
+		t.Fatal("test setup: backoff should be active")
+	}
+
+	vm := newFakeVM(t, "cold-lease-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{ProviderHealth: health})
+
+	status, _ := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("cold lease status while provider backoff active = %d, want 200", status)
+	}
+	if got := provider.createdCount(); got != 1 {
+		t.Fatalf("provider create calls = %d, want 1; cold path must not consult backoff", got)
+	}
+}
+
 func getBrokerHealth(t *testing.T, ts *httptest.Server) map[string]any {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+livechat.RouteHealth, nil)

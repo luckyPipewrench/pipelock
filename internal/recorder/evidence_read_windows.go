@@ -12,6 +12,12 @@ const (
 	evidenceReadNonblockFlag = 0
 )
 
+// validateEvidenceFileAccess permits evidence access through the Windows
+// descriptor-identity validation path.
+func validateEvidenceFileAccess() error {
+	return nil
+}
+
 // Windows has no advisory whole-file lock equivalent to flock here, so the
 // writer-presence lock is a no-op. That is safe on its own: it only means
 // writers advertise nothing.
@@ -19,6 +25,7 @@ func lockEvidenceFileForWrite(_ *os.File) error {
 	return nil
 }
 
+// unlockEvidenceFile mirrors the no-op Windows writer lock.
 func unlockEvidenceFile(_ *os.File) error {
 	return nil
 }

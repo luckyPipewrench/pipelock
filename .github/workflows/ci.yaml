@@ -333,6 +333,37 @@ jobs:
       - name: internal/config test package builds on Windows
         run: go test -count=1 -run "TestWindows" ./internal/config/...
 
+  # Exercise the browser target's concrete fail-closed filesystem fallbacks,
+  # then compile the same contracts for WASI and AIX so build-tag gaps cannot
+  # silently remove their implementations.
+  test-unsupported-filesystems:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Run browser target fallback contracts
+        run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -count=1 -run "TestOpenRegularNonblockingFailsClosedOnUnsupportedPlatform|TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform" ./internal/securefile/... ./internal/recorder/...
+
+      - name: Compile WASI fallback contracts
+        run: |
+          GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/securefile-wasi.test ./internal/securefile
+          GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/recorder-wasi.test ./internal/recorder
+          GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/license-wasi.test ./internal/license
+
+      - name: Compile AIX fallback contracts
+        run: |
+          GOOS=aix GOARCH=ppc64 go test -c -o /tmp/recorder-aix.test ./internal/recorder
+          GOOS=aix GOARCH=ppc64 go test -c -o /tmp/license-aix.test ./internal/license
+
   lint:
     needs: [security-scan]
     runs-on: ubuntu-latest

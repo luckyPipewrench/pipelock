@@ -400,6 +400,7 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 
 		verdict := ScanResponse([]byte(line), sc)
 		verdict.Line = lineNum
+		verdict.Scanned = scanVerdictScope()
 
 		if !verdict.Clean && verdict.Error == "" {
 			foundInjection = true
@@ -426,6 +427,10 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 	}
 
 	return foundInjection, nil
+}
+
+func scanVerdictScope() []string {
+	return []string{jsonrpc.ScanScopeResponseInjection}
 }
 
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.

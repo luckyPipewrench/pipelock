@@ -135,6 +135,10 @@ type ServerConfig struct {
 	TrustForwardedFor bool
 	// AllowOrigin sets Access-Control-Allow-Origin. Empty disables CORS headers.
 	AllowOrigin string
+	// ProviderHealth, when non-nil, lets /api/live/health report whether the
+	// broker can actually reach its machine provider. Nil reports the provider
+	// as "unknown", preserving the previous response shape's meaning.
+	ProviderHealth *ProviderHealth
 }
 
 // Server is the broker HTTP front door. It is safe for concurrent use.
@@ -442,8 +446,28 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ph := s.cfg.ProviderHealth.Snapshot()
+	// HTTP 200 and the meaning of "ok" are BOTH preserved deliberately.
+	//
+	// "ok" continues to report only the broker's own gates (demo enabled, budget
+	// left, kill switch off) because the browser viewer and the pipelab.org
+	// iframe already consume it; redefining it would change their behaviour as a
+	// side effect of adding observability. Provider reachability is reported
+	// alongside it as provider_ok, which is what an uptime monitor should watch.
+	//
+	// Status stays 200 even when the provider is failing: the machine config
+	// currently defines no platform health check, but if one were ever added, a
+	// non-2xx here would make the platform restart or de-list the broker — an
+	// honest signal causing a self-inflicted outage. Report the failure in the
+	// body, not the status line.
 	writeBrokerJSON(w, http.StatusOK, map[string]any{
 		"ok":                         s.cfg.Gate.Open() && s.global.Open() && !s.killed.Load(),
+		"provider_ok":                ph.OK,
+		"provider_state":             string(ph.State),
+		"provider_failures":          ph.ConsecutiveFailures,
+		"last_provider_error_at":     nullableRFC3339(ph.LastErrAt),
+		"last_provider_success_at":   nullableRFC3339(ph.LastOKAt),
+		"pool_backoff_until":         nullableRFC3339(ph.BackoffUntil),
 		"in_use":                     s.cfg.Leases.ActiveLeases(),
 		"capacity":                   s.cfg.Leases.cfg.Concurrency.Cap(),
 		"budget_remaining":           s.global.Remaining(),
@@ -457,6 +481,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		// the viewer renders the widget and sends turnstile_token when present.
 		"turnstile_sitekey": s.cfg.TurnstileSitekey,
 	})
+}
+
+// nullableRFC3339 renders t as an RFC3339 string, or JSON null when unset, so a
+// consumer can distinguish "never happened" from a zero-value timestamp.
+func nullableRFC3339(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {

@@ -254,6 +254,11 @@ func TestBridgeProxy_CloseBeforeServeRejectsDial(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Close blocked before Serve started")
 	}
+	select {
+	case <-bp.watcherDone:
+	default:
+		t.Fatal("Close before Serve did not complete watcher lifecycle")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

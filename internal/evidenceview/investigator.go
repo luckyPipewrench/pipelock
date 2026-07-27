@@ -18,10 +18,19 @@ type ExplanationField struct {
 	Detail  string
 }
 
+type explanationRecordClass int
+
+const (
+	explanationRecordDecision explanationRecordClass = iota
+	explanationRecordLifecycle
+)
+
 // DecisionExplanation surfaces, in bounded prose, WHY the boundary decided as
 // it did for one receipt. Every field is independently populated; there is no
 // aggregate verdict beyond the receipt's own Verdict.
 type DecisionExplanation struct {
+	recordClass explanationRecordClass
+
 	// Core verdict
 	Verdict       ExplanationField
 	DecisionPhase ExplanationField
@@ -151,8 +160,14 @@ func ExplainReceipt(r receipt.Receipt) DecisionExplanation {
 
 	// Contaminated is meaningful only when SessionTaintLevel is present.
 	taintPresent := ar.SessionTaintLevel != ""
+	recordClass := explanationRecordDecision
+	if ar.SessionControl != nil {
+		recordClass = explanationRecordLifecycle
+	}
 
 	return DecisionExplanation{
+		recordClass: recordClass,
+
 		Verdict:       field("Verdict", ar.Verdict),
 		DecisionPhase: field("Decision Phase", ar.DecisionPhase),
 		Transport:     field("Transport", ar.Transport),
@@ -192,9 +207,27 @@ func ExplainReceipt(r receipt.Receipt) DecisionExplanation {
 	}
 }
 
-// Fields returns all explanation fields (excluding Verdict and ChainSeq which
-// are used as the heading) in display order. Used by the HTML template.
+// Fields returns applicable explanation fields (excluding Verdict and ChainSeq
+// which are used as the heading) in display order. Decision receipts keep
+// applicable but unpopulated fields as "not reported"; lifecycle receipts omit
+// scanner/decision-only concepts that cannot apply to session-control records.
 func (e DecisionExplanation) Fields() []ExplanationField {
+	if e.recordClass == explanationRecordLifecycle {
+		return []ExplanationField{
+			e.Transport,
+			e.PolicyHash,
+			e.ActionType,
+			e.SideEffectClass,
+			e.Reversibility,
+			e.Target,
+			e.Actor,
+			e.Principal,
+		}
+	}
+	return decisionExplanationFields(e)
+}
+
+func decisionExplanationFields(e DecisionExplanation) []ExplanationField {
 	return []ExplanationField{
 		e.Transport,
 		e.Method,

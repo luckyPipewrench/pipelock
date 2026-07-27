@@ -58,6 +58,50 @@ func newTestPool(t *testing.T, provider MachineProvider, limiter *livechat.Concu
 	return p
 }
 
+type poolCountingProvider struct {
+	inner MachineProvider
+
+	mu           sync.Mutex
+	createCalls  int
+	waitCalls    int
+	destroyCalls int
+	listCalls    int
+}
+
+func (p *poolCountingProvider) CreateMachine(ctx context.Context, spec MachineSpec) (*Machine, error) {
+	p.mu.Lock()
+	p.createCalls++
+	p.mu.Unlock()
+	return p.inner.CreateMachine(ctx, spec)
+}
+
+func (p *poolCountingProvider) WaitReady(ctx context.Context, id string) error {
+	p.mu.Lock()
+	p.waitCalls++
+	p.mu.Unlock()
+	return p.inner.WaitReady(ctx, id)
+}
+
+func (p *poolCountingProvider) DestroyMachine(ctx context.Context, id string) error {
+	p.mu.Lock()
+	p.destroyCalls++
+	p.mu.Unlock()
+	return p.inner.DestroyMachine(ctx, id)
+}
+
+func (p *poolCountingProvider) ListManagedMachines(ctx context.Context) ([]Machine, error) {
+	p.mu.Lock()
+	p.listCalls++
+	p.mu.Unlock()
+	return p.inner.ListManagedMachines(ctx)
+}
+
+func (p *poolCountingProvider) calls() (create, wait, destroy, list int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.createCalls, p.waitCalls, p.destroyCalls, p.listCalls
+}
+
 // TestPoolAcquireReturnsWarmVM verifies Acquire returns a warm VM when one is
 // ready, and ok=false when the pool is empty.
 func TestPoolAcquireReturnsWarmVM(t *testing.T) {
@@ -641,6 +685,150 @@ func TestPoolPauseDestroyFailureQuarantinesVM(t *testing.T) {
 	}
 	if limiter.InUse() != 0 {
 		t.Fatalf("InUse after paused quarantine retry = %d, want 0", limiter.InUse())
+	}
+}
+
+func TestPoolMaintainSkipsProviderCallsWhileBackedOffAndResumes(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	health := NewProviderHealth(func() time.Time { return now }, nil)
+	counter := &poolCountingProvider{inner: &fakeProvider{}}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool, err := NewPool(PoolConfig{
+		Provider:    counter,
+		Concurrency: limiter,
+		NewVMCode:   testVMCode(),
+		BuildSpec:   testBuildSpec,
+		Size:        1,
+		Now:         func() time.Time { return now },
+		Health:      health,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	health.RecordFailure(errors.New("provider rejected credential"))
+	pool.maintain(context.Background())
+	if create, wait, destroy, list := counter.calls(); create != 0 || wait != 0 || destroy != 0 || list != 0 {
+		t.Fatalf("provider calls while backed off = create:%d wait:%d destroy:%d list:%d, want all zero", create, wait, destroy, list)
+	}
+
+	now = now.Add(providerBackoffBase)
+	pool.maintain(context.Background())
+	if create, wait, destroy, list := counter.calls(); create != 1 || wait != 1 || destroy != 0 || list != 0 {
+		t.Fatalf("provider calls after backoff = create:%d wait:%d destroy:%d list:%d, want create:1 wait:1 destroy:0 list:0", create, wait, destroy, list)
+	}
+}
+
+func TestPoolMaintainNeverHandsOutStaleVMWhileBackedOff(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	health := NewProviderHealth(func() time.Time { return now }, nil)
+	counter := &poolCountingProvider{inner: &fakeProvider{}}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool, err := NewPool(PoolConfig{
+		Provider:    counter,
+		Concurrency: limiter,
+		NewVMCode:   testVMCode(),
+		BuildSpec:   testBuildSpec,
+		Size:        1,
+		MaxWarmAge:  time.Minute,
+		Now:         func() time.Time { return now },
+		Health:      health,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	pool.maintain(context.Background())
+	for range 6 {
+		health.RecordFailure(errors.New("provider rejected credential"))
+	}
+	now = now.Add(2 * time.Minute)
+	pool.maintain(context.Background())
+
+	if _, _, _, ok := pool.Acquire(); ok {
+		t.Fatal("stale warm VM was handed out while provider was backed off")
+	}
+	if _, _, destroy, _ := counter.calls(); destroy != 1 {
+		t.Fatalf("stale destroy attempts = %d, want 1", destroy)
+	}
+}
+
+func TestPoolNilHealthRetriesEveryMaintainTick(t *testing.T) {
+	counter := &poolCountingProvider{inner: &fakeProvider{createErr: errors.New("provider rejected credential")}}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool, err := NewPool(PoolConfig{
+		Provider:    counter,
+		Concurrency: limiter,
+		NewVMCode:   testVMCode(),
+		BuildSpec:   testBuildSpec,
+		Size:        1,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	pool.maintain(context.Background())
+	pool.maintain(context.Background())
+	if create, _, _, _ := counter.calls(); create != 2 {
+		t.Fatalf("create calls with nil Health = %d, want 2", create)
+	}
+	if limiter.InUse() != 0 {
+		t.Fatalf("InUse after repeated create failures = %d, want 0", limiter.InUse())
+	}
+}
+
+func TestPoolQuarantineBackoffHoldsSlotAndRecoversAfterWindow(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	health := NewProviderHealth(func() time.Time { return now }, nil)
+	inner := &destroyErrProvider{fakeProvider: &fakeProvider{}}
+	counter := &poolCountingProvider{inner: inner}
+	provider := NewHealthTrackingProvider(counter, health)
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool, err := NewPool(PoolConfig{
+		Provider:    provider,
+		Concurrency: limiter,
+		NewVMCode:   testVMCode(),
+		BuildSpec:   testBuildSpec,
+		Size:        1,
+		MaxWarmAge:  time.Minute,
+		Now:         func() time.Time { return now },
+		Health:      health,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	pool.maintain(context.Background())
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse after fill = %d, want 1", limiter.InUse())
+	}
+
+	inner.destroyErr = errors.New("provider rejected destroy")
+	now = now.Add(2 * time.Minute)
+	pool.maintain(context.Background())
+	if _, _, destroy, _ := counter.calls(); destroy != 1 {
+		t.Fatalf("destroy calls after failed stale recycle = %d, want 1", destroy)
+	}
+	if _, _, _, ok := pool.Acquire(); ok {
+		t.Fatal("fully quarantined VM was handed out; want no warm handout")
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse while quarantined = %d, want 1 (slot held for maybe-live VM)", limiter.InUse())
+	}
+
+	pool.maintain(context.Background())
+	if create, wait, destroy, list := counter.calls(); create != 1 || wait != 1 || destroy != 1 || list != 0 {
+		t.Fatalf("provider calls during backoff = create:%d wait:%d destroy:%d list:%d, want original counts 1/1/1/0", create, wait, destroy, list)
+	}
+
+	inner.destroyErr = nil
+	now = now.Add(providerBackoffBase)
+	pool.maintain(context.Background())
+	if create, wait, destroy, _ := counter.calls(); create != 2 || wait != 2 || destroy != 2 {
+		t.Fatalf("provider calls after quarantine recovery = create:%d wait:%d destroy:%d, want 2/2/2", create, wait, destroy)
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse after quarantine recovery/refill = %d, want 1", limiter.InUse())
 	}
 }
 

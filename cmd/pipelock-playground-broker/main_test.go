@@ -47,6 +47,75 @@ func (fakeProvider) ListManagedMachines(_ context.Context) ([]broker.Machine, er
 	return nil, nil
 }
 
+type trackingProvider struct {
+	mu          sync.Mutex
+	createErr   error
+	listErr     error
+	createCalls int
+	listCalls   int
+	createCh    chan struct{}
+	listCh      chan struct{}
+}
+
+func (p *trackingProvider) CreateMachine(_ context.Context, _ broker.MachineSpec) (*broker.Machine, error) {
+	p.mu.Lock()
+	p.createCalls++
+	ch := p.createCh
+	err := p.createErr
+	p.mu.Unlock()
+	signalTestCall(ch)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Machine{ID: "tracked-create", State: "started", PrivateIP: "fdaa::1"}, nil
+}
+
+func (p *trackingProvider) WaitReady(_ context.Context, _ string) error {
+	return nil
+}
+
+func (p *trackingProvider) DestroyMachine(_ context.Context, _ string) error {
+	return nil
+}
+
+func (p *trackingProvider) ListManagedMachines(_ context.Context) ([]broker.Machine, error) {
+	p.mu.Lock()
+	p.listCalls++
+	ch := p.listCh
+	err := p.listErr
+	p.mu.Unlock()
+	signalTestCall(ch)
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (p *trackingProvider) setListErr(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listErr = err
+}
+
+func signalTestCall(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func waitTestCall(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -164,6 +233,100 @@ func TestMergeSessionAndBaseEnvLayersSessionOverBase(t *testing.T) {
 	}
 }
 
+func TestBuildServerWiresProviderHealthToWarmPoolAndHealthEndpoint(t *testing.T) {
+	provider := &trackingProvider{
+		createErr: errors.New("provider rejected credential"),
+		createCh:  make(chan struct{}, 1),
+	}
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return provider, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	var out bytes.Buffer
+	srv, handler, _, pool, err := buildServer(context.Background(), &out, testServeFlags(t, 1))
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	if pool == nil {
+		t.Fatal("warm pool is nil, want enabled pool")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Run(ctx)
+	}()
+	waitTestCall(t, provider.createCh, "warm-pool create")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for warm pool maintainer to exit")
+	}
+
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	health := getMainHealth(t, ts)
+	if health["provider_state"] != string(broker.ProviderStateDegraded) {
+		t.Fatalf("provider_state = %v, want degraded", health["provider_state"])
+	}
+	if health["provider_failures"] != float64(1) {
+		t.Fatalf("provider_failures = %v, want 1", health["provider_failures"])
+	}
+	if strings.Contains(out.String(), "fly-file-token") {
+		t.Fatalf("operator output leaked token: %q", out.String())
+	}
+}
+
+func TestBuildServerWarmPoolDisabledReaperFeedsProviderHealth(t *testing.T) {
+	provider := &trackingProvider{
+		listErr: errors.New("provider rejected credential"),
+		listCh:  make(chan struct{}, 4),
+	}
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return provider, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	srv, handler, startReaper, pool, err := buildServer(context.Background(), io.Discard, testServeFlags(t, 0))
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	if pool != nil {
+		t.Fatal("warm pool should be disabled for this test")
+	}
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	if health := getMainHealth(t, ts); health["provider_state"] != string(broker.ProviderStateUnknown) {
+		t.Fatalf("initial provider_state = %v, want unknown", health["provider_state"])
+	}
+
+	runReaperStartupOnce(t, startReaper, provider.listCh)
+	health := getMainHealth(t, ts)
+	if health["provider_state"] != string(broker.ProviderStateDegraded) {
+		t.Fatalf("provider_state after reaper failure = %v, want degraded", health["provider_state"])
+	}
+	if health["provider_failures"] != float64(1) {
+		t.Fatalf("provider_failures after reaper failure = %v, want 1", health["provider_failures"])
+	}
+
+	provider.setListErr(nil)
+	runReaperStartupOnce(t, startReaper, provider.listCh)
+	health = getMainHealth(t, ts)
+	if health["provider_state"] != string(broker.ProviderStateOK) {
+		t.Fatalf("provider_state after reaper recovery = %v, want ok", health["provider_state"])
+	}
+	if health["provider_failures"] != float64(0) {
+		t.Fatalf("provider_failures after reaper recovery = %v, want 0", health["provider_failures"])
+	}
+}
+
 func TestBuildServerStaticDir(t *testing.T) {
 	dir := t.TempDir()
 	uiDir := filepath.Join(dir, "ui")
@@ -256,7 +419,6 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 		vmDailyTurnBudget:     10,
 		requireSessionSecrets: false,
 		embedOrigins:          []string{testEmbedOrigin},
-		turnstileOrigin:       "https://challenge.vendor.example",
 	})
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
@@ -278,7 +440,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("GET %s status = %d, want 200", tc.path, resp.StatusCode)
 			}
-			assertBrokerSecurityHeaders(t, resp.Header, "https://challenge.vendor.example")
+			assertBrokerSecurityHeaders(t, resp.Header, "")
 		})
 	}
 }
@@ -499,8 +661,9 @@ func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
 		codeBurst:             defaultCodeBurst,
 		globalDailyBudget:     10,
 		turnstileSecretFile:   turnstileSecretFile,
+		turnstileSitekey:      "1x00000000000000000000AA",
 		turnstileVerifyURL:    verifyServer.URL,
-		turnstileOrigin:       "https://challenge.vendor.example",
+		turnstileOrigin:       defaultTurnstileOrigin,
 		sessionTTL:            defaultSessionTTL,
 		deadlineGrace:         defaultGrace,
 		vmDailyTurnBudget:     10,
@@ -591,6 +754,108 @@ func httpGetStatus(t *testing.T, rawURL string) (string, int) {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b), resp.StatusCode
+}
+
+func getMainHealth(t *testing.T, ts *httptest.Server) map[string]any {
+	t.Helper()
+	body, status := httpGetStatus(t, ts.URL+livechat.RouteHealth)
+	if status != http.StatusOK {
+		t.Fatalf("health status = %d, want 200; body=%q", status, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	return out
+}
+
+func runReaperStartupOnce(t *testing.T, startReaper func(context.Context), listCh <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		startReaper(ctx)
+	}()
+	waitTestCall(t, listCh, "reaper list")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reaper to exit")
+	}
+}
+
+func testServeFlags(t *testing.T, warmPoolSize int) *serveFlags {
+	t.Helper()
+	dir := t.TempDir()
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+	return &serveFlags{
+		listen:                defaultListen,
+		provider:              "fake",
+		flyApp:                "playground-test",
+		flyTokenFile:          flyTokenFile,
+		image:                 "registry.example/playground:test",
+		internalPort:          8080,
+		concurrency:           2,
+		codes:                 []string{"outer-code"},
+		maxPerCode:            defaultMaxPerCode,
+		gateSecretFile:        gateSecretFile,
+		ipRate:                defaultIPRate,
+		ipBurst:               defaultIPBurst,
+		codeRate:              defaultCodeRate,
+		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		unsafeNoHumanGate:     true,
+		sessionTTL:            defaultSessionTTL,
+		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
+		requireSessionSecrets: false,
+		warmPoolSize:          warmPoolSize,
+	}
+}
+
+func TestRunServeCheckConfigDoesNotResolveSecretsOrProvider(t *testing.T) {
+	f := testServeFlags(t, 0)
+	f.checkConfig = true
+	f.flyTokenFile = filepath.Join(t.TempDir(), "missing-fly-token")
+	f.gateSecretFile = filepath.Join(t.TempDir(), "missing-gate-secret")
+	f.staticDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(f.staticDir, "index.html"), []byte(`<script src="viewer.js"></script>`), 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	providerCalled := false
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		providerCalled = true
+		return nil, errors.New("provider must not be created during check-config")
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runServe(cmd, f); err != nil {
+		t.Fatalf("runServe check-config: %v", err)
+	}
+	if providerCalled {
+		t.Fatal("check-config created the machine provider")
+	}
+	if !strings.Contains(out.String(), "secrets and provider not contacted") {
+		t.Fatalf("check-config output = %q", out.String())
+	}
+
+	invalidHost := *f
+	invalidHost.publicHosts = []string{"bad host"}
+	if err := runServe(cmd, &invalidHost); err == nil || !strings.Contains(err.Error(), "--public-host") {
+		t.Fatalf("check-config invalid public host error = %v", err)
+	}
+	if providerCalled {
+		t.Fatal("invalid check-config created the machine provider")
+	}
 }
 
 func TestBuildServerValidation(t *testing.T) {
@@ -1071,14 +1336,39 @@ func TestValidateFlagsBranches(t *testing.T) {
 	turnstileGate.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 	turnstileGate.turnstileExpectedHostname = "playground.example"
 	turnstileGate.turnstileExpectedAction = "playground-session"
-	turnstileGate.turnstileOrigin = "https://challenge.vendor.example"
+	turnstileGate.turnstileSitekey = "1x00000000000000000000AA"
+	turnstileGate.turnstileOrigin = defaultTurnstileOrigin
 	if err := validateFlags(&turnstileGate); err != nil {
 		t.Fatalf("turnstile gate should validate: %v", err)
 	}
 	turnstileWithoutOrigin := turnstileGate
 	turnstileWithoutOrigin.turnstileOrigin = ""
-	if err := validateFlags(&turnstileWithoutOrigin); err == nil || !strings.Contains(err.Error(), "--turnstile-origin is required") {
-		t.Fatalf("Turnstile gate without origin error = %v, want required-origin error", err)
+	if err := validateFlags(&turnstileWithoutOrigin); err != nil {
+		t.Fatalf("Turnstile gate without explicit origin should use the Cloudflare default: %v", err)
+	}
+	if got := effectiveTurnstileOrigin(&turnstileWithoutOrigin); got != defaultTurnstileOrigin {
+		t.Fatalf("default Turnstile origin = %q, want %q", got, defaultTurnstileOrigin)
+	}
+	turnstileWithoutSitekey := turnstileGate
+	turnstileWithoutSitekey.turnstileSitekey = ""
+	if err := validateFlags(&turnstileWithoutSitekey); err == nil || !strings.Contains(err.Error(), "--turnstile-sitekey is required") {
+		t.Fatalf("Turnstile gate without sitekey error = %v, want required-sitekey error", err)
+	}
+	sitekeyWithoutSecret := turnstileGate
+	sitekeyWithoutSecret.turnstileSecretEnv = ""
+	sitekeyWithoutSecret.unsafeNoHumanGate = true
+	if err := validateFlags(&sitekeyWithoutSecret); err == nil || !strings.Contains(err.Error(), "--turnstile-sitekey requires") {
+		t.Fatalf("Turnstile sitekey without secret error = %v, want requires-secret error", err)
+	}
+	originWithoutSecret := sitekeyWithoutSecret
+	originWithoutSecret.turnstileSitekey = ""
+	if err := validateFlags(&originWithoutSecret); err == nil || !strings.Contains(err.Error(), "--turnstile-origin requires") {
+		t.Fatalf("Turnstile origin without secret error = %v, want requires-secret error", err)
+	}
+	unsupportedTurnstileOrigin := turnstileGate
+	unsupportedTurnstileOrigin.turnstileOrigin = "https://challenge.vendor.example"
+	if err := validateFlags(&unsupportedTurnstileOrigin); err == nil || !strings.Contains(err.Error(), "--turnstile-origin must be") {
+		t.Fatalf("unsupported Turnstile origin error = %v, want fixed-origin error", err)
 	}
 	if err := validateAllowOrigin("https://site.example:65535"); err != nil {
 		t.Fatalf("maximum valid origin port should validate: %v", err)
@@ -1616,12 +1906,66 @@ func TestBrokerContentSecurityPolicy_DefaultsToNoFraming(t *testing.T) {
 	}
 	for _, want := range []string{
 		"script-src 'self' blob: 'wasm-unsafe-eval' https://challenge.vendor.example;",
+		"script-src-attr 'none';",
 		"connect-src 'self' https://challenge.vendor.example;",
 		"frame-src https://challenge.vendor.example;",
 	} {
 		if !strings.Contains(withOrigin, want) {
 			t.Fatalf("CSP = %q, missing %q", withOrigin, want)
 		}
+	}
+}
+
+func TestValidateStaticUIRejectsCSPIncompatibleMarkup(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "external script", body: `<script src="viewer.js"></script>`},
+		{name: "Turnstile script", body: `<script src="` + defaultTurnstileOrigin + `/turnstile/v0/api.js"></script>`},
+		{name: "Turnstile script explicit HTTPS port", body: `<script src="` + defaultTurnstileOrigin + `:443/turnstile/v0/api.js"></script>`},
+		{name: "Turnstile script mixed case", body: `<script src="` + strings.ToUpper(defaultTurnstileOrigin) + `/turnstile/v0/api.js"></script>`},
+		{name: "JSON data block", body: `<script type="application/json">{"safe":true}</script>`},
+		{name: "inline script", body: `<script>window.bad = true</script>`, want: "inline script"},
+		{name: "inline handler", body: `<button onclick="bad()">go</button>`, want: "inline event handler"},
+		{name: "third-party script", body: `<script src="https://analytics.example/array.js"></script>`, want: "not permitted"},
+		{name: "protocol-relative script", body: `<script src="` + strings.TrimPrefix(defaultTurnstileOrigin, "https:") + `/x.js"></script>`, want: "not permitted"},
+		{name: "base element", body: `<base href="/">`, want: "base element"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(tc.body), 0o600); err != nil {
+				t.Fatalf("write index: %v", err)
+			}
+			err := validateStaticUI(dir, defaultTurnstileOrigin)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("validateStaticUI: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateStaticUI error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateStaticUIUsesRuntimeScriptOrigins(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(
+		`<script src="`+defaultTurnstileOrigin+`/turnstile/v0/api.js"></script>`,
+	), 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := validateStaticUI(dir, ""); err == nil || !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("validateStaticUI without Turnstile origin error = %v, want not permitted", err)
+	}
+	if err := validateStaticUI(dir, defaultTurnstileOrigin); err != nil {
+		t.Fatalf("validateStaticUI with Turnstile origin: %v", err)
 	}
 }
 

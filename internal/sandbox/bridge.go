@@ -125,6 +125,11 @@ func (bp *BridgeProxy) Close() {
 		bp.wg.Wait()
 		if waitForWatcher {
 			<-bp.watcherDone
+		} else {
+			// Serve may not have started yet even though the listener already
+			// accepted a queued connection. Complete the watcher lifecycle so
+			// a later Serve observes closed and callers never wait forever.
+			bp.watcherDoneOnce.Do(func() { close(bp.watcherDone) })
 		}
 	})
 }

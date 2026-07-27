@@ -6,6 +6,7 @@
 package securefile
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +16,10 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
+
+// ErrUnsupportedSecureOpen means the current platform cannot provide the
+// nonblocking, no-follow open required by Read's security contract.
+var ErrUnsupportedSecureOpen = errors.New("secure file open unsupported on this platform")
 
 // Options defines the filesystem boundary enforced by Read.
 type Options struct {

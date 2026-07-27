@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -31,6 +32,7 @@ type mcpExplainReport struct {
 	Target      string                 `json:"target,omitempty"`
 	TrustClass  string                 `json:"trust_class,omitempty"`
 	Allowed     bool                   `json:"allowed"`
+	Scanned     []string               `json:"scanned,omitempty"`
 	Scanner     string                 `json:"scanner,omitempty"`
 	Action      string                 `json:"action,omitempty"`
 	Patterns    []string               `json:"patterns,omitempty"`
@@ -159,6 +161,7 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 		Version:    cliutil.Version,
 		ServerName: serverName,
 		Target:     mcpResponseTargetDisplay(serverName),
+		Scanned:    []string{jsonrpc.ScanScopeResponseInjection},
 	}
 
 	// Merge installed rule bundles exactly as the runtime scanner would so

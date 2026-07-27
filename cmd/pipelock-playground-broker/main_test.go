@@ -1400,6 +1400,16 @@ func TestValidateFlagsBranches(t *testing.T) {
 	if err := validateFlags(&invalidExternalScriptOrigin); err == nil || !strings.Contains(err.Error(), "--external-script-origin") {
 		t.Fatalf("invalid external script origin error = %v, want flag-specific error", err)
 	}
+	invalidExternalConnectShape := externalOrigins
+	invalidExternalConnectShape.externalConnectOrigins = []string{"https://events.vendor.example/path"}
+	if err := validateFlags(&invalidExternalConnectShape); err == nil || !strings.Contains(err.Error(), "--external-connect-origin") {
+		t.Fatalf("invalid external connect origin shape error = %v, want flag-specific error", err)
+	}
+	invalidExternalScriptShape := externalOrigins
+	invalidExternalScriptShape.externalScriptOrigins = []string{"https://*.vendor.example"}
+	if err := validateFlags(&invalidExternalScriptShape); err == nil || !strings.Contains(err.Error(), "--external-script-origin") {
+		t.Fatalf("invalid external script origin shape error = %v, want flag-specific error", err)
+	}
 	cfAccessGate := noHumanGate
 	cfAccessGate.cfAccessTeamDomain = "team.cloudflareaccess.com"
 	cfAccessGate.cfAccessAUD = "aud"

@@ -137,11 +137,20 @@ func TestRunCmd_SelfManagedContainmentRejectsNegativeUIDs(t *testing.T) {
 }
 
 func TestRunCmd_UIDFlagsRequireSelfManagedContainment(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"run", "--run-dir", t.TempDir(), "--operator-uid", "1000"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "require --self-managed-containment") {
-		t.Fatalf("error = %v, want mode requirement", err)
+	for _, tc := range []struct {
+		name, flag, value string
+	}{
+		{name: "operator uid", flag: "--operator-uid", value: "1000"},
+		{name: "proxy uid", flag: "--proxy-uid", value: "967"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"run", "--run-dir", t.TempDir(), tc.flag, tc.value})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "require --self-managed-containment") {
+				t.Fatalf("error = %v, want mode requirement", err)
+			}
+		})
 	}
 }
 

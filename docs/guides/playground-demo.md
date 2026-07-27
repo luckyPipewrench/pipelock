@@ -85,16 +85,26 @@ operator_uid="$(id -u)"
 proxy_uid="$(id -u pipelock-proxy)"
 
 # The capture's in-process proxy must temporarily own the policy-authorized port.
-sudo systemctl stop pipelock
-trap 'sudo systemctl start pipelock' EXIT
+was_active=0
+if sudo systemctl is-active --quiet pipelock; then
+  was_active=1
+fi
+restore_pipelock() {
+  capture_status=$?
+  trap - EXIT
+  if [ "${was_active}" -eq 1 ] && ! sudo systemctl start pipelock; then
+    return 1
+  fi
+  return "${capture_status}"
+}
+trap restore_pipelock EXIT
+if [ "${was_active}" -eq 1 ]; then
+  sudo systemctl stop pipelock
+fi
 sudo pipelock-playground-demo run --contained --self-managed-containment \
   --toyagent-bin /usr/local/bin/pipelock-playground-toyagent \
   --operator-uid "${operator_uid}" --proxy-uid "${proxy_uid}" \
   --proxy-port 8888 --run-dir ./demo-run --scenario secret-exfil-body-blocked
-capture_rc=$?
-sudo systemctl start pipelock
-trap - EXIT
-test "${capture_rc}" -eq 0
 ```
 
 Contained capture mode requires root, the `pipelock-agent` OS user, and a

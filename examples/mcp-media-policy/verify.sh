@@ -172,6 +172,7 @@ else
   printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
   exit 1
 fi
+send_json '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
 # -- Tests 3–6 ----------------------------------------------------------------
 step "Test 3: text tool result allowed"

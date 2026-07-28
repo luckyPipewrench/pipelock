@@ -534,17 +534,24 @@ func TestUnknownScannerDefaultsToRedactedContentBearingFields(t *testing.T) {
 	}
 }
 
-// TestCoreSSRFKeepsFullURL pins the deliberate exclusion. An SSRF target is an
-// address rather than secret-shaped content, so redacting it would destroy the
-// operator's ability to see which destination was refused.
-func TestCoreSSRFKeepsFullURL(t *testing.T) {
+// TestCoreSSRFKeepsDestinationDropsRequestLine pins both directions of the
+// destination mode at once. The refused address survives, because an SSRF block
+// the operator cannot attribute to a destination is not actionable. Everything
+// after the authority is dropped, because a destination-class scanner routinely
+// reports a request before DLP inspects it and therefore cannot vouch for the
+// request line it is about to write to logs and external sinks.
+func TestCoreSSRFKeepsDestinationDropsRequestLine(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 	logger, err := New("json", "file", logPath, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const rawURL = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+	// A credential in the query is the case this pins: the core SSRF floor runs
+	// well ahead of the core DLP floor, so this request is attributed to SSRF and
+	// the detector that would have recognised the credential never sees it.
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "http://169.254.169.254/latest/meta-data/iam/security-credentials/?api_key=" + secret
 	logger.LogBlockedDetail(LogContext{
 		method:    testMethodGet,
 		url:       rawURL,
@@ -559,11 +566,80 @@ func TestCoreSSRFKeepsFullURL(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
-	if entry["url"] != rawURL {
-		t.Errorf("core_ssrf must keep the full destination, got %v", entry["url"])
+	const wantURL = "http://169.254.169.254"
+	if entry["url"] != wantURL {
+		t.Errorf("core_ssrf url = %v, want the destination only (%s)", entry["url"], wantURL)
+	}
+	if entry["target"] != wantURL {
+		t.Errorf("core_ssrf target = %v, want the destination only (%s)", entry["target"], wantURL)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatal("a credential in the query reached the audit record on a destination-class block")
 	}
 	if IsContentScanner(scannerpkg.ScannerCoreSSRF) {
-		t.Fatal("core_ssrf must opt into raw destination logging")
+		t.Fatal("core_ssrf must remain a destination-class scanner, not a fully redacted one")
+	}
+}
+
+// TestPathDiagnosticScannersKeepPathDropQuery pins the narrower mode. A path
+// traversal or CRLF block reports "sequence in URL" without naming the
+// sequence, so dropping the path would leave the operator with a block they
+// cannot investigate. The query is dropped regardless, because nothing about
+// either finding depends on it.
+func TestPathDiagnosticScannersKeepPathDropQuery(t *testing.T) {
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	for _, scanner := range []string{scannerpkg.ScannerPathTraversal, scannerpkg.ScannerCRLF} {
+		t.Run(scanner, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "test.log")
+			logger, err := New("json", "file", logPath, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger.LogBlockedDetail(LogContext{
+				method:    testMethodGet,
+				url:       "https://api.vendor.example/a/../../etc/passwd?api_key=" + secret,
+				clientIP:  testClientIP,
+				requestID: "req-path",
+			}, scanner, "sequence in URL", BlockDetail{})
+			logger.Close()
+
+			data, _ := os.ReadFile(filepath.Clean(logPath))
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("expected valid JSON: %v", err)
+			}
+			const wantURL = "https://api.vendor.example/a/../../etc/passwd"
+			if entry["url"] != wantURL {
+				t.Errorf("url = %v, want the path retained without the query (%s)", entry["url"], wantURL)
+			}
+			if strings.Contains(string(data), secret) {
+				t.Fatal("a credential in the query reached the audit record")
+			}
+		})
+	}
+}
+
+// TestDropURLContentSegmentsPreservesConnectAuthority pins the non-URL input
+// path. A forward-proxy CONNECT target is an authority, not an absolute URL, so
+// it must survive intact rather than collapse into a placeholder that would
+// make every tunnel block indistinguishable from every other.
+func TestDropURLContentSegmentsPreservesConnectAuthority(t *testing.T) {
+	tests := []struct {
+		raw      string
+		keepPath bool
+		want     string
+	}{
+		{raw: "evil.com:443", want: "evil.com:443"},
+		{raw: "evil.com:443?leak=secret", want: "evil.com:443"},
+		{raw: "https://host.example/p/q?a=b#frag", want: "https://host.example"},
+		{raw: "https://host.example/p/q?a=b#frag", keepPath: true, want: "https://host.example/p/q"},
+		{raw: "", want: ""},
+	}
+	for _, tt := range tests {
+		if got := dropURLContentSegments(tt.raw, tt.keepPath); got != tt.want {
+			t.Errorf("dropURLContentSegments(%q, %v) = %q, want %q", tt.raw, tt.keepPath, got, tt.want)
+		}
 	}
 }
 
@@ -773,7 +849,7 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	checks := map[string]any{
 		"event":           "blocked",
 		"method":          testMethodGet,
-		"url":             "https://evil.com/exfil",
+		"url":             "https://evil.com",
 		"scanner":         "blocklist",
 		"reason":          "domain in blocklist: evil.com",
 		"component":       "pipelock",
@@ -2624,7 +2700,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventBlocked),
 			wantKey:   "url",
-			wantValue: "http://forward.example/path",
+			wantValue: "http://forward.example",
 			absent:    []string{"target", "resource"},
 		},
 		{

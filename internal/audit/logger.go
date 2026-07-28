@@ -26,16 +26,29 @@ type contentFieldMode int
 
 const (
 	contentFieldModeRedacted contentFieldMode = iota
-	contentFieldModeRawDestination
+	contentFieldModeDestination
+	contentFieldModePathDiagnostic
 )
 
 // scannerContentFieldMode classifies URL/target/resource fields for audit
 // output. The default is redaction: future or misspelled scanner labels may be
 // content-bearing, so they must not silently echo paths, queries, or resources
-// into logs and external sinks. Network destination scanners opt into raw URL
-// logging because the destination itself is the diagnostic object.
+// into logs and external sinks.
+//
+// No mode emits a query string or fragment. Scanner order decides which
+// detector reports a request first, and a destination-class scanner routinely
+// fires ahead of DLP: the core SSRF floor runs several stages before the core
+// DLP floor, so a request to a metadata address carrying a credential in its
+// query is attributed to SSRF and never reaches the detector that would have
+// recognised the credential. Classifying by scanner identity therefore cannot
+// decide whether a URL is safe to log; only the URL component can. Query and
+// fragment are operand-carrying by construction and are always dropped.
 func scannerContentFieldMode(scanner string) contentFieldMode {
 	switch scanner {
+	case scannerpkg.ScannerPathTraversal,
+		scannerpkg.ScannerCRLF:
+		// The path is the finding itself; a block is not diagnosable without it.
+		return contentFieldModePathDiagnostic
 	case scannerpkg.ScannerSSRF,
 		scannerpkg.ScannerSSRFMetadata,
 		scannerpkg.ScannerCoreSSRF,
@@ -43,13 +56,12 @@ func scannerContentFieldMode(scanner string) contentFieldMode {
 		scannerpkg.ScannerBlocklist,
 		scannerpkg.ScannerRateLimit,
 		scannerpkg.ScannerDataBudget,
-		scannerpkg.ScannerPathTraversal,
-		scannerpkg.ScannerCRLF,
 		scannerpkg.ScannerContext,
 		"mcp_tool_scanning",
 		scannerpkg.AuditMCPSessionBinding,
 		scannerpkg.AuditFrozenTool:
-		return contentFieldModeRawDestination
+		// The destination, not the request line, is the diagnostic object.
+		return contentFieldModeDestination
 	default:
 		return contentFieldModeRedacted
 	}
@@ -65,18 +77,50 @@ func IsContentScanner(name string) bool {
 }
 
 func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTarget, loggedResource string) {
-	loggedURL = ctx.url
-	loggedTarget = ctx.target
 	loggedResource = ctx.resource
-	if scannerContentFieldMode(scanner) == contentFieldModeRawDestination {
+	switch scannerContentFieldMode(scanner) {
+	case contentFieldModeDestination:
+		return dropURLContentSegments(ctx.url, false),
+			dropURLContentSegments(ctx.target, false),
+			loggedResource
+	case contentFieldModePathDiagnostic:
+		return dropURLContentSegments(ctx.url, true),
+			dropURLContentSegments(ctx.target, true),
+			loggedResource
+	default:
+		loggedURL = redactContentBearingURL(ctx.url)
+		loggedTarget = redactContentBearingURL(ctx.target)
+		if loggedResource != "" {
+			loggedResource = "[redacted]"
+		}
 		return loggedURL, loggedTarget, loggedResource
 	}
-	loggedURL = redactContentBearingURL(ctx.url)
-	loggedTarget = redactContentBearingURL(ctx.target)
-	if loggedResource != "" {
-		loggedResource = "[redacted]"
+}
+
+// dropURLContentSegments removes the query and fragment from raw, and removes
+// the path as well unless keepPath is set. A value that does not parse as an
+// absolute URL is truncated at the first query or fragment delimiter instead of
+// being replaced wholesale, so a forward-proxy CONNECT authority such as
+// host:443 survives intact while nothing after a delimiter can ride through.
+func dropURLContentSegments(raw string, keepPath bool) string {
+	if raw == "" {
+		return ""
 	}
-	return loggedURL, loggedTarget, loggedResource
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		if i := strings.IndexAny(raw, "?#"); i >= 0 {
+			return raw[:i]
+		}
+		return raw
+	}
+	out := u.Host
+	if u.Scheme != "" {
+		out = u.Scheme + "://" + u.Host
+	}
+	if keepPath {
+		out += u.EscapedPath()
+	}
+	return out
 }
 
 // RedactContentBearingURL returns a URL safe to echo when a

@@ -17,6 +17,7 @@ const EventDLPWarn EventType = "dlp_warn"
 // Transport identifies the scanning surface (e.g., "fetch", "forward", "mcp_input", "body").
 func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport string) {
 	technique := TechniqueForScanner(ScannerDLP)
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, ScannerDLP)
 
 	e := newLogEntry(l.zl.Warn(), EventDLPWarn).
 		str("mode", "warn").
@@ -26,9 +27,9 @@ func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport str
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerDLP, patternName)).
 		str("mitre_technique", technique).
 		str("method", ctx.Method()).
-		optStr("url", ctx.URL()).
-		optStr("target", ctx.Target()).
-		optStr("resource", ctx.Resource()).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
 		optStr("agent", ctx.Agent())

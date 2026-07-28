@@ -353,7 +353,7 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	if entry["event"] != "anomaly" {
 		t.Errorf("expected event=anomaly, got %v", entry["event"])
 	}
-	if entry["url"] != "https://sus.com/data" {
+	if entry["url"] != "https://sus.com/[redacted]" {
 		t.Errorf("expected url, got %v", entry["url"])
 	}
 	if entry["reason"] != "high entropy segment" {
@@ -478,6 +478,62 @@ func TestCoreFloorScannersRedactContentBearingFields(t *testing.T) {
 	}
 }
 
+func TestUnknownScannerDefaultsToRedactedContentBearingFields(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/v1/upload?key=" + secret
+	scanner := "future_" + "content_scanner"
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger.LogBlockedDetail(LogContext{
+		method:    testMethodGet,
+		url:       rawURL,
+		target:    rawURL,
+		resource:  secret,
+		clientIP:  testClientIP,
+		requestID: "req-unknown-redact",
+		agent:     testAgentName,
+	}, scanner, "future scanner matched content", BlockDetail{})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(logPath))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("unknown scanner leaked the matched credential: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted url, got %v", entry["url"])
+	}
+	if entry["target"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["resource"] != "[redacted]" {
+		t.Errorf("expected redacted resource, got %v", entry["resource"])
+	}
+	if entry["request_id"] != "req-unknown-redact" {
+		t.Errorf("expected request_id to survive redaction, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != scanner {
+		t.Errorf("expected scanner to survive redaction, got %v", entry["scanner"])
+	}
+	if entry["reason"] != "future scanner matched content" {
+		t.Errorf("expected reason to survive redaction, got %v", entry["reason"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent to survive redaction, got %v", entry["agent"])
+	}
+	if !IsContentScanner(scanner) {
+		t.Fatal("unknown scanner must be treated as content-bearing")
+	}
+}
+
 // TestCoreSSRFKeepsFullURL pins the deliberate exclusion. An SSRF target is an
 // address rather than secret-shaped content, so redacting it would destroy the
 // operator's ability to see which destination was refused.
@@ -505,6 +561,9 @@ func TestCoreSSRFKeepsFullURL(t *testing.T) {
 	}
 	if entry["url"] != rawURL {
 		t.Errorf("core_ssrf must keep the full destination, got %v", entry["url"])
+	}
+	if IsContentScanner(scannerpkg.ScannerCoreSSRF) {
+		t.Fatal("core_ssrf must opt into raw destination logging")
 	}
 }
 
@@ -2605,7 +2664,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventAnomaly),
 			wantKey:   "resource",
-			wantValue: "resources/read",
+			wantValue: "[redacted]",
 			absent:    []string{"url", "target"},
 		},
 		{

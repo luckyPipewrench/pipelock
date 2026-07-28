@@ -22,38 +22,37 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// contentScanners identify block sources where the blocked URL (or target)
-// likely contains the very bytes that triggered the match - DLP firing on
-// a query-param-embedded API key, seed-phrase detection on an address
-// embedded in the path, etc. When a block comes from one of these
-// scanners, LogBlocked truncates the URL/target to scheme+host before
-// emitting to structured logs so the credential is not echoed verbatim
-// into the audit stream. Network-layer scanners (ssrf, blocklist) or
-// scanners that never see URL contents (airlock, kill_switch) are not in
-// this set; their full-URL logs are unambiguously safe.
-//
-// Pre-tag gate finding: a fetch URL containing a credential in the query
-// string was blocked by DLP but the client 403 body AND the structured
-// log both echoed the raw token back.
-// The core_* entries are the immutable floors, which are the STRICTEST
-// detectors in the product: they fire on real credential shapes and cannot be
-// exempted by config. Omitting them inverted the intended posture, because the
-// configurable "dlp" scanner redacted while the core floor that caught the same
-// credential logged it verbatim, into the audit stream and onward to every
-// configured sink. core_ssrf is deliberately absent: an SSRF target is an
-// address, not secret-shaped content, so its full URL stays useful and safe.
-var contentScanners = map[string]struct{}{
-	"dlp":                   {},
-	"core_dlp":              {},
-	"body_dlp":              {},
-	"body_prompt_injection": {},
-	"header_dlp":            {},
-	"mcp_input_scanning":    {},
-	"response_scan":         {},
-	"core_response":         {},
-	"address_protection":    {},
-	"seed_phrase":           {},
-	"cross_request_entropy": {},
+type contentFieldMode int
+
+const (
+	contentFieldModeRedacted contentFieldMode = iota
+	contentFieldModeRawDestination
+)
+
+// scannerContentFieldMode classifies URL/target/resource fields for audit
+// output. The default is redaction: future or misspelled scanner labels may be
+// content-bearing, so they must not silently echo paths, queries, or resources
+// into logs and external sinks. Network destination scanners opt into raw URL
+// logging because the destination itself is the diagnostic object.
+func scannerContentFieldMode(scanner string) contentFieldMode {
+	switch scanner {
+	case scannerpkg.ScannerSSRF,
+		scannerpkg.ScannerSSRFMetadata,
+		scannerpkg.ScannerCoreSSRF,
+		scannerpkg.ScannerAllowlist,
+		scannerpkg.ScannerBlocklist,
+		scannerpkg.ScannerRateLimit,
+		scannerpkg.ScannerDataBudget,
+		scannerpkg.ScannerPathTraversal,
+		scannerpkg.ScannerCRLF,
+		scannerpkg.ScannerContext,
+		"mcp_tool_scanning",
+		scannerpkg.AuditMCPSessionBinding,
+		scannerpkg.AuditFrozenTool:
+		return contentFieldModeRawDestination
+	default:
+		return contentFieldModeRedacted
+	}
 }
 
 // IsContentScanner reports whether blocks attributed to the given scanner
@@ -62,15 +61,14 @@ var contentScanners = map[string]struct{}{
 // reverse proxy, forward proxy) should redact the URL/target before
 // echoing it back so the credential is not returned to the caller.
 func IsContentScanner(name string) bool {
-	_, ok := contentScanners[name]
-	return ok
+	return scannerContentFieldMode(name) == contentFieldModeRedacted
 }
 
 func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTarget, loggedResource string) {
 	loggedURL = ctx.url
 	loggedTarget = ctx.target
 	loggedResource = ctx.resource
-	if _, redact := contentScanners[scanner]; !redact {
+	if scannerContentFieldMode(scanner) == contentFieldModeRawDestination {
 		return loggedURL, loggedTarget, loggedResource
 	}
 	loggedURL = redactContentBearingURL(ctx.url)

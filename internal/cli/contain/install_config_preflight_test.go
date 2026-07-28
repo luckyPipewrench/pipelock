@@ -180,12 +180,51 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 	assertSawCall(t, runner, testSystemctl, "enable", "--now", "pipelock")
 }
 
+func TestRunInstall_ConfigPreflightRefusesBinaryChangedBeforeInstall(t *testing.T) {
+	env, runner, _ := newPreflightInstallEnv(t)
+	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+		t.Fatalf("write ca export: %v", err)
+	}
+	src := writePreflightConfig(t, "clean.yaml", "mode: balanced\n")
+
+	origChown := env.chown
+	mutated := false
+	env.chown = func(path string, uid, gid int) error {
+		if !mutated {
+			mutated = true
+			if err := os.WriteFile(env.pipelockBinary, []byte("unchecked replacement binary"), 0o600); err != nil {
+				t.Fatalf("mutate source binary: %v", err)
+			}
+		}
+		return origChown(path, uid, gid)
+	}
+
+	err := runInstall(context.Background(), env, installOpts{configSource: src})
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+	if err == nil {
+		t.Fatal("runInstall succeeded, want binary TOCTOU failure")
+	}
+	for _, want := range []string{
+		"source binary",
+		env.pipelockBinary,
+		"changed after config preflight",
+		"refusing to install an unvalidated binary",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(env.pipelockTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("installed binary changed despite preflight race refusal: stat err=%v", statErr)
+	}
+}
+
 func TestRunInstall_ConfigPreflightAllowsValidExistingManagedConfigWithoutConfigFlag(t *testing.T) {
 	env, runner, buf := newPreflightInstallEnv(t)
 	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
 		t.Fatalf("write ca export: %v", err)
 	}
-	target := seedManagedConfig(t, env, "mode: balanced\n")
+	target := seedManagedConfig(t, env)
 
 	if err := runInstall(context.Background(), env, installOpts{}); err != nil {
 		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
@@ -204,7 +243,7 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 			name: "selected binary command error",
 			run: func(t *testing.T, env *installEnv, runner *fakeRunner) error {
 				t.Helper()
-				target := seedManagedConfig(t, env, "mode: balanced\n")
+				target := seedManagedConfig(t, env)
 				runner.on(argvFor(env.pipelockBinary, "check", "--config", target), "", -1, errors.New("exec failed"))
 				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
 			},
@@ -214,11 +253,59 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 			name: "selected binary nonzero with empty output",
 			run: func(t *testing.T, env *installEnv, runner *fakeRunner) error {
 				t.Helper()
-				target := seedManagedConfig(t, env, "mode: balanced\n")
+				target := seedManagedConfig(t, env)
 				runner.on(argvFor(env.pipelockBinary, "check", "--config", target), "", 2, nil)
 				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
 			},
 			want: "pipelock check exited 2",
+		},
+		{
+			name: "selected binary hash before check fails",
+			run: func(t *testing.T, env *installEnv, _ *fakeRunner) error {
+				t.Helper()
+				seedManagedConfig(t, env)
+				env.hashFile = func(string) (string, error) {
+					return "", errors.New("hash before failed")
+				}
+				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
+			},
+			want: "hash selected binary before check: hash before failed",
+		},
+		{
+			name: "selected binary hash after check fails",
+			run: func(t *testing.T, env *installEnv, _ *fakeRunner) error {
+				t.Helper()
+				seedManagedConfig(t, env)
+				origHash := env.hashFile
+				calls := 0
+				env.hashFile = func(path string) (string, error) {
+					calls++
+					if calls == 2 {
+						return "", errors.New("hash after failed")
+					}
+					return origHash(path)
+				}
+				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
+			},
+			want: "hash selected binary after check: hash after failed",
+		},
+		{
+			name: "selected binary changes during check",
+			run: func(t *testing.T, env *installEnv, runner *fakeRunner) error {
+				t.Helper()
+				target := seedManagedConfig(t, env)
+				runner.on(argvFor(env.pipelockBinary, "check", "--config", target), "", 0, nil)
+				origRun := env.runCmd
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					out, code, err := origRun(ctx, name, args...)
+					if err := os.WriteFile(env.pipelockBinary, []byte("replacement during check"), 0o600); err != nil {
+						t.Fatalf("mutate source binary: %v", err)
+					}
+					return out, code, err
+				}
+				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
+			},
+			want: "selected binary changed during config check",
 		},
 		{
 			name: "managed config stat error",
@@ -258,6 +345,52 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 	}
 }
 
+func TestStepInstallPipelockBinaryRefusesSourceChangedWhileReading(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.preflightBinaryHash = mustHashFile(t, env, env.pipelockBinary)
+	origReadFile := env.readFile
+	env.readFile = func(path string) ([]byte, error) {
+		data, err := origReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if path == env.pipelockBinary {
+			return append([]byte(nil), append(data, []byte("unchecked suffix")...)...), nil
+		}
+		return data, nil
+	}
+
+	changed, err := stepInstallPipelockBinary().apply(context.Background(), env)
+	if err == nil {
+		t.Fatal("stepInstallPipelockBinary succeeded, want source changed while reading failure")
+	}
+	if changed {
+		t.Fatal("stepInstallPipelockBinary reported change despite refusing source changed while reading")
+	}
+	for _, want := range []string{
+		"source binary",
+		env.pipelockBinary,
+		"changed while reading after config preflight",
+		"refusing to install an unvalidated binary",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(env.pipelockTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("installed binary changed despite read-race refusal: stat err=%v", statErr)
+	}
+}
+
+func mustHashFile(t *testing.T, env *installEnv, path string) string {
+	t.Helper()
+	hash, err := env.hashFile(path)
+	if err != nil {
+		t.Fatalf("hash %s: %v", path, err)
+	}
+	return hash
+}
+
 func newPreflightInstallEnv(t *testing.T) (*installEnv, *fakeRunner, *strings.Builder) {
 	t.Helper()
 	env, runner, buf := newFakeEnv(t)
@@ -289,10 +422,10 @@ func writePreflightConfig(t *testing.T, name, body string) string {
 	return path
 }
 
-func seedManagedConfig(t *testing.T, env *installEnv, body string) string {
+func seedManagedConfig(t *testing.T, env *installEnv) string {
 	t.Helper()
 	target := managedPipelockConfigPath(env)
-	if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("mode: balanced\n"), 0o600); err != nil {
 		t.Fatalf("write managed config: %v", err)
 	}
 	return target

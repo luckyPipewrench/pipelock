@@ -5,6 +5,8 @@ package contain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -946,6 +948,12 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 			"  [INFO] dry-run config preflight: validating --config %s before it would be installed as %s\n",
 			target.checkPath, target.unitPath)
 	}
+	binaryHashBefore, err := env.hashFile(env.pipelockBinary)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: hash selected binary before check: %w. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+			target.unitPath, env.pipelockBinary, err)
+	}
 	out, code, err := env.runCmd(ctx, env.pipelockBinary, "check", "--config", target.checkPath)
 	if err != nil {
 		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
@@ -960,6 +968,20 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %s. "+
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; remove the unsupported or invalid field from the config and rerun install",
 			target.unitPath, env.pipelockBinary, oneLine(detail))
+	}
+	binaryHashAfter, err := env.hashFile(env.pipelockBinary)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: hash selected binary after check: %w. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+			target.unitPath, env.pipelockBinary, err)
+	}
+	if binaryHashAfter != binaryHashBefore {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: selected binary changed during config check. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; rerun install with a stable --pipelock-binary path",
+			target.unitPath, env.pipelockBinary)
+	}
+	if !dryRun {
+		env.preflightBinaryHash = binaryHashAfter
 	}
 	return nil
 }
@@ -1062,9 +1084,24 @@ func stepInstallPipelockBinary() step {
 		name: "install-pipelock-binary",
 		desc: "install pipelock binary to /usr/local/bin/pipelock (0o755)",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			if env.preflightBinaryHash != "" {
+				srcHash, err := env.hashFile(env.pipelockBinary)
+				if err != nil {
+					return false, fmt.Errorf("hash source binary before install: %w", err)
+				}
+				if srcHash != env.preflightBinaryHash {
+					return false, fmt.Errorf("source binary %s changed after config preflight; refusing to install an unvalidated binary", env.pipelockBinary)
+				}
+			}
 			data, err := env.readFile(env.pipelockBinary)
 			if err != nil {
 				return false, fmt.Errorf("read source binary: %w", err)
+			}
+			if env.preflightBinaryHash != "" {
+				sum := sha256.Sum256(data)
+				if got := hex.EncodeToString(sum[:]); got != env.preflightBinaryHash {
+					return false, fmt.Errorf("source binary %s changed while reading after config preflight; refusing to install an unvalidated binary", env.pipelockBinary)
+				}
 			}
 
 			// Idempotency: if /usr/local/bin/pipelock exists AND its sha256

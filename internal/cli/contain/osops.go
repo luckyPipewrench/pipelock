@@ -105,6 +105,7 @@ type installEnv struct {
 	prevNFTTableStateKnown   bool
 	prevNFTPersistEnabled    bool
 	prevNFTPersistStateKnown bool
+	preflightBinaryHash      string
 	archivedBackups          map[string][]string
 }
 

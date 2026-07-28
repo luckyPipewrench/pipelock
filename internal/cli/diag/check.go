@@ -129,6 +129,14 @@ func checkConfigAdvisories(cfg *config.Config) []string {
 		advisories = append(advisories, msg)
 	}
 
+	// A budget pinned to principal-grade subject identification refuses every
+	// tool call in this build, because no shipped path resolves an
+	// authenticated MCP principal. Operators must see that here, not one
+	// refusal at a time in production.
+	if msg, ok := cfg.DoWPrincipalTrustAdvisory(); ok {
+		advisories = append(advisories, msg)
+	}
+
 	if cfg.Conductor.Enabled {
 		_, err := license.VerifyFleetWithOptions(fleetVerifyInputsFromConfig(cfg))
 		if err != nil {

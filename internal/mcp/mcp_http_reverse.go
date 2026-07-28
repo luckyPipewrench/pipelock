@@ -141,9 +141,11 @@ func newReverseUpstreamClient(dialContext func(ctx context.Context, network, add
 // adaptive enforcement signal tracking per logical MCP session.
 //
 // DoW enforcement is stricter: when DoWEnforceSubjectTrust is true, a tool or
-// A2A call must present an Mcp-Session-Id that this listener observed in an
-// upstream response. A raw inbound header by itself is not trusted as a budget
-// key.
+// A2A call is refused unless its subject is identified at or above
+// DoWMinSubjectTrust. Grades run network < agent < principal; see
+// dowSubjectTrustFor. An agent identity Pipelock did not bind or configure
+// stays at network grade, so a request-supplied name cannot buy a stronger
+// grade or a fresh budget bucket.
 //
 // Endpoints:
 //   - POST / : scan and forward JSON-RPC requests to upstream
@@ -1757,13 +1759,26 @@ func a2aHeaderBlockReason(result A2AScanResult) blockreason.Reason {
 }
 
 func validateListenerUpstreamHeaders(headers http.Header) error {
-	for _, name := range []string{listenerAuthorization, listenerProtocolVersion, "A2A-Extensions", "A2A-Version"} {
+	for _, name := range []string{
+		listenerAuthorization, listenerProtocolVersion,
+		listenerMCPMethod, listenerMCPName,
+		"A2A-Extensions", "A2A-Version",
+	} {
 		if len(headers.Values(name)) > 1 {
 			return fmt.Errorf("operator upstream header %s must appear at most once", name)
 		}
 	}
 	if !validMCPProtocolVersion(headers.Values(listenerProtocolVersion)) {
 		return fmt.Errorf("operator upstream %s must be a valid YYYY-MM-DD protocol version", listenerProtocolVersion)
+	}
+	// Operator-pinned routing headers get the same shape check the client's do.
+	// Pinning a malformed value would otherwise fail every request at runtime
+	// rather than refusing to start, and a pinned value overrides the client's,
+	// so it is the one the upstream actually routes on.
+	for _, name := range []string{listenerMCPMethod, listenerMCPName} {
+		if !validMCPRoutingHeader(headers.Values(name)) {
+			return fmt.Errorf("operator upstream %s must be a non-empty visible ASCII value of at most 256 bytes", name)
+		}
 	}
 	if values := headers.Values(listenerAuthorization); len(values) > 0 && !validVisibleSingletonHeader(values, 8192) {
 		return fmt.Errorf("operator upstream %s must be a non-empty visible ASCII value of at most 8192 bytes", listenerAuthorization)

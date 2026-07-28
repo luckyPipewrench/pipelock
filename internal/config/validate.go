@@ -270,6 +270,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	c.validateTLSInterceptionCoverage(&warnings)
+	c.validateDoWPrincipalTrust(&warnings)
 	if err := c.validateToolChainDetection(); err != nil {
 		return warnings, err
 	}
@@ -2398,6 +2399,36 @@ func (c *Config) TLSInterceptionCoverageAdvisory() (string, bool) {
 		return "", false
 	}
 	return tlsInterceptionCoverageMessage, true
+}
+
+// DoWPrincipalTrustAdvisory returns an operator advisory, and true, when a
+// budget demands principal-grade subject identification.
+//
+// No shipped runtime path resolves an authenticated MCP principal yet: the seam
+// exists (MCPProxyOpts.DoWAuthenticatedPrincipal) but nothing sets it, so every
+// request currently grades below principal. A budget pinned to that grade
+// therefore refuses every tool call, which reads as a total outage rather than
+// as the posture the operator chose. Config validation cannot see runtime
+// wiring, so this is an advisory rather than an error: it must fire at load,
+// where an operator can act on it, instead of surfacing one refusal at a time.
+func (c *Config) DoWPrincipalTrustAdvisory() (string, bool) {
+	for name, ap := range c.Agents {
+		if ap.Budget.MinSubjectTrust() != DoWTrustPrincipal {
+			continue
+		}
+		return fmt.Sprintf(
+			"agents.%s.budget.dow_min_subject_trust is %q, but no authenticated MCP principal source is wired in this build, so every request grades below it and every tool call under this budget will be refused. Use %q or %q unless an authenticated principal is supplied by a deployment-specific integration.",
+			name, DoWTrustPrincipal, DoWTrustNetwork, DoWTrustAgent), true
+	}
+	return "", false
+}
+
+// validateDoWPrincipalTrust surfaces DoWPrincipalTrustAdvisory as a non-fatal
+// Validate warning. It changes no enforcement behavior.
+func (c *Config) validateDoWPrincipalTrust(warnings *[]Warning) {
+	if msg, ok := c.DoWPrincipalTrustAdvisory(); ok {
+		*warnings = append(*warnings, Warning{Field: "agents.budget.dow_min_subject_trust", Message: msg})
+	}
 }
 
 // validateTLSInterceptionCoverage surfaces TLSInterceptionCoverageAdvisory as a

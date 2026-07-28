@@ -181,6 +181,13 @@ pipelock mcp proxy --upstream https://mcp.example.com/v1 \
 
 The flag is repeatable. Pipelock validates header names as RFC 7230 tokens and rejects ASCII control bytes, DEL, CRLF, and Unicode whitespace in values. The transport-managed and connection-critical headers `Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Transfer-Encoding`, and `Host` are blocked case-insensitively at both the CLI flag-parser and the transport layer so an attacker-controlled extra header cannot shadow Pipelock's session correlation or smuggle a request via header injection.
 
+**Routing headers.** Protocol revision `2026-07-28` requires `Mcp-Method` and `Mcp-Name` on every Streamable HTTP POST. These are not blocked, because an upstream that enforces them rejects a request without them, but they are treated as security-relevant rather than passed through blindly:
+
+- The reverse proxy refuses any request whose `Mcp-Method` disagrees with the JSON-RPC method in the body, or whose `Mcp-Name` disagrees with a `tools/call` tool name, answering `HeaderMismatch` (`-32020`) before the request leaves Pipelock. The upstream routes on the header while Pipelock scans the body, so a disagreement would mean Pipelock inspects one call and the upstream performs another.
+- Both headers must be a single visible-ASCII value of at most 256 bytes. Duplicate, empty, control-character, non-ASCII and oversized values are refused.
+- An operator value pinned through `--header` or `--header-file` overrides a client's, is validated at startup rather than per request, and is the value the agreement check compares against, so a check can never reject bytes the upstream would not have received.
+- An **absent** routing header is accepted. Revisions before `2026-07-28` never send these headers, and a mixed-revision fleet is the normal state through the deprecation window.
+
 ### MCP WebSocket Proxy (`pipelock mcp proxy --upstream ws://...`)
 
 Proxies a remote MCP server over WebSocket with the same scanning as stdio mode.

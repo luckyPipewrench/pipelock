@@ -231,6 +231,7 @@ func (r *AnalyticsRelay) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case event := <-r.queue:
+			// #nosec G117 -- the PostHog project ingestion key is intentionally public.
 			payload, err := json.Marshal(event)
 			if err != nil {
 				continue

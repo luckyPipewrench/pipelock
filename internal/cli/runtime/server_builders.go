@@ -95,6 +95,7 @@ type mcpDoWWiring struct {
 	Enabled          func() bool
 	SubjectAgent     string
 	SubjectAgentAuth envelope.ActorAuth
+	MinSubjectTrust  func() config.DoWSubjectTrust
 	KnownSession     func(string) bool
 	RegisterSession  func(string)
 	ForgetSession    func(string)
@@ -115,6 +116,7 @@ type mcpDoWRuntime struct {
 	action           string
 	subjectAgent     string
 	subjectAgentAuth envelope.ActorAuth
+	minSubjectTrust  config.DoWSubjectTrust
 	trustedSessions  *mcpTrustedSessionRegistry
 	agentName        string
 }
@@ -140,6 +142,10 @@ func (r *mcpDoWRuntime) UpdateConfig(cfg *config.Config) {
 	}
 	if dowAction == "" {
 		dowAction = config.ActionBlock
+	}
+	minSubjectTrust := config.DoWTrustNetwork
+	if budget != nil {
+		minSubjectTrust = budget.MinSubjectTrust()
 	}
 	var trackerCfg proxy.DoWConfig
 	if budget != nil {
@@ -169,6 +175,7 @@ func (r *mcpDoWRuntime) UpdateConfig(cfg *config.Config) {
 	r.action = dowAction
 	r.subjectAgent = subjectAgent
 	r.subjectAgentAuth = subjectAgentAuth
+	r.minSubjectTrust = minSubjectTrust
 }
 
 func (r *mcpDoWRuntime) Enabled() bool {
@@ -196,6 +203,18 @@ func (r *mcpDoWRuntime) Check(subjectKey, toolName, argsJSON string) (bool, stri
 	return result.Allowed, action, result.Reason, result.BudgetType
 }
 
+// MinSubjectTrust reports the operator-declared weakest subject grade this
+// budget may be billed against. Read under the lock so a hot reload that
+// changes it takes effect on the next request.
+func (r *mcpDoWRuntime) MinSubjectTrust() config.DoWSubjectTrust {
+	if r == nil {
+		return config.DoWTrustNetwork
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.minSubjectTrust
+}
+
 func (r *mcpDoWRuntime) Wiring() *mcpDoWWiring {
 	if r == nil {
 		return nil
@@ -209,6 +228,7 @@ func (r *mcpDoWRuntime) Wiring() *mcpDoWWiring {
 		Enabled:          r.Enabled,
 		SubjectAgent:     subjectAgent,
 		SubjectAgentAuth: subjectAgentAuth,
+		MinSubjectTrust:  r.MinSubjectTrust,
 		KnownSession:     r.trustedSessions.Known,
 		RegisterSession:  r.trustedSessions.Register,
 		ForgetSession:    r.trustedSessions.Forget,
@@ -329,8 +349,9 @@ func applyMCPDoWOpts(opts *mcp.MCPProxyOpts, wiring *mcpDoWWiring, requireTruste
 	opts.DoWEnabledFn = wiring.Enabled
 	opts.DoWSubjectAgent = wiring.SubjectAgent
 	opts.DoWSubjectAgentAuth = wiring.SubjectAgentAuth
+	opts.DoWMinSubjectTrustFn = wiring.MinSubjectTrust
 	if requireTrustedSession {
-		opts.DoWRequireTrustedSession = true
+		opts.DoWEnforceSubjectTrust = true
 		opts.DoWSessionKnown = wiring.KnownSession
 		opts.DoWRegisterSession = wiring.RegisterSession
 		opts.DoWForgetSession = wiring.ForgetSession

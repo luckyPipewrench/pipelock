@@ -19,7 +19,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
-	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -55,13 +54,13 @@ type MCPRedactionConfig struct {
 	Required bool
 }
 
-func (o MCPProxyOpts) dowSubjectKeyForRequest(r *http.Request) string {
-	if o.DoWAuthenticatedPrincipal != nil {
-		if principal := strings.TrimSpace(o.DoWAuthenticatedPrincipal(r)); principal != "" {
-			return principal
-		}
+// minSubjectTrust resolves the operator-declared minimum subject grade,
+// preferring the reload-following resolver when one is wired.
+func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
+	if o.DoWMinSubjectTrustFn != nil {
+		return o.DoWMinSubjectTrustFn()
 	}
-	return identitykey.CEESafeKey(o.DoWSubjectAgent, adaptiveHostFromRemoteAddr(r.RemoteAddr), o.DoWSubjectAgentAuth)
+	return o.DoWMinSubjectTrust
 }
 
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
@@ -184,7 +183,7 @@ type MCPProxyOpts struct {
 	DoWEnabledFn func() bool
 	// DoWSubjectKey is set per request by multi-client transports before
 	// invoking the shared input pipeline. Empty is valid only when
-	// DoWRequireTrustedSession is false.
+	// DoWEnforceSubjectTrust is false.
 	DoWSubjectKey string
 	// DoWSessionKey is a deprecated alias for older direct pipeline callers.
 	DoWSessionKey string
@@ -196,11 +195,23 @@ type MCPProxyOpts struct {
 	// DoWAuthenticatedPrincipal is a future seam for mTLS/OAuth-style MCP
 	// client principals. It is nil today for shipped MCP listener paths.
 	DoWAuthenticatedPrincipal func(*http.Request) string
-	// DoWRequireTrustedSession makes missing/unknown session identity a
+	// DoWMinSubjectTrust is the weakest subject identification this listener
+	// will bill a budget against. A request graded below it is refused. The
+	// zero value is the weakest grade, so enabling a budget does not by itself
+	// begin refusing traffic Pipelock can already account for.
+	DoWMinSubjectTrust config.DoWSubjectTrust
+	// DoWMinSubjectTrustFn resolves the minimum for each request so a hot reload
+	// that raises or lowers it takes effect without restarting the listener. When
+	// set it overrides DoWMinSubjectTrust.
+	DoWMinSubjectTrustFn func() config.DoWSubjectTrust
+	// DoWEnforceSubjectTrust refuses a request whose subject is identified
+	// below DoWMinSubjectTrust. Formerly this required a server-minted
+	// Mcp-Session-Id, which protocol revision 2026-07-28 removes entirely.
+	// Historic note: missing/unknown session identity was a
 	// fail-closed DoW block for tool and A2A calls. HTTP listener mode enables
 	// this because a raw client-supplied Mcp-Session-Id is not a trustworthy
 	// budget key until Pipelock has observed the upstream issue it.
-	DoWRequireTrustedSession bool
+	DoWEnforceSubjectTrust bool
 	// DoWSessionKnown reports whether an inbound Mcp-Session-Id has previously
 	// been issued by the upstream through this Pipelock listener.
 	DoWSessionKnown func(sessionKey string) bool
@@ -600,5 +611,5 @@ func (o MCPProxyOpts) dowEnabled() bool {
 	if o.DoWEnabledFn != nil {
 		return o.DoWEnabledFn()
 	}
-	return o.DoWCheck != nil || o.DoWRequireTrustedSession
+	return o.DoWCheck != nil || o.DoWEnforceSubjectTrust
 }

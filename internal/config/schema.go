@@ -1487,6 +1487,14 @@ type BudgetConfig struct {
 	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"` // tool calls to track for pattern detection; zero disables
 	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`      // optional domain -> cost weight
 	DoWAction                  string             `yaml:"dow_action,omitempty"`            // "block" or "warn" (default "block")
+	// DoWMinSubjectTrust is the weakest subject identification this budget will
+	// be billed against: "network" (peer address), "agent" (bound or configured
+	// agent identity), or "principal" (authenticated identity). A request
+	// identified below the minimum is refused. Empty means "network", because
+	// enabling a budget must not by itself start refusing traffic Pipelock can
+	// already account for. Raise it where clients share a NAT or ingress and
+	// per-address accounting would let them spend each other's allowance.
+	DoWMinSubjectTrust string `yaml:"dow_min_subject_trust,omitempty"`
 }
 
 // FlightRecorder configures the tamper-evident evidence recording system.

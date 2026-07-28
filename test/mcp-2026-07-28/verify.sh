@@ -180,6 +180,50 @@ else
   fail "$((after_rows - before_rows)) rejected request(s) reached the upstream"
 fi
 
+# ---------------------------------------------------------------------------
+# Case 5: a budget bills a sessionless 2026-07-28 client instead of refusing it.
+#
+# Denial-of-wallet used to require a server-minted Mcp-Session-Id observed in an
+# upstream response. Revision 2026-07-28 removes sessions, so that check could
+# never be satisfied again and refused every tool call wherever a budget was
+# configured. At the default minimum grade the call must go through.
+# ---------------------------------------------------------------------------
+echo "Case 5: budget bills a sessionless client (default minimum grade)"
+cleanup
+start_stack "$RIG_DIR/pipelock-dow-network.yaml" || exit 2
+if "$PY" "$RIG_DIR/client_2026.py" "http://127.0.0.1:$PPORT/mcp" >/dev/null 2>&1; then
+  pass "tool call allowed with a budget configured"
+else
+  fail "budget refused a compliant sessionless tool call"
+fi
+if [ "$(trace_q "$TRACE" used_legacy_handshake)" = "False" ]; then
+  pass "still no downgrade with a budget configured"
+else
+  fail "DOWNGRADE reappeared once a budget was configured"
+fi
+
+# ---------------------------------------------------------------------------
+# Case 6: raising the minimum grade refuses what it cannot identify.
+#
+# The listener has no authenticated principal, so a request can only reach
+# network grade. An operator demanding principal grade must have the call
+# refused rather than billed to a subject they declared insufficient.
+# ---------------------------------------------------------------------------
+echo "Case 6: minimum grade above what the request can prove is refused"
+cleanup
+start_stack "$RIG_DIR/pipelock-dow-principal.yaml" || exit 2
+before_rows="$(wc -l < "$TRACE")"
+if "$PY" "$RIG_DIR/client_2026.py" "http://127.0.0.1:$PPORT/mcp" >/dev/null 2>&1; then
+  fail "tool call allowed despite being below the declared minimum grade"
+else
+  pass "tool call refused below the declared minimum grade"
+fi
+if grep -q 'minimum trust grade' "$RIG_DIR/.pipelock.log" 2>/dev/null; then
+  pass "refusal names the subject-trust reason"
+else
+  fail "refusal did not name the subject-trust reason"
+fi
+
 cleanup
 echo
 printf 'passed: %d  failed: %d\n' "$PASS" "$FAIL"

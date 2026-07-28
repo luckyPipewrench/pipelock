@@ -1913,6 +1913,7 @@ Budgets cap what an agent can do within a time window. Most limits default to `0
 | `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection. `0` disables it; when unset but `max_retries_per_tool` is set, the tracked history is sized from that limit. **Enforced when set.** |
 | `max_wall_clock_minutes` | `int` | `0` | Max elapsed time since the subject's first MCP DoW call in the current window (0 = unlimited). This resets when the DoW budget window rolls. **Enforced.** |
 | `dow_action` | `string` | `"block"` | Action when a denial-of-wallet limit is exceeded: `"block"` (reject the tool call) or `"warn"` (log and allow) |
+| `dow_min_subject_trust` | `string` | `"network"` | Weakest subject identification this budget may be billed against: `"network"`, `"agent"`, or `"principal"`. A request identified below the minimum is refused. |
 | `max_concurrent_tool_calls` | `int` | `0` | Reserved for future lease-based concurrency control. Any nonzero value is rejected because concurrency is not yet enforced. |
 
 When a budget limit is reached:
@@ -1920,7 +1921,40 @@ When a budget limit is reached:
 - **Request count and domain limits** are checked before the outbound request. Exceeding either returns `429 Too Many Requests`.
 - **Byte limit (fetch proxy):** the response body read is capped at the remaining byte budget. If the response exceeds the limit, it is discarded and a `429` is returned.
 - **Byte limit (CONNECT/WebSocket):** streaming connections track bytes after close. The byte budget is enforced on the next admission check, not mid-stream, because tunnel data cannot be recalled after transmission.
-- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch and are keyed by DoW subject, not by `Mcp-Session-Id`. For HTTP listener mode, the subject is a future authenticated MCP principal when available; today it falls back to the configured/bound agent namespace plus remote host, with request-supplied agent names collapsed to the remote-host bucket. `Mcp-Session-Id` is still used for protocol correlation and trusted-session cleanup, but not for quota ownership. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, same-tool retry storms, loop/cycle detection, and window-scoped elapsed time. The live DoW subject table is bounded; if it is full, new subjects fail closed until existing windows expire rather than evicting live budget state. Endpoint retry, fan-out, and concurrent-call limits are not enforced.
+- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch and are keyed by DoW subject, not by `Mcp-Session-Id`. See [Subject trust grades](#subject-trust-grades) for how the subject is identified and how `dow_min_subject_trust` governs which requests may be billed. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, same-tool retry storms, loop/cycle detection, and window-scoped elapsed time. The live DoW subject table is bounded; if it is full, new subjects fail closed until existing windows expire rather than evicting live budget state. Endpoint retry, fan-out, and concurrent-call limits are not enforced.
+
+#### Subject trust grades
+
+A denial-of-wallet budget is only meaningful if Pipelock can tell one client from
+another. `dow_min_subject_trust` lets an operator declare the weakest
+identification they are willing to bill against, in ascending order:
+
+| Grade | Subject derived from | Separates clients that... |
+|-------|----------------------|---------------------------|
+| `network` | Transport peer address | ...connect from different addresses. Always available and never client-assertable, but everything behind one NAT or shared ingress collapses into a single subject. |
+| `agent` | Agent identity Pipelock bound or configured, plus peer address | ...run under distinct configured agent identities. A request-supplied agent name never reaches this grade, so a client cannot mint a fresh budget by claiming a new name. |
+| `principal` | Authenticated principal, such as an OAuth subject or mTLS client identity | ...are separately authenticated, including clients sharing one network path. |
+
+A request graded at or above the minimum is billed and forwarded. A request
+graded below it is refused with a JSON-RPC error naming the subject-trust
+reason, and never reaches the upstream.
+
+The default is `network` deliberately: enabling a budget must not, by itself,
+start refusing traffic Pipelock can already account for. Raise it to `agent` or
+`principal` where clients share a network path and per-address accounting would
+let them spend one another's allowance. Note that raising the minimum above what
+a deployment can actually prove will refuse every request, which is why the
+setting is explicit rather than inferred.
+
+`dow_min_subject_trust` is hot-reloadable; a change takes effect on the next
+request without restarting the listener.
+
+> **Protocol note:** before revision `2026-07-28`, the HTTP listener additionally
+> required a server-minted `Mcp-Session-Id` that Pipelock had previously observed
+> in an upstream response. That revision removes protocol-level sessions, so no
+> conforming client can present one, and the requirement has been replaced by the
+> grades above. `Mcp-Session-Id` remains in use for protocol correlation with
+> earlier revisions, but never for quota ownership.
 
 ### Listener Binding
 

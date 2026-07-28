@@ -43,8 +43,8 @@ const (
 )
 
 const (
-	dowMissingTrustedSessionReason = "missing trusted MCP session for denial-of-wallet enforcement"
-	dowMissingTrustedSessionBudget = "session_identity"
+	dowMissingTrustedSessionReason = "subject identified below the minimum trust grade for denial-of-wallet enforcement"
+	dowMissingTrustedSessionBudget = "subject_identity"
 )
 
 // BindingReason values populated by the stdio gate helper when a
@@ -255,7 +255,7 @@ func applyDoWGate(opts MCPProxyOpts, eval *MCPInputEvaluation, enforcementIdenti
 	if subjectKey == "" {
 		subjectKey = opts.DoWSessionKey
 	}
-	if opts.DoWRequireTrustedSession && subjectKey == "" {
+	if opts.DoWEnforceSubjectTrust && subjectKey == "" {
 		eval.DoWAllowed = false
 		eval.DoWAction = config.ActionBlock
 		eval.DoWReason = dowMissingTrustedSessionReason

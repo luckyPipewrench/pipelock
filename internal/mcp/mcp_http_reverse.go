@@ -107,7 +107,7 @@ func newReverseUpstreamTransport(dialContext func(ctx context.Context, network, 
 // Mcp-Session-Id header (or RemoteAddr fallback) as the session key, enabling
 // adaptive enforcement signal tracking per logical MCP session.
 //
-// DoW enforcement is stricter: when DoWRequireTrustedSession is true, a tool or
+// DoW enforcement is stricter: when DoWEnforceSubjectTrust is true, a tool or
 // A2A call must present an Mcp-Session-Id that this listener observed in an
 // upstream response. A raw inbound header by itself is not trusted as a budget
 // key.
@@ -240,7 +240,7 @@ func RunHTTPListenerProxy(
 		DoWSubjectAgent:           opts.DoWSubjectAgent,
 		DoWSubjectAgentAuth:       opts.DoWSubjectAgentAuth,
 		DoWAuthenticatedPrincipal: opts.DoWAuthenticatedPrincipal,
-		DoWRequireTrustedSession:  opts.DoWRequireTrustedSession,
+		DoWEnforceSubjectTrust:    opts.DoWEnforceSubjectTrust,
 		DoWSessionKnown:           opts.DoWSessionKnown,
 		DoWRegisterSession:        opts.DoWRegisterSession,
 		DoWForgetSession:          opts.DoWForgetSession,
@@ -1551,22 +1551,25 @@ func validMCPSessionID(values []string) bool {
 	return true
 }
 
+// trustedDoWSubjectKey returns the denial-of-wallet subject key when the request
+// identifies its subject at or above the operator's declared minimum grade, and
+// an empty key otherwise. The shared gate treats an empty key as a refusal.
+//
+// This replaces an earlier check that required a server-minted Mcp-Session-Id
+// previously observed in an upstream response. Protocol revision 2026-07-28
+// removes sessions, so that check could never again be satisfied by a
+// conforming client and refused every 2026-07-28 tool call where a budget was
+// configured. It was also a guard that decided trust by reading an artifact
+// Pipelock itself had produced, which is not an authenticated identity proof.
 func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
-	if !opts.dowEnabled() || !opts.DoWRequireTrustedSession {
-		// Both production callers of RunHTTPListenerProxy set the trusted-session
-		// requirement, so this branch is not reached today. Returning an empty
-		// key here would collapse every client on a multi-client listener into
-		// the manager's shared "_default" bucket, letting one caller spend
-		// everyone else's budget. Derive the per-client key instead, so a future
-		// caller that turns the strict gate off degrades to per-client
-		// accounting rather than to no accounting at all.
-		return opts.dowSubjectKeyForRequest(r)
+	key, trust := opts.dowSubjectTrustFor(r)
+	if !opts.dowEnabled() {
+		return key
 	}
-	sessionID := r.Header.Get("Mcp-Session-Id")
-	if sessionID == "" || opts.DoWSessionKnown == nil || !opts.DoWSessionKnown(sessionID) {
+	if !trust.Meets(opts.minSubjectTrust()) {
 		return ""
 	}
-	return opts.dowSubjectKeyForRequest(r)
+	return key
 }
 
 func logUpstreamRequestError(logW io.Writer, ctx context.Context) {

@@ -301,12 +301,29 @@ func (b *BudgetConfig) ValidateDoW() error {
 		return err
 	}
 
+	if _, ok := ParseDoWSubjectTrust(b.DoWMinSubjectTrust); !ok {
+		return fmt.Errorf("invalid dow_min_subject_trust %q: must be one of %s",
+			b.DoWMinSubjectTrust, strings.Join(DoWSubjectTrustValues, ", "))
+	}
+
 	switch b.DoWAction {
 	case "", ActionBlock, ActionWarn:
 		return nil
 	default:
 		return fmt.Errorf("invalid dow_action %q: must be block or warn", b.DoWAction)
 	}
+}
+
+// MinSubjectTrust resolves the configured minimum. Validation rejects an
+// unrecognised spelling at load, so an unparseable value here can only mean the
+// config bypassed validation; it resolves to the strongest grade so that a
+// bypass fails closed rather than silently billing an unidentified subject.
+func (b *BudgetConfig) MinSubjectTrust() DoWSubjectTrust {
+	trust, ok := ParseDoWSubjectTrust(b.DoWMinSubjectTrust)
+	if !ok {
+		return DoWTrustPrincipal
+	}
+	return trust
 }
 
 func (b *BudgetConfig) validateReservedDoWLimits() error {

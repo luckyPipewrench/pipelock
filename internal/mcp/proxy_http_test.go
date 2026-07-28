@@ -6080,7 +6080,11 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	}
 }
 
-func TestHTTPListener_DoWRequiresServerIssuedSession(t *testing.T) {
+// Denial-of-wallet refuses a request whose subject is identified below the
+// operator's declared minimum grade. This listener supplies no authenticated
+// principal resolver, so the request can only reach network grade and must be
+// refused when the operator demands principal grade.
+func TestHTTPListener_DoWRefusesSubjectBelowMinimumTrust(t *testing.T) {
 	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamHits.Add(1)
@@ -6090,11 +6094,9 @@ func TestHTTPListener_DoWRequiresServerIssuedSession(t *testing.T) {
 	defer upstream.Close()
 
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:                  testScannerForHTTP(t),
-		DoWRequireTrustedSession: true,
-		DoWSessionKnown: func(string) bool {
-			return false
-		},
+		Scanner:                testScannerForHTTP(t),
+		DoWEnforceSubjectTrust: true,
+		DoWMinSubjectTrust:     config.DoWTrustPrincipal,
 		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
 			return true, config.ActionBlock, "", ""
 		},
@@ -6112,10 +6114,63 @@ func TestHTTPListener_DoWRequiresServerIssuedSession(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), dowMissingTrustedSessionReason) {
-		t.Fatalf("body = %s, want trusted-session DoW failure", body)
+		t.Fatalf("body = %s, want a subject-trust DoW refusal", body)
 	}
 	if got := upstreamHits.Load(); got != 0 {
-		t.Fatalf("upstream hits = %d, want 0 for fail-closed DoW session rejection", got)
+		t.Fatalf("upstream hits = %d, want 0 for a fail-closed subject-trust refusal", got)
+	}
+}
+
+// The companion allow path. A sessionless request is the normal case from
+// protocol revision 2026-07-28, and at the default minimum grade it must be
+// billed and forwarded. Without this, an implementation that refused every
+// request would satisfy the refusal test above while taking every conforming
+// client offline.
+func TestHTTPListener_DoWBillsSessionlessRequestAtDefaultMinimumTrust(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+	}))
+	defer upstream.Close()
+
+	var billed atomic.Int32
+	var billedSubject atomic.Value
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                testScannerForHTTP(t),
+		DoWEnforceSubjectTrust: true,
+		DoWCheck: func(subject, _, _ string) (bool, string, string, string) {
+			billed.Add(1)
+			billedSubject.Store(subject)
+			return true, config.ActionBlock, "", ""
+		},
+	})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), dowMissingTrustedSessionReason) {
+		t.Fatalf("sessionless request refused at the default minimum grade: %s", body)
+	}
+	if got := upstreamHits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+	// Billing must actually happen. Forwarding without consulting the budget
+	// would pass this test's allow assertion while disabling enforcement.
+	if got := billed.Load(); got != 1 {
+		t.Fatalf("budget consulted %d times, want 1", got)
+	}
+	if subject, _ := billedSubject.Load().(string); subject == "" {
+		t.Fatal("budget consulted with an empty subject, which shares one bucket across every client")
 	}
 }
 
@@ -6143,8 +6198,8 @@ func TestHTTPListener_DoWUsesStableSubjectAcrossServerIssuedSessions(t *testing.
 		counts = map[string]int{}
 	)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:                  testScannerForHTTP(t),
-		DoWRequireTrustedSession: true,
+		Scanner:                testScannerForHTTP(t),
+		DoWEnforceSubjectTrust: true,
 		DoWSessionKnown: func(sessionKey string) bool {
 			mu.Lock()
 			defer mu.Unlock()
@@ -6201,8 +6256,8 @@ func TestHTTPListener_DoWCollapsesSelfDeclaredAgentRenameToSameSubject(t *testin
 		counts = map[string]int{}
 	)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:                  testScannerForHTTP(t),
-		DoWRequireTrustedSession: true,
+		Scanner:                testScannerForHTTP(t),
+		DoWEnforceSubjectTrust: true,
 		DoWSessionKnown: func(sessionKey string) bool {
 			mu.Lock()
 			defer mu.Unlock()
@@ -6259,10 +6314,10 @@ func TestHTTPListener_DoWSubjectIgnoresForwardedClientHeaders(t *testing.T) {
 		subjects []string
 	)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:                  testScannerForHTTP(t),
-		DoWRequireTrustedSession: true,
-		DoWSubjectAgent:          "bound-agent",
-		DoWSubjectAgentAuth:      envelope.ActorAuthBound,
+		Scanner:                testScannerForHTTP(t),
+		DoWEnforceSubjectTrust: true,
+		DoWSubjectAgent:        "bound-agent",
+		DoWSubjectAgentAuth:    envelope.ActorAuthBound,
 		DoWSessionKnown: func(sessionKey string) bool {
 			mu.Lock()
 			defer mu.Unlock()

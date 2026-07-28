@@ -350,7 +350,7 @@ func TestEvaluateMCPInputGatesStdio_DoWDisabledSkipsTrustedSessionGate(t *testin
 
 	sc := testInputScanner(t)
 	opts := testOpts(sc)
-	opts.DoWRequireTrustedSession = true
+	opts.DoWEnforceSubjectTrust = true
 	opts.DoWEnabledFn = func() bool {
 		return false
 	}

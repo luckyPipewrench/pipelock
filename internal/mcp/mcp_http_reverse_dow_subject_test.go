@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // With the trusted-session gate off, the subject key must still identify the
 // client. An empty key here would land every caller in the DoW manager's shared
 // "_default" bucket, so one caller could spend every other caller's budget.
 func TestTrustedDoWSubjectKeyBucketsPerClientWhenGateOff(t *testing.T) {
-	opts := MCPProxyOpts{DoWRequireTrustedSession: false, DoWSubjectAgent: "agent-a"}
+	opts := MCPProxyOpts{DoWEnforceSubjectTrust: false, DoWSubjectAgent: "agent-a"}
 
 	reqA := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
 	reqA.RemoteAddr = "203.0.113.10:5555"
@@ -42,32 +44,48 @@ func TestTrustedDoWSubjectKeyBucketsPerClientWhenGateOff(t *testing.T) {
 	}
 }
 
-// The strict gate must still fail closed on an unknown session.
-func TestTrustedDoWSubjectKeyEmptyForUnknownSessionWhenGateOn(t *testing.T) {
+// The gate must fail closed when the subject is identified below the operator's
+// declared minimum grade. This listener has no authenticated principal resolver,
+// so the request can only reach network grade.
+func TestTrustedDoWSubjectKeyEmptyWhenBelowMinimumTrust(t *testing.T) {
 	opts := MCPProxyOpts{
-		DoWRequireTrustedSession: true,
-		DoWSubjectAgent:          "agent-a",
-		DoWSessionKnown:          func(string) bool { return false },
+		DoWEnforceSubjectTrust: true,
+		DoWSubjectAgent:        "agent-a",
+		DoWMinSubjectTrust:     config.DoWTrustPrincipal,
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
 	req.RemoteAddr = "203.0.113.10:5555"
-	req.Header.Set("Mcp-Session-Id", "not-registered")
 
 	if got := trustedDoWSubjectKey(req, opts); got != "" {
-		t.Fatalf("unknown session produced subject key %q, want empty so the gate fails closed", got)
+		t.Fatalf("subject below the minimum grade produced key %q, want empty so the gate fails closed", got)
+	}
+}
+
+// A sessionless request is the normal case from protocol revision 2026-07-28.
+// At the default minimum it must be billed, not refused: refusing it would mean
+// enabling a budget silently blocks every conforming client.
+func TestTrustedDoWSubjectKeyBillsSessionlessRequestAtDefaultMinimum(t *testing.T) {
+	opts := MCPProxyOpts{
+		DoWEnforceSubjectTrust: true,
+		DoWSubjectAgent:        "agent-a",
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
+	req.RemoteAddr = "203.0.113.10:5555"
+
+	if got := trustedDoWSubjectKey(req, opts); got == "" {
+		t.Fatal("sessionless 2026-07-28 request refused at the default minimum grade")
 	}
 }
 
 func TestTrustedDoWSubjectKeyUsesClientKeyWhenLiveDoWDisabled(t *testing.T) {
 	opts := MCPProxyOpts{
-		DoWRequireTrustedSession: true,
-		DoWSubjectAgent:          "agent-a",
-		DoWEnabledFn:             func() bool { return false },
-		DoWSessionKnown:          func(string) bool { return false },
+		DoWEnforceSubjectTrust: true,
+		DoWSubjectAgent:        "agent-a",
+		DoWMinSubjectTrust:     config.DoWTrustPrincipal,
+		DoWEnabledFn:           func() bool { return false },
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
 	req.RemoteAddr = "203.0.113.10:5555"
-	req.Header.Set("Mcp-Session-Id", "not-registered")
 
 	if got := trustedDoWSubjectKey(req, opts); got == "" {
 		t.Fatal("disabled live DoW state still produced an empty subject key for the trusted-session gate")
@@ -75,25 +93,24 @@ func TestTrustedDoWSubjectKeyUsesClientKeyWhenLiveDoWDisabled(t *testing.T) {
 }
 
 // Gate-on coverage cannot be negative-only. An implementation that always
-// returned "" under DoWRequireTrustedSession would satisfy the unknown-session
-// test while turning every tool call from a known session into a fail-closed
-// block, which is an outage rather than a security win.
-func TestTrustedDoWSubjectKeyReturnsStableKeyForKnownSessionWhenGateOn(t *testing.T) {
+// returned "" under DoWEnforceSubjectTrust would satisfy the below-minimum test
+// while turning every conforming tool call into a fail-closed block, which is an
+// outage rather than a security win.
+func TestTrustedDoWSubjectKeyReturnsStableKeyWhenTrustMeetsMinimum(t *testing.T) {
 	opts := MCPProxyOpts{
-		DoWRequireTrustedSession: true,
-		DoWSubjectAgent:          "agent-a",
-		DoWSessionKnown:          func(string) bool { return true },
+		DoWEnforceSubjectTrust:    true,
+		DoWSubjectAgent:           "agent-a",
+		DoWMinSubjectTrust:        config.DoWTrustPrincipal,
+		DoWAuthenticatedPrincipal: func(*http.Request) string { return "sub-42" },
 	}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
 	req.RemoteAddr = "203.0.113.10:5555"
-	req.Header.Set("Mcp-Session-Id", "registered")
 
 	// Same client on a new connection: the source port differs every time, so
 	// a key derived from it would hand each request a fresh budget.
 	repeat := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
 	repeat.RemoteAddr = "203.0.113.10:61234"
-	repeat.Header.Set("Mcp-Session-Id", "registered")
 
 	key := trustedDoWSubjectKey(req, opts)
 	if key == "" {

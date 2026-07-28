@@ -44,9 +44,15 @@ const (
 	// (SEP-2243). An upstream that enforces them answers a stripped request
 	// with HeaderMismatch (-32020), which drives a fallback-capable client
 	// back onto the deprecated session transport.
-	listenerMCPMethod          = "Mcp-Method"
-	listenerMCPName            = "Mcp-Name"
-	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version, Last-Event-ID"
+	listenerMCPMethod = "Mcp-Method"
+	listenerMCPName   = "Mcp-Name"
+	// Mcp-Method and Mcp-Name are required from revision 2026-07-28; the
+	// preflight is refused outright when a requested header is absent here, so
+	// omitting them blocks browser MCP clients rather than degrading them.
+	// Mcp-Session-Id and Last-Event-ID belong to revisions the 2026-07-28
+	// deprecation window still covers, so they stay: dropping them would break
+	// older browser clients, and a mixed-revision fleet is the normal state.
+	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, A2A-Extensions, A2A-Version, Last-Event-ID"
 	maxAuditSessionKeyLen      = 128
 )
 

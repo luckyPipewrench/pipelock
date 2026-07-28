@@ -105,6 +105,43 @@ func TestHTTPListener_ForwardsRequiredMCPRequestHeaders(t *testing.T) {
 	}
 }
 
+// a browser MCP client on protocol revision 2026-07-28 names Mcp-Method and
+// Mcp-Name in its preflight. listenerCORSPreflightAllowed refuses the whole
+// preflight if any requested header is outside the allowlist, so omitting them
+// blocks browser clients outright rather than degrading.
+func TestHTTPListener_CORSPreflightAllowsRequiredMCPRequestHeaders(t *testing.T) {
+	const origin = "https://client.vendor.example"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                testScannerForHTTP(t),
+		ListenerAllowedOrigins: []string{origin},
+	})
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodOptions, baseURL+"/", nil)
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "content-type,mcp-protocol-version,mcp-method,mcp-name")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204 (browser MCP clients are refused outright)", resp.StatusCode)
+	}
+	allow := strings.ToLower(resp.Header.Get("Access-Control-Allow-Headers"))
+	for _, name := range []string{"mcp-method", "mcp-name"} {
+		if !strings.Contains(allow, name) {
+			t.Errorf("Access-Control-Allow-Headers = %q, missing %q", allow, name)
+		}
+	}
+}
+
 // the listener token must never reach upstream, even when the client
 // presents it in BOTH auth headers.
 func TestHTTPListener_ListenerTokenNeverForwardedUpstream(t *testing.T) {

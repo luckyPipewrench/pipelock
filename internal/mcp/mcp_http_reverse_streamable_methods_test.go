@@ -1584,6 +1584,8 @@ func TestHTTPListener_CORSPreflightAllowsStreamableMethods(t *testing.T) {
 				listenerAuthorization,
 				"Mcp-Session-Id",
 				listenerProtocolVersion,
+				listenerMCPMethod,
+				listenerMCPName,
 				"Content-Type",
 				listenerLastEventID,
 				"A2A-Extensions",

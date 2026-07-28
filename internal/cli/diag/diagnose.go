@@ -350,6 +350,9 @@ func checkRules(_, _ string, cfg *config.Config) diagnoseResult {
 		TrustedKeys:      cfg.Rules.TrustedKeys,
 		SkipEmbeddedKeys: !cfg.Rules.TrustEmbeddedKeys,
 		PipelockVersion:  cliutil.Version,
+		// diagnose must report what the runtime would do. If it ignored this
+		// override it would report FAILED for a bundle the runtime loads fine.
+		AllowUnversionedLoad: cfg.Rules.AllowUnversionedBundleLoad,
 	})
 
 	if len(result.Loaded) == 0 && len(result.Errors) == 0 {

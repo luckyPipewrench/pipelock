@@ -31,14 +31,15 @@ var errBundleFileTooLarge = errors.New("bundle file exceeds maximum size")
 
 // LoadOptions controls bundle loading behavior.
 type LoadOptions struct {
-	MinConfidence       string              // high, medium, low
-	IncludeExperimental bool                // load experimental-status rules
-	Disabled            []string            // namespaced rule IDs or glob patterns
-	TrustedKeys         []config.TrustedKey // additional trusted signing keys
-	SkipEmbeddedKeys    bool                // exclude compiled official keyring from trust
-	PipelockVersion     string              // current binary version for min_pipelock check
-	AllowStale          bool                // accept expired bundles with warning
-	TierKeyMapping      map[string]string   // tier → expected signing key fingerprint
+	MinConfidence        string              // high, medium, low
+	IncludeExperimental  bool                // load experimental-status rules
+	Disabled             []string            // namespaced rule IDs or glob patterns
+	TrustedKeys          []config.TrustedKey // additional trusted signing keys
+	SkipEmbeddedKeys     bool                // exclude compiled official keyring from trust
+	PipelockVersion      string              // current binary version for min_pipelock check
+	AllowUnversionedLoad bool                // load min_pipelock bundles on a build with no released version
+	AllowStale           bool                // accept expired bundles with warning
+	TierKeyMapping       map[string]string   // tier → expected signing key fingerprint
 }
 
 // StandardBundleName is the reserved name for the official standard pack.
@@ -329,7 +330,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	}
 
 	// Check min_pipelock version requirement.
-	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion); err != nil {
+	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion, opts.AllowUnversionedLoad); err != nil {
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,36 @@ import (
 const officialRegistryURL = "https://pipelab.org/rules"
 
 var discoverRulesConfigPath = cliutil.DiscoverConfigPathStrict
+
+// rulesAllowUnversionedLoad reports whether the operator opted into loading
+// bundles that declare a min_pipelock requirement on a build that cannot prove
+// its version. It mirrors rulesTrustPolicy's config resolution and defaults to
+// false (refuse) when no config is readable, so an unreadable config cannot
+// silently relax the requirement.
+func rulesAllowUnversionedLoad(configFile string, stderr io.Writer) bool {
+	cfg, err := loadRulesConfig(configFile, stderr)
+	if err != nil || cfg == nil {
+		return false
+	}
+	return cfg.Rules.AllowUnversionedBundleLoad
+}
+
+// warnUnverifiableBundleVersion downgrades an unverifiable-version refusal to a
+// warning on operator-driven CLI paths. Refusing here would block install on a
+// locally built binary for any bundle that declares a minimum, and the operator
+// running the command is present to read a warning.
+//
+// The requirement is not dropped: the runtime load path refuses the same
+// bundle. Note what that refusal actually does, because it is not an abort. The
+// refusal is classed as an availability error, which strict startup tolerates,
+// so the process starts WITHOUT that bundle's rules and reports the shortfall
+// through the rule_bundle_degraded audit event, /stats, and the
+// pipelock_rule_bundles_degraded metric. Hot reload is stricter: it rejects a
+// reload whose bundle errors would drop rules that are already live.
+func warnUnverifiableBundleVersion(w io.Writer, err error) {
+	_, _ = fmt.Fprintf(w, "warning: %v\n", err)
+	_, _ = fmt.Fprintf(w, "warning: the bundle is installed, but this build will refuse to LOAD it at runtime until rules.allow_unversioned_bundle_load is set\n")
+}
 
 // loadRulesConfig loads the pipelock config for trusted key resolution.
 // Resolution is explicit --config, then PIPELOCK_CONFIG, then the shared
@@ -596,7 +627,7 @@ Examples:
 			// Determine install mode.
 			switch {
 			case localPath != "":
-				return installLocal(out, dir, localPath, allowUnsign)
+				return installLocal(out, dir, localPath, allowUnsign, rulesAllowUnversionedLoad(configFile, cmd.ErrOrStderr()))
 			case sourceURL != "":
 				return installRemote(installRemoteOptions{
 					out:        out,
@@ -631,7 +662,7 @@ Examples:
 }
 
 // installLocal installs a bundle from a local directory.
-func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned bool) error {
+func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allowUnversioned bool) error {
 	if !allowUnsigned {
 		return fmt.Errorf("local installs require --allow-unsigned (local bundles cannot be signature-verified)")
 	}
@@ -651,8 +682,11 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned bool)
 		return fmt.Errorf("parsing bundle: %w", err)
 	}
 
-	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version); err != nil {
-		return err
+	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, allowUnversioned); err != nil {
+		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
+			return err
+		}
+		warnUnverifiableBundleVersion(out, err)
 	}
 
 	// Check pipelock-* prefix reservation: local unsigned bundles cannot use it.
@@ -716,6 +750,8 @@ func rulesTrustPolicy(configFile string, stderr io.Writer) (domrules.TrustPolicy
 }
 
 func installRemote(opts installRemoteOptions) error {
+	allowUnversioned := rulesAllowUnversionedLoad(opts.configFile, opts.stderr)
+	out := opts.out
 	ctx := context.Background()
 
 	// Load the signing trust policy from config (explicit flag, env, or discovery).
@@ -749,8 +785,11 @@ func installRemote(opts installRemoteOptions) error {
 		return fmt.Errorf("bundle name %q uses reserved prefix %q but signer is not official", bundle.Name, "pipelock-")
 	}
 
-	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version); err != nil {
-		return err
+	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, allowUnversioned); err != nil {
+		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
+			return err
+		}
+		warnUnverifiableBundleVersion(out, err)
 	}
 
 	digest := sha256Hex(bundleData)
@@ -911,9 +950,18 @@ Local (unsigned) bundles are skipped during update.`,
 			if err != nil {
 				return err
 			}
+			allowUnversioned := rulesAllowUnversionedLoad(configFile, cmd.ErrOrStderr())
 
 			if len(args) == 1 {
-				return updateBundle(out, dir, args[0], policy, force, allowKeyRotate)
+				return updateBundle(updateBundleOpts{
+					Out:              out,
+					RulesDir:         dir,
+					Name:             args[0],
+					Policy:           policy,
+					Force:            force,
+					AllowKeyRotation: allowKeyRotate,
+					AllowUnversioned: allowUnversioned,
+				})
 			}
 
 			// Update all.
@@ -931,7 +979,15 @@ Local (unsigned) bundles are skipped during update.`,
 				if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), ".bak") {
 					continue
 				}
-				err := updateBundle(out, dir, e.Name(), policy, force, allowKeyRotate)
+				err := updateBundle(updateBundleOpts{
+					Out:              out,
+					RulesDir:         dir,
+					Name:             e.Name(),
+					Policy:           policy,
+					Force:            force,
+					AllowKeyRotation: allowKeyRotate,
+					AllowUnversioned: allowUnversioned,
+				})
 				if err != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error updating %s: %v\n", e.Name(), err)
 					failures++
@@ -958,8 +1014,21 @@ Local (unsigned) bundles are skipped during update.`,
 }
 
 // updateBundle updates a single installed bundle.
-func updateBundle(out io.Writer, rulesDir, name string, policy domrules.TrustPolicy, force, allowKeyRotation bool) error {
-	bundleDir, err := validateBundlePath(rulesDir, name)
+// updateBundleOpts groups the update inputs. The positional form reached seven
+// parameters, past the point where the call sites read as a row of bare
+// booleans and a transposed pair would compile silently.
+type updateBundleOpts struct {
+	Out              io.Writer
+	RulesDir         string
+	Name             string
+	Policy           domrules.TrustPolicy
+	Force            bool
+	AllowKeyRotation bool
+	AllowUnversioned bool
+}
+
+func updateBundle(opts updateBundleOpts) error {
+	bundleDir, err := validateBundlePath(opts.RulesDir, opts.Name)
 	if err != nil {
 		return err
 	}
@@ -967,12 +1036,12 @@ func updateBundle(out io.Writer, rulesDir, name string, policy domrules.TrustPol
 
 	lf, err := domrules.ReadLockFile(lockPath)
 	if err != nil {
-		return fmt.Errorf("bundle %q not installed", name)
+		return fmt.Errorf("bundle %q not installed", opts.Name)
 	}
 
 	// Skip local/unsigned bundles.
 	if lf.Unsigned || !strings.HasPrefix(lf.Source, "https://") {
-		_, _ = fmt.Fprintf(out, "skipping %s: installed from local path\n", name)
+		_, _ = fmt.Fprintf(opts.Out, "skipping %s: installed from local path\n", opts.Name)
 		return nil
 	}
 
@@ -980,38 +1049,41 @@ func updateBundle(out io.Writer, rulesDir, name string, policy domrules.TrustPol
 	ctx := context.Background()
 	bundleData, sigData, err := fetchRemoteBundle(ctx, lf.Source)
 	if err != nil {
-		return fmt.Errorf("fetching update for %s: %w", name, err)
+		return fmt.Errorf("fetching update for %s: %w", opts.Name, err)
 	}
 
-	result, err := verifyRemoteSignature(bundleData, sigData, policy)
+	result, err := verifyRemoteSignature(bundleData, sigData, opts.Policy)
 	if err != nil {
-		return fmt.Errorf("signature verification for %s: %w", name, err)
+		return fmt.Errorf("signature verification for %s: %w", opts.Name, err)
 	}
 
 	// Check signer pinning.
 	if lf.SignerFingerprint != "" {
-		if err := domrules.CheckSignerPinning(lf.SignerFingerprint, result.SignerFingerprint, allowKeyRotation); err != nil {
-			return fmt.Errorf("update %s: %w", name, err)
+		if err := domrules.CheckSignerPinning(lf.SignerFingerprint, result.SignerFingerprint, opts.AllowKeyRotation); err != nil {
+			return fmt.Errorf("update %s: %w", opts.Name, err)
 		}
 	}
 
 	bundle, err := domrules.ParseBundle(bundleData)
 	if err != nil {
-		return fmt.Errorf("parsing updated bundle %s: %w", name, err)
+		return fmt.Errorf("parsing updated bundle %s: %w", opts.Name, err)
 	}
 
-	// Reject name changes: a source cannot silently rename a bundle on update.
-	if bundle.Name != name {
-		return fmt.Errorf("update %s: bundle manifest name changed from %q to %q (rejected)", name, name, bundle.Name)
+	// Reject opts.Name changes: a source cannot silently rename a bundle on update.
+	if bundle.Name != opts.Name {
+		return fmt.Errorf("update %s: bundle manifest name changed from %q to %q (rejected)", opts.Name, opts.Name, bundle.Name)
 	}
 
 	// Re-run reserved prefix check: updates must also enforce pipelock-* reservation.
 	if strings.HasPrefix(bundle.Name, "pipelock-") && result.Tier != domrules.TrustTierOfficial {
-		return fmt.Errorf("update %s: bundle name %q uses reserved prefix %q but signer is not official", name, bundle.Name, "pipelock-")
+		return fmt.Errorf("update %s: bundle name %q uses reserved prefix %q but signer is not official", opts.Name, bundle.Name, "pipelock-")
 	}
 
-	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version); err != nil {
-		return err
+	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, opts.AllowUnversioned); err != nil {
+		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
+			return err
+		}
+		warnUnverifiableBundleVersion(opts.Out, err)
 	}
 
 	// Compare versions.
@@ -1029,20 +1101,20 @@ func updateBundle(out io.Writer, rulesDir, name string, policy domrules.TrustPol
 
 	cmp := newVer.Compare(oldVer)
 	switch {
-	case cmp < 0 && !force:
-		return fmt.Errorf("update %s: new version %s is older than installed %s (use --force to downgrade)", name, bundle.Version, lf.InstalledVersion)
+	case cmp < 0 && !opts.Force:
+		return fmt.Errorf("update %s: new version %s is older than installed %s (use --force to downgrade)", opts.Name, bundle.Version, lf.InstalledVersion)
 
 	case cmp == 0 && newDigest == lf.BundleSHA256:
 		// Same version, same digest: just update last_check.
 		lf.LastCheck = now
 		if err := domrules.WriteLockFile(lockPath, lf); err != nil {
-			return fmt.Errorf("updating last_check for %s: %w", name, err)
+			return fmt.Errorf("updating last_check for %s: %w", opts.Name, err)
 		}
-		_, _ = fmt.Fprintf(out, "%s v%s: already up to date\n", name, bundle.Version)
+		_, _ = fmt.Fprintf(opts.Out, "%s v%s: already up to date\n", opts.Name, bundle.Version)
 		return nil
 
-	case cmp == 0 && newDigest != lf.BundleSHA256 && !force:
-		return fmt.Errorf("update %s: same version %s but different digest (possible republish attack, use --force to override)", name, bundle.Version)
+	case cmp == 0 && newDigest != lf.BundleSHA256 && !opts.Force:
+		return fmt.Errorf("update %s: same version %s but different digest (possible republish attack, use --force to override)", opts.Name, bundle.Version)
 	}
 
 	// Build lock file and stage everything atomically.
@@ -1054,14 +1126,14 @@ func updateBundle(out io.Writer, rulesDir, name string, policy domrules.TrustPol
 		BundleSHA256:      newDigest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	if err := stageBundle(rulesDir, name, bundleData, sigData, newLF); err != nil {
+	if err := stageBundle(opts.RulesDir, opts.Name, bundleData, sigData, newLF); err != nil {
 		return err
 	}
-	if err := resetFreshnessStateAfterBundleChange(rulesDir); err != nil {
+	if err := resetFreshnessStateAfterBundleChange(opts.RulesDir); err != nil {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "Updated %s: v%s -> v%s\n", name, lf.InstalledVersion, bundle.Version)
+	_, _ = fmt.Fprintf(opts.Out, "Updated %s: v%s -> v%s\n", opts.Name, lf.InstalledVersion, bundle.Version)
 	return nil
 }
 

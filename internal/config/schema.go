@@ -197,14 +197,20 @@ type SuppressEntry struct {
 
 // Rules configures community rule bundle loading.
 type Rules struct {
-	RulesDir            string       `yaml:"rules_dir"`
-	MinConfidence       string       `yaml:"min_confidence"`
-	IncludeExperimental bool         `yaml:"include_experimental"`
-	AllowDegraded       bool         `yaml:"allow_degraded" json:"-"`
-	TrustEmbeddedKeys   bool         `yaml:"trust_embedded_keys"`
-	Disabled            []string     `yaml:"disabled"`
-	TrustedKeys         []TrustedKey `yaml:"trusted_keys"`
-	DegradedBundles     []string     `yaml:"-" json:"-"`
+	RulesDir            string `yaml:"rules_dir"`
+	MinConfidence       string `yaml:"min_confidence"`
+	IncludeExperimental bool   `yaml:"include_experimental"`
+	AllowDegraded       bool   `yaml:"allow_degraded" json:"-"`
+	TrustEmbeddedKeys   bool   `yaml:"trust_embedded_keys"`
+	// AllowUnversionedBundleLoad lets a binary that cannot prove its own
+	// version load bundles that declare a min_pipelock requirement. Source
+	// builds (go install, go build) carry no release stamp, so the
+	// requirement cannot be checked; the default refuses rather than
+	// silently loading rules whose prerequisites are unverified.
+	AllowUnversionedBundleLoad bool         `yaml:"allow_unversioned_bundle_load"`
+	Disabled                   []string     `yaml:"disabled"`
+	TrustedKeys                []TrustedKey `yaml:"trusted_keys"`
+	DegradedBundles            []string     `yaml:"-" json:"-"`
 }
 
 // TrustedKey is a named Ed25519 public key for verifying third-party bundles.
@@ -1477,8 +1483,8 @@ type BudgetConfig struct {
 	MaxToolCallsPerSession     int                `yaml:"max_tool_calls_per_session,omitempty"`
 	MaxConcurrentToolCalls     int                `yaml:"max_concurrent_tool_calls,omitempty"` // reserved; validation rejects nonzero values
 	MaxWallClockMinutes        int                `yaml:"max_wall_clock_minutes,omitempty"`
-	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`  // same tool+args (default 5)
-	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"` // tool calls to track (default 20)
+	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`  // same tool+args; zero disables retry limiting
+	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"` // tool calls to track for pattern detection; zero disables
 	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`      // optional domain -> cost weight
 	DoWAction                  string             `yaml:"dow_action,omitempty"`            // "block" or "warn" (default "block")
 }

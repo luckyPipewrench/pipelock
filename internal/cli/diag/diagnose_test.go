@@ -232,6 +232,11 @@ func TestCheckRules_ValidBundle(t *testing.T) {
 	// a bare-Config test would assert a state the system never occupies.
 	cfg := config.Defaults()
 	cfg.Rules.RulesDir = rulesDir
+	// The bundle declares a min_pipelock, and a test binary carries no release
+	// stamp, so without this the gate refuses and this test would be measuring
+	// the version gate instead of bundle validity. The refusal itself is pinned
+	// by TestCheckRules_UnverifiableVersionReportsFailure below.
+	cfg.Rules.AllowUnversionedBundleLoad = true
 
 	result := checkRules("", "", cfg)
 	if result.Status != statusPass {

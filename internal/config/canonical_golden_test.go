@@ -305,7 +305,7 @@ const (
 	// policy semantics, so removing the compiled official keyring must change ph.
 	// Re-bumped for request body/WebSocket content entropy warn-by-default
 	// posture in ApplyDefaults.
-	goldenHashDefaults = "4ec506e8f5775d1ee04bfafd40372c3fbab3b374974fc5ac1f7aa3f5bc33fcda"
+	goldenHashDefaults = "bcaa6bf3d9439b5449a7e4fa6bc8dbd23aa2d762b37c180ff329b6803d736127"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -452,7 +452,7 @@ const (
 	// Re-bumped for rules.trust_embedded_keys: see goldenHashDefaults note above.
 	// Re-bumped for request body/WebSocket content entropy warn-by-default
 	// posture in ApplyDefaults: see goldenHashDefaults note above.
-	goldenHashRichConfig = "e1c1253c658f680e6884a8deac27c8c5dd6edf60587e1fa605236afc50aeea74"
+	goldenHashRichConfig = "b6a94ce291f1ce1b2843898df0bf299c2b635afa2693e288de78a04d3b070658"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

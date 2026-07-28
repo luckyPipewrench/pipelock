@@ -5,6 +5,7 @@ package rules
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -407,7 +408,16 @@ func NamespacedID(bundleName, ruleID string) string {
 
 // CheckMinPipelock verifies that currentVersion meets the minimum required
 // pipelock version. If minVersion is empty, the check always passes.
-func CheckMinPipelock(minVersion, currentVersion string) error {
+// ErrUnverifiableVersion reports that the running build does not carry a
+// released version, so a bundle's min_pipelock requirement could not be checked
+// either way. It is deliberately distinct from a requirement that was checked
+// and genuinely not met: the runtime load path refuses both, but the operator
+// CLI can downgrade only this one to a warning, because at install time the
+// operator is present to read it. A requirement that IS met or genuinely unmet
+// never produces this error.
+var ErrUnverifiableVersion = errors.New("check min pipelock")
+
+func CheckMinPipelock(minVersion, currentVersion string, allowUnversioned bool) error {
 	if minVersion == "" {
 		return nil
 	}
@@ -417,10 +427,26 @@ func CheckMinPipelock(minVersion, currentVersion string) error {
 		return fmt.Errorf("check min pipelock: invalid min_pipelock %q: %w", minVersion, err)
 	}
 
-	if isDevelopmentCurrentVersion(currentVersion) {
-		return nil
+	// A git-describe --dirty build appends a dirty marker. Semver orders a
+	// prerelease BELOW its release, so an unstripped "2.3.0-dirty" compares
+	// below 2.3.0 and a build of the required release would refuse its own
+	// bundle. Stripping the marker first also restores git-describe
+	// recognition for "<tag>-<commits>-g<hash>-dirty", whose trailing marker
+	// otherwise hides the commits/hash pair the detector looks for.
+	effectiveVersion := stripDirtyMarker(currentVersion)
+
+	if isDevelopmentCurrentVersion(effectiveVersion) {
+		// A source build carries no release stamp, so the requirement cannot
+		// be verified. Refuse by default rather than loading rules whose
+		// prerequisites are unchecked, and name the way out.
+		if allowUnversioned {
+			return nil
+		}
+		return fmt.Errorf(
+			"%w: this build does not report a released version (%q), so the bundle requirement min_pipelock %q cannot be verified; install a released binary, or set rules.allow_unversioned_bundle_load: true to load it unverified",
+			ErrUnverifiableVersion, currentVersion, minVersion)
 	}
-	curSemver, err := parseSemverVersion(currentVersion)
+	curSemver, err := parseSemverVersion(effectiveVersion)
 	if err != nil {
 		// Not orderable semver AND not a recognized development build
 		// (isDevelopmentCurrentVersion above already returned true for those:
@@ -489,6 +515,26 @@ func parseSemverVersion(s string) (semverVersion, error) {
 	}
 
 	return semverVersion{major: major, minor: minor, patch: patch, prerelease: prerelease}, nil
+}
+
+// stripDirtyMarker removes a trailing git-describe dirty marker so the rest of
+// the version is classified and compared on its own terms.
+func stripDirtyMarker(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if strings.HasSuffix(trimmed, "-dirty") {
+		return strings.TrimSuffix(trimmed, "-dirty")
+	}
+	if strings.HasSuffix(trimmed, ".dirty") {
+		candidate := strings.TrimSuffix(trimmed, ".dirty")
+		if isDevelopmentCurrentVersion(candidate) {
+			return candidate
+		}
+		return trimmed
+	}
+	if strings.HasSuffix(trimmed, "+dirty") {
+		return strings.TrimSuffix(trimmed, "+dirty")
+	}
+	return trimmed
 }
 
 func isDevelopmentCurrentVersion(s string) bool {

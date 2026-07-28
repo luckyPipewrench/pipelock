@@ -65,8 +65,8 @@ name: test-bundle
 version: "2026.03.1"
 author: Test Author
 description: A test bundle
-min_pipelock: "0.1.0"
 license: Apache-2.0
+min_pipelock: "0.1.0"
 rules:
   - id: test-rule-one
     type: dlp
@@ -85,8 +85,8 @@ name: test-bundle
 version: "2026.04.1"
 author: Test Author
 description: A test bundle
-min_pipelock: "0.1.0"
 license: Apache-2.0
+min_pipelock: "0.1.0"
 rules:
   - id: test-rule-one
     type: dlp
@@ -1057,6 +1057,28 @@ func TestLoadRulesConfig_ExplicitPathError(t *testing.T) {
 	_, err := loadRulesConfig("/nonexistent/pipelock.yaml")
 	if err == nil {
 		t.Error("expected error for nonexistent explicit config path")
+	}
+}
+
+func TestRulesAllowUnversionedLoadFailsClosed(t *testing.T) {
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	if rulesAllowUnversionedLoad("/nonexistent/pipelock.yaml", io.Discard) {
+		t.Fatal("unreadable explicit config must not allow unversioned bundle load")
+	}
+	if rulesAllowUnversionedLoad("", io.Discard) {
+		t.Fatal("missing config must not allow unversioned bundle load")
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("rules:\n  allow_unversioned_bundle_load: true\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	if !rulesAllowUnversionedLoad(cfgPath, io.Discard) {
+		t.Fatal("explicit true config should allow unversioned bundle load")
 	}
 }
 
@@ -2074,7 +2096,12 @@ func TestUpdateBundle_NameChangeRejected(t *testing.T) {
 	}
 
 	buf := &strings.Builder{}
-	err = updateBundle(buf, rulesDir, testBundleName, domrules.DefaultTrustPolicy(nil), false, false)
+	err = updateBundle(updateBundleOpts{
+		Out:      buf,
+		RulesDir: rulesDir,
+		Name:     testBundleName,
+		Policy:   domrules.DefaultTrustPolicy(nil),
+	})
 	if err == nil {
 		t.Fatal("expected error for name change during update")
 	}
@@ -2149,7 +2176,13 @@ func TestUpdateBundle_ReservedPrefixRecheckOnUpdate(t *testing.T) {
 	}
 
 	buf := &strings.Builder{}
-	err = updateBundle(buf, rulesDir, installedName, domrules.DefaultTrustPolicy(trustedKeys), false, true)
+	err = updateBundle(updateBundleOpts{
+		Out:              buf,
+		RulesDir:         rulesDir,
+		Name:             installedName,
+		Policy:           domrules.DefaultTrustPolicy(trustedKeys),
+		AllowKeyRotation: true,
+	})
 	if err == nil {
 		t.Fatal("expected error for reserved prefix with non-official signer on update")
 	}

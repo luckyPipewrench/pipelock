@@ -223,7 +223,7 @@ func TestInstallLocal_MalformedInputsLeaveRulesDirectoryEmpty(t *testing.T) {
 				}
 			}
 			var stdout strings.Builder
-			err := installLocal(&stdout, rulesDir, sourceDir, true)
+			err := installLocal(&stdout, rulesDir, sourceDir, true, false)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}

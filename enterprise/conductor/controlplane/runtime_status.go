@@ -350,7 +350,7 @@ func classifyFollowerHealth(follower FollowerSummary, status *FollowerRuntimeSta
 	if minVersion == "" {
 		minVersion = status.ActiveBundleMinPipelockVersion
 	}
-	if minVersion != "" && rules.CheckMinPipelock(minVersion, status.PipelockVersion) != nil {
+	if minVersion != "" && rules.CheckMinPipelock(minVersion, status.PipelockVersion, false) != nil {
 		return FleetHealthUnsupported, "runtime_below_minimum"
 	}
 	if expected.BundleHash != "" && !strings.EqualFold(status.ActiveBundleHash, expected.BundleHash) {
@@ -408,7 +408,7 @@ func classifySignedAppliedState(follower FollowerSummary, signed VerifiedApplied
 	if minVersion == "" {
 		minVersion = applied.ActiveBundleMinPipelockVersion
 	}
-	if minVersion != "" && rules.CheckMinPipelock(minVersion, applied.PipelockVersion) != nil {
+	if minVersion != "" && rules.CheckMinPipelock(minVersion, applied.PipelockVersion, false) != nil {
 		return FleetHealthUnsupported, "runtime_below_minimum"
 	}
 	if expected.BundleHash != "" && !strings.EqualFold(applied.ActiveBundleHash, expected.BundleHash) {
@@ -503,7 +503,7 @@ func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRu
 			summary.LastApplyFailed++
 			continue
 		}
-		if err := rules.CheckMinPipelock(bundle.MinPipelockVersion, status.PipelockVersion); err != nil {
+		if err := rules.CheckMinPipelock(bundle.MinPipelockVersion, status.PipelockVersion, false); err != nil {
 			summary.Unsupported++
 			continue
 		}

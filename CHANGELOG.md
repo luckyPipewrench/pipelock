@@ -187,6 +187,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **False-positive tuning guidance points single-pattern response findings at the
   narrowest effective knob**, rather than a broader one the blocking path does not
   consult.
+- **Kubernetes deployment guidance tells operators to verify per-pod NetworkPolicy
+  enforcement rather than assume it.** NetworkPolicies are additive with no deny
+  rule, so a narrow policy cannot override a broader one that already permits the
+  traffic. Separately, on one k3s cluster a namespace-wide policy that selected
+  every pod and declared both directions in a single object was observed defeating
+  a more specific per-pod ingress policy outright. The affected surface is named,
+  the observation is reported with its exact provenance rather than as a general
+  guarantee, and the verification recipe requires a positive control before the
+  negative test.
 - Documentation adds an evidence terminology quick reference, a rewritten README
   with a capability table and a verify-it-yourself walkthrough, and executable
   examples for hot reload, learn-and-lock, receipt verification, request-policy

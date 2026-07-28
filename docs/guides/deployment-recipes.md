@@ -22,6 +22,17 @@ Each tier is strictly stronger than the previous one. Tier 1 assumes the agent c
 - **Tier 2 (Enforced):** [Docker Compose with `internal: true` network](#docker-compose-recommended-for-local-development) on a single host (Docker creates an isolated network namespace with no gateway, so pipelock is the agent's only route out), [Linux host firewall rules](#iptables--nftables-linux) (iptables/nftables `--uid-owner` filtering drops packets from the agent user unless destined for pipelock), or [macOS PF per-user filtering](#macos-pf) (PF drops packets from the agent user unless destined for pipelock). In all three, a kernel-level owner-match boundary drops direct egress from the agent user; raw sockets don't help because the kernel drops the packets before they leave the host. The match keys on the socket owner (UID), so keep host setuid/sudo policy tight — a setuid or file-capability helper could egress under a different UID.
 - **Tier 3 (Transparent):** [Kubernetes separate-pod pattern with NetworkPolicy](#kubernetes-with-networkpolicy) restricting the agent pod's egress to only the pipelock Service IP. Pipelock runs as its own Deployment, not as a sidecar. The agent pod has no route to the internet; it can only reach the pipelock Service endpoint. This is the strongest tier pipelock supports today with zero agent cooperation required.
 
+> **Verify NetworkPolicy enforcement on your CNI before relying on Tier 3.** Tier 3's boundary is an
+> **egress** policy on the agent pod, so it depends on your CNI enforcing egress rules — if it does not,
+> the agent keeps a direct route out and the tier collapses to Tier 1. Separately, NetworkPolicies are
+> additive with no deny rule, so a narrow policy cannot override a broader one that already permits the
+> traffic; and on one k3s cluster a namespace-wide policy selecting every pod with `podSelector: {}` while
+> declaring both `Ingress` and `Egress` in one object was observed defeating a more specific per-pod
+> **ingress** policy entirely. Splitting that namespace-wide policy into separate `Ingress`-only and
+> `Egress`-only objects restored expected behaviour. Prove your own policies with a positive control and
+> then a negative test rather than trusting that they read correctly — see
+> [NetworkPolicy Semantics](../cli/init-sidecar.md#networkpolicy-semantics).
+
 > **Future work: kernel-level transparent interception.** TPROXY / `IP_TRANSPARENT`-based interception that redirects packets at the kernel before they leave the host would let pipelock transparently capture agent traffic without any agent cooperation or per-UID filtering. Pipelock does not currently set `IP_TRANSPARENT` on its listen socket, so a TPROXY recipe requires pipelock code changes, not just documentation. This is on the roadmap.
 
 ## Docker Compose (Recommended for Local Development)

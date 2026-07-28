@@ -178,7 +178,7 @@ The generated agent workload gets `HTTPS_PROXY` and `HTTP_PROXY` for HTTP egress
 - `PIPELOCK_MCP_PROXY_URL=http://<pipelock-service>:8889`
 - `PIPELOCK_MCP_CONFIG=/etc/pipelock/mcp/mcp.json`
 
-The mounted `mcp.json` contains an `mcpServers.openclaw` entry whose URL points at Pipelock's MCP listener. Configure your agent launcher to read `PIPELOCK_MCP_CONFIG`, or configure the MCP client directly from `PIPELOCK_MCP_PROXY_URL`. The generated NetworkPolicy limits the agent pod to DNS plus the Pipelock HTTP and MCP proxy ports, so direct egress to the OpenClaw gateway is outside the generated agent boundary.
+The mounted `mcp.json` contains an `mcpServers.openclaw` entry whose URL points at Pipelock's MCP listener. Configure your agent launcher to read `PIPELOCK_MCP_CONFIG`, or configure the MCP client directly from `PIPELOCK_MCP_PROXY_URL`. The generated NetworkPolicy limits the agent pod to DNS plus the Pipelock HTTP and MCP proxy ports, so direct egress to the OpenClaw gateway is outside the generated agent boundary. That boundary only holds if your CNI actually enforces the policy — see [NetworkPolicy Semantics](../cli/init-sidecar.md#networkpolicy-semantics) for how to prove it with a positive control followed by a negative test.
 
 Same-pod sidecar wiring is still useful for local prototypes, but it relies on the agent honoring proxy settings and is not the generated enforced topology:
 

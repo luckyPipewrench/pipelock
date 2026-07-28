@@ -207,6 +207,32 @@ The canary phase runs locally against the generated config to confirm DLP blocks
 
 The enforcement claim for this command depends on Kubernetes NetworkPolicy egress enforcement being active in your cluster. If your CNI does not enforce egress policies, the generated manifests still configure the companion proxy correctly, but the cluster will not provide the intended direct-egress boundary.
 
+### Verify per-pod ingress restrictions on your CNI
+
+NetworkPolicies are additive: the effective permission set is the union of every policy selecting a pod, and there is no deny rule. A narrow policy therefore cannot override a broad one. If some other policy in the namespace already permits the traffic, the narrow policy changes nothing, and it will still be accepted by the API server and still read correctly in `kubectl get networkpolicy -o yaml`.
+
+A CNI can also fail to apply a policy the way the API accepts it. On one cluster running k3s v1.33.6+k3s1 with flannel and the embedded kube-router NetworkPolicy controller, a namespace-wide policy that selects every pod with `podSelector: {}` **and** declares both `Ingress` and `Egress` in the same object was observed defeating a more specific per-pod **ingress** policy in that namespace, so the narrow policy enforced nothing at all. Splitting the namespace-wide policy into two objects, one `Ingress`-only and one `Egress`-only with identical rules, restored the expected behaviour; a policy selecting a specific pod carried both directions safely. This resembles older reports against k3s and kube-router such as [k3s-io/k3s#2390](https://github.com/k3s-io/k3s/issues/2390). Do not assume the problem is limited to that stack, and do not assume your own stack is affected — the point is to test rather than infer.
+
+The generated bundle's proxy NetworkPolicy is a per-pod ingress policy: it permits agent pods to reach the proxy. Where such a restriction is not enforced, more pods in the namespace than intended can reach the proxy listener. That widens who may send traffic *through* pipelock rather than creating a path *around* it, since the agent-side boundary is a separate egress policy. Note that pipelock ignores caller-supplied identity headers, so traffic from an unintended pod is attributed to the workload the proxy is bound to — treat it as an evidence-attribution concern as well as an access one.
+
+The same testing advice applies to egress. On the cluster above, a per-pod egress restriction continued to enforce under the conditions that broke ingress, but that is one observation on one CNI, and Kubernetes gives no signal for when a policy change has finished being applied, so it is not a guarantee for your cluster.
+
+Do not take any of this on trust. Prove each restriction with a **positive control followed by a negative test** — the positive control matters, because a failed connection from an excluded pod proves nothing if the listener, IP, or port were wrong to begin with:
+
+```bash
+# 1. POSITIVE CONTROL: a pod the policy permits must SUCCEED.
+#    If this fails, your target details are wrong and the test below is meaningless.
+kubectl exec -n <namespace> <permitted-agent-pod> -- \
+  timeout 5 nc -z -w4 <pipelock-proxy-pod-ip> 8888
+
+# 2. NEGATIVE TEST: a pod the policy excludes must FAIL.
+#    Success here means the restriction is not being enforced.
+kubectl exec -n <namespace> <excluded-pod> -- \
+  timeout 5 nc -z -w4 <pipelock-proxy-pod-ip> 8888
+```
+
+Step 2 may fail as a connection timeout or as `connection refused`, depending on whether your CNI drops or rejects; either is a pass once step 1 has succeeded. Both commands need `timeout` and an `nc` supporting `-z` in the pod image.
+
 For existing workloads, roll the companion proxy out first and wait for ready endpoints before patching the agent workload. The Helm bundle output includes that order explicitly to avoid a fail-closed brownout while the proxy Deployment is still starting.
 
 Within a cluster that enforces egress NetworkPolicies, the agent pods are limited to:

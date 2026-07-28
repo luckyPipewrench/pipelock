@@ -164,7 +164,9 @@ func TestMCPProxyCmdWebSocketUpstreamConnectionFailureAfterSetup(t *testing.T) {
 }
 
 func TestMCPProxyCmdHTTPReverseProxyStartsAndStopsWithContext(t *testing.T) {
-	t.Parallel()
+	// This test owns a live listener lifecycle. Keep it serial within the
+	// package so parallel CLI tests cannot consume its entire startup window.
+	const lifecycleTimeout = 10 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -185,7 +187,7 @@ func TestMCPProxyCmdHTTPReverseProxyStartsAndStopsWithContext(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Execute() }()
 
-	testwait.For(t, 5*time.Second, func() bool {
+	testwait.For(t, lifecycleTimeout, func() bool {
 		return stderr.contains("MCP reverse proxy")
 	}, "mcp reverse proxy startup")
 	cancel()
@@ -195,7 +197,7 @@ func TestMCPProxyCmdHTTPReverseProxyStartsAndStopsWithContext(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("mcp reverse proxy after context cancel: %v\nstderr:\n%s", err, stderr.String())
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(lifecycleTimeout):
 		t.Fatalf("mcp reverse proxy did not stop after context cancel\nstderr:\n%s", stderr.String())
 	}
 }

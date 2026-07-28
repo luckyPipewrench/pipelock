@@ -101,7 +101,8 @@ Upstream failures are rate-limited in the broker log and are not retried.
 Do not load an analytics SDK in the playground or add an analytics host to its
 CSP. Keep the browser transport same-origin and send JSON with
 `Content-Type: application/json`; the browser supplies
-`Sec-Fetch-Site: same-origin`. Cross-site and form-style requests are rejected.
+`Sec-Fetch-Site: same-origin`. Cross-site, form-style, duplicate security
+headers, and JSON bodies with duplicate member names are rejected.
 
 ## Human verification
 

@@ -128,5 +128,7 @@ selecting a blocking preset (strict/hostile presets already block):
 - **Global (last resort):** raising `request_body_scanning.content_entropy_threshold`
   lowers sensitivity for every destination. Prefer a per-host exclusion.
 
-Raising `content_entropy_min_length` also reduces flags on short opaque
-identifiers without exempting a whole host.
+`content_entropy_min_length` applies to both individual leaves and their stable
+aggregate views. Raising it can reduce flags for one short identifier, but a
+collection of short identifiers may still exceed the aggregate floor. Prefer a
+per-host exclusion when opaque identifiers are a normal part of that protocol.

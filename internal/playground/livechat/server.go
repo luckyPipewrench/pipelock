@@ -4,6 +4,7 @@
 package livechat
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
@@ -815,7 +817,14 @@ func gateErrStatus(err error) int {
 }
 
 func decodeJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxRequestBody))
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxRequestBody))
+	if err != nil {
+		return fmt.Errorf("livechat: read request body: %w", err)
+	}
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return fmt.Errorf("livechat: reject duplicate request keys: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err

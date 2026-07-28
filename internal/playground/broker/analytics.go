@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
 
@@ -158,8 +159,11 @@ func (r *AnalyticsRelay) Handler() http.Handler {
 			http.Error(w, "analytics unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		contentTypes := req.Header.Values("Content-Type")
+		fetchSites := req.Header.Values("Sec-Fetch-Site")
 		mediaType, _, mediaErr := mime.ParseMediaType(req.Header.Get("Content-Type"))
-		if mediaErr != nil || mediaType != "application/json" || req.Header.Get("Sec-Fetch-Site") != "same-origin" {
+		if len(contentTypes) != 1 || len(fetchSites) != 1 ||
+			mediaErr != nil || mediaType != "application/json" || fetchSites[0] != "same-origin" {
 			http.Error(w, "same-origin JSON required", http.StatusForbidden)
 			return
 		}
@@ -168,8 +172,12 @@ func (r *AnalyticsRelay) Handler() http.Handler {
 			http.Error(w, "analytics busy", http.StatusTooManyRequests)
 			return
 		}
-		body := http.MaxBytesReader(w, req.Body, maxAnalyticsBody)
-		dec := json.NewDecoder(body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxAnalyticsBody))
+		if err != nil || jsonscan.RejectDuplicateKeys(body) != nil {
+			http.Error(w, "invalid analytics event", http.StatusBadRequest)
+			return
+		}
+		dec := json.NewDecoder(bytes.NewReader(body))
 		dec.DisallowUnknownFields()
 		var in analyticsInput
 		if err := dec.Decode(&in); err != nil {
@@ -294,7 +302,7 @@ func validateAnalyticsProperties(event string, input map[string]any) (map[string
 	if !ok {
 		return nil, false
 	}
-	out := make(map[string]any, len(input)+2)
+	out := make(map[string]any, len(input)+3)
 	for key, value := range input {
 		kind, exists := schema[key]
 		if !exists || !validAnalyticsValue(kind, value) {

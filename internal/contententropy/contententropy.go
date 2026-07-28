@@ -46,27 +46,43 @@ func ScanTexts(texts []string, opts Options) *Finding {
 			return finding
 		}
 	}
-	if finding := findSeparatorlessOpaqueHex(texts, opts.Threshold, opts.MinLength); finding != nil {
+	// The separator-bearing view below is useful for preserving field
+	// boundaries, but separators can dominate when an attacker shards an opaque
+	// payload into many tiny fields. Scan a stable separatorless view first so
+	// field-count amplification cannot dilute the payload's entropy. Shannon
+	// entropy depends only on character frequency, so this view is independent
+	// of field order: a sharded opaque hex blob reassembles here whatever order
+	// the fields arrived in, and no separate reassembly pass is needed.
+	sorted := sortedTexts(texts)
+	if finding := Find(strings.Join(sorted, ""), opts.Threshold, opts.MinLength); finding != nil {
 		return finding
+	}
+	// Repeated low-entropy structural values (for example, A2A part kinds) must
+	// not swamp a payload split across many small fields. A stable deduplicated
+	// view preserves the opaque alphabet while bounding each repeated filler's
+	// influence. With no repeats this view is byte-identical to the one already
+	// scanned above, so skip the redundant entropy pass over the whole payload.
+	if unique := uniqueSortedTexts(sorted); len(unique) != len(sorted) {
+		if finding := Find(strings.Join(unique, ""), opts.Threshold, opts.MinLength); finding != nil {
+			return finding
+		}
 	}
 	separator := opts.Separator
 	if separator == "" {
 		separator = "."
 	}
-	joined := strings.Join(sortedTexts(texts), separator)
+	joined := strings.Join(sorted, separator)
 	return Find(joined, opts.Threshold, opts.MinLength)
 }
 
-func findSeparatorlessOpaqueHex(texts []string, threshold float64, minLen int) *Finding {
-	if len(texts) < 2 {
-		return nil
+func uniqueSortedTexts(sorted []string) []string {
+	unique := make([]string, 0, len(sorted))
+	for _, text := range sorted {
+		if len(unique) == 0 || unique[len(unique)-1] != text {
+			unique = append(unique, text)
+		}
 	}
-	joined := strings.Join(texts, "")
-	finding := Find(joined, threshold, minLen)
-	if finding == nil || finding.Encoding != "hex" {
-		return nil
-	}
-	return finding
+	return unique
 }
 
 // Find checks one string for opaque high entropy content.
@@ -141,7 +157,13 @@ func canonicalHost(hostname string) string {
 }
 
 func sortedTexts(texts []string) []string {
-	out := append([]string(nil), texts...)
+	out := make([]string, len(texts))
+	for i, text := range texts {
+		// Find normalizes each individual leaf. Apply the same normalization to
+		// synthetic joined views so padding every shard cannot reintroduce
+		// low-entropy whitespace only after the per-leaf minimum-length check.
+		out[i] = strings.TrimSpace(text)
+	}
 	sort.Strings(out)
 	return out
 }

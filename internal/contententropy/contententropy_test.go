@@ -4,6 +4,7 @@
 package contententropy
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -58,8 +59,13 @@ func TestScanTexts(t *testing.T) {
 		{"exclusion host exempt", []string{highEntropy}, func(o *Options) { o.Exclusions = []string{"exfil.vendor.example"} }, false},
 		{"per-field hit", []string{"short", highEntropy}, nil, true},
 		{"joined hit when each field below min length", []string{highEntropy[:16], highEntropy[16:32]}, func(o *Options) { o.MinLength = 32 }, true},
+		{"single-character field split cannot dilute entropy", strings.Split(highEntropy, ""), func(o *Options) { o.MinLength = 32 }, true},
+		{"repeated structure cannot dilute split entropy", entropyFieldsWithRepeatedStructure(), func(o *Options) { o.MinLength = 32 }, true},
 		{"separatorless hex hit when each field below min length", []string{hexBlob[:16], hexBlob[16:32], hexBlob[32:48], hexBlob[48:]}, func(o *Options) { o.MinLength = 64 }, true},
+		{"whitespace-padded hex shards still hit", []string{hexBlob[:16] + " ", hexBlob[16:32] + " ", hexBlob[32:48] + " ", hexBlob[48:] + " "}, func(o *Options) { o.MinLength = 64 }, true},
 		{"clean short fields", []string{"a", "b"}, nil, false},
+		{"clean repeated structure", []string{strings.Repeat("a", 40), strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("b", 40)}, nil, false},
+		{"clean distinct key-rich structure", cleanDistinctStructure(), nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,11 +81,39 @@ func TestScanTexts(t *testing.T) {
 	}
 }
 
+func entropyFieldsWithRepeatedStructure() []string {
+	fields := make([]string, 0, len(highEntropy)*2)
+	for _, character := range highEntropy {
+		fields = append(fields, string(character), "text")
+	}
+	return fields
+}
+
+func cleanDistinctStructure() []string {
+	fields := make([]string, 0, 60)
+	for i := range 60 {
+		fields = append(fields, "status_field_"+strconv.Itoa(i))
+	}
+	return fields
+}
+
 func TestScanTexts_CustomSeparator(t *testing.T) {
-	// A non-default separator must still produce a joined view that trips.
+	// The separator-joined view is the last one ScanTexts tries, so a fixture
+	// that any earlier view already catches would pass without ever using the
+	// separator. Five 6-character fields make every separatorless view 30 bytes
+	// (under the 32-byte minimum, so they return nil on length alone) while the
+	// separator-joined view is 34 bytes and does reach the entropy check. That
+	// leaves the custom separator load-bearing for this assertion.
+	fields := []string{highEntropy[0:6], highEntropy[6:12], highEntropy[12:18], highEntropy[18:24], highEntropy[24:30]}
 	opts := Options{Enabled: true, Threshold: 4.5, MinLength: 32, Host: "exfil.vendor.example", Separator: "|"}
-	if ScanTexts([]string{highEntropy[:16], highEntropy[16:32]}, opts) == nil {
+	if ScanTexts(fields, opts) == nil {
 		t.Fatal("expected joined scan with custom separator to trip")
+	}
+	// Same fields, no separator configured: the default "." separator keeps the
+	// joined view at 34 bytes, so this must trip too.
+	opts.Separator = ""
+	if ScanTexts(fields, opts) == nil {
+		t.Fatal("expected joined scan with default separator to trip")
 	}
 }
 
@@ -137,9 +171,9 @@ func TestIsDomainExempt(t *testing.T) {
 }
 
 func TestSortedTexts_DoesNotMutateInput(t *testing.T) {
-	in := []string{"c", "a", "b"}
+	in := []string{" c ", "a", "b"}
 	out := sortedTexts(in)
-	if in[0] != "c" {
+	if in[0] != " c " {
 		t.Fatalf("input mutated: %v", in)
 	}
 	if out[0] != "a" || out[1] != "b" || out[2] != "c" {
@@ -147,18 +181,18 @@ func TestSortedTexts_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestFindSeparatorlessOpaqueHex(t *testing.T) {
-	// Fewer than two fields: nothing to concatenate, returns nil.
-	if findSeparatorlessOpaqueHex([]string{hexBlob}, 4.5, 32) != nil {
-		t.Fatal("single field should not produce a separatorless finding")
-	}
-	// Hex split across short fields concatenates to an opaque-hex hit.
-	f := findSeparatorlessOpaqueHex([]string{hexBlob[:16], hexBlob[16:32], hexBlob[32:48], hexBlob[48:]}, 4.5, 64)
+// TestScanTexts_ShardedHexReassembles keeps end-to-end coverage for a hex blob
+// split below the minimum length. The dedicated helper this used to exercise was
+// removed as unreachable; the separatorless view in ScanTexts covers it, and the
+// encoding must still be reported as hex so the operator reason text is right.
+func TestScanTexts_ShardedHexReassembles(t *testing.T) {
+	opts := Options{Enabled: true, Threshold: 4.5, MinLength: 64, Host: "exfil.vendor.example"}
+	f := ScanTexts([]string{hexBlob[:16], hexBlob[16:32], hexBlob[32:48], hexBlob[48:]}, opts)
 	if f == nil || f.Encoding != "hex" {
-		t.Fatalf("expected separatorless opaque-hex finding, got %+v", f)
+		t.Fatalf("expected sharded opaque-hex finding, got %+v", f)
 	}
-	// Concatenation that is not all-hex is not an opaque-hex finding.
-	if findSeparatorlessOpaqueHex([]string{"not", "hex", "content", "here"}, 4.5, 4) != nil {
-		t.Fatal("non-hex concatenation should not be an opaque-hex finding")
+	// Non-hex short fields must stay clean rather than reporting a hex encoding.
+	if f := ScanTexts([]string{"not", "hex", "content", "here"}, opts); f != nil {
+		t.Fatalf("non-hex concatenation should be clean, got %+v", f)
 	}
 }

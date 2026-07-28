@@ -1327,17 +1327,31 @@ func readMessageToken(w http.ResponseWriter, r *http.Request) ([]byte, string, e
 	if err != nil {
 		return nil, "", fmt.Errorf("broker: read message request: %w", err)
 	}
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return nil, "", fmt.Errorf("broker: reject duplicate message keys: %w", err)
+	}
 	var req messageRequest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return nil, "", err
 	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, "", errors.New("broker: message body must contain exactly one JSON object")
+	}
 	return body, req.Token, nil
 }
 
 func decodeBrokerJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBrokerBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBrokerBodyBytes))
+	if err != nil {
+		return fmt.Errorf("broker: read request body: %w", err)
+	}
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return fmt.Errorf("broker: reject duplicate request keys: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err

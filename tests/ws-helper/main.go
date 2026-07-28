@@ -7,11 +7,11 @@
 //
 //	ws-helper echo <port>           Start an echo server (text + binary).
 //	ws-helper inject <port>         Start a server that replies with injection payloads.
-//	ws-helper send <url> <payload>  Connect, send one text frame, print response or "CLOSED".
-//	ws-helper send-binary <url>     Connect, send one binary frame, print "OK" or "CLOSED".
-//	ws-helper send-header <url> <header:value>  Connect with custom header, print "OK" or "DIAL_FAILED".
-//	ws-helper fragment <url> <part1> <part2>     Send a fragmented message (two frames), print response or "CLOSED".
-//	ws-helper send-compressed <url> <payload>   Send a text frame with RSV1 (compression) bit set, print response or "CLOSED".
+//	ws-helper send <url> <payload>  Connect, send one text frame, print response, "CLOSED", "HTTP_<status>", or "DIAL_FAILED".
+//	ws-helper send-binary <url>     Connect, send one binary frame, print "OK", "CLOSED", "HTTP_<status>", or "DIAL_FAILED".
+//	ws-helper send-header <url> <header:value>  Connect with custom header, print "OK", "HTTP_<status>", or "DIAL_FAILED".
+//	ws-helper fragment <url> <part1> <part2>     Send a fragmented message, print response, "CLOSED", "HTTP_<status>", or "DIAL_FAILED".
+//	ws-helper send-compressed <url> <payload>   Send an RSV1 frame, print response, "CLOSED", "HTTP_<status>", or "DIAL_FAILED".
 //	ws-helper serve-html <port> <html>          Start an HTTP server that returns <html> as text/html.
 //
 // Build: go build -o /tmp/ws-helper ./tests/ws-helper
@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -143,7 +144,7 @@ func sendText(wsURL, payload string) {
 
 	conn, _, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
-		fmt.Println("DIAL_FAILED")
+		printDialFailure(err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -167,7 +168,7 @@ func sendBinary(wsURL string) {
 
 	conn, _, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
-		fmt.Println("DIAL_FAILED")
+		printDialFailure(err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -208,7 +209,7 @@ func sendWithHeader(wsURL, headerSpec string) {
 
 	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {
-		fmt.Println("DIAL_FAILED")
+		printDialFailure(err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -232,7 +233,7 @@ func sendFragmented(wsURL, part1, part2 string) {
 
 	conn, _, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
-		fmt.Println("DIAL_FAILED")
+		printDialFailure(err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -298,7 +299,7 @@ func sendCompressed(wsURL, payload string) {
 
 	conn, _, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
-		fmt.Println("DIAL_FAILED")
+		printDialFailure(err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -336,6 +337,15 @@ func sendCompressed(wsURL, payload string) {
 		return
 	}
 	fmt.Println(string(reply))
+}
+
+func printDialFailure(err error) {
+	var statusErr ws.StatusError
+	if errors.As(err, &statusErr) {
+		fmt.Printf("HTTP_%d\n", int(statusErr))
+		return
+	}
+	fmt.Println("DIAL_FAILED")
 }
 
 func serveHTML(port, html string) {

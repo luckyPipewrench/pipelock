@@ -153,4 +153,34 @@ func TestHardeningBrokerHelpersFailClosedAndCleanState(t *testing.T) {
 	if err := decodeBrokerJSON(req, &decoded); err == nil {
 		t.Fatal("decodeBrokerJSON accepted multiple objects")
 	}
+
+	req = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		livechat.RouteSession,
+		bytes.NewBufferString(`{"code":"attacker-first","code":"valid-code"}`),
+	)
+	if err := decodeBrokerJSON(req, &decoded); err == nil {
+		t.Fatal("decodeBrokerJSON accepted duplicate members")
+	}
+
+	req = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		livechat.RouteMessage,
+		bytes.NewBufferString(`{"token":"attacker-first","token":"valid-last","message":"hello"}`),
+	)
+	if _, _, err := readMessageToken(httptest.NewRecorder(), req); err == nil {
+		t.Fatal("readMessageToken accepted duplicate members")
+	}
+
+	req = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		livechat.RouteMessage,
+		bytes.NewBufferString(`{"token":"valid-first","message":"hello"}{"token":"attacker-second","message":"hidden"}`),
+	)
+	if _, _, err := readMessageToken(httptest.NewRecorder(), req); err == nil {
+		t.Fatal("readMessageToken accepted multiple objects")
+	}
 }

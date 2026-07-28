@@ -92,7 +92,7 @@ func TestAnalyticsSchemaCoversViewerContract(t *testing.T) {
 
 func TestAnalyticsRelayRejectsUnboundedOrMalformedInput(t *testing.T) {
 	captures := make(chan analyticsCapture, 1)
-	relay, err := NewAnalyticsRelay(context.Background(), AnalyticsConfig{ProjectKey: "key", Endpoint: "https://analytics.example/i/v0/e/", Client: &http.Client{Transport: analyticsRoundTripper{captures: captures}}, SigningKey: analyticsTestSigningKey})
+	relay, err := NewAnalyticsRelay(t.Context(), AnalyticsConfig{ProjectKey: "key", Endpoint: "https://analytics.example/i/v0/e/", Client: &http.Client{Transport: analyticsRoundTripper{captures: captures}}, SigningKey: analyticsTestSigningKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +109,9 @@ func TestAnalyticsRelayRejectsUnboundedOrMalformedInput(t *testing.T) {
 		{"invalid_enum", `{"event":"playground_demo_viewed","properties":{"mode":"other"}}`},
 		{"removed_layer", `{"event":"playground_attack_blocked","properties":{"layer":"body_dlp"}}`},
 		{"browser_distinct_id", `{"event":"playground_live_session_started","properties":{},"distinct_id":"browser-controlled"}`},
+		{"duplicate_event", `{"event":"attacker_first","event":"playground_live_session_started","properties":{}}`},
+		{"duplicate_properties", `{"event":"playground_live_session_started","properties":{"prompt":"hidden"},"properties":{}}`},
+		{"duplicate_nested_property", `{"event":"playground_message_sent","properties":{"turn":1000,"turn":1}}`},
 		{"trailing_json", `{"event":"playground_live_session_started","properties":{}} {}`},
 		{"oversize", `{"event":"playground_live_session_started","properties":{}` + strings.Repeat(" ", maxAnalyticsBody) + `}`},
 	}
@@ -153,6 +156,45 @@ func TestAnalyticsRelayRejectsCrossSiteAndPlainText(t *testing.T) {
 			relay.Handler().ServeHTTP(rec, req)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("headers %#v: status = %d", test.headers, rec.Code)
+			}
+		})
+	}
+}
+
+func TestAnalyticsRelayRejectsAmbiguousSecurityHeaders(t *testing.T) {
+	relay, err := NewAnalyticsRelay(t.Context(), AnalyticsConfig{ProjectKey: "key", Endpoint: "https://analytics.example/i/v0/e/", SigningKey: analyticsTestSigningKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(http.Header)
+	}{
+		{
+			name: "duplicate content type",
+			mutate: func(header http.Header) {
+				header.Add("Content-Type", "application/json")
+				header.Add("Content-Type", "text/plain")
+				header.Set("Sec-Fetch-Site", "same-origin")
+			},
+		},
+		{
+			name: "duplicate fetch site",
+			mutate: func(header http.Header) {
+				header.Set("Content-Type", "application/json")
+				header.Add("Sec-Fetch-Site", "same-origin")
+				header.Add("Sec-Fetch-Site", "cross-site")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, RouteAnalytics, strings.NewReader(`{"event":"playground_live_session_started","properties":{}}`))
+			test.mutate(req.Header)
+			rec := httptest.NewRecorder()
+			relay.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("headers %#v: status = %d", req.Header, rec.Code)
 			}
 		})
 	}

@@ -1,0 +1,38 @@
+# Baseline config for the MCP 2026-07-28 conformance rig.
+#
+# Deliberately minimal: scanning layers that would confound a transit test are
+# off, so a failure here is a TRANSPORT/protocol failure, not a scanner verdict.
+# Attack cases enable their specific layer explicitly.
+
+version: 1
+mode: balanced
+
+internal: []
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.1/32"
+
+dlp:
+  scan_env: false
+  include_defaults: false
+
+response_scanning:
+  enabled: false
+  action: warn
+
+mcp_input_scanning:
+  enabled: false
+  action: warn
+
+mcp_tool_scanning:
+  enabled: false
+  action: warn
+  detect_drift: false
+
+mcp_session_binding:
+  enabled: false
+
+mcp_tool_policy:
+  enabled: false
+  action: warn

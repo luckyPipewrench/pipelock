@@ -1,0 +1,3 @@
+.venv/
+.server.log
+.pipelock.log

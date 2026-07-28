@@ -37,9 +37,15 @@ import (
 const listenerProxyAuthorization = "Proxy-Authorization"
 
 const (
-	listenerAuthorization      = "Authorization"
-	listenerLastEventID        = "Last-Event-ID"
-	listenerProtocolVersion    = "Mcp-Protocol-Version"
+	listenerAuthorization   = "Authorization"
+	listenerLastEventID     = "Last-Event-ID"
+	listenerProtocolVersion = "Mcp-Protocol-Version"
+	// Required on Streamable HTTP POST from protocol revision 2026-07-28
+	// (SEP-2243). An upstream that enforces them answers a stripped request
+	// with HeaderMismatch (-32020), which drives a fallback-capable client
+	// back onto the deprecated session transport.
+	listenerMCPMethod          = "Mcp-Method"
+	listenerMCPName            = "Mcp-Name"
 	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, A2A-Extensions, A2A-Version, Last-Event-ID"
 	maxAuditSessionKeyLen      = 128
 )
@@ -1354,6 +1360,8 @@ func forwardListenerUpstreamHeaders(upReq, r *http.Request, includeLastEventID b
 		upReq.Header.Set("Mcp-Session-Id", sid)
 	}
 	forwardIfOperatorUnset(upReq, r, listenerProtocolVersion)
+	forwardIfOperatorUnset(upReq, r, listenerMCPMethod)
+	forwardIfOperatorUnset(upReq, r, listenerMCPName)
 	forwardIfOperatorUnset(upReq, r, "A2A-Extensions")
 	forwardIfOperatorUnset(upReq, r, "A2A-Version")
 	if includeLastEventID {

@@ -1,0 +1,38 @@
+# SSE streaming scan example (reverse proxy).
+# verify.sh rewrites fetch_proxy.listen, reverse_proxy.listen, and
+# reverse_proxy.upstream into a temp WORK copy with free ports.
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  monitoring:
+    max_url_length: 4096
+
+reverse_proxy:
+  enabled: true
+  listen: "127.0.0.1:8890"
+  upstream: "http://127.0.0.1:7899"
+
+# Offline: no DNS SSRF. Core literal-IP SSRF floor remains.
+internal: []
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"
+    - "::1/128"
+
+dlp:
+  scan_env: false
+  include_defaults: false
+
+response_scanning:
+  enabled: true
+  action: block
+  include_defaults: true
+  sse_streaming:
+    enabled: true
+    action: block
+    max_event_bytes: 65536

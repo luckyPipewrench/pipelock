@@ -3988,8 +3988,11 @@ func TestHTTPListener_SSEUpstream_ScanErrorReturns502(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("Content-Type = %q, want application/json (SSE header must be overridden on fail-closed)", ct)
 	}
-	if cc := resp.Header.Get("Cache-Control"); cc != "" {
-		t.Errorf("Cache-Control = %q, want unset (was no-cache from SSE branch)", cc)
+	// The fail-closed JSON envelope must not inherit a weaker cache directive
+	// than the listener's baseline. Every MCP response is no-store so no shared
+	// intermediary retains it.
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	var rpc struct {

@@ -49,6 +49,10 @@ const (
 	// HeaderMismatch, allocated by protocol revision 2026-07-28 for a routing
 	// header that disagrees with the request body's method.
 	mcpHeaderMismatchCode = -32020
+	// upstreamResponseHeaderTimeout bounds how long an upstream may take to send
+	// response headers. It intentionally does not bound the body: see
+	// newReverseUpstreamTransport.
+	upstreamResponseHeaderTimeout = 30 * time.Second
 	// Mcp-Method and Mcp-Name are required from revision 2026-07-28; the
 	// preflight is refused outright when a requested header is absent here, so
 	// omitting them blocks browser MCP clients rather than degrading them.
@@ -88,10 +92,39 @@ func newReverseUpstreamTransport(dialContext func(ctx context.Context, network, 
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableCompression = true
 	t.Proxy = nil
+	// Bound the wait for response HEADERS rather than the whole exchange. From
+	// protocol revision 2026-07-28 a subscriptions/listen response is a single
+	// long-lived POST body, so a total timeout would sever a healthy stream on a
+	// fixed schedule. Once headers arrive the body streams unbounded, which is
+	// what a notification stream requires.
+	t.ResponseHeaderTimeout = upstreamResponseHeaderTimeout
 	if dialContext != nil {
 		t.DialContext = dialContext
 	}
 	return t
+}
+
+// newReverseUpstreamClient builds the shared client used for upstream MCP
+// requests. Redirect-following is disabled to prevent SSRF via a crafted
+// Location header from the upstream.
+//
+// Envelope-refresh implication: because redirects never follow, the mediation
+// envelope signing refresh path that lives at internal/proxy/proxy.go:348
+// (CheckRedirect) is moot for the MCP HTTP transport - there is no second hop
+// to rebuild an envelope over. If a future change enables redirect following
+// here (for example, to support upstream servers that relocate endpoints) the
+// refresh helper must be wired into the new CheckRedirect closure so signed
+// envelopes do not flow with stale @target-uri / ph / hop values. The same
+// applies to internal/mcp/transport/httpclient.go:45.
+//
+// No total Client.Timeout: see newReverseUpstreamTransport.
+func newReverseUpstreamClient(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Client {
+	return &http.Client{
+		Transport: newReverseUpstreamTransport(dialContext),
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // RunHTTPListenerProxy starts an HTTP server that reverse-proxies MCP requests
@@ -265,27 +298,7 @@ func RunHTTPListenerProxy(
 		DialContext:               opts.DialContext,
 	}
 
-	// Shared HTTP client for upstream requests. Redirect-following is disabled
-	// to prevent SSRF via crafted Location headers from the upstream.
-	// 30s timeout prevents hanging on unresponsive upstreams.
-	//
-	// Envelope-refresh implication: because redirects never follow,
-	// the mediation envelope signing refresh path that lives at
-	// internal/proxy/proxy.go:348 (CheckRedirect) is moot for the
-	// MCP HTTP transport - there is no second hop to rebuild an
-	// envelope over. If a future change enables redirect following
-	// here (for example, to support upstream servers that relocate
-	// endpoints) the refresh helper must be wired into the new
-	// CheckRedirect closure so signed envelopes do not flow with
-	// stale @target-uri / ph / hop values. The same applies to
-	// internal/mcp/transport/httpclient.go:45.
-	upstreamClient := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: newReverseUpstreamTransport(opts.DialContext),
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	upstreamClient := newReverseUpstreamClient(opts.DialContext)
 	upstreamStreamTransport := newReverseUpstreamTransport(opts.DialContext)
 	upstreamStreamTransport.ResponseHeaderTimeout = 30 * time.Second
 	upstreamStreamClient := &http.Client{
@@ -308,6 +321,13 @@ func RunHTTPListenerProxy(
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// MCP responses are never storable by an intermediary. Protocol revision
+		// 2026-07-28 lets a server mark list and read results cacheScope "public",
+		// and a retained tools/list is the tool-poisoning surface: a poisoned or
+		// since-revoked tool definition served from a cache outlives the
+		// revocation. Set before any branch so error and preflight paths inherit
+		// it; the SSE path overrides Content-Type but not this.
+		w.Header().Set("Cache-Control", "no-store")
 		if !listenerOriginAllowed(r.Header.Values("Origin"), opts.ListenerAllowedOrigins) {
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
@@ -757,7 +777,6 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Mcp-Session-Id", sid)
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
 			streamWriter := &sseMessageWriter{w: w}
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
@@ -767,7 +786,7 @@ func RunHTTPListenerProxy(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
-				w.Header().Del("Cache-Control")
+				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream SSE response failed validation")))
@@ -1235,7 +1254,6 @@ func RunHTTPListenerProxy(
 		// the buffer holds a single message and is forwarded verbatim below.
 		if upstreamIsSSE {
 			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
 			streamWriter := &sseMessageWriter{w: w}
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
@@ -1252,7 +1270,7 @@ func RunHTTPListenerProxy(
 			// content-type set above with the standard application/json
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
-				w.Header().Del("Cache-Control")
+				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream SSE response failed validation")))

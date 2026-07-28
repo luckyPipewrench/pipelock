@@ -224,6 +224,42 @@ else
   fail "refusal did not name the subject-trust reason"
 fi
 
+# ---------------------------------------------------------------------------
+# Case 7: MRTR inputResponses are scanned like any other request content.
+#
+# Revision 2026-07-28 replaces server-initiated sampling and elicitation with
+# Multi Round-Trip Requests: the server returns inputRequests, and the client
+# answers with inputResponses on a retry of the original request. That answer is
+# an outbound channel a malicious server can solicit secrets through, so it must
+# be covered by the same DLP the tool arguments get.
+#
+# The tools/call argument case is the control: if it stops blocking, this case
+# proves nothing about inputResponses.
+# ---------------------------------------------------------------------------
+echo "Case 7: MRTR inputResponses covered by request DLP"
+cleanup
+start_stack "$RIG_DIR/pipelock-scan.yaml" || exit 2
+# Built at runtime so the fixture is not itself a committed credential shape.
+secret="AKIA""IOSFODNN7EXAMPLE"
+
+control="$(curl -s -H 'Content-Type: application/json' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: echo' \
+  -X POST --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"text\":\"$secret\"}}}" \
+  "http://127.0.0.1:$PPORT/mcp")"
+if printf '%s' "$control" | grep -q 'dlp_match'; then
+  pass "control: secret in tool arguments is blocked"
+else
+  fail "control did not block, so the MRTR case below proves nothing: $control"
+fi
+
+mrtr="$(curl -s -H 'Content-Type: application/json' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: echo' \
+  -X POST --data "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{},\"inputResponses\":[{\"requestId\":\"r1\",\"content\":\"$secret\"}]}}" \
+  "http://127.0.0.1:$PPORT/mcp")"
+if printf '%s' "$mrtr" | grep -q 'dlp_match'; then
+  pass "secret in MRTR inputResponses is blocked"
+else
+  fail "MRTR inputResponses exfiltrated a secret: $mrtr"
+fi
+
 cleanup
 echo
 printf 'passed: %d  failed: %d\n' "$PASS" "$FAIL"

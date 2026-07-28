@@ -86,6 +86,7 @@ type DoWTracker struct {
 type dowSubjectEntry struct {
 	tracker     *DoWTracker
 	windowStart time.Time
+	expiresAt   time.Time
 }
 
 // DoWSubjectManager owns per-subject DoW trackers for multi-client listeners.
@@ -95,10 +96,11 @@ type DoWSubjectManager struct {
 	mu          sync.Mutex
 	cfg         DoWConfig
 	window      time.Duration
+	idleTTL     time.Duration
 	maxSubjects int
 	now         func() time.Time
 	subjects    map[string]*dowSubjectEntry
-	// nextExpiry is the earliest windowStart+window across subjects. Before it
+	// nextExpiry is the earliest stamped expiry across subjects. Before it
 	// passes, no subject can be expired, so the reap scan can be skipped.
 	nextExpiry time.Time
 }
@@ -121,13 +123,7 @@ func newDoWTracker(cfg DoWConfig, now func() time.Time) *DoWTracker {
 
 // NewDoWSubjectManager creates a bounded per-subject DoW manager.
 func NewDoWSubjectManager(cfg DoWSubjectManagerConfig) *DoWSubjectManager {
-	window := time.Duration(cfg.TrackerConfig.WindowMinutes) * time.Minute
-	if window <= 0 {
-		window = cfg.IdleTTL
-	}
-	if window <= 0 {
-		window = defaultDoWSubjectWindow
-	}
+	window := normalizeDoWSubjectWindow(cfg.TrackerConfig, cfg.IdleTTL)
 	maxSubjects := cfg.MaxSubjects
 	if maxSubjects <= 0 {
 		maxSubjects = defaultDoWSubjectMaxSubjects
@@ -139,9 +135,36 @@ func NewDoWSubjectManager(cfg DoWSubjectManagerConfig) *DoWSubjectManager {
 	return &DoWSubjectManager{
 		cfg:         cfg.TrackerConfig,
 		window:      window,
+		idleTTL:     cfg.IdleTTL,
 		maxSubjects: maxSubjects,
 		now:         now,
 		subjects:    make(map[string]*dowSubjectEntry),
+	}
+}
+
+func normalizeDoWSubjectWindow(cfg DoWConfig, idleTTL time.Duration) time.Duration {
+	window := time.Duration(cfg.WindowMinutes) * time.Minute
+	if window <= 0 {
+		window = idleTTL
+	}
+	if window <= 0 {
+		window = defaultDoWSubjectWindow
+	}
+	return window
+}
+
+// UpdateConfig swaps the manager and tracker limits in place so hot reloads
+// take effect without resetting live subject spend counters.
+func (m *DoWSubjectManager) UpdateConfig(cfg DoWConfig) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+	m.window = normalizeDoWSubjectWindow(cfg, m.idleTTL)
+	for _, entry := range m.subjects {
+		entry.tracker.UpdateConfig(cfg)
 	}
 }
 
@@ -188,8 +211,9 @@ func (m *DoWSubjectManager) trackerFor(subjectKey string) (*DoWTracker, bool) {
 		return nil, false
 	}
 	tracker := newDoWTracker(m.cfg, m.now)
-	m.subjects[subjectKey] = &dowSubjectEntry{tracker: tracker, windowStart: now}
-	if expiry := now.Add(m.window); m.nextExpiry.IsZero() || expiry.Before(m.nextExpiry) {
+	expiry := now.Add(m.window)
+	m.subjects[subjectKey] = &dowSubjectEntry{tracker: tracker, windowStart: now, expiresAt: expiry}
+	if m.nextExpiry.IsZero() || expiry.Before(m.nextExpiry) {
 		m.nextExpiry = expiry
 	}
 	return tracker, true
@@ -206,16 +230,26 @@ func (m *DoWSubjectManager) reapExpiredLocked(now time.Time) {
 	}
 	var earliest time.Time
 	for key, entry := range m.subjects {
-		expiry := entry.windowStart.Add(m.window)
-		if !now.Before(expiry) {
+		if !now.Before(entry.expiresAt) {
 			delete(m.subjects, key)
 			continue
 		}
-		if earliest.IsZero() || expiry.Before(earliest) {
-			earliest = expiry
+		if earliest.IsZero() || entry.expiresAt.Before(earliest) {
+			earliest = entry.expiresAt
 		}
 	}
 	m.nextExpiry = earliest
+}
+
+// UpdateConfig swaps limit fields while preserving spend, start time, history,
+// and in-flight call state.
+func (t *DoWTracker) UpdateConfig(cfg DoWConfig) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cfg = cfg
 }
 
 // RecordToolCall records a tool invocation and checks for loop, runaway,
@@ -315,13 +349,12 @@ func (t *DoWTracker) historyWindow() int {
 // flag and incrementing inflight, which would admit a new acquisition
 // after shutdown.
 func (t *DoWTracker) AcquireConcurrent() DoWResult {
+	t.mu.Lock()
 	cfgLimit := t.cfg.MaxConcurrentToolCalls
 	if cfgLimit <= 0 {
 		cfgLimit = 10 // default limit
 	}
 	limit := int32(min(cfgLimit, 1<<30)) // cap to prevent int32 overflow
-
-	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
 		return DoWResult{Allowed: false, Reason: "tracker closed", BudgetType: BudgetConcurrent}

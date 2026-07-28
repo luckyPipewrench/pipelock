@@ -141,6 +141,10 @@ func (r *mcpDoWRuntime) UpdateConfig(cfg *config.Config) {
 	if dowAction == "" {
 		dowAction = config.ActionBlock
 	}
+	var trackerCfg proxy.DoWConfig
+	if budget != nil {
+		trackerCfg = mcpDoWTrackerConfig(*budget)
+	}
 	subjectAgent := r.agentName
 	if subjectAgent == "" && cfg != nil {
 		subjectAgent = cfg.DefaultAgentIdentity
@@ -152,17 +156,14 @@ func (r *mcpDoWRuntime) UpdateConfig(cfg *config.Config) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if enabled && r.manager == nil {
-		r.manager = proxy.NewDoWSubjectManager(proxy.DoWSubjectManagerConfig{
-			TrackerConfig: proxy.DoWConfig{
-				MaxToolCallsPerSession: budget.MaxToolCallsPerSession,
-				MaxWallClockMinutes:    budget.MaxWallClockMinutes,
-				WindowMinutes:          budget.WindowMinutes,
-				MaxRetriesPerTool:      budget.MaxRetriesPerTool,
-				LoopDetectionWindow:    budget.LoopDetectionWindow,
-				Action:                 budget.DoWAction,
-			},
-		})
+	if enabled {
+		if r.manager == nil {
+			r.manager = proxy.NewDoWSubjectManager(proxy.DoWSubjectManagerConfig{
+				TrackerConfig: trackerCfg,
+			})
+		} else {
+			r.manager.UpdateConfig(trackerCfg)
+		}
 	}
 	r.enabled = enabled
 	r.action = dowAction
@@ -211,6 +212,17 @@ func (r *mcpDoWRuntime) Wiring() *mcpDoWWiring {
 		KnownSession:     r.trustedSessions.Known,
 		RegisterSession:  r.trustedSessions.Register,
 		ForgetSession:    r.trustedSessions.Forget,
+	}
+}
+
+func mcpDoWTrackerConfig(budget config.BudgetConfig) proxy.DoWConfig {
+	return proxy.DoWConfig{
+		MaxToolCallsPerSession: budget.MaxToolCallsPerSession,
+		MaxWallClockMinutes:    budget.MaxWallClockMinutes,
+		WindowMinutes:          budget.WindowMinutes,
+		MaxRetriesPerTool:      budget.MaxRetriesPerTool,
+		LoopDetectionWindow:    budget.LoopDetectionWindow,
+		Action:                 budget.DoWAction,
 	}
 }
 

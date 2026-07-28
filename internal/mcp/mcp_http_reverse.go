@@ -1523,13 +1523,6 @@ func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
 	return opts.dowSubjectKeyForRequest(r)
 }
 
-func (o MCPProxyOpts) dowEnabled() bool {
-	if o.DoWEnabledFn != nil {
-		return o.DoWEnabledFn()
-	}
-	return o.DoWCheck != nil || o.DoWRequireTrustedSession
-}
-
 func logUpstreamRequestError(logW io.Writer, ctx context.Context) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: upstream error: %v\n", ctxErr)

@@ -722,6 +722,217 @@ func TestDoWSubjectManager_WindowExpiryPreventsPermanentWedge(t *testing.T) {
 	}
 }
 
+func TestDoWSubjectManager_UpdateConfigTightenedLimitAppliesToExistingSubject(t *testing.T) {
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 3,
+			Action:                 actionBlock,
+		},
+	})
+
+	for i := range 2 {
+		if result := manager.Check("subject-a", toolGetWeather, fmt.Sprintf(`{"turn":%d}`, i)); !result.Allowed {
+			t.Fatalf("pre-reload call %d blocked: %s", i+1, result.Reason)
+		}
+	}
+
+	manager.UpdateConfig(DoWConfig{
+		MaxToolCallsPerSession: 1,
+		Action:                 actionBlock,
+	})
+
+	result := manager.Check("subject-a", toolGetWeather, `{"turn":3}`)
+	if result.Allowed || result.BudgetType != BudgetToolCalls {
+		t.Fatalf("tightened existing subject check = allowed:%v budget:%q reason:%q, want tool-call refusal",
+			result.Allowed, result.BudgetType, result.Reason)
+	}
+}
+
+func TestDoWSubjectManagerUpdateConfigNilReceivers(t *testing.T) {
+	var manager *DoWSubjectManager
+	manager.UpdateConfig(DoWConfig{MaxToolCallsPerSession: 1})
+
+	var tracker *DoWTracker
+	tracker.UpdateConfig(DoWConfig{MaxToolCallsPerSession: 1})
+}
+
+func TestDoWSubjectManager_UpdateConfigLoosenedLimitPreservesSpendAndAddsHeadroom(t *testing.T) {
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 2,
+			Action:                 actionBlock,
+		},
+	})
+
+	for i := range 2 {
+		if result := manager.Check("subject-a", toolGetWeather, fmt.Sprintf(`{"turn":%d}`, i)); !result.Allowed {
+			t.Fatalf("pre-reload call %d blocked: %s", i+1, result.Reason)
+		}
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":3}`); result.Allowed {
+		t.Fatal("third call should spend past the original limit before reload")
+	}
+
+	manager.UpdateConfig(DoWConfig{
+		MaxToolCallsPerSession: 4,
+		Action:                 actionBlock,
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":4}`); !result.Allowed {
+		t.Fatalf("loosened limit did not grant immediate headroom: %s", result.Reason)
+	}
+	tracker, ok := manager.trackerFor("subject-a")
+	if !ok {
+		t.Fatal("existing subject disappeared after loosening limit")
+	}
+	if got := tracker.TotalToolCalls(); got != 4 {
+		t.Fatalf("TotalToolCalls after loosened reload = %d, want 4 preserved calls", got)
+	}
+}
+
+func TestDoWSubjectManager_ReapStoresNextStampedExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 28, 11, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 10,
+			Action:                 actionBlock,
+		},
+		IdleTTL: time.Minute,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("subject-a blocked: %s", result.Reason)
+	}
+	now = now.Add(30 * time.Second)
+	if result := manager.Check("subject-b", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("subject-b blocked: %s", result.Reason)
+	}
+
+	now = now.Add(31 * time.Second)
+	if got := manager.SubjectCount(); got != 1 {
+		t.Fatalf("SubjectCount after first expiry = %d, want 1", got)
+	}
+	wantNext := time.Date(2026, 7, 28, 11, 1, 30, 0, time.UTC)
+	if !manager.nextExpiry.Equal(wantNext) {
+		t.Fatalf("nextExpiry = %s, want remaining subject expiry %s", manager.nextExpiry, wantNext)
+	}
+}
+
+func TestDoWSubjectManager_UpdateConfigShrinksWindowOnlyForNewEntries(t *testing.T) {
+	now := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			WindowMinutes:          10,
+			Action:                 actionBlock,
+		},
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("first call blocked: %s", result.Reason)
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); result.Allowed {
+		t.Fatal("second call should spend past the original limit")
+	}
+
+	manager.UpdateConfig(DoWConfig{
+		MaxToolCallsPerSession: 1,
+		WindowMinutes:          1,
+		Action:                 actionBlock,
+	})
+
+	now = now.Add(2 * time.Minute)
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":3}`); result.Allowed {
+		t.Fatal("shrinking the window reset the live subject before its original expiry")
+	}
+
+	now = time.Date(2026, 7, 28, 9, 10, 1, 0, time.UTC)
+	if got := manager.SubjectCount(); got != 0 {
+		t.Fatalf("SubjectCount after original expiry = %d, want 0", got)
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":4}`); !result.Allowed {
+		t.Fatalf("new window call blocked: %s", result.Reason)
+	}
+	now = now.Add(90 * time.Second)
+	if got := manager.SubjectCount(); got != 0 {
+		t.Fatalf("SubjectCount after new shortened window = %d, want 0", got)
+	}
+}
+
+func TestDoWSubjectManager_RepeatedUpdateConfigDoesNotResetSpend(t *testing.T) {
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 2,
+			Action:                 actionBlock,
+		},
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("first call blocked: %s", result.Reason)
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); !result.Allowed {
+		t.Fatalf("second call blocked: %s", result.Reason)
+	}
+	for range 3 {
+		manager.UpdateConfig(DoWConfig{
+			MaxToolCallsPerSession: 2,
+			Action:                 actionBlock,
+		})
+	}
+
+	result := manager.Check("subject-a", toolGetWeather, `{"turn":3}`)
+	if result.Allowed || result.BudgetType != BudgetToolCalls {
+		t.Fatalf("repeated reload reset subject spend: allowed:%v budget:%q reason:%q",
+			result.Allowed, result.BudgetType, result.Reason)
+	}
+}
+
+func TestDoWSubjectManager_SubjectCapFailsClosedAcrossReload(t *testing.T) {
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 10,
+			Action:                 actionBlock,
+		},
+		IdleTTL:     time.Minute,
+		MaxSubjects: 2,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("subject-a blocked: %s", result.Reason)
+	}
+	if result := manager.Check("subject-b", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("subject-b blocked: %s", result.Reason)
+	}
+
+	manager.UpdateConfig(DoWConfig{
+		MaxToolCallsPerSession: 20,
+		Action:                 actionBlock,
+	})
+
+	if result := manager.Check("subject-c", toolGetWeather, `{"turn":1}`); result.Allowed || result.BudgetType != BudgetSubjectCap {
+		t.Fatalf("new subject at cap after reload = allowed:%v budget:%q reason:%q, want subject-cap refusal",
+			result.Allowed, result.BudgetType, result.Reason)
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); !result.Allowed {
+		t.Fatalf("existing subject should keep its live slot after reload: %s", result.Reason)
+	}
+
+	now = now.Add(time.Minute + time.Second)
+	if result := manager.Check("subject-c", toolGetWeather, `{"turn":2}`); !result.Allowed {
+		t.Fatalf("new subject should be admitted after original entries expire: %s", result.Reason)
+	}
+}
+
 func TestDoWSubjectManager_SubjectCapFailsClosedForNewSubjects(t *testing.T) {
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{

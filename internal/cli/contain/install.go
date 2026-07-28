@@ -163,6 +163,9 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	steps := installSteps(opts)
 
 	if opts.dryRun {
+		if err := preflightPipelockConfig(ctx, env, opts, true); err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+		}
 		printPlan(env.out, "pipelock contain install — planned steps:", steps)
 		return nil
 	}
@@ -278,6 +281,7 @@ func installSteps(opts installOpts) []step {
 		stepCreateDir("config", func(e *installEnv) string { return e.configDir }, modeDirTraversable),
 		stepCreateDir("data", func(e *installEnv) string { return e.dataDir }, modeDirPrivate),
 		stepWritePipelockConfig(opts),
+		stepPreflightPipelockConfig(opts),
 		stepChownToProxy("config", func(e *installEnv) string { return e.configDir }),
 		stepChownToProxy("data", func(e *installEnv) string { return e.dataDir }),
 		// Grant the human operator a user-scoped read+traverse ACL on the
@@ -901,6 +905,87 @@ func stepWritePipelockConfig(opts installOpts) step {
 	}
 }
 
+func stepPreflightPipelockConfig(opts installOpts) step {
+	return step{
+		name: "preflight-pipelock-config",
+		desc: "preflight: selected pipelock binary accepts the managed config",
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			if err := preflightPipelockConfig(ctx, env, opts, false); err != nil {
+				return false, err
+			}
+			return false, nil
+		},
+		undo: nil,
+	}
+}
+
+type pipelockConfigPreflightTarget struct {
+	checkPath string
+	unitPath  string
+	drySource bool
+}
+
+func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installOpts, dryRun bool) error {
+	target, ok, err := pipelockConfigPreflightTargetFor(env, opts, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	if target.drySource {
+		_, _ = fmt.Fprintf(env.out,
+			"  [INFO] dry-run config preflight: validating --config %s before it would be installed as %s\n",
+			target.checkPath, target.unitPath)
+	}
+	out, code, err := env.runCmd(ctx, env.pipelockBinary, "check", "--config", target.checkPath)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; fix the config and rerun install",
+			target.unitPath, env.pipelockBinary, err)
+	}
+	if code != 0 {
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = fmt.Sprintf("pipelock check exited %d", code)
+		}
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %s. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; remove the unsupported or invalid field from the config and rerun install",
+			target.unitPath, env.pipelockBinary, oneLine(detail))
+	}
+	return nil
+}
+
+func pipelockConfigPreflightTargetFor(env *installEnv, opts installOpts, dryRun bool) (pipelockConfigPreflightTarget, bool, error) {
+	unitPath := managedPipelockConfigPath(env)
+	if opts.configSource != "" {
+		if dryRun {
+			return pipelockConfigPreflightTarget{
+				checkPath: filepath.Clean(opts.configSource),
+				unitPath:  unitPath,
+				drySource: true,
+			}, true, nil
+		}
+		return pipelockConfigPreflightTarget{checkPath: unitPath, unitPath: unitPath}, true, nil
+	}
+
+	info, err := env.stat(unitPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return pipelockConfigPreflightTarget{}, false, nil
+		}
+		return pipelockConfigPreflightTarget{}, false, fmt.Errorf("stat managed config %s for preflight: %w", unitPath, err)
+	}
+	if info.IsDir() {
+		return pipelockConfigPreflightTarget{}, false, fmt.Errorf("managed config %s is a directory", unitPath)
+	}
+	return pipelockConfigPreflightTarget{checkPath: unitPath, unitPath: unitPath}, true, nil
+}
+
+func managedPipelockConfigPath(env *installEnv) string {
+	return filepath.Join(env.configDir, "pipelock.yaml")
+}
+
 // bytesEqual compares two byte slices without dragging in the bytes
 // import for one call site. Equivalent to bytes.Equal.
 func bytesEqual(a, b []byte) bool {
@@ -1134,7 +1219,7 @@ func stepWriteSystemUnit() step {
 // the runbook; the firewall is the real boundary, these are defense in
 // depth.
 func renderSystemUnit(env *installEnv) string {
-	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	configPath := managedPipelockConfigPath(env)
 	capturePath := filepath.Join(env.dataDir, "captures")
 	return strings.Join([]string{
 		"[Unit]",

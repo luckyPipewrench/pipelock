@@ -46,6 +46,40 @@ func TestRejectDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestRejectCaseFoldedAliases(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"exact schema keys", `{"token":"first","message":"hello"}`, false},
+		{"single case-folded alias", `{"Token":"first","message":"hello"}`, true},
+		{"case-folded collision", `{"token":"first","Token":"second","message":"hello"}`, true},
+		{"escaped case-folded alias", `{"\u0054oken":"first","message":"hello"}`, true},
+		{"unicode case-folded alias", `{"to\u212Aen":"first","message":"hello"}`, true},
+		{"unrelated unknown key deferred", `{"token":"first","other":"value"}`, false},
+		{"unrelated similar key deferred", `{"tokenized":"first","message":"hello"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := RejectCaseFoldedAliases([]byte(tc.input), "token", "message")
+			if tc.wantErr {
+				if !errors.Is(err, ErrCaseFoldedKey) {
+					t.Fatalf("RejectCaseFoldedAliases(%s) = %v, want ErrCaseFoldedKey", tc.input, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RejectCaseFoldedAliases(%s) = %v, want nil", tc.input, err)
+			}
+		})
+	}
+	if err := RejectCaseFoldedAliases([]byte(`null`), "token", "message"); err == nil {
+		t.Fatal("RejectCaseFoldedAliases accepted null instead of an object")
+	}
+}
+
 // TestRejectDuplicateKeys_DepthBounded proves the scanner errors (rather than
 // panicking via stack overflow) on maliciously deep nesting. The scan runs
 // before json.Unmarshal, which would otherwise be the depth backstop.

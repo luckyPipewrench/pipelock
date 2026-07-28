@@ -518,7 +518,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body sessionRequest
-	if err := decodeBrokerJSON(r, &body); err != nil {
+	if err := decodeBrokerJSON(r, &body, "code", "turnstile_token"); err != nil {
 		writeBrokerErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
@@ -1330,6 +1330,9 @@ func readMessageToken(w http.ResponseWriter, r *http.Request) ([]byte, string, e
 	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
 		return nil, "", fmt.Errorf("broker: reject duplicate message keys: %w", err)
 	}
+	if err := jsonscan.RejectCaseFoldedAliases(body, "token", "message"); err != nil {
+		return nil, "", fmt.Errorf("broker: reject case-folded message keys: %w", err)
+	}
 	var req messageRequest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
@@ -1343,13 +1346,16 @@ func readMessageToken(w http.ResponseWriter, r *http.Request) ([]byte, string, e
 	return body, req.Token, nil
 }
 
-func decodeBrokerJSON(r *http.Request, v any) error {
+func decodeBrokerJSON(r *http.Request, v any, allowedKeys ...string) error {
 	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBrokerBodyBytes))
 	if err != nil {
 		return fmt.Errorf("broker: read request body: %w", err)
 	}
 	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
 		return fmt.Errorf("broker: reject duplicate request keys: %w", err)
+	}
+	if err := jsonscan.RejectCaseFoldedAliases(body, allowedKeys...); err != nil {
+		return fmt.Errorf("broker: reject case-folded request keys: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

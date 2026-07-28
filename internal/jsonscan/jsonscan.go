@@ -15,11 +15,16 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
 // ErrDuplicateKey is returned when input contains a duplicate object key.
 var ErrDuplicateKey = fmt.Errorf("duplicate object key")
+
+// ErrCaseFoldedKey is returned when an object key matches a schema key only
+// after case folding.
+var ErrCaseFoldedKey = errors.New("case-folded object key alias")
 
 // MaxNestingDepth bounds the scanner's recursion. json.Decoder.Token() (unlike
 // json.Unmarshal) does NOT enforce a nesting limit, so without this bound a
@@ -55,6 +60,29 @@ func RejectDuplicateKeys(data []byte) error {
 		return nil
 	}
 	return check(dec, tok, 0)
+}
+
+// RejectCaseFoldedAliases rejects top-level object keys that match one of the
+// allowed schema keys only after case folding. encoding/json otherwise accepts
+// those aliases for struct fields, so inputs such as "token" plus "Token" can
+// overwrite the same destination field even after exact duplicate keys have
+// been rejected. Callers should run RejectDuplicateKeys first.
+func RejectCaseFoldedAliases(data []byte, allowedKeys ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return errors.New("JSON value must be an object")
+	}
+	for key := range object {
+		for _, allowed := range allowedKeys {
+			if key != allowed && strings.EqualFold(key, allowed) {
+				return fmt.Errorf("%w: %q aliases %q", ErrCaseFoldedKey, key, allowed)
+			}
+		}
+	}
+	return nil
 }
 
 // check recursively validates the value whose opening token is tok. For objects

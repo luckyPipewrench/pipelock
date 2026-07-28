@@ -101,19 +101,20 @@ func TestScanTexts_CustomSeparator(t *testing.T) {
 	// The separator-joined view is the last one ScanTexts tries, so a fixture
 	// that any earlier view already catches would pass without ever using the
 	// separator. Five 6-character fields make every separatorless view 30 bytes
-	// (under the 32-byte minimum, so they return nil on length alone) while the
-	// separator-joined view is 34 bytes and does reach the entropy check. That
-	// leaves the custom separator load-bearing for this assertion.
+	// (under the 36-byte minimum, so they return nil on length alone). Four
+	// two-byte custom separators make the joined view 38 bytes, while the
+	// default one-byte separators leave it at 34. That leaves the configured
+	// separator load-bearing for this assertion.
 	fields := []string{highEntropy[0:6], highEntropy[6:12], highEntropy[12:18], highEntropy[18:24], highEntropy[24:30]}
-	opts := Options{Enabled: true, Threshold: 4.5, MinLength: 32, Host: "exfil.vendor.example", Separator: "|"}
+	opts := Options{Enabled: true, Threshold: 4.5, MinLength: 36, Host: "exfil.vendor.example", Separator: "::"}
 	if ScanTexts(fields, opts) == nil {
 		t.Fatal("expected joined scan with custom separator to trip")
 	}
 	// Same fields, no separator configured: the default "." separator keeps the
-	// joined view at 34 bytes, so this must trip too.
+	// joined view below MinLength.
 	opts.Separator = ""
-	if ScanTexts(fields, opts) == nil {
-		t.Fatal("expected joined scan with default separator to trip")
+	if finding := ScanTexts(fields, opts); finding != nil {
+		t.Fatalf("default separator should stay below MinLength, got %+v", finding)
 	}
 }
 
@@ -187,7 +188,7 @@ func TestSortedTexts_DoesNotMutateInput(t *testing.T) {
 // encoding must still be reported as hex so the operator reason text is right.
 func TestScanTexts_ShardedHexReassembles(t *testing.T) {
 	opts := Options{Enabled: true, Threshold: 4.5, MinLength: 64, Host: "exfil.vendor.example"}
-	f := ScanTexts([]string{hexBlob[:16], hexBlob[16:32], hexBlob[32:48], hexBlob[48:]}, opts)
+	f := ScanTexts([]string{hexBlob[32:48], hexBlob[:16], hexBlob[48:], hexBlob[16:32]}, opts)
 	if f == nil || f.Encoding != "hex" {
 		t.Fatalf("expected sharded opaque-hex finding, got %+v", f)
 	}

@@ -173,7 +173,9 @@ func (r *AnalyticsRelay) Handler() http.Handler {
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxAnalyticsBody))
-		if err != nil || jsonscan.RejectDuplicateKeys(body) != nil {
+		if err != nil ||
+			jsonscan.RejectDuplicateKeys(body) != nil ||
+			jsonscan.RejectCaseFoldedAliases(body, "event", "properties") != nil {
 			http.Error(w, "invalid analytics event", http.StatusBadRequest)
 			return
 		}

@@ -423,8 +423,21 @@ func renderCredentialGuardScript(agentUser, operatorHome, bashPath string) strin
 }
 
 func renderCredentialGuardService(scriptPath string) string {
+	// StartLimitIntervalSec=0 disables systemd's start rate limiter for this
+	// unit. The guard is a path-triggered idempotent oneshot: a single editor
+	// save, a token refresh, or any tool rewriting several credential files at
+	// once legitimately fires it many times in a few seconds. Under the default
+	// limit (5 starts / 10s) that burst is indistinguishable from a crash loop,
+	// so systemd fails the SERVICE and then fails the .path unit that triggers
+	// it. The credential guard then stays dead until someone notices and resets
+	// it by hand, which is the worst outcome for a control whose whole job is to
+	// re-lock credential files after something widens them. Observed on a real
+	// host: the .path unit sat in failed/unit-start-limit-hit for over a day,
+	// having previously failed the same way twice, while every individual
+	// service run had completed successfully.
 	return `[Unit]
 Description=Pipelock containment credential guard
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

@@ -68,6 +68,9 @@ func RejectDuplicateKeys(data []byte) error {
 // overwrite the same destination field even after exact duplicate keys have
 // been rejected. Callers should run RejectDuplicateKeys first.
 func RejectCaseFoldedAliases(data []byte, allowedKeys ...string) error {
+	if len(allowedKeys) == 0 {
+		return errors.New("allowed JSON schema keys are required")
+	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(data, &object); err != nil {
 		return err

@@ -78,6 +78,9 @@ func TestRejectCaseFoldedAliases(t *testing.T) {
 	if err := RejectCaseFoldedAliases([]byte(`null`), "token", "message"); err == nil {
 		t.Fatal("RejectCaseFoldedAliases accepted null instead of an object")
 	}
+	if err := RejectCaseFoldedAliases([]byte(`{"token":"first"}`)); err == nil {
+		t.Fatal("RejectCaseFoldedAliases accepted an empty schema")
+	}
 }
 
 // TestRejectDuplicateKeys_DepthBounded proves the scanner errors (rather than

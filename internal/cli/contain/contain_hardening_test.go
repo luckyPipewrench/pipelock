@@ -303,7 +303,7 @@ func TestStepWritePipelockConfigUndoRestoresMigratedArtifacts(t *testing.T) {
 	mustWriteFile(t, license, "token\n")
 	src := filepath.Join(configDir, "pipelock.yaml")
 	mustWriteFile(t, src, "license_file: "+license+"\n")
-	step := stepWritePipelockConfig(installOpts{configSource: src})
+	step := stepStagePipelockConfig(installOpts{configSource: src})
 	applied, err := step.apply(context.Background(), env)
 	if err != nil {
 		t.Fatalf("apply: %v", err)

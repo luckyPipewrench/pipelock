@@ -40,7 +40,11 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 			env, runner, _ := newPreflightInstallEnv(t)
 			src := writePreflightConfig(t, "source.yaml", tt.body)
 			target := managedPipelockConfigPath(env)
-			runner.on(argvFor(env.pipelockBinary, "check", "--config", target), strings.ReplaceAll(tt.failureOut, "CONFIG", target), 1, nil)
+			// The candidate is checked at its staging path; the binary reports
+			// the path it was handed, and the installer rewrites it back to the
+			// managed path before the operator sees it.
+			staged := stagedPipelockConfigPath(env)
+			runner.on(argvFor(env.pipelockBinary, "check", "--config", staged), strings.ReplaceAll(tt.failureOut, "CONFIG", staged), 1, nil)
 
 			err := runInstall(context.Background(), env, installOpts{configSource: src})
 			assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
@@ -51,6 +55,9 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("error = %q, want substring %q", err, want)
 				}
+			}
+			if strings.Contains(err.Error(), staged) {
+				t.Fatalf("staging path leaked into the operator-facing error: %q", err)
 			}
 			if _, statErr := os.Stat(env.pipelockTarget); !os.IsNotExist(statErr) {
 				t.Fatalf("installed binary changed before preflight refusal: stat err=%v", statErr)
@@ -176,8 +183,78 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 	if err := runInstall(context.Background(), env, installOpts{configSource: src}); err != nil {
 		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
 	}
-	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", managedPipelockConfigPath(env))
+	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", stagedPipelockConfigPath(env))
 	assertSawCall(t, runner, testSystemctl, "enable", "--now", "pipelock")
+	// The staged candidate is promoted to the managed path and the staging file
+	// is discarded, so a successful install leaves no residue behind.
+	if _, statErr := os.Stat(stagedPipelockConfigPath(env)); !os.IsNotExist(statErr) {
+		t.Fatalf("staged config survived a successful install: stat err=%v", statErr)
+	}
+	got, err := os.ReadFile(filepath.Clean(managedPipelockConfigPath(env)))
+	if err != nil {
+		t.Fatalf("read managed config: %v", err)
+	}
+	if string(got) != "mode: balanced\n" {
+		t.Fatalf("managed config = %q, want the promoted candidate", got)
+	}
+}
+
+// TestRunInstall_ConfigPreflightNeverMakesTheCandidateLive pins the guarantee
+// staging exists for, by observing the managed path at the one moment that
+// distinguishes staging from the previous ordering: while preflight is running.
+//
+// An end-state assertion cannot prove this. The step runner rolls back a failed
+// install, so under the previous ordering the managed config was written, found
+// unacceptable, and restored, ending exactly where it started. What changed is
+// the window in between, during which a crash or a concurrent reload would have
+// observed a config the binary had already refused. The probe therefore reads
+// the managed path from inside the check invocation itself.
+func TestRunInstall_ConfigPreflightNeverMakesTheCandidateLive(t *testing.T) {
+	env, runner, _ := newPreflightInstallEnv(t)
+	target := seedManagedConfig(t, env)
+	good, err := os.ReadFile(filepath.Clean(target))
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+	const badBody = "agents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n"
+	src := writePreflightConfig(t, "bad.yaml", badBody)
+	staged := stagedPipelockConfigPath(env)
+	runner.on(argvFor(env.pipelockBinary, "check", "--config", staged), "Config validation FAILED\n", 1, nil)
+
+	var liveDuringPreflight string
+	var sawCheck bool
+	origRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == env.pipelockBinary && len(args) > 0 && args[0] == "check" {
+			sawCheck = true
+			if b, readErr := os.ReadFile(filepath.Clean(target)); readErr == nil {
+				liveDuringPreflight = string(b)
+			} else {
+				liveDuringPreflight = "<missing>"
+			}
+		}
+		return origRun(ctx, name, args...)
+	}
+
+	if err := runInstall(context.Background(), env, installOpts{configSource: src}); err == nil {
+		t.Fatal("runInstall succeeded, want config preflight failure")
+	}
+	if !sawCheck {
+		t.Fatal("config preflight never ran; the probe observed nothing")
+	}
+	if liveDuringPreflight != string(good) {
+		t.Fatalf("managed config during preflight = %q, want the untouched pre-install content %q", liveDuringPreflight, good)
+	}
+	if _, statErr := os.Stat(staged); !os.IsNotExist(statErr) {
+		t.Fatalf("staged candidate survived the refusal: stat err=%v", statErr)
+	}
+	after, err := os.ReadFile(filepath.Clean(target))
+	if err != nil {
+		t.Fatalf("managed config missing after refusal: %v", err)
+	}
+	if string(after) != string(good) {
+		t.Fatalf("managed config after refusal = %q, want %q", after, good)
+	}
 }
 
 func TestRunInstall_ConfigPreflightRefusesBinaryChangedBeforeInstall(t *testing.T) {

@@ -86,8 +86,11 @@ def trace_middleware(app):
         await app(scope, recv, snd)
 
         rpc_method = None
+        meta: dict = {}
         try:
-            rpc_method = json.loads(body).get("method")
+            parsed = json.loads(body)
+            rpc_method = parsed.get("method")
+            meta = (parsed.get("params") or {}).get("_meta") or {}
         except Exception:  # noqa: BLE001 - non-JSON bodies are expected
             pass
 
@@ -101,6 +104,7 @@ def trace_middleware(app):
                 "mcp_name_header": headers.get("mcp-name"),
                 "mcp_protocol_version": headers.get("mcp-protocol-version"),
                 "mcp_session_id": headers.get("mcp-session-id"),
+                "meta": meta,
             }
         )
 

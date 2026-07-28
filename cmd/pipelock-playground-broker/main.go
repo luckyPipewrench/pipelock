@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -131,6 +133,7 @@ type serveFlags struct {
 	externalConnectOrigins    []string
 	analyticsProjectKey       string
 	analyticsEndpoint         string
+	analyticsClient           *http.Client // tests only; production uses the bounded default client
 	publicHosts               []string
 	cfAccessTeamDomain        string
 	cfAccessAUD               string
@@ -485,9 +488,11 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	handler := srv.Handler()
 	var analyticsRelay *broker.AnalyticsRelay
 	if strings.TrimSpace(f.analyticsProjectKey) != "" {
+		analyticsSigningKey := deriveAnalyticsSigningKey(secret)
 		analyticsRelay, err = broker.NewAnalyticsRelay(ctx, broker.AnalyticsConfig{
 			ProjectKey: strings.TrimSpace(f.analyticsProjectKey), Endpoint: f.analyticsEndpoint,
-			TrustForwardedFor: f.trustForwardedFor, Enabled: func() bool { return !srv.Killed() }, Log: out, SigningKey: secret,
+			Client: f.analyticsClient, TrustForwardedFor: f.trustForwardedFor,
+			Enabled: func() bool { return !srv.Killed() }, Log: out, SigningKey: analyticsSigningKey,
 		})
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("configure analytics relay: %w", err)
@@ -570,6 +575,9 @@ func defaultMachineProvider(_ context.Context, f *serveFlags, flyToken string) (
 func validateFlags(f *serveFlags) error {
 	if f == nil {
 		return errors.New("nil serve flags")
+	}
+	if err := validateAnalyticsFlags(f); err != nil {
+		return err
 	}
 	if strings.TrimSpace(f.image) == "" {
 		return errors.New("--image is required")
@@ -665,6 +673,26 @@ func validateFlags(f *serveFlags) error {
 		return err
 	}
 	return nil
+}
+
+func validateAnalyticsFlags(f *serveFlags) error {
+	if strings.TrimSpace(f.analyticsProjectKey) == "" {
+		return nil
+	}
+	endpoint, err := url.Parse(f.analyticsEndpoint)
+	if err != nil {
+		return fmt.Errorf("--analytics-endpoint: %w", err)
+	}
+	if f.provider == "fly" && (endpoint.Scheme != "https" || endpoint.Hostname() != "us.i.posthog.com" || endpoint.Port() != "") {
+		return errors.New("--analytics-endpoint must use https://us.i.posthog.com for Fly deployments")
+	}
+	return nil
+}
+
+func deriveAnalyticsSigningKey(secret []byte) []byte {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = io.WriteString(mac, "pipelock-playground-analytics-signing-key\x00")
+	return mac.Sum(nil)
 }
 
 func effectiveTurnstileOrigin(f *serveFlags) string {

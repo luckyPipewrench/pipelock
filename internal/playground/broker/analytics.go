@@ -30,6 +30,7 @@ const (
 	analyticsCookieName = "__Host-playground_funnel"
 	maxAnalyticsBody    = 2048
 	analyticsDailyCap   = 100_000
+	analyticsWorkers    = 4
 )
 
 var analyticsSchema = map[string]map[string]string{
@@ -55,6 +56,7 @@ type analyticsCapture struct {
 	APIKey     string         `json:"api_key"` // #nosec G117 -- PostHog project ingestion keys are intentionally public.
 	Event      string         `json:"event"`
 	Properties map[string]any `json:"properties"`
+	Timestamp  time.Time      `json:"timestamp"`
 }
 
 // AnalyticsRelay accepts only the playground's bounded counts-only schema and
@@ -106,8 +108,11 @@ func NewAnalyticsRelay(ctx context.Context, cfg AnalyticsConfig) (*AnalyticsRela
 		return nil, errors.New("analytics endpoint is empty")
 	}
 	endpointURL, err := url.Parse(cfg.Endpoint)
-	if err != nil || endpointURL.Host == "" || (endpointURL.Scheme != "https" && !isLoopbackAnalyticsEndpoint(endpointURL)) {
-		return nil, errors.New("analytics endpoint must be HTTPS (HTTP is allowed only on loopback for tests)")
+	if err != nil {
+		return nil, fmt.Errorf("parse analytics endpoint: %w", err)
+	}
+	if endpointURL.Host == "" || endpointURL.Scheme != "https" {
+		return nil, errors.New("analytics endpoint must be an absolute HTTPS URL")
 	}
 	if len(cfg.SigningKey) < 32 {
 		return nil, errors.New("analytics signing key must be at least 32 bytes")
@@ -136,11 +141,6 @@ func NewAnalyticsRelay(ctx context.Context, cfg AnalyticsConfig) (*AnalyticsRela
 	r.alive.Store(true)
 	go r.run(ctx)
 	return r, nil
-}
-
-func isLoopbackAnalyticsEndpoint(endpoint *url.URL) bool {
-	host := endpoint.Hostname()
-	return endpoint.Scheme == "http" && (host == "127.0.0.1" || host == "::1" || host == "localhost")
 }
 
 func (r *AnalyticsRelay) Handler() http.Handler {
@@ -210,8 +210,8 @@ func (r *AnalyticsRelay) Handler() http.Handler {
 			return
 		}
 		select {
-		case r.queue <- analyticsCapture{APIKey: r.projectKey, Event: in.Event, Properties: props}:
-			w.WriteHeader(http.StatusNoContent)
+		case r.queue <- analyticsCapture{APIKey: r.projectKey, Event: in.Event, Properties: props, Timestamp: time.Now().UTC()}:
+			w.WriteHeader(http.StatusAccepted)
 		default:
 			r.globalDay.Refund(1)
 			http.Error(w, "analytics busy", http.StatusServiceUnavailable)
@@ -226,6 +226,18 @@ func (r *AnalyticsRelay) run(ctx context.Context) {
 		r.acceptMu.Unlock()
 		close(r.done)
 	}()
+	var workers sync.WaitGroup
+	workers.Add(analyticsWorkers)
+	for range analyticsWorkers {
+		go func() {
+			defer workers.Done()
+			r.forward(ctx)
+		}()
+	}
+	workers.Wait()
+}
+
+func (r *AnalyticsRelay) forward(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():

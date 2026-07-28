@@ -88,6 +88,11 @@ rate plus a process-wide 100,000-event daily ceiling, and the broker's
 pause/kill switch stops it with the paid session paths. The project key is a
 public ingestion key, not an account or personal API key.
 
+Accepted events receive HTTP 202 because delivery is asynchronous and
+best-effort. A bounded worker pool forwards them to
+`https://us.i.posthog.com`; Fly deployments reject other ingestion hosts.
+Upstream failures are rate-limited in the broker log and are not retried.
+
 Do not load an analytics SDK in the playground or add an analytics host to its
 CSP. Keep the browser transport same-origin and send JSON with
 `Content-Type: application/json`; the browser supplies

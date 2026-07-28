@@ -5,6 +5,7 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -39,7 +40,7 @@ func TestAnalyticsRelayAcceptsOnlyCountsSchema(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
 	relay.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
 	}
 	cookie := rec.Result().Cookies()
@@ -95,25 +96,33 @@ func TestAnalyticsRelayRejectsUnboundedOrMalformedInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tests := []string{
-		`{"event":"unknown","properties":{}}`,
-		`{"event":"playground_live_session_started","properties":{"prompt":"secret"}}`,
-		`{"event":"playground_message_sent","properties":{"turn":1000}}`,
-		`{"event":"playground_demo_viewed","properties":{"mode":"other"}}`,
-		`{"event":"playground_attack_blocked","properties":{"layer":"body_dlp"}}`,
-		`{"event":"playground_live_session_started","properties":{},"distinct_id":"browser-controlled"}`,
-		`{"event":"playground_live_session_started","properties":{}} {}`,
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"unknown_event", `{"event":"unknown","properties":{}}`},
+		{"unknown_property", `{"event":"playground_live_session_started","properties":{"prompt":"secret"}}`},
+		{"number_too_large", `{"event":"playground_message_sent","properties":{"turn":1000}}`},
+		{"negative_status", `{"event":"playground_live_session_failed","properties":{"status":-1}}`},
+		{"fractional_turn", `{"event":"playground_message_sent","properties":{"turn":1.5}}`},
+		{"fractional_checks", `{"event":"playground_verify_result","properties":{"checks":1.5}}`},
+		{"invalid_enum", `{"event":"playground_demo_viewed","properties":{"mode":"other"}}`},
+		{"removed_layer", `{"event":"playground_attack_blocked","properties":{"layer":"body_dlp"}}`},
+		{"browser_distinct_id", `{"event":"playground_live_session_started","properties":{},"distinct_id":"browser-controlled"}`},
+		{"trailing_json", `{"event":"playground_live_session_started","properties":{}} {}`},
+		{"oversize", `{"event":"playground_live_session_started","properties":{}` + strings.Repeat(" ", maxAnalyticsBody) + `}`},
 	}
-	tests = append(tests, `{"event":"playground_live_session_started","properties":{}`+strings.Repeat(" ", maxAnalyticsBody)+`}`)
-	for _, body := range tests {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, RouteAnalytics, strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		relay.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("body %q: status = %d", body, rec.Code)
-		}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, RouteAnalytics, strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			relay.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("body %q: status = %d", test.body, rec.Code)
+			}
+		})
 	}
 	select {
 	case got := <-captures:
@@ -127,20 +136,25 @@ func TestAnalyticsRelayRejectsCrossSiteAndPlainText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, headers := range []map[string]string{
-		{"Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin"},
-		{"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
-		{"Content-Type": "application/json"},
+	for _, test := range []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"plain_text", map[string]string{"Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin"}},
+		{"cross_site", map[string]string{"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"}},
+		{"missing_fetch_site", map[string]string{"Content-Type": "application/json"}},
 	} {
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, RouteAnalytics, strings.NewReader(`{"event":"playground_live_session_started","properties":{}}`))
-		for key, value := range headers {
-			req.Header.Set(key, value)
-		}
-		rec := httptest.NewRecorder()
-		relay.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("headers %#v: status = %d", headers, rec.Code)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, RouteAnalytics, strings.NewReader(`{"event":"playground_live_session_started","properties":{}}`))
+			for key, value := range test.headers {
+				req.Header.Set(key, value)
+			}
+			rec := httptest.NewRecorder()
+			relay.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("headers %#v: status = %d", test.headers, rec.Code)
+			}
+		})
 	}
 }
 
@@ -158,7 +172,7 @@ func TestAnalyticsRelayAcceptsJSONCharset(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
 	relay.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
 	}
 }
@@ -212,9 +226,21 @@ func TestAnalyticsRelayReusesOnlyValidServerCookie(t *testing.T) {
 		t.Fatalf("valid cookie: got=%q fresh=%v err=%v", got, fresh, err)
 	}
 	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, RouteAnalytics, nil)
-	req.AddCookie(&http.Cookie{Name: analyticsCookieName, Value: "attacker-value", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	req.AddCookie(&http.Cookie{
+		Name: analyticsCookieName, Value: valid + "." + strings.Repeat("0", sha256.Size*2),
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode,
+	})
 	got, _, fresh, err = relay.analyticsDistinctID(req)
-	if err != nil || !fresh || got == "attacker-value" || len(got) != 32 {
+	if err != nil || !fresh || got == valid || len(got) != 32 {
 		t.Fatalf("invalid cookie: got=%q fresh=%v err=%v", got, fresh, err)
+	}
+}
+
+func TestNewAnalyticsRelayPreservesEndpointParseError(t *testing.T) {
+	_, err := NewAnalyticsRelay(t.Context(), AnalyticsConfig{
+		ProjectKey: "key", Endpoint: "https://[::1", SigningKey: analyticsTestSigningKey,
+	})
+	if err == nil || !strings.Contains(err.Error(), "parse analytics endpoint") {
+		t.Fatalf("error = %v", err)
 	}
 }

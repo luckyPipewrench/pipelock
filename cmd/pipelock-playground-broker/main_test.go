@@ -400,7 +400,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
 	analyticsReceived := make(chan struct{}, 1)
-	analyticsSink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	analyticsSink := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		analyticsReceived <- struct{}{}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -413,7 +413,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
 	var out bytes.Buffer
-	srv, handler, _, _, err := buildServer(context.Background(), &out, &serveFlags{
+	srv, handler, _, _, err := buildServer(t.Context(), &out, &serveFlags{
 		listen: defaultListen, provider: "fake", flyApp: "playground-test",
 		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
 		staticDir: uiDir, internalPort: 8080, concurrency: 2,
@@ -430,6 +430,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 		externalConnectOrigins: []string{"https://events.vendor.example"},
 		analyticsProjectKey:    "public-test-key",
 		analyticsEndpoint:      analyticsSink.URL,
+		analyticsClient:        analyticsSink.Client(),
 	})
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
@@ -462,8 +463,8 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = analyticsPostResp.Body.Close() }()
-	if analyticsPostResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("POST analytics status = %d, want 204", analyticsPostResp.StatusCode)
+	if analyticsPostResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST analytics status = %d, want 202", analyticsPostResp.StatusCode)
 	}
 	select {
 	case <-analyticsReceived:

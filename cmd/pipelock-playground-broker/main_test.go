@@ -399,6 +399,12 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
 	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+	analyticsReceived := make(chan struct{}, 1)
+	analyticsSink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		analyticsReceived <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(analyticsSink.Close)
 
 	oldFactory := newMachineProvider
 	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
@@ -422,6 +428,8 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 		embedOrigins:           []string{testEmbedOrigin},
 		externalScriptOrigins:  []string{"https://scripts.vendor.example"},
 		externalConnectOrigins: []string{"https://events.vendor.example"},
+		analyticsProjectKey:    "public-test-key",
+		analyticsEndpoint:      analyticsSink.URL,
 	})
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
@@ -429,6 +437,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	for _, want := range []string{
 		"trusting external script origin(s): https://scripts.vendor.example",
 		"allowing external browser connection origin(s): https://events.vendor.example",
+		"privacy-safe playground analytics relay enabled",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("broker startup output = %q, missing %q", out.String(), want)
@@ -436,6 +445,31 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	}
 	t.Cleanup(srv.Close)
 	baseURL := startHTTPTestServer(t, handler)
+	analyticsResp := testHTTPGet(t, baseURL+broker.RouteAnalytics)
+	defer func() { _ = analyticsResp.Body.Close() }()
+	if analyticsResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET analytics status = %d, want 405", analyticsResp.StatusCode)
+	}
+	analyticsReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+broker.RouteAnalytics,
+		strings.NewReader(`{"event":"playground_live_session_started","properties":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	analyticsReq.Header.Set("Content-Type", "application/json")
+	analyticsReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	analyticsPostResp, err := http.DefaultClient.Do(analyticsReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = analyticsPostResp.Body.Close() }()
+	if analyticsPostResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST analytics status = %d, want 204", analyticsPostResp.StatusCode)
+	}
+	select {
+	case <-analyticsReceived:
+	case <-time.After(time.Second):
+		t.Fatal("analytics event did not reach configured sink")
+	}
 
 	tests := []struct {
 		name string

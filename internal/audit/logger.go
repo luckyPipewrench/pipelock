@@ -1008,15 +1008,18 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 // When bundleRules is non-empty, bundle provenance is included in the audit event
 // and webhook payload so SIEM consumers can identify which community rules matched.
 func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
-	technique := TechniqueForScanner("response_scan")
+	const scanner = scannerpkg.AuditResponseScan
+	technique := TechniqueForScanner(scanner)
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
 		optStr("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
-		optStr("resource", ctx.resource).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		str("scanner", scanner).
 		str("action", action).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
@@ -1379,6 +1382,7 @@ type WSScanEvent struct {
 	Direction    string
 	ClientIP     string
 	RequestID    string
+	Agent        string
 	Action       string
 	Scanner      string
 	MatchCount   int
@@ -1399,12 +1403,17 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 		}
 	}
 	technique := TechniqueForScanner(scanner)
+	ctx := LogContext{target: ev.Target}
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventWSScan).
-		str("target", ev.Target).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		str("direction", ev.Direction).
 		str("client_ip", ev.ClientIP).
 		str("request_id", ev.RequestID).
+		optStr("agent", ev.Agent).
 		str("action", ev.Action).
 		str("scanner", scanner).
 		intField("match_count", ev.MatchCount).

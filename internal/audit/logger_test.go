@@ -841,7 +841,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	if entry["event"] != string(EventResponseScan) {
 		t.Errorf("expected event=response_scan, got %v", entry["event"])
 	}
-	if entry["url"] != "https://example.com/page" {
+	if entry["url"] != "https://example.com/[redacted]" {
 		t.Errorf("expected url, got %v", entry["url"])
 	}
 	if entry["client_ip"] != testClientIP {
@@ -863,6 +863,63 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	}
 	if entry["component"] != testComponent {
 		t.Errorf("expected component=pipelock, got %v", entry["component"])
+	}
+}
+
+func TestLogResponseScanRedactsContentBearingContext(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/v1/chat?token=" + secret
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan(LogContext{
+		method:    testMethodGet,
+		url:       rawURL,
+		target:    rawURL,
+		resource:  secret,
+		clientIP:  testClientIP,
+		requestID: "req-response-redact",
+		agent:     testAgentName,
+	}, testActionWarn, 1, []string{"Prompt Injection"}, nil)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("response_scan leaked the matched credential: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted url, got %v", entry["url"])
+	}
+	if entry["target"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["resource"] != "[redacted]" {
+		t.Errorf("expected redacted resource, got %v", entry["resource"])
+	}
+	if entry["request_id"] != "req-response-redact" {
+		t.Errorf("expected request_id to survive redaction, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != scannerpkg.AuditResponseScan {
+		t.Errorf("expected scanner=response_scan, got %v", entry["scanner"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 1 || patterns[0] != "Prompt Injection" {
+		t.Errorf("expected patterns to survive redaction, got %v", entry["patterns"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent to survive redaction, got %v", entry["agent"])
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "suppress:") {
+		t.Fatalf("remediation_hint = %q, want response-scan operator hint", hint)
 	}
 }
 
@@ -1769,6 +1826,58 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestLogWSScanRedactsContentBearingTarget(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawTarget := "wss://api.vendor.example/socket?token=" + secret
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSScan(WSScanEvent{
+		Target:       rawTarget,
+		Direction:    DirectionClientToServer,
+		ClientIP:     testClientIP,
+		RequestID:    "req-ws-redact",
+		Agent:        testAgentName,
+		Action:       "audit",
+		MatchCount:   1,
+		PatternNames: []string{"AWS Access ID"},
+	})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("ws_scan leaked the matched credential: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["target"] != "wss://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["request_id"] != "req-ws-redact" {
+		t.Errorf("expected request_id to survive redaction, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != scannerpkg.ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %v", entry["scanner"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 1 || patterns[0] != "AWS Access ID" {
+		t.Errorf("expected patterns to survive redaction, got %v", entry["patterns"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent to survive redaction, got %v", entry["agent"])
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "dlp.patterns[].exempt_domains") {
+		t.Fatalf("remediation_hint = %q, want DLP operator hint", hint)
+	}
+}
+
 func TestLogWSScan_ClientToServer_DLPTechnique(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
@@ -2466,7 +2575,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventResponseScan),
 			wantKey:   "url",
-			wantValue: "wss://socket.example/stream",
+			wantValue: "wss://socket.example/[redacted]",
 			absent:    []string{"target", "resource"},
 		},
 		{

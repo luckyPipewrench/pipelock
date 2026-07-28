@@ -2518,12 +2518,13 @@ func TestQueryImageDimensionsAllowed(t *testing.T) {
 		height int
 		want   bool
 	}{
-		"four megapixel boundary": {width: 4096, height: 1024, want: true},
-		"over pixel limit":        {width: 4096, height: 1025, want: false},
-		"zero width":              {width: 0, height: 1, want: false},
-		"zero height":             {width: 1, height: 0, want: false},
-		"negative width":          {width: -1, height: 1, want: false},
-		"negative height":         {width: 1, height: -1, want: false},
+		"512 square boundary": {width: 512, height: 512, want: true},
+		"skinny boundary":     {width: 4096, height: 64, want: true},
+		"over pixel limit":    {width: 4096, height: 65, want: false},
+		"zero width":          {width: 0, height: 1, want: false},
+		"zero height":         {width: 1, height: 0, want: false},
+		"negative width":      {width: -1, height: 1, want: false},
+		"negative height":     {width: 1, height: -1, want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -397,6 +397,9 @@ jobs:
       - name: Config consumption policy
         run: bash scripts/check-config-consumption.sh
 
+      - name: Codecov upload count matches the shard matrix
+        run: bash scripts/check-codecov-upload-count.sh
+
       - name: Config example startability policy
         run: bash scripts/check-config-examples.sh
 

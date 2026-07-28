@@ -1,11 +1,19 @@
 codecov:
   require_ci_to_pass: true
   notify:
-    # CI uploads five coverage reports on successful runs: the four Go 1.25
-    # enterprise shards plus the merged sandbox subprocess profile. Without
-    # this, Codecov posts statuses and updates badges after the first partial
-    # upload, then revises the result as later shards arrive.
-    after_n_builds: 5
+    # CI uploads seven coverage reports on a successful run: the six Go 1.25
+    # enterprise shards (proxy, scanner, mcp, rest-0, rest-1, rest-2) plus the
+    # merged sandbox subprocess profile. Codecov posts its verdict once this
+    # many uploads arrive and does not wait for the rest, so this must equal
+    # the real upload count.
+    #
+    # It drifted once: the shard list grew from four to six and this stayed at
+    # five, so Codecov judged partial data on every PR. Lines covered only by
+    # the two missing shards counted as missed, patch coverage read low, and
+    # the check failed before flipping to pass minutes later. That is
+    # indistinguishable from a real regression while you are looking at it.
+    # scripts/check-codecov-upload-count.sh now fails if the two disagree.
+    after_n_builds: 7
     wait_for_ci: true
 
 parsers:

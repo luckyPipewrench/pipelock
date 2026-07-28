@@ -125,6 +125,61 @@ else
   fail "Mcp-Name not forwarded on tools/call"
 fi
 
+# ---------------------------------------------------------------------------
+# Case 4: a routing header that disagrees with the body is refused locally.
+#
+# Mcp-Method and Mcp-Name route the request at the upstream while Pipelock
+# scans the body. Forwarding a disagreement lets the upstream act on a call no
+# scanner in that request ever saw. Must fail closed BEFORE upstream, with
+# HeaderMismatch (-32020).
+# ---------------------------------------------------------------------------
+echo "Case 4: routing header/body disagreement refused"
+before_rows="$(wc -l < "$TRACE")"
+
+mismatch_body='{"jsonrpc":"2.0","id":9,"method":"tools/list"}'
+code="$(curl -s -o /tmp/mcp-rig-mismatch.json -w '%{http_code}' \
+  -H 'Content-Type: application/json' -H 'Mcp-Method: tools/call' \
+  -X POST --data "$mismatch_body" "http://127.0.0.1:$PPORT/mcp")"
+if [ "$code" = "400" ]; then
+  pass "method/body disagreement rejected with 400"
+else
+  fail "method/body disagreement got HTTP $code, want 400"
+fi
+if grep -q -- '-32020' /tmp/mcp-rig-mismatch.json 2>/dev/null; then
+  pass "rejection carries HeaderMismatch (-32020)"
+else
+  fail "rejection did not carry -32020: $(head -c 200 /tmp/mcp-rig-mismatch.json 2>/dev/null)"
+fi
+
+name_body='{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}'
+code="$(curl -s -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: read_note' \
+  -X POST --data "$name_body" "http://127.0.0.1:$PPORT/mcp")"
+if [ "$code" = "400" ]; then
+  pass "tool-name/body disagreement rejected with 400"
+else
+  fail "tool-name/body disagreement got HTTP $code, want 400"
+fi
+
+for bad in 'tools/	list' 'oversized'; do
+  case "$bad" in oversized) value="$(printf 'a%.0s' $(seq 1 9010))" ;; *) value="$bad" ;; esac
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' -H "Mcp-Method: $value" \
+    -X POST --data "$mismatch_body" "http://127.0.0.1:$PPORT/mcp")"
+  if [ "$code" = "400" ]; then
+    pass "malformed routing header rejected ($bad)"
+  else
+    fail "malformed routing header ($bad) got HTTP $code, want 400"
+  fi
+done
+
+after_rows="$(wc -l < "$TRACE")"
+if [ "$before_rows" = "$after_rows" ]; then
+  pass "no rejected request reached the upstream"
+else
+  fail "$((after_rows - before_rows)) rejected request(s) reached the upstream"
+fi
+
 cleanup
 echo
 printf 'passed: %d  failed: %d\n' "$PASS" "$FAIL"

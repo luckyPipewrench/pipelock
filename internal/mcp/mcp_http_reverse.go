@@ -46,6 +46,9 @@ const (
 	// back onto the deprecated session transport.
 	listenerMCPMethod = "Mcp-Method"
 	listenerMCPName   = "Mcp-Name"
+	// HeaderMismatch, allocated by protocol revision 2026-07-28 for a routing
+	// header that disagrees with the request body's method.
+	mcpHeaderMismatchCode = -32020
 	// Mcp-Method and Mcp-Name are required from revision 2026-07-28; the
 	// preflight is refused outright when a requested header is absent here, so
 	// omitting them blocks browser MCP clients rather than degrading them.
@@ -385,6 +388,13 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid Mcp-Protocol-Version header")))
+			return
+		}
+		if !validMCPRoutingHeader(r.Header.Values(listenerMCPMethod)) ||
+			!validMCPRoutingHeader(r.Header.Values(listenerMCPName)) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid MCP routing header")))
 			return
 		}
 		if !validA2AVersion(r.Header.Values("A2A-Version")) ||
@@ -888,6 +898,28 @@ func RunHTTPListenerProxy(
 		// and upstream-error response below reads frame.ID instead of
 		// re-parsing the body bytes.
 		frame := ParseMCPFrame(body)
+
+		// Routing headers must agree with the body Pipelock scanned. Forwarding
+		// a disagreement would let the upstream act on a method or tool name
+		// that no scanner or policy in this request ever saw. Protocol revision
+		// 2026-07-28 allocates HeaderMismatch (-32020) for this condition;
+		// refusing locally also keeps the failure legible instead of surfacing
+		// as a generic upstream error.
+		if !routingHeaderMatchesFrame(r.Header, frame) {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP routing header disagrees with request body\n")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			mismatch, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				ID:      frame.ID,
+				Error: rpcErrorDetail{
+					Code:    mcpHeaderMismatchCode,
+					Message: "pipelock: MCP routing header does not match the request body",
+				},
+			})
+			_, _ = w.Write(mismatch)
+			return
+		}
 
 		// Validate JSON-RPC 2.0 structure for single requests: version
 		// must be "2.0", method must be present and a string. Batch
@@ -1407,7 +1439,7 @@ func acceptAllowsSSE(values []string) bool {
 }
 
 func applyOperatorPinnedServiceHeaders(request, operator http.Header) {
-	for _, name := range []string{listenerProtocolVersion, "A2A-Extensions", "A2A-Version"} {
+	for _, name := range []string{listenerProtocolVersion, listenerMCPMethod, listenerMCPName, "A2A-Extensions", "A2A-Version"} {
 		values := operator.Values(name)
 		if len(values) == 0 {
 			continue
@@ -1571,6 +1603,40 @@ func validMCPSessionDeleteStatus(status int) bool {
 	default:
 		return false
 	}
+}
+
+// validMCPRoutingHeader accepts an absent Mcp-Method / Mcp-Name header, since
+// revisions before 2026-07-28 never send one and a mixed-revision fleet is the
+// normal state for the deprecation window. A present value must be a single
+// visible-ASCII token: these route the request at the upstream, so a duplicate
+// or control-character value is an ambiguity the upstream may resolve
+// differently than Pipelock did.
+func validMCPRoutingHeader(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	return validVisibleSingletonHeader(values, 256)
+}
+
+// routingHeaderMatchesFrame reports whether the client's routing headers agree
+// with the JSON-RPC body Pipelock scanned. Disagreement means Pipelock applies
+// policy to one call while the upstream routes another, so it is refused rather
+// than forwarded. An absent header agrees by definition; a frame that failed to
+// parse is left to the existing parse-error handling.
+func routingHeaderMatchesFrame(headers http.Header, frame MCPFrame) bool {
+	if frame.ParseErr != nil || frame.IsBatch {
+		return true
+	}
+	if method := headers.Get(listenerMCPMethod); method != "" && frame.Method != "" && method != frame.Method {
+		return false
+	}
+	// Mcp-Name names the invoked entity. Only tools/call carries a comparable
+	// name in the body; for other methods the header has nothing to disagree
+	// with and is left to the upstream.
+	if name := headers.Get(listenerMCPName); name != "" && frame.IsToolsCall() && frame.ToolCallName != "" && name != frame.ToolCallName {
+		return false
+	}
+	return true
 }
 
 func validMCPProtocolVersion(values []string) bool {

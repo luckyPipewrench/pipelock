@@ -1005,12 +1005,9 @@ type pipelockConfigPreflightTarget struct {
 }
 
 func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installOpts, dryRun bool) error {
-	target, ok, err := pipelockConfigPreflightTargetFor(env, opts, dryRun)
+	target, err := pipelockConfigPreflightTargetFor(env, opts, dryRun)
 	if err != nil {
 		return err
-	}
-	if !ok {
-		return nil
 	}
 	if target.missingManaged {
 		return fmt.Errorf("contain install config preflight failed for %s: --config is required if the managed config is not already in place. "+
@@ -1071,7 +1068,11 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 	return nil
 }
 
-func pipelockConfigPreflightTargetFor(env *installEnv, opts installOpts, dryRun bool) (pipelockConfigPreflightTarget, bool, error) {
+// pipelockConfigPreflightTargetFor resolves which config path preflight checks
+// and which path the operator is told about. It returns an error or a target,
+// never a "no target" signal: a caller handed one of those would have to treat
+// it as "nothing to check", which silently skips the whole preflight.
+func pipelockConfigPreflightTargetFor(env *installEnv, opts installOpts, dryRun bool) (pipelockConfigPreflightTarget, error) {
 	unitPath := managedPipelockConfigPath(env)
 	if opts.configSource != "" {
 		if dryRun {
@@ -1079,25 +1080,25 @@ func pipelockConfigPreflightTargetFor(env *installEnv, opts installOpts, dryRun 
 				checkPath: filepath.Clean(opts.configSource),
 				unitPath:  unitPath,
 				drySource: true,
-			}, true, nil
+			}, nil
 		}
 		// Check the staged candidate, not the managed path. The managed path
 		// still holds the previous config at this point, so checking it would
 		// verify the config being replaced instead of the one replacing it.
-		return pipelockConfigPreflightTarget{checkPath: stagedPipelockConfigPath(env), unitPath: unitPath}, true, nil
+		return pipelockConfigPreflightTarget{checkPath: stagedPipelockConfigPath(env), unitPath: unitPath}, nil
 	}
 
 	info, err := env.stat(unitPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return pipelockConfigPreflightTarget{unitPath: unitPath, missingManaged: true}, true, nil
+			return pipelockConfigPreflightTarget{unitPath: unitPath, missingManaged: true}, nil
 		}
-		return pipelockConfigPreflightTarget{}, false, fmt.Errorf("stat managed config %s for preflight: %w", unitPath, err)
+		return pipelockConfigPreflightTarget{}, fmt.Errorf("stat managed config %s for preflight: %w", unitPath, err)
 	}
 	if info.IsDir() {
-		return pipelockConfigPreflightTarget{}, false, fmt.Errorf("managed config %s is a directory", unitPath)
+		return pipelockConfigPreflightTarget{}, fmt.Errorf("managed config %s is a directory", unitPath)
 	}
-	return pipelockConfigPreflightTarget{checkPath: unitPath, unitPath: unitPath}, true, nil
+	return pipelockConfigPreflightTarget{checkPath: unitPath, unitPath: unitPath}, nil
 }
 
 func managedPipelockConfigPath(env *installEnv) string {

@@ -57,7 +57,7 @@ func scannerContentFieldMode(scanner string) contentFieldMode {
 		scannerpkg.ScannerRateLimit,
 		scannerpkg.ScannerDataBudget,
 		scannerpkg.ScannerContext,
-		"mcp_tool_scanning",
+		scannerpkg.ScannerMCPToolScanning,
 		scannerpkg.AuditMCPSessionBinding,
 		scannerpkg.AuditFrozenTool:
 		// The destination, not the request line, is the diagnostic object.

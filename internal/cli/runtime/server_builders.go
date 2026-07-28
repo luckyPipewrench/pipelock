@@ -92,6 +92,7 @@ func buildMCPCEE(cfg *config.Config, m *metrics.Metrics) *mcp.CEEDeps {
 
 type mcpDoWWiring struct {
 	Check            mcp.DoWCheckFunc
+	Enabled          func() bool
 	SubjectAgent     string
 	SubjectAgentAuth envelope.ActorAuth
 	KnownSession     func(string) bool
@@ -100,43 +101,116 @@ type mcpDoWWiring struct {
 }
 
 func buildMCPDoWWiring(cfg *config.Config, agentName string) *mcpDoWWiring {
-	budget := resolveMCPDoWBudget(cfg, agentName)
-	if budget == nil || !budget.HasDoWFields() {
+	runtime := newMCPDoWRuntime(cfg, agentName)
+	if runtime == nil || !runtime.Enabled() {
 		return nil
 	}
-	manager := proxy.NewDoWSubjectManager(proxy.DoWSubjectManagerConfig{
-		TrackerConfig: proxy.DoWConfig{
-			MaxToolCallsPerSession: budget.MaxToolCallsPerSession,
-			MaxWallClockMinutes:    budget.MaxWallClockMinutes,
-			WindowMinutes:          budget.WindowMinutes,
-			MaxRetriesPerTool:      budget.MaxRetriesPerTool,
-			LoopDetectionWindow:    budget.LoopDetectionWindow,
-			Action:                 budget.DoWAction,
-		},
-	})
-	trustedSessions := &mcpTrustedSessionRegistry{sessions: make(map[string]time.Time)}
-	dowAction := budget.DoWAction
+	return runtime.Wiring()
+}
+
+type mcpDoWRuntime struct {
+	mu               sync.RWMutex
+	manager          *proxy.DoWSubjectManager
+	enabled          bool
+	action           string
+	subjectAgent     string
+	subjectAgentAuth envelope.ActorAuth
+	trustedSessions  *mcpTrustedSessionRegistry
+	agentName        string
+}
+
+func newMCPDoWRuntime(cfg *config.Config, agentName string) *mcpDoWRuntime {
+	runtime := &mcpDoWRuntime{
+		trustedSessions: &mcpTrustedSessionRegistry{sessions: make(map[string]time.Time)},
+		agentName:       agentName,
+	}
+	runtime.UpdateConfig(cfg)
+	return runtime
+}
+
+func (r *mcpDoWRuntime) UpdateConfig(cfg *config.Config) {
+	if r == nil {
+		return
+	}
+	budget := resolveMCPDoWBudget(cfg, r.agentName)
+	enabled := budget != nil && budget.HasDoWFields()
+	dowAction := ""
+	if budget != nil {
+		dowAction = budget.DoWAction
+	}
 	if dowAction == "" {
 		dowAction = config.ActionBlock
 	}
-	subjectAgent := agentName
-	if subjectAgent == "" {
+	subjectAgent := r.agentName
+	if subjectAgent == "" && cfg != nil {
 		subjectAgent = cfg.DefaultAgentIdentity
 	}
 	subjectAgentAuth := envelope.ActorAuth("")
 	if subjectAgent != "" {
 		subjectAgentAuth = envelope.ActorAuthConfigDefault
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if enabled && r.manager == nil {
+		r.manager = proxy.NewDoWSubjectManager(proxy.DoWSubjectManagerConfig{
+			TrackerConfig: proxy.DoWConfig{
+				MaxToolCallsPerSession: budget.MaxToolCallsPerSession,
+				MaxWallClockMinutes:    budget.MaxWallClockMinutes,
+				WindowMinutes:          budget.WindowMinutes,
+				MaxRetriesPerTool:      budget.MaxRetriesPerTool,
+				LoopDetectionWindow:    budget.LoopDetectionWindow,
+				Action:                 budget.DoWAction,
+			},
+		})
+	}
+	r.enabled = enabled
+	r.action = dowAction
+	r.subjectAgent = subjectAgent
+	r.subjectAgentAuth = subjectAgentAuth
+}
+
+func (r *mcpDoWRuntime) Enabled() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.enabled
+}
+
+func (r *mcpDoWRuntime) Check(subjectKey, toolName, argsJSON string) (bool, string, string, string) {
+	if r == nil {
+		return true, config.ActionBlock, "", ""
+	}
+	r.mu.RLock()
+	enabled := r.enabled
+	manager := r.manager
+	action := r.action
+	r.mu.RUnlock()
+	if !enabled || manager == nil {
+		return true, action, "", ""
+	}
+	result := manager.Check(subjectKey, toolName, argsJSON)
+	return result.Allowed, action, result.Reason, result.BudgetType
+}
+
+func (r *mcpDoWRuntime) Wiring() *mcpDoWWiring {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	subjectAgent := r.subjectAgent
+	subjectAgentAuth := r.subjectAgentAuth
+	r.mu.RUnlock()
 	return &mcpDoWWiring{
-		Check: func(subjectKey, toolName, argsJSON string) (bool, string, string, string) {
-			result := manager.Check(subjectKey, toolName, argsJSON)
-			return result.Allowed, dowAction, result.Reason, result.BudgetType
-		},
+		Check:            r.Check,
+		Enabled:          r.Enabled,
 		SubjectAgent:     subjectAgent,
 		SubjectAgentAuth: subjectAgentAuth,
-		KnownSession:     trustedSessions.Known,
-		RegisterSession:  trustedSessions.Register,
-		ForgetSession:    trustedSessions.Forget,
+		KnownSession:     r.trustedSessions.Known,
+		RegisterSession:  r.trustedSessions.Register,
+		ForgetSession:    r.trustedSessions.Forget,
 	}
 }
 
@@ -240,6 +314,7 @@ func applyMCPDoWOpts(opts *mcp.MCPProxyOpts, wiring *mcpDoWWiring, requireTruste
 		return
 	}
 	opts.DoWCheck = wiring.Check
+	opts.DoWEnabledFn = wiring.Enabled
 	opts.DoWSubjectAgent = wiring.SubjectAgent
 	opts.DoWSubjectAgentAuth = wiring.SubjectAgentAuth
 	if requireTrustedSession {

@@ -248,6 +248,9 @@ func applyDoWGate(opts MCPProxyOpts, eval *MCPInputEvaluation, enforcementIdenti
 	if opts.DoWCheck == nil || enforcementIdentity == "" {
 		return false
 	}
+	if !opts.dowEnabled() {
+		return false
+	}
 	subjectKey := opts.DoWSubjectKey
 	if subjectKey == "" {
 		subjectKey = opts.DoWSessionKey

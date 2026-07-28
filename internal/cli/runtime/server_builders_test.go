@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 func TestMCPTrustedSessionRegistryConcurrentAccess(t *testing.T) {
@@ -76,5 +79,42 @@ func TestMCPTrustedSessionRegistryRefusesNilAndEmptyKeys(t *testing.T) {
 func TestResolveMCPDoWBudgetNilConfig(t *testing.T) {
 	if got := resolveMCPDoWBudget(nil, "agent-a"); got != nil {
 		t.Fatalf("resolveMCPDoWBudget(nil) = %+v, want nil", got)
+	}
+}
+
+func TestMCPDoWRuntimeDisabledStartupEnabledByReloadEnforces(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Agents = make(map[string]config.AgentProfile)
+	cfg.Agents["_default"] = config.AgentProfile{}
+	runtime := newMCPDoWRuntime(cfg, "_default")
+	wiring := runtime.Wiring()
+	if wiring == nil {
+		t.Fatal("DoW runtime did not produce reusable wiring while disabled")
+	}
+	if wiring.Enabled() {
+		t.Fatal("DoW runtime enabled without configured DoW fields")
+	}
+	if allowed, _, reason, budgetType := wiring.Check("subject-a", "search", `{"q":"one"}`); !allowed || reason != "" || budgetType != "" {
+		t.Fatalf("disabled DoW check = allowed:%v reason:%q budget:%q, want clean skip", allowed, reason, budgetType)
+	}
+
+	reloaded := cfg.Clone()
+	profile := reloaded.Agents["_default"]
+	profile.Budget.MaxToolCallsPerSession = 1
+	profile.Budget.DoWAction = config.ActionBlock
+	reloaded.Agents["_default"] = profile
+	runtime.UpdateConfig(reloaded)
+
+	if !wiring.Enabled() {
+		t.Fatal("DoW runtime stayed disabled after reload enabled a DoW budget")
+	}
+	if allowed, action, reason, budgetType := wiring.Check("subject-a", "search", `{"q":"one"}`); !allowed || action != config.ActionBlock || reason != "" || budgetType != "" {
+		t.Fatalf("first enabled DoW check = allowed:%v action:%q reason:%q budget:%q, want allowed block-mode accounting",
+			allowed, action, reason, budgetType)
+	}
+	allowed, action, reason, budgetType := wiring.Check("subject-a", "search", `{"q":"two"}`)
+	if allowed || action != config.ActionBlock || budgetType != proxy.BudgetToolCalls || reason == "" {
+		t.Fatalf("second enabled DoW check = allowed:%v action:%q reason:%q budget:%q, want tool-call denial",
+			allowed, action, reason, budgetType)
 	}
 }

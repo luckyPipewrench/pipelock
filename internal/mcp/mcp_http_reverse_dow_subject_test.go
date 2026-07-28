@@ -58,6 +58,22 @@ func TestTrustedDoWSubjectKeyEmptyForUnknownSessionWhenGateOn(t *testing.T) {
 	}
 }
 
+func TestTrustedDoWSubjectKeyUsesClientKeyWhenLiveDoWDisabled(t *testing.T) {
+	opts := MCPProxyOpts{
+		DoWRequireTrustedSession: true,
+		DoWSubjectAgent:          "agent-a",
+		DoWEnabledFn:             func() bool { return false },
+		DoWSessionKnown:          func(string) bool { return false },
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
+	req.RemoteAddr = "203.0.113.10:5555"
+	req.Header.Set("Mcp-Session-Id", "not-registered")
+
+	if got := trustedDoWSubjectKey(req, opts); got == "" {
+		t.Fatal("disabled live DoW state still produced an empty subject key for the trusted-session gate")
+	}
+}
+
 // Gate-on coverage cannot be negative-only. An implementation that always
 // returned "" under DoWRequireTrustedSession would satisfy the unknown-session
 // test while turning every tool call from a known session into a fail-closed

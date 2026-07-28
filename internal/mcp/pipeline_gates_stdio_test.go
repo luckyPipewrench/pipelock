@@ -345,6 +345,42 @@ func TestEvaluateMCPInputGatesStdio_DoWWarnDoesNotShortCircuit(t *testing.T) {
 	}
 }
 
+func TestEvaluateMCPInputGatesStdio_DoWDisabledSkipsTrustedSessionGate(t *testing.T) {
+	t.Parallel()
+
+	sc := testInputScanner(t)
+	opts := testOpts(sc)
+	opts.DoWRequireTrustedSession = true
+	opts.DoWEnabledFn = func() bool {
+		return false
+	}
+	opts.DoWCheck = func(_, _, _ string) (bool, string, string, string) {
+		t.Fatal("DoWCheck called while live DoW state is disabled")
+		return false, config.ActionBlock, "should not run", "test_budget"
+	}
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/x"}}}`)
+	frame := ParseMCPFrame(msg)
+
+	eval := EvaluateMCPInputGatesStdio(
+		context.Background(),
+		frame,
+		msg,
+		msg,
+		nil,
+		opts,
+		config.ActionWarn,
+		config.ActionBlock,
+	)
+
+	if eval.BlockingGate == blockingGateDoW {
+		t.Fatalf("disabled DoW still blocked on trusted-session gate: %+v", eval)
+	}
+	if eval.DoWReason != "" || eval.DoWBudgetType != "" {
+		t.Fatalf("disabled DoW populated evaluation fields: reason=%q budget=%q", eval.DoWReason, eval.DoWBudgetType)
+	}
+}
+
 func TestEvaluateMCPInputGatesStdio_ParseErrorShortCircuit(t *testing.T) {
 	// Force ContentVerdict.Error via invalid JSON. The frame will
 	// have ParseErr set and ScanRequest returns a parse-error verdict.

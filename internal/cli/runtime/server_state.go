@@ -78,6 +78,13 @@ func (s *Server) refreshRuntimeState(
 	s.receiptEmitter = s.liveReceiptEmitter()
 	s.envelopeEmitter = s.liveEnvelopeEmitter()
 	s.toolPolicyCfg = buildToolPolicyCfg(newCfg)
+	if s.hasMCPListen {
+		if s.mcpDoW == nil {
+			s.mcpDoW = newMCPDoWRuntime(newCfg, "_default")
+		} else {
+			s.mcpDoW.UpdateConfig(newCfg)
+		}
+	}
 	if bundleResult != nil {
 		s.mcpToolExtraPoison = rules.ConvertToolPoison(bundleResult.ToolPoison)
 	} else {

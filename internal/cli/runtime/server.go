@@ -207,6 +207,7 @@ type Server struct {
 	mcpChainMatcher    *chains.Matcher
 	mcpCEE             *mcp.CEEDeps
 	mcpToolExtraPoison []*tools.ExtraPoisonPattern
+	mcpDoW             *mcpDoWRuntime
 }
 
 // stderrSyncWriter wraps the operator-facing stderr writer with a mutex so

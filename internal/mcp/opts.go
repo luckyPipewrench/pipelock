@@ -178,6 +178,10 @@ type MCPProxyOpts struct {
 
 	// Denial-of-wallet tracking (nil-safe).
 	DoWCheck DoWCheckFunc
+	// DoWEnabledFn returns the live denial-of-wallet enabled state for
+	// long-lived listener surfaces. Nil preserves legacy static behavior:
+	// a configured DoWCheck means the gate is enabled.
+	DoWEnabledFn func() bool
 	// DoWSubjectKey is set per request by multi-client transports before
 	// invoking the shared input pipeline. Empty is valid only when
 	// DoWRequireTrustedSession is false.

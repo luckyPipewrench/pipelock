@@ -221,6 +221,7 @@ func RunHTTPListenerProxy(
 		RedactProfile:             baseRedactionCfg.Profile,
 		RedactionCfgFn:            opts.RedactionCfgFn,
 		DoWCheck:                  opts.DoWCheck,
+		DoWEnabledFn:              opts.DoWEnabledFn,
 		DoWSubjectAgent:           opts.DoWSubjectAgent,
 		DoWSubjectAgentAuth:       opts.DoWSubjectAgentAuth,
 		DoWAuthenticatedPrincipal: opts.DoWAuthenticatedPrincipal,
@@ -1505,7 +1506,7 @@ func validMCPSessionID(values []string) bool {
 }
 
 func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
-	if !opts.DoWRequireTrustedSession {
+	if !opts.dowEnabled() || !opts.DoWRequireTrustedSession {
 		// Both production callers of RunHTTPListenerProxy set the trusted-session
 		// requirement, so this branch is not reached today. Returning an empty
 		// key here would collapse every client on a multi-client listener into
@@ -1520,6 +1521,13 @@ func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
 		return ""
 	}
 	return opts.dowSubjectKeyForRequest(r)
+}
+
+func (o MCPProxyOpts) dowEnabled() bool {
+	if o.DoWEnabledFn != nil {
+		return o.DoWEnabledFn()
+	}
+	return o.DoWCheck != nil || o.DoWRequireTrustedSession
 }
 
 func logUpstreamRequestError(logW io.Writer, ctx context.Context) {

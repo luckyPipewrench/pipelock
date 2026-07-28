@@ -18,6 +18,8 @@ func TestValidateReload_ForwarderDestinationAllowlistExpanded(t *testing.T) {
 	}{
 		{name: "expanded", oldHosts: []string{"old.example"}, newHosts: []string{"old.example", "new.example"}, want: true},
 		{name: "case and trailing dot are equivalent", oldHosts: []string{"SIEM.EXAMPLE."}, newHosts: []string{"siem.example"}},
+		{name: "alternative IP forms are equivalent", oldHosts: []string{"8.0.0.8"}, newHosts: []string{"8.8"}},
+		{name: "alternative IP form to different address expands", oldHosts: []string{"8.8.8.8"}, newHosts: []string{"8.8"}, want: true},
 		{name: "contracted", oldHosts: []string{"old.example", "removed.example"}, newHosts: []string{"old.example"}},
 	}
 	for _, tc := range tests {

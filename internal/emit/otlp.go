@@ -575,10 +575,14 @@ func mapSeverity(sev Severity) (logspb.SeverityNumber, string) {
 
 // stringKV creates an OTLP KeyValue with a string value.
 func stringKV(key, value string) *commonpb.KeyValue {
+	// Every OTLP string attribute funnels through here, including the ones
+	// built from arbitrary event fields, so the amplification bound is applied
+	// once at this choke point. Keys are bounded too: they come from the event
+	// field map, which a scanner can populate.
 	return &commonpb.KeyValue{
-		Key: key,
+		Key: boundEventString(key),
 		Value: &commonpb.AnyValue{
-			Value: &commonpb.AnyValue_StringValue{StringValue: value},
+			Value: &commonpb.AnyValue_StringValue{StringValue: boundEventString(value)},
 		},
 	}
 }

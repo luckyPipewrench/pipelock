@@ -15,7 +15,6 @@ import (
 	"reflect"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const (
@@ -177,6 +176,8 @@ func FormatOCSFEvent(event Event, deviceVersion string) string {
 		record.Action = ""
 	}
 
+	record.capStrings()
+
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -186,6 +187,87 @@ func FormatOCSFEvent(event Event, deviceVersion string) string {
 	return strings.TrimSuffix(buf.String(), "\n")
 }
 
+// capStrings bounds every attacker-influenceable string in the finding to
+// ocsfMaxStringBytes. The generic Unmapped walk is already bounded by
+// ocsfJSONValue, but the typed fields are assigned straight from event data by
+// cefName/ocsfStringField/eventAgent, none of which cap length. A single
+// oversized field (a hostile reason, URL, or agent name) otherwise lands
+// untruncated in several typed fields at once and amplifies one audit event
+// into a multi-megabyte record on every configured sink.
+//
+// Capping happens here, after the record is fully built, rather than inside
+// each accessor: url.Parse still sees the complete input so scheme and hostname
+// stay accurate, and any typed field added later is bounded without the author
+// having to remember a per-site cap.
+func (r *ocsfDetectionFinding) capStrings() {
+	r.Message = ocsfTruncateString(r.Message)
+	r.Action = ocsfTruncateString(r.Action)
+	r.StatusDetail = ocsfTruncateString(r.StatusDetail)
+
+	r.Metadata.Product.Version = ocsfTruncateString(r.Metadata.Product.Version)
+
+	r.FindingInfo.UID = ocsfTruncateString(r.FindingInfo.UID)
+	r.FindingInfo.Title = ocsfTruncateString(r.FindingInfo.Title)
+	r.FindingInfo.Description = ocsfTruncateString(r.FindingInfo.Description)
+	r.FindingInfo.Product.Version = ocsfTruncateString(r.FindingInfo.Product.Version)
+
+	if r.Actor != nil {
+		r.Actor.User.Name = ocsfTruncateString(r.Actor.User.Name)
+	}
+	for _, ep := range []*ocsfNetworkEndpoint{r.SrcEndpoint, r.DstEndpoint} {
+		if ep == nil {
+			continue
+		}
+		ep.IP = ocsfTruncateString(ep.IP)
+		ep.Hostname = ocsfTruncateString(ep.Hostname)
+	}
+	if r.URL != nil {
+		r.URL.URLString = ocsfTruncateString(r.URL.URLString)
+		r.URL.Scheme = ocsfTruncateString(r.URL.Scheme)
+		r.URL.Hostname = ocsfTruncateString(r.URL.Hostname)
+		r.URL.Path = ocsfTruncateString(r.URL.Path)
+		r.URL.QueryString = ocsfTruncateString(r.URL.QueryString)
+	}
+	if r.HTTPRequest != nil {
+		r.HTTPRequest.HTTPMethod = ocsfTruncateString(r.HTTPRequest.HTTPMethod)
+		r.HTTPRequest.UID = ocsfTruncateString(r.HTTPRequest.UID)
+	}
+
+	// Unmapped carries the pipelock envelope. Its "fields" sub-tree is already
+	// bounded by ocsfJSONValue, but the sibling scalars (instance_id, event_type,
+	// action, decision_type) are placed raw, so the whole map is walked here.
+	// Walking it generically also bounds any entry added later.
+	for key, value := range r.Unmapped {
+		r.Unmapped[key] = ocsfCapAnyStrings(value, 0)
+	}
+}
+
+// ocsfCapAnyStrings caps every string reachable in an already-sanitized value.
+// Depth is bounded by ocsfMaxDepth: ocsfJSONValue has already removed cycles
+// and unmarshalable values from the field tree, so this pass only needs to
+// enforce the byte cap, not re-run cycle detection.
+func ocsfCapAnyStrings(value any, depth int) any {
+	if depth > ocsfMaxDepth {
+		return value
+	}
+	switch typed := value.(type) {
+	case string:
+		return ocsfTruncateString(typed)
+	case map[string]any:
+		for k, item := range typed {
+			typed[k] = ocsfCapAnyStrings(item, depth+1)
+		}
+		return typed
+	case []any:
+		for i, item := range typed {
+			typed[i] = ocsfCapAnyStrings(item, depth+1)
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
 func fallbackOCSFEvent(record ocsfDetectionFinding, err error) string {
 	eventType := record.FindingInfo.Title
 	if pipelock, ok := record.Unmapped["pipelock"].(map[string]any); ok {
@@ -193,8 +275,12 @@ func fallbackOCSFEvent(record ocsfDetectionFinding, err error) string {
 			eventType = value
 		}
 	}
-	record.Message = "ocsf_format_error: " + record.Message
-	record.StatusDetail = err.Error()
+	// err.Error() can embed the same hostile field content that broke encoding,
+	// so it is capped here too: the fallback must not become the amplification
+	// path that the main record just closed.
+	encodeErr := ocsfTruncateString(err.Error())
+	record.Message = ocsfTruncateString("ocsf_format_error: " + record.Message)
+	record.StatusDetail = encodeErr
 	record.Actor = nil
 	record.SrcEndpoint = nil
 	record.DstEndpoint = nil
@@ -202,10 +288,11 @@ func fallbackOCSFEvent(record ocsfDetectionFinding, err error) string {
 	record.HTTPRequest = nil
 	record.Unmapped = map[string]any{
 		"pipelock": map[string]any{
-			"event_type":        eventType,
-			"ocsf_format_error": err.Error(),
+			"event_type":        ocsfTruncateString(eventType),
+			"ocsf_format_error": encodeErr,
 		},
 	}
+	record.capStrings()
 
 	msg, marshalErr := json.Marshal(record)
 	if marshalErr != nil {
@@ -331,7 +418,11 @@ func ocsfFindingUID(event Event) string {
 const (
 	ocsfMaxDepth       = 16
 	ocsfMaxNodes       = 10000
-	ocsfMaxStringBytes = 8192
+	ocsfMaxStringBytes = emitMaxStringBytes
+
+	// ocsfTruncationMarker is appended to any value cut by ocsfTruncateString,
+	// so a capped field is bounded by ocsfMaxStringBytes plus this marker.
+	ocsfTruncationMarker = emitTruncationMarker
 )
 
 // ocsfBudget bounds a single field-serialization walk. nodes counts total
@@ -346,16 +437,7 @@ type ocsfBudget struct {
 func newOCSFBudget() *ocsfBudget { return &ocsfBudget{seen: make(map[uintptr]bool)} }
 
 func ocsfTruncateString(s string) string {
-	if len(s) <= ocsfMaxStringBytes {
-		return s
-	}
-	// Back the cut off to a rune boundary so a multi-byte character is not
-	// split into an invalid sequence that renders as U+FFFD in the finding.
-	cut := ocsfMaxStringBytes
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "...[truncated]"
+	return boundEventString(s)
 }
 
 // enter records a reference-typed value on the current path. It returns a

@@ -133,7 +133,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **File integrity monitoring:** `pipelock integrity init/check/update` detects unauthorized workspace modifications. An agent that tampers with shared handoff files is detected.
 - **Ed25519 signing:** agents can sign and verify files/manifests. Tampered content is cryptographically detectable.
 - **MCP confused deputy protection:** response ID validation ensures a malicious MCP server cannot inject unsolicited JSON-RPC responses to hijack agent execution flow. Outbound request IDs are tracked and inbound responses are validated against them (one-shot consumption prevents replay).
-- **MCP and A2A scanning:** bidirectional MCP scanning covers proxied tool traffic, and A2A scanning inspects request and response bodies, service-parameter headers, Agent Cards, and SSE streams for injection, DLP, and SSRF findings.
+- **MCP and A2A scanning:** bidirectional MCP scanning covers proxied tool traffic, and A2A scanning inspects request and response bodies, service-parameter headers, Agent Cards, and SSE streams for injection, DLP, and SSRF findings. One scope exception is worth stating plainly: a **configured MCP upstream** is an operator-chosen destination, and MCP servers legitimately run on loopback or private addresses, so dialing one enforces the cloud instance-metadata floor rather than the full private-address SSRF policy applied to agent-chosen destinations. An agent cannot redirect that dial: the upstream comes from config, not from request input.
 
 **Gap:** Direct agent-to-agent traffic that never transits Pipelock is outside binary enforcement. End-to-end message authentication between agents remains deployment-enforced.
 

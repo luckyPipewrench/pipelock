@@ -194,10 +194,16 @@ func cefFieldValue(value any) string {
 }
 
 func cefEscapeHeader(s string) string {
+	// Bound before escaping: escaping can only expand, so capping the input
+	// keeps the emitted field bounded by the cap plus escape overhead.
+	s = boundEventString(s)
 	return cefEscape(s)
 }
 
 func cefEscapeExtension(s string) string {
+	// Bound before escaping: escaping can only expand, so capping the input
+	// keeps the emitted field bounded by the cap plus escape overhead.
+	s = boundEventString(s)
 	return cefEscape(s)
 }
 

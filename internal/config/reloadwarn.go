@@ -1308,11 +1308,11 @@ func passthroughDomainsAdded(old, updated []string) []string {
 func forwarderDestinationsAdded(old, updated []string) []string {
 	oldSet := make(map[string]struct{}, len(old))
 	for _, host := range old {
-		oldSet[strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))] = struct{}{}
+		oldSet[canonicalForwarderHost(host)] = struct{}{}
 	}
 	var added []string
 	for _, host := range updated {
-		normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+		normalized := canonicalForwarderHost(host)
 		if _, exists := oldSet[normalized]; !exists {
 			added = append(added, host)
 		}

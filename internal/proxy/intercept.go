@@ -1977,7 +1977,7 @@ func newInterceptHandler(
 				}
 				defer releaseSizeExemptScan()
 			} else {
-				reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes")
+				reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes", true)
 				ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)
 				ic.Metrics.RecordTLSResponseBlocked("oversized")
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

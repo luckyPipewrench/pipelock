@@ -30,7 +30,7 @@ func TestResponseSizeReasonUsesUnknownHostFallback(t *testing.T) {
 	}{
 		{
 			name: "normal cap",
-			got:  responseSizeBlockReason("", 11, 10, "tls_interception.max_response_bytes"),
+			got:  responseSizeBlockReason("", 11, 10, "tls_interception.max_response_bytes", true),
 		},
 		{
 			name: "size exempt cap",

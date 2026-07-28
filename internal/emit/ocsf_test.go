@@ -6,6 +6,7 @@ package emit
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -369,6 +370,41 @@ func TestFallbackOCSFEventEmitsValidFindingWithErrorMarker(t *testing.T) {
 	}
 }
 
+func TestFallbackOCSFEventCapsHostileErrorStrings(t *testing.T) {
+	hostile := strings.Repeat("E", 1<<20)
+	maxLen := ocsfMaxStringBytes + len(ocsfTruncationMarker)
+	record := ocsfDetectionFinding{
+		ClassUID: ocsfClassUIDDetectionFinding,
+		Message:  hostile,
+		FindingInfo: ocsfFindingInfo{
+			Title: hostile,
+		},
+		Unmapped: map[string]any{
+			"pipelock": map[string]any{"event_type": hostile},
+		},
+	}
+
+	line := fallbackOCSFEvent(record, errors.New(hostile))
+	got := parseOCSFEvent(t, line)
+	pipelock := assertMap(t, assertMap(t, got, "unmapped"), "pipelock")
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "message", value: stringValue(t, got, "message")},
+		{name: "status_detail", value: stringValue(t, got, "status_detail")},
+		{name: "unmapped.pipelock.event_type", value: stringValue(t, pipelock, "event_type")},
+		{name: "unmapped.pipelock.ocsf_format_error", value: stringValue(t, pipelock, "ocsf_format_error")},
+	} {
+		if len(tc.value) > maxLen {
+			t.Errorf("%s: %d bytes exceeds the %d-byte bound", tc.name, len(tc.value), maxLen)
+		}
+	}
+	if len(line) >= len(hostile) {
+		t.Fatalf("fallback OCSF record is %d bytes for a %d-byte hostile error", len(line), len(hostile))
+	}
+}
+
 func TestFormatOCSFEventBranchCoverage(t *testing.T) {
 	// Empty deviceVersion default, explicit URL port, finite float field, and an
 	// event whose action resolves to none (action_id 0, which clears the label).
@@ -490,5 +526,162 @@ func TestOCSFTruncateStringRuneSafe(t *testing.T) {
 	}
 	if !strings.HasSuffix(blob, "...[truncated]") {
 		t.Fatalf("missing truncation marker: %q", blob[max(0, len(blob)-20):])
+	}
+}
+
+// TestFormatOCSFEventCapsTypedStringFields proves that a hostile oversized
+// field value cannot amplify a single audit event into a multi-megabyte OCSF
+// record. The generic Unmapped path already truncates via ocsfTruncateString,
+// but the typed record fields (message, finding_info.title,
+// finding_info.description, status_detail) are assigned directly from
+// cefName/ocsfStringField, neither of which caps length. A single oversized
+// reason therefore lands untruncated in four separate fields.
+func TestFormatOCSFEventCapsTypedStringFields(t *testing.T) {
+	const hostileBytes = 1 << 20 // 1 MiB
+	hostileReason := strings.Repeat("A", hostileBytes)
+
+	event := Event{
+		Severity:   SeverityWarn,
+		Type:       EventBodyDLP,
+		Timestamp:  time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC),
+		InstanceID: testInstanceName,
+		Fields: map[string]any{
+			"action":    conventionActionBlock,
+			fieldReason: hostileReason,
+		},
+	}
+
+	encoded := FormatOCSFEvent(event, "1.2.3")
+
+	// Every typed string field that can carry attacker-influenced content must
+	// respect the same cap the generic path enforces.
+	got := parseOCSFEvent(t, encoded)
+	findingInfo := assertMap(t, got, "finding_info")
+	for _, tc := range []struct {
+		field string
+		value any
+	}{
+		{"message", got["message"]},
+		{"status_detail", got["status_detail"]},
+		{"finding_info.title", findingInfo["title"]},
+		{"finding_info.desc", findingInfo["desc"]},
+	} {
+		s, ok := tc.value.(string)
+		if !ok {
+			t.Fatalf("%s: expected a string, got %T", tc.field, tc.value)
+		}
+		// ocsfTruncateString caps content at ocsfMaxStringBytes and then appends
+		// a marker, so the bound is the cap plus that marker.
+		if maxLen := ocsfMaxStringBytes + len(ocsfTruncationMarker); len(s) > maxLen {
+			t.Errorf("%s: %d bytes exceeds the %d-byte bound (uncapped typed field)",
+				tc.field, len(s), maxLen)
+		}
+	}
+
+	// The whole record must not amplify the input. Without capping, one 1 MiB
+	// reason is copied into four typed fields plus JSON escaping.
+	if len(encoded) >= hostileBytes {
+		t.Errorf("encoded OCSF record is %d bytes for a %d-byte input field: "+
+			"a bounded record must be far smaller than its hostile input",
+			len(encoded), hostileBytes)
+	}
+}
+
+// TestFormatOCSFEventBoundsEveryStringInTheRecord is the class-level guard for
+// the amplification fix: it walks the entire decoded finding and asserts no
+// string anywhere exceeds the cap, with hostile content in every event field
+// that reaches a typed record field. A typed field added later without a cap in
+// capStrings fails here even if no field-specific test covers it.
+func TestFormatOCSFEventBoundsEveryStringInTheRecord(t *testing.T) {
+	const hostileBytes = 1 << 18 // 256 KiB per field
+	hostile := strings.Repeat("B", hostileBytes)
+	maxLen := ocsfMaxStringBytes + len(ocsfTruncationMarker)
+
+	event := Event{
+		Severity:   SeverityCritical,
+		Type:       EventBodyDLP,
+		Timestamp:  time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC),
+		InstanceID: hostile,
+		Fields: map[string]any{
+			"action":     conventionActionBlock,
+			"agent":      hostile,
+			"client_ip":  hostile,
+			"method":     hostile,
+			"request_id": hostile,
+			"scanner":    hostile,
+			"url":        "https://" + hostile + ".example/" + hostile + "?q=" + hostile,
+			fieldReason:  hostile,
+		},
+	}
+
+	encoded := FormatOCSFEvent(event, hostile)
+
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch typed := v.(type) {
+		case string:
+			if len(typed) > maxLen {
+				t.Errorf("%s: %d bytes exceeds the %d-byte bound", path, len(typed), maxLen)
+			}
+		case map[string]any:
+			for k, item := range typed {
+				walk(path+"."+k, item)
+			}
+		case []any:
+			for i, item := range typed {
+				walk(fmt.Sprintf("%s[%d]", path, i), item)
+			}
+		}
+	}
+	walk("record", parseOCSFEvent(t, encoded))
+}
+
+// The envelope walk bounds strings reachable through slices, not just maps.
+// Today every Unmapped entry is either a scalar or the fields sub-tree that
+// ocsfJSONValue has already bounded, so this arm is reached only by an entry
+// added to the envelope later. It is tested directly rather than through
+// FormatOCSFEvent for exactly that reason: routing through the formatter would
+// be bounded by ocsfJSONValue first and would pass with this arm removed.
+func TestOCSFCapAnyStringsBoundsStringsInsideSlices(t *testing.T) {
+	const hostileBytes = 1 << 18 // 256 KiB
+	hostile := strings.Repeat("C", hostileBytes)
+	maxLen := ocsfMaxStringBytes + len(ocsfTruncationMarker)
+
+	// A bare slice, and a slice reached through a map and a nested slice, so
+	// the recursion into the arm is covered and not just the top-level case.
+	value := map[string]any{
+		"matched_patterns": []any{"clean", hostile},
+		"nested":           []any{[]any{hostile}},
+	}
+
+	capped := ocsfCapAnyStrings(value, 0)
+
+	var longest int
+	var walk func(v any)
+	walk = func(v any) {
+		switch typed := v.(type) {
+		case string:
+			if len(typed) > longest {
+				longest = len(typed)
+			}
+			if len(typed) > maxLen {
+				t.Errorf("string of %d bytes exceeds the %d-byte bound", len(typed), maxLen)
+			}
+		case map[string]any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(capped)
+
+	// Guard against passing vacuously: if the hostile values vanished entirely
+	// the bound assertion above would be trivially satisfied.
+	if longest <= len("clean") {
+		t.Fatalf("longest string was %d bytes; the hostile values did not survive the walk, so this test proves nothing", longest)
 	}
 }

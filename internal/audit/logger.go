@@ -35,13 +35,22 @@ import (
 // Pre-tag gate finding: a fetch URL containing a credential in the query
 // string was blocked by DLP but the client 403 body AND the structured
 // log both echoed the raw token back.
+// The core_* entries are the immutable floors, which are the STRICTEST
+// detectors in the product: they fire on real credential shapes and cannot be
+// exempted by config. Omitting them inverted the intended posture, because the
+// configurable "dlp" scanner redacted while the core floor that caught the same
+// credential logged it verbatim, into the audit stream and onward to every
+// configured sink. core_ssrf is deliberately absent: an SSRF target is an
+// address, not secret-shaped content, so its full URL stays useful and safe.
 var contentScanners = map[string]struct{}{
 	"dlp":                   {},
+	"core_dlp":              {},
 	"body_dlp":              {},
 	"body_prompt_injection": {},
 	"header_dlp":            {},
 	"mcp_input_scanning":    {},
 	"response_scan":         {},
+	"core_response":         {},
 	"address_protection":    {},
 	"seed_phrase":           {},
 	"cross_request_entropy": {},

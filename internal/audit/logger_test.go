@@ -421,6 +421,93 @@ func TestLogAnomaly_ContentScannerRedactsURL(t *testing.T) {
 	}
 }
 
+// TestCoreFloorScannersRedactContentBearingFields pins the immutable floors.
+// They are the strictest detectors in the product and cannot be exempted by
+// config, so a floor block that echoed the matched credential would publish it
+// to the audit stream and to every configured sink. Both the block path and the
+// anomaly path are covered, because they are separate call sites.
+func TestCoreFloorScannersRedactContentBearingFields(t *testing.T) {
+	// Split literal so the dogfood self-scan does not flag the fixture; the
+	// constant is folded to the same value at compile time.
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/v1/upload?key=" + secret
+
+	for _, scanner := range []string{"core_dlp", "core_response"} {
+		for _, path := range []string{"blocked", "anomaly"} {
+			t.Run(scanner+"/"+path, func(t *testing.T) {
+				dir := t.TempDir()
+				logPath := filepath.Join(dir, "test.log")
+				logger, err := New("json", "file", logPath, true, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := LogContext{
+					method:    testMethodGet,
+					url:       rawURL,
+					target:    rawURL,
+					resource:  secret,
+					clientIP:  testClientIP,
+					requestID: "req-core-redact",
+				}
+				if path == "blocked" {
+					logger.LogBlockedDetail(ctx, scanner, "core floor match", BlockDetail{})
+				} else {
+					logger.LogAnomaly(ctx, scanner, "core floor match", 1.0)
+				}
+				logger.Close()
+
+				data, _ := os.ReadFile(filepath.Clean(logPath))
+				if bytes.Contains(data, []byte(secret)) {
+					t.Fatalf("%s %s log leaked the matched credential: %s", scanner, path, data)
+				}
+				var entry map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+					t.Fatalf("expected valid JSON: %v", err)
+				}
+				if entry["url"] != "https://api.vendor.example/[redacted]" {
+					t.Errorf("expected redacted url, got %v", entry["url"])
+				}
+				if entry["target"] != "https://api.vendor.example/[redacted]" {
+					t.Errorf("expected redacted target, got %v", entry["target"])
+				}
+				if entry["resource"] != "[redacted]" {
+					t.Errorf("expected redacted resource, got %v", entry["resource"])
+				}
+			})
+		}
+	}
+}
+
+// TestCoreSSRFKeepsFullURL pins the deliberate exclusion. An SSRF target is an
+// address rather than secret-shaped content, so redacting it would destroy the
+// operator's ability to see which destination was refused.
+func TestCoreSSRFKeepsFullURL(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const rawURL = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+	logger.LogBlockedDetail(LogContext{
+		method:    testMethodGet,
+		url:       rawURL,
+		target:    rawURL,
+		clientIP:  testClientIP,
+		requestID: "req-ssrf",
+	}, "core_ssrf", "cloud metadata endpoint", BlockDetail{})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(logPath))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != rawURL {
+		t.Errorf("core_ssrf must keep the full destination, got %v", entry["url"])
+	}
+}
+
 func TestLogResponseScanExempt_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

@@ -255,7 +255,6 @@ func TestValidateConfigRequiredFields(t *testing.T) {
 	}{
 		{name: "broker url", mutate: func(cfg *config) { cfg.brokerURL = "://" }, want: "--broker-url"},
 		{name: "broker host", mutate: func(cfg *config) { cfg.brokerURL = "https://" }, want: "--broker-url host"},
-		{name: "code", mutate: func(cfg *config) { cfg.code = " " }, want: "--code"},
 		{name: "turnstile", mutate: func(cfg *config) { cfg.turnstileToken = "" }, want: "--turnstile-token"},
 		{name: "concurrency", mutate: func(cfg *config) { cfg.concurrency = 0 }, want: "--concurrency"},
 		{name: "ramp", mutate: func(cfg *config) { cfg.ramp = -time.Second }, want: "--ramp"},
@@ -275,6 +274,10 @@ func TestValidateConfigRequiredFields(t *testing.T) {
 	}
 	if err := validateConfig(valid); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+	valid.code = ""
+	if err := validateConfig(valid); err != nil {
+		t.Fatalf("codeless config rejected: %v", err)
 	}
 }
 

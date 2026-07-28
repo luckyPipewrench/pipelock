@@ -54,7 +54,7 @@ type config struct {
 }
 
 type sessionRequest struct {
-	Code           string `json:"code"`
+	Code           string `json:"code,omitempty"`
 	TurnstileToken string `json:"turnstile_token,omitempty"`
 }
 
@@ -164,7 +164,7 @@ func main() {
 func parseFlags() config {
 	var cfg config
 	flag.StringVar(&cfg.brokerURL, "broker-url", "", "broker base URL, for example https://playground.example")
-	flag.StringVar(&cfg.code, "code", "", "invite code")
+	flag.StringVar(&cfg.code, "code", "", "invite code; omit for a codeless human-gated broker")
 	flag.StringVar(&cfg.turnstileToken, "turnstile-token", "", "Cloudflare Turnstile test-mode token")
 	flag.IntVar(&cfg.concurrency, "concurrency", defaultConcurrency, "number of concurrent virtual users to run")
 	flag.DurationVar(&cfg.ramp, "ramp", 0, "duration to spread user launches over; 0 launches all users at once")
@@ -188,9 +188,6 @@ func validateConfig(cfg config) error {
 	}
 	if u.Host == "" {
 		return errors.New("--broker-url host is required")
-	}
-	if strings.TrimSpace(cfg.code) == "" {
-		return errors.New("--code is required")
 	}
 	if strings.TrimSpace(cfg.turnstileToken) == "" {
 		return errors.New("--turnstile-token is required")

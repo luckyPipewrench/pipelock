@@ -71,7 +71,6 @@ docker run --rm "${BROKER_TAG}" serve \
 	--fly-app preflight \
 	--fly-token-env PREFLIGHT_FLY_TOKEN \
 	--image preflight \
-	--code preflight \
 	--global-daily-budget 1 \
 	--vm-daily-turn-budget 1 \
 	--turnstile-secret-env PREFLIGHT_TURNSTILE_SECRET \

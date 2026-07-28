@@ -698,7 +698,6 @@ func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
 		image:                 "registry.example/playground:test",
 		internalPort:          8080,
 		concurrency:           2,
-		codes:                 []string{"outer-code"},
 		maxPerCode:            defaultMaxPerCode,
 		gateSecretFile:        gateSecretFile,
 		ipRate:                defaultIPRate,
@@ -721,11 +720,16 @@ func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, livechat.RouteSession, strings.NewReader(`{"code":"outer-code"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, livechat.RouteSession, strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("missing Turnstile token status = %d, want 403", rr.Code)
+	}
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequestWithContext(context.Background(), http.MethodGet, livechat.RouteHealth, nil))
+	if !strings.Contains(health.Body.String(), `"code_required":false`) {
+		t.Fatalf("codeless health = %s", health.Body.String())
 	}
 }
 
@@ -894,6 +898,17 @@ func TestRunServeCheckConfigDoesNotResolveSecretsOrProvider(t *testing.T) {
 		t.Fatalf("check-config output = %q", out.String())
 	}
 
+	codeless := *f
+	codeless.codes = nil
+	codeless.unsafeNoHumanGate = false
+	codeless.turnstileSecretEnv = "TS_SECRET"
+	codeless.turnstileSitekey = "site-key"
+	codeless.turnstileExpectedHostname = "playground.example"
+	codeless.turnstileExpectedAction = "playground-session"
+	if err := runServe(cmd, &codeless); err != nil {
+		t.Fatalf("codeless Turnstile check-config: %v", err)
+	}
+
 	invalidHost := *f
 	invalidHost.publicHosts = []string{"bad host"}
 	if err := runServe(cmd, &invalidHost); err == nil || !strings.Contains(err.Error(), "--public-host") {
@@ -950,6 +965,77 @@ func TestBuildServerValidation(t *testing.T) {
 			}
 		})
 	}
+
+	codeless := base
+	codeless.codes = nil
+	codeless.unsafeNoHumanGate = false
+	codeless.turnstileSecretEnv = "TS_SECRET"
+	codeless.turnstileSitekey = "site-key"
+	codeless.turnstileExpectedHostname = "playground.example"
+	codeless.turnstileExpectedAction = "playground-session"
+	if err := validateFlags(&codeless); err != nil {
+		t.Fatalf("Turnstile-only flags rejected: %v", err)
+	}
+	codeless.turnstileVerifyURL = "https://verify.example"
+	if err := validateFlags(&codeless); err == nil {
+		t.Fatal("codeless Fly deployment accepted a Turnstile endpoint override")
+	}
+
+	codelessAccess := base
+	codelessAccess.codes = nil
+	codelessAccess.unsafeNoHumanGate = false
+	codelessAccess.cfAccessTeamDomain = "https://team.cloudflareaccess.com"
+	codelessAccess.cfAccessAUD = "aud-tag"
+	if err := validateFlags(&codelessAccess); err != nil {
+		t.Fatalf("Access-only flags rejected: %v", err)
+	}
+	codelessAccess.cfAccessAUD = ""
+	if err := validateFlags(&codelessAccess); err == nil {
+		t.Fatal("partial Access configuration accepted for codeless mode")
+	}
+}
+
+func TestResolveBrokerCodes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("generates process-local default for human-gated codeless mode", func(t *testing.T) {
+		t.Parallel()
+		codes, defaultCode, err := resolveBrokerCodes(&serveFlags{
+			maxPerCode: 7, turnstileSecretEnv: "TS_SECRET",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(codes) != 1 {
+			t.Fatalf("codes = %d, want 1 internal code", len(codes))
+		}
+		if defaultCode == "" || codes[0].Code != defaultCode {
+			t.Fatal("internal code was not applied as the server-side default")
+		}
+		if codes[0].MaxSessions != 0 {
+			t.Fatalf("MaxSessions = %d, want unlimited internal code", codes[0].MaxSessions)
+		}
+	})
+
+	t.Run("refuses generation without a configured human gate", func(t *testing.T) {
+		t.Parallel()
+		if _, _, err := resolveBrokerCodes(&serveFlags{}); err == nil {
+			t.Fatal("resolveBrokerCodes succeeded without a human gate")
+		}
+	})
+
+	t.Run("preserves configured codes and default", func(t *testing.T) {
+		t.Parallel()
+		codes, defaultCode, err := resolveBrokerCodes(&serveFlags{
+			codes: []string{"public"}, defaultCode: "public", maxPerCode: 3,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(codes) != 1 || codes[0].Code != "public" || defaultCode != "public" {
+			t.Fatalf("configured gate changed: codes=%#v default=%q", codes, defaultCode)
+		}
+	})
 }
 
 func TestValidateDefaultCode(t *testing.T) {

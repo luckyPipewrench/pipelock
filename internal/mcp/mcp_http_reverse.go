@@ -92,6 +92,11 @@ func newReverseUpstreamTransport(dialContext func(ctx context.Context, network, 
 // Mcp-Session-Id header (or RemoteAddr fallback) as the session key, enabling
 // adaptive enforcement signal tracking per logical MCP session.
 //
+// DoW enforcement is stricter: when DoWRequireTrustedSession is true, a tool or
+// A2A call must present an Mcp-Session-Id that this listener observed in an
+// upstream response. A raw inbound header by itself is not trusted as a budget
+// key.
+//
 // Endpoints:
 //   - POST / : scan and forward JSON-RPC requests to upstream
 //   - GET /health : returns 200 OK for liveness probes
@@ -167,74 +172,81 @@ func RunHTTPListenerProxy(
 	// once here so we do not re-run opts.redactionConfig() three times.
 	baseRedactionCfg := opts.redactionConfig()
 	baseOpts := MCPProxyOpts{
-		Scanner:                  opts.scanner(),
-		ScannerFn:                opts.ScannerFn,
-		Approver:                 opts.Approver,
-		InputCfg:                 opts.inputCfg(),
-		InputCfgFn:               opts.InputCfgFn,
-		ToolCfg:                  toolCfgFn(),
-		ToolCfgFn:                toolCfgFn,
-		PolicyCfg:                opts.policyCfg(),
-		PolicyCfgFn:              opts.PolicyCfgFn,
-		KillSwitch:               opts.KillSwitch,
-		ChainMatcher:             opts.chainMatcher(),
-		ChainMatcherFn:           opts.ChainMatcherFn,
-		Store:                    opts.Store,
-		Baseline:                 opts.Baseline,
-		BaselineFn:               opts.BaselineFn,
-		AuditLogger:              opts.AuditLogger,
-		CEE:                      opts.cee(),
-		CEEFn:                    opts.CEEFn,
-		Metrics:                  opts.Metrics,
-		RedirectRT:               opts.redirectRT(),
-		RedirectRTFn:             opts.RedirectRTFn,
-		Transport:                "mcp_http_listener",
-		ReceiptEmitter:           opts.receiptEmitter(),
-		ReceiptEmitterFn:         opts.ReceiptEmitterFn,
-		RequireReceipts:          opts.requireReceipts(),
-		RequireReceiptsFn:        opts.RequireReceiptsFn,
-		V2ReceiptEmitter:         opts.v2ReceiptEmitter(),
-		V2ReceiptEmitterFn:       opts.V2ReceiptEmitterFn,
-		PolicyHash:               opts.receiptPolicyHash(),
-		PolicyHashFn:             opts.PolicyHashFn,
-		ContractLoader:           opts.ContractLoader,
-		ContractLoaderPtr:        opts.ContractLoaderPtr,
-		ContractLoaderFn:         opts.ContractLoaderFn,
-		ContractAgent:            opts.ContractAgent,
-		ContractServer:           opts.ContractServer,
-		CaptureObs:               opts.captureObserver(),
-		ConfigHash:               opts.captureConfigHash(),
-		ConfigHashFn:             opts.ConfigHashFn,
-		AddressProtectionAgent:   opts.addressProtectionAgent(),
-		AddressProtectionAgentFn: opts.AddressProtectionAgentFn,
-		Profile:                  opts.captureProfile(),
-		ProfileFn:                opts.ProfileFn,
-		ProvenanceCfg:            opts.provenanceCfg(),
-		ProvenanceCfgFn:          opts.ProvenanceCfgFn,
-		RedactMatcher:            baseRedactionCfg.Matcher,
-		RedactLimits:             baseRedactionCfg.Limits,
-		RedactProfile:            baseRedactionCfg.Profile,
-		RedactionCfgFn:           opts.RedactionCfgFn,
-		DoWCheck:                 opts.DoWCheck,
-		A2ACfg:                   opts.a2aCfg(),
-		A2ACfgFn:                 opts.A2ACfgFn,
-		MediaPolicy:              opts.mediaPolicy(),
-		MediaPolicyFn:            opts.MediaPolicyFn,
-		ServerName:               opts.ServerName,
-		Suppress:                 opts.Suppress,
-		SuppressFn:               opts.SuppressFn,
-		ResponseTrustClass:       opts.ResponseTrustClass,
-		ResponseTrustClassFn:     opts.ResponseTrustClassFn,
-		ResponseActionOverride:   opts.ResponseActionOverride,
-		ResponseActionOverrideFn: opts.ResponseActionOverrideFn,
-		TaintCfg:                 opts.taintCfg(),
-		TaintCfgFn:               opts.TaintCfgFn,
-		TaintExternalSource:      true,
-		TaintTrustedSource:       opts.TaintTrustedSource,
-		TaintTrustedSourceFn:     opts.TaintTrustedSourceFn,
-		EnvelopeEmitter:          opts.envelopeEmitter(),
-		EnvelopeEmitterFn:        opts.EnvelopeEmitterFn,
-		DialContext:              opts.DialContext,
+		Scanner:                   opts.scanner(),
+		ScannerFn:                 opts.ScannerFn,
+		Approver:                  opts.Approver,
+		InputCfg:                  opts.inputCfg(),
+		InputCfgFn:                opts.InputCfgFn,
+		ToolCfg:                   toolCfgFn(),
+		ToolCfgFn:                 toolCfgFn,
+		PolicyCfg:                 opts.policyCfg(),
+		PolicyCfgFn:               opts.PolicyCfgFn,
+		KillSwitch:                opts.KillSwitch,
+		ChainMatcher:              opts.chainMatcher(),
+		ChainMatcherFn:            opts.ChainMatcherFn,
+		Store:                     opts.Store,
+		Baseline:                  opts.Baseline,
+		BaselineFn:                opts.BaselineFn,
+		AuditLogger:               opts.AuditLogger,
+		CEE:                       opts.cee(),
+		CEEFn:                     opts.CEEFn,
+		Metrics:                   opts.Metrics,
+		RedirectRT:                opts.redirectRT(),
+		RedirectRTFn:              opts.RedirectRTFn,
+		Transport:                 "mcp_http_listener",
+		ReceiptEmitter:            opts.receiptEmitter(),
+		ReceiptEmitterFn:          opts.ReceiptEmitterFn,
+		RequireReceipts:           opts.requireReceipts(),
+		RequireReceiptsFn:         opts.RequireReceiptsFn,
+		V2ReceiptEmitter:          opts.v2ReceiptEmitter(),
+		V2ReceiptEmitterFn:        opts.V2ReceiptEmitterFn,
+		PolicyHash:                opts.receiptPolicyHash(),
+		PolicyHashFn:              opts.PolicyHashFn,
+		ContractLoader:            opts.ContractLoader,
+		ContractLoaderPtr:         opts.ContractLoaderPtr,
+		ContractLoaderFn:          opts.ContractLoaderFn,
+		ContractAgent:             opts.ContractAgent,
+		ContractServer:            opts.ContractServer,
+		CaptureObs:                opts.captureObserver(),
+		ConfigHash:                opts.captureConfigHash(),
+		ConfigHashFn:              opts.ConfigHashFn,
+		AddressProtectionAgent:    opts.addressProtectionAgent(),
+		AddressProtectionAgentFn:  opts.AddressProtectionAgentFn,
+		Profile:                   opts.captureProfile(),
+		ProfileFn:                 opts.ProfileFn,
+		ProvenanceCfg:             opts.provenanceCfg(),
+		ProvenanceCfgFn:           opts.ProvenanceCfgFn,
+		RedactMatcher:             baseRedactionCfg.Matcher,
+		RedactLimits:              baseRedactionCfg.Limits,
+		RedactProfile:             baseRedactionCfg.Profile,
+		RedactionCfgFn:            opts.RedactionCfgFn,
+		DoWCheck:                  opts.DoWCheck,
+		DoWSubjectAgent:           opts.DoWSubjectAgent,
+		DoWSubjectAgentAuth:       opts.DoWSubjectAgentAuth,
+		DoWAuthenticatedPrincipal: opts.DoWAuthenticatedPrincipal,
+		DoWRequireTrustedSession:  opts.DoWRequireTrustedSession,
+		DoWSessionKnown:           opts.DoWSessionKnown,
+		DoWRegisterSession:        opts.DoWRegisterSession,
+		DoWForgetSession:          opts.DoWForgetSession,
+		A2ACfg:                    opts.a2aCfg(),
+		A2ACfgFn:                  opts.A2ACfgFn,
+		MediaPolicy:               opts.mediaPolicy(),
+		MediaPolicyFn:             opts.MediaPolicyFn,
+		ServerName:                opts.ServerName,
+		Suppress:                  opts.Suppress,
+		SuppressFn:                opts.SuppressFn,
+		ResponseTrustClass:        opts.ResponseTrustClass,
+		ResponseTrustClassFn:      opts.ResponseTrustClassFn,
+		ResponseActionOverride:    opts.ResponseActionOverride,
+		ResponseActionOverrideFn:  opts.ResponseActionOverrideFn,
+		TaintCfg:                  opts.taintCfg(),
+		TaintCfgFn:                opts.TaintCfgFn,
+		TaintExternalSource:       true,
+		TaintTrustedSource:        opts.TaintTrustedSource,
+		TaintTrustedSourceFn:      opts.TaintTrustedSourceFn,
+		EnvelopeEmitter:           opts.envelopeEmitter(),
+		EnvelopeEmitterFn:         opts.EnvelopeEmitterFn,
+		DialContext:               opts.DialContext,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -716,6 +728,9 @@ func RunHTTPListenerProxy(
 			reqOpts.AdaptiveCfgFn = nil
 
 			if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
+				if opts.DoWRegisterSession != nil {
+					opts.DoWRegisterSession(sid)
+				}
 				w.Header().Set("Mcp-Session-Id", sid)
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -801,6 +816,9 @@ func RunHTTPListenerProxy(
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
+			}
+			if opts.DoWForgetSession != nil {
+				opts.DoWForgetSession(r.Header.Get("Mcp-Session-Id"))
 			}
 			w.WriteHeader(upResp.StatusCode)
 			return
@@ -1021,6 +1039,7 @@ func RunHTTPListenerProxy(
 		scanOpts.AdaptiveCfg = adaptiveCfg
 		scanOpts.AdaptiveCfgFn = nil
 		scanOpts.WarnContext = r.Context()
+		scanOpts.DoWSubjectKey = trustedDoWSubjectKey(r, opts)
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -1158,6 +1177,9 @@ func RunHTTPListenerProxy(
 
 		// Pass Mcp-Session-Id from upstream back to client.
 		if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
+			if opts.DoWRegisterSession != nil {
+				opts.DoWRegisterSession(sid)
+			}
 			w.Header().Set("Mcp-Session-Id", sid)
 		}
 
@@ -1480,6 +1502,24 @@ func validMCPSessionID(values []string) bool {
 		}
 	}
 	return true
+}
+
+func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
+	if !opts.DoWRequireTrustedSession {
+		// Both production callers of RunHTTPListenerProxy set the trusted-session
+		// requirement, so this branch is not reached today. Returning an empty
+		// key here would collapse every client on a multi-client listener into
+		// the manager's shared "_default" bucket, letting one caller spend
+		// everyone else's budget. Derive the per-client key instead, so a future
+		// caller that turns the strict gate off degrades to per-client
+		// accounting rather than to no accounting at all.
+		return opts.dowSubjectKeyForRequest(r)
+	}
+	sessionID := r.Header.Get("Mcp-Session-Id")
+	if sessionID == "" || opts.DoWSessionKnown == nil || !opts.DoWSessionKnown(sessionID) {
+		return ""
+	}
+	return opts.dowSubjectKeyForRequest(r)
 }
 
 func logUpstreamRequestError(logW io.Writer, ctx context.Context) {

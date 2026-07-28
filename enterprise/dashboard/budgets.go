@@ -55,7 +55,8 @@ type AgentBudgetView struct {
 	WindowMinutes     int
 
 	// MCP denial-of-wallet budget, aggregated across the agent's live sessions.
-	// Limits are per session (each session enforces independently); the
+	// MCP DoW limits are per subject/window; request budgets retain their
+	// existing per-session display semantics.
 	// consumption counters are summed across active sessions.
 	DoWConfigured          bool
 	ActiveSessions         int
@@ -205,11 +206,18 @@ func (a AgentBudgetView) WindowStartDisplay() string {
 }
 
 func (a AgentBudgetView) ToolCallsDisplay() string {
-	// Aggregate consumption across sessions vs the per-session limit.
+	// TotalToolCalls is summed ACROSS subjects while the limit is now PER
+	// subject, so the two must not be shown as a ratio: two subjects at 40 each
+	// against a 50 limit would read "80 / 50" with neither over budget. Show the
+	// total as a total and state the limit separately.
+	//
+	// Note this value is not yet populated: no snapshot path supplies DoW
+	// figures, so it currently renders as zero. Whatever wires it must supply a
+	// per-subject figure before any ratio is reintroduced here.
 	if a.MaxToolCallsPerSession <= 0 {
 		return fmt.Sprintf("%d / %s", a.TotalToolCalls, budgetUnlimited)
 	}
-	return fmt.Sprintf("%d / %d per session", a.TotalToolCalls, a.MaxToolCallsPerSession)
+	return fmt.Sprintf("%d across subjects (limit %d per subject)", a.TotalToolCalls, a.MaxToolCallsPerSession)
 }
 
 func (a AgentBudgetView) InflightDisplay() string {

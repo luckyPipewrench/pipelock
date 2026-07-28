@@ -66,7 +66,7 @@ func TestScanHTTPInput_A2ADoWBlock(t *testing.T) {
 	opts := MCPProxyOpts{
 		Scanner:  sc,
 		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
-		DoWCheck: func(identity, argsJSON string) (bool, string, string, string) {
+		DoWCheck: func(_, identity, argsJSON string) (bool, string, string, string) {
 			gotIdentity = identity
 			if identity == a2aBaselineIdentity(testA2AMethod) && strings.Contains(argsJSON, `"method":"`+testA2AMethod+`"`) {
 				return false, config.ActionBlock, testA2ADoWReason, testA2ADoWBudgetType
@@ -93,7 +93,7 @@ func TestScanHTTPInput_A2ADoWAllowDoesNotFalseBlock(t *testing.T) {
 	opts := MCPProxyOpts{
 		Scanner:  sc,
 		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
-		DoWCheck: func(identity, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, identity, _ string) (bool, string, string, string) {
 			gotIdentity = identity
 			return true, "", "", ""
 		},
@@ -280,7 +280,7 @@ func TestScanHTTPInput_A2ADoWBlockLeavesNoChainTrace(t *testing.T) {
 		Scanner:      sc,
 		InputCfg:     &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
 		ChainMatcher: testA2AChainMatcher(),
-		DoWCheck: func(identity, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, identity, _ string) (bool, string, string, string) {
 			if identity == a2aBaselineIdentity(testA2AMethod) {
 				return false, config.ActionBlock, testA2ADoWReason, testA2ADoWBudgetType
 			}
@@ -302,7 +302,7 @@ func TestForwardScannedInput_A2ADoWBlock(t *testing.T) {
 	sc := testInputScanner(t)
 	opts := testOpts(sc)
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
-	opts.DoWCheck = func(identity, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, identity, _ string) (bool, string, string, string) {
 		if identity == a2aBaselineIdentity(testA2AMethod) {
 			return false, config.ActionBlock, testA2ADoWReason, testA2ADoWBudgetType
 		}
@@ -343,7 +343,7 @@ func TestForwardScannedInput_A2ADoWBlockLeavesNoChainTrace(t *testing.T) {
 	opts := testOpts(sc)
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
 	opts.ChainMatcher = testA2AChainMatcher()
-	opts.DoWCheck = func(identity, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, identity, _ string) (bool, string, string, string) {
 		if identity == a2aBaselineIdentity(testA2AMethod) {
 			return false, config.ActionBlock, testA2ADoWReason, testA2ADoWBudgetType
 		}
@@ -396,7 +396,7 @@ func TestForwardScannedInput_A2ADoWAllowDoesNotFalseBlock(t *testing.T) {
 	sc := testInputScanner(t)
 	opts := testOpts(sc)
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
-	opts.DoWCheck = func(identity, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, identity, _ string) (bool, string, string, string) {
 		if identity != a2aBaselineIdentity(testA2AMethod) {
 			t.Fatalf("DoW identity = %q, want %q", identity, a2aBaselineIdentity(testA2AMethod))
 		}

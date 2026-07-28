@@ -188,6 +188,34 @@ func TestCEESessionKey_FoldsUntrustedAgent(t *testing.T) {
 	}
 }
 
+func TestCEESessionKey_SharedHelperMatchesPreRefactorKeys(t *testing.T) {
+	const (
+		agent = "agent-x"
+		ip    = "203.0.113.10"
+	)
+	tests := []struct {
+		name string
+		auth envelope.ActorAuth
+		want string
+	}{
+		{"bound", envelope.ActorAuthBound, "agent-x|203.0.113.10"},
+		{"config_default", envelope.ActorAuthConfigDefault, "agent-x|203.0.113.10"},
+		{"matched", envelope.ActorAuthMatched, "203.0.113.10"},
+		{"self_declared", envelope.ActorAuthSelfDeclared, "203.0.113.10"},
+		{"unknown", envelope.ActorAuth(""), "203.0.113.10"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ceeSessionKey(agent, ip, tt.auth); got != tt.want {
+				t.Fatalf("ceeSessionKey() = %q, want historical key %q", got, tt.want)
+			}
+		})
+	}
+	if got := CeeSessionKey(agentAnonymous, ip); got != ip {
+		t.Fatalf("anonymous raw CEE key = %q, want %q", got, ip)
+	}
+}
+
 // --- Bypass #2: cross-transport fragment evasion -------------------------
 
 // TestCEEBypass_CrossTransportSharesBuffer proves the fragment buffer is shared

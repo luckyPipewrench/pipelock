@@ -313,7 +313,7 @@ func TestEvaluateMCPInputGatesStdio_DoWWarnDoesNotShortCircuit(t *testing.T) {
 
 	sc := testInputScanner(t)
 	opts := testOpts(sc)
-	opts.DoWCheck = func(_ string, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, _, _ string) (bool, string, string, string) {
 		return false, config.ActionWarn, testDoWBudgetReason, "per_tool"
 	}
 

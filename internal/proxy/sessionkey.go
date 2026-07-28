@@ -3,6 +3,8 @@
 
 package proxy
 
+import "github.com/luckyPipewrench/pipelock/internal/identitykey"
+
 // sessionKeyFor builds the per-session key used for adaptive-enforcement
 // tracking and audit correlation. A named agent is namespaced ahead of its
 // client IP so that two agents sharing one client IP are tracked as distinct
@@ -13,8 +15,5 @@ package proxy
 // the key the same way, otherwise adaptive escalation and de-escalation would
 // track different keys for the same logical session.
 func sessionKeyFor(agent, clientIP string) string {
-	if agent == "" || agent == agentAnonymous {
-		return clientIP
-	}
-	return agent + "|" + clientIP
+	return identitykey.ForAgentAndClient(agent, clientIP)
 }

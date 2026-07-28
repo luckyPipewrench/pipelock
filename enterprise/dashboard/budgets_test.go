@@ -401,8 +401,16 @@ func TestAgentBudgetView_Displays(t *testing.T) {
 	if got := limited.BytesDisplay(); got != "2147483648 / 2147483649" {
 		t.Fatalf("BytesDisplay = %q, want %q", got, "2147483648 / 2147483649")
 	}
-	if got := limited.ToolCallsDisplay(); got != "4 / 50 per session" {
-		t.Fatalf("ToolCallsDisplay = %q, want %q", got, "4 / 50 per session")
+	// The total is summed across subjects while the limit is per subject, so
+	// the two must not be rendered as a ratio: an operator reading "80 / 50"
+	// would think the budget was blown when no subject had exceeded it.
+	const wantToolCalls = "4 across subjects (limit 50 per subject)"
+	if got := limited.ToolCallsDisplay(); got != wantToolCalls {
+		t.Fatalf("ToolCallsDisplay = %q, want %q", got, wantToolCalls)
+	}
+	overCap := AgentBudgetView{TotalToolCalls: 80, MaxToolCallsPerSession: 50}
+	if got := overCap.ToolCallsDisplay(); strings.Contains(got, "80 / 50") {
+		t.Fatalf("aggregate rendered as a per-subject ratio: %q", got)
 	}
 	unlimited := AgentBudgetView{RequestCount: 3, MaxRequests: 0, TotalToolCalls: 4, MaxToolCallsPerSession: 0}
 	if got := unlimited.RequestsDisplay(); got != "3 / "+budgetUnlimited {

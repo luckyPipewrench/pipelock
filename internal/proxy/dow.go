@@ -19,6 +19,13 @@ const (
 	BudgetConcurrent = "concurrent_limit"
 	BudgetWallClock  = "wall_clock"
 	BudgetToolCalls  = "tool_call_limit"
+	BudgetSubjectCap = "subject_cap"
+)
+
+const (
+	defaultDoWSubjectKey         = "_default"
+	defaultDoWSubjectWindow      = 30 * time.Minute
+	defaultDoWSubjectMaxSubjects = 10000
 )
 
 // DoWConfig configures denial-of-wallet detection thresholds.
@@ -27,9 +34,21 @@ type DoWConfig struct {
 	MaxToolCallsPerSession int    `yaml:"max_tool_calls_per_session"`
 	MaxConcurrentToolCalls int    `yaml:"max_concurrent_tool_calls"`
 	MaxWallClockMinutes    int    `yaml:"max_wall_clock_minutes"`
+	WindowMinutes          int    `yaml:"window_minutes"`
 	MaxRetriesPerTool      int    `yaml:"max_retries_per_tool"`
 	LoopDetectionWindow    int    `yaml:"loop_detection_window"`
 	Action                 string `yaml:"action"` // "block" or "warn"
+}
+
+// DoWSubjectManagerConfig configures bounded per-subject DoW tracking.
+type DoWSubjectManagerConfig struct {
+	TrackerConfig DoWConfig
+	// IdleTTL is retained as the default budget window when WindowMinutes is
+	// unset. That preserves the old 30-minute retention expectation without
+	// making spent subjects live forever.
+	IdleTTL     time.Duration
+	MaxSubjects int
+	Now         func() time.Time
 }
 
 // DoWResult is the outcome of a DoW budget check.
@@ -47,12 +66,13 @@ type toolCallEntry struct {
 	at       time.Time
 }
 
-// DoWTracker tracks denial-of-wallet signals for a single session.
+// DoWTracker tracks denial-of-wallet signals for a single budget subject.
 // Thread-safe via mutex for all state except inflight (atomic).
 type DoWTracker struct {
 	mu     sync.Mutex
 	cfg    DoWConfig
 	start  time.Time
+	now    func() time.Time
 	closed bool
 
 	// Tool call tracking (sliding window).
@@ -63,12 +83,139 @@ type DoWTracker struct {
 	inflight atomic.Int32
 }
 
+type dowSubjectEntry struct {
+	tracker     *DoWTracker
+	windowStart time.Time
+}
+
+// DoWSubjectManager owns per-subject DoW trackers for multi-client listeners.
+// MCP sessions remain registered separately as protocol trust material; they do
+// not own quota.
+type DoWSubjectManager struct {
+	mu          sync.Mutex
+	cfg         DoWConfig
+	window      time.Duration
+	maxSubjects int
+	now         func() time.Time
+	subjects    map[string]*dowSubjectEntry
+	// nextExpiry is the earliest windowStart+window across subjects. Before it
+	// passes, no subject can be expired, so the reap scan can be skipped.
+	nextExpiry time.Time
+}
+
 // NewDoWTracker creates a tracker with the given configuration.
 func NewDoWTracker(cfg DoWConfig) *DoWTracker {
+	return newDoWTracker(cfg, time.Now)
+}
+
+func newDoWTracker(cfg DoWConfig, now func() time.Time) *DoWTracker {
+	if now == nil {
+		now = time.Now
+	}
 	return &DoWTracker{
 		cfg:   cfg,
-		start: time.Now(),
+		start: now(),
+		now:   now,
 	}
+}
+
+// NewDoWSubjectManager creates a bounded per-subject DoW manager.
+func NewDoWSubjectManager(cfg DoWSubjectManagerConfig) *DoWSubjectManager {
+	window := time.Duration(cfg.TrackerConfig.WindowMinutes) * time.Minute
+	if window <= 0 {
+		window = cfg.IdleTTL
+	}
+	if window <= 0 {
+		window = defaultDoWSubjectWindow
+	}
+	maxSubjects := cfg.MaxSubjects
+	if maxSubjects <= 0 {
+		maxSubjects = defaultDoWSubjectMaxSubjects
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &DoWSubjectManager{
+		cfg:         cfg.TrackerConfig,
+		window:      window,
+		maxSubjects: maxSubjects,
+		now:         now,
+		subjects:    make(map[string]*dowSubjectEntry),
+	}
+}
+
+// Check records a tool call against one subject. An empty key is the
+// single-session transport bucket.
+func (m *DoWSubjectManager) Check(subjectKey, toolName, argsJSON string) DoWResult {
+	if m == nil {
+		return DoWResult{Allowed: true}
+	}
+	if subjectKey == "" {
+		subjectKey = defaultDoWSubjectKey
+	}
+	tracker, ok := m.trackerFor(subjectKey)
+	if !ok {
+		return DoWResult{
+			Allowed:    false,
+			Reason:     fmt.Sprintf("DoW subject cap reached: %d/%d", m.maxSubjects, m.maxSubjects),
+			BudgetType: BudgetSubjectCap,
+		}
+	}
+	return tracker.RecordToolCall(toolName, argsJSON)
+}
+
+// SubjectCount returns the current number of live subject buckets.
+func (m *DoWSubjectManager) SubjectCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reapExpiredLocked(m.now())
+	return len(m.subjects)
+}
+
+func (m *DoWSubjectManager) trackerFor(subjectKey string) (*DoWTracker, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	m.reapExpiredLocked(now)
+	if entry, ok := m.subjects[subjectKey]; ok {
+		return entry.tracker, true
+	}
+	if len(m.subjects) >= m.maxSubjects {
+		return nil, false
+	}
+	tracker := newDoWTracker(m.cfg, m.now)
+	m.subjects[subjectKey] = &dowSubjectEntry{tracker: tracker, windowStart: now}
+	if expiry := now.Add(m.window); m.nextExpiry.IsZero() || expiry.Before(m.nextExpiry) {
+		m.nextExpiry = expiry
+	}
+	return tracker, true
+}
+
+func (m *DoWSubjectManager) reapExpiredLocked(now time.Time) {
+	// This runs from trackerFor, so it is on the path of every tool call. A
+	// full scan each time serializes every subject on a listener behind one
+	// mutex for a result that is almost always empty, which is worst exactly
+	// when the table is large. Nothing can have expired before nextExpiry, so
+	// the common call returns without touching the map.
+	if !m.nextExpiry.IsZero() && now.Before(m.nextExpiry) {
+		return
+	}
+	var earliest time.Time
+	for key, entry := range m.subjects {
+		expiry := entry.windowStart.Add(m.window)
+		if !now.Before(expiry) {
+			delete(m.subjects, key)
+			continue
+		}
+		if earliest.IsZero() || expiry.Before(earliest) {
+			earliest = expiry
+		}
+	}
+	m.nextExpiry = earliest
 }
 
 // RecordToolCall records a tool invocation and checks for loop, runaway,
@@ -82,7 +229,7 @@ func (t *DoWTracker) RecordToolCall(toolName, argsJSON string) DoWResult {
 		return DoWResult{Allowed: false, Reason: "session closed", BudgetType: BudgetWallClock}
 	}
 
-	now := time.Now()
+	now := t.now()
 	entry := toolCallEntry{
 		name:     toolName,
 		argsHash: hashArgs(argsJSON),
@@ -93,12 +240,13 @@ func (t *DoWTracker) RecordToolCall(toolName, argsJSON string) DoWResult {
 	t.totalToolCalls++
 	t.toolCalls = append(t.toolCalls, entry)
 
-	// Trim window to configured size.
-	window := t.cfg.LoopDetectionWindow
+	// Trim history to the configured window. If only a retry limit is
+	// configured, retain the minimum entries needed to enforce that limit
+	// without enabling unrelated pattern detectors by default.
+	window := t.historyWindow()
 	if window <= 0 {
-		window = 20 // default window size
-	}
-	if len(t.toolCalls) > window {
+		t.toolCalls = nil
+	} else if len(t.toolCalls) > window {
 		t.toolCalls = t.toolCalls[len(t.toolCalls)-window:]
 	}
 
@@ -125,8 +273,14 @@ func (t *DoWTracker) RecordToolCall(toolName, argsJSON string) DoWResult {
 	}
 
 	// Check loop: same (name, argsHash) repeated N times in window.
-	if r := t.checkLoop(entry); !r.Allowed {
-		return r
+	if t.cfg.MaxRetriesPerTool > 0 {
+		if r := t.checkLoop(entry); !r.Allowed {
+			return r
+		}
+	}
+
+	if t.cfg.LoopDetectionWindow <= 0 {
+		return DoWResult{Allowed: true}
 	}
 
 	// Check runaway expansion: monotonically increasing args size for same tool.
@@ -140,6 +294,16 @@ func (t *DoWTracker) RecordToolCall(toolName, argsJSON string) DoWResult {
 	}
 
 	return DoWResult{Allowed: true}
+}
+
+func (t *DoWTracker) historyWindow() int {
+	if t.cfg.LoopDetectionWindow > 0 {
+		return t.cfg.LoopDetectionWindow
+	}
+	if t.cfg.MaxRetriesPerTool > 0 {
+		return t.cfg.MaxRetriesPerTool + 1
+	}
+	return 0
 }
 
 // AcquireConcurrent attempts to increment the in-flight counter. Returns
@@ -215,7 +379,7 @@ func (t *DoWTracker) Close() {
 func (t *DoWTracker) checkLoop(current toolCallEntry) DoWResult {
 	maxRetries := t.cfg.MaxRetriesPerTool
 	if maxRetries <= 0 {
-		maxRetries = 5 // default
+		return DoWResult{Allowed: true}
 	}
 
 	count := 0

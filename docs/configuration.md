@@ -1900,18 +1900,18 @@ Agent DLP overrides follow the same `include_defaults` pattern as the global DLP
 
 ### Budget Config
 
-Budgets cap what an agent can do within a rolling time window. All fields default to `0` (unlimited).
+Budgets cap what an agent can do within a time window. Most limits default to `0` meaning unlimited, but two fields do not follow that rule and are worth reading before you rely on it. `window_minutes: 0` does not mean "no window" for MCP denial-of-wallet: it selects a 30-minute subject window, so a long-lived session receives a fresh allowance every 30 minutes. `max_retries_per_tool: 0` and `loop_detection_window: 0` disable those checks entirely rather than making them unlimited, which is the same outcome by a different route but means an unset value never blocks. Each row below states its own behavior at `0`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_requests_per_session` | `int` | `0` | Max HTTP requests per window |
 | `max_bytes_per_session` | `int` | `0` | Max response bytes per window |
 | `max_unique_domains_per_session` | `int` | `0` | Max distinct domains per window |
-| `window_minutes` | `int` | `0` | Rolling window duration in minutes. `0` means the budget never resets. |
-| `max_tool_calls_per_session` | `int` | `0` | Max MCP tool calls per session (0 = unlimited). **Enforced.** |
-| `max_retries_per_tool` | `int` | `0` | Max times the same tool+args can be called (0 = unlimited, default 5 when set). Detects retry storms. **Enforced.** |
-| `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection (0 = disabled, default 20 when set). **Enforced.** |
-| `max_wall_clock_minutes` | `int` | `0` | Max session duration in minutes (0 = unlimited). **Enforced.** |
+| `window_minutes` | `int` | `0` | Window duration in minutes. Request/domain/byte budgets keep the legacy `0` = never resets behavior; MCP denial-of-wallet budgets default `0` to a 30-minute subject window. |
+| `max_tool_calls_per_session` | `int` | `0` | Max MCP tool calls per DoW subject per window (0 = unlimited). The field name is retained for config compatibility. **Enforced.** |
+| `max_retries_per_tool` | `int` | `0` | Max times the same tool+args can be called. Detects retry storms. `0` means retry limiting is **not enforced**: an unset limit never blocks, so set this explicitly to enable it. **Enforced when set.** |
+| `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection. `0` disables it; when unset but `max_retries_per_tool` is set, the tracked history is sized from that limit. **Enforced when set.** |
+| `max_wall_clock_minutes` | `int` | `0` | Max elapsed time since the subject's first MCP DoW call in the current window (0 = unlimited). This resets when the DoW budget window rolls. **Enforced.** |
 | `dow_action` | `string` | `"block"` | Action when a denial-of-wallet limit is exceeded: `"block"` (reject the tool call) or `"warn"` (log and allow) |
 | `max_concurrent_tool_calls` | `int` | `0` | Reserved for future lease-based concurrency control. Any nonzero value is rejected because concurrency is not yet enforced. |
 
@@ -1920,7 +1920,7 @@ When a budget limit is reached:
 - **Request count and domain limits** are checked before the outbound request. Exceeding either returns `429 Too Many Requests`.
 - **Byte limit (fetch proxy):** the response body read is capped at the remaining byte budget. If the response exceeds the limit, it is discarded and a `429` is returned.
 - **Byte limit (CONNECT/WebSocket):** streaming connections track bytes after close. The byte budget is enforced on the next admission check, not mid-stream, because tunnel data cannot be recalled after transmission.
-- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, same-tool retry storms, loop/cycle detection, and wall-clock duration. Endpoint retry, fan-out, and concurrent-call limits are not enforced.
+- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch and are keyed by DoW subject, not by `Mcp-Session-Id`. For HTTP listener mode, the subject is a future authenticated MCP principal when available; today it falls back to the configured/bound agent namespace plus remote host, with request-supplied agent names collapsed to the remote-host bucket. `Mcp-Session-Id` is still used for protocol correlation and trusted-session cleanup, but not for quota ownership. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, same-tool retry storms, loop/cycle detection, and window-scoped elapsed time. The live DoW subject table is bounded; if it is full, new subjects fail closed until existing windows expire rather than evicting live budget state. Endpoint retry, fan-out, and concurrent-call limits are not enforced.
 
 ### Listener Binding
 
@@ -2233,6 +2233,7 @@ rules:
   include_experimental: false     # only load stable rules by default
   allow_degraded: false           # emergency strict-mode degraded startup/reload override
   trust_embedded_keys: true       # trust the compiled official rules keyring
+  allow_unversioned_bundle_load: false  # load min_pipelock bundles on a build with no released version
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
     - name: "vendor-security"
       public_key: "64-char-hex-encoded-ed25519-public-key"
@@ -2244,6 +2245,7 @@ rules:
 | `min_confidence` | `""` (all) | Skip rules below this confidence level |
 | `include_experimental` | `false` | Include experimental rules from bundles |
 | `allow_degraded` | `false` | Explicit emergency override that lets strict mode start or reload with degraded rule-bundle integrity/coverage after emitting warnings and audit events |
+| `allow_unversioned_bundle_load` | `false` | Lets a build that does not report a released version load bundles that declare a `min_pipelock` requirement. Source builds (`go install`, `go build`) carry no release stamp, so the requirement cannot be checked. The runtime **refuses to load** such a bundle by default; `pipelock rules install` still installs it but prints a warning, since an operator is present there to read it and the runtime remains the enforcement point. Set this to load it unverified at runtime. Bundles that declare no `min_pipelock` are unaffected either way |
 | `trust_embedded_keys` | `true` | Trust the compiled official rules keyring. Set to `false` for private-root-only deployments that trust only `trusted_keys`; unsigned local bundles are rejected in this mode. |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 

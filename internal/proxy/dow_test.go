@@ -93,6 +93,41 @@ func TestDoW_LoopDetection_DifferentTools(t *testing.T) {
 	}
 }
 
+func TestDoW_UnsetRetryAndWindowDoNotArmPatternBudgets(t *testing.T) {
+	tracker := NewDoWTracker(DoWConfig{
+		MaxWallClockMinutes: 60,
+		Action:              actionBlock,
+	})
+
+	for i := range 10 {
+		result := tracker.RecordToolCall(toolGetWeather, argsNYC)
+		if !result.Allowed {
+			t.Fatalf("call %d blocked by unconfigured budget: %s (%s)", i+1, result.Reason, result.BudgetType)
+		}
+	}
+}
+
+func TestDoW_MaxRetriesWithoutWindowEnforcesConfiguredLimitOnly(t *testing.T) {
+	tracker := NewDoWTracker(DoWConfig{
+		MaxRetriesPerTool: 2,
+		Action:            actionBlock,
+	})
+
+	for i := range 2 {
+		result := tracker.RecordToolCall(toolGetWeather, argsNYC)
+		if !result.Allowed {
+			t.Fatalf("call %d should be allowed, got blocked: %s", i+1, result.Reason)
+		}
+	}
+	result := tracker.RecordToolCall(toolGetWeather, argsNYC)
+	if result.Allowed {
+		t.Fatal("third identical call should be blocked by configured retry budget")
+	}
+	if result.BudgetType != BudgetLoop {
+		t.Fatalf("BudgetType = %q, want %q", result.BudgetType, BudgetLoop)
+	}
+}
+
 // --- Runaway Expansion ---
 
 func TestDoW_RunawayExpansion(t *testing.T) {
@@ -556,16 +591,14 @@ func TestDoW_WindowTrimming(t *testing.T) {
 	}
 }
 
-// --- Default Values ---
+// --- Unset Values ---
 
-func TestDoW_DefaultWindow(t *testing.T) {
-	// Zero LoopDetectionWindow should use default of 20.
+func TestDoW_UnsetWindowDoesNotRetainHistoryWithoutPatternBudget(t *testing.T) {
 	tracker := NewDoWTracker(DoWConfig{
-		MaxRetriesPerTool: 100,
-		Action:            actionBlock,
+		MaxWallClockMinutes: 60,
+		Action:              actionBlock,
 	})
 
-	// Record 25 calls. Should trim to 20.
 	for i := range 25 {
 		tracker.RecordToolCall(toolGetWeather, fmt.Sprintf(`{"i":%d}`, i))
 	}
@@ -574,9 +607,192 @@ func TestDoW_DefaultWindow(t *testing.T) {
 	windowLen := len(tracker.toolCalls)
 	tracker.mu.Unlock()
 
-	if windowLen > 20 {
-		t.Errorf("default window size = %d, want <= 20", windowLen)
+	if windowLen != 0 {
+		t.Errorf("unset window retained %d calls, want 0", windowLen)
 	}
+}
+
+func TestDoWSubjectManager_IsolatesSubjectsAndBoundsMemory(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			Action:                 actionBlock,
+		},
+		IdleTTL:     time.Minute,
+		MaxSubjects: 2,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if !manager.Check("subject-a", toolGetWeather, `{"turn":1}`).Allowed {
+		t.Fatal("first subject-a call should be allowed")
+	}
+	if !manager.Check("subject-b", toolGetWeather, `{"turn":1}`).Allowed {
+		t.Fatal("first subject-b call should be allowed independently")
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); result.Allowed {
+		t.Fatal("second subject-a call should be blocked by its own budget")
+	}
+
+	now = now.Add(time.Second)
+	if result := manager.Check("subject-c", toolGetWeather, `{"turn":1}`); result.Allowed || result.BudgetType != BudgetSubjectCap {
+		t.Fatalf("new subject at cap = allowed:%v budget:%q reason:%q, want subject-cap block",
+			result.Allowed, result.BudgetType, result.Reason)
+	}
+	if got := manager.SubjectCount(); got != 2 {
+		t.Fatalf("SubjectCount after cap block = %d, want 2", got)
+	}
+
+	for i := range 10 {
+		result := manager.Check(fmt.Sprintf("subject-extra-%02d", i), toolGetWeather, `{"turn":1}`)
+		if result.Allowed || result.BudgetType != BudgetSubjectCap {
+			t.Fatalf("bounded table admitted subject %d at cap: allowed:%v budget:%q reason:%q",
+				i, result.Allowed, result.BudgetType, result.Reason)
+		}
+		if got := manager.SubjectCount(); got > 2 {
+			t.Fatalf("SubjectCount = %d, want <= 2", got)
+		}
+	}
+}
+
+func TestDoWSubjectManager_WindowResetIsLegitimate(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			Action:                 actionBlock,
+		},
+		IdleTTL:     time.Minute,
+		MaxSubjects: 2,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if !manager.Check("subject-s", toolGetWeather, `{"turn":1}`).Allowed {
+		t.Fatal("first subject-s call should be allowed")
+	}
+	if result := manager.Check("subject-s", toolGetWeather, `{"turn":2}`); result.Allowed {
+		t.Fatal("second subject-s call should consume the budget and block")
+	}
+
+	now = now.Add(30 * time.Second)
+	if result := manager.Check("subject-s", toolGetWeather, `{"turn":3}`); result.Allowed {
+		t.Fatal("subject received a fresh allowance before the window rolled")
+	}
+
+	now = now.Add(31 * time.Second)
+	if result := manager.Check("subject-s", toolGetWeather, `{"turn":4}`); !result.Allowed {
+		t.Fatalf("subject should receive a fresh allowance after the window: %s", result.Reason)
+	}
+}
+
+func TestDoWSubjectManager_WindowExpiryPreventsPermanentWedge(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			Action:                 actionBlock,
+		},
+		IdleTTL:     time.Minute,
+		MaxSubjects: 5,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	for i := range 5 {
+		subject := fmt.Sprintf("spent-subject-%d", i)
+		if !manager.Check(subject, toolGetWeather, `{"turn":1}`).Allowed {
+			t.Fatalf("%s first call should be allowed", subject)
+		}
+		if result := manager.Check(subject, toolGetWeather, `{"turn":2}`); result.Allowed {
+			t.Fatalf("%s should be spent", subject)
+		}
+	}
+
+	now = now.Add(time.Minute + time.Second)
+	if got := manager.SubjectCount(); got != 0 {
+		t.Fatalf("spent subjects should be dropped after the budget window; got %d", got)
+	}
+	if result := manager.Check("brand-new-subject", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("new subject should be allowed after spent table ages past window: %s", result.Reason)
+	}
+}
+
+func TestDoWSubjectManager_SubjectCapFailsClosedForNewSubjects(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			Action:                 actionBlock,
+		},
+		IdleTTL:     time.Minute,
+		MaxSubjects: 2,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if !manager.Check("subject-a", toolGetWeather, `{"turn":1}`).Allowed {
+		t.Fatal("subject-a first call should be allowed")
+	}
+	now = now.Add(time.Second)
+	if !manager.Check("subject-b", toolGetWeather, `{"turn":1}`).Allowed {
+		t.Fatal("subject-b first call should be allowed")
+	}
+	now = now.Add(time.Second)
+	if result := manager.Check("subject-c", toolGetWeather, `{"turn":1}`); result.Allowed || result.BudgetType != BudgetSubjectCap {
+		t.Fatalf("new subject at cap = allowed:%v budget:%q reason:%q, want subject-cap block",
+			result.Allowed, result.BudgetType, result.Reason)
+	}
+	if got := manager.SubjectCount(); got != 2 {
+		t.Fatalf("SubjectCount = %d, want 2", got)
+	}
+
+	// A spent live subject must not be reset early by cap pressure from
+	// attacker-rotated subjects. It remains blocked until its window expires.
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); result.Allowed {
+		t.Fatalf("spent subject was reset before the budget window expired")
+	}
+
+	now = now.Add(2 * time.Minute)
+	if got := manager.SubjectCount(); got != 0 {
+		t.Fatalf("subjects should expire after the budget window; got %d", got)
+	}
+	if result := manager.Check("subject-c", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("new subject should be admitted after the live windows expire: %s", result.Reason)
+	}
+}
+
+func TestDoWSubjectManager_ConcurrentSubjectsRace(t *testing.T) {
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 100000,
+			Action:                 actionBlock,
+		},
+		MaxSubjects: 100,
+	})
+
+	const subjects = 25
+	var wg sync.WaitGroup
+	for i := range subjects {
+		subjectKey := fmt.Sprintf("subject-%02d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 100 {
+				result := manager.Check(subjectKey, toolGetWeather, fmt.Sprintf(`{"turn":%d}`, j))
+				if !result.Allowed {
+					t.Errorf("%s call %d blocked: %s", subjectKey, j, result.Reason)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // --- Integration-style test ---

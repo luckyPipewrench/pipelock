@@ -4233,7 +4233,7 @@ func TestForwardScannedInput_DoWBlock(t *testing.T) {
 
 	opts := testOpts(sc)
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}
-	opts.DoWCheck = func(toolName, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, toolName, _ string) (bool, string, string, string) {
 		if toolName == testDoWToolName {
 			return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
 		}
@@ -4283,7 +4283,7 @@ func TestForwardScannedInput_DoWWarn(t *testing.T) {
 
 	opts := testOpts(sc)
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
-	opts.DoWCheck = func(toolName, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, toolName, _ string) (bool, string, string, string) {
 		if toolName == "moderate_tool" {
 			return false, config.ActionWarn, "near budget", testDoWBudgetType
 		}
@@ -4334,7 +4334,7 @@ func TestForwardScannedInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) 
 			reason := "tool call limit exceeded: 11/10"
 			opts := testOpts(sc)
 			opts.AuditLogger = auditLogger
-			opts.DoWCheck = func(_, _ string) (bool, string, string, string) {
+			opts.DoWCheck = func(_, _, _ string) (bool, string, string, string) {
 				return false, tt.action, reason, "tool_call_limit"
 			}
 
@@ -4389,7 +4389,7 @@ func TestForwardScannedInput_DoWBlockNotification(t *testing.T) {
 
 	opts := testOpts(sc)
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}
-	opts.DoWCheck = func(toolName, _ string) (bool, string, string, string) {
+	opts.DoWCheck = func(_, toolName, _ string) (bool, string, string, string) {
 		if toolName == testDoWToolName {
 			return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
 		}

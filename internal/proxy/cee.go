@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -63,19 +64,14 @@ func CeeSessionKey(agent, clientIP string) string {
 // spoof-proof per-agent CEE separation use per-listener binding
 // (ActorAuthBound), not header-based identity.
 func ceeKeyAgent(agent string, auth envelope.ActorAuth) string {
-	switch auth {
-	case envelope.ActorAuthBound, envelope.ActorAuthConfigDefault:
-		return agent
-	default:
-		return ""
-	}
+	return identitykey.CEESafeAgent(agent, auth)
 }
 
 // ceeSessionKey builds the partition-resistant CEE accumulation key. Untrusted
 // (attacker-variable) agent identities collapse to the client IP so a rotating
 // agent identifier cannot split a secret across buckets. See ceeKeyAgent.
 func ceeSessionKey(agent, clientIP string, auth envelope.ActorAuth) string {
-	return CeeSessionKey(ceeKeyAgent(agent, auth), clientIP)
+	return identitykey.CEESafeKey(agent, clientIP, auth)
 }
 
 // maxCaptureSessionKeyLen aliases the writer-side ceiling so the

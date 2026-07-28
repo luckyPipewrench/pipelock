@@ -3,6 +3,8 @@
 
 package proxy
 
+import "github.com/luckyPipewrench/pipelock/internal/identitykey"
+
 import (
 	"net/http"
 
@@ -12,7 +14,9 @@ import (
 // agentAnonymous is the fallback agent name when no header/query/context
 // override identifies the caller. Used by proxy handlers for display.
 // Agent resolution logic lives in internal/edition/.
-const agentAnonymous = "anonymous"
+// agentAnonymous mirrors identitykey.AnonymousAgent by reference, not by copy,
+// so the two cannot drift. See that constant for why the agreement matters.
+const agentAnonymous = identitykey.AnonymousAgent
 
 // AgentHeader re-exports the canonical agent header from edition.
 // Used by proxy tests and any proxy-internal code that needs it.

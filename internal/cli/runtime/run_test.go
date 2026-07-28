@@ -962,6 +962,99 @@ logging:
 	})
 }
 
+func TestRunCmd_MCPListenerWiresDoWBudget(t *testing.T) {
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		mainAddr := addrs[0]
+		mcpAddr := addrs[1]
+
+		mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if request.Method == "initialize" {
+				w.Header().Set("Mcp-Session-Id", "run-session")
+			}
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+		}))
+		defer mcpUpstream.Close()
+
+		cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+agents:
+  _default:
+    budget:
+      max_tool_calls_per_session: 1
+      dow_action: block
+mcp_input_scanning:
+  enabled: false
+mcp_tool_scanning:
+  enabled: false
+mcp_tool_policy:
+  enabled: false
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+logging:
+  format: json
+  output: stdout
+`, mainAddr)
+
+		cfgPath := filepath.Join(t.TempDir(), "pipelock-run-dow.yaml")
+		if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := RunCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"--config", cfgPath,
+			"--mcp-listen", mcpAddr,
+			"--mcp-upstream", mcpUpstream.URL,
+		})
+		var stderr syncBuffer
+		cmd.SetErr(&stderr)
+		cmd.SetOut(&stderr)
+
+		cmdErr := make(chan error, 1)
+		go func() {
+			cmdErr <- cmd.Execute()
+		}()
+
+		if err := waitForPortOrCommandExitResult(mainAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+
+		baseURL := "http://" + mcpAddr
+		sessionID := initializeRunMCPListenerSession(t, baseURL)
+		postRunMCPListenerToolCall(t, baseURL, sessionID, "")
+		body := postRunMCPListenerToolCall(t, baseURL, sessionID, "tool call limit exceeded: 2/1")
+		if !strings.Contains(body, "tool call limit exceeded: 2/1") {
+			t.Fatalf("second tools/call body = %s, want DoW block", body)
+		}
+
+		cancel()
+		select {
+		case err := <-cmdErr:
+			if err != nil {
+				t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("RunCmd did not exit within 5s")
+		}
+		return nil
+	})
+}
+
 func TestRunCmd_MCPListenerResponseTrustReasoning(t *testing.T) {
 	testport.WithRetry(t, 2, func(addrs []string) error {
 		mainAddr := addrs[0]
@@ -1055,6 +1148,55 @@ logging:
 		}
 		return nil
 	})
+}
+
+func initializeRunMCPListenerSession(t *testing.T, baseURL string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		baseURL+"/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`),
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("initialize POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatal("initialize response missing Mcp-Session-Id")
+	}
+	return sessionID
+}
+
+func postRunMCPListenerToolCall(t *testing.T, baseURL, sessionID, wantBody string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		baseURL+"/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"play_game","arguments":{"turn":1}}}`),
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("tools/call POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if wantBody != "" && !strings.Contains(string(body), wantBody) {
+		t.Fatalf("body = %s, want substring %q", body, wantBody)
+	}
+	return string(body)
 }
 
 func TestAgentHandler(t *testing.T) {

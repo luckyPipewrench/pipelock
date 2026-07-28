@@ -939,40 +939,14 @@ Key-free evidence capture:
 				baselineChecker = sm
 			}
 
-			// Denial-of-wallet tracker: _default budget is free tier (always
+			// Denial-of-wallet tracking: _default budget is free tier (always
 			// available). Named agent budgets are safe to read from cfg.Agents
 			// because EnforceLicenseGate (called during Load) already stripped
 			// named agents when the license is missing/invalid. In enterprise
 			// builds the gate preserves _default and removes the rest; in OSS
 			// builds the gate func is nil so only _default survives if no
 			// named agents are configured.
-			var dowCheck mcp.DoWCheckFunc
-			var dowBudget *config.BudgetConfig
-			if ap, ok := cfg.Agents["_default"]; ok {
-				dowBudget = &ap.Budget
-			}
-			if agentName != "" && agentName != "_default" {
-				if ap, ok := cfg.Agents[agentName]; ok {
-					dowBudget = &ap.Budget
-				}
-			}
-			if dowBudget != nil && dowBudget.HasDoWFields() {
-				tracker := proxy.NewDoWTracker(proxy.DoWConfig{
-					MaxToolCallsPerSession: dowBudget.MaxToolCallsPerSession,
-					MaxWallClockMinutes:    dowBudget.MaxWallClockMinutes,
-					MaxRetriesPerTool:      dowBudget.MaxRetriesPerTool,
-					LoopDetectionWindow:    dowBudget.LoopDetectionWindow,
-					Action:                 dowBudget.DoWAction,
-				})
-				dowAction := dowBudget.DoWAction
-				if dowAction == "" {
-					dowAction = config.ActionBlock
-				}
-				dowCheck = func(toolName, argsJSON string) (bool, string, string, string) {
-					r := tracker.RecordToolCall(toolName, argsJSON)
-					return r.Allowed, dowAction, r.Reason, r.BudgetType
-				}
-			}
+			dowWiring := buildMCPDoWWiring(cfg, agentName)
 
 			var receiptEmitter *receipt.Emitter
 			var v2ReceiptEmitter *proxydecision.Emitter
@@ -1260,7 +1234,6 @@ Key-free evidence capture:
 						RedirectRT:             buildRedirectRT(cfg),
 						ProvenanceCfg:          &cfg.MCPToolProvenance,
 						EnvelopeEmitter:        envEmitter,
-						DoWCheck:               dowCheck,
 						CaptureObs:             captureObs,
 						MediaPolicy:            &cfg.MediaPolicy,
 						RedactMatcher:          mcpRedactMatcher,
@@ -1271,6 +1244,7 @@ Key-free evidence capture:
 						ContractAgent:          contractAgent,
 						DialContext:            upstreamDialContext,
 					}
+					applyMCPDoWOpts(&listenerOpts, dowWiring, true)
 					if listenerAuthTokenFile != "" {
 						listenerOpts.ListenerBearerTokenFn = func() (string, error) {
 							return readMCPListenerTokenFile(listenerAuthTokenFile)
@@ -1313,7 +1287,6 @@ Key-free evidence capture:
 						Metrics:                mcpMetrics,
 						CaptureObs:             captureObs,
 						RedirectRT:             buildRedirectRT(cfg),
-						DoWCheck:               dowCheck,
 						EnvelopeEmitter:        envEmitter,
 						MediaPolicy:            &cfg.MediaPolicy,
 						RedactMatcher:          mcpRedactMatcher,
@@ -1324,6 +1297,7 @@ Key-free evidence capture:
 						ContractAgent:          contractAgent,
 						DialContext:            upstreamDialContext,
 					}
+					applyMCPDoWOpts(&wsOpts, dowWiring, false)
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
@@ -1363,7 +1337,6 @@ Key-free evidence capture:
 					AddressProtectionAgent: captureProfile,
 					RedirectRT:             buildRedirectRT(cfg),
 					EnvelopeEmitter:        envEmitter,
-					DoWCheck:               dowCheck,
 					CaptureObs:             captureObs,
 					IntegrityCfg:           &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:          &cfg.MCPToolProvenance,
@@ -1377,6 +1350,7 @@ Key-free evidence capture:
 					DeferManager:           deferManager,
 					DialContext:            upstreamDialContext,
 				}
+				applyMCPDoWOpts(&httpOpts, dowWiring, false)
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
@@ -1539,21 +1513,22 @@ Key-free evidence capture:
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					ConfigHash: captureConfigHash, Profile: captureProfile,
 					AddressProtectionAgent: captureProfile,
-					RedirectRT:             buildRedirectRT(cfg), DoWCheck: dowCheck,
-					EnvelopeEmitter:   envEmitter,
-					CaptureObs:        captureObs,
-					IntegrityCfg:      &cfg.MCPBinaryIntegrity,
-					ProvenanceCfg:     &cfg.MCPToolProvenance,
-					MediaPolicy:       &cfg.MediaPolicy,
-					RedactMatcher:     mcpRedactMatcher,
-					RedactLimits:      cfg.Redaction.Limits.ToLimits(),
-					RedactProfile:     cfg.Redaction.DefaultProfile,
-					TaintCfg:          &cfg.Taint,
-					ContractLoader:    contractLoader,
-					ContractAgent:     contractAgent,
-					AdaptiveResetFile: adaptiveResetFile,
-					DeferManager:      deferManager,
+					RedirectRT:             buildRedirectRT(cfg),
+					EnvelopeEmitter:        envEmitter,
+					CaptureObs:             captureObs,
+					IntegrityCfg:           &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg:          &cfg.MCPToolProvenance,
+					MediaPolicy:            &cfg.MediaPolicy,
+					RedactMatcher:          mcpRedactMatcher,
+					RedactLimits:           cfg.Redaction.Limits.ToLimits(),
+					RedactProfile:          cfg.Redaction.DefaultProfile,
+					TaintCfg:               &cfg.Taint,
+					ContractLoader:         contractLoader,
+					ContractAgent:          contractAgent,
+					AdaptiveResetFile:      adaptiveResetFile,
+					DeferManager:           deferManager,
 				}
+				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
@@ -1669,22 +1644,23 @@ Key-free evidence capture:
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 				ConfigHash: captureConfigHash, Profile: captureProfile,
 				AddressProtectionAgent: captureProfile,
-				RedirectRT:             buildRedirectRT(cfg), DoWCheck: dowCheck,
-				EnvelopeEmitter: envEmitter,
-				CaptureObs:      captureObs,
-				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
-				ProvenanceCfg:   &cfg.MCPToolProvenance,
-				MediaPolicy:     &cfg.MediaPolicy,
-				RedactMatcher:   mcpRedactMatcher,
-				RedactLimits:    cfg.Redaction.Limits.ToLimits(),
-				RedactProfile:   cfg.Redaction.DefaultProfile,
-				TaintCfg:        &cfg.Taint,
-				Lineage:         lin, OnChildReady: onChildReady,
+				RedirectRT:             buildRedirectRT(cfg),
+				EnvelopeEmitter:        envEmitter,
+				CaptureObs:             captureObs,
+				IntegrityCfg:           &cfg.MCPBinaryIntegrity,
+				ProvenanceCfg:          &cfg.MCPToolProvenance,
+				MediaPolicy:            &cfg.MediaPolicy,
+				RedactMatcher:          mcpRedactMatcher,
+				RedactLimits:           cfg.Redaction.Limits.ToLimits(),
+				RedactProfile:          cfg.Redaction.DefaultProfile,
+				TaintCfg:               &cfg.Taint,
+				Lineage:                lin, OnChildReady: onChildReady,
 				ContractLoader:    contractLoader,
 				ContractAgent:     contractAgent,
 				AdaptiveResetFile: adaptiveResetFile,
 				DeferManager:      deferManager,
 			}
+			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)

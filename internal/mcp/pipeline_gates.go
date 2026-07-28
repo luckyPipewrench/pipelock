@@ -42,6 +42,11 @@ const (
 	blockingGateTaintAskDenied = "taint_ask_denied"
 )
 
+const (
+	dowMissingTrustedSessionReason = "missing trusted MCP session for denial-of-wallet enforcement"
+	dowMissingTrustedSessionBudget = "session_identity"
+)
+
 // BindingReason values populated by the stdio gate helper when a
 // session binding violation fires. Callers switch on these to emit
 // the right per-reason diagnostic log.
@@ -230,6 +235,41 @@ func mcpFrameParams(frame MCPFrame) json.RawMessage {
 		return nil
 	}
 	return decoded.Params
+}
+
+// applyDoWGate evaluates the denial-of-wallet gate and records the outcome on
+// eval, reporting whether the caller must stop and return immediately.
+//
+// The HTTP and stdio gates share this rather than each carrying a copy. The
+// trusted-session branch is a fail-closed security decision, and when the same
+// decision exists twice a change applied to one copy leaves the other surface
+// open with nothing to catch it.
+func applyDoWGate(opts MCPProxyOpts, eval *MCPInputEvaluation, enforcementIdentity string, frame MCPFrame, msg []byte) bool {
+	if opts.DoWCheck == nil || enforcementIdentity == "" {
+		return false
+	}
+	subjectKey := opts.DoWSubjectKey
+	if subjectKey == "" {
+		subjectKey = opts.DoWSessionKey
+	}
+	if opts.DoWRequireTrustedSession && subjectKey == "" {
+		eval.DoWAllowed = false
+		eval.DoWAction = config.ActionBlock
+		eval.DoWReason = dowMissingTrustedSessionReason
+		eval.DoWBudgetType = dowMissingTrustedSessionBudget
+		eval.BlockingGate = blockingGateDoW
+		return true
+	}
+	allowed, action, reason, budgetType := opts.DoWCheck(subjectKey, enforcementIdentity, mcpFrameDoWArgs(frame, msg))
+	eval.DoWAllowed = allowed
+	eval.DoWAction = action
+	eval.DoWReason = reason
+	eval.DoWBudgetType = budgetType
+	if !allowed && action == config.ActionBlock {
+		eval.BlockingGate = blockingGateDoW
+		return true
+	}
+	return false
 }
 
 func mcpFrameDoWArgs(frame MCPFrame, msg []byte) string {
@@ -421,16 +461,8 @@ func EvaluateMCPInputGates(
 
 	// DoW. Applies to tools/call by tool name and to A2A methods by the
 	// namespaced method identity.
-	if opts.DoWCheck != nil && enforcementIdentity != "" {
-		allowed, action, reason, budgetType := opts.DoWCheck(enforcementIdentity, mcpFrameDoWArgs(frame, msg))
-		eval.DoWAllowed = allowed
-		eval.DoWAction = action
-		eval.DoWReason = reason
-		eval.DoWBudgetType = budgetType
-		if !allowed && action == config.ActionBlock {
-			eval.BlockingGate = blockingGateDoW
-			return eval
-		}
+	if applyDoWGate(opts, &eval, enforcementIdentity, frame, msg) {
+		return eval
 	}
 
 	// session binding. HTTP listener traffic shares a listener-level baseline.
@@ -666,16 +698,8 @@ func EvaluateMCPInputGatesStdio(
 
 	// DoW. Applies to tools/call by tool name and to A2A methods by the
 	// namespaced method identity.
-	if opts.DoWCheck != nil && enforcementIdentity != "" {
-		allowed, action, reason, budgetType := opts.DoWCheck(enforcementIdentity, mcpFrameDoWArgs(frame, msg))
-		eval.DoWAllowed = allowed
-		eval.DoWAction = action
-		eval.DoWReason = reason
-		eval.DoWBudgetType = budgetType
-		if !allowed && action == config.ActionBlock {
-			eval.BlockingGate = blockingGateDoW
-			return eval
-		}
+	if applyDoWGate(opts, &eval, enforcementIdentity, frame, msg) {
+		return eval
 	}
 
 	// session binding callable check. Overrides the batch pre-check when it

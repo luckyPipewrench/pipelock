@@ -177,7 +177,7 @@ func TestEvaluateMCPInputGates_CrossAgentA2ARecordedWhenDoWBlocksWithoutA2AScann
 	cfg := config.Defaults()
 	rec := &taintRecorder{}
 	contaminateRecorder(rec, true)
-	dow := func(_, _ string) (bool, string, string, string) {
+	dow := func(_, _, _ string) (bool, string, string, string) {
 		return false, config.ActionBlock, "dow: a2a budget exceeded", "calls"
 	}
 
@@ -225,7 +225,7 @@ func TestEvaluateMCPInputGatesStdio_CrossAgentA2ARecordedWhenDoWBlocksWithoutA2A
 	cfg := config.Defaults()
 	rec := &taintRecorder{}
 	contaminateRecorder(rec, true)
-	dow := func(_, _ string) (bool, string, string, string) {
+	dow := func(_, _, _ string) (bool, string, string, string) {
 		return false, config.ActionBlock, "dow: a2a budget exceeded", "calls"
 	}
 
@@ -360,7 +360,7 @@ func TestEvaluateMCPInputGates_CrossAgentRecordedWhenLaterGateBlocks(t *testing.
 
 	// A DoW check that blocks every tool call — runs after the cross-agent
 	// observe and short-circuits the evaluation.
-	dow := func(_, _ string) (bool, string, string, string) {
+	dow := func(_, _, _ string) (bool, string, string, string) {
 		return false, config.ActionBlock, "dow: budget exceeded", "calls"
 	}
 
@@ -389,7 +389,7 @@ func TestEvaluateMCPInputGatesStdio_CrossAgentRecordedWhenLaterGateBlocks(t *tes
 	rec := &taintRecorder{}
 	contaminateRecorder(rec, true) // hostile
 
-	dow := func(_, _ string) (bool, string, string, string) {
+	dow := func(_, _, _ string) (bool, string, string, string) {
 		return false, config.ActionBlock, "dow: budget exceeded", "calls"
 	}
 

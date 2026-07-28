@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -31,10 +32,12 @@ import (
 )
 
 // DoWCheckFunc checks an MCP action identity against denial-of-wallet budgets.
+// subjectKey is empty for single-session transports and a stable MCP DoW
+// subject for multi-client HTTP listener traffic.
 // The identity is a raw tool name for tools/call and "a2a:<Method>" for A2A.
 // Returns (allowed, action, reason, budgetType). Action is "block" or "warn".
 // When action is "warn", the caller logs but does not block the request.
-type DoWCheckFunc func(toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
+type DoWCheckFunc func(subjectKey, toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
 
 const (
 	transportMCPStdio = "mcp_stdio"
@@ -50,6 +53,15 @@ type MCPRedactionConfig struct {
 	Limits   redact.Limits
 	Profile  string
 	Required bool
+}
+
+func (o MCPProxyOpts) dowSubjectKeyForRequest(r *http.Request) string {
+	if o.DoWAuthenticatedPrincipal != nil {
+		if principal := strings.TrimSpace(o.DoWAuthenticatedPrincipal(r)); principal != "" {
+			return principal
+		}
+	}
+	return identitykey.CEESafeKey(o.DoWSubjectAgent, adaptiveHostFromRemoteAddr(r.RemoteAddr), o.DoWSubjectAgentAuth)
 }
 
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
@@ -166,6 +178,32 @@ type MCPProxyOpts struct {
 
 	// Denial-of-wallet tracking (nil-safe).
 	DoWCheck DoWCheckFunc
+	// DoWSubjectKey is set per request by multi-client transports before
+	// invoking the shared input pipeline. Empty is valid only when
+	// DoWRequireTrustedSession is false.
+	DoWSubjectKey string
+	// DoWSessionKey is a deprecated alias for older direct pipeline callers.
+	DoWSessionKey string
+	// DoWSubjectAgent and DoWSubjectAgentAuth are the configured fallback
+	// identity components used when no future authenticated MCP principal is
+	// available. Only bound/config-default auth contributes the agent name.
+	DoWSubjectAgent     string
+	DoWSubjectAgentAuth envelope.ActorAuth
+	// DoWAuthenticatedPrincipal is a future seam for mTLS/OAuth-style MCP
+	// client principals. It is nil today for shipped MCP listener paths.
+	DoWAuthenticatedPrincipal func(*http.Request) string
+	// DoWRequireTrustedSession makes missing/unknown session identity a
+	// fail-closed DoW block for tool and A2A calls. HTTP listener mode enables
+	// this because a raw client-supplied Mcp-Session-Id is not a trustworthy
+	// budget key until Pipelock has observed the upstream issue it.
+	DoWRequireTrustedSession bool
+	// DoWSessionKnown reports whether an inbound Mcp-Session-Id has previously
+	// been issued by the upstream through this Pipelock listener.
+	DoWSessionKnown func(sessionKey string) bool
+	// DoWRegisterSession records an upstream-issued Mcp-Session-Id as trusted.
+	DoWRegisterSession func(sessionKey string)
+	// DoWForgetSession removes a session after a successful MCP DELETE.
+	DoWForgetSession func(sessionKey string)
 
 	// Policy capture observer for recording scan verdicts.
 	// Defaults to capture.NopObserver{} when nil.

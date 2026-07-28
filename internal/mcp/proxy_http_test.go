@@ -5876,7 +5876,7 @@ func TestScanHTTPInput_DoWBlock(t *testing.T) {
 	opts := MCPProxyOpts{
 		Scanner:  sc,
 		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
-		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 			if toolName == testDoWToolName {
 				return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
 			}
@@ -5907,7 +5907,7 @@ func TestScanHTTPInput_DoWWarn(t *testing.T) {
 	opts := MCPProxyOpts{
 		Scanner:  sc,
 		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
-		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 			if toolName == "moderate_tool" {
 				return false, config.ActionWarn, "near budget", testDoWBudgetType
 			}
@@ -5947,7 +5947,7 @@ func TestScanHTTPInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) {
 			opts := MCPProxyOpts{
 				Scanner:     testScannerForHTTP(t),
 				AuditLogger: auditLogger,
-				DoWCheck: func(_, _ string) (bool, string, string, string) {
+				DoWCheck: func(_, _, _ string) (bool, string, string, string) {
 					return false, tt.action, reason, "tool_call_limit"
 				},
 			}
@@ -5989,7 +5989,7 @@ func TestScanHTTPInput_DoWBlockNotification(t *testing.T) {
 	opts := MCPProxyOpts{
 		Scanner:  sc,
 		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
-		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 			if toolName == testDoWToolName {
 				return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
 			}
@@ -6042,7 +6042,7 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
 			Scanner:  sc,
 			InputCfg: inputCfg,
-			DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+			DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 				if toolName == testDoWToolName {
 					return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
 				}
@@ -6080,6 +6080,298 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_DoWRequiresServerIssuedSession(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                  testScannerForHTTP(t),
+		DoWRequireTrustedSession: true,
+		DoWSessionKnown: func(string) bool {
+			return false
+		},
+		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+			return true, config.ActionBlock, "", ""
+		},
+	})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), dowMissingTrustedSessionReason) {
+		t.Fatalf("body = %s, want trusted-session DoW failure", body)
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 for fail-closed DoW session rejection", got)
+	}
+}
+
+func TestHTTPListener_DoWUsesStableSubjectAcrossServerIssuedSessions(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "server-session-"+string(request.ID))
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	var (
+		mu     sync.Mutex
+		known  = map[string]bool{}
+		counts = map[string]int{}
+	)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                  testScannerForHTTP(t),
+		DoWRequireTrustedSession: true,
+		DoWSessionKnown: func(sessionKey string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return known[sessionKey]
+		},
+		DoWRegisterSession: func(sessionKey string) {
+			mu.Lock()
+			defer mu.Unlock()
+			known[sessionKey] = true
+		},
+		DoWCheck: func(sessionKey, _, _ string) (bool, string, string, string) {
+			mu.Lock()
+			defer mu.Unlock()
+			counts[sessionKey]++
+			if counts[sessionKey] > 1 {
+				return false, config.ActionBlock, "subject budget exceeded", "test_budget"
+			}
+			return true, config.ActionBlock, "", ""
+		},
+	})
+
+	sessionA := initializeHTTPListenerSession(t, baseURL, 101)
+	sessionB := initializeHTTPListenerSession(t, baseURL, 202)
+	if body := postHTTPListenerToolCall(t, baseURL, sessionA, http.StatusOK); strings.Contains(body, "subject budget exceeded") {
+		t.Fatalf("first session-a call body = %s, want allowed", body)
+	}
+	body := postHTTPListenerToolCall(t, baseURL, sessionB, http.StatusOK)
+	if !strings.Contains(body, "subject budget exceeded") {
+		t.Fatalf("new server session body = %s, want same-subject budget block", body)
+	}
+}
+
+func TestHTTPListener_DoWCollapsesSelfDeclaredAgentRenameToSameSubject(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "server-session-"+string(request.ID))
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	var (
+		mu     sync.Mutex
+		known  = map[string]bool{}
+		counts = map[string]int{}
+	)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                  testScannerForHTTP(t),
+		DoWRequireTrustedSession: true,
+		DoWSessionKnown: func(sessionKey string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return known[sessionKey]
+		},
+		DoWRegisterSession: func(sessionKey string) {
+			mu.Lock()
+			defer mu.Unlock()
+			known[sessionKey] = true
+		},
+		DoWCheck: func(subjectKey, _, _ string) (bool, string, string, string) {
+			mu.Lock()
+			defer mu.Unlock()
+			counts[subjectKey]++
+			if counts[subjectKey] > 1 {
+				return false, config.ActionBlock, "subject budget exceeded", "test_budget"
+			}
+			return true, config.ActionBlock, "", ""
+		},
+	})
+
+	sessionA := initializeHTTPListenerSession(t, baseURL, 303)
+	sessionB := initializeHTTPListenerSession(t, baseURL, 404)
+	if body := postHTTPListenerToolCallWithAgent(t, baseURL, sessionA, "attacker-alpha", http.StatusOK); strings.Contains(body, "subject budget exceeded") {
+		t.Fatalf("first self-declared agent call body = %s, want allowed", body)
+	}
+	body := postHTTPListenerToolCallWithAgent(t, baseURL, sessionB, "attacker-beta", http.StatusOK)
+	if !strings.Contains(body, "subject budget exceeded") {
+		t.Fatalf("renamed self-declared agent body = %s, want same-subject budget block", body)
+	}
+}
+
+func TestHTTPListener_DoWSubjectIgnoresForwardedClientHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "server-session-"+string(request.ID))
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	var (
+		mu       sync.Mutex
+		known    = map[string]bool{}
+		subjects []string
+	)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                  testScannerForHTTP(t),
+		DoWRequireTrustedSession: true,
+		DoWSubjectAgent:          "bound-agent",
+		DoWSubjectAgentAuth:      envelope.ActorAuthBound,
+		DoWSessionKnown: func(sessionKey string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return known[sessionKey]
+		},
+		DoWRegisterSession: func(sessionKey string) {
+			mu.Lock()
+			defer mu.Unlock()
+			known[sessionKey] = true
+		},
+		DoWCheck: func(subjectKey, _, _ string) (bool, string, string, string) {
+			mu.Lock()
+			defer mu.Unlock()
+			subjects = append(subjects, subjectKey)
+			return true, config.ActionBlock, "", ""
+		},
+	})
+
+	sessionA := initializeHTTPListenerSession(t, baseURL, 505)
+	sessionB := initializeHTTPListenerSession(t, baseURL, 606)
+	postHTTPListenerToolCallWithForwardedHeaders(t, baseURL, sessionA, "198.51.100.10")
+	postHTTPListenerToolCallWithForwardedHeaders(t, baseURL, sessionB, "198.51.100.200")
+
+	mu.Lock()
+	captured := append([]string(nil), subjects...)
+	mu.Unlock()
+
+	if len(captured) != 2 {
+		t.Fatalf("captured subjects = %d, want 2", len(captured))
+	}
+	if captured[0] == "" || captured[0] != captured[1] {
+		t.Fatalf("forwarded headers changed DoW subject: %q vs %q", captured[0], captured[1])
+	}
+	if strings.Contains(captured[0], "198.51.100.") {
+		t.Fatalf("DoW subject used spoofable forwarded header value: %q", captured[0])
+	}
+}
+
+func initializeHTTPListenerSession(t *testing.T, baseURL string, id int) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"initialize","params":{}}`, id)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("initialize POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatal("initialize response missing Mcp-Session-Id")
+	}
+	return sessionID
+}
+
+func postHTTPListenerToolCall(t *testing.T, baseURL, sessionID string, wantStatus int) string {
+	t.Helper()
+	return postHTTPListenerToolCallWithAgent(t, baseURL, sessionID, "", wantStatus)
+}
+
+func postHTTPListenerToolCallWithForwardedHeaders(t *testing.T, baseURL, sessionID, forwardedFor string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	req.Header.Set("X-Forwarded-For", forwardedFor)
+	req.Header.Set("Forwarded", "for="+forwardedFor)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("tool POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+}
+
+func postHTTPListenerToolCallWithAgent(t *testing.T, baseURL, sessionID, agent string, wantStatus int) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	if agent != "" {
+		req.Header.Set("X-Pipelock-Agent", agent)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("tool POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, wantStatus, body)
+	}
+	return string(body)
+}
+
 // TestScanHTTPInput_DoWMetadataBackfill exercises the metadata extraction path
 // (line ~243) where input scanning is DISABLED but DoWCheck is non-nil.
 // Without the backfill, verdict.Method is empty and DoW never fires.
@@ -6090,7 +6382,7 @@ func TestScanHTTPInput_DoWMetadataBackfill(t *testing.T) {
 	opts := MCPProxyOpts{
 		Scanner:  sc,
 		InputCfg: nil, // input scanning disabled
-		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 			if toolName == testDoWToolName {
 				return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
 			}
@@ -6836,7 +7128,7 @@ func TestScanHTTPInputDecision_ReceiptBackfillWhenInputScanningDisabledAndBlocke
 		Scanner:        sc,
 		ReceiptEmitter: receiptEmitter,
 		Transport:      "mcp_http",
-		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+		DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 			if toolName == "expensive_tool" {
 				return false, config.ActionBlock, "budget exceeded", "per_call"
 			}

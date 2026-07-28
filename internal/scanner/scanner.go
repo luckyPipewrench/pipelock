@@ -2925,12 +2925,6 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 }
 
 func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Result, bool) {
-	// Real image data-URLs contain a literal ';' (data:image/png;base64,...). If
-	// left in place, the ambiguous raw-query parser would split inside the
-	// payload and treat the high-entropy base64 as a parameter key. Replace
-	// verified image payloads first so they do not trigger separator-based splitting.
-	// Fake/non-image data-URLs are not replaced and remain blocked.
-	rawQuery = replaceVerifiedQueryImageDataURLs(rawQuery)
 	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool {
 		return r == '&' || r == ';'
 	}) {
@@ -2956,9 +2950,6 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		}
 		if result, blocked := unsafeDatabaseURIQueryValueResult(value); blocked {
 			return result, true
-		}
-		if rawValue == verifiedQueryImagePlaceholder {
-			continue
 		}
 		if !scanEntropy || len(value) < s.entropyMinLen {
 			continue
@@ -3152,11 +3143,6 @@ func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
 }
 
 func shouldSkipQueryValueEntropy(value string, entropy, threshold float64) bool {
-	// Strict query-safe image data URLs are high-entropy by construction. This
-	// query-only recognizer is narrower than the response/text-DLP carve-out.
-	if isVerifiedImageDataURL(value) {
-		return true
-	}
 	if entropy <= threshold || entropy > threshold+0.35 {
 		return false
 	}

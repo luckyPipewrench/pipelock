@@ -41,6 +41,12 @@ func (s *Server) currentToolPolicyCfg() *policy.Config {
 	return s.toolPolicyCfg
 }
 
+func (s *Server) currentMCPDoWRuntime() *mcpDoWRuntime {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.mcpDoW
+}
+
 func (s *Server) currentMCPChainMatcher() *chains.Matcher {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()

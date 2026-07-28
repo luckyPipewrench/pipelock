@@ -869,7 +869,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// double-counted. p.SessionStore() reads from the atomic
 		// pointer, so it returns the live store even after hot-reloads.
 		mcpStore := s.proxy.SessionStore() // nil when session profiling is disabled
-		mcpDoWWiring := s.mcpDoW.Wiring()
+		mcpDoWWiring := s.currentMCPDoWRuntime().Wiring()
 
 		// Pass a function that reads the adaptive config from the live
 		// proxy config on each request. This ensures the long-lived

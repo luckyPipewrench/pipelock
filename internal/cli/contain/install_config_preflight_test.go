@@ -59,6 +59,34 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 	}
 }
 
+func TestRunInstall_ConfigPreflightRefusesMissingManagedConfigBeforeServiceMutation(t *testing.T) {
+	env, runner, _ := newPreflightInstallEnv(t)
+	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+		t.Fatalf("write ca export: %v", err)
+	}
+	target := managedPipelockConfigPath(env)
+
+	err := runInstall(context.Background(), env, installOpts{})
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+	if err == nil {
+		t.Fatal("runInstall succeeded, want missing managed config preflight failure")
+	}
+	for _, want := range []string{
+		target,
+		"--config is required if the managed config is not already in place",
+		"No --config was given and no config exists at the managed path",
+		"service would start with no configuration",
+		"Pass --config",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(env.pipelockTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("installed binary changed before preflight refusal: stat err=%v", statErr)
+	}
+}
+
 func TestRunInstall_ConfigPreflightCoversUpgradeWithoutConfigFlag(t *testing.T) {
 	env, runner, _ := newPreflightInstallEnv(t)
 	target := managedPipelockConfigPath(env)
@@ -78,6 +106,37 @@ func TestRunInstall_ConfigPreflightCoversUpgradeWithoutConfigFlag(t *testing.T) 
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want substring %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "No --config was given and no config exists") {
+		t.Fatalf("invalid existing config used missing-config refusal: %v", err)
+	}
+}
+
+func TestRunInstall_ConfigPreflightDryRunReportsMissingManagedConfig(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	target := managedPipelockConfigPath(env)
+
+	err := runInstall(context.Background(), env, installOpts{dryRun: true})
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+	if err == nil {
+		t.Fatal("dry-run succeeded, want missing managed config preflight failure")
+	}
+	for _, want := range []string{
+		target,
+		"--config is required if the managed config is not already in place",
+		"No --config was given and no config exists at the managed path",
+		"service would start with no configuration",
+		"Pass --config",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("dry-run missing-config preflight shelled out: %+v", runner.calls)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("dry-run wrote managed config: stat err=%v", statErr)
 	}
 }
 
@@ -110,11 +169,28 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 		t.Fatalf("write ca export: %v", err)
 	}
 	src := writePreflightConfig(t, "clean.yaml", "mode: balanced\n")
+	if _, statErr := os.Stat(managedPipelockConfigPath(env)); !os.IsNotExist(statErr) {
+		t.Fatalf("managed config exists before fresh install: stat err=%v", statErr)
+	}
 
 	if err := runInstall(context.Background(), env, installOpts{configSource: src}); err != nil {
 		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
 	}
 	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", managedPipelockConfigPath(env))
+	assertSawCall(t, runner, testSystemctl, "enable", "--now", "pipelock")
+}
+
+func TestRunInstall_ConfigPreflightAllowsValidExistingManagedConfigWithoutConfigFlag(t *testing.T) {
+	env, runner, buf := newPreflightInstallEnv(t)
+	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+		t.Fatalf("write ca export: %v", err)
+	}
+	target := seedManagedConfig(t, env, "mode: balanced\n")
+
+	if err := runInstall(context.Background(), env, installOpts{}); err != nil {
+		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
+	}
+	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", target)
 	assertSawCall(t, runner, testSystemctl, "enable", "--now", "pipelock")
 }
 

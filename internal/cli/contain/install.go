@@ -920,9 +920,10 @@ func stepPreflightPipelockConfig(opts installOpts) step {
 }
 
 type pipelockConfigPreflightTarget struct {
-	checkPath string
-	unitPath  string
-	drySource bool
+	checkPath      string
+	unitPath       string
+	drySource      bool
+	missingManaged bool
 }
 
 func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installOpts, dryRun bool) error {
@@ -932,6 +933,13 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 	}
 	if !ok {
 		return nil
+	}
+	if target.missingManaged {
+		return fmt.Errorf("contain install config preflight failed for %s: --config is required if the managed config is not already in place. "+
+			"No --config was given and no config exists at the managed path, so the service would start with no configuration. "+
+			"Pass --config to copy a pipelock.yaml to %s. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+			target.unitPath, target.unitPath)
 	}
 	if target.drySource {
 		_, _ = fmt.Fprintf(env.out,
@@ -972,7 +980,7 @@ func pipelockConfigPreflightTargetFor(env *installEnv, opts installOpts, dryRun 
 	info, err := env.stat(unitPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return pipelockConfigPreflightTarget{}, false, nil
+			return pipelockConfigPreflightTarget{unitPath: unitPath, missingManaged: true}, true, nil
 		}
 		return pipelockConfigPreflightTarget{}, false, fmt.Errorf("stat managed config %s for preflight: %w", unitPath, err)
 	}

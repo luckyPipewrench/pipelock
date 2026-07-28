@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,6 +30,37 @@ func TestHTTPListener_RejectsRoutingHeaderBodyDisagreement(t *testing.T) {
 	defer upstream.Close()
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
 
+	// A bare 400 can be returned for many reasons. The revision allocates
+	// HeaderMismatch (-32020) for this specific condition, so assert the code.
+	requireHeaderMismatch := func(body string, setHeaders func(http.Header)) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		setHeaders(req.Header)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+		var rpc struct {
+			Error struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if rpc.Error.Code != mcpHeaderMismatchCode {
+			t.Errorf("error code = %d, want %d (HeaderMismatch)", rpc.Error.Code, mcpHeaderMismatchCode)
+		}
+	}
+
 	request := func(body string, setHeaders func(http.Header)) int {
 		t.Helper()
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
@@ -46,20 +78,16 @@ func TestHTTPListener_RejectsRoutingHeaderBodyDisagreement(t *testing.T) {
 	}
 
 	t.Run("method header disagrees with body", func(t *testing.T) {
-		if got := request(jsonToolsList, func(h http.Header) {
+		requireHeaderMismatch(jsonToolsList, func(h http.Header) {
 			h.Set(listenerMCPMethod, "tools/call")
-		}); got != http.StatusBadRequest {
-			t.Errorf("status = %d, want 400 (Pipelock scanned tools/list, upstream would route tools/call)", got)
-		}
+		})
 	})
 
 	t.Run("name header disagrees with body tool name", func(t *testing.T) {
-		if got := request(routingHeaderToolsCall, func(h http.Header) {
+		requireHeaderMismatch(routingHeaderToolsCall, func(h http.Header) {
 			h.Set(listenerMCPMethod, "tools/call")
 			h.Set(listenerMCPName, "read_note")
-		}); got != http.StatusBadRequest {
-			t.Errorf("status = %d, want 400 (Pipelock applied policy to echo, upstream would route read_note)", got)
-		}
+		})
 	})
 
 	t.Run("malformed routing headers", func(t *testing.T) {
@@ -81,6 +109,33 @@ func TestHTTPListener_RejectsRoutingHeaderBodyDisagreement(t *testing.T) {
 			if got := request(jsonToolsList, func(h http.Header) {
 				h.Add(listenerMCPMethod, "tools/list")
 				h.Add(listenerMCPMethod, "tools/call")
+			}); got != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", got)
+			}
+		})
+		// Mcp-Name is equally untrusted routing input. Exercised with a valid
+		// tools/call body and an agreeing method header, so a rejection can
+		// only come from the name header's own shape validation.
+		for _, tc := range []struct{ name, value string }{
+			{"tab", "ec\tho"},
+			{"non-ascii", "ech\u00f6"},
+			{"oversized", strings.Repeat("a", 9010)},
+			{"empty", ""},
+		} {
+			t.Run("name/"+tc.name, func(t *testing.T) {
+				if got := request(routingHeaderToolsCall, func(h http.Header) {
+					h.Set(listenerMCPMethod, "tools/call")
+					h[listenerMCPName] = []string{tc.value}
+				}); got != http.StatusBadRequest {
+					t.Errorf("status = %d, want 400", got)
+				}
+			})
+		}
+		t.Run("name/duplicate", func(t *testing.T) {
+			if got := request(routingHeaderToolsCall, func(h http.Header) {
+				h.Set(listenerMCPMethod, "tools/call")
+				h.Add(listenerMCPName, "echo")
+				h.Add(listenerMCPName, "read_note")
 			}); got != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400", got)
 			}

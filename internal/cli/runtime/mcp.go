@@ -72,6 +72,16 @@ var reservedTransportHeaders = map[string]struct{}{
 	http.CanonicalHeaderKey("Content-Length"):    {},
 	http.CanonicalHeaderKey("Transfer-Encoding"): {},
 	http.CanonicalHeaderKey("Host"):              {},
+	// Mcp-Method and Mcp-Name describe the individual call a request carries,
+	// so no single value can be correct for a whole session. Pinning one is
+	// startup-valid but bricks the listener: the pinned value replaces the
+	// client's before the body is parsed, and every request whose method or
+	// tool name differs from the pin is then refused as a routing-header
+	// disagreement. Rejecting the pin outright is clearer than shipping a
+	// configuration whose only correct value is the one method a deployment
+	// happens to use.
+	http.CanonicalHeaderKey("Mcp-Method"): {},
+	http.CanonicalHeaderKey("Mcp-Name"):   {},
 }
 
 // singletonUpstreamHeaders carry credentials or negotiated service policy.

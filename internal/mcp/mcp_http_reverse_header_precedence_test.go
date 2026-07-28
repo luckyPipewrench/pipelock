@@ -13,11 +13,10 @@ import (
 
 // a client must not clobber an operator-pinned upstream header.
 func TestHTTPListener_ClientCannotOverrideOperatorPinnedHeaders(t *testing.T) {
-	var gotVersion, gotExt, gotVer, gotAuth, gotMethod, gotName string
+	var gotVersion, gotExt, gotVer, gotAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotVersion, gotExt = r.Header.Get(listenerProtocolVersion), r.Header.Get("A2A-Extensions")
 		gotVer, gotAuth = r.Header.Get("A2A-Version"), r.Header.Get("Authorization")
-		gotMethod, gotName = r.Header.Get(listenerMCPMethod), r.Header.Get(listenerMCPName)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
 	}))
@@ -30,8 +29,6 @@ func TestHTTPListener_ClientCannotOverrideOperatorPinnedHeaders(t *testing.T) {
 			listenerProtocolVersion: []string{"2025-06-18"},
 			"A2A-Extensions":        []string{"https://operator.example/ext"},
 			"A2A-Version":           []string{"1.0"},
-			listenerMCPMethod:       []string{"tools/list"},
-			listenerMCPName:         []string{"operator-pinned"},
 		},
 	})
 
@@ -41,8 +38,6 @@ func TestHTTPListener_ClientCannotOverrideOperatorPinnedHeaders(t *testing.T) {
 	req.Header.Set(listenerProtocolVersion, "1999-01-01-DOWNGRADE")
 	req.Header.Set("A2A-Extensions", "https://attacker.example/ext")
 	req.Header.Set("A2A-Version", "ATTACKER-VERSION")
-	req.Header.Set(listenerMCPMethod, "tools/call")
-	req.Header.Set(listenerMCPName, "attacker-tool")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -57,12 +52,27 @@ func TestHTTPListener_ClientCannotOverrideOperatorPinnedHeaders(t *testing.T) {
 		{listenerProtocolVersion, gotVersion, "2025-06-18"},
 		{"A2A-Extensions", gotExt, "https://operator.example/ext"},
 		{"A2A-Version", gotVer, "1.0"},
-		{listenerMCPMethod, gotMethod, "tools/list"},
-		{listenerMCPName, gotName, "operator-pinned"},
 	} {
 		if c.got != c.want {
 			t.Errorf("client CLOBBERED operator-pinned %s: upstream got %q, want %q", c.name, c.got, c.want)
 		}
+	}
+}
+
+// Mcp-Method and Mcp-Name describe the individual call, so no single pinned
+// value can be right for a session. Pinning one is startup-valid on its face
+// but refuses every request whose method differs from the pin, because the
+// pinned value replaces the client's before the agreement check runs. The
+// listener must refuse to start rather than serve that configuration.
+func TestValidateListenerUpstreamHeaders_RejectsPinnedRoutingHeaders(t *testing.T) {
+	for _, name := range []string{listenerMCPMethod, listenerMCPName} {
+		t.Run(name, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set(name, "tools/list")
+			if err := validateListenerUpstreamHeaders(headers); err == nil {
+				t.Errorf("pinning %s was accepted; it would refuse every other method at runtime", name)
+			}
+		})
 	}
 }
 
@@ -72,9 +82,15 @@ func TestHTTPListener_ClientCannotOverrideOperatorPinnedHeaders(t *testing.T) {
 // and back onto the deprecated session handshake: the proxy would silently
 // downgrade the protocol it is mediating.
 func TestHTTPListener_ForwardsRequiredMCPRequestHeaders(t *testing.T) {
-	var gotMethod, gotName string
+	// The handler runs on the server goroutine, so hand the captured values back
+	// over a channel rather than reading plain variables across goroutines.
+	type captured struct{ method, name string }
+	seen := make(chan captured, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotName = r.Header.Get(listenerMCPMethod), r.Header.Get(listenerMCPName)
+		select {
+		case seen <- captured{r.Header.Get(listenerMCPMethod), r.Header.Get(listenerMCPName)}:
+		default:
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
 	}))
@@ -97,11 +113,12 @@ func TestHTTPListener_ForwardsRequiredMCPRequestHeaders(t *testing.T) {
 		t.Fatalf("request status = %d, want 200", resp.StatusCode)
 	}
 
-	if gotMethod != "tools/list" {
-		t.Errorf("upstream got %s = %q, want %q (stripped header downgrades the protocol)", listenerMCPMethod, gotMethod, "tools/list")
+	got := <-seen
+	if got.method != "tools/list" {
+		t.Errorf("upstream got %s = %q, want %q (stripped header downgrades the protocol)", listenerMCPMethod, got.method, "tools/list")
 	}
-	if gotName != "echo" {
-		t.Errorf("upstream got %s = %q, want %q", listenerMCPName, gotName, "echo")
+	if got.name != "echo" {
+		t.Errorf("upstream got %s = %q, want %q", listenerMCPName, got.name, "echo")
 	}
 }
 

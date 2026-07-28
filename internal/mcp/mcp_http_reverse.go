@@ -53,6 +53,11 @@ const (
 	// response headers. It intentionally does not bound the body: see
 	// newReverseUpstreamTransport.
 	upstreamResponseHeaderTimeout = 30 * time.Second
+	// upstreamIdleReadTimeout bounds the GAP between upstream body reads. A
+	// healthy stream resets it on every event; a stalled upstream trips it. It
+	// deliberately does not bound total body lifetime: see
+	// newReverseUpstreamTransport.
+	upstreamIdleReadTimeout = 120 * time.Second
 	// Mcp-Method and Mcp-Name are required from revision 2026-07-28; the
 	// preflight is refused outright when a requested header is absent here, so
 	// omitting them blocks browser MCP clients rather than degrading them.
@@ -722,6 +727,10 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
+			// The client carries no total timeout so subscriptions/listen can stream;
+			// bound the gap between body reads instead, so an upstream that sends
+			// headers and then stalls cannot pin this goroutine and both connections.
+			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
 			if upResp.StatusCode >= 400 {
@@ -850,6 +859,10 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
+			// The client carries no total timeout so subscriptions/listen can stream;
+			// bound the gap between body reads instead, so an upstream that sends
+			// headers and then stalls cannot pin this goroutine and both connections.
+			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
@@ -1154,6 +1167,10 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
+		// The client carries no total timeout so subscriptions/listen can stream;
+		// bound the gap between body reads instead, so an upstream that sends
+		// headers and then stalls cannot pin this goroutine and both connections.
+		upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 		defer func() { _ = upResp.Body.Close() }()
 
 		// 202 Accepted: notification acknowledged, no body.
@@ -1459,7 +1476,10 @@ func acceptAllowsSSE(values []string) bool {
 }
 
 func applyOperatorPinnedServiceHeaders(request, operator http.Header) {
-	for _, name := range []string{listenerProtocolVersion, listenerMCPMethod, listenerMCPName, "A2A-Extensions", "A2A-Version"} {
+	// Mcp-Method and Mcp-Name are deliberately absent: they describe the
+	// individual call, are rejected as operator pins, and must reach the
+	// agreement check as the client sent them.
+	for _, name := range []string{listenerProtocolVersion, "A2A-Extensions", "A2A-Version"} {
 		values := operator.Values(name)
 		if len(values) == 0 {
 			continue
@@ -1586,7 +1606,11 @@ func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
 	if !opts.dowEnabled() {
 		return key
 	}
-	if !trust.Meets(opts.minSubjectTrust()) {
+	// Only blank the subject when the gate will actually refuse on it. The gate
+	// fail-closes on an empty key only under DoWEnforceSubjectTrust; returning
+	// empty with enforcement off would instead bill the request to the manager's
+	// shared bucket, which is the very outcome an empty key exists to prevent.
+	if opts.DoWEnforceSubjectTrust && !trust.Meets(opts.minSubjectTrust()) {
 		return ""
 	}
 	return key
@@ -1644,19 +1668,40 @@ func validMCPRoutingHeader(values []string) bool {
 // routingHeaderMatchesFrame reports whether the client's routing headers agree
 // with the JSON-RPC body Pipelock scanned. Disagreement means Pipelock applies
 // policy to one call while the upstream routes another, so it is refused rather
-// than forwarded. An absent header agrees by definition; a frame that failed to
-// parse is left to the existing parse-error handling.
+// than forwarded.
+//
+// An ABSENT header agrees by definition: revisions before 2026-07-28 never send
+// one. A PRESENT header must find a body value to agree with. A missing
+// comparable value is NOT agreement — it is the worst case, because Pipelock
+// has nothing to scan or apply policy to while the upstream still routes on the
+// header. Treating it as agreement was a fail-open.
 func routingHeaderMatchesFrame(headers http.Header, frame MCPFrame) bool {
-	if frame.ParseErr != nil || frame.IsBatch {
+	method := headers.Get(listenerMCPMethod)
+	name := headers.Get(listenerMCPName)
+	if method == "" && name == "" {
 		return true
 	}
-	if method := headers.Get(listenerMCPMethod); method != "" && frame.Method != "" && method != frame.Method {
+	// A single routing header cannot describe several calls, and an unparseable
+	// body offers nothing to compare. Both are refused rather than exempted, so
+	// the invariant does not quietly reopen if batch handling changes.
+	if frame.ParseErr != nil || frame.IsBatch {
 		return false
 	}
-	// Mcp-Name names the invoked entity. Only tools/call carries a comparable
-	// name in the body; for other methods the header has nothing to disagree
-	// with and is left to the upstream.
-	if name := headers.Get(listenerMCPName); name != "" && frame.IsToolsCall() && frame.ToolCallName != "" && name != frame.ToolCallName {
+	if method != "" && method != frame.Method {
+		return false
+	}
+	// Only tools/call carries a name Pipelock can compare, and it is the method
+	// whose name drives tool policy and per-tool accounting, so it is enforced
+	// strictly: a tools/call naming a tool the body does not is refused, INCLUDING
+	// the case where the body omits the name entirely. A missing body value is
+	// the worst case, not a tolerance, because the upstream still routes on the
+	// header while Pipelock sees no tool at all.
+	//
+	// Residual: other methods may legitimately carry Mcp-Name for an entity with
+	// no comparable body field, so those are left to the upstream rather than
+	// refused. Refusing them would break spec-legal requests to buy a check
+	// Pipelock cannot actually perform.
+	if name != "" && frame.IsToolsCall() && name != frame.ToolCallName {
 		return false
 	}
 	return true
@@ -1761,7 +1806,6 @@ func a2aHeaderBlockReason(result A2AScanResult) blockreason.Reason {
 func validateListenerUpstreamHeaders(headers http.Header) error {
 	for _, name := range []string{
 		listenerAuthorization, listenerProtocolVersion,
-		listenerMCPMethod, listenerMCPName,
 		"A2A-Extensions", "A2A-Version",
 	} {
 		if len(headers.Values(name)) > 1 {
@@ -1771,13 +1815,12 @@ func validateListenerUpstreamHeaders(headers http.Header) error {
 	if !validMCPProtocolVersion(headers.Values(listenerProtocolVersion)) {
 		return fmt.Errorf("operator upstream %s must be a valid YYYY-MM-DD protocol version", listenerProtocolVersion)
 	}
-	// Operator-pinned routing headers get the same shape check the client's do.
-	// Pinning a malformed value would otherwise fail every request at runtime
-	// rather than refusing to start, and a pinned value overrides the client's,
-	// so it is the one the upstream actually routes on.
+	// Routing headers are rejected as operator pins entirely (see
+	// reservedTransportHeaders), so there is no pinned value to shape-check
+	// here. Guard the invariant rather than trusting the caller.
 	for _, name := range []string{listenerMCPMethod, listenerMCPName} {
-		if !validMCPRoutingHeader(headers.Values(name)) {
-			return fmt.Errorf("operator upstream %s must be a non-empty visible ASCII value of at most 256 bytes", name)
+		if len(headers.Values(name)) > 0 {
+			return fmt.Errorf("operator upstream %s cannot be pinned: it describes an individual call, so a fixed value would refuse every other method", name)
 		}
 	}
 	if values := headers.Values(listenerAuthorization); len(values) > 0 && !validVisibleSingletonHeader(values, 8192) {

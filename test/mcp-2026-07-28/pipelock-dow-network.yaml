@@ -36,7 +36,7 @@ mcp_session_binding:
 agents:
   _default:
     budget:
-      max_tool_calls_per_session: 50
+      max_tool_calls_per_session: 1
       dow_action: block
 
 mcp_tool_policy:

@@ -134,10 +134,20 @@ fi
 # HeaderMismatch (-32020).
 # ---------------------------------------------------------------------------
 echo "Case 4: routing header/body disagreement refused"
+cache_hdr="$(curl -s -D - -o /dev/null -H 'Content-Type: application/json' -H 'Mcp-Method: tools/list' \
+  -X POST --data '{"jsonrpc":"2.0","id":11,"method":"tools/list"}' "http://127.0.0.1:$PPORT/mcp" \
+  | tr -d '\r' | grep -i '^cache-control:' | head -1)"
+if printf '%s' "$cache_hdr" | grep -qi 'no-store'; then
+  pass "responses carry Cache-Control: no-store"
+else
+  fail "response cache directive was '${cache_hdr:-<none>}', want no-store"
+fi
+
 before_rows="$(wc -l < "$TRACE")"
 
 mismatch_body='{"jsonrpc":"2.0","id":9,"method":"tools/list"}'
-code="$(curl -s -o /tmp/mcp-rig-mismatch.json -w '%{http_code}' \
+mismatch_out="$(mktemp -t mcp-rig-mismatch.XXXXXX)"
+code="$(curl -s -o "$mismatch_out" -w '%{http_code}' \
   -H 'Content-Type: application/json' -H 'Mcp-Method: tools/call' \
   -X POST --data "$mismatch_body" "http://127.0.0.1:$PPORT/mcp")"
 if [ "$code" = "400" ]; then
@@ -145,11 +155,12 @@ if [ "$code" = "400" ]; then
 else
   fail "method/body disagreement got HTTP $code, want 400"
 fi
-if grep -q -- '-32020' /tmp/mcp-rig-mismatch.json 2>/dev/null; then
+if grep -q -- '-32020' "$mismatch_out" 2>/dev/null; then
   pass "rejection carries HeaderMismatch (-32020)"
 else
-  fail "rejection did not carry -32020: $(head -c 200 /tmp/mcp-rig-mismatch.json 2>/dev/null)"
+  fail "rejection did not carry -32020: $(head -c 200 "$mismatch_out" 2>/dev/null)"
 fi
+rm -f "$mismatch_out"
 
 name_body='{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}'
 code="$(curl -s -o /dev/null -w '%{http_code}' \
@@ -161,6 +172,8 @@ else
   fail "tool-name/body disagreement got HTTP $code, want 400"
 fi
 
+# These agree with the body method, so a rejection can only come from the
+# header's own shape validation, not from the disagreement check.
 for bad in 'tools/	list' 'oversized'; do
   case "$bad" in oversized) value="$(printf 'a%.0s' $(seq 1 9010))" ;; *) value="$bad" ;; esac
   code="$(curl -s -o /dev/null -w '%{http_code}' \
@@ -191,10 +204,19 @@ fi
 echo "Case 5: budget bills a sessionless client (default minimum grade)"
 cleanup
 start_stack "$RIG_DIR/pipelock-dow-network.yaml" || exit 2
+# The fixture caps the budget at ONE tool call. A single successful call would
+# also pass if the sessionless request were never billed at all, so the proof is
+# that the SECOND call is refused: that can only happen if the first was charged
+# to a subject the second resolves to as well.
 if "$PY" "$RIG_DIR/client_2026.py" "http://127.0.0.1:$PPORT/mcp" >/dev/null 2>&1; then
-  pass "tool call allowed with a budget configured"
+  pass "first tool call allowed with a budget configured"
 else
   fail "budget refused a compliant sessionless tool call"
+fi
+if "$PY" "$RIG_DIR/client_2026.py" "http://127.0.0.1:$PPORT/mcp" >/dev/null 2>&1; then
+  fail "second tool call allowed past a one-call budget: the request is not being billed"
+else
+  pass "second tool call refused, so the first was charged to a stable subject"
 fi
 if [ "$(trace_q "$TRACE" used_legacy_handshake)" = "False" ]; then
   pass "still no downgrade with a budget configured"

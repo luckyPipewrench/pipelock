@@ -115,7 +115,10 @@ func TestReverseUpstreamClient_StreamsBodySlowerThanHeaderBound(t *testing.T) {
 			break
 		}
 	}
-	if total == 0 {
-		t.Fatal("read no stream bytes")
+	// A body deadline applied after headers would truncate the stream, and
+	// "some bytes arrived" cannot detect that. Require every frame.
+	const frames = 6
+	if want := frames * len("data: {}\n\n"); total != want {
+		t.Fatalf("read %d stream bytes, want %d: a post-header deadline truncated the body", total, want)
 	}
 }

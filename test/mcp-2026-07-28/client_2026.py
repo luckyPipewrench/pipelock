@@ -49,7 +49,16 @@ def main() -> int:
         return 2
     url = sys.argv[1]
     tool = sys.argv[2] if len(sys.argv) > 2 else "echo"
-    args = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {"text": "hello"}
+    try:
+        args = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {"text": "hello"}
+        if not isinstance(args, dict):
+            raise TypeError("tool arguments must be a JSON object")
+    except (ValueError, TypeError) as exc:
+        # The contract is a JSON verdict either way, so a bad argument string
+        # must not exit through a traceback.
+        print(json.dumps({"url": url, "tool": tool, "ok": False,
+                          "error_type": type(exc).__name__, "error": str(exc)}, indent=2))
+        return 1
     verdict = asyncio.run(drive(url, tool, args))
     print(json.dumps(verdict, indent=2, default=str))
     return 0 if verdict["ok"] else 1

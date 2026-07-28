@@ -34,6 +34,24 @@ func TestDoWPrincipalTrustAdvisory(t *testing.T) {
 		})
 	}
 
+	t.Run("an unrecognised grade is refused at load", func(t *testing.T) {
+		budget := &BudgetConfig{DoWMinSubjectTrust: "supervisor"}
+		if err := budget.ValidateDoW(); err == nil {
+			t.Error("unrecognised grade accepted; the operator would get a weaker policy than they wrote")
+		}
+	})
+
+	// Validation rejects an unknown spelling, so an unparseable value here can
+	// only mean the config bypassed validation. It must resolve to the
+	// strongest grade so the bypass fails closed rather than billing an
+	// unidentified subject.
+	t.Run("an unparseable grade resolves fail-closed", func(t *testing.T) {
+		budget := &BudgetConfig{DoWMinSubjectTrust: "supervisor"}
+		if got := budget.MinSubjectTrust(); got != DoWTrustPrincipal {
+			t.Errorf("MinSubjectTrust() = %v, want DoWTrustPrincipal", got)
+		}
+	})
+
 	t.Run("surfaces through ValidateWithWarnings", func(t *testing.T) {
 		cfg := Defaults()
 		cfg.Internal = nil

@@ -17,6 +17,7 @@ Usage: server_2026.py <port>
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -111,11 +112,45 @@ def trace_middleware(app):
     return wrapped
 
 
+async def slow_stream(scope, receive, send):
+    """A long-lived SSE response that outlives any short total timeout.
+
+    subscriptions/listen is a single long-lived POST response body, so the
+    proxy must not bound total body lifetime. Emitting events slowly over a
+    span longer than a plausible total timeout is what makes that observable
+    end to end rather than only in a unit test.
+    """
+    await send({
+        "type": "http.response.start",
+        "status": 200,
+        "headers": [(b"content-type", b"text/event-stream"), (b"cache-control", b"no-cache")],
+    })
+    for index in range(int(os.environ.get("MCP_RIG_STREAM_EVENTS", "6"))):
+        await asyncio.sleep(float(os.environ.get("MCP_RIG_STREAM_GAP", "0.4")))
+        payload = json.dumps({"jsonrpc": "2.0", "method": "notifications/message",
+                              "params": {"seq": index}}).encode()
+        await send({"type": "http.response.body", "body": b"data: " + payload + b"\n\n",
+                    "more_body": True})
+    await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+def with_stream_route(app):
+    """Route /stream to the long-lived responder, everything else to MCP."""
+
+    async def wrapped(scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/stream":
+            await slow_stream(scope, receive, send)
+            return
+        await app(scope, receive, send)
+
+    return wrapped
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: server_2026.py <port>", file=sys.stderr)
         return 2
-    app = trace_middleware(build().streamable_http_app())
+    app = trace_middleware(with_stream_route(build().streamable_http_app()))
     uvicorn.run(app, host="127.0.0.1", port=int(sys.argv[1]), log_level="warning")
     return 0
 

@@ -77,9 +77,14 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	}
 	r.mu.Unlock()
 
-	if tripped && err != nil && !errors.Is(err, io.EOF) {
+	if tripped && err != nil {
 		// The close came from the idle timer, so report why rather than
 		// surfacing a generic use-of-closed-connection error.
+		//
+		// This deliberately covers io.EOF. A ReadCloser is entitled to report
+		// EOF once closed, and forwarding that would present a stalled,
+		// truncated response to the caller as a clean end of stream, which is
+		// precisely the failure the idle budget exists to catch.
 		return n, ErrUpstreamIdleTimeout
 	}
 	return n, err

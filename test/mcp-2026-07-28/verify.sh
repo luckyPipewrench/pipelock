@@ -282,6 +282,59 @@ else
   fail "MRTR inputResponses exfiltrated a secret: $mrtr"
 fi
 
+# ---------------------------------------------------------------------------
+# Case 8: a long-lived response body is not severed.
+#
+# Revision 2026-07-28 replaces the GET notification endpoint with
+# subscriptions/listen: one long-lived POST response body. The upstream client
+# therefore carries no TOTAL timeout, only a header timeout plus an idle budget.
+# A total timeout would cut a healthy stream on a fixed schedule, and only an
+# end-to-end stream that outlives such a bound can show the difference.
+# ---------------------------------------------------------------------------
+echo "Case 8: long-lived response body survives"
+cleanup
+start_stack "$RIG_DIR/pipelock-baseline.yaml" || exit 2
+
+stream_out="$(mktemp -t mcp-rig-stream.XXXXXX)"
+stream_start="$(date +%s)"
+curl -s --max-time 30 -o "$stream_out" -H 'Content-Type: application/json' -H 'Mcp-Method: tools/list' \
+  -X POST --data '{"jsonrpc":"2.0","id":20,"method":"tools/list"}' \
+  "http://127.0.0.1:$SPORT/stream" 2>/dev/null
+stream_elapsed=$(( $(date +%s) - stream_start ))
+events="$(grep -c '^data: ' "$stream_out" 2>/dev/null || echo 0)"
+rm -f "$stream_out"
+
+if [ "$events" -ge 6 ]; then
+  pass "streamed $events events over ${stream_elapsed}s without being severed"
+else
+  fail "stream delivered $events events in ${stream_elapsed}s, want at least 6"
+fi
+
+# ---------------------------------------------------------------------------
+# Case 9: shape validation refuses a header the agreement check would accept.
+#
+# The malformed cases above also DISAGREE with the body, so their rejection is
+# ambiguous: shape validation and the agreement check both produce a 400. A
+# single malformed VALUE cannot separate them, because any value carrying an
+# invalid byte necessarily differs from the clean method in the body, so the
+# agreement check would reject it anyway.
+#
+# Duplication is the separable case. Both values are well formed AND agree with
+# the body, so the agreement check has nothing to object to; only the singleton
+# rule can reject it. The Go suite covers the malformed-value shapes directly.
+# ---------------------------------------------------------------------------
+echo "Case 9: shape validation rejects what agreement alone would accept"
+agree_body='{"jsonrpc":"2.0","id":21,"method":"tools/list"}'
+
+code="$(curl -s -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' -H 'Mcp-Method: tools/list' -H 'Mcp-Method: tools/list' \
+  -X POST --data "$agree_body" "http://127.0.0.1:$PPORT/mcp")"
+if [ "$code" = "400" ]; then
+  pass "duplicate header rejected even when both values agree"
+else
+  fail "duplicate agreeing header got HTTP $code, want 400"
+fi
+
 cleanup
 echo
 printf 'passed: %d  failed: %d\n' "$PASS" "$FAIL"

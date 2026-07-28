@@ -723,6 +723,50 @@ func TestServer_DefaultCodeFallback(t *testing.T) {
 			t.Fatalf("created machines = %d, want 1 after human proof", got)
 		}
 	})
+	t.Run("internal default bypasses public per-code budget", func(t *testing.T) {
+		vm1 := newFakeVM(t, "vm-codeless-1")
+		vm2 := newFakeVM(t, "vm-codeless-2")
+		provider := &serverFakeProvider{targets: []string{vm1.targetHost(t), vm2.targetHost(t)}}
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{
+			DefaultCode:        brokerTestCode,
+			DisableCodeLimits:  true,
+			CodeRate:           livechat.RateConfig{RefillPerSec: 0.0001, Burst: 1},
+			PerCodeDailyBudget: 1,
+			GlobalDailyBudget:  2,
+		})
+		for i := range 2 {
+			resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{})
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("session %d status = %d, want 200", i+1, resp.StatusCode)
+			}
+		}
+		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("third session status = %d, want global-budget 503", resp.StatusCode)
+		}
+	})
+	t.Run("codeless mode still enforces per-IP budget", func(t *testing.T) {
+		vm := newFakeVM(t, "vm-codeless-ip")
+		provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{
+			DefaultCode:       brokerTestCode,
+			DisableCodeLimits: true,
+			PerIPDailyBudget:  1,
+			GlobalDailyBudget: 2,
+		})
+		for i, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
+			resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{})
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != want {
+				t.Fatalf("session %d status = %d, want %d", i+1, resp.StatusCode, want)
+			}
+		}
+	})
 }
 
 func TestServer_EndToEndProxyAndRelease(t *testing.T) {

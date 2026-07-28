@@ -21,7 +21,7 @@ controls enabled:
 | Human/bot gate | `--turnstile-secret-file` or `--turnstile-secret-env` |
 | Global broker spend cap | `--global-daily-budget` greater than `0` |
 | Per-VM model spend cap | `--vm-daily-turn-budget` greater than `0` |
-| Abuse buckets | `--per-ip-daily-budget`, `--per-code-daily-budget`, IP/code rates |
+| Abuse buckets | `--per-ip-daily-budget` and IP rate; add per-code controls when invite codes are enabled |
 | Short sessions | `--session-ttl`, `--deadline-grace`, `--vm-session-ttl` |
 | Host protection | `--public-host`, `--allow-origin`, and origin-side Access JWT while private |
 | Provider backstop | Model-provider billing cap or prepaid balance outside Pipelock |
@@ -50,11 +50,8 @@ pipelock-playground-broker serve \
   --cpus 1 \
   --internal-port 8080 \
   --concurrency 20 \
-  --code press-review-code \
-  --max-per-code 25 \
   --global-daily-budget 60 \
   --per-ip-daily-budget 20 \
-  --per-code-daily-budget 60 \
   --admin-listen 127.0.0.1:8101 \
   --admin-token-env PLAYGROUND_ADMIN_TOKEN \
   --turnstile-secret-env PLAYGROUND_TURNSTILE_SECRET \
@@ -73,6 +70,14 @@ pipelock-playground-broker serve \
   --embed-origin https://site.example \
   --public-host playground.example.com
 ```
+
+This example uses Turnstile as the public authorization step and therefore
+needs no invite codes. When no `--code` values are configured, the broker
+creates an unguessable process-local gate value that is never logged or sent to
+the browser. Per-code rate and budget controls are disabled in this mode;
+per-IP, global daily, concurrency, and provider billing controls remain active.
+If public invite codes are configured, the existing per-code controls still
+apply normally.
 
 Secrets are loaded from files or environment variables and are never printed by
 the broker. Do not pass model keys, provider tokens, Turnstile secrets, or invite
@@ -211,7 +216,7 @@ Poll `/api/live/health` and alert on:
 | `ok:false` | Broker is paused, out of global budget, or gate is closed |
 | `budget_remaining` near `0` | The demo is about to stop accepting sessions |
 | `in_use` near `capacity` | Visitors are queued out by the concurrency cap |
-| `session_starts_last_minute` spike | Bot traffic or an invite code shared more broadly than planned |
+| `session_starts_last_minute` spike | Bot traffic, or an invite code shared more broadly than planned when codes are enabled |
 | Repeated HTTP 403 on session creation | Bot traffic, invalid Turnstile tokens, or bad invite flow |
 | Repeated HTTP 429 | Abuse pressure or caps set too low for the audience |
 | Repeated HTTP 503 on `/api/live/message` | Model provider is out of credits, has bad credentials, or is rate-limiting; check provider billing and the model key |
@@ -225,7 +230,7 @@ system.
 1. Pause immediately with `SIGUSR1`.
 2. Confirm health reports `"killed":true`.
 3. Check provider billing and active machine count.
-4. Rotate invite codes if a shared code leaked.
+4. If invite codes are enabled, rotate them when a shared code leaks.
 5. Reduce `--concurrency`, daily budgets, session TTL, or per-IP caps before
    resuming.
 6. Resume with `SIGUSR2` only after the cost ceiling and bot gate are confirmed.

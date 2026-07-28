@@ -94,6 +94,11 @@ type ServerConfig struct {
 	// session creation — the caller (main) enforces that. Empty means a code is
 	// always required. It is never sent to clients.
 	DefaultCode string
+	// DisableCodeLimits skips per-code rate and daily-budget controls when the
+	// deployment has no public invite codes. Per-IP and global controls remain
+	// enforced; applying per-code controls to one process-local internal code
+	// would incorrectly turn them into a second global choke point.
+	DisableCodeLimits bool
 	// TurnstileSitekey is the PUBLIC Cloudflare Turnstile site key, reported via
 	// /health so the viewer can render the widget. Empty means no Turnstile
 	// widget (Access-gated or unsafe-no-gate deploy). The secret is held by
@@ -563,7 +568,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	rollback = append(rollback, func() { s.cfg.Gate.Refund(claims) })
 
 	codeLimiterKey := "code:" + claims.CodeID
-	if !s.codeRate.Allow(codeLimiterKey) {
+	if !s.cfg.DisableCodeLimits && !s.codeRate.Allow(codeLimiterKey) {
 		undo()
 		writeBrokerErr(w, http.StatusTooManyRequests, "rate limited")
 		return
@@ -578,12 +583,14 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	rollback = append(rollback, func() { s.perIP.Refund(ipBudgetKey, 1) })
 
-	if !s.perCode.Charge(codeBudgetKey, 1) {
+	if !s.cfg.DisableCodeLimits && !s.perCode.Charge(codeBudgetKey, 1) {
 		undo()
 		writeBrokerErr(w, http.StatusTooManyRequests, "daily limit reached for this code")
 		return
 	}
-	rollback = append(rollback, func() { s.perCode.Refund(codeBudgetKey, 1) })
+	if !s.cfg.DisableCodeLimits {
+		rollback = append(rollback, func() { s.perCode.Refund(codeBudgetKey, 1) })
+	}
 
 	if !s.global.Charge(1) {
 		undo()

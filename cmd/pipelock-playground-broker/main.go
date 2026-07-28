@@ -204,7 +204,7 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.cpus, "cpus", 1, "per-visitor VM shared CPUs")
 	fl.IntVar(&f.internalPort, "internal-port", 8080, "per-visitor VM internal HTTP port")
 	fl.IntVar(&f.concurrency, "concurrency", defaultConcurrency, "global cap on live per-visitor machines")
-	fl.StringArrayVar(&f.codes, "code", nil, "public invite code (repeatable)")
+	fl.StringArrayVar(&f.codes, "code", nil, "public invite code (repeatable); omit when Turnstile or Cloudflare Access is the authorization gate")
 	fl.IntVar(&f.maxPerCode, "max-per-code", defaultMaxPerCode, "max broker sessions per invite code (0 = unlimited)")
 	fl.StringVar(&f.gateSecretFile, "gate-secret-file", "", "path to base64 broker gate secret")
 	fl.StringVar(&f.gateSecretEnv, "gate-secret-env", "", "environment variable containing base64 broker gate secret")
@@ -269,7 +269,7 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		return err
 	}
 	if f.checkConfig {
-		if _, err := resolveCodes(f.codes, f.maxPerCode); err != nil {
+		if _, _, err := resolveBrokerCodes(f); err != nil {
 			return err
 		}
 		if _, err := brokerPublicHosts(f); err != nil {
@@ -278,7 +278,7 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		if _, err := newCFAccessVerifier(f); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "broker flags, invite codes, public hosts, access policy, and static UI valid; secrets and provider not contacted")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "broker flags, access gates, public hosts, access policy, and static UI valid; secrets and provider not contacted")
 		return nil
 	}
 	srv, handler, startReaper, pool, err := buildServer(ctx, cmd.OutOrStdout(), f)
@@ -342,7 +342,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	codes, err := resolveCodes(f.codes, f.maxPerCode)
+	codes, defaultCode, err := resolveBrokerCodes(f)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -425,7 +425,8 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		Leases:             lm,
 		WarmPool:           warmPool,
 		Gate:               gate,
-		DefaultCode:        effectiveDefaultCode(f),
+		DefaultCode:        defaultCode,
+		DisableCodeLimits:  len(f.codes) == 0,
 		TurnstileSitekey:   f.turnstileSitekey,
 		HumanVerifier:      humanVerifier,
 		IPRate:             livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
@@ -478,7 +479,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		return nil, nil, nil, nil, err
 	}
 
-	_, _ = fmt.Fprintf(out, "broker configured: %d code(s), capacity %d, image %s\n", len(codes), f.concurrency, f.image)
+	_, _ = fmt.Fprintf(out, "broker configured: %d public code(s), capacity %d, image %s\n", len(f.codes), f.concurrency, f.image)
 
 	// The broker API lives under /api/live/*. When a static UI directory is
 	// configured, serve it at / on the SAME origin so the live viewer's
@@ -597,9 +598,6 @@ func validateFlags(f *serveFlags) error {
 	if f.maxPerCode < 0 {
 		return errors.New("--max-per-code must be >= 0")
 	}
-	if len(f.codes) == 0 {
-		return errors.New("no invite codes: pass --code CODE")
-	}
 	if f.internalPort < 1 || f.internalPort > 65535 {
 		return errors.New("--internal-port must be 1-65535")
 	}
@@ -622,6 +620,12 @@ func validateFlags(f *serveFlags) error {
 	}
 	if err := validateHumanGateFlags(f); err != nil {
 		return err
+	}
+	if len(f.codes) == 0 && !hasConfiguredHumanGate(f) {
+		return errors.New("invite codes may be omitted only when Turnstile or Cloudflare Access is configured")
+	}
+	if len(f.codes) == 0 && f.provider == "fly" && strings.TrimSpace(f.turnstileVerifyURL) != "" {
+		return errors.New("--turnstile-verify-url overrides are not allowed for codeless Fly deployments")
 	}
 	if f.sessionTTL <= 0 {
 		return errors.New("--session-ttl must be > 0")
@@ -727,9 +731,7 @@ func validateDefaultCode(f *serveFlags) error {
 	if cfdc := strings.TrimSpace(f.cfAccessDefaultCode); cfdc != "" && cfdc != dc {
 		return errors.New("set only one of --default-code or --cf-access-default-code")
 	}
-	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
-	hasCFAccess := strings.TrimSpace(f.cfAccessTeamDomain) != "" || strings.TrimSpace(f.cfAccessAUD) != ""
-	if !hasTurnstile && !hasCFAccess {
+	if !hasConfiguredHumanGate(f) {
 		return errors.New("--default-code requires a human gate (--turnstile-secret-file/--turnstile-secret-env or Cloudflare Access); a default code with no human gate would open the broker")
 	}
 	for _, c := range f.codes {
@@ -811,12 +813,16 @@ func isPrivateOrLoopback(addr netip.Addr) bool {
 }
 
 func validateHumanGateFlags(f *serveFlags) error {
-	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
-	hasCFAccess := strings.TrimSpace(f.cfAccessTeamDomain) != "" || strings.TrimSpace(f.cfAccessAUD) != ""
-	if hasTurnstile || hasCFAccess || f.unsafeNoHumanGate {
+	if hasConfiguredHumanGate(f) || f.unsafeNoHumanGate {
 		return nil
 	}
 	return errors.New("--turnstile-secret-file/--turnstile-secret-env or Cloudflare Access is required unless --unsafe-no-human-gate is set")
+}
+
+func hasConfiguredHumanGate(f *serveFlags) bool {
+	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
+	hasCFAccess := strings.TrimSpace(f.cfAccessTeamDomain) != "" && strings.TrimSpace(f.cfAccessAUD) != ""
+	return hasTurnstile || hasCFAccess
 }
 
 func validateTurnstileFlags(f *serveFlags) error {
@@ -1641,6 +1647,30 @@ func resolveCodes(codes []string, maxPerCode int) ([]livechat.CodeSpec, error) {
 		specs = append(specs, livechat.CodeSpec{Code: code, MaxSessions: maxPerCode})
 	}
 	return specs, nil
+}
+
+// resolveBrokerCodes keeps the gate's code-based accounting internally while
+// allowing operators to omit public invite codes when a real human gate is
+// configured. The generated code is process-local, unguessable, never logged,
+// and applied server-side only after the human verifier accepts the request.
+func resolveBrokerCodes(f *serveFlags) ([]livechat.CodeSpec, string, error) {
+	defaultCode := effectiveDefaultCode(f)
+	rawCodes := f.codes
+	if len(rawCodes) == 0 {
+		if !hasConfiguredHumanGate(f) {
+			return nil, "", errors.New("cannot generate an internal gate code without Turnstile or Cloudflare Access")
+		}
+		internalCode, err := livechat.NewRandomCode(32)
+		if err != nil {
+			return nil, "", fmt.Errorf("generate internal gate code: %w", err)
+		}
+		return []livechat.CodeSpec{{Code: internalCode}}, internalCode, nil
+	}
+	codes, err := resolveCodes(rawCodes, f.maxPerCode)
+	if err != nil {
+		return nil, "", err
+	}
+	return codes, defaultCode, nil
 }
 
 // buildVMBaseEnv assembles the PLAYGROUND_* environment shared by every

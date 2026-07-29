@@ -1226,6 +1226,26 @@ func TestLoadPublicKey(t *testing.T) {
 			t.Error("same-named file replaced the inline key")
 		}
 	})
+
+	t.Run("inline_versioned_key_wins_over_same_named_file", func(t *testing.T) {
+		dir := t.TempDir()
+		otherPub, _, _ := GenerateKeyPair()
+		shadow := filepath.Join(dir, versioned)
+		if err := os.MkdirAll(filepath.Dir(shadow), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(shadow, []byte(hex.EncodeToString(otherPub)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		key, err := LoadPublicKey(versioned)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(key, pub) {
+			t.Error("same-named file replaced the inline versioned key")
+		}
+	})
 }
 
 func TestAtomicWrite_RenameError(t *testing.T) {

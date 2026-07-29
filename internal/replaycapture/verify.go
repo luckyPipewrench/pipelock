@@ -103,7 +103,8 @@ func validateInMemoryPacketArtifacts(pkt auditpacket.Packet) error {
 }
 
 func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) error {
-	if strings.TrimSpace(keyHex) == "" {
+	keyHex = strings.TrimSpace(keyHex)
+	if keyHex == "" {
 		return fmt.Errorf("external signer key is required")
 	}
 	if err := jsonscan.RejectUnsafeNumbers(evidenceJSONL); err != nil {

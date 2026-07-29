@@ -49,5 +49,5 @@ Trusted Audit Packet verification requires an external `--key` or an
 out-of-band `--expect-sha256` packet digest. A packet's embedded signer key
 cannot establish its own provenance. The explicitly weaker
 `--allow-self-consistent-only` and `--no-trust-required` modes retain their
-documented opt-in behavior. `--offline` is schema-only and deliberately skips
-receipt-chain verification.
+documented opt-in behavior. `--offline` skips receipt-chain verification while
+still validating the schema and packet-level trust fields.

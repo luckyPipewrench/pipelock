@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { verifyAuditPacket } from "../src/audit-packet.js";
 import type { AuditPacket } from "../src/types.js";
-import { sha256Hex } from "../src/util.js";
+import { resolveSignerKey, sha256Hex } from "../src/util.js";
 
 const publicKey = "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678";
 const versionedPublicKey =
@@ -198,6 +198,11 @@ test("versioned literal signer key wins over a same-named cwd file", () => {
     },
   );
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("versioned signer keys reject malformed base64", () => {
+  const malformed = versionedPublicKey.replace("RlWn", "Rl!Wn");
+  assert.throws(() => resolveSignerKey(malformed), /malformed base64/u);
 });
 
 test("audit packet detects totals mismatch", async () => {

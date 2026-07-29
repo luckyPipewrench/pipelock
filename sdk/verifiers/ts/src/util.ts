@@ -192,6 +192,9 @@ export function resolveSignerKey(input: string): string {
 function parseSignerKeyValue(value: string): string {
   if (/^pipelock-ed25519-public-v1\r?\n/u.test(value)) {
     const body = value.split(/\r?\n/u)[1]?.trim() ?? "";
+    if (!/^[A-Za-z0-9+/]{43}=$/u.test(body)) {
+      throw new Error("invalid public key: malformed base64");
+    }
     value = Buffer.from(body, "base64").toString("hex");
   }
 

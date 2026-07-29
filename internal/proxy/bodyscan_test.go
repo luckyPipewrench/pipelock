@@ -1583,6 +1583,127 @@ func TestExtractBodyTextForDLP_ProviderOpaqueWrongValueShapeScansNormally(t *tes
 	}
 }
 
+func TestScanRequestBody_ProviderOpaqueDowngradeGates(t *testing.T) {
+	cfg := testScannerConfig()
+
+	opaqueValue := func(totalBytes int) string {
+		t.Helper()
+		suffix := "." + fakeGitHubToken() + "."
+		if totalBytes < len(suffix) {
+			t.Fatalf("test ciphertext length %d is smaller than suffix %d", totalBytes, len(suffix))
+		}
+		value := strings.Repeat("A", totalBytes-len(suffix)) + suffix
+		if len(value) != totalBytes {
+			t.Fatalf("ciphertext length = %d, want %d", len(value), totalBytes)
+		}
+		return value
+	}
+
+	tests := []struct {
+		name           string
+		host           string
+		path           string
+		valueBytes     int
+		useDefaultGate bool
+		wantWarn       bool
+	}{
+		{
+			name:       "trusted host non-allowlisted path blocks",
+			host:       testTrustedProviderHost,
+			path:       "/v1/provider/other",
+			valueBytes: providerOpaqueCiphertextMinBytes,
+		},
+		{
+			name:       "255 byte value blocks",
+			host:       testTrustedProviderHost,
+			path:       testTrustedProviderPath,
+			valueBytes: providerOpaqueCiphertextMinBytes - 1,
+		},
+		{
+			name:       "256 byte value warns",
+			host:       testTrustedProviderHost,
+			path:       testTrustedProviderPath,
+			valueBytes: providerOpaqueCiphertextMinBytes,
+			wantWarn:   true,
+		},
+		{
+			name:           "nil gate uses production allowlist",
+			host:           "api.openai.com",
+			path:           "/v1/responses",
+			valueBytes:     providerOpaqueCiphertextMinBytes,
+			useDefaultGate: true,
+			wantWarn:       true,
+		},
+		{
+			name:           "nil gate rejects sibling endpoint",
+			host:           "api.openai.com",
+			path:           "/v1/responsesfoo",
+			valueBytes:     providerOpaqueCiphertextMinBytes,
+			useDefaultGate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := scanner.MustNew(cfg)
+			defer sc.Close()
+
+			value := opaqueValue(tt.valueBytes)
+			body := `{"input":[{"content":[{"type":"reasoning","encrypted_content":"` + value + `"}]}]}`
+			req := BodyScanRequest{
+				Body:        strings.NewReader(body),
+				ContentType: contentTypeJSON,
+				Host:        tt.host,
+				Path:        tt.path,
+				MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+				Scanner:     sc,
+				Action:      cfg.RequestBodyScanning.Action,
+			}
+			if !tt.useDefaultGate {
+				req.TrustedProviderOpaqueRequest = testTrustedProviderOpaqueRequest
+			}
+
+			_, result := scanRequestBody(context.Background(), req)
+			if result.Clean {
+				t.Fatal("expected GitHub token finding")
+			}
+			if tt.wantWarn {
+				if result.Action != config.ActionWarn {
+					t.Fatalf("Action = %q, want warn; matches=%+v", result.Action, result.DLPMatches)
+				}
+				if len(result.DLPMatches) == 0 || !result.DLPMatches[0].ProviderOpaque {
+					t.Fatalf("matches = %+v, want provider-opaque provenance", result.DLPMatches)
+				}
+				return
+			}
+			assertBodyDLPBlocksWithoutProviderOpaque(t, result, tt.name)
+		})
+	}
+}
+
+func TestTrustedProviderPathMatch(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "exact", path: "/v1/responses", want: true},
+		{name: "subpath", path: "/v1/responses/compact", want: true},
+		{name: "query", path: "/v1/responses?stream=true", want: true},
+		{name: "sibling", path: "/v1/responsesfoo"},
+		{name: "prefix only", path: "/v1/response"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := trustedProviderPathMatch(tt.path, "/v1/responses"); got != tt.want {
+				t.Fatalf("trustedProviderPathMatch(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractBodyTextForDLP_JSONErrorsFailClosed(t *testing.T) {
 	tests := []struct {
 		name string

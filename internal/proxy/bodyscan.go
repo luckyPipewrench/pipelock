@@ -28,15 +28,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
-	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
 	// contentTypeJSON is the canonical JSON media type. Used in multiple
-	// places (redaction content-type gate, existing body-text extract
-	// path); extracted to satisfy goconst.
+	// redaction and body-text extraction gates; extracted to satisfy goconst.
 	contentTypeJSON = "application/json"
 
 	// maxMultipartParts caps the number of multipart form parts parsed.
@@ -582,6 +580,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
 		extracted := extractBodyTextForDLP(buf, req)
+		// Do not scan partial pre-redaction extraction results. Redaction and
+		// the mandatory post-redaction extraction below both fail closed when
+		// this body cannot be parsed.
 		if extracted.Err == "" {
 			disabled := bodyDLPDisabledSet(req.DisablePatterns)
 			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled)
@@ -912,16 +913,28 @@ func isTrustedProviderOpaqueDLPField(req BodyScanRequest, path []string, value s
 	if !trustedRequest(req.Host, req.Path) || !isOpenAIOpaqueReasoningFieldPath(path) {
 		return false
 	}
+	// The provider does not expose a local MAC or structural verifier for this
+	// ciphertext. The downgrade therefore relies on the trusted endpoint,
+	// expected field path, ciphertext alphabet, and size floor. A deliberately
+	// padded secret can still be warn-capped; callers must preserve provenance
+	// and must not widen any of these gates.
 	return isProviderOpaqueCiphertext(value)
+}
+
+func trustedProviderPathMatch(path, endpoint string) bool {
+	return path == endpoint ||
+		strings.HasPrefix(path, endpoint+"/") ||
+		strings.HasPrefix(path, endpoint+"?")
 }
 
 func isTrustedOpenAIRequest(host, path string) bool {
 	host = canonicalBodyScanHost(host)
 	switch host {
 	case "api.openai.com":
-		return strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/v1/chat/completions")
+		return trustedProviderPathMatch(path, "/v1/responses") ||
+			trustedProviderPathMatch(path, "/v1/chat/completions")
 	case "chatgpt.com":
-		return strings.HasPrefix(path, "/backend-api/codex/responses")
+		return trustedProviderPathMatch(path, "/backend-api/codex/responses")
 	default:
 		return false
 	}
@@ -1316,16 +1329,6 @@ func extractBodyText(body []byte, req BodyScanRequest) ([]string, string) {
 	mediaType, params, _ := mime.ParseMediaType(req.ContentType)
 
 	switch {
-	case mediaType == contentTypeJSON || strings.HasSuffix(mediaType, "+json"):
-		if !json.Valid(body) {
-			return nil, "invalid JSON body"
-		}
-		extracted := extract.AllStringsFromJSONOrderedResult(json.RawMessage(body))
-		if extracted.Truncated {
-			return nil, "JSON body exceeds maximum inspectable nesting depth"
-		}
-		return extracted.Strings, ""
-
 	case mediaType == "application/x-www-form-urlencoded":
 		return extractFormURLEncoded(body)
 

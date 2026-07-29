@@ -224,20 +224,32 @@ func TestDefaultMatcher_GitHubTokenInOpaqueRunStillMatches(t *testing.T) {
 	t.Parallel()
 	m := NewDefaultMatcher()
 
-	for _, input := range []string{
-		strings.Repeat("A", 260) + "." + "ghp_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
-		strings.Repeat("A", 260) + "." + "github_pat_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "classic",
+			input: strings.Repeat("A", 260) + "." + "ghp_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		},
+		{
+			name:  "fine-grained",
+			input: strings.Repeat("A", 260) + "." + "github_pat_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		},
+		{
+			name:  "uppercase classic",
+			input: strings.Repeat("A", 260) + "." + "GHP_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		},
 	} {
-		found := false
-		for _, got := range m.Scan(input) {
-			if got.Class == ClassGitHubToken {
-				found = true
-				break
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, got := range m.Scan(tc.input) {
+				if got.Class == ClassGitHubToken {
+					return
+				}
 			}
-		}
-		if !found {
-			t.Fatalf("expected GitHub token in opaque run to match: %q", input)
-		}
+			t.Fatalf("expected %s token in opaque run to match", tc.name)
+		})
 	}
 }
 

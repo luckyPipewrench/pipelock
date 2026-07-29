@@ -111,11 +111,6 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		return nil, nil, err
 	}
 	migrateRedirectProfiles(ctx, mapping)
-	paths, err := containHomeReadOnlyPathsFromMapping(mapping)
-	if err != nil {
-		return nil, nil, err
-	}
-	env.serviceHomeReadOnlyPaths = paths
 
 	out, err := encodeYAML(root)
 	if err != nil {

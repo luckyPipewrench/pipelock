@@ -227,8 +227,12 @@ func TestMigratePipelockConfigForContain_NarrowsFileSentryHomeVisibility(t *test
 	if !strings.Contains(string(out), wantHome) {
 		t.Fatalf("relative watch path was not made absolute: %s", out)
 	}
-	if len(env.serviceHomeReadOnlyPaths) != 1 || env.serviceHomeReadOnlyPaths[0] != wantHome {
-		t.Fatalf("service home paths = %#v, want [%q]", env.serviceHomeReadOnlyPaths, wantHome)
+	paths, err := containHomeReadOnlyPaths(out)
+	if err != nil {
+		t.Fatalf("containHomeReadOnlyPaths: %v", err)
+	}
+	if len(paths) != 1 || paths[0] != wantHome {
+		t.Fatalf("service home paths = %#v, want [%q]", paths, wantHome)
 	}
 }
 

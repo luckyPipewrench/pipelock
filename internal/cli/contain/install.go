@@ -939,10 +939,16 @@ func stepStagePipelockConfig(opts installOpts) step {
 				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, err
 			}
+			paths, err := containHomeReadOnlyPaths(data)
+			if err != nil {
+				_ = cleanupMigratedConfigArtifacts(env, migrated)
+				return false, fmt.Errorf("read file_sentry paths for service sandbox: %w", err)
+			}
 			if err := env.writeFile(stagedPipelockConfigPath(env), data, modeConfigSecret); err != nil {
 				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, fmt.Errorf("stage config candidate: %w", err)
 			}
+			env.serviceHomeReadOnlyPaths = paths
 			staged = true
 			// Report the mutation even when nothing was migrated. Staging
 			// writes a file, and a step that reports no mutation is left off

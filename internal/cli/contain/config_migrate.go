@@ -148,7 +148,7 @@ func migrateFileSentryWatchPaths(ctx *configMigrationContext, root *yaml.Node) e
 	return nil
 }
 
-func containHomeReadOnlyPaths(data []byte) ([]string, error) {
+func containServiceReadOnlyPaths(data []byte, proxyPort int) ([]string, error) {
 	root, err := parseSingleYAMLDocument(data)
 	if err != nil {
 		return nil, err
@@ -157,10 +157,17 @@ func containHomeReadOnlyPaths(data []byte) ([]string, error) {
 	if mapping == nil {
 		return nil, errors.New("pipelock config must be a YAML mapping")
 	}
-	return containHomeReadOnlyPathsFromMapping(mapping)
+	metricsListen := strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen")))
+	if metricsListen == "" {
+		return nil, errors.New("metrics_listen must use a dedicated loopback port; rerun contain install with --config to migrate the managed config safely")
+	}
+	if err := validateContainMetricsListen(metricsListen, proxyPort); err != nil {
+		return nil, err
+	}
+	return containServiceReadOnlyPathsFromMapping(mapping)
 }
 
-func containHomeReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
+func containServiceReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
 	fileSentry := getMappingPath(root, []string{"file_sentry"})
 	if fileSentry == nil || !yamlBool(mappingValue(fileSentry, "enabled")) {
 		return nil, nil
@@ -186,7 +193,7 @@ func containHomeReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
 		if strings.ContainsAny(path, "\x00\r\n:") {
 			return nil, fmt.Errorf("file_sentry.watch_paths[%d] %q cannot be represented safely in a systemd bind path", i, path)
 		}
-		if isProtectedHomePath(path) {
+		if isServiceSandboxHiddenPath(path) {
 			seen[path] = struct{}{}
 		}
 	}
@@ -196,6 +203,11 @@ func containHomeReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+func isServiceSandboxHiddenPath(path string) bool {
+	return isProtectedHomePath(path) || path == "/tmp" || strings.HasPrefix(path, "/tmp/") ||
+		path == "/var/tmp" || strings.HasPrefix(path, "/var/tmp/")
 }
 
 func isProtectedHomePath(path string) bool {

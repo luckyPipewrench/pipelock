@@ -4,6 +4,7 @@
 package recorder
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -156,6 +157,35 @@ func TestFindLastEntry_FailsClosedOnMalformedNewerEntry(t *testing.T) {
 	}
 }
 
+func TestFindLastEntry_RejectsOversizedLineAtWindowBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
+	window := MaxEvidenceReadFileBytes + int64(maxEntryWireLineBytes+1)
+	data := strings.Repeat("x", int(window)) + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("WriteFile oversized line: %v", err)
+	}
+
+	if _, _, err := FindLastEntry(path, func(Entry) bool { return true }); err == nil || !strings.Contains(err.Error(), "tail line exceeds") {
+		t.Fatalf("FindLastEntry oversized line error = %v, want bounded refusal", err)
+	}
+}
+
+func TestFindLastEntry_EmptyAndNoMatch(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile empty shard: %v", err)
+	}
+	if _, found, err := FindLastEntry(empty, func(Entry) bool { return true }); err != nil || found {
+		t.Fatalf("FindLastEntry(empty) found=%v error=%v, want false nil", found, err)
+	}
+
+	populated := filepath.Join(t.TempDir(), "evidence-directional-1.jsonl")
+	writeDirectionalEntries(t, populated, 2)
+	if _, found, err := FindLastEntry(populated, func(entry Entry) bool { return entry.Type == "receipt" }); err != nil || found {
+		t.Fatalf("FindLastEntry(no match) found=%v error=%v, want false nil", found, err)
+	}
+}
+
 func TestFindLastEntry_RequiresMatcher(t *testing.T) {
 	if _, _, err := FindLastEntry(filepath.Join(t.TempDir(), "missing.jsonl"), nil); err == nil {
 		t.Fatal("FindLastEntry nil matcher = nil error, want refusal")
@@ -196,6 +226,110 @@ func TestReadDirectionalEntriesBounded_RejectsSymlink(t *testing.T) {
 	if _, _, err := ReadTailEntriesBounded(link, 1, MaxEvidenceReadFileBytes); err == nil {
 		t.Fatal("ReadTailEntriesBounded symlink = nil error, want refusal")
 	}
+}
+
+func TestDirectionalEntryReaders_EdgeCases(t *testing.T) {
+	t.Run("missing paths", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing.jsonl")
+		if _, _, err := ReadHeadEntriesBounded(path, 1, 1); err == nil {
+			t.Fatal("ReadHeadEntriesBounded(missing) error = nil")
+		}
+		if _, _, err := ReadTailEntriesBounded(path, 1, 1); err == nil {
+			t.Fatal("ReadTailEntriesBounded(missing) error = nil")
+		}
+		if _, _, err := FindLastEntry(path, func(Entry) bool { return true }); err == nil {
+			t.Fatal("FindLastEntry(missing) error = nil")
+		}
+	})
+
+	t.Run("empty tail", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "empty.jsonl")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entries, truncated, err := ReadTailEntriesBounded(path, 0, 0)
+		if err != nil || truncated || len(entries) != 0 {
+			t.Fatalf("ReadTailEntriesBounded(empty) entries=%v truncated=%v error=%v", entries, truncated, err)
+		}
+	})
+
+	t.Run("default limits and CRLF", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "crlf.jsonl")
+		writeDirectionalEntries(t, path, 1)
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if entries, _, err := ReadHeadEntriesBounded(path, 0, 0); err != nil || len(entries) != 1 {
+			t.Fatalf("ReadHeadEntriesBounded(CRLF) entries=%v error=%v", entries, err)
+		}
+		if entries, _, err := ReadTailEntriesBounded(path, 0, 0); err != nil || len(entries) != 1 {
+			t.Fatalf("ReadTailEntriesBounded(CRLF) entries=%v error=%v", entries, err)
+		}
+		if _, found, err := FindLastEntry(path, func(Entry) bool { return true }); err != nil || !found {
+			t.Fatalf("FindLastEntry(CRLF) found=%v error=%v", found, err)
+		}
+	})
+
+	t.Run("malformed head", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "malformed.jsonl")
+		if err := os.WriteFile(path, []byte("{bad\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ReadHeadEntriesBounded(path, 1, MaxEvidenceReadFileBytes); err == nil {
+			t.Fatal("ReadHeadEntriesBounded(malformed) error = nil")
+		}
+	})
+
+	t.Run("oversized complete line", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "oversized.jsonl")
+		if err := os.WriteFile(path, []byte(strings.Repeat("x", MaxEntryLineBytes+1)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ReadTailEntriesBounded(path, 1, MaxEvidenceReadFileBytes); err == nil || !strings.Contains(err.Error(), "tail line exceeds") {
+			t.Fatalf("ReadTailEntriesBounded(oversized) error=%v", err)
+		}
+		if _, _, err := FindLastEntry(path, func(Entry) bool { return true }); err == nil || !strings.Contains(err.Error(), "tail line exceeds") {
+			t.Fatalf("FindLastEntry(oversized) error=%v", err)
+		}
+	})
+
+	t.Run("oversized boundary without newline", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "oversized-boundary.jsonl")
+		window := MaxEvidenceReadFileBytes + int64(maxEntryWireLineBytes+1)
+		if err := os.WriteFile(path, []byte(strings.Repeat("x", int(window+1))), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := FindLastEntry(path, func(Entry) bool { return true }); err == nil || !strings.Contains(err.Error(), "tail line exceeds") {
+			t.Fatalf("FindLastEntry(no newline) error=%v", err)
+		}
+	})
+
+	t.Run("parser and stat failures", func(t *testing.T) {
+		if _, err := parseDirectionalEntry(nil); err == nil {
+			t.Fatal("parseDirectionalEntry(empty) error = nil")
+		}
+		path := filepath.Join(t.TempDir(), "closed.jsonl")
+		writeDirectionalEntries(t, path, 1)
+		file, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := file.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensureEvidenceFileUnchanged(file, before); err == nil {
+			t.Fatal("ensureEvidenceFileUnchanged(closed) error = nil")
+		}
+	})
 }
 
 func entrySequences(entries []Entry) []uint64 {

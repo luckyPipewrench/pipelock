@@ -350,9 +350,22 @@ func TestStepEnableSystemUnit_ActiveDisabledChangeEnablesAndRestarts(t *testing.
 	}
 }
 
+func TestStepEnableSystemUnit_ActiveDisabledReportsEnableFailure(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.serviceBinaryChanged = true
+	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "disabled\n", 1, nil)
+	runner.on(argvFor(testSystemctl, "enable", "pipelock"), "failed", 1, errors.New("enable failed"))
+
+	if applied, err := stepEnableSystemUnit().apply(t.Context(), env); err == nil || !applied {
+		t.Fatalf("apply = %v, %v; want true, error", applied, err)
+	}
+}
+
 func TestRenderSystemUnit_FileSentryHomeIsNarrowlyVisibleReadOnly(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
-	env.serviceHomeReadOnlyPaths = []string{"/home/operator/project", "/home/operator/project with spaces"}
+	env.serviceReadOnlyPaths = []string{"/home/operator/project", "/home/operator/project with spaces"}
 	body := renderSystemUnit(env)
 	if !strings.Contains(body, "ProtectHome=tmpfs") {
 		t.Fatalf("system unit does not hide unlisted home paths:\n%s", body)
@@ -369,6 +382,20 @@ func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 	body := renderSystemUnit(env)
 	if !strings.Contains(body, "ProtectHome=true") || strings.Contains(body, "BindReadOnlyPaths=") {
 		t.Fatalf("system unit weakens home isolation without file-sentry paths:\n%s", body)
+	}
+}
+
+func TestRenderSystemUnit_FileSentryPrivateTmpPathIsVisibleReadOnly(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.serviceReadOnlyPaths = []string{"/tmp/pipelock-watch", "/var/tmp/pipelock-watch"}
+	body := renderSystemUnit(env)
+	if !strings.Contains(body, "ProtectHome=true") {
+		t.Fatalf("system unit weakens home isolation for tmp-only paths:\n%s", body)
+	}
+	for _, want := range []string{`BindReadOnlyPaths=-"/tmp/pipelock-watch"`, `BindReadOnlyPaths=-"/var/tmp/pipelock-watch"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("system unit missing %q:\n%s", want, body)
+		}
 	}
 }
 

@@ -198,7 +198,7 @@ func TestMigratePipelockConfigForContain_RejectsAgentReachableMetricsListener(t 
 		}
 		return origLookup(name)
 	}
-	for _, listen := range []string{"0.0.0.0:9191", "[::]:9191", "localhost:9191", "127.0.0.1:8888", "127.0.0.1:-1", "127.0.0.1:0", "127.0.0.1:65536"} {
+	for _, listen := range []string{"127.0.0.1", "0.0.0.0:9191", "[::]:9191", "localhost:9191", "127.0.0.1:8888", "127.0.0.1:-1", "127.0.0.1:0", "127.0.0.1:65536"} {
 		t.Run(listen, func(t *testing.T) {
 			_, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte("metrics_listen: \""+listen+"\"\n"))
 			if err == nil || !strings.Contains(err.Error(), "unsafe for containment") {
@@ -227,12 +227,71 @@ func TestMigratePipelockConfigForContain_NarrowsFileSentryHomeVisibility(t *test
 	if !strings.Contains(string(out), wantHome) {
 		t.Fatalf("relative watch path was not made absolute: %s", out)
 	}
-	paths, err := containHomeReadOnlyPaths(out)
+	paths, err := containServiceReadOnlyPaths(out, env.proxyPort)
 	if err != nil {
-		t.Fatalf("containHomeReadOnlyPaths: %v", err)
+		t.Fatalf("containServiceReadOnlyPaths: %v", err)
 	}
-	if len(paths) != 1 || paths[0] != wantHome {
-		t.Fatalf("service home paths = %#v, want [%q]", paths, wantHome)
+	wantTmp := "/tmp/outside-home"
+	if len(paths) != 2 || paths[0] != wantHome || paths[1] != wantTmp {
+		t.Fatalf("service read-only paths = %#v, want [%q %q]", paths, wantHome, wantTmp)
+	}
+}
+
+func TestContainServiceReadOnlyPaths_ValidationAndFiltering(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "invalid yaml", body: ":\n", want: "parse pipelock config"},
+		{name: "non mapping", body: "- item\n", want: "YAML mapping"},
+		{name: "missing metrics", body: "mode: balanced\n", want: "dedicated loopback port"},
+		{name: "unsafe metrics", body: "metrics_listen: 0.0.0.0:9091\n", want: "unsafe for containment"},
+		{name: "relative path", body: "metrics_listen: 127.0.0.1:9091\nfile_sentry:\n  enabled: true\n  watch_paths: [relative]\n", want: "must be absolute"},
+		{name: "unsafe bind path", body: "metrics_listen: 127.0.0.1:9091\nfile_sentry:\n  enabled: true\n  watch_paths: [\"/tmp/bad:path\"]\n", want: "cannot be represented safely"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := containServiceReadOnlyPaths([]byte(tc.body), 8888); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("containServiceReadOnlyPaths error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "disabled", body: "metrics_listen: 127.0.0.1:9091\nfile_sentry:\n  enabled: false\n"},
+		{name: "non sequence", body: "metrics_listen: 127.0.0.1:9091\nfile_sentry:\n  enabled: true\n  watch_paths: invalid\n"},
+		{name: "unhidden and blank", body: "metrics_listen: 127.0.0.1:9091\nfile_sentry:\n  enabled: true\n  watch_paths: [\"\", /srv/project]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			paths, err := containServiceReadOnlyPaths([]byte(tc.body), 8888)
+			if err != nil || len(paths) != 0 {
+				t.Fatalf("containServiceReadOnlyPaths paths=%v error=%v, want empty nil", paths, err)
+			}
+		})
+	}
+}
+
+func TestMigrateFileSentryWatchPaths_EdgeCases(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	source := filepath.Join(t.TempDir(), "pipelock.yaml")
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "non sequence", body: "file_sentry:\n  watch_paths: invalid\n"},
+		{name: "blank items", body: "file_sentry:\n  watch_paths: [\"\", {}]\n"},
+		{name: "unsafe path", body: "file_sentry:\n  watch_paths: [\"/tmp/bad:path\"]\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := migratePipelockConfigForContain(env, source, []byte(tc.body))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("migrate error = %v, wantErr=%v", err, tc.wantErr)
+			}
+		})
 	}
 }
 

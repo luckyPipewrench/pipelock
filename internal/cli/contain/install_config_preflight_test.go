@@ -97,7 +97,7 @@ func TestRunInstall_ConfigPreflightRefusesMissingManagedConfigBeforeServiceMutat
 func TestRunInstall_ConfigPreflightCoversUpgradeWithoutConfigFlag(t *testing.T) {
 	env, runner, _ := newPreflightInstallEnv(t)
 	target := managedPipelockConfigPath(env)
-	if err := os.WriteFile(target, []byte("agents:\n  _default:\n    budget:\n      fan_out_limit: 4\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("metrics_listen: 127.0.0.1:9091\nagents:\n  _default:\n    budget:\n      fan_out_limit: 4\n"), 0o600); err != nil {
 		t.Fatalf("write existing config: %v", err)
 	}
 	runner.on(argvFor(env.pipelockBinary, "check", "--config", target),
@@ -502,7 +502,7 @@ func writePreflightConfig(t *testing.T, name, body string) string {
 func seedManagedConfig(t *testing.T, env *installEnv) string {
 	t.Helper()
 	target := managedPipelockConfigPath(env)
-	if err := os.WriteFile(target, []byte("mode: balanced\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("mode: balanced\nmetrics_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
 		t.Fatalf("write managed config: %v", err)
 	}
 	return target

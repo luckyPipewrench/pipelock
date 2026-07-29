@@ -157,6 +157,9 @@ func FindLastEntry(path string, match func(Entry) bool) (Entry, bool, error) {
 				return Entry{}, false, fmt.Errorf("tail line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
 			}
 			boundary = newline + 1
+			if boundary >= len(data) {
+				return Entry{}, false, fmt.Errorf("tail line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+			}
 		}
 
 		for lineEnd := len(data); lineEnd > boundary; {
@@ -188,7 +191,11 @@ func FindLastEntry(path string, match func(Entry) bool) (Entry, bool, error) {
 			}
 			lineEnd = lineStart
 		}
-		end = start + int64(boundary)
+		nextEnd := start + int64(boundary)
+		if nextEnd >= end {
+			return Entry{}, false, errors.New("finding last evidence entry: tail scan made no progress")
+		}
+		end = nextEnd
 	}
 	if err := ensureEvidenceFileUnchanged(file, info); err != nil {
 		return Entry{}, false, err

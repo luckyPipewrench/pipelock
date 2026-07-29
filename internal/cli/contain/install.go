@@ -126,7 +126,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	env.serviceUnitChanged = false
 	env.installServiceWasActive = false
 	env.installServiceStateKnown = false
-	env.serviceHomeReadOnlyPaths = nil
+	env.serviceReadOnlyPaths = nil
 	if opts.operatorUser != "" {
 		env.operatorUser = opts.operatorUser
 	}
@@ -923,11 +923,11 @@ func stepStagePipelockConfig(opts installOpts) step {
 				if err != nil {
 					return false, fmt.Errorf("read managed config for service sandbox: %w", err)
 				}
-				paths, err := containHomeReadOnlyPaths(data)
+				paths, err := containServiceReadOnlyPaths(data, env.proxyPort)
 				if err != nil {
-					return false, fmt.Errorf("read file_sentry paths for service sandbox: %w", err)
+					return false, fmt.Errorf("validate managed config for service sandbox: %w", err)
 				}
-				env.serviceHomeReadOnlyPaths = paths
+				env.serviceReadOnlyPaths = paths
 				return false, nil
 			}
 			data, err := env.readFile(opts.configSource)
@@ -939,7 +939,7 @@ func stepStagePipelockConfig(opts installOpts) step {
 				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, err
 			}
-			paths, err := containHomeReadOnlyPaths(data)
+			paths, err := containServiceReadOnlyPaths(data, env.proxyPort)
 			if err != nil {
 				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, fmt.Errorf("read file_sentry paths for service sandbox: %w", err)
@@ -948,7 +948,7 @@ func stepStagePipelockConfig(opts installOpts) step {
 				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, fmt.Errorf("stage config candidate: %w", err)
 			}
-			env.serviceHomeReadOnlyPaths = paths
+			env.serviceReadOnlyPaths = paths
 			staged = true
 			// Report the mutation even when nothing was migrated. Staging
 			// writes a file, and a step that reports no mutation is left off
@@ -1433,15 +1433,22 @@ func renderSystemUnit(env *installEnv) string {
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
 	}, "\n")
-	if len(env.serviceHomeReadOnlyPaths) == 0 {
+	hasProtectedHomePath := false
+	for _, path := range env.serviceReadOnlyPaths {
+		if isProtectedHomePath(path) {
+			hasProtectedHomePath = true
+			break
+		}
+	}
+	if !hasProtectedHomePath {
 		body += "\nProtectHome=true"
 	} else {
-		// tmpfs hides every home path, then the bind allow-list exposes only the
+		// tmpfs hides every home path; the bind allow-list below exposes only
 		// configured file-sentry roots. DAC/ACL checks still apply inside them.
 		body += "\nProtectHome=tmpfs"
-		for _, path := range env.serviceHomeReadOnlyPaths {
-			body += "\nBindReadOnlyPaths=-" + strconv.Quote(strings.ReplaceAll(path, "%", "%%"))
-		}
+	}
+	for _, path := range env.serviceReadOnlyPaths {
+		body += "\nBindReadOnlyPaths=-" + strconv.Quote(strings.ReplaceAll(path, "%", "%%"))
 	}
 	return body + "\n" + strings.Join([]string{
 		"ReadWritePaths=" + env.dataDir,

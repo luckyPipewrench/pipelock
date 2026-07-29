@@ -117,6 +117,9 @@ func TestLoadManifest_InvalidJSON(t *testing.T) {
 }
 
 func TestLoadManifest_PermissionPolicy(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
 	body := []byte(`{"version":1,"entries":{}}`)
 	for _, tt := range []struct {
 		name    string

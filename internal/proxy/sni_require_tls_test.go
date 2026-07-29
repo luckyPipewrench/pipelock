@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestSNIRequireTLS_ProductionConnectPath(t *testing.T) {
@@ -123,6 +124,74 @@ func TestForwardProxy_SNIRequireTLSEnabled(t *testing.T) {
 	if (config.ForwardProxy{SNIRequireTLS: boolPtr(false)}).SNIRequireTLSEnabled() {
 		t.Error("SNIRequireTLS=false must return false")
 	}
+}
+
+func TestSNIRequireTLS_HotReloadLifecycle(t *testing.T) {
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.SNIRequireTLS = boolPointer(false)
+	})
+	defer cleanup()
+
+	assertOpaque := func(wantEcho bool) {
+		t.Helper()
+		conn := dialProxy(t, proxyAddr)
+		defer func() { _ = conn.Close() }()
+		target := echoLn.Addr().String()
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		reader := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("read CONNECT response: %v", err)
+		}
+		_ = resp.Body.Close()
+		payload := []byte("opaque reload probe")
+		if _, err := conn.Write(payload); err != nil {
+			t.Fatalf("write tunnel payload: %v", err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		got := make([]byte, len(payload))
+		_, err = io.ReadFull(reader, got)
+		if wantEcho {
+			if err != nil || string(got) != string(payload) {
+				t.Fatalf("legacy tunnel echo = %q, err=%v", got, err)
+			}
+			return
+		}
+		if err == nil {
+			t.Fatal("opaque tunnel payload survived fail-closed reload")
+		}
+	}
+
+	reload := func(requireTLS bool, unrelatedMode string) {
+		t.Helper()
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		cfg.APIAllowlist = nil
+		cfg.ForwardProxy.Enabled = true
+		cfg.ForwardProxy.MaxTunnelSeconds = 10
+		cfg.ForwardProxy.IdleTimeoutSeconds = 2
+		cfg.FetchProxy.TimeoutSeconds = 5
+		cfg.ForwardProxy.SNIRequireTLS = boolPointer(requireTLS)
+		if unrelatedMode != "" {
+			cfg.Mode = unrelatedMode
+		}
+		cfg.ApplyDefaults()
+		cfg.Internal = nil
+		if !p.Reload(cfg, scanner.MustNew(cfg)) {
+			t.Fatal("Reload returned false")
+		}
+	}
+
+	assertOpaque(true)
+	reload(true, "")
+	assertOpaque(false)
+	reload(true, "")
+	assertOpaque(false)
+	reload(true, config.ModeStrict)
+	assertOpaque(false)
 }
 
 func boolPointer(v bool) *bool { return &v }

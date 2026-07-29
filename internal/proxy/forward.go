@@ -636,7 +636,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if cfg.ForwardProxy.SNIVerificationEnabled() {
 		resized, sniHost, category, sniErr := verifySNI(clientReader, clientConn, host, sniReadTimeoutDefault)
 		clientReader = resized
-		if sniErr == nil && cfg.ForwardProxy.SNIRequireTLSEnabled() &&
+		if sniErr == nil && cfg.ForwardProxy.SNIRequireTLS != nil && *cfg.ForwardProxy.SNIRequireTLS &&
 			(category == sniCategoryNotTLS || category == sniCategoryNoExtension) {
 			// sni_require_tls: refuse to splice an opaque, unscanned tunnel. A
 			// non-TLS payload or a ClientHello with no SNI extension would bypass

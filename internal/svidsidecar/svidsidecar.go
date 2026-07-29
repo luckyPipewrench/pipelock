@@ -137,7 +137,7 @@ func (s *Sidecar) Options() (aarp.SVIDVerifyOptions, error) {
 // evidence and the verifier-pinned options. It is the CLI's one-call entry; the
 // conformance corpus uses Parse + Options directly on in-memory sidecars.
 func Load(path string) (*aarp.SVIDEvidence, aarp.SVIDVerifyOptions, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxSidecarBytes, DisallowedPerms: 0o022})
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxSidecarBytes, DisallowedPerms: securefile.DisallowGroupOrWorldWrite})
 	if err != nil {
 		return nil, aarp.SVIDVerifyOptions{}, fmt.Errorf("read svid file: %w", err)
 	}

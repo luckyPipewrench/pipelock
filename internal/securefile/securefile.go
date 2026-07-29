@@ -21,6 +21,10 @@ import (
 // nonblocking, no-follow open required by Read's security contract.
 var ErrUnsupportedSecureOpen = errors.New("secure file open unsupported on this platform")
 
+// DisallowGroupOrWorldWrite is the shared integrity-material policy: public
+// read access is permitted, but no non-owner may modify the trusted file.
+const DisallowGroupOrWorldWrite fs.FileMode = 0o022
+
 // Options defines the filesystem boundary enforced by Read.
 type Options struct {
 	MaxBytes        int64

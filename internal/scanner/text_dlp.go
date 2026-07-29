@@ -271,13 +271,14 @@ func isLowConfidenceInboundAWSAccessID(ctx inboundAWSAccessIDContext, match Text
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
 type TextDLPMatch struct {
-	PatternName   string `json:"pattern_name"`
-	Severity      string `json:"severity"`
-	Encoded       string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain", "whitespace"
-	Bundle        string `json:"bundle,omitempty"`
-	BundleVersion string `json:"bundle_version,omitempty"`
-	Warn          bool   `json:"warn,omitempty"` // true for warn-mode patterns (informational only)
-	span          MatchSpan
+	PatternName    string `json:"pattern_name"`
+	Severity       string `json:"severity"`
+	Encoded        string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain", "whitespace"
+	Bundle         string `json:"bundle,omitempty"`
+	BundleVersion  string `json:"bundle_version,omitempty"`
+	Warn           bool   `json:"warn,omitempty"`            // true for warn-mode patterns (informational only)
+	ProviderOpaque bool   `json:"provider_opaque,omitempty"` // true when proxy scoped this match to trusted provider opaque ciphertext
+	span           MatchSpan
 }
 
 // Span returns retained coordinates for this match in the normalized scanner

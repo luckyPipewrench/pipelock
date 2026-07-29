@@ -1448,8 +1448,11 @@ func TestScanRequestBody_ModelProviderOpaqueReasoningFieldEmbeddedTokenSubstring
 		t.Fatal("expected provider opaque field DLP matches to remain visible")
 	}
 	for _, match := range result.DLPMatches {
-		if !match.Warn {
-			t.Fatalf("expected provider opaque field match to be warn-only, got %+v", match)
+		if !match.ProviderOpaque {
+			t.Fatalf("expected provider opaque field match provenance, got %+v", match)
+		}
+		if match.Warn {
+			t.Fatalf("provider opaque provenance must not reuse scanner warn state: %+v", match)
 		}
 	}
 	if shouldHardBlockBodyCriticalDLP(result, "chatgpt.com", cfg) {
@@ -1491,10 +1494,12 @@ func TestScanRequestBody_OpaqueReasoningFieldNamesDoNotBypassOtherHosts(t *testi
 		Path:        "/collect",
 		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
 		Scanner:     sc,
+		Action:      cfg.RequestBodyScanning.Action,
 	})
 	if result.Clean {
 		t.Fatal("expected real delimited token in opaque field name on non-provider host to block")
 	}
+	assertBodyDLPBlocksWithoutProviderOpaque(t, result, "non-provider opaque field name")
 }
 
 func TestScanRequestBody_OpenAITopLevelOpaqueFieldNameDoesNotBypassDLP(t *testing.T) {
@@ -1511,10 +1516,12 @@ func TestScanRequestBody_OpenAITopLevelOpaqueFieldNameDoesNotBypassDLP(t *testin
 		Path:        "/v1/responses",
 		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
 		Scanner:     sc,
+		Action:      cfg.RequestBodyScanning.Action,
 	})
 	if result.Clean {
 		t.Fatal("expected top-level encrypted_content to block outside provider reasoning schema")
 	}
+	assertBodyDLPBlocksWithoutProviderOpaque(t, result, "top-level provider opaque field name")
 }
 
 func TestExtractBodyTextForDLP_ProviderOpaqueReasoningFieldSeparated(t *testing.T) {
@@ -1540,6 +1547,9 @@ func TestExtractBodyTextForDLP_ProviderOpaqueReasoningFieldSeparated(t *testing.
 	if !bodyScanTestStringsContain(extracted.Texts, "encrypted_content") {
 		t.Fatalf("expected JSON keys to remain scannable, got %#v", extracted.Texts)
 	}
+	if !bodyScanTestStringsContain(extracted.GenericTexts, ciphertext) {
+		t.Fatalf("generic texts should retain provider opaque value for non-DLP scans, got %#v", extracted.GenericTexts)
+	}
 }
 
 func TestExtractBodyTextForDLP_ProviderOpaqueWrongValueShapeScansNormally(t *testing.T) {
@@ -1562,6 +1572,109 @@ func TestExtractBodyTextForDLP_ProviderOpaqueWrongValueShapeScansNormally(t *tes
 	}
 }
 
+func TestExtractBodyTextForDLP_JSONErrorsFailClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{
+			name: "malformed JSON",
+			body: []byte(`{"input":`),
+			want: "decoding JSON body for DLP",
+		},
+		{
+			name: "over-depth JSON",
+			body: []byte(deepProxyJSONObject("depth-regression-sentinel", extractJSONMaxDepth+1)),
+			want: "JSON body exceeds maximum inspectable nesting depth",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extracted := extractBodyTextForDLP(tt.body, BodyScanRequest{ContentType: "application/json"})
+			if extracted.Err == "" {
+				t.Fatal("Err = empty, want fail-closed extraction error")
+			}
+			if !strings.Contains(extracted.Err, tt.want) {
+				t.Fatalf("Err = %q, want to contain %q", extracted.Err, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanRequestBody_ProviderOpaqueAndNormalDLPBlockPrecedence(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	ciphertext := strings.Repeat("A", 260) + "." + fakeGitHubToken() + "." + strings.Repeat("B", 260)
+	body := `{
+		"input": [{
+			"content": [{
+				"type": "reasoning",
+				"encrypted_content": "` + ciphertext + `"
+			}]
+		}],
+		"normal_secret": "` + fakeAPIKey() + `"
+	}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		Host:        "chatgpt.com",
+		Path:        "/backend-api/codex/responses",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+		Action:      cfg.RequestBodyScanning.Action,
+	})
+	if result.Clean {
+		t.Fatal("expected mixed provider opaque and normal DLP matches")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q; matches=%v", result.Action, config.ActionBlock, result.DLPMatches)
+	}
+	if !hasDLPMatchName(result.DLPMatches, "AWS Access ID") {
+		t.Fatalf("DLPMatches = %v, want AWS Access ID normal match", dlpMatchNames(result.DLPMatches))
+	}
+	foundProviderOpaque := false
+	for _, match := range result.DLPMatches {
+		if match.ProviderOpaque {
+			foundProviderOpaque = true
+		}
+	}
+	if !foundProviderOpaque {
+		t.Fatalf("DLPMatches = %+v, want provider opaque provenance match", result.DLPMatches)
+	}
+	if !shouldHardBlockBodyCriticalDLP(result, "chatgpt.com", cfg) {
+		t.Fatal("normal critical DLP match must still hard-block when provider opaque match is warn-capped")
+	}
+}
+
+func TestUniqueBodyDLPMatches_PreservesProviderOpaqueAndEnforcedDuplicate(t *testing.T) {
+	matches := []scanner.TextDLPMatch{
+		{PatternName: "GitHub Token", Severity: config.SeverityCritical, Encoded: "raw", ProviderOpaque: true},
+		{PatternName: "GitHub Token", Severity: config.SeverityCritical, Encoded: "raw"},
+	}
+
+	got := uniqueBodyDLPMatches(matches)
+	if len(got) != 2 {
+		t.Fatalf("len(uniqueBodyDLPMatches) = %d, want 2; matches=%+v", len(got), got)
+	}
+	hasProviderOpaque := false
+	hasEnforced := false
+	for _, match := range got {
+		if match.ProviderOpaque {
+			hasProviderOpaque = true
+		} else {
+			hasEnforced = true
+		}
+	}
+	if !hasProviderOpaque || !hasEnforced {
+		t.Fatalf("uniqueBodyDLPMatches = %+v, want provider opaque and enforced copies", got)
+	}
+}
+
 func bodyScanTestStringsContain(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1569,6 +1682,18 @@ func bodyScanTestStringsContain(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertBodyDLPBlocksWithoutProviderOpaque(t *testing.T, result BodyScanResult, label string) {
+	t.Helper()
+	if result.Action != config.ActionBlock {
+		t.Fatalf("%s Action = %q, want %q; matches=%v", label, result.Action, config.ActionBlock, result.DLPMatches)
+	}
+	for _, match := range result.DLPMatches {
+		if match.ProviderOpaque || match.Warn {
+			t.Fatalf("%s match outside provider schema must be enforceable, got %+v", label, match)
+		}
+	}
 }
 
 func TestScanRequestBody_CompressedGzip(t *testing.T) {

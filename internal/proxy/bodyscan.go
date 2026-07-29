@@ -403,7 +403,7 @@ func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled b
 		return false
 	}
 	for _, match := range matches {
-		if match.Warn {
+		if match.Warn || match.ProviderOpaque {
 			continue
 		}
 		if strings.EqualFold(match.Severity, config.SeverityCritical) {
@@ -418,7 +418,7 @@ func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Confi
 		return false
 	}
 	for _, match := range matches {
-		if match.Warn {
+		if match.Warn || match.ProviderOpaque {
 			continue
 		}
 		if !strings.EqualFold(match.Severity, config.SeverityCritical) {
@@ -631,16 +631,17 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		}
 	}
 
-	// Extract text strings from body based on content type.
-	texts, parseErr := extractBodyText(buf, req)
-	if parseErr != "" {
-		// Multipart limit exceeded: fail-closed block.
+	// Extract text strings from body based on content type. The DLP extractor
+	// also returns generic ordered text so JSON bodies are traversed once here.
+	dlpExtracted := extractBodyTextForDLP(buf, req)
+	if dlpExtracted.Err != "" {
 		return nil, BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
-			Reason: parseErr,
+			Reason: dlpExtracted.Err,
 		}
 	}
+	texts := dlpExtracted.GenericTexts
 
 	if len(texts) == 0 {
 		if len(preRedactionDLP) > 0 {
@@ -659,14 +660,6 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	var action string
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
-	dlpExtracted := extractBodyTextForDLP(buf, req)
-	if dlpExtracted.Err != "" {
-		return nil, BodyScanResult{
-			Clean:  false,
-			Action: config.ActionBlock,
-			Reason: dlpExtracted.Err,
-		}
-	}
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
 	matches := scanBodyTextsForDLP(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP)
 	matches = append(matches, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP)...)
@@ -764,6 +757,7 @@ type jsonBodyDLPFrame struct {
 }
 
 type bodyDLPTextExtraction struct {
+	GenericTexts        []string
 	Texts               []string
 	ProviderOpaqueTexts []string
 	Err                 string
@@ -773,27 +767,25 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
-		return bodyDLPTextExtraction{Texts: texts, Err: errText}
+		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, Err: errText}
 	}
-	if !json.Valid(body) {
-		return bodyDLPTextExtraction{Err: "invalid JSON body"}
-	}
-	textStrings, providerOpaqueTexts, truncated, err := extractJSONBodyDLPStrings(body, req)
+	textStrings, providerOpaqueTexts, genericTexts, truncated, err := extractJSONBodyDLPStrings(body, req)
 	if err != nil {
 		return bodyDLPTextExtraction{Err: err.Error()}
 	}
 	if truncated {
 		return bodyDLPTextExtraction{Err: "JSON body exceeds maximum inspectable nesting depth"}
 	}
-	return bodyDLPTextExtraction{Texts: textStrings, ProviderOpaqueTexts: providerOpaqueTexts}
+	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, ProviderOpaqueTexts: providerOpaqueTexts}
 }
 
-func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, bool, error) {
+func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []string, bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
 	var result []string
 	var providerOpaque []string
+	var generic []string
 	var stack []jsonBodyDLPFrame
 	depth := 0
 	truncated := false
@@ -801,10 +793,13 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
+			if depth > 0 || len(stack) > 0 {
+				return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", io.ErrUnexpectedEOF)
+			}
 			break
 		}
 		if err != nil {
-			return nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
+			return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
 		}
 
 		switch v := tok.(type) {
@@ -833,12 +828,14 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			if len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey {
 				if depth <= extractJSONMaxDepth {
 					result = append(result, v)
+					generic = append(generic, v)
 				}
 				stack[len(stack)-1].currentKey = v
 				stack[len(stack)-1].expectKey = false
 				continue
 			}
 			if depth <= extractJSONMaxDepth {
+				generic = append(generic, v)
 				if isTrustedProviderOpaqueDLPField(req, currentJSONBodyDLPPath(stack), v) {
 					providerOpaque = append(providerOpaque, v)
 				} else {
@@ -848,19 +845,23 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			markJSONBodyDLPValueConsumed(stack)
 		case json.Number:
 			if depth <= extractJSONMaxDepth {
-				result = append(result, v.String())
+				text := v.String()
+				result = append(result, text)
+				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
 		case bool:
 			if depth <= extractJSONMaxDepth {
-				result = append(result, strconv.FormatBool(v))
+				text := strconv.FormatBool(v)
+				result = append(result, text)
+				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
 		case nil:
 			markJSONBodyDLPValueConsumed(stack)
 		}
 	}
-	return result, providerOpaque, truncated, nil
+	return result, providerOpaque, generic, truncated, nil
 }
 
 const extractJSONMaxDepth = 64
@@ -994,7 +995,7 @@ func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, tex
 	}
 	matches := scanBodyTextsForDLP(ctx, sc, texts, target, suppress, disabled)
 	for i := range matches {
-		matches[i].Warn = true
+		matches[i].ProviderOpaque = true
 	}
 	return matches
 }
@@ -1049,7 +1050,7 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 	seen := make(map[string]struct{}, len(matches))
 	unique := make([]scanner.TextDLPMatch, 0, len(matches))
 	for _, match := range matches {
-		key := match.PatternName + "\x00" + match.Encoded
+		key := match.PatternName + "\x00" + match.Encoded + "\x00" + strconv.FormatBool(match.Warn) + "\x00" + strconv.FormatBool(match.ProviderOpaque)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1062,7 +1063,7 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, patternActions map[string]string) string {
 	action := ""
 	for _, match := range matches {
-		if match.Warn {
+		if match.ProviderOpaque {
 			action = config.StrongestAction(action, config.ActionWarn)
 			continue
 		}

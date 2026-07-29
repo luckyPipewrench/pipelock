@@ -228,15 +228,51 @@ func (f statFileInfo) Sys() any {
 	return &syscall.Stat_t{Uid: f.uid, Gid: f.gid}
 }
 
+// ownStat returns this process's real uid and gid as the filesystem reports them,
+// so the tests below can derive foreign ids with uint32 arithmetic. Taking them
+// from a real stat rather than converting os.Geteuid means there is no narrowing
+// int conversion anywhere, which both avoids a gosec overflow finding honestly and
+// keeps the fixtures anchored to what the filesystem actually says.
+func ownStat(t *testing.T) (uid, gid uint32) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "own")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat() error = %v", err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("filesystem does not report ownership metadata")
+	}
+	return st.Uid, st.Gid
+}
+
+// foreignGIDUint32 finds a gid this process is not a member of, walking upward in
+// uint32 space. Widening back to int for the membership check is safe; narrowing
+// is what needed avoiding.
+func foreignGIDUint32(t *testing.T, start uint32) uint32 {
+	t.Helper()
+	for candidate := start + 1; candidate < start+512; candidate++ {
+		if !inProcessGroups(int(candidate)) {
+			return candidate
+		}
+	}
+	t.Skip("no nearby gid found that this process is not a member of")
+	return 0
+}
+
 // TestOwnedGroupWritableRefusesForeignOwner pins the owner check. Group membership
 // says this process can reach the file; it does not say the file is ours. A file
 // owned by a different uid that merely shares a group is somebody else's state.
 func TestOwnedGroupWritableRefusesForeignOwner(t *testing.T) {
-	foreignUID := uint32(os.Geteuid() + 1)
-	info := statFileInfo{mode: 0o660, uid: foreignUID, gid: uint32(os.Getegid())}
+	uid, gid := ownStat(t)
+	info := statFileInfo{mode: 0o660, uid: uid + 1, gid: gid}
 	err := OwnedGroupWritableAllowed(info)
 	if err == nil {
-		t.Fatalf("OwnedGroupWritableAllowed(0660, uid %d) = nil, want refusal for a foreign owner", foreignUID)
+		t.Fatalf("OwnedGroupWritableAllowed(0660, uid %d) = nil, want refusal for a foreign owner", uid+1)
 	}
 	if !strings.Contains(err.Error(), "owned by uid") {
 		t.Fatalf("error = %v, want it to name the foreign owner", err)
@@ -246,11 +282,12 @@ func TestOwnedGroupWritableRefusesForeignOwner(t *testing.T) {
 // TestOwnedGroupWritableRefusesForeignGroupUnprivileged is the gid half of the
 // same guard, reached with the owner correct so the group check is what decides.
 func TestOwnedGroupWritableRefusesForeignGroupUnprivileged(t *testing.T) {
-	foreignGID := uint32(foreignGIDValue(t))
-	info := statFileInfo{mode: 0o660, uid: uint32(os.Geteuid()), gid: foreignGID}
+	uid, gid := ownStat(t)
+	foreign := foreignGIDUint32(t, gid)
+	info := statFileInfo{mode: 0o660, uid: uid, gid: foreign}
 	err := OwnedGroupWritableAllowed(info)
 	if err == nil {
-		t.Fatalf("OwnedGroupWritableAllowed(0660, gid %d) = nil, want refusal for a foreign group", foreignGID)
+		t.Fatalf("OwnedGroupWritableAllowed(0660, gid %d) = nil, want refusal for a foreign group", foreign)
 	}
 	if !strings.Contains(err.Error(), "is not a member of") {
 		t.Fatalf("error = %v, want it to name the group this process is not in", err)
@@ -259,10 +296,10 @@ func TestOwnedGroupWritableRefusesForeignGroupUnprivileged(t *testing.T) {
 
 // TestOwnedGroupWritableAcceptsOurOwnGroupWidening is the positive case at the
 // same level, so the refusals above cannot pass merely because everything is
-// refused: our own uid and gid with the platform's g+rw is accepted.
+// refused: our own uid and gid with the platform's group read/write is accepted.
 func TestOwnedGroupWritableAcceptsOurOwnGroupWidening(t *testing.T) {
-	info := statFileInfo{mode: 0o660, uid: uint32(os.Geteuid()), gid: uint32(os.Getegid())}
-	if err := OwnedGroupWritableAllowed(info); err != nil {
+	uid, gid := ownStat(t)
+	if err := OwnedGroupWritableAllowed(statFileInfo{mode: 0o660, uid: uid, gid: gid}); err != nil {
 		t.Fatalf("OwnedGroupWritableAllowed(0660, our own uid/gid) = %v, want nil", err)
 	}
 }

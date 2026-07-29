@@ -90,6 +90,23 @@ func TestStepCreateDir_RejectsExistingFile(t *testing.T) {
 	}
 }
 
+// applyStagePromote drives the two steps the installer runs around the config
+// preflight. Production never applies one without the other, so tests that
+// assert on the managed config must drive both.
+func applyStagePromote(t *testing.T, env *installEnv, opts installOpts) bool {
+	t.Helper()
+	if _, err := stepStagePipelockConfig(opts).apply(context.Background(), env); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	// Staging always reports a mutation when --config is set, so the managed
+	// config's fate is the promote step's verdict.
+	promoted, err := stepPromotePipelockConfig(opts).apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	return promoted
+}
+
 func TestStepWritePipelockConfig_CopiesFromSource(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
@@ -97,11 +114,7 @@ func TestStepWritePipelockConfig_CopiesFromSource(t *testing.T) {
 		t.Fatalf("write src: %v", err)
 	}
 	opts := installOpts{configSource: src}
-	s := stepWritePipelockConfig(opts)
-	applied, err := s.apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
+	applied := applyStagePromote(t, env, opts)
 	if !applied {
 		t.Errorf("expected applied=true when source given and dest missing")
 	}
@@ -114,11 +127,7 @@ func TestStepWritePipelockConfig_CopiesFromSource(t *testing.T) {
 
 func TestStepWritePipelockConfig_SkipsWhenNoSource(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
-	s := stepWritePipelockConfig(installOpts{})
-	applied, err := s.apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
+	applied := applyStagePromote(t, env, installOpts{})
 	if applied {
 		t.Errorf("expected skip when --config not set")
 	}
@@ -138,11 +147,7 @@ func TestStepWritePipelockConfig_SkipsWhenIdentical(t *testing.T) {
 	if err := os.WriteFile(dst, body, 0o600); err != nil {
 		t.Fatalf("write dst: %v", err)
 	}
-	s := stepWritePipelockConfig(installOpts{configSource: src})
-	applied, err := s.apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
+	applied := applyStagePromote(t, env, installOpts{configSource: src})
 	if applied {
 		t.Errorf("expected skip when src and dst contents match")
 	}
@@ -161,11 +166,7 @@ func TestStepWritePipelockConfig_OverwritesAndWarnsOnDifference(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("mode: balanced\n"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	s := stepWritePipelockConfig(installOpts{configSource: src})
-	applied, err := s.apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
+	applied := applyStagePromote(t, env, installOpts{configSource: src})
 	if !applied {
 		t.Errorf("expected overwrite when --config differs")
 	}
@@ -932,5 +933,30 @@ func TestRenderCredentialGuardPathUnitUsesOnlyChangedWatches(t *testing.T) {
 		if strings.Contains(pathUnit, bad) {
 			t.Fatalf("path unit should not use level-triggered directive %q:\n%s", bad, pathUnit)
 		}
+	}
+}
+
+// TestRenderCredentialGuardServiceDisablesStartRateLimit pins the fix for a
+// self-disabling security control. The guard is a path-triggered idempotent
+// oneshot, so one tool rewriting several credential files at once fires it
+// repeatedly within seconds. Under systemd's default limit that burst reads as a
+// crash loop: systemd fails the service, then fails the .path unit that triggers
+// it, and the credential guard stays dead until a human notices. Observed on a
+// real host sitting in unit-start-limit-hit for over a day, with every individual
+// service run having completed successfully.
+func TestRenderCredentialGuardServiceDisablesStartRateLimit(t *testing.T) {
+	unit := renderCredentialGuardService("/usr/local/bin/plk-cred-guard")
+	if !strings.Contains(unit, "StartLimitIntervalSec=0") {
+		t.Fatalf("credential guard service must disable the start rate limiter, or a burst of credential writes permanently fails the guard:\n%s", unit)
+	}
+	// The directive only takes effect in [Unit], so pin the section it lands in.
+	unitIdx := strings.Index(unit, "[Unit]")
+	svcIdx := strings.Index(unit, "[Service]")
+	limIdx := strings.Index(unit, "StartLimitIntervalSec=0")
+	if unitIdx < 0 || svcIdx < 0 || limIdx < unitIdx || limIdx > svcIdx {
+		t.Fatalf("StartLimitIntervalSec must appear in the [Unit] section:\n%s", unit)
+	}
+	if !strings.Contains(unit, "Type=oneshot") {
+		t.Fatalf("credential guard should remain a oneshot:\n%s", unit)
 	}
 }

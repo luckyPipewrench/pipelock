@@ -400,13 +400,19 @@ func TestRunInstall_SelfPathFallback(t *testing.T) {
 
 func TestRunInstall_DryRunSucceedsWithoutMutation(t *testing.T) {
 	env, runner, buf := newFakeEnv(t)
-	err := runInstall(context.Background(), env, installOpts{dryRun: true})
+	src := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(src, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	err := runInstall(context.Background(), env, installOpts{dryRun: true, configSource: src})
 	if err != nil {
 		t.Fatalf("dry-run err: %v", err)
 	}
-	// Dry-run should NOT have shelled out for any mutation.
-	if len(runner.calls) != 0 {
-		t.Errorf("dry-run shelled out: %v", runner.calls)
+	// Dry-run may validate the config, but it must not shell out for
+	// service or nft mutation.
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+	if len(runner.calls) != 1 {
+		t.Errorf("dry-run calls: got %v, want only config preflight", runner.calls)
 	}
 	if !strings.Contains(buf.String(), "planned steps") {
 		t.Errorf("missing 'planned steps' header: %q", buf.String())
@@ -454,8 +460,12 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
 		t.Fatalf("write ca export: %v", err)
 	}
+	src := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(src, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 
-	if err := runInstall(context.Background(), env, installOpts{}); err != nil {
+	if err := runInstall(context.Background(), env, installOpts{configSource: src}); err != nil {
 		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
 	}
 	for _, path := range []string{
@@ -2113,13 +2123,13 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 28 steps total after combining the runtime
+	// Sanity: the install flow has 30 steps total after combining the runtime
 	// contract steps with the credential guard and the operator evidence ACL
 	// step. Changing this count is a documented breaking change for the
 	// dry-run / verify probe-4 inventory.
 	steps := installSteps(installOpts{})
-	if len(steps) != 28 {
-		t.Errorf("installSteps count: got %d, want 28", len(steps))
+	if len(steps) != 30 {
+		t.Errorf("installSteps count: got %d, want 30", len(steps))
 	}
 }
 

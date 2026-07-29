@@ -353,7 +353,7 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	if entry["event"] != "anomaly" {
 		t.Errorf("expected event=anomaly, got %v", entry["event"])
 	}
-	if entry["url"] != "https://sus.com/data" {
+	if entry["url"] != "https://sus.com/[redacted]" {
 		t.Errorf("expected url, got %v", entry["url"])
 	}
 	if entry["reason"] != "high entropy segment" {
@@ -418,6 +418,241 @@ func TestLogAnomaly_ContentScannerRedactsURL(t *testing.T) {
 	}
 	if entry["resource"] != "[redacted]" {
 		t.Errorf("expected redacted resource, got %v", entry["resource"])
+	}
+}
+
+// TestCoreFloorScannersRedactContentBearingFields pins the immutable floors.
+// They are the strictest detectors in the product and cannot be exempted by
+// config, so a floor block that echoed the matched credential would publish it
+// to the audit stream and to every configured sink. Both the block path and the
+// anomaly path are covered, because they are separate call sites.
+func TestCoreFloorScannersRedactContentBearingFields(t *testing.T) {
+	// Split literal so the dogfood self-scan does not flag the fixture; the
+	// constant is folded to the same value at compile time.
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/v1/upload?key=" + secret
+
+	for _, scanner := range []string{"core_dlp", "core_response"} {
+		for _, path := range []string{"blocked", "anomaly"} {
+			t.Run(scanner+"/"+path, func(t *testing.T) {
+				dir := t.TempDir()
+				logPath := filepath.Join(dir, "test.log")
+				logger, err := New("json", "file", logPath, true, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := LogContext{
+					method:    testMethodGet,
+					url:       rawURL,
+					target:    rawURL,
+					resource:  secret,
+					clientIP:  testClientIP,
+					requestID: "req-core-redact",
+				}
+				if path == "blocked" {
+					logger.LogBlockedDetail(ctx, scanner, "core floor match", BlockDetail{})
+				} else {
+					logger.LogAnomaly(ctx, scanner, "core floor match", 1.0)
+				}
+				logger.Close()
+
+				data, _ := os.ReadFile(filepath.Clean(logPath))
+				if bytes.Contains(data, []byte(secret)) {
+					t.Fatalf("%s %s log leaked the matched credential: %s", scanner, path, data)
+				}
+				var entry map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+					t.Fatalf("expected valid JSON: %v", err)
+				}
+				if entry["url"] != "https://api.vendor.example/[redacted]" {
+					t.Errorf("expected redacted url, got %v", entry["url"])
+				}
+				if entry["target"] != "https://api.vendor.example/[redacted]" {
+					t.Errorf("expected redacted target, got %v", entry["target"])
+				}
+				if entry["resource"] != "[redacted]" {
+					t.Errorf("expected redacted resource, got %v", entry["resource"])
+				}
+			})
+		}
+	}
+}
+
+func TestUnknownScannerDefaultsToRedactedContentBearingFields(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/v1/upload?key=" + secret
+	scanner := "future_" + "content_scanner"
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger.LogBlockedDetail(LogContext{
+		method:    testMethodGet,
+		url:       rawURL,
+		target:    rawURL,
+		resource:  secret,
+		clientIP:  testClientIP,
+		requestID: "req-unknown-redact",
+		agent:     testAgentName,
+	}, scanner, "future scanner matched content", BlockDetail{})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(logPath))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("unknown scanner leaked the matched credential: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted url, got %v", entry["url"])
+	}
+	if entry["target"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["resource"] != "[redacted]" {
+		t.Errorf("expected redacted resource, got %v", entry["resource"])
+	}
+	if entry["request_id"] != "req-unknown-redact" {
+		t.Errorf("expected request_id to survive redaction, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != scanner {
+		t.Errorf("expected scanner to survive redaction, got %v", entry["scanner"])
+	}
+	if entry["reason"] != "future scanner matched content" {
+		t.Errorf("expected reason to survive redaction, got %v", entry["reason"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent to survive redaction, got %v", entry["agent"])
+	}
+	if !IsContentScanner(scanner) {
+		t.Fatal("unknown scanner must be treated as content-bearing")
+	}
+}
+
+// TestCoreSSRFKeepsDestinationDropsRequestLine pins both directions of the
+// destination mode at once. The refused address survives, because an SSRF block
+// the operator cannot attribute to a destination is not actionable. Everything
+// after the authority is dropped, because a destination-class scanner routinely
+// reports a request before DLP inspects it and therefore cannot vouch for the
+// request line it is about to write to logs and external sinks.
+func TestCoreSSRFKeepsDestinationDropsRequestLine(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A credential in the query is the case this pins: the core SSRF floor runs
+	// well ahead of the core DLP floor, so this request is attributed to SSRF and
+	// the detector that would have recognised the credential never sees it.
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "http://169.254.169.254/latest/meta-data/iam/security-credentials/?api_key=" + secret
+	logger.LogBlockedDetail(LogContext{
+		method:    testMethodGet,
+		url:       rawURL,
+		target:    rawURL,
+		clientIP:  testClientIP,
+		requestID: "req-ssrf",
+	}, "core_ssrf", "cloud metadata endpoint", BlockDetail{})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(logPath))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	const wantURL = "http://169.254.169.254"
+	if entry["url"] != wantURL {
+		t.Errorf("core_ssrf url = %v, want the destination only (%s)", entry["url"], wantURL)
+	}
+	if entry["target"] != wantURL {
+		t.Errorf("core_ssrf target = %v, want the destination only (%s)", entry["target"], wantURL)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatal("a credential in the query reached the audit record on a destination-class block")
+	}
+	if IsContentScanner(scannerpkg.ScannerCoreSSRF) {
+		t.Fatal("core_ssrf must remain a destination-class scanner, not a fully redacted one")
+	}
+}
+
+// TestPathDiagnosticScannersKeepPathDropQuery pins the narrower mode. A path
+// traversal or CRLF block reports "sequence in URL" without naming the
+// sequence, so dropping the path would leave the operator with a block they
+// cannot investigate. The query is dropped regardless, because nothing about
+// either finding depends on it.
+func TestPathDiagnosticScannersKeepPathDropQuery(t *testing.T) {
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	for _, scanner := range []string{scannerpkg.ScannerPathTraversal, scannerpkg.ScannerCRLF} {
+		t.Run(scanner, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "test.log")
+			logger, err := New("json", "file", logPath, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger.LogBlockedDetail(LogContext{
+				method:    testMethodGet,
+				url:       "https://api.vendor.example/a/../../etc/passwd?api_key=" + secret,
+				clientIP:  testClientIP,
+				requestID: "req-path",
+			}, scanner, "sequence in URL", BlockDetail{})
+			logger.Close()
+
+			data, _ := os.ReadFile(filepath.Clean(logPath))
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("expected valid JSON: %v", err)
+			}
+			const wantURL = "https://api.vendor.example/a/../../etc/passwd"
+			if entry["url"] != wantURL {
+				t.Errorf("url = %v, want the path retained without the query (%s)", entry["url"], wantURL)
+			}
+			if strings.Contains(string(data), secret) {
+				t.Fatal("a credential in the query reached the audit record")
+			}
+		})
+	}
+}
+
+// TestDropURLContentSegmentsPreservesConnectAuthority pins the non-URL input
+// path. A forward-proxy CONNECT target is an authority, not an absolute URL, so
+// it must survive intact rather than collapse into a placeholder that would
+// make every tunnel block indistinguishable from every other.
+func TestDropURLContentSegmentsPreservesConnectAuthority(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		keepPath bool
+		want     string
+	}{
+		{name: "connect authority survives", raw: "evil.com:443", want: "evil.com:443"},
+		{name: "connect authority drops query", raw: "evil.com:443?blob=leakcanary", want: "evil.com:443"},
+		// A schemeless value parses with an empty Host and reaches the fallback
+		// with its path intact. Destination mode has to drop that path like any
+		// other, or the least parseable inputs get the weakest redaction.
+		{name: "schemeless value drops path and query", raw: "evil.com/admin?blob=leakcanary", want: "evil.com"},
+		{name: "authority with path drops both", raw: "evil.com:443/admin?blob=leakcanary", want: "evil.com:443"},
+		{name: "schemeless value keeps path when asked", raw: "evil.com/admin?blob=leakcanary", keepPath: true, want: "evil.com/admin"},
+		{name: "absolute url drops path and query", raw: "https://host.example/p/q?a=b#frag", want: "https://host.example"},
+		{name: "absolute url keeps path when asked", raw: "https://host.example/p/q?a=b#frag", keepPath: true, want: "https://host.example/p/q"},
+		{name: "empty stays empty", raw: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dropURLContentSegments(tt.raw, tt.keepPath)
+			if got != tt.want {
+				t.Errorf("dropURLContentSegments(%q, %v) = %q, want %q", tt.raw, tt.keepPath, got, tt.want)
+			}
+			if !tt.keepPath && strings.Contains(got, "leakcanary") {
+				t.Errorf("destination mode echoed content: %q", got)
+			}
+		})
 	}
 }
 
@@ -627,7 +862,7 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	checks := map[string]any{
 		"event":           "blocked",
 		"method":          testMethodGet,
-		"url":             "https://evil.com/exfil",
+		"url":             "https://evil.com",
 		"scanner":         "blocklist",
 		"reason":          "domain in blocklist: evil.com",
 		"component":       "pipelock",
@@ -754,7 +989,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	if entry["event"] != string(EventResponseScan) {
 		t.Errorf("expected event=response_scan, got %v", entry["event"])
 	}
-	if entry["url"] != "https://example.com/page" {
+	if entry["url"] != "https://example.com/[redacted]" {
 		t.Errorf("expected url, got %v", entry["url"])
 	}
 	if entry["client_ip"] != testClientIP {
@@ -776,6 +1011,63 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	}
 	if entry["component"] != testComponent {
 		t.Errorf("expected component=pipelock, got %v", entry["component"])
+	}
+}
+
+func TestLogResponseScanRedactsContentBearingContext(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/v1/chat?token=" + secret
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan(LogContext{
+		method:    testMethodGet,
+		url:       rawURL,
+		target:    rawURL,
+		resource:  secret,
+		clientIP:  testClientIP,
+		requestID: "req-response-redact",
+		agent:     testAgentName,
+	}, testActionWarn, 1, []string{"Prompt Injection"}, nil)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("response_scan leaked the matched credential: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted url, got %v", entry["url"])
+	}
+	if entry["target"] != "https://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["resource"] != "[redacted]" {
+		t.Errorf("expected redacted resource, got %v", entry["resource"])
+	}
+	if entry["request_id"] != "req-response-redact" {
+		t.Errorf("expected request_id to survive redaction, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != scannerpkg.AuditResponseScan {
+		t.Errorf("expected scanner=response_scan, got %v", entry["scanner"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 1 || patterns[0] != "Prompt Injection" {
+		t.Errorf("expected patterns to survive redaction, got %v", entry["patterns"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent to survive redaction, got %v", entry["agent"])
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "suppress:") {
+		t.Fatalf("remediation_hint = %q, want response-scan operator hint", hint)
 	}
 }
 
@@ -1682,6 +1974,58 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestLogWSScanRedactsContentBearingTarget(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	rawTarget := "wss://api.vendor.example/socket?token=" + secret
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSScan(WSScanEvent{
+		Target:       rawTarget,
+		Direction:    DirectionClientToServer,
+		ClientIP:     testClientIP,
+		RequestID:    "req-ws-redact",
+		Agent:        testAgentName,
+		Action:       "audit",
+		MatchCount:   1,
+		PatternNames: []string{"AWS Access ID"},
+	})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("ws_scan leaked the matched credential: %s", data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["target"] != "wss://api.vendor.example/[redacted]" {
+		t.Errorf("expected redacted target, got %v", entry["target"])
+	}
+	if entry["request_id"] != "req-ws-redact" {
+		t.Errorf("expected request_id to survive redaction, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != scannerpkg.ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %v", entry["scanner"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 1 || patterns[0] != "AWS Access ID" {
+		t.Errorf("expected patterns to survive redaction, got %v", entry["patterns"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent to survive redaction, got %v", entry["agent"])
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "dlp.patterns[].exempt_domains") {
+		t.Fatalf("remediation_hint = %q, want DLP operator hint", hint)
+	}
+}
+
 func TestLogWSScan_ClientToServer_DLPTechnique(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
@@ -2369,7 +2713,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventBlocked),
 			wantKey:   "url",
-			wantValue: "http://forward.example/path",
+			wantValue: "http://forward.example",
 			absent:    []string{"target", "resource"},
 		},
 		{
@@ -2379,7 +2723,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventResponseScan),
 			wantKey:   "url",
-			wantValue: "wss://socket.example/stream",
+			wantValue: "wss://socket.example/[redacted]",
 			absent:    []string{"target", "resource"},
 		},
 		{
@@ -2409,7 +2753,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventAnomaly),
 			wantKey:   "resource",
-			wantValue: "resources/read",
+			wantValue: "[redacted]",
 			absent:    []string{"url", "target"},
 		},
 		{

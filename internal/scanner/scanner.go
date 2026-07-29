@@ -54,6 +54,7 @@ const (
 	ScannerPathTraversal    = "path_traversal"
 	ScannerCRLF             = "crlf_injection"
 	ScannerContext          = "context"
+	ScannerMCPToolScanning  = "mcp_tool_scanning"
 	ScannerAll              = "all"
 )
 

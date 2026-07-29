@@ -22,29 +22,49 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// contentScanners identify block sources where the blocked URL (or target)
-// likely contains the very bytes that triggered the match - DLP firing on
-// a query-param-embedded API key, seed-phrase detection on an address
-// embedded in the path, etc. When a block comes from one of these
-// scanners, LogBlocked truncates the URL/target to scheme+host before
-// emitting to structured logs so the credential is not echoed verbatim
-// into the audit stream. Network-layer scanners (ssrf, blocklist) or
-// scanners that never see URL contents (airlock, kill_switch) are not in
-// this set; their full-URL logs are unambiguously safe.
+type contentFieldMode int
+
+const (
+	contentFieldModeRedacted contentFieldMode = iota
+	contentFieldModeDestination
+	contentFieldModePathDiagnostic
+)
+
+// scannerContentFieldMode classifies URL/target/resource fields for audit
+// output. The default is redaction: future or misspelled scanner labels may be
+// content-bearing, so they must not silently echo paths, queries, or resources
+// into logs and external sinks.
 //
-// Pre-tag gate finding: a fetch URL containing a credential in the query
-// string was blocked by DLP but the client 403 body AND the structured
-// log both echoed the raw token back.
-var contentScanners = map[string]struct{}{
-	"dlp":                   {},
-	"body_dlp":              {},
-	"body_prompt_injection": {},
-	"header_dlp":            {},
-	"mcp_input_scanning":    {},
-	"response_scan":         {},
-	"address_protection":    {},
-	"seed_phrase":           {},
-	"cross_request_entropy": {},
+// No mode emits a query string or fragment. Scanner order decides which
+// detector reports a request first, and a destination-class scanner routinely
+// fires ahead of DLP: the core SSRF floor runs several stages before the core
+// DLP floor, so a request to a metadata address carrying a credential in its
+// query is attributed to SSRF and never reaches the detector that would have
+// recognised the credential. Classifying by scanner identity therefore cannot
+// decide whether a URL is safe to log; only the URL component can. Query and
+// fragment are operand-carrying by construction and are always dropped.
+func scannerContentFieldMode(scanner string) contentFieldMode {
+	switch scanner {
+	case scannerpkg.ScannerPathTraversal,
+		scannerpkg.ScannerCRLF:
+		// The path is the finding itself; a block is not diagnosable without it.
+		return contentFieldModePathDiagnostic
+	case scannerpkg.ScannerSSRF,
+		scannerpkg.ScannerSSRFMetadata,
+		scannerpkg.ScannerCoreSSRF,
+		scannerpkg.ScannerAllowlist,
+		scannerpkg.ScannerBlocklist,
+		scannerpkg.ScannerRateLimit,
+		scannerpkg.ScannerDataBudget,
+		scannerpkg.ScannerContext,
+		scannerpkg.ScannerMCPToolScanning,
+		scannerpkg.AuditMCPSessionBinding,
+		scannerpkg.AuditFrozenTool:
+		// The destination, not the request line, is the diagnostic object.
+		return contentFieldModeDestination
+	default:
+		return contentFieldModeRedacted
+	}
 }
 
 // IsContentScanner reports whether blocks attributed to the given scanner
@@ -53,23 +73,64 @@ var contentScanners = map[string]struct{}{
 // reverse proxy, forward proxy) should redact the URL/target before
 // echoing it back so the credential is not returned to the caller.
 func IsContentScanner(name string) bool {
-	_, ok := contentScanners[name]
-	return ok
+	return scannerContentFieldMode(name) == contentFieldModeRedacted
 }
 
 func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTarget, loggedResource string) {
-	loggedURL = ctx.url
-	loggedTarget = ctx.target
 	loggedResource = ctx.resource
-	if _, redact := contentScanners[scanner]; !redact {
+	switch scannerContentFieldMode(scanner) {
+	case contentFieldModeDestination:
+		return dropURLContentSegments(ctx.url, false),
+			dropURLContentSegments(ctx.target, false),
+			loggedResource
+	case contentFieldModePathDiagnostic:
+		return dropURLContentSegments(ctx.url, true),
+			dropURLContentSegments(ctx.target, true),
+			loggedResource
+	default:
+		loggedURL = redactContentBearingURL(ctx.url)
+		loggedTarget = redactContentBearingURL(ctx.target)
+		if loggedResource != "" {
+			loggedResource = "[redacted]"
+		}
 		return loggedURL, loggedTarget, loggedResource
 	}
-	loggedURL = redactContentBearingURL(ctx.url)
-	loggedTarget = redactContentBearingURL(ctx.target)
-	if loggedResource != "" {
-		loggedResource = "[redacted]"
+}
+
+// dropURLContentSegments removes the query and fragment from raw, and removes
+// the path as well unless keepPath is set. A value that does not parse as an
+// absolute URL is truncated at the earliest delimiter rather than replaced
+// wholesale, so a forward-proxy CONNECT authority such as host:443 survives
+// intact while nothing after a delimiter rides through.
+//
+// The fallback covers more than CONNECT authorities. A schemeless value parses
+// with an empty Host and lands here with its path intact, so the fallback has to
+// apply the same component rules the parsed branch does; treating it as opaque
+// would let destination mode echo path content for exactly the inputs too
+// malformed to reason about.
+func dropURLContentSegments(raw string, keepPath bool) string {
+	if raw == "" {
+		return ""
 	}
-	return loggedURL, loggedTarget, loggedResource
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		delims := "?#"
+		if !keepPath {
+			delims += "/"
+		}
+		if i := strings.IndexAny(raw, delims); i >= 0 {
+			return raw[:i]
+		}
+		return raw
+	}
+	out := u.Host
+	if u.Scheme != "" {
+		out = u.Scheme + "://" + u.Host
+	}
+	if keepPath {
+		out += u.EscapedPath()
+	}
+	return out
 }
 
 // RedactContentBearingURL returns a URL safe to echo when a
@@ -999,15 +1060,18 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 // When bundleRules is non-empty, bundle provenance is included in the audit event
 // and webhook payload so SIEM consumers can identify which community rules matched.
 func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
-	technique := TechniqueForScanner("response_scan")
+	const scanner = scannerpkg.AuditResponseScan
+	technique := TechniqueForScanner(scanner)
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
 		optStr("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
-		optStr("resource", ctx.resource).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		str("scanner", scanner).
 		str("action", action).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
@@ -1370,6 +1434,7 @@ type WSScanEvent struct {
 	Direction    string
 	ClientIP     string
 	RequestID    string
+	Agent        string
 	Action       string
 	Scanner      string
 	MatchCount   int
@@ -1390,12 +1455,17 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 		}
 	}
 	technique := TechniqueForScanner(scanner)
+	ctx := LogContext{target: ev.Target}
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventWSScan).
-		str("target", ev.Target).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		str("direction", ev.Direction).
 		str("client_ip", ev.ClientIP).
 		str("request_id", ev.RequestID).
+		optStr("agent", ev.Agent).
 		str("action", ev.Action).
 		str("scanner", scanner).
 		intField("match_count", ev.MatchCount).

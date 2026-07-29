@@ -114,7 +114,7 @@ On success, `install` prints a **Next steps** block with:
 
 ### nftables version compatibility
 
-The nftables step checks the installed `nft` version before generating rules. The containment ruleset requires nftables >= 0.6 (for `meta skuid` and inline `counter log prefix ... drop` syntax). On hosts with an older `nft` (seen on some older enterprise Linux images), install fails with a clear error naming the minimum version and the distro-appropriate upgrade command, rather than a cryptic parse error at load time.
+The nftables step checks the installed `nft` version before generating rules. The containment ruleset requires nftables >= 0.8 (for `meta skuid`, inline `counter log prefix ... drop` syntax, and the `-c`/`--check` validation mode used by the install and rollback paths). On hosts with an older `nft` (seen on some older enterprise Linux images), install fails with a clear error naming the minimum version and the distro-appropriate upgrade command, rather than a cryptic parse error at load time.
 
 ## `pipelock contain verify`
 

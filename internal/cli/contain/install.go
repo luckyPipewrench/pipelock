@@ -5,6 +5,8 @@ package contain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,6 +165,9 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	steps := installSteps(opts)
 
 	if opts.dryRun {
+		if err := preflightPipelockConfig(ctx, env, opts, true); err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+		}
 		printPlan(env.out, "pipelock contain install — planned steps:", steps)
 		return nil
 	}
@@ -277,7 +282,9 @@ func installSteps(opts installOpts) []step {
 		// /var/lib/pipelock holds capture data and stays pipelock-proxy-private.
 		stepCreateDir("config", func(e *installEnv) string { return e.configDir }, modeDirTraversable),
 		stepCreateDir("data", func(e *installEnv) string { return e.dataDir }, modeDirPrivate),
-		stepWritePipelockConfig(opts),
+		stepStagePipelockConfig(opts),
+		stepPreflightPipelockConfig(opts),
+		stepPromotePipelockConfig(opts),
 		stepChownToProxy("config", func(e *installEnv) string { return e.configDir }),
 		stepChownToProxy("data", func(e *installEnv) string { return e.dataDir }),
 		// Grant the human operator a user-scoped read+traverse ACL on the
@@ -417,8 +424,21 @@ func renderCredentialGuardScript(agentUser, operatorHome, bashPath string) strin
 }
 
 func renderCredentialGuardService(scriptPath string) string {
+	// StartLimitIntervalSec=0 disables systemd's start rate limiter for this
+	// unit. The guard is a path-triggered idempotent oneshot: a single editor
+	// save, a token refresh, or any tool rewriting several credential files at
+	// once legitimately fires it many times in a few seconds. Under the default
+	// limit (5 starts / 10s) that burst is indistinguishable from a crash loop,
+	// so systemd fails the SERVICE and then fails the .path unit that triggers
+	// it. The credential guard then stays dead until someone notices and resets
+	// it by hand, which is the worst outcome for a control whose whole job is to
+	// re-lock credential files after something widens them. Observed on a real
+	// host: the .path unit sat in failed/unit-start-limit-hit for over a day,
+	// having previously failed the same way twice, while every individual
+	// service run had completed successfully.
 	return `[Unit]
 Description=Pipelock containment credential guard
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -847,20 +867,29 @@ func stepCreateDir(label string, pathFn func(*installEnv) string, mode os.FileMo
 // Step 6: write pipelock.yaml
 // ---------------------------------------------------------------------------
 
-func stepWritePipelockConfig(opts installOpts) step {
-	const targetName = "pipelock.yaml"
+// stepStagePipelockConfig writes the migrated --config candidate to a staging
+// path beside the managed config rather than to the managed config itself.
+//
+// The preflight that follows proves the selected binary can load the candidate,
+// and it must run against post-migration content, because migration rewrites
+// home-relative paths and is exactly the transformation capable of producing a
+// config the binary rejects. Writing to the managed path first satisfied that
+// requirement by making the unvalidated candidate live: rollback restores it
+// afterwards, but the window between write and verdict is real, and a crash or
+// a concurrent reload inside that window observes a config nothing has accepted.
+// Staging keeps the candidate off the live path until it has been accepted.
+func stepStagePipelockConfig(opts installOpts) step {
 	var migrated []migratedConfigArtifact
-	var configWritten bool
+	var staged bool
 	return step{
-		name: "write-pipelock-config",
-		desc: "write /etc/pipelock/pipelock.yaml (from --config, with home-path migration)",
+		name: "stage-pipelock-config",
+		desc: "stage the --config candidate (with home-path migration) for preflight",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			migrated = nil
-			configWritten = false
+			staged = false
 			if opts.configSource == "" {
 				return false, nil
 			}
-			dst := filepath.Join(env.configDir, targetName)
 			data, err := env.readFile(opts.configSource)
 			if err != nil {
 				return false, fmt.Errorf("read --config %s: %w", opts.configSource, err)
@@ -870,35 +899,210 @@ func stepWritePipelockConfig(opts installOpts) step {
 				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, err
 			}
+			if err := env.writeFile(stagedPipelockConfigPath(env), data, modeConfigSecret); err != nil {
+				_ = cleanupMigratedConfigArtifacts(env, migrated)
+				return false, fmt.Errorf("stage config candidate: %w", err)
+			}
+			staged = true
+			// Report the mutation even when nothing was migrated. Staging
+			// writes a file, and a step that reports no mutation is left off
+			// the rollback chain, which would strand the candidate on disk when
+			// a later step fails.
+			return true, nil
+		},
+		undo: func(_ context.Context, env *installEnv) error {
+			var stagedErr error
+			if staged {
+				if err := env.removeFile(stagedPipelockConfigPath(env)); err != nil && !errors.Is(err, os.ErrNotExist) {
+					stagedErr = err
+				}
+			}
+			return errors.Join(stagedErr, cleanupMigratedConfigArtifacts(env, migrated))
+		},
+	}
+}
+
+// stepPromotePipelockConfig moves the accepted candidate onto the managed path.
+// It runs only after preflight has returned a verdict, so the managed config is
+// replaced exactly once, by content the selected binary has already loaded.
+func stepPromotePipelockConfig(opts installOpts) step {
+	var configWritten bool
+	return step{
+		name: "promote-pipelock-config",
+		desc: "promote the accepted config to /etc/pipelock/pipelock.yaml",
+		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			configWritten = false
+			if opts.configSource == "" {
+				return false, nil
+			}
+			stagedPath := stagedPipelockConfigPath(env)
+			dst := managedPipelockConfigPath(env)
+			data, err := env.readFile(stagedPath)
+			if err != nil {
+				return false, fmt.Errorf("read staged config %s: %w", stagedPath, err)
+			}
 			// Compare with the existing config (if any). Identical -> skip
 			// silently. Different -> overwrite with .bak, and print a loud
 			// warning so an operator running install twice with different
 			// --config values is never silently misled about which one is
 			// live. The previous "skip if exists" behaviour hid that case.
-			if existing, err := env.readFile(dst); err == nil {
+			if existing, readErr := env.readFile(dst); readErr == nil {
 				if bytesEqual(existing, data) {
-					return len(migrated) > 0, nil
+					return false, discardStagedPipelockConfig(env)
 				}
 				_, _ = fmt.Fprintf(env.out,
 					"  WARN: --config %s differs from existing %s; overwriting (prior content saved to %s.bak)\n",
 					opts.configSource, dst, dst)
 			}
 			if err := backupAndWrite(env, dst, data, modeConfigSecret); err != nil {
-				_ = cleanupMigratedConfigArtifacts(env, migrated)
 				return false, err
 			}
 			configWritten = true
-			return true, nil
+			return true, discardStagedPipelockConfig(env)
 		},
 		undo: func(_ context.Context, env *installEnv) error {
-			dst := filepath.Join(env.configDir, targetName)
-			var configErr error
-			if configWritten {
-				configErr = restoreBackup(env, dst)
+			if !configWritten {
+				return nil
 			}
-			return errors.Join(configErr, cleanupMigratedConfigArtifacts(env, migrated))
+			return restoreBackup(env, managedPipelockConfigPath(env))
 		},
 	}
+}
+
+// stagedPipelockConfigPath is a sibling of the managed config so the staged
+// candidate shares its directory, mode, and filesystem. Preflight runs the
+// selected binary against this path.
+func stagedPipelockConfigPath(env *installEnv) string {
+	return managedPipelockConfigPath(env) + ".staged"
+}
+
+func discardStagedPipelockConfig(env *installEnv) error {
+	if err := env.removeFile(stagedPipelockConfigPath(env)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove staged config: %w", err)
+	}
+	return nil
+}
+
+func stepPreflightPipelockConfig(opts installOpts) step {
+	return step{
+		name: "preflight-pipelock-config",
+		desc: "preflight: selected pipelock binary accepts the managed config",
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			if err := preflightPipelockConfig(ctx, env, opts, false); err != nil {
+				return false, err
+			}
+			return false, nil
+		},
+		undo: nil,
+	}
+}
+
+type pipelockConfigPreflightTarget struct {
+	checkPath      string
+	unitPath       string
+	drySource      bool
+	missingManaged bool
+}
+
+func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installOpts, dryRun bool) error {
+	target, err := pipelockConfigPreflightTargetFor(env, opts, dryRun)
+	if err != nil {
+		return err
+	}
+	if target.missingManaged {
+		return fmt.Errorf("contain install config preflight failed for %s: --config is required if the managed config is not already in place. "+
+			"No --config was given and no config exists at the managed path, so the service would start with no configuration. "+
+			"Pass --config to copy a pipelock.yaml to %s. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+			target.unitPath, target.unitPath)
+	}
+	if target.drySource {
+		_, _ = fmt.Fprintf(env.out,
+			"  [INFO] dry-run config preflight: validating --config %s before it would be installed as %s\n",
+			target.checkPath, target.unitPath)
+	}
+	binaryHashBefore, err := env.hashFile(env.pipelockBinary)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: hash selected binary before check: %w. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+			target.unitPath, env.pipelockBinary, err)
+	}
+	out, code, err := env.runCmd(ctx, env.pipelockBinary, "check", "--config", target.checkPath)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; fix the config and rerun install",
+			target.unitPath, env.pipelockBinary, err)
+	}
+	if code != 0 {
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = fmt.Sprintf("pipelock check exited %d", code)
+		}
+		// The binary reports the path it was handed, which during a --config
+		// install is the staging path. An operator has no such file to edit and
+		// no reason to know staging exists, so report the managed path the
+		// candidate was destined for instead.
+		// Dry run checks the operator's own --config file, which is the path
+		// they should see, so the rewrite applies only to the staging path.
+		if !target.drySource && target.checkPath != target.unitPath {
+			detail = strings.ReplaceAll(detail, target.checkPath, target.unitPath)
+		}
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %s. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; remove the unsupported or invalid field from the config and rerun install",
+			target.unitPath, env.pipelockBinary, oneLine(detail))
+	}
+	binaryHashAfter, err := env.hashFile(env.pipelockBinary)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: hash selected binary after check: %w. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+			target.unitPath, env.pipelockBinary, err)
+	}
+	if binaryHashAfter != binaryHashBefore {
+		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: selected binary changed during config check. "+
+			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; rerun install with a stable --pipelock-binary path",
+			target.unitPath, env.pipelockBinary)
+	}
+	if !dryRun {
+		env.preflightBinaryHash = binaryHashAfter
+	}
+	return nil
+}
+
+// pipelockConfigPreflightTargetFor resolves which config path preflight checks
+// and which path the operator is told about. It returns an error or a target,
+// never a "no target" signal: a caller handed one of those would have to treat
+// it as "nothing to check", which silently skips the whole preflight.
+func pipelockConfigPreflightTargetFor(env *installEnv, opts installOpts, dryRun bool) (pipelockConfigPreflightTarget, error) {
+	unitPath := managedPipelockConfigPath(env)
+	if opts.configSource != "" {
+		if dryRun {
+			return pipelockConfigPreflightTarget{
+				checkPath: filepath.Clean(opts.configSource),
+				unitPath:  unitPath,
+				drySource: true,
+			}, nil
+		}
+		// Check the staged candidate, not the managed path. The managed path
+		// still holds the previous config at this point, so checking it would
+		// verify the config being replaced instead of the one replacing it.
+		return pipelockConfigPreflightTarget{checkPath: stagedPipelockConfigPath(env), unitPath: unitPath}, nil
+	}
+
+	info, err := env.stat(unitPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return pipelockConfigPreflightTarget{unitPath: unitPath, missingManaged: true}, nil
+		}
+		return pipelockConfigPreflightTarget{}, fmt.Errorf("stat managed config %s for preflight: %w", unitPath, err)
+	}
+	if info.IsDir() {
+		return pipelockConfigPreflightTarget{}, fmt.Errorf("managed config %s is a directory", unitPath)
+	}
+	return pipelockConfigPreflightTarget{checkPath: unitPath, unitPath: unitPath}, nil
+}
+
+func managedPipelockConfigPath(env *installEnv) string {
+	return filepath.Join(env.configDir, "pipelock.yaml")
 }
 
 // bytesEqual compares two byte slices without dragging in the bytes
@@ -969,9 +1173,24 @@ func stepInstallPipelockBinary() step {
 		name: "install-pipelock-binary",
 		desc: "install pipelock binary to /usr/local/bin/pipelock (0o755)",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			if env.preflightBinaryHash != "" {
+				srcHash, err := env.hashFile(env.pipelockBinary)
+				if err != nil {
+					return false, fmt.Errorf("hash source binary before install: %w", err)
+				}
+				if srcHash != env.preflightBinaryHash {
+					return false, fmt.Errorf("source binary %s changed after config preflight; refusing to install an unvalidated binary", env.pipelockBinary)
+				}
+			}
 			data, err := env.readFile(env.pipelockBinary)
 			if err != nil {
 				return false, fmt.Errorf("read source binary: %w", err)
+			}
+			if env.preflightBinaryHash != "" {
+				sum := sha256.Sum256(data)
+				if got := hex.EncodeToString(sum[:]); got != env.preflightBinaryHash {
+					return false, fmt.Errorf("source binary %s changed while reading after config preflight; refusing to install an unvalidated binary", env.pipelockBinary)
+				}
 			}
 
 			// Idempotency: if /usr/local/bin/pipelock exists AND its sha256
@@ -1134,7 +1353,7 @@ func stepWriteSystemUnit() step {
 // the runbook; the firewall is the real boundary, these are defense in
 // depth.
 func renderSystemUnit(env *installEnv) string {
-	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	configPath := managedPipelockConfigPath(env)
 	capturePath := filepath.Join(env.dataDir, "captures")
 	return strings.Join([]string{
 		"[Unit]",

@@ -173,6 +173,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Content-bearing URLs are redacted on anomaly events.**
 - **MCP Streamable HTTP fails closed on ambiguous responses** and no longer leaks
   upstream bytes.
+- **Denial-of-wallet enforcement follows a hot reload.** Enabling, disabling, or
+  retuning the MCP denial-of-wallet gates required a restart to take effect, so a
+  reload left the previous limits enforcing. Budgets now update in place without
+  resetting each subject's accumulated consumption, meaning a retune no longer
+  hands every active subject a fresh allowance.
 - **MCP protocol revision 2026-07-28 is mediated without a silent downgrade.**
   That revision makes `Mcp-Method` and `Mcp-Name` required on Streamable HTTP
   POST, and the reverse proxy stripped both in transit. An upstream that enforces
@@ -203,13 +208,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A verified inline image no longer trips content scanning on its own
   opacity.** Legitimate `data:image/png;base64` payloads were indistinguishable
   from an encoded blob. Response scanning and text DLP now excise a verified
-  image before evaluating the surrounding content, and text DLP keeps the
-  decoded bytes in scope, so a secret hidden inside the image is still detected.
-  The carve-out is deliberately narrow: only a strict PNG or JPEG in an exact
-  data-URL envelope, whose bytes are fully accounted for and which decodes
-  successfully, is excised. A payload that merely looks like an image, carries
-  data before, after, or around the image, or hides bytes in metadata segments
-  is scanned normally, and the verification itself is allocation-bounded.
+  image before evaluating the surrounding content. The two surfaces differ in
+  what happens to the image itself: text DLP keeps the decoded bytes in scope,
+  so a secret carried inside a verified image is still detected there, while
+  response scanning discards them, so a verified image's own bytes are not
+  examined on that path. The carve-out is deliberately narrow: only a strict PNG
+  or JPEG in an exact data-URL envelope, whose bytes are fully accounted for and
+  which decodes successfully, is excised. A payload that merely looks like an
+  image, or that carries data before, after, or around the image, is scanned
+  normally, and the verification itself is allocation-bounded.
   **URL query parameters are deliberately not covered.** A high-entropy image
   payload in a query parameter still blocks on entropy, so a deployment that
   passes inline media through URLs must exempt it explicitly rather than rely on

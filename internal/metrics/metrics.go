@@ -122,6 +122,7 @@ type Metrics struct {
 	conductorServerAuditIngest   *prometheus.CounterVec
 	conductorServerAuditQueries  *prometheus.CounterVec
 	conductorEmergencyQuarantine *prometheus.CounterVec
+	conductorPolicyHashStatuses  *prometheus.GaugeVec
 
 	// Learn-and-lock observation pipeline (learn.go).
 	learnObservationEvents        *prometheus.CounterVec

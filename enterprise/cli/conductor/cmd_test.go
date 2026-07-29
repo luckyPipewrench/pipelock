@@ -123,8 +123,12 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.MetricsPath, nil)
 	w = httptest.NewRecorder()
 	probeHandler.ServeHTTP(w, req)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pipelock_conductor_server_requests_total") {
+	metricsBody := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(metricsBody, "pipelock_conductor_server_requests_total") {
 		t.Fatalf("metrics status = %d body=%s, want conductor metrics", w.Code, w.Body.String())
+	}
+	if !strings.Contains(metricsBody, `pipelock_conductor_policy_bundle_policy_hash_status_count{status="unknown_unverified"} 0`) {
+		t.Fatalf("metrics body missing policy hash status gauge:\n%s", metricsBody)
 	}
 }
 

@@ -7,9 +7,11 @@ package metrics
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -74,4 +76,26 @@ func TestConductorEmergencyQuarantineMetric(t *testing.T) {
 
 	var nilMetrics *Metrics
 	nilMetrics.RecordConductorEmergencyQuarantine("rollback", "nil_resolver")
+}
+
+func TestConductorPolicyHashStatusMetricIsBounded(t *testing.T) {
+	m := New()
+	m.RecordConductorPolicyHashStatusCounts(map[conductor.PolicyHashStatus]int{
+		conductor.PolicyHashCurrent:            4,
+		conductor.PolicyHashKnownLegacy:        2,
+		conductor.PolicyHashUnknownUnverified:  1,
+		conductor.PolicyHashStatus("future-x"): 99,
+	})
+
+	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(`# HELP pipelock_conductor_policy_bundle_policy_hash_status_count Loaded Conductor policy bundles by policy hash status.
+# TYPE pipelock_conductor_policy_bundle_policy_hash_status_count gauge
+pipelock_conductor_policy_bundle_policy_hash_status_count{status="current"} 4
+pipelock_conductor_policy_bundle_policy_hash_status_count{status="known_legacy"} 2
+pipelock_conductor_policy_bundle_policy_hash_status_count{status="unknown_unverified"} 1
+`), "pipelock_conductor_policy_bundle_policy_hash_status_count"); err != nil {
+		t.Fatalf("policy hash status metric = %v", err)
+	}
+
+	var nilMetrics *Metrics
+	nilMetrics.RecordConductorPolicyHashStatusCounts(nil)
 }

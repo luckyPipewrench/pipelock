@@ -699,8 +699,9 @@ func (s *FileBundleStore) load() error {
 		// scheme, which meant the case that actually stops an upgrade -- a hash
 		// from a release whose config schema this build no longer carries --
 		// produced no signal at all before the leader failed to boot.
-		if status := record.Bundle.PolicyHashStatus(); status != conductor.PolicyHashCurrent {
-			s.policyHashStatusCounts[status]++
+		status := record.Bundle.PolicyHashStatus()
+		s.policyHashStatusCounts[status]++
+		if status != conductor.PolicyHashCurrent {
 			slog.Warn("conductor_policy_bundle_policy_hash_not_current",
 				slog.String("event", "conductor_policy_bundle_policy_hash_not_current"),
 				slog.String("policy_hash_status", string(status)),

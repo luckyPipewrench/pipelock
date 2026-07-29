@@ -373,6 +373,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		return nil, nil, nil, err
 	}
 	m := metrics.New()
+	m.RecordConductorPolicyHashStatusCounts(store.PolicyHashStatusCounts())
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:              store,
 		Capabilities:       controlplane.DefaultCapabilities(opts.conductorID),

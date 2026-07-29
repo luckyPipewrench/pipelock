@@ -23,4 +23,5 @@ func (m *Metrics) registerConductorMetrics(_ *prometheus.Registry) {
 	_ = m.conductorServerAuditIngest
 	_ = m.conductorServerAuditQueries
 	_ = m.conductorEmergencyQuarantine
+	_ = m.conductorPolicyHashStatuses
 }

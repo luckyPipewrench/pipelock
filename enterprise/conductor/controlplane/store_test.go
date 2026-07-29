@@ -74,6 +74,13 @@ func TestFileBundleStorePublishesIdempotentlyAndReloads(t *testing.T) {
 	if got := info.Mode().Perm(); got != bundleRecordFileMode {
 		t.Fatalf("bundle record mode = %v, want %v", got, bundleRecordFileMode)
 	}
+	counts := reopened.PolicyHashStatusCounts()
+	if got := counts[conductor.PolicyHashCurrent]; got != 1 {
+		t.Fatalf("current policy hash count = %d, want 1", got)
+	}
+	if got := counts[conductor.PolicyHashUnknownUnverified]; got != 0 {
+		t.Fatalf("unknown policy hash count = %d, want 0", got)
+	}
 }
 
 func TestFileBundleStoreLoadsLegacyPolicyHashBundleAndServesLatest(t *testing.T) {
@@ -116,6 +123,13 @@ func TestFileBundleStoreLoadsLegacyPolicyHashBundleAndServesLatest(t *testing.T)
 	}
 	if served.BundleID != bundle.BundleID || served.PolicyHash != bundle.PolicyHash {
 		t.Fatalf("served bundle id/hash = %q/%s, want %q/%s", served.BundleID, served.PolicyHash, bundle.BundleID, bundle.PolicyHash)
+	}
+	counts := reopened.PolicyHashStatusCounts()
+	if got := counts[conductor.PolicyHashKnownLegacy]; got != 1 {
+		t.Fatalf("known legacy policy hash count = %d, want 1", got)
+	}
+	if got := counts[conductor.PolicyHashUnknownUnverified]; got != 0 {
+		t.Fatalf("unknown policy hash count = %d, want 0", got)
 	}
 	resolver := resolverForSigner(signer)
 	if err := served.ValidateAllowLegacyPolicyHash(); err != nil {

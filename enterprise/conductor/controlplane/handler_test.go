@@ -846,7 +846,7 @@ func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
 }
 
 func TestHandlerRejectsOverlongEmergencyValidity(t *testing.T) {
-	msg, killResolver := signedRemoteKillMessageWithTTL(t, "kill-long", 3, conductor.KillSwitchActive, testNow, DefaultRemoteKillMaxValidity+time.Minute)
+	msg, killResolver := signedRemoteKillMessageWithTTL(t, "kill-long", 3, testNow, DefaultRemoteKillMaxValidity+time.Minute)
 	auth, rollbackResolver := signedRollbackAuthorizationWithTTL(t, "rollback-long", 4, testNow, DefaultRollbackMaxValidity+time.Minute)
 	handler := newTestHandlerWithEmergencyKeys(t, killResolver, rollbackResolver)
 

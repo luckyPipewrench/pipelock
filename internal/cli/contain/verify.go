@@ -43,9 +43,10 @@ const (
 	defaultNFTTable     = "pipelock_containment"
 	defaultNFTChain     = "output_filter"
 
-	probeDialTimeout  = 2 * time.Second
-	readinessTimeout  = 5 * time.Second
-	readinessInterval = 100 * time.Millisecond
+	probeDialTimeout        = 2 * time.Second
+	readinessTimeout        = 5 * time.Second
+	installReadinessTimeout = 30 * time.Second
+	readinessInterval       = 100 * time.Millisecond
 
 	// curl flags shared between the egress canary and the operator
 	// reachability probe. Connect timeout is intentionally lower than
@@ -137,6 +138,7 @@ type probeEnv struct {
 	nftPersistUnitPath string
 	nftPath            string
 	serviceName        string
+	readinessTimeout   time.Duration
 	curlPath           string
 	pinPath            string
 	wrapperInvPath     string
@@ -1628,9 +1630,13 @@ func scanPipelockCertCN(data []byte) (int, string, error) {
 func probeLoopbackListen(ctx context.Context, env *probeEnv) (string, string) {
 	addr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", env.port))
 	start := time.Now()
-	readyCtx, cancel := context.WithTimeout(ctx, readinessTimeout)
+	timeout := env.readinessTimeout
+	if timeout <= 0 {
+		timeout = readinessTimeout
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	maxAttempts := int(readinessTimeout/readinessInterval) + 1
+	maxAttempts := int(timeout/readinessInterval) + 1
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		conn, err := env.dialCtx(readyCtx, "tcp", addr, min(probeDialTimeout, readinessInterval))
@@ -1658,7 +1664,7 @@ func probeLoopbackListen(ctx context.Context, env *probeEnv) (string, string) {
 			break
 		}
 	}
-	return statusFail, fmt.Sprintf("dial %s: service did not become ready within %s (last error: %v)", addr, readinessTimeout, lastErr)
+	return statusFail, fmt.Sprintf("dial %s: service did not become ready within %s (last error: %v)", addr, timeout, lastErr)
 }
 
 // formatDialDuration renders an elapsed dial time at millisecond

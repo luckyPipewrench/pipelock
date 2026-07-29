@@ -221,8 +221,8 @@ func validateContainMetricsListen(listen string, proxyPort int) error {
 	if ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("metrics_listen %q is unsafe for containment: use a numeric loopback address on a dedicated port", listen)
 	}
-	parsedPort, err := strconv.Atoi(port)
-	if err != nil || parsedPort == proxyPort {
+	parsedPort, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsedPort == 0 || int(parsedPort) == proxyPort {
 		return fmt.Errorf("metrics_listen %q is unsafe for containment: use a port other than the agent-accessible proxy port %d", listen, proxyPort)
 	}
 	return nil

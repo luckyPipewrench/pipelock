@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -155,6 +156,17 @@ func TestResume_SelectsOldestHeadAndNewestTail(t *testing.T) {
 	_, priv := generateTestKey(t)
 	rec1 := newTestRecorder(t, dir, priv)
 	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
+	timestamps := []time.Time{
+		time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, time.July, 29, 12, 0, 1, 0, time.UTC),
+		time.Date(2026, time.July, 29, 12, 0, 2, 0, time.UTC),
+	}
+	nextTimestamp := 0
+	e1.now = func() time.Time {
+		got := timestamps[nextTimestamp]
+		nextTimestamp++
+		return got
+	}
 	emitOne(t, e1)
 	emitOne(t, e1)
 	emitOne(t, e1)
@@ -165,8 +177,10 @@ func TestResume_SelectsOldestHeadAndNewestTail(t *testing.T) {
 	if len(receipts) != 3 {
 		t.Fatalf("receipt count = %d, want 3", len(receipts))
 	}
-	if receipts[0].ActionRecord.Timestamp.Equal(receipts[2].ActionRecord.Timestamp) {
-		t.Fatal("test setup produced indistinguishable head and tail timestamps")
+	for i, want := range timestamps {
+		if !receipts[i].ActionRecord.Timestamp.Equal(want) {
+			t.Fatalf("receipt %d timestamp = %s, want %s", i, receipts[i].ActionRecord.Timestamp, want)
+		}
 	}
 
 	rec2 := newTestRecorder(t, dir, priv)
@@ -253,6 +267,38 @@ func TestResume_LegacyOversizedShardUsesBoundedHeadAndTail(t *testing.T) {
 	if err := encoder.Encode(receiptEntry); err != nil {
 		_ = file.Close()
 		t.Fatalf("Encode receipt tail: %v", err)
+	}
+	receiptInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		t.Fatalf("Stat receipt position: %v", err)
+	}
+	for {
+		entry := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  seq + 1,
+			Timestamp: receiptEntry.Timestamp,
+			SessionID: "proxy",
+			Type:      "request",
+			Transport: testTransport,
+			Summary:   padding,
+			Detail:    map[string]string{"safe": "value"},
+			PrevHash:  "legacy-prev",
+			Hash:      "legacy-hash",
+		}
+		if err := encoder.Encode(entry); err != nil {
+			_ = file.Close()
+			t.Fatalf("Encode trailing non-receipt: %v", err)
+		}
+		seq++
+		info, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			t.Fatalf("Stat trailing entries: %v", statErr)
+		}
+		if info.Size()-receiptInfo.Size() > recorder.MaxEvidenceReadFileBytes+(1<<20) {
+			break
+		}
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("Close legacy shard: %v", err)

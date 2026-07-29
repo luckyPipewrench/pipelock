@@ -501,17 +501,27 @@ func signedRemoteKillMessage(t *testing.T, id string, counter uint64, state cond
 
 func signedRemoteKillMessageWithResolver(t *testing.T, id string, counter uint64, state conductor.KillSwitchState, created time.Time) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {
 	t.Helper()
-	return signedRemoteKillMessageWithTTL(t, id, counter, state, created, time.Hour)
+	return signedRemoteKillMessageWithAudienceAndTTL(t, id, counter, state, created, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, time.Hour)
 }
 
-func signedRemoteKillMessageWithTTL(t *testing.T, id string, counter uint64, state conductor.KillSwitchState, created time.Time, ttl time.Duration) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {
+func signedRemoteKillMessageWithTTL(t *testing.T, id string, counter uint64, created time.Time, ttl time.Duration) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {
+	t.Helper()
+	return signedRemoteKillMessageWithAudienceAndTTL(t, id, counter, conductor.KillSwitchActive, created, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, ttl)
+}
+
+func signedRemoteKillMessageWithAudience(t *testing.T, id string, counter uint64, state conductor.KillSwitchState, created time.Time, audience conductor.Audience) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {
+	t.Helper()
+	return signedRemoteKillMessageWithAudienceAndTTL(t, id, counter, state, created, audience, time.Hour)
+}
+
+func signedRemoteKillMessageWithAudienceAndTTL(t *testing.T, id string, counter uint64, state conductor.KillSwitchState, created time.Time, audience conductor.Audience, ttl time.Duration) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {
 	t.Helper()
 	msg := conductor.RemoteKillMessage{
 		SchemaVersion: conductor.SchemaVersion,
 		MessageID:     id,
 		OrgID:         "org-main",
 		FleetID:       "prod",
-		Audience:      conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
+		Audience:      audience,
 		State:         state,
 		Counter:       counter,
 		Reason:        "operator emergency stop",

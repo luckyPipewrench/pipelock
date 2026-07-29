@@ -1270,6 +1270,10 @@ func TestRecorder_ResumeAcceptsLegacyShardPastEntryReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Record after legacy shard past entry read cap: %v", err)
 	}
+	nextPath := filepath.Join(dir, fmt.Sprintf("evidence-resume-entry-cap-%d.jsonl", recorder.MaxEvidenceReadEntries+1))
+	if _, err := os.Stat(nextPath); err != nil {
+		t.Fatalf("next resumed shard %q: %v", filepath.Base(nextPath), err)
+	}
 }
 
 func TestComputeFileHash(t *testing.T) {

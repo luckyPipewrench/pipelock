@@ -190,7 +190,7 @@ func TestStepWaitPipelockReadyFailsWhenServiceExited(t *testing.T) {
 	env.dialCtx = func(context.Context, string, string, time.Duration) (net.Conn, error) {
 		return nil, errors.New("connection refused")
 	}
-	runner.on("systemctl show pipelock --property=ActiveState,SubState",
+	runner.on("systemctl show pipelock.service --property=ActiveState,SubState",
 		"ActiveState=failed\nSubState=failed\n", 0, nil)
 
 	applied, err := stepWaitPipelockReady().apply(t.Context(), env)
@@ -199,6 +199,31 @@ func TestStepWaitPipelockReadyFailsWhenServiceExited(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "service exited before readiness") {
 		t.Fatalf("readiness error = %v, want exited-service refusal", err)
+	}
+}
+
+func TestStepWaitPipelockReadyUsesInstallBudget(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on("systemctl show pipelock.service --property=ActiveState,SubState",
+		"ActiveState=active\nSubState=running\n", 0, nil)
+	attempts := 0
+	env.dialCtx = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		attempts++
+		if attempts > int(readinessTimeout/readinessInterval)+1 {
+			return &fakeConn{}, nil
+		}
+		return nil, errors.New("connection refused")
+	}
+
+	applied, err := stepWaitPipelockReady().apply(t.Context(), env)
+	if err != nil {
+		t.Fatalf("readiness with slow healthy startup: %v", err)
+	}
+	if applied {
+		t.Fatal("readiness step reported a mutation")
+	}
+	if attempts <= int(readinessTimeout/readinessInterval)+1 {
+		t.Fatalf("dial attempts = %d, want beyond diagnostic budget", attempts)
 	}
 }
 

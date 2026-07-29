@@ -474,10 +474,7 @@ func TestHandlerStreamStatusInactiveDoesNotShadowDifferentAudience(t *testing.T)
 	if _, _, err := emergency.PublishRemoteKill(t.Context(), active, testNow.Add(-time.Minute)); err != nil {
 		t.Fatalf("PublishRemoteKill(active) error = %v", err)
 	}
-	inactive, _ := signedRemoteKillMessageWithResolver(t, "kill-inactive", 2, conductor.KillSwitchInactive, testNow)
-	inactive.Audience = conductor.Audience{InstanceIDs: []string{"other-instance"}}
-	var inactiveResolver conductor.SignatureKeyResolver
-	inactive.Signatures, inactiveResolver = signConductorPreimage(t, inactive.SignablePreimage, signing.PurposeRemoteKillSigning, "other-kill-signer-1", "other-kill-signer-2")
+	inactive, inactiveResolver := signedRemoteKillMessageWithAudience(t, "kill-inactive", 2, conductor.KillSwitchInactive, testNow, conductor.Audience{InstanceIDs: []string{"other-instance"}})
 	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
 		t.Fatalf("PublishRemoteKill(inactive) error = %v", err)
 	}
@@ -493,6 +490,36 @@ func TestHandlerStreamStatusInactiveDoesNotShadowDifferentAudience(t *testing.T)
 	}
 	if len(resp.ActiveRemoteKills) != 1 || resp.ActiveRemoteKills[0].MessageID != "kill-active" {
 		t.Fatalf("active kills = %+v, want active record for unaffected audience", resp.ActiveRemoteKills)
+	}
+}
+
+func TestHandlerStreamStatusNewerInactiveWildcardShadowsNarrowerActiveAudience(t *testing.T) {
+	store := mustStore(t)
+	publishStreamFixture(t, store)
+	emergency := mustEmergencyStore(t)
+
+	active, activeResolver := signedRemoteKillMessageWithAudience(t, "kill-active", 1, conductor.KillSwitchActive, testNow.Add(-time.Minute), conductor.Audience{InstanceIDs: []string{"pl-prod-1"}})
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), active, testNow.Add(-time.Minute)); err != nil {
+		t.Fatalf("PublishRemoteKill(active) error = %v", err)
+	}
+	inactive, _ := signedRemoteKillMessageWithAudience(t, "kill-inactive", 2, conductor.KillSwitchInactive, testNow, conductor.Audience{InstanceIDs: []string{"*"}})
+	var inactiveResolver conductor.SignatureKeyResolver
+	inactive.Signatures, inactiveResolver = signConductorPreimage(t, inactive.SignablePreimage, signing.PurposeRemoteKillSigning, "wildcard-resume-signer-1", "wildcard-resume-signer-2")
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
+		t.Fatalf("PublishRemoteKill(inactive wildcard) error = %v", err)
+	}
+
+	handler := newStreamStatusTestHandler(t, store, emergency, activeResolver, inactiveResolver)
+	w := getStreamStatus(t, handler, StreamStatusPath+"?org_id=org-main", streamAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp streamStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.ActiveRemoteKills) != 0 {
+		t.Fatalf("active kills = %+v, want none after newer wildcard resume", resp.ActiveRemoteKills)
 	}
 }
 

@@ -331,11 +331,12 @@ func stepWaitPipelockReady() step {
 		desc: "confirm the installed proxy is accepting connections before declaring success",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			status, detail := probeLoopbackListen(ctx, &probeEnv{
-				serviceName: "pipelock",
-				port:        env.proxyPort,
-				runCmd:      env.runCmd,
-				dialCtx:     env.dialCtx,
-				wait:        env.wait,
+				serviceName:      defaultServiceName,
+				port:             env.proxyPort,
+				readinessTimeout: installReadinessTimeout,
+				runCmd:           env.runCmd,
+				dialCtx:          env.dialCtx,
+				wait:             env.wait,
 			})
 			if status != statusPass {
 				return false, fmt.Errorf("installed proxy failed readiness: %s", detail)

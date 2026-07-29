@@ -115,6 +115,87 @@ func ReadTailEntriesBounded(path string, maxEntries int, maxBytes int64) ([]Entr
 	return entries, truncated, nil
 }
 
+// FindLastEntry opens an evidence shard once and scans complete entries from
+// newest to oldest until match accepts one. The scan may read the whole shard,
+// but memory stays bounded to one MaxEvidenceReadFileBytes window plus one
+// maximum-size entry. This is intended for upgrade recovery where refusing an
+// oversized legacy shard would disable new evidence, while trusting an older
+// entry before the true tail would fork the chain.
+func FindLastEntry(path string, match func(Entry) bool) (Entry, bool, error) {
+	if match == nil {
+		return Entry{}, false, errors.New("finding last evidence entry: match function is required")
+	}
+	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
+	if err != nil {
+		return Entry{}, false, err
+	}
+	defer func() { _ = file.Close() }()
+	if info.Size() == 0 {
+		return Entry{}, false, nil
+	}
+
+	end := info.Size()
+	window := MaxEvidenceReadFileBytes
+	extra := int64(maxEntryWireLineBytes + 1)
+	if window > math.MaxInt64-extra {
+		window = math.MaxInt64
+	} else {
+		window += extra
+	}
+	for end > 0 {
+		readLen := min(end, window)
+		start := end - readLen
+		data := make([]byte, readLen)
+		if _, err := io.ReadFull(io.NewSectionReader(file, start, readLen), data); err != nil {
+			return Entry{}, false, fmt.Errorf("reading evidence tail window: %w", err)
+		}
+
+		boundary := 0
+		if start > 0 {
+			newline := bytes.IndexByte(data, '\n')
+			if newline < 0 {
+				return Entry{}, false, fmt.Errorf("tail line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+			}
+			boundary = newline + 1
+		}
+
+		for lineEnd := len(data); lineEnd > boundary; {
+			if data[lineEnd-1] == '\n' {
+				lineEnd--
+			}
+			lineStart := bytes.LastIndexByte(data[boundary:lineEnd], '\n') + boundary + 1
+			line := data[lineStart:lineEnd]
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			if len(line) > MaxEntryLineBytes {
+				return Entry{}, false, fmt.Errorf("tail line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+			}
+			if len(bytes.TrimSpace(line)) != 0 {
+				entry, parseErr := parseDirectionalEntry(line)
+				if parseErr != nil {
+					return Entry{}, false, parseErr
+				}
+				if match(entry) {
+					if err := ensureEvidenceFileUnchanged(file, info); err != nil {
+						return Entry{}, false, err
+					}
+					return entry, true, nil
+				}
+			}
+			if lineStart == boundary {
+				break
+			}
+			lineEnd = lineStart
+		}
+		end = start + int64(boundary)
+	}
+	if err := ensureEvidenceFileUnchanged(file, info); err != nil {
+		return Entry{}, false, err
+	}
+	return Entry{}, false, nil
+}
+
 func directionalEntryReadLimits(maxEntries int, maxBytes int64) entryReadLimits {
 	if maxEntries <= 0 {
 		maxEntries = MaxEvidenceReadEntries

@@ -64,31 +64,121 @@ func TestReadDirectionalEntriesBounded_OrderAndTruncation(t *testing.T) {
 }
 
 func TestReadTailEntriesBounded_SkipsPartialBoundaryButRejectsMalformedTail(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "evidence-directional-0.jsonl")
+	t.Run("skips partial boundary", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
+		writeDirectionalEntries(t, path, 1)
+		validTail, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		prefix := strings.Repeat("x", MaxEntryLineBytes+128) + "\n"
+		if err := os.WriteFile(path, append([]byte(prefix), validTail...), 0o600); err != nil {
+			t.Fatalf("WriteFile partial-boundary fixture: %v", err)
+		}
+
+		entries, truncated, err := ReadTailEntriesBounded(path, 1, int64(len(validTail)))
+		if err != nil {
+			t.Fatalf("ReadTailEntriesBounded after partial boundary: %v", err)
+		}
+		if !truncated || len(entries) != 1 || entries[0].Sequence != 0 {
+			t.Fatalf("entries = seqs %v truncated=%v, want [0] true", entrySequences(entries), truncated)
+		}
+	})
+
+	t.Run("rejects malformed tail", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
+		if err := os.WriteFile(path, []byte(`{"v":2,"seq":9`), 0o600); err != nil {
+			t.Fatalf("WriteFile malformed tail: %v", err)
+		}
+		if _, _, err := ReadTailEntriesBounded(path, 1, MaxEvidenceReadFileBytes); err == nil {
+			t.Fatal("ReadTailEntriesBounded malformed tail = nil error, want refusal")
+		}
+	})
+}
+
+func TestFindLastEntry_ScansPastBoundedTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
+	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	encoder := json.NewEncoder(file)
+	want := Entry{Version: EntryVersion, Sequence: 7, Timestamp: time.Unix(1712345678, 0).UTC(), SessionID: "directional", Type: "receipt", Transport: "http", Summary: "target", Detail: map[string]string{"safe": "value"}, PrevHash: "prev", Hash: "hash"}
+	if err := encoder.Encode(want); err != nil {
+		t.Fatalf("Encode target: %v", err)
+	}
+	padding := strings.Repeat("x", 512<<10)
+	for seq := uint64(8); ; seq++ {
+		entry := want
+		entry.Sequence = seq
+		entry.Type = "request"
+		entry.Summary = padding
+		if err := encoder.Encode(entry); err != nil {
+			t.Fatalf("Encode padding: %v", err)
+		}
+		info, statErr := file.Stat()
+		if statErr != nil {
+			t.Fatalf("Stat: %v", statErr)
+		}
+		if info.Size() > MaxEvidenceReadFileBytes+(1<<20) {
+			break
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got, found, err := FindLastEntry(path, func(entry Entry) bool { return entry.Type == "receipt" })
+	if err != nil {
+		t.Fatalf("FindLastEntry: %v", err)
+	}
+	if !found || got.Sequence != want.Sequence {
+		t.Fatalf("FindLastEntry = seq %d found=%v, want seq %d true", got.Sequence, found, want.Sequence)
+	}
+}
+
+func TestFindLastEntry_FailsClosedOnMalformedNewerEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
 	writeDirectionalEntries(t, path, 1)
-	validTail, err := os.ReadFile(filepath.Clean(path))
+	file, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+		t.Fatalf("OpenFile: %v", err)
 	}
-	prefix := strings.Repeat("x", MaxEntryLineBytes+128) + "\n"
-	if err := os.WriteFile(path, append([]byte(prefix), validTail...), 0o600); err != nil {
-		t.Fatalf("WriteFile partial-boundary fixture: %v", err)
+	if _, err := file.WriteString(`{"v":2,"seq":9`); err != nil {
+		_ = file.Close()
+		t.Fatalf("WriteString malformed tail: %v", err)
 	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := FindLastEntry(path, func(Entry) bool { return true }); err == nil {
+		t.Fatal("FindLastEntry malformed newer entry = nil error, want refusal")
+	}
+}
 
-	entries, truncated, err := ReadTailEntriesBounded(path, 1, int64(len(validTail)))
+func TestFindLastEntry_RequiresMatcher(t *testing.T) {
+	if _, _, err := FindLastEntry(filepath.Join(t.TempDir(), "missing.jsonl"), nil); err == nil {
+		t.Fatal("FindLastEntry nil matcher = nil error, want refusal")
+	}
+}
+
+func TestEnsureEvidenceFileUnchanged_RejectsMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
+	writeDirectionalEntries(t, path, 1)
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
-		t.Fatalf("ReadTailEntriesBounded after partial boundary: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	if !truncated || len(entries) != 1 || entries[0].Sequence != 0 {
-		t.Fatalf("entries = seqs %v truncated=%v, want [0] true", entrySequences(entries), truncated)
+	defer func() { _ = file.Close() }()
+	before, err := file.Stat()
+	if err != nil {
+		t.Fatalf("Stat before: %v", err)
 	}
-
-	if err := os.WriteFile(path, []byte(`{"v":2,"seq":9`), 0o600); err != nil {
-		t.Fatalf("WriteFile malformed tail: %v", err)
+	if err := os.Truncate(path, before.Size()-1); err != nil {
+		t.Fatalf("Truncate: %v", err)
 	}
-	if _, _, err := ReadTailEntriesBounded(path, 1, MaxEvidenceReadFileBytes); err == nil {
-		t.Fatal("ReadTailEntriesBounded malformed tail = nil error, want refusal")
+	if err := ensureEvidenceFileUnchanged(file, before); err == nil {
+		t.Fatal("ensureEvidenceFileUnchanged after mutation = nil error, want refusal")
 	}
 }
 

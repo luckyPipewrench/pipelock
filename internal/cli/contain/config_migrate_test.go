@@ -198,7 +198,7 @@ func TestMigratePipelockConfigForContain_RejectsAgentReachableMetricsListener(t 
 		}
 		return origLookup(name)
 	}
-	for _, listen := range []string{"0.0.0.0:9191", "[::]:9191", "localhost:9191", "127.0.0.1:8888"} {
+	for _, listen := range []string{"0.0.0.0:9191", "[::]:9191", "localhost:9191", "127.0.0.1:8888", "127.0.0.1:-1", "127.0.0.1:0", "127.0.0.1:65536"} {
 		t.Run(listen, func(t *testing.T) {
 			_, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte("metrics_listen: \""+listen+"\"\n"))
 			if err == nil || !strings.Contains(err.Error(), "unsafe for containment") {

@@ -1005,7 +1005,7 @@ func TestPreviewRemoteKill_StaleCounterParity(t *testing.T) {
 }
 
 func TestRemoteKillDryRun_ExpiredNoWrite(t *testing.T) {
-	msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-expired", 1, conductor.KillSwitchActive, testNow.Add(-2*time.Hour), time.Hour)
+	msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-expired", 1, testNow.Add(-2*time.Hour), time.Hour)
 	sh := newSpyHandler(t, resolver)
 	before := dirDigest(t, sh.emergencyDir)
 	w := remoteKillJSON(t, sh.handler, publishRemoteKillRequest{Message: msg, DryRun: true})
@@ -2425,7 +2425,7 @@ func TestReplay_Unauthorized(t *testing.T) {
 }
 
 func TestReplayEmergency_RejectsSnapshotTimeOverride(t *testing.T) {
-	msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-replay-expired", 1, conductor.KillSwitchActive, testNow.Add(-2*time.Hour), time.Hour)
+	msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-replay-expired", 1, testNow.Add(-2*time.Hour), time.Hour)
 	handler := newTestHandlerWithOptions(t, mustStore(t), nil, resolver)
 	snapshot := &decisionReplaySnapshot{Now: msg.NotBefore.Add(30 * time.Minute)}
 
@@ -2458,7 +2458,7 @@ func TestReplayEmergency_RejectsSnapshotTimeOverride(t *testing.T) {
 
 func TestReplayEmergency_EnforcesPublishValidation(t *testing.T) {
 	t.Run("remote kill max validity", func(t *testing.T) {
-		msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-replay-long", 1, conductor.KillSwitchActive, testNow, DefaultRemoteKillMaxValidity+time.Minute)
+		msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-replay-long", 1, testNow, DefaultRemoteKillMaxValidity+time.Minute)
 		handler := newTestHandlerWithOptions(t, mustStore(t), nil, resolver)
 
 		w := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &msg}, true, false)

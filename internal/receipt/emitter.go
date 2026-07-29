@@ -88,6 +88,7 @@ type Emitter struct {
 	actor      string
 	metrics    MetricsSink
 	onReceipt  func(rcpt *Receipt)
+	now        func() time.Time
 	initErr    error
 	healthMu   sync.RWMutex
 	healthErr  error
@@ -188,6 +189,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		actor:            cfg.Actor,
 		metrics:          cfg.Metrics,
 		onReceipt:        cfg.OnReceipt,
+		now:              time.Now,
 		runNonce:         runNonce,
 		chainPrevHash:    GenesisHash,
 		postureBinding:   cfg.PostureBinding,
@@ -559,7 +561,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		ActionID:              opts.ActionID,
 		ParentActionID:        opts.ParentActionID,
 		ActionType:            actionType,
-		Timestamp:             time.Now().UTC(),
+		Timestamp:             e.now().UTC(),
 		Principal:             e.principal,
 		Actor:                 e.actorLabel(opts),
 		DelegationChain:       nil, // Populated when delegation tracking ships
@@ -731,7 +733,7 @@ func (e *Emitter) prepareSessionControlLocked(in *SessionControl) (*SessionContr
 				Beat:             e.heartbeatBeat,
 				ChainHead:        e.chainPrevHash,
 				ChainSeqHead:     PreviousChainSeq(e.chainSeq),
-				HeartbeatTime:    time.Now().UTC().Format(time.RFC3339Nano),
+				HeartbeatTime:    e.now().UTC().Format(time.RFC3339Nano),
 				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
 				DurabilityBlocks: e.DurabilityBlocks(),
 			},
@@ -1047,41 +1049,17 @@ func (e *Emitter) resumeChain() error {
 
 	var lastReceipt *Receipt
 	for i := len(files) - 1; i >= 0 && lastReceipt == nil; i-- {
-		entries, truncated, readErr := recorder.ReadTailEntriesBounded(
-			files[i], recorder.MaxEvidenceReadEntries, recorder.MaxEvidenceReadFileBytes,
-		)
+		entry, found, readErr := recorder.FindLastEntry(files[i], func(entry recorder.Entry) bool {
+			return entry.Type == recorderEntryType
+		})
 		if readErr != nil {
 			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
 		}
-		for j := range entries {
-			switch entries[j].Type {
-			case transcriptRootEntryType:
-				// A transcript root is a clean-shutdown checkpoint that seals the
-				// receipts emitted up to that point IN THIS PROCESS. It is not a
-				// permanent on-disk seal: skip it and keep scanning back for the
-				// last action receipt so the next start resumes emission into the
-				// same hash-linked chain (a continuous chain still verifies, and
-				// the root's historical claim over seq 0..N stays true). The old
-				// behavior set rootEmitted=true here, which made every subsequent
-				// Emit return ErrChainSealed - silently bricking receipts after
-				// the first clean shutdown once EmitTranscriptRoot has a caller.
-				// Skipping it is also evidence-suppression-resistant: an attacker
-				// who appends a transcript_root to the evidence file cannot use it
-				// to stop the proxy from recording (the tail action receipt is
-				// still signature-verified below before we trust its chain state).
-			case recorderEntryType:
-				rcpt, unmarshalErr := receiptFromEntry(entries[j])
-				if unmarshalErr != nil {
-					return unmarshalErr
-				}
-				lastReceipt = rcpt
+		if found {
+			lastReceipt, readErr = receiptFromEntry(entry)
+			if readErr != nil {
+				return readErr
 			}
-			if lastReceipt != nil {
-				break
-			}
-		}
-		if lastReceipt == nil && truncated {
-			return fmt.Errorf("reading existing evidence file %s: %w: no action receipt found in bounded tail", filepath.Base(files[i]), recorder.ErrEvidenceReadLimitExceeded)
 		}
 	}
 	if lastReceipt == nil {
@@ -1090,7 +1068,7 @@ func (e *Emitter) resumeChain() error {
 
 	var firstReceipt *Receipt
 	for _, file := range files {
-		entries, truncated, readErr := recorder.ReadHeadEntriesBounded(
+		entries, _, readErr := recorder.ReadHeadEntriesBounded(
 			file, recorder.MaxEvidenceReadEntries, recorder.MaxEvidenceReadFileBytes,
 		)
 		if readErr != nil {
@@ -1110,9 +1088,9 @@ func (e *Emitter) resumeChain() error {
 		if firstReceipt != nil {
 			break
 		}
-		if truncated {
-			return fmt.Errorf("reading existing evidence file %s: %w: no action receipt found in bounded head", filepath.Base(file), recorder.ErrEvidenceReadLimitExceeded)
-		}
+		// chainStart is informational. If an oversized legacy prefix has no
+		// receipt in the bounded head, leave it unset instead of disabling new
+		// receipt emission; the fully verified tail above remains authoritative.
 	}
 
 	// Trust model for resuming an on-disk chain across a possible signing-key

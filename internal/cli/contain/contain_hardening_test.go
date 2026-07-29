@@ -323,6 +323,30 @@ func TestStepWritePipelockConfigUndoRestoresMigratedArtifacts(t *testing.T) {
 	}
 }
 
+func TestStepStagePipelockConfigExplicitCandidatePreservesHomeSentryPaths(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := "/home/operator"
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == containInstallOperatorUser {
+			return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+		}
+		return &user.User{Uid: "988", Gid: "988", Username: name, HomeDir: "/tmp"}, nil
+	}
+	src := filepath.Join(t.TempDir(), "pipelock.yaml")
+	mustWriteFile(t, src, "file_sentry:\n  enabled: true\n  watch_paths:\n    - /home/operator/project\n")
+	step := stepStagePipelockConfig(installOpts{configSource: src})
+	if _, err := step.apply(t.Context(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(env.serviceHomeReadOnlyPaths) != 1 || env.serviceHomeReadOnlyPaths[0] != "/home/operator/project" {
+		t.Fatalf("service home paths = %#v, want explicit candidate path", env.serviceHomeReadOnlyPaths)
+	}
+	unit := renderSystemUnit(env)
+	if !strings.Contains(unit, `BindReadOnlyPaths=-"/home/operator/project"`) {
+		t.Fatalf("system unit does not preserve explicit candidate path:\n%s", unit)
+	}
+}
+
 func TestStepExportPipelockCAUndoAndErrorBranches(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	step := stepExportPipelockCA()

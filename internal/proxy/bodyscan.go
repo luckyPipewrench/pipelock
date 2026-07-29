@@ -834,9 +834,6 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				if depth > 0 {
 					depth--
 				}
-				if depth == 0 {
-					rootComplete = true
-				}
 				markJSONBodyDLPValueConsumed(stack)
 			}
 		case string:
@@ -858,9 +855,6 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				}
 			}
 			markJSONBodyDLPValueConsumed(stack)
-			if depth == 0 {
-				rootComplete = true
-			}
 		case json.Number:
 			if depth <= extractJSONMaxDepth {
 				text := v.String()
@@ -868,9 +862,6 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
-			if depth == 0 {
-				rootComplete = true
-			}
 		case bool:
 			if depth <= extractJSONMaxDepth {
 				text := strconv.FormatBool(v)
@@ -878,14 +869,11 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
-			if depth == 0 {
-				rootComplete = true
-			}
 		case nil:
 			markJSONBodyDLPValueConsumed(stack)
-			if depth == 0 {
-				rootComplete = true
-			}
+		}
+		if depth == 0 {
+			rootComplete = true
 		}
 	}
 	return result, providerOpaque, generic, truncated, nil

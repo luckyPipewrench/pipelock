@@ -57,17 +57,26 @@ func TestReadOwnedStateAcceptsPlatformWidenedMode(t *testing.T) {
 // bits from the platform are accepted; world access never is, under either policy.
 func TestReadOwnedStateStillRefusesWorldAccess(t *testing.T) {
 	dir := t.TempDir()
-	for _, mode := range []fs.FileMode{0o664, 0o666, 0o604} {
-		path := filepath.Join(dir, strings.ReplaceAll(mode.String(), "-", "_"))
-		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
-			t.Fatalf("WriteFile() error = %v", err)
-		}
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatalf("Chmod() error = %v", err)
-		}
-		if _, err := Read(path, Options{MaxBytes: 1024, OwnedState: true}); err == nil {
-			t.Fatalf("Read(OwnedState, %04o) = nil error, want refusal for world access", mode)
-		}
+	for _, tc := range []struct {
+		name string
+		mode fs.FileMode
+	}{
+		{name: "world_readable_0664", mode: 0o664},
+		{name: "world_writable_0666", mode: 0o666},
+		{name: "world_read_only_0604", mode: 0o604},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatalf("Chmod() error = %v", err)
+			}
+			if _, err := Read(path, Options{MaxBytes: 1024, OwnedState: true}); err == nil {
+				t.Fatalf("Read(OwnedState, %04o) = nil error, want refusal for world access", tc.mode)
+			}
+		})
 	}
 }
 

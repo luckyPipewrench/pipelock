@@ -124,29 +124,10 @@ func TestInProcessGroups(t *testing.T) {
 	if !inProcessGroups(os.Getegid()) {
 		t.Fatalf("inProcessGroups(%d) = false for our own effective gid, want true", os.Getegid())
 	}
-	foreign := foreignGIDValue(t)
+	foreign := foreignGID(t)
 	if inProcessGroups(foreign) {
 		t.Fatalf("inProcessGroups(%d) = true for a gid we are not a member of, want false", foreign)
 	}
-}
-
-// foreignGIDValue finds a gid this process is not in, without touching the
-// filesystem, so the check can be exercised unprivileged.
-func foreignGIDValue(t *testing.T) int {
-	t.Helper()
-	mine := map[int]struct{}{os.Getegid(): {}, os.Getgid(): {}}
-	if groups, err := os.Getgroups(); err == nil {
-		for _, g := range groups {
-			mine[g] = struct{}{}
-		}
-	}
-	for candidate := 65000; candidate > 1; candidate-- {
-		if _, ok := mine[candidate]; !ok {
-			return candidate
-		}
-	}
-	t.Skip("no gid available that this process is not a member of")
-	return 0
 }
 
 // TestOwnedGroupWritableRefusesGroupExecute pins the mask. The widening this

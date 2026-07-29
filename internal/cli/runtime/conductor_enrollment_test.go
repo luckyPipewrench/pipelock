@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -383,6 +384,12 @@ func TestReadConductorEnrollmentToken(t *testing.T) {
 		token := "pl_" + "enroll_runtime"
 		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
 			t.Fatalf("write token: %v", err)
+		}
+		if runtime.GOOS == "windows" {
+			// The permission refusal asserted below is a deliberate no-op on
+			// Windows, so there would be nothing to reject and this would fail
+			// rather than prove anything.
+			t.Skip("POSIX mode refusal is not meaningful on Windows")
 		}
 		groupWritableMode := os.FileMode(0o660)
 		if err := os.Chmod(path, groupWritableMode); err != nil {

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1073,6 +1074,12 @@ func TestReadRecordAcceptsOwnedGroupWritableRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
 	if err := writeDiskRecord(path, validDiskRecord(signedTestBatch(t, "batch-owned-group-record", priv))); err != nil {
 		t.Fatalf("writeDiskRecord() error = %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		// Windows has no chmod semantics for this mode and the acceptance check
+		// is a no-op there, so this would pass without exercising the behaviour.
+		// A vacuous pass is worse than a skip because it reads as coverage.
+		t.Skip("platform-widened POSIX mode is not reproducible on Windows")
 	}
 	groupWritableMode := os.FileMode(0o660)
 	if err := os.Chmod(path, groupWritableMode); err != nil {

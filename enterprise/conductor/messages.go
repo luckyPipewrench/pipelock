@@ -657,9 +657,26 @@ func (b PolicyBundle) Validate() error {
 	return b.validate(false)
 }
 
-// ValidateAllowLegacyPolicyHash validates a bundle while tolerating the
-// pre-loaded-config policy_hash scheme. This is only for reading already stored
-// upgrade-era bundles; network publish/apply paths must use Validate.
+// ValidateAllowLegacyPolicyHash validates a bundle while tolerating a policy_hash
+// this build cannot reproduce. Network publish paths must use Validate.
+//
+// There are exactly two legitimate classes of caller, and a new call site that is
+// neither of them is a mistake:
+//
+//   - Reads of state on local disk the process already trusts: the leader's bundle
+//     store, the offline inspect and repair readers, and the follower's own
+//     verified cache. These never verified signatures and do not start now; the
+//     leader trusting its own disk is the documented design, and on that path the
+//     policy_hash recompute was a consistency check rather than a tamper gate,
+//     because anything able to rewrite the store rewrites the digests with it.
+//   - Apply paths that have ALREADY verified signatures against a pinned roster,
+//     which must use ValidateAtTimeAllowLegacyPolicyHash so the freshness window is
+//     checked too. There the publisher's signature covers policy_hash, so the value
+//     is attested even when this build cannot recompute it.
+//
+// Tolerated is not verified. Callers reporting to an operator must use
+// PolicyHashStatus and must not describe PolicyHashUnknownUnverified as a verified
+// digest of policy content.
 func (b PolicyBundle) ValidateAllowLegacyPolicyHash() error {
 	return b.validate(true)
 }

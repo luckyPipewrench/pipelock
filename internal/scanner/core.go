@@ -525,7 +525,6 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 			})
 		}
 	}
-
 	// URL-decoded variant.
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchCoreDLPPatterns(decoded, "url")...)

@@ -19,6 +19,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -577,9 +578,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
-		texts, parseErr := extractBodyText(buf, req)
-		if parseErr == "" {
-			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress, bodyDLPDisabledSet(req.DisablePatterns))
+		extracted := extractBodyTextForDLP(buf, req)
+		if extracted.Err == "" {
+			disabled := bodyDLPDisabledSet(req.DisablePatterns)
+			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled)...)
 		}
 	}
 
@@ -656,7 +659,18 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	var action string
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
-	matches := scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress, bodyDLPDisabledSet(req.DisablePatterns))
+	dlpExtracted := extractBodyTextForDLP(buf, req)
+	if dlpExtracted.Err != "" {
+		return nil, BodyScanResult{
+			Clean:  false,
+			Action: config.ActionBlock,
+			Reason: dlpExtracted.Err,
+		}
+	}
+	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
+	matches := scanBodyTextsForDLP(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP)
+	matches = append(matches, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP)...)
+	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
 		result.DLPMatches = matches
 		action = config.StrongestAction(action, requestBodyDLPAction(matches, req.Action, req.PatternActions))
@@ -740,6 +754,201 @@ func scanBodyTextsForContentEntropy(texts []string, req BodyScanRequest) *Conten
 	})
 }
 
+const providerOpaqueCiphertextMinBytes = 256
+
+type jsonBodyDLPFrame struct {
+	kind       json.Delim
+	expectKey  bool
+	currentKey string
+	path       []string
+}
+
+type bodyDLPTextExtraction struct {
+	Texts               []string
+	ProviderOpaqueTexts []string
+	Err                 string
+}
+
+func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtraction {
+	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
+	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
+		texts, errText := extractBodyText(body, req)
+		return bodyDLPTextExtraction{Texts: texts, Err: errText}
+	}
+	if !json.Valid(body) {
+		return bodyDLPTextExtraction{Err: "invalid JSON body"}
+	}
+	textStrings, providerOpaqueTexts, truncated, err := extractJSONBodyDLPStrings(body, req)
+	if err != nil {
+		return bodyDLPTextExtraction{Err: err.Error()}
+	}
+	if truncated {
+		return bodyDLPTextExtraction{Err: "JSON body exceeds maximum inspectable nesting depth"}
+	}
+	return bodyDLPTextExtraction{Texts: textStrings, ProviderOpaqueTexts: providerOpaqueTexts}
+}
+
+func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+
+	var result []string
+	var providerOpaque []string
+	var stack []jsonBodyDLPFrame
+	depth := 0
+	truncated := false
+
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
+		}
+
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{', '[':
+				depth++
+				if depth > extractJSONMaxDepth {
+					truncated = true
+				}
+				stack = append(stack, jsonBodyDLPFrame{
+					kind:      v,
+					expectKey: v == '{',
+					path:      currentJSONBodyDLPPath(stack),
+				})
+			case '}', ']':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				if depth > 0 {
+					depth--
+				}
+				markJSONBodyDLPValueConsumed(stack)
+			}
+		case string:
+			if len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey {
+				if depth <= extractJSONMaxDepth {
+					result = append(result, v)
+				}
+				stack[len(stack)-1].currentKey = v
+				stack[len(stack)-1].expectKey = false
+				continue
+			}
+			if depth <= extractJSONMaxDepth {
+				if isTrustedProviderOpaqueDLPField(req, currentJSONBodyDLPPath(stack), v) {
+					providerOpaque = append(providerOpaque, v)
+				} else {
+					result = append(result, v)
+				}
+			}
+			markJSONBodyDLPValueConsumed(stack)
+		case json.Number:
+			if depth <= extractJSONMaxDepth {
+				result = append(result, v.String())
+			}
+			markJSONBodyDLPValueConsumed(stack)
+		case bool:
+			if depth <= extractJSONMaxDepth {
+				result = append(result, strconv.FormatBool(v))
+			}
+			markJSONBodyDLPValueConsumed(stack)
+		case nil:
+			markJSONBodyDLPValueConsumed(stack)
+		}
+	}
+	return result, providerOpaque, truncated, nil
+}
+
+const extractJSONMaxDepth = 64
+
+func currentJSONBodyDLPPath(stack []jsonBodyDLPFrame) []string {
+	if len(stack) == 0 {
+		return nil
+	}
+	top := stack[len(stack)-1]
+	path := append([]string(nil), top.path...)
+	if top.kind == '{' && top.currentKey != "" {
+		path = append(path, top.currentKey)
+	}
+	return path
+}
+
+func markJSONBodyDLPValueConsumed(stack []jsonBodyDLPFrame) {
+	if len(stack) == 0 {
+		return
+	}
+	top := &stack[len(stack)-1]
+	if top.kind == '{' {
+		top.expectKey = true
+		top.currentKey = ""
+	}
+}
+
+func isTrustedProviderOpaqueDLPField(req BodyScanRequest, path []string, value string) bool {
+	if !isTrustedOpenAIRequest(req.Host, req.Path) || !isOpenAIOpaqueReasoningFieldPath(path) {
+		return false
+	}
+	return isProviderOpaqueCiphertext(value)
+}
+
+func isTrustedOpenAIRequest(host, path string) bool {
+	host = canonicalBodyScanHost(host)
+	switch host {
+	case "api.openai.com":
+		return strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/v1/chat/completions")
+	case "chatgpt.com":
+		return strings.HasPrefix(path, "/backend-api/codex/responses")
+	default:
+		return false
+	}
+}
+
+func canonicalBodyScanHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.TrimSuffix(host, ".")
+}
+
+func isOpenAIOpaqueReasoningFieldPath(path []string) bool {
+	if len(path) == 0 || path[len(path)-1] != "encrypted_content" {
+		return false
+	}
+	return pathContainsJSONKey(path, "content") && (pathContainsJSONKey(path, "input") || pathContainsJSONKey(path, "messages"))
+}
+
+func pathContainsJSONKey(path []string, key string) bool {
+	for _, part := range path {
+		if part == key {
+			return true
+		}
+	}
+	return false
+}
+
+func isProviderOpaqueCiphertext(value string) bool {
+	if len(value) < providerOpaqueCiphertextMinBytes {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		switch {
+		case b >= 'a' && b <= 'z':
+		case b >= 'A' && b <= 'Z':
+		case b >= '0' && b <= '9':
+		case b == '_' || b == '-' || b == '=' || b == '+' || b == '/' || b == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func contentEntropyReason(f *ContentEntropyFinding) string {
 	return contententropy.Reason(f)
 }
@@ -777,6 +986,17 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 		}
 	}
 	return uniqueBodyDLPMatches(allMatches)
+}
+
+func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}) []scanner.TextDLPMatch {
+	if len(texts) == 0 {
+		return nil
+	}
+	matches := scanBodyTextsForDLP(ctx, sc, texts, target, suppress, disabled)
+	for i := range matches {
+		matches[i].Warn = true
+	}
+	return matches
 }
 
 func (req BodyScanRequest) suppressTarget() string {
@@ -842,6 +1062,10 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, patternActions map[string]string) string {
 	action := ""
 	for _, match := range matches {
+		if match.Warn {
+			action = config.StrongestAction(action, config.ActionWarn)
+			continue
+		}
 		matchAction := defaultAction
 		if override := patternActions[match.PatternName]; override != "" && !config.IsCoreDLPPatternName(match.PatternName) {
 			matchAction = override

@@ -220,6 +220,27 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 	}
 }
 
+func TestDefaultMatcher_GitHubTokenInOpaqueRunStillMatches(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+
+	for _, input := range []string{
+		strings.Repeat("A", 260) + "." + "ghp_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		strings.Repeat("A", 260) + "." + "github_pat_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+	} {
+		found := false
+		for _, got := range m.Scan(input) {
+			if got.Class == ClassGitHubToken {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected GitHub token in opaque run to match: %q", input)
+		}
+	}
+}
+
 func TestDefaultMatcher_ProviderKeyGlueParity(t *testing.T) {
 	t.Parallel()
 	m := NewDefaultMatcher()

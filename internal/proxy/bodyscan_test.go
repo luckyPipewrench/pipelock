@@ -1413,19 +1413,19 @@ func TestScanRequestBody_JSONImageDataURLWithoutImageMagicStillScansPayloadText(
 	}
 }
 
-func TestScanRequestBody_ModelProviderOpaqueReasoningFieldsStillScanned(t *testing.T) {
+func TestScanRequestBody_ModelProviderOpaqueReasoningFieldEmbeddedTokenSubstringWarns(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	token := "fw_" + strings.Repeat("A", 22)
+	token := fakeGitHubToken()
+	ciphertext := strings.Repeat("A", 260) + "." + token + "." + strings.Repeat("B", 260)
 	body := `{
 		"input": [{
 			"role": "assistant",
 			"content": [{
 				"type": "reasoning",
-				"encrypted_content": "` + token + `",
-				"thinkingSignature": "{\"encrypted_content\":\"` + token + `\"}"
+				"encrypted_content": "` + ciphertext + `"
 			}]
 		}]
 	}`
@@ -1439,10 +1439,21 @@ func TestScanRequestBody_ModelProviderOpaqueReasoningFieldsStillScanned(t *testi
 		Scanner:     sc,
 	})
 	if result.Clean {
-		t.Fatal("expected DLP match in provider opaque reasoning fields")
+		t.Fatal("expected embedded token-shaped substring in opaque provider field to stay visible as warn")
+	}
+	if result.Action != config.ActionWarn {
+		t.Fatalf("expected warn action for provider opaque field, got action=%q matches=%v reason=%q", result.Action, result.DLPMatches, result.Reason)
 	}
 	if len(result.DLPMatches) == 0 {
-		t.Fatal("expected non-empty DLP matches")
+		t.Fatal("expected provider opaque field DLP matches to remain visible")
+	}
+	for _, match := range result.DLPMatches {
+		if !match.Warn {
+			t.Fatalf("expected provider opaque field match to be warn-only, got %+v", match)
+		}
+	}
+	if shouldHardBlockBodyCriticalDLP(result, "chatgpt.com", cfg) {
+		t.Fatal("provider opaque field warn-only match must not hard-block")
 	}
 }
 
@@ -1471,7 +1482,7 @@ func TestScanRequestBody_OpaqueReasoningFieldNamesDoNotBypassOtherHosts(t *testi
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	body := `{"encrypted_content":"` + "fw_" + strings.Repeat("A", 22) + `"}`
+	body := `{"encrypted_content":"` + strings.Repeat("A", 260) + "." + fakeGitHubToken() + "." + strings.Repeat("B", 260) + `"}`
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
@@ -1482,8 +1493,82 @@ func TestScanRequestBody_OpaqueReasoningFieldNamesDoNotBypassOtherHosts(t *testi
 		Scanner:     sc,
 	})
 	if result.Clean {
-		t.Fatal("expected DLP match for opaque field name on non-provider host")
+		t.Fatal("expected real delimited token in opaque field name on non-provider host to block")
 	}
+}
+
+func TestScanRequestBody_OpenAITopLevelOpaqueFieldNameDoesNotBypassDLP(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	body := `{"encrypted_content":"` + strings.Repeat("A", 260) + "." + fakeGitHubToken() + "." + strings.Repeat("B", 260) + `"}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		Host:        "api.openai.com",
+		Path:        "/v1/responses",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected top-level encrypted_content to block outside provider reasoning schema")
+	}
+}
+
+func TestExtractBodyTextForDLP_ProviderOpaqueReasoningFieldSeparated(t *testing.T) {
+	ciphertext := strings.Repeat("A", 260) + "." + fakeGitHubToken() + "." + strings.Repeat("B", 260)
+	body := []byte(`{"input":[{"content":[{"type":"reasoning","encrypted_content":"` + ciphertext + `"}]}]}`)
+
+	extracted := extractBodyTextForDLP(body, BodyScanRequest{
+		ContentType: "application/json",
+		Host:        "CHATGPT.COM:443",
+		Path:        "/backend-api/codex/responses",
+	})
+	if extracted.Err != "" {
+		t.Fatalf("Err = %q", extracted.Err)
+	}
+	if len(extracted.ProviderOpaqueTexts) != 1 || extracted.ProviderOpaqueTexts[0] != ciphertext {
+		t.Fatalf("ProviderOpaqueTexts = %#v, want ciphertext", extracted.ProviderOpaqueTexts)
+	}
+	for _, text := range extracted.Texts {
+		if text == ciphertext {
+			t.Fatalf("ciphertext should be separated from normal DLP texts: %#v", extracted.Texts)
+		}
+	}
+	if !bodyScanTestStringsContain(extracted.Texts, "encrypted_content") {
+		t.Fatalf("expected JSON keys to remain scannable, got %#v", extracted.Texts)
+	}
+}
+
+func TestExtractBodyTextForDLP_ProviderOpaqueWrongValueShapeScansNormally(t *testing.T) {
+	value := strings.Repeat("A", 260) + ":" + fakeGitHubToken()
+	body := []byte(`{"input":[{"content":[{"type":"reasoning","encrypted_content":"` + value + `"}]}]}`)
+
+	extracted := extractBodyTextForDLP(body, BodyScanRequest{
+		ContentType: "application/json",
+		Host:        "chatgpt.com",
+		Path:        "/backend-api/codex/responses",
+	})
+	if extracted.Err != "" {
+		t.Fatalf("Err = %q", extracted.Err)
+	}
+	if len(extracted.ProviderOpaqueTexts) != 0 {
+		t.Fatalf("ProviderOpaqueTexts = %#v, want none", extracted.ProviderOpaqueTexts)
+	}
+	if !bodyScanTestStringsContain(extracted.Texts, value) {
+		t.Fatalf("wrong-shape value should stay in normal DLP texts, got %#v", extracted.Texts)
+	}
+}
+
+func bodyScanTestStringsContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestScanRequestBody_CompressedGzip(t *testing.T) {

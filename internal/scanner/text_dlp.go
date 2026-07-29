@@ -492,7 +492,6 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 			})
 		}
 	}
-
 	// Iterative URL-decode and re-check DLP patterns (catches %2D → - etc.).
 	// Uses IterativeDecode to defeat multi-layer encoding.
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {

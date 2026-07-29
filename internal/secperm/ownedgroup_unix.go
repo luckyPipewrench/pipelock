@@ -48,12 +48,28 @@ func OwnedGroupWritableAllowed(info fs.FileInfo) error {
 		// No group bits at all, so there is nothing to justify.
 		return nil
 	}
+	// Only the read and write bits the platform actually sets are in scope. The
+	// widening this exists to accept is group read/write; group EXECUTE is not
+	// part of it and would be permission drift from somewhere else, so it stays
+	// refused rather than riding along on a rationale that never covered it.
+	if perm&0o010 != 0 {
+		return fmt.Errorf("has group-execute permission %04o, which platform volume widening does not set", perm)
+	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		// Without ownership metadata the claim cannot be checked, so refuse
 		// rather than assume. Failing closed here costs an operator a clear
 		// error; assuming would accept a foreign writer unseen.
 		return fmt.Errorf("has group permissions %04o and file ownership is unavailable", perm)
+	}
+	// The file must be OURS. Group membership alone says this process can reach
+	// the file, not that the file belongs to this workload, and a file owned by
+	// another uid that merely shares a group is somebody else's state. Checking
+	// the owner as well means a foreign file is refused even when the gid matches.
+	if fileUID := int(stat.Uid); fileUID != os.Geteuid() {
+		return fmt.Errorf(
+			"has group permissions %04o and is owned by uid %d, not this process (uid %d)",
+			perm, fileUID, os.Geteuid())
 	}
 	fileGID := int(stat.Gid)
 	if inProcessGroups(fileGID) {

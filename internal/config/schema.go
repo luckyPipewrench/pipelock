@@ -829,6 +829,7 @@ type ForwardProxy struct {
 	MaxTunnelSeconds       int      `yaml:"max_tunnel_seconds"`
 	IdleTimeoutSeconds     int      `yaml:"idle_timeout_seconds"`
 	SNIVerification        *bool    `yaml:"sni_verification"`
+	SNIRequireTLS          *bool    `yaml:"sni_require_tls"`
 	RedirectWebSocketHosts []string `yaml:"redirect_websocket_hosts"`
 }
 

@@ -48,7 +48,7 @@ type FileEntry struct {
 
 // Load reads and parses a manifest from disk.
 func Load(path string) (*Manifest, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestBytes})
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestBytes, DisallowedPerms: 0o022})
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}

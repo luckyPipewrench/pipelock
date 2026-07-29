@@ -636,12 +636,22 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if cfg.ForwardProxy.SNIVerificationEnabled() {
 		resized, sniHost, category, sniErr := verifySNI(clientReader, clientConn, host, sniReadTimeoutDefault)
 		clientReader = resized
+		if sniErr == nil && cfg.ForwardProxy.SNIRequireTLSEnabled() &&
+			(category == sniCategoryNotTLS || category == sniCategoryNoExtension) {
+			// sni_require_tls: refuse to splice an opaque, unscanned tunnel. A
+			// non-TLS payload or a ClientHello with no SNI extension would bypass
+			// DLP entirely, giving the agent a one-tunnel exfiltration channel.
+			// Fail closed: audit and tear down both connections.
+			sniErr = fmt.Errorf(
+				"sni_require_tls: opaque CONNECT tunnel refused (category=%q); TLS with SNI required", category)
+		}
 		p.metrics.RecordSNI(category, agentLabel)
 		if sniErr != nil {
 			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, agent, category)
+			p.metrics.RecordTunnelBlocked(agentLabel)
 			outcomeStatus = strconv.Itoa(http.StatusOK)
 			outcomeBytes = 0
-			outcomeReason = "sni_mismatch"
+			outcomeReason = "sni_" + category
 			return // close both connections via deferred Close()
 		}
 	}

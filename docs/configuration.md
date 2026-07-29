@@ -230,6 +230,7 @@ forward_proxy:
   max_tunnel_seconds: 300
   idle_timeout_seconds: 120
   sni_verification: true        # Verify TLS SNI matches CONNECT target
+  sni_require_tls: false        # Security profiles set true
   redirect_websocket_hosts: []  # Redirect WS hosts to /ws proxy
 ```
 
@@ -239,6 +240,7 @@ forward_proxy:
 | `max_tunnel_seconds` | `300` | No | CONNECT setup/dial deadline before the tunnel is established |
 | `idle_timeout_seconds` | `120` | No | Kill established tunnels after this much inactivity |
 | `sni_verification` | `true` | No | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
+| `sni_require_tls` | `false` | No | Require the tunnel to begin with a TLS ClientHello carrying SNI. Official security profiles enable it. This prevents raw/no-SNI protocol smuggling but does not decrypt or scan the tunnel body. Requires `sni_verification: true`. |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
 
 ## TLS Interception

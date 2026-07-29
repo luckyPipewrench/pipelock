@@ -1849,6 +1849,9 @@ func (c *Config) validateForwardProxy() error {
 	if !c.ForwardProxy.Enabled {
 		return nil
 	}
+	if c.ForwardProxy.SNIRequireTLSEnabled() && !c.ForwardProxy.SNIVerificationEnabled() {
+		return fmt.Errorf("forward_proxy.sni_require_tls requires forward_proxy.sni_verification")
+	}
 	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
 		return fmt.Errorf("forward_proxy.max_tunnel_seconds must be positive")
 	}

@@ -257,6 +257,20 @@ func (f ForwardProxy) SNIVerificationEnabled() bool {
 	return *f.SNIVerification
 }
 
+// SNIRequireTLSEnabled returns whether opaque CONNECT tunnels must present a
+// TLS ClientHello carrying an SNI extension. When true, the SNI verifier
+// fail-closes on the `not_tls` and `no_extension` categories instead of
+// splicing an opaque tunnel. Defaults to false for compatibility with
+// intentional non-TLS CONNECT protocols; security profiles enable it
+// explicitly. This guard authenticates the initial protocol/name only and
+// does not provide tunnel-body visibility without TLS interception.
+func (f ForwardProxy) SNIRequireTLSEnabled() bool {
+	if f.SNIRequireTLS == nil {
+		return false
+	}
+	return *f.SNIRequireTLS
+}
+
 // EnforceEnabled returns whether blocking is enabled.
 // Defaults to true when Enforce is nil (not set in config).
 func (c *Config) EnforceEnabled() bool {

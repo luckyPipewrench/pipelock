@@ -424,6 +424,13 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			},
 		},
 		{
+			name: "forward_proxy.sni_require_tls disabled",
+			mut: func(c *Config) {
+				f := false
+				c.ForwardProxy.SNIRequireTLS = &f
+			},
+		},
+		{
 			// A request_policy discriminator predicate is policy: two
 			// configs differing only by it must produce different ph, or
 			// emitted receipts would not reflect the rail.

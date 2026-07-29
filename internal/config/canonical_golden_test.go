@@ -305,7 +305,8 @@ const (
 	// policy semantics, so removing the compiled official keyring must change ph.
 	// Re-bumped for request body/WebSocket content entropy warn-by-default
 	// posture in ApplyDefaults.
-	goldenHashDefaults = "bcaa6bf3d9439b5449a7e4fa6bc8dbd23aa2d762b37c180ff329b6803d736127"
+	// Re-bumped for the policy-semantic forward_proxy.sni_require_tls field.
+	goldenHashDefaults = "f0a90dcdbb792983d0e90babd96db0f28189e7d44cf0c13cbe151fd5007cca61"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -452,7 +453,9 @@ const (
 	// Re-bumped for rules.trust_embedded_keys: see goldenHashDefaults note above.
 	// Re-bumped for request body/WebSocket content entropy warn-by-default
 	// posture in ApplyDefaults: see goldenHashDefaults note above.
-	goldenHashRichConfig = "b6a94ce291f1ce1b2843898df0bf299c2b635afa2693e288de78a04d3b070658"
+	// Re-bumped for forward_proxy.sni_require_tls; the rich fixture omits the
+	// field, whose compatibility default is false.
+	goldenHashRichConfig = "829f65ad00b257f4511a046afdde22b75f657516057e691ace971275c7abfee5"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

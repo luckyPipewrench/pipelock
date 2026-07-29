@@ -116,7 +116,7 @@ type VerifyResult struct {
 
 // LoadManifest reads a binary integrity manifest from disk.
 func LoadManifest(path string) (*Manifest, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestFileSize})
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestFileSize, DisallowedPerms: 0o022})
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}

@@ -4231,12 +4231,16 @@ func TestConnectSNIMismatch(t *testing.T) {
 	}
 }
 
-func TestConnectSNINonTLS(t *testing.T) {
-	// CONNECT + non-TLS data: should pass through without blocking.
+func TestConnectSNINonTLSExplicitOptOut(t *testing.T) {
+	// CONNECT + non-TLS data is available only through the explicit legacy
+	// opt-out. The secure default is covered by TestSNIRequireTLS_ProductionConnectPath.
 	echoLn := listenEcho(t)
 	defer func() { _ = echoLn.Close() }()
 
-	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	requireTLS := false
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.SNIRequireTLS = &requireTLS
+	})
 	defer cleanup()
 
 	conn := dialProxy(t, proxyAddr)

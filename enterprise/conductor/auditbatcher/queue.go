@@ -565,7 +565,23 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 	// OwnedState: this is Pipelock own durable audit-queue state, written by
 	// durableWrite at 0600. Kubernetes fsGroup re-widens it to 0660 on every
 	// mount, so a strict group-write refusal would keep a non-root follower from
-	// recovering or delivering queued audit batches after restart.
+	// recovering or delivering queued audit batches after restart. A refusal here
+	// becomes ErrCorruptRecord and Claim moves the record to dead/, so strictness
+	// costs delivery of that audit data rather than merely delaying it.
+	//
+	// The confidentiality tradeoff, stated plainly because it is real: a queued
+	// record carries the batch envelope and the raw recorder payload, and decision
+	// entries can include matched-pattern context and policy evidence. Accepting
+	// group read means any process sharing the fsGroup can read that from disk.
+	// Refusing it does NOT prevent that: the platform has already widened the file,
+	// so a co-tenant of the group can read it whether or not Pipelock will. Strict
+	// mode would therefore leave the exposure in place and discard our own audit
+	// delivery on top of it, which is the worse of the two.
+	//
+	// Closing the exposure properly means encrypting these records at rest under a
+	// key that does not live on the widened volume. That is a separate piece of
+	// work with its own key lifecycle, and until it exists this state sits inside
+	// the workload/volume trust boundary alongside flight-recorder evidence.
 	data, err := securefile.Read(path, securefile.Options{
 		MaxBytes:      limit,
 		RejectSymlink: true,

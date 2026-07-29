@@ -804,6 +804,14 @@ func loadEnrollmentState(path string, maxBytes int64) (enrollmentDiskState, erro
 	// at 0600. Kubernetes fsGroup re-widens it to 0660 on every mount, so a strict
 	// group-write refusal here stopped the leader from starting at all on any
 	// non-root deployment using a persistent volume.
+	//
+	// Sensitivity, recorded so the tradeoff is not rediscovered: this holds
+	// enrollment token hashes, the follower roster with their public audit keys,
+	// and per-follower runtime status. Hashes and public keys are not secrets, but
+	// the roster is operational detail worth keeping inside the boundary. As with
+	// the audit queue, refusing the read would not withhold any of it from a
+	// process sharing the fsGroup, since the platform has already widened the
+	// file; it would only stop the leader from starting.
 	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxBytes, OwnedState: true})
 	if err != nil {
 		return enrollmentDiskState{}, fmt.Errorf("read enrollment store: %w", err)

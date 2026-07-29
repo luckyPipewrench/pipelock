@@ -23,9 +23,9 @@ func TestSNIRequireTLS_ProductionConnectPath(t *testing.T) {
 		payload    []byte
 		wantEcho   bool
 	}{
-		{name: "enabled blocks non TLS", requireTLS: boolPointer(true), payload: []byte("opaque secret bytes")},
-		{name: "enabled blocks ClientHello without SNI", requireTLS: boolPointer(true), payload: buildClientHelloNoExtensions()},
-		{name: "explicit opt out permits non TLS", requireTLS: boolPointer(false), payload: []byte("legacy protocol"), wantEcho: true},
+		{name: "enabled blocks non TLS", requireTLS: ptrBool(true), payload: []byte("opaque secret bytes")},
+		{name: "enabled blocks ClientHello without SNI", requireTLS: ptrBool(true), payload: buildClientHelloNoExtensions()},
+		{name: "explicit opt out permits non TLS", requireTLS: ptrBool(false), payload: []byte("legacy protocol"), wantEcho: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,15 +54,15 @@ func TestSNIRequireTLS_ProductionConnectPath(t *testing.T) {
 			}
 			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 			got := make([]byte, len(tc.payload))
-			_, err = io.ReadFull(reader, got)
+			n, err := io.ReadFull(reader, got)
 			if tc.wantEcho {
 				if err != nil || string(got) != string(tc.payload) {
 					t.Fatalf("opt-out tunnel echo = %q, err=%v", got, err)
 				}
 				return
 			}
-			if err == nil {
-				t.Fatal("opaque tunnel payload reached upstream; want fail-closed connection")
+			if err == nil || n > 0 {
+				t.Fatalf("opaque tunnel leaked %d byte(s) upstream; want zero-byte fail-closed connection", n)
 			}
 		})
 	}
@@ -77,7 +77,7 @@ func TestSNIRequireTLS_DoesNotClaimPayloadVisibility(t *testing.T) {
 	echoLn := listenEcho(t)
 	defer func() { _ = echoLn.Close() }()
 	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
-		cfg.ForwardProxy.SNIRequireTLS = boolPointer(true)
+		cfg.ForwardProxy.SNIRequireTLS = ptrBool(true)
 	})
 	defer cleanup()
 
@@ -113,15 +113,13 @@ func TestSNIRequireTLS_DoesNotClaimPayloadVisibility(t *testing.T) {
 // nil (unset) must default to false for backward compatibility; explicit
 // true/false must round-trip.
 func TestForwardProxy_SNIRequireTLSEnabled(t *testing.T) {
-	boolPtr := func(b bool) *bool { return &b }
-
 	if (config.ForwardProxy{}).SNIRequireTLSEnabled() {
 		t.Error("unset SNIRequireTLS must default to false")
 	}
-	if !(config.ForwardProxy{SNIRequireTLS: boolPtr(true)}).SNIRequireTLSEnabled() {
+	if !(config.ForwardProxy{SNIRequireTLS: ptrBool(true)}).SNIRequireTLSEnabled() {
 		t.Error("SNIRequireTLS=true must return true")
 	}
-	if (config.ForwardProxy{SNIRequireTLS: boolPtr(false)}).SNIRequireTLSEnabled() {
+	if (config.ForwardProxy{SNIRequireTLS: ptrBool(false)}).SNIRequireTLSEnabled() {
 		t.Error("SNIRequireTLS=false must return false")
 	}
 }
@@ -130,7 +128,7 @@ func TestSNIRequireTLS_HotReloadLifecycle(t *testing.T) {
 	echoLn := listenEcho(t)
 	defer func() { _ = echoLn.Close() }()
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
-		cfg.ForwardProxy.SNIRequireTLS = boolPointer(false)
+		cfg.ForwardProxy.SNIRequireTLS = ptrBool(false)
 	})
 	defer cleanup()
 
@@ -152,15 +150,15 @@ func TestSNIRequireTLS_HotReloadLifecycle(t *testing.T) {
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		got := make([]byte, len(payload))
-		_, err = io.ReadFull(reader, got)
+		n, err := io.ReadFull(reader, got)
 		if wantEcho {
 			if err != nil || string(got) != string(payload) {
 				t.Fatalf("legacy tunnel echo = %q, err=%v", got, err)
 			}
 			return
 		}
-		if err == nil {
-			t.Fatal("opaque tunnel payload survived fail-closed reload")
+		if err == nil || n > 0 {
+			t.Fatalf("opaque tunnel leaked %d byte(s) after fail-closed reload", n)
 		}
 	}
 
@@ -174,7 +172,7 @@ func TestSNIRequireTLS_HotReloadLifecycle(t *testing.T) {
 		cfg.ForwardProxy.MaxTunnelSeconds = 10
 		cfg.ForwardProxy.IdleTimeoutSeconds = 2
 		cfg.FetchProxy.TimeoutSeconds = 5
-		cfg.ForwardProxy.SNIRequireTLS = boolPointer(requireTLS)
+		cfg.ForwardProxy.SNIRequireTLS = ptrBool(requireTLS)
 		if unrelatedMode != "" {
 			cfg.Mode = unrelatedMode
 		}
@@ -192,6 +190,10 @@ func TestSNIRequireTLS_HotReloadLifecycle(t *testing.T) {
 	assertOpaque(false)
 	reload(true, config.ModeStrict)
 	assertOpaque(false)
+	reload(false, "")
+	assertOpaque(true)
+	reload(false, config.ModeStrict)
+	assertOpaque(true)
+	reload(true, "")
+	assertOpaque(false)
 }
-
-func boolPointer(v bool) *bool { return &v }

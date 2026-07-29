@@ -135,12 +135,27 @@ async def slow_stream(scope, receive, send):
 
 
 def with_stream_route(app):
-    """Route /stream to the long-lived responder, everything else to MCP."""
+    """Serve the long-lived body for subscriptions/listen on the normal route.
+
+    It has to live on the MCP path, not a side path, so the rig can drive it
+    THROUGH Pipelock; a side path would only prove the fixture can stream.
+
+    Dispatch is on the Mcp-Method header rather than the body. Revision
+    2026-07-28 requires that header on every Streamable HTTP POST and Pipelock
+    forwards it, so it is available without consuming the request body, which
+    an ASGI middleware cannot do and still hand a well-formed stream to the
+    wrapped application.
+    """
 
     async def wrapped(scope, receive, send):
-        if scope.get("type") == "http" and scope.get("path") == "/stream":
-            await slow_stream(scope, receive, send)
-            return
+        if scope.get("type") == "http":
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in scope.get("headers", [])
+            }
+            if headers.get("mcp-method") == "subscriptions/listen":
+                await slow_stream(scope, receive, send)
+                return
         await app(scope, receive, send)
 
     return wrapped

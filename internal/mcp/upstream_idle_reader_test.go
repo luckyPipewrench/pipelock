@@ -101,6 +101,37 @@ func TestIdleTimeoutReader_EOFAfterTripStillReportsTimeout(t *testing.T) {
 	}
 }
 
+// Close sets the same closed flag the idle timer does, so a caller closing the
+// body mid-read must not be reported as a stall. Misreporting it would have an
+// ordinary cancellation surface as an upstream fault, and would make a genuine
+// timeout indistinguishable from a caller hanging up.
+func TestIdleTimeoutReader_CallerCloseIsNotATimeout(t *testing.T) {
+	body := &stallingBody{
+		first:    []byte("data: {}\n\n"),
+		release:  make(chan struct{}),
+		closedCh: make(chan struct{}),
+	}
+	// A budget long enough that it cannot plausibly fire during this test.
+	reader := newIdleTimeoutReader(body, time.Hour)
+
+	buf := make([]byte, 64)
+	if _, err := reader.Read(buf); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		_ = reader.Close()
+	}()
+	<-closed
+
+	_, err := reader.Read(buf)
+	if errors.Is(err, ErrUpstreamIdleTimeout) {
+		t.Error("caller-initiated Close reported as an idle timeout")
+	}
+}
+
 // The budget must bound the GAP between reads, not the total lifetime, or it
 // reintroduces the severed-stream bug the total timeout caused.
 func TestIdleTimeoutReader_DoesNotCutASteadyStream(t *testing.T) {

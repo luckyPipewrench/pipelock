@@ -38,9 +38,14 @@ type idleTimeoutReader struct {
 	inner  io.ReadCloser
 	budget time.Duration
 
-	mu     sync.Mutex
-	timer  *time.Timer
-	closed bool
+	mu    sync.Mutex
+	timer *time.Timer
+	// closed records that the underlying body has been closed by either party.
+	// timedOut records that the IDLE TIMER closed it, which is the only case
+	// that should surface as a stall: Close sets closed too, and reporting a
+	// caller hang-up as an upstream timeout would misattribute the fault.
+	closed   bool
+	timedOut bool
 }
 
 // newIdleTimeoutReader wraps body so a gap between reads longer than budget
@@ -63,6 +68,7 @@ func (r *idleTimeoutReader) trip() {
 		return
 	}
 	r.closed = true
+	r.timedOut = true
 	_ = r.inner.Close()
 }
 
@@ -70,8 +76,8 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	n, err := r.inner.Read(p)
 
 	r.mu.Lock()
-	tripped := r.closed
-	if !tripped && r.timer != nil {
+	tripped := r.timedOut
+	if !r.closed && r.timer != nil {
 		// Progress resets the budget, so a steady stream is never severed.
 		r.timer.Reset(r.budget)
 	}

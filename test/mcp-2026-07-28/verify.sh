@@ -296,19 +296,29 @@ cleanup
 start_stack "$RIG_DIR/pipelock-baseline.yaml" || exit 2
 
 stream_out="$(mktemp -t mcp-rig-stream.XXXXXX)"
+stream_hdr="$(mktemp -t mcp-rig-stream-hdr.XXXXXX)"
 stream_start="$(date +%s)"
-curl -s --max-time 30 -o "$stream_out" -H 'Content-Type: application/json' -H 'Mcp-Method: tools/list' \
-  -X POST --data '{"jsonrpc":"2.0","id":20,"method":"tools/list"}' \
-  "http://127.0.0.1:$SPORT/stream" 2>/dev/null
+# THROUGH Pipelock ($PPORT), not the fixture directly: the point is that
+# Pipelock's upstream reader does not sever a healthy long-lived body, which a
+# direct call to the fixture cannot show.
+curl -s --max-time 30 -D "$stream_hdr" -o "$stream_out" \
+  -H 'Content-Type: application/json' -H 'Mcp-Method: subscriptions/listen' \
+  -X POST --data '{"jsonrpc":"2.0","id":20,"method":"subscriptions/listen","params":{"types":["toolsListChanged"]}}' \
+  "http://127.0.0.1:$PPORT/mcp" 2>/dev/null
 stream_elapsed=$(( $(date +%s) - stream_start ))
-events="$(grep -c '^data: ' "$stream_out" 2>/dev/null || echo 0)"
-rm -f "$stream_out"
+events="$(grep -c 'notifications/message' "$stream_out" 2>/dev/null || echo 0)"
 
 if [ "$events" -ge 6 ]; then
-  pass "streamed $events events over ${stream_elapsed}s without being severed"
+  pass "streamed $events events through Pipelock over ${stream_elapsed}s without being severed"
 else
-  fail "stream delivered $events events in ${stream_elapsed}s, want at least 6"
+  fail "stream through Pipelock delivered $events events in ${stream_elapsed}s, want at least 6"
 fi
+if grep -qi 'cache-control:.*no-store' "$stream_hdr" 2>/dev/null; then
+  pass "streamed response carries Cache-Control: no-store"
+else
+  fail "streamed response cache directive was '$(grep -i '^cache-control:' "$stream_hdr" 2>/dev/null || echo '<none>')', want no-store"
+fi
+rm -f "$stream_out" "$stream_hdr"
 
 # ---------------------------------------------------------------------------
 # Case 9: shape validation refuses a header the agreement check would accept.

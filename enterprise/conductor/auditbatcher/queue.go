@@ -460,7 +460,24 @@ func (q *Queue) migrateRecordsLocked() error {
 			path := filepath.Join(dir, id)
 			record, keyID, legacy, err := readRecordWithKeyring(path, q.maxPayloadBytes, q.keyring)
 			if err != nil {
-				return fmt.Errorf("auditbatcher: migrate queue record %s: %w", id, err)
+				if errors.Is(err, errQueueKeyUnavailable) || !errors.Is(err, ErrCorruptRecord) {
+					return fmt.Errorf("auditbatcher: migrate queue record %s: %w", id, err)
+				}
+				// Dead-letter records are already quarantined evidence. An unreadable
+				// one must not turn a later restart into a permanent availability
+				// failure. Corrupt live records are quarantined atomically here so
+				// the remaining queue can migrate and start.
+				if dir == q.deadDir {
+					continue
+				}
+				deadPath, pathErr := uniqueDeadPath(q.deadDir, id)
+				if pathErr != nil {
+					return fmt.Errorf("auditbatcher: quarantine queue record %s: %w", id, errors.Join(err, pathErr))
+				}
+				if moveErr := moveToDead(path, deadPath); moveErr != nil {
+					return fmt.Errorf("auditbatcher: quarantine queue record %s: %w", id, errors.Join(err, moveErr))
+				}
+				continue
 			}
 			if !legacy && keyID == active {
 				continue

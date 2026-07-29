@@ -39,6 +39,10 @@ func TestAuditQueueKeyLifecycle(t *testing.T) {
 	if !strings.Contains(out, oldID+" records=0 active") {
 		t.Fatalf("inspect output = %q", out)
 	}
+	out = runAuditQueueKeyCommand(t, "migrate", "--keyring", keyringPath, "--queue-dir", queueDir)
+	if !strings.Contains(out, "converged to active key "+oldID) {
+		t.Fatalf("migrate output = %q", out)
+	}
 
 	out = runAuditQueueKeyCommand(t, "rotate", "--keyring", keyringPath, "--queue-dir", queueDir)
 	if !strings.Contains(out, "rotated audit queue key") {
@@ -102,6 +106,34 @@ func TestAuditQueueKeyCommandsRespectQueueLock(t *testing.T) {
 	err = cmd.Execute()
 	if !errors.Is(err, auditbatcher.ErrQueueLocked) {
 		t.Fatalf("migrate while queue live error = %v, want ErrQueueLocked", err)
+	}
+}
+
+func TestAuditQueueKeyInspectReportsUnreadableRecords(t *testing.T) {
+	root := t.TempDir()
+	keyringPath := filepath.Join(root, "secrets", "keyring.json")
+	queueDir := filepath.Join(root, "queue")
+	runAuditQueueKeyCommand(t, "init", "--keyring", keyringPath)
+	keyring, err := auditbatcher.LoadKeyring(keyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := auditbatcher.Open(auditbatcher.Config{Dir: queueDir, Keyring: keyring})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadPath := filepath.Join(queueDir, "dead", "00000000000000000001-corrupt.json")
+	if err := os.WriteFile(deadPath, []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runAuditQueueKeyCommand(t, "inspect", "--keyring", keyringPath, "--queue-dir", queueDir)
+	want := auditbatcher.UnreadableRecordID + " records=1"
+	if !strings.Contains(out, want) {
+		t.Fatalf("inspect output = %q, want %q", out, want)
 	}
 }
 

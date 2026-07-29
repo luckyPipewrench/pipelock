@@ -6,13 +6,17 @@
 package auditbatcher
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
 
-const LegacyKeyID = "legacy-plaintext"
+const (
+	LegacyKeyID        = "legacy-plaintext"
+	UnreadableRecordID = "unreadable-record"
+)
 
 // InspectQueueKeys takes the queue's exclusive lock and reports which key
 // protects every durable record. It never rewrites queue state.
@@ -42,6 +46,10 @@ func (q *Queue) keyUsageLocked() (map[string]int, error) {
 		for _, name := range names {
 			_, keyID, legacy, err := readRecordWithKeyring(filepath.Join(recordDir, name), q.maxPayloadBytes, q.keyring)
 			if err != nil {
+				if errors.Is(err, ErrCorruptRecord) {
+					usage[UnreadableRecordID]++
+					continue
+				}
 				return nil, fmt.Errorf("auditbatcher: inspect queue record %s: %w", name, err)
 			}
 			if legacy {
@@ -64,8 +72,12 @@ func RotateQueueKeyring(queueDir, keyringPath, backupPath string) (string, strin
 		return "", "", err
 	}
 	q.keyring = keyring
-	if _, err := q.keyUsageLocked(); err != nil {
+	usage, err := q.keyUsageLocked()
+	if err != nil {
 		return "", "", err
+	}
+	if usage[UnreadableRecordID] > 0 {
+		return "", "", fmt.Errorf("auditbatcher: rotate refused: %d unreadable queue record(s)", usage[UnreadableRecordID])
 	}
 	oldID := keyring.ActiveKeyID()
 	if err := keyring.Save(backupPath + ".previous"); err != nil {
@@ -122,6 +134,9 @@ func RevokeQueueKeyringKey(queueDir, keyringPath, keyID string) error {
 	if err != nil {
 		return err
 	}
+	if usage[UnreadableRecordID] > 0 {
+		return fmt.Errorf("auditbatcher: revoke refused: %d unreadable queue record(s) may still use the key", usage[UnreadableRecordID])
+	}
 	if err := keyring.Revoke(keyID, usage); err != nil {
 		return err
 	}
@@ -139,8 +154,12 @@ func RecoverQueueKeyring(queueDir, livePath, backupPath string) (string, error) 
 		return "", fmt.Errorf("load recovery keyring: %w", err)
 	}
 	q.keyring = backup
-	if _, err := q.keyUsageLocked(); err != nil {
+	usage, err := q.keyUsageLocked()
+	if err != nil {
 		return "", fmt.Errorf("recovery keyring cannot decrypt the queue: %w", err)
+	}
+	if usage[UnreadableRecordID] > 0 {
+		return "", fmt.Errorf("recovery keyring cannot decrypt %d queue record(s)", usage[UnreadableRecordID])
 	}
 	if err := backup.Save(livePath); err != nil {
 		return "", err

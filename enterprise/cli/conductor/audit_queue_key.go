@@ -88,6 +88,9 @@ func auditQueueKeyInspectCmd() *cobra.Command {
 			if usage[auditbatcher.LegacyKeyID] > 0 {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s records=%d\n", auditbatcher.LegacyKeyID, usage[auditbatcher.LegacyKeyID])
 			}
+			if usage[auditbatcher.UnreadableRecordID] > 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s records=%d\n", auditbatcher.UnreadableRecordID, usage[auditbatcher.UnreadableRecordID])
+			}
 			return nil
 		},
 	}

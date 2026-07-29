@@ -25,6 +25,8 @@ const (
 	encryptedRecordMetadataBytes = 1024
 )
 
+var errQueueKeyUnavailable = errors.New("auditbatcher: queue encryption key unavailable")
+
 var queueRecordAAD = []byte("pipelock/conductor/audit-queue/v2")
 
 type encryptedDiskRecord struct {
@@ -91,7 +93,7 @@ func decryptDiskRecord(data []byte, keyring *Keyring) (diskRecord, string, bool,
 		}
 		key, ok := keyring.key(encrypted.KeyID)
 		if !ok {
-			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("auditbatcher: queue key %q unavailable", encrypted.KeyID)
+			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("%w: %q", errQueueKeyUnavailable, encrypted.KeyID)
 		}
 		aead, err := queueAEAD(key)
 		if err != nil {

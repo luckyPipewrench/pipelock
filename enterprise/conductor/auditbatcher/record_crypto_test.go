@@ -10,10 +10,12 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
@@ -225,6 +227,46 @@ func TestOpenFailsClosedWhenRecordKeyUnavailable(t *testing.T) {
 	}
 }
 
+func TestOpenQuarantinesCorruptLiveRecordAndIgnoresUnreadableDeadRecord(t *testing.T) {
+	dir := t.TempDir()
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(Config{Dir: dir, Keyring: keyring})
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptID := "00000000000000000001-corrupt-0000000000000000.json"
+	if err := os.WriteFile(filepath.Join(q.pendingDir, corruptID), []byte("{bad"), fileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(Config{Dir: dir, Keyring: keyring})
+	if err != nil {
+		t.Fatalf("Open with corrupt pending record: %v", err)
+	}
+	stats, err := reopened.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 0 || stats.Dead != 1 {
+		t.Fatalf("Stats after migration quarantine = %+v, want pending=0 dead=1", stats)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	afterDead, err := Open(Config{Dir: dir, Keyring: keyring})
+	if err != nil {
+		t.Fatalf("Open with unreadable dead-letter record: %v", err)
+	}
+	defer func() { _ = afterDead.Close() }()
+}
+
 func TestEncryptedRecordsUseDistinctNonces(t *testing.T) {
 	keyring, err := NewKeyring()
 	if err != nil {
@@ -287,5 +329,161 @@ func chmodTestFixture(t *testing.T, path string, mode os.FileMode) {
 func TestOpenRequiresEncryptionKeyring(t *testing.T) {
 	if _, err := Open(Config{Dir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "keyring required") {
 		t.Fatalf("Open(nil keyring) error = %v, want required refusal", err)
+	}
+}
+
+func TestMigrationAndEncryptedReadErrorPaths(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(Config{Dir: t.TempDir(), Keyring: keyring})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.Close() }()
+
+	if err := os.RemoveAll(q.deadDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.migrateRecordsLocked(); err == nil {
+		t.Fatal("migrateRecordsLocked(missing dir) error = nil")
+	}
+	if err := os.MkdirAll(q.deadDir, dirMode); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyID := "00000000000000000001-legacy.json"
+	legacyPath := filepath.Join(q.pendingDir, legacyID)
+	if err := writeDiskRecord(legacyPath, validDiskRecord(signedTestBatch(t, "migration-error", priv))); err != nil {
+		t.Fatal(err)
+	}
+	q.keyring = &Keyring{}
+	if err := q.migrateRecordsLocked(); err == nil || !strings.Contains(err.Error(), "encrypt queue record") {
+		t.Fatalf("migrateRecordsLocked(empty keyring) error = %v", err)
+	}
+
+	q.keyring = keyring
+	data, err := encryptDiskRecord(diskRecord{Version: 99, EnqueuedAt: time.Now().UTC()}, keyring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidVersionPath := filepath.Join(q.pendingDir, "00000000000000000002-version.json")
+	if err := os.WriteFile(invalidVersionPath, data, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := readRecordWithKeyring(invalidVersionPath, conductor.MaxAuditPayloadBytes, keyring); err == nil || !strings.Contains(err.Error(), "plaintext version") {
+		t.Fatalf("readRecordWithKeyring(version) error = %v", err)
+	}
+
+	if _, err := encryptedRecordReadLimit(-1); err == nil {
+		t.Fatal("encryptedRecordReadLimit(negative) error = nil")
+	}
+	if _, err := encryptedRecordReadLimit(math.MaxInt64); err == nil {
+		t.Fatal("encryptedRecordReadLimit(oversized plaintext) error = nil")
+	}
+	threshold := int64(((maxRecordReadBytes-encryptedRecordMetadataBytes)/4)*3 - 2)
+	if _, err := encryptedRecordReadLimit(threshold); err == nil {
+		t.Fatal("encryptedRecordReadLimit(oversized ciphertext) error = nil")
+	}
+}
+
+func TestMigrationQuarantineAndRewriteFailures(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newQueue := func(t *testing.T) (*Queue, *Keyring) {
+		t.Helper()
+		keyring, err := NewKeyring()
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := Open(Config{Dir: t.TempDir(), Keyring: keyring})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = q.Close() })
+		return q, keyring
+	}
+
+	t.Run("dead path failure", func(t *testing.T) {
+		q, _ := newQueue(t)
+		id := "00000000000000000001-corrupt.json"
+		if err := os.WriteFile(filepath.Join(q.pendingDir, id), []byte("{bad"), fileMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(q.deadDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(q.deadDir, []byte("not a directory"), fileMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.migrateRecordsLocked(); err == nil || !strings.Contains(err.Error(), "quarantine queue record") {
+			t.Fatalf("migrateRecordsLocked(dead path) error = %v", err)
+		}
+	})
+
+	t.Run("dead move failure", func(t *testing.T) {
+		q, _ := newQueue(t)
+		id := "00000000000000000001-corrupt.json"
+		if err := os.WriteFile(filepath.Join(q.pendingDir, id), []byte("{bad"), fileMode); err != nil {
+			t.Fatal(err)
+		}
+		restrictDirectoryWrites(t, q.deadDir)
+		if err := q.migrateRecordsLocked(); err == nil || !strings.Contains(err.Error(), "quarantine queue record") {
+			t.Fatalf("migrateRecordsLocked(dead move) error = %v", err)
+		}
+	})
+
+	t.Run("rewrite failure", func(t *testing.T) {
+		q, keyring := newQueue(t)
+		id := "00000000000000000001-legacy.json"
+		if err := writeDiskRecord(filepath.Join(q.pendingDir, id), validDiskRecord(signedTestBatch(t, "rewrite-error", priv))); err != nil {
+			t.Fatal(err)
+		}
+		restrictDirectoryWrites(t, q.pendingDir)
+		q.keyring = keyring
+		if err := q.migrateRecordsLocked(); err == nil || !strings.Contains(err.Error(), "migrate queue record") {
+			t.Fatalf("migrateRecordsLocked(rewrite) error = %v", err)
+		}
+	})
+}
+
+func restrictDirectoryWrites(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := info.Mode().Perm()
+	readOnly := original &^ 0o222
+	if err := os.Chmod(path, readOnly); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, original) })
+}
+
+func TestEncryptedRecordReadLimitAndFileReadFailures(t *testing.T) {
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "record.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, fileMode) })
+	if _, _, _, err := readRecordWithKeyring(path, conductor.MaxAuditPayloadBytes, keyring); err == nil || !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecordWithKeyring(unreadable) error = %v", err)
+	}
+
+	maxAcceptedPayload := ((maxRecordReadBytes-maxRecordMetadataBytes)/4)*3 - 2
+	if _, _, _, err := readRecordWithKeyring(path, maxAcceptedPayload, keyring); err == nil {
+		t.Fatal("readRecordWithKeyring(encrypted limit) error = nil")
 	}
 }

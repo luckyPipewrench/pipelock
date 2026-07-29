@@ -372,6 +372,20 @@ func TestBuildConductorAuditTransportReleasesQueueOnConstructorFailure(t *testin
 	defer func() { _ = reopened.Close() }()
 }
 
+func TestBuildConductorAuditTransportRejectsMissingQueueKeyring(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Conductor: config.Conductor{
+			Enabled:                  true,
+			DurableAuditQueueDir:     filepath.Join(dir, "audit-queue"),
+			DurableAuditQueueKeyring: filepath.Join(dir, "missing-keyring.json"),
+		},
+	}
+	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil || !strings.Contains(err.Error(), "loading conductor audit queue keyring") {
+		t.Fatalf("buildConductorAuditTransport() error = %v, want missing keyring refusal", err)
+	}
+}
+
 // TestBuildConductorBundlePollerDisabled confirms the poller is a no-op (nil,
 // nil) when conductor is not enabled.
 func TestBuildConductorBundlePollerDisabled(t *testing.T) {

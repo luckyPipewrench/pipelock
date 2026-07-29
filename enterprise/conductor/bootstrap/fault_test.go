@@ -95,6 +95,72 @@ func TestProduceSignedBatch_HonorsCancelledContext(t *testing.T) {
 	}
 }
 
+func TestProduceSignedBatch_FailsWhenQueueKeyringCannotBeCreated(t *testing.T) {
+	_, opts, id, _ := freshMaterial(t)
+	queueParent := filepath.Join(opts.Dir, "proof")
+	if err := os.MkdirAll(queueParent, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(queueParent, "queue-secrets"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil {
+		t.Fatal("produceSignedBatch with unusable keyring parent should fail")
+	}
+}
+
+func TestProduceSignedBatch_FailsWhenQueueKeyringCannotBeSaved(t *testing.T) {
+	_, opts, id, _ := freshMaterial(t)
+	queueParent := filepath.Join(opts.Dir, "proof-save")
+	keyringTarget := filepath.Join(queueParent, "queue-secrets", "keyring.json")
+	if err := os.MkdirAll(keyringTarget, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil {
+		t.Fatal("produceSignedBatch with directory keyring target should fail")
+	}
+}
+
+func TestLoadMaterialRejectsMissingQueueKeyring(t *testing.T) {
+	layout, _, _, _ := freshMaterial(t)
+	if err := os.Remove(layout.FollowerQueueKeyring); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadMaterial(layout); err == nil {
+		t.Fatal("loadMaterial with missing queue keyring should fail")
+	}
+}
+
+func TestGenerateMaterialFailsWhenQueueKeyringTargetIsDirectory(t *testing.T) {
+	dir := privateFleetDir(t)
+	opts := Options{Dir: dir}
+	normalize(&opts)
+	layout, err := newLayout(opts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(layout.FollowerQueueKeyring, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	id := controlplane.FollowerIdentity{
+		OrgID:       opts.OrgID,
+		FleetID:     opts.FleetID,
+		InstanceID:  opts.InstanceID,
+		Environment: opts.Environment,
+	}
+	if _, err := generateMaterial(layout, opts, id); err == nil {
+		t.Fatal("generateMaterial with keyring directory target should fail")
+	}
+}
+
 // TestVerifyBatchOffline_RejectsWrongKey: the offline verifier must reject a
 // batch when checked against the wrong audit public key.
 func TestVerifyBatchOffline_RejectsWrongKey(t *testing.T) {

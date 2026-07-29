@@ -119,7 +119,12 @@ func loadOfflineStore(policyBundlesDir string) (*FileBundleStore, []OfflineUnrea
 	}
 	slices.Sort(names)
 	for _, name := range names {
-		record, err := readBundleRecord(filepath.Join(store.bundlesDir, name))
+		// Match startup, which tolerates a policy_hash this build cannot
+		// reproduce. Reading strictly here classified every bundle published
+		// before a release moved the canonical policy hash as unreadable, so the
+		// tool an operator reaches for when the leader will not boot reported the
+		// whole store as damaged and repair refused to act on it.
+		record, err := readBundleRecordAllowLegacyPolicyHash(filepath.Join(store.bundlesDir, name))
 		if err != nil {
 			unreadable = append(unreadable, OfflineUnreadableRecord{FileName: name, Err: err.Error()})
 			continue
@@ -384,7 +389,9 @@ func RepairOfflineStore(policyBundlesDir, backupDir string, confirm bool, now ti
 		src := filepath.Join(store.bundlesDir, orphan.FileName)
 		// Re-validate that this is exactly one of the records we classified and that
 		// the on-disk file still parses to the same orphan hash before touching it.
-		record, err := readBundleRecord(src)
+		// Same tolerance as the classification pass above, so repair can act on
+		// exactly the set it classified rather than failing the re-read.
+		record, err := readBundleRecordAllowLegacyPolicyHash(src)
 		if err != nil {
 			return finalizeRepair(resolvedBackup, removed), fmt.Errorf("conductor offline repair re-read %s: %w", orphan.FileName, err)
 		}

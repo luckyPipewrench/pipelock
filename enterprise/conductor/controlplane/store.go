@@ -264,6 +264,10 @@ type FileBundleStore struct {
 	records        map[string]PublishedBundle
 	streams        map[string]PublishedBundle
 	rollbackHeads  map[string]streamHeadRecord
+	// policyHashStatusCounts records how many loaded bundles fell into each
+	// policy-hash status, so an operator can see that a store carries bundles
+	// whose policy hash this build cannot reproduce without reading the log.
+	policyHashStatusCounts map[conductor.PolicyHashStatus]int
 }
 
 type streamHeadRecord struct {
@@ -299,12 +303,13 @@ func OpenFileBundleStore(dir string) (*FileBundleStore, error) {
 		return nil, err
 	}
 	store := &FileBundleStore{
-		dir:            root,
-		bundlesDir:     bundlesDir,
-		streamHeadsDir: streamHeadsDir,
-		records:        make(map[string]PublishedBundle),
-		streams:        make(map[string]PublishedBundle),
-		rollbackHeads:  make(map[string]streamHeadRecord),
+		dir:                    root,
+		bundlesDir:             bundlesDir,
+		streamHeadsDir:         streamHeadsDir,
+		records:                make(map[string]PublishedBundle),
+		streams:                make(map[string]PublishedBundle),
+		rollbackHeads:          make(map[string]streamHeadRecord),
+		policyHashStatusCounts: make(map[conductor.PolicyHashStatus]int),
 	}
 	if err := store.load(); err != nil {
 		return nil, err
@@ -650,6 +655,21 @@ func (f FollowerIdentity) Validate() error {
 	return nil
 }
 
+// PolicyHashStatusCounts reports how many loaded bundles fell into each
+// policy-hash status. A nonzero unknown_unverified count means the store carries
+// bundles whose policy hash this build cannot reproduce, which is expected after
+// a release that moved the canonical policy hash and is the signal an operator
+// needs before it becomes a mystery.
+func (s *FileBundleStore) PolicyHashStatusCounts() map[conductor.PolicyHashStatus]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[conductor.PolicyHashStatus]int, len(s.policyHashStatusCounts))
+	for k, v := range s.policyHashStatusCounts {
+		out[k] = v
+	}
+	return out
+}
+
 func (s *FileBundleStore) load() error {
 	entries, err := os.ReadDir(s.bundlesDir)
 	if err != nil {
@@ -674,9 +694,17 @@ func (s *FileBundleStore) load() error {
 		if _, exists := s.records[record.BundleHash]; exists {
 			return fmt.Errorf("%w: duplicate bundle_hash %q", ErrInvalidStoreRecord, record.BundleHash)
 		}
-		if record.Bundle.UsesLegacyPolicyHash() {
-			slog.Warn("conductor_policy_bundle_legacy_policy_hash",
-				slog.String("event", "conductor_policy_bundle_legacy_policy_hash"),
+		// Report anything this build could not reproduce under the current
+		// scheme. The previously reported case was only the pre-loaded-config
+		// scheme, which meant the case that actually stops an upgrade -- a hash
+		// from a release whose config schema this build no longer carries --
+		// produced no signal at all before the leader failed to boot.
+		if status := record.Bundle.PolicyHashStatus(); status != conductor.PolicyHashCurrent {
+			s.policyHashStatusCounts[status]++
+			slog.Warn("conductor_policy_bundle_policy_hash_not_current",
+				slog.String("event", "conductor_policy_bundle_policy_hash_not_current"),
+				slog.String("policy_hash_status", string(status)),
+				slog.Bool("policy_hash_reproducible", status.Reproducible()),
 				slog.String("bundle_id", record.Bundle.BundleID),
 				slog.String("bundle_hash", record.BundleHash),
 				slog.Uint64("version", record.Bundle.Version),

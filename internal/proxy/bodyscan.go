@@ -515,6 +515,9 @@ type BodyScanRequest struct {
 	Host string
 	// Path is the upstream request path, used for provider parser selection.
 	Path string
+	// TrustedProviderOpaqueRequest overrides provider-opaque request recognition.
+	// Nil uses the production OpenAI/ChatGPT host and path allowlist.
+	TrustedProviderOpaqueRequest func(host, path string) bool
 	// Target is the full request URL used to evaluate scoped suppress rules.
 	// When empty, Host/Path are joined into a best-effort target.
 	Target string
@@ -789,11 +792,16 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 	var stack []jsonBodyDLPFrame
 	depth := 0
 	truncated := false
+	rootStarted := false
+	rootComplete := false
 
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
-			if depth > 0 || len(stack) > 0 {
+			if !rootStarted {
+				return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: empty JSON body")
+			}
+			if depth > 0 || len(stack) > 0 || !rootComplete {
 				return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", io.ErrUnexpectedEOF)
 			}
 			break
@@ -801,6 +809,10 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 		if err != nil {
 			return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
 		}
+		if rootComplete {
+			return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: multiple JSON values")
+		}
+		rootStarted = true
 
 		switch v := tok.(type) {
 		case json.Delim:
@@ -821,6 +833,9 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				}
 				if depth > 0 {
 					depth--
+				}
+				if depth == 0 {
+					rootComplete = true
 				}
 				markJSONBodyDLPValueConsumed(stack)
 			}
@@ -843,6 +858,9 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				}
 			}
 			markJSONBodyDLPValueConsumed(stack)
+			if depth == 0 {
+				rootComplete = true
+			}
 		case json.Number:
 			if depth <= extractJSONMaxDepth {
 				text := v.String()
@@ -850,6 +868,9 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
+			if depth == 0 {
+				rootComplete = true
+			}
 		case bool:
 			if depth <= extractJSONMaxDepth {
 				text := strconv.FormatBool(v)
@@ -857,8 +878,14 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
+			if depth == 0 {
+				rootComplete = true
+			}
 		case nil:
 			markJSONBodyDLPValueConsumed(stack)
+			if depth == 0 {
+				rootComplete = true
+			}
 		}
 	}
 	return result, providerOpaque, generic, truncated, nil
@@ -890,7 +917,11 @@ func markJSONBodyDLPValueConsumed(stack []jsonBodyDLPFrame) {
 }
 
 func isTrustedProviderOpaqueDLPField(req BodyScanRequest, path []string, value string) bool {
-	if !isTrustedOpenAIRequest(req.Host, req.Path) || !isOpenAIOpaqueReasoningFieldPath(path) {
+	trustedRequest := req.TrustedProviderOpaqueRequest
+	if trustedRequest == nil {
+		trustedRequest = isTrustedOpenAIRequest
+	}
+	if !trustedRequest(req.Host, req.Path) || !isOpenAIOpaqueReasoningFieldPath(path) {
 		return false
 	}
 	return isProviderOpaqueCiphertext(value)

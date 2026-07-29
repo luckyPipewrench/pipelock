@@ -160,6 +160,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Content-bearing URLs are redacted on anomaly events.**
 - **MCP Streamable HTTP fails closed on ambiguous responses** and no longer leaks
   upstream bytes.
+- **MCP protocol revision 2026-07-28 is mediated without a silent downgrade.**
+  That revision makes `Mcp-Method` and `Mcp-Name` required on Streamable HTTP
+  POST, and the reverse proxy stripped both in transit. An upstream that enforces
+  them rejected the stripped request, and a fallback-capable client then completed
+  the exchange over the deprecated session-based handshake while still reporting
+  success, so the proxy downgraded the protocol it was mediating and the downgrade
+  was invisible from the client side. Both headers now forward through the
+  operator-unset path, so a value pinned with `--header` still wins. Browser
+  preflight also allowlists them, and `Mcp-Session-Id` and `Last-Event-ID` stay
+  allowlisted because a mixed-revision fleet is the normal state throughout the
+  revision's deprecation window.
+- **MCP routing headers that disagree with the scanned body are refused.**
+  `Mcp-Method` and `Mcp-Name` route a request at the upstream while Pipelock scans
+  and applies policy to the JSON-RPC body, so forwarding a header that disagrees
+  with that body would let the upstream act on a method or tool name no scanner
+  ever saw. That is a display-versus-reality divergence on the mediating path.
 - **Server-sent-event content types are matched exactly** rather than by prefix.
 - **Agent attribution is bound to resolved identity.**
 - **Dashboard routes enforce mapped OIDC role permissions.**

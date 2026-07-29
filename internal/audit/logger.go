@@ -99,16 +99,26 @@ func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTar
 
 // dropURLContentSegments removes the query and fragment from raw, and removes
 // the path as well unless keepPath is set. A value that does not parse as an
-// absolute URL is truncated at the first query or fragment delimiter instead of
-// being replaced wholesale, so a forward-proxy CONNECT authority such as
-// host:443 survives intact while nothing after a delimiter can ride through.
+// absolute URL is truncated at the earliest delimiter rather than replaced
+// wholesale, so a forward-proxy CONNECT authority such as host:443 survives
+// intact while nothing after a delimiter rides through.
+//
+// The fallback covers more than CONNECT authorities. A schemeless value parses
+// with an empty Host and lands here with its path intact, so the fallback has to
+// apply the same component rules the parsed branch does; treating it as opaque
+// would let destination mode echo path content for exactly the inputs too
+// malformed to reason about.
 func dropURLContentSegments(raw string, keepPath bool) string {
 	if raw == "" {
 		return ""
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		delims := "?#"
+		if !keepPath {
+			delims += "/"
+		}
+		if i := strings.IndexAny(raw, delims); i >= 0 {
 			return raw[:i]
 		}
 		return raw

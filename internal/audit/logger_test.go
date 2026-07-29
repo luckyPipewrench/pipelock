@@ -626,20 +626,33 @@ func TestPathDiagnosticScannersKeepPathDropQuery(t *testing.T) {
 // make every tunnel block indistinguishable from every other.
 func TestDropURLContentSegmentsPreservesConnectAuthority(t *testing.T) {
 	tests := []struct {
+		name     string
 		raw      string
 		keepPath bool
 		want     string
 	}{
-		{raw: "evil.com:443", want: "evil.com:443"},
-		{raw: "evil.com:443?leak=secret", want: "evil.com:443"},
-		{raw: "https://host.example/p/q?a=b#frag", want: "https://host.example"},
-		{raw: "https://host.example/p/q?a=b#frag", keepPath: true, want: "https://host.example/p/q"},
-		{raw: "", want: ""},
+		{name: "connect authority survives", raw: "evil.com:443", want: "evil.com:443"},
+		{name: "connect authority drops query", raw: "evil.com:443?blob=leakcanary", want: "evil.com:443"},
+		// A schemeless value parses with an empty Host and reaches the fallback
+		// with its path intact. Destination mode has to drop that path like any
+		// other, or the least parseable inputs get the weakest redaction.
+		{name: "schemeless value drops path and query", raw: "evil.com/admin?blob=leakcanary", want: "evil.com"},
+		{name: "authority with path drops both", raw: "evil.com:443/admin?blob=leakcanary", want: "evil.com:443"},
+		{name: "schemeless value keeps path when asked", raw: "evil.com/admin?blob=leakcanary", keepPath: true, want: "evil.com/admin"},
+		{name: "absolute url drops path and query", raw: "https://host.example/p/q?a=b#frag", want: "https://host.example"},
+		{name: "absolute url keeps path when asked", raw: "https://host.example/p/q?a=b#frag", keepPath: true, want: "https://host.example/p/q"},
+		{name: "empty stays empty", raw: "", want: ""},
 	}
 	for _, tt := range tests {
-		if got := dropURLContentSegments(tt.raw, tt.keepPath); got != tt.want {
-			t.Errorf("dropURLContentSegments(%q, %v) = %q, want %q", tt.raw, tt.keepPath, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got := dropURLContentSegments(tt.raw, tt.keepPath)
+			if got != tt.want {
+				t.Errorf("dropURLContentSegments(%q, %v) = %q, want %q", tt.raw, tt.keepPath, got, tt.want)
+			}
+			if !tt.keepPath && strings.Contains(got, "leakcanary") {
+				t.Errorf("destination mode echoed content: %q", got)
+			}
+		})
 	}
 }
 

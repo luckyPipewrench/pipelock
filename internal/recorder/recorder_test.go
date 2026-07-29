@@ -1114,10 +1114,23 @@ func TestRecorder_ResumeIgnoresUnrelatedDirectoryNoise(t *testing.T) {
 	}
 }
 
-func TestRecorder_ResumeRejectsOverCapMatchingSessionFiles(t *testing.T) {
+// The directory-entry ceiling deliberately does NOT apply to resume. It exists
+// so a truncated read cannot present partial evidence as complete, which is a
+// real hazard for query, verification and the dashboard, and it remains
+// enforced on those paths. Resume reads shards newest first until one yields
+// a tail entry, each read bounded per file, and never verifies the chain, so
+// the count ceiling bought no integrity there and instead bricked receipt
+// emission permanently once a directory grew past it.
+//
+// This test previously asserted the opposite. It is inverted rather than
+// deleted so the policy change stays visible to anyone reading the history.
+// Availability past the cap is covered with a real tail in
+// TestRecorder_ResumeSucceedsPastDirectoryCap; here every shard is empty, so
+// the expected outcome is genesis, not a count refusal.
+func TestRecorder_ResumeIsNotCappedByMatchingSessionFileCount(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i <= recorder.MaxEvidenceReadDirectoryEntries; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("evidence-matching-cap-%03d.jsonl", i))
+		path := filepath.Join(dir, fmt.Sprintf("evidence-matching-cap-%d.jsonl", i))
 		if err := os.WriteFile(path, []byte(""), filePermissions); err != nil {
 			t.Fatalf("WriteFile(%q): %v", path, err)
 		}
@@ -1137,11 +1150,14 @@ func TestRecorder_ResumeRejectsOverCapMatchingSessionFiles(t *testing.T) {
 		SessionID: "matching-cap",
 		Type:      testType,
 		Transport: testTransport,
-		Summary:   "must cap matching evidence shards only",
+		Summary:   "shard count alone must not refuse the write",
 		Detail:    map[string]string{"safe": "value"},
 	})
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("Record error = %v, want ErrEvidenceReadLimitExceeded", err)
+	if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("Record refused on shard count: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("Record with over-cap empty shards: %v", err)
 	}
 }
 

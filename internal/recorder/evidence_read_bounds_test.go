@@ -185,12 +185,21 @@ func TestReadEvidenceFileBounded_UnreadableFileRejected(t *testing.T) {
 
 // TestEvidenceReadBoundsAreNotWidened pins the bounded-resume ceilings.
 //
-// These caps exist so an oversized evidence directory or shard fails CLOSED
-// during chain resume rather than being silently truncated, which would let a
-// partial read masquerade as a verified chain. Automatic retention expiry keeps
-// a healthy directory under the ceiling, so a future change that raises these
-// bounds would be papering over accumulation by making the failure quieter
-// instead of preventing it.
+// These caps exist so an oversized evidence directory or shard fails CLOSED on
+// the READ paths (query, verification, the dashboard) rather than being
+// silently truncated, which would let a partial read masquerade as a verified
+// chain. Raising them would make that failure quieter rather than preventing
+// it.
+//
+// The directory ceiling no longer gates recorder RESUME, and reinstating it
+// there would reintroduce a proven production outage: resume reads shards
+// newest first until one yields a tail entry, under the per-file bounds this
+// test also pins, and never verifies the chain. The count ceiling protected
+// nothing while permanently ending receipt emission once a directory passed
+// 256 shards. Note also that retention does NOT keep a directory under the
+// ceiling, because expiry skips .jsonl chain shards by design; growth is
+// bounded by nothing today. See sessionResumeCandidates and
+// TestRecorder_ResumeSucceedsPastDirectoryCap.
 //
 // Tightening a bound is allowed and does not fail this test. Widening one does,
 // so that it can only happen as a deliberate, reviewed decision. The behavioural

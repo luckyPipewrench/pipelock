@@ -710,7 +710,7 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Reachable:  true,
 			Enforcing:  true,
 			Detail:     health.FileCountVerdict(),
-			Next:       "archive and verify older JSONL shards before the session reaches the bounded resume cap",
+			Next:       "run pipelock evidence doctor on the recorder directory, then archive older JSONL shards; verify the archive independently, and do not assume one linear chain if the doctor reports a fork",
 		}
 	}
 	return doctorReportCheck{

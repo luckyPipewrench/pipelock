@@ -788,7 +788,7 @@ func TestRecorder_RecordDecisionUsesRecorderRedactionAndEscrow(t *testing.T) {
 func TestExtractSeqStart(t *testing.T) {
 	tests := []struct {
 		path string
-		want int
+		want uint64
 	}{
 		{"/dir/evidence-sess-0.jsonl", 0},
 		{"/dir/evidence-sess-42.jsonl", 42},

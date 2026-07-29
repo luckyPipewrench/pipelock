@@ -15,13 +15,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -1213,33 +1213,54 @@ func recorderFiles(dir string) ([]string, error) {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
 
-	prefix := "evidence-" + recorderSessionID + "-"
-	files := make([]string, 0)
+	// Match on parsed session EQUALITY, not on an "evidence-<session>-" prefix.
+	// This scan and the recorder's own resume scan read the same directory, so
+	// when they disagreed about membership the emitter could attribute another
+	// session's shard to this one: for session "s", "evidence-s-evil-999.jsonl"
+	// satisfies the prefix but belongs to session "s-evil". Both now go through
+	// recorder.ParseEvidenceFilename so there is one definition of membership.
+	type shard struct {
+		path     string
+		base     string
+		seqStart uint64
+	}
+	shards := make([]shard, 0)
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
 		}
 		name := de.Name()
-		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
-			files = append(files, filepath.Join(filepath.Clean(dir), name))
+		if !strings.HasSuffix(name, ".jsonl") {
+			continue
 		}
+		parsedSession, seqStart, ok := recorder.ParseEvidenceFilename(name)
+		if !ok || parsedSession != recorderSessionID {
+			continue
+		}
+		shards = append(shards, shard{
+			path:     filepath.Join(filepath.Clean(dir), name),
+			base:     name,
+			seqStart: seqStart,
+		})
 	}
-	sort.Slice(files, func(i, j int) bool {
-		return recorderSeqStart(files[i]) < recorderSeqStart(files[j])
+	// Total order: sort.Slice is not stable, so break seqStart ties on basename
+	// rather than leaving the result dependent on directory order.
+	sort.Slice(shards, func(i, j int) bool {
+		if shards[i].seqStart != shards[j].seqStart {
+			return shards[i].seqStart < shards[j].seqStart
+		}
+		return shards[i].base < shards[j].base
 	})
+	files := make([]string, 0, len(shards))
+	for _, s := range shards {
+		files = append(files, s.path)
+	}
+	// Same refusal the recorder applies to its resume candidates. This list
+	// feeds resumeChain, which sets live chain sequence and prev-hash state, so
+	// silently tie-breaking here while the recorder refuses would let the two
+	// derive different chain heads from identical bytes.
+	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+		return nil, err
+	}
 	return files, nil
-}
-
-func recorderSeqStart(path string) uint64 {
-	name := filepath.Base(path)
-	name = strings.TrimSuffix(name, ".jsonl")
-	lastDash := strings.LastIndex(name, "-")
-	if lastDash < 0 {
-		return 0
-	}
-	seq, err := strconv.ParseUint(name[lastDash+1:], 10, 64)
-	if err != nil {
-		return 0
-	}
-	return seq
 }

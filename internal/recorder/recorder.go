@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ import (
 
 	"golang.org/x/crypto/nacl/box"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -843,14 +845,17 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	resumedPrevHash := GenesisHash
 	resumedFirstSeqInSpan := uint64(0)
 
-	files, err := r.sessionFiles(sessionID)
+	// Matches the name ensureFile writes and sessionResumeCandidates filters on.
+	wantSession := filepath.Base(sessionID)
+
+	candidates, err := r.sessionResumeCandidates(sessionID)
 	if err != nil {
 		return err
 	}
-	for i := len(files) - 1; i >= 0; i-- {
-		entries, readErr := readEntriesForResume(files[i])
+	for _, candidate := range candidates {
+		entries, readErr := readEntriesForResume(candidate.path)
 		if readErr != nil {
-			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
+			return fmt.Errorf("reading existing evidence file %s: %w", candidate.base, readErr)
 		}
 		if len(entries) == 0 {
 			continue
@@ -868,7 +873,29 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		// new Record call.
 		if last.Hash == "" {
 			return fmt.Errorf("evidence file %s: tail entry seq %d has empty hash",
-				filepath.Base(files[i]), last.Sequence)
+				candidate.base, last.Sequence)
+		}
+
+		// Filtering candidates by parsed filename settles which shard to read,
+		// not what is inside it. A shard NAMED for this session but CONTAINING
+		// another session's entries would still be adopted as this chain's
+		// head, which is the same cross-session contamination the filename fix
+		// closes, one layer down. A renamed, misplaced or tampered file reaches
+		// exactly this path. Refuse rather than inherit a foreign tail.
+		if last.SessionID != wantSession {
+			return fmt.Errorf(
+				"evidence file %s: tail entry seq %d belongs to session %q, not %q; refusing to adopt a foreign chain head",
+				candidate.base, last.Sequence, last.SessionID, wantSession)
+		}
+
+		// A uint64 at its maximum wraps to zero on increment, which would
+		// silently restart the sequence and reuse numbers already in the
+		// chain. Refuse instead; an exhausted sequence needs a new session,
+		// not a wrapped one.
+		if last.Sequence == math.MaxUint64 {
+			return fmt.Errorf(
+				"evidence file %s: sequence space exhausted at %d; refusing to wrap and reuse sequence numbers",
+				candidate.base, last.Sequence)
 		}
 
 		resumedSeq = last.Sequence + 1
@@ -876,6 +903,11 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		resumedFirstSeqInSpan = resumedSeq
 		break
 	}
+
+	// Falling through to genesis is correct when this session has no entries on
+	// disk. That includes empty shards left by a crash between file creation and
+	// the first write. Existing entries with corrupt contents, oversized reads,
+	// or empty tail hashes fail above before genesis can hide them.
 
 	r.sessionID = sessionID
 	r.seq = resumedSeq
@@ -885,16 +917,44 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	return nil
 }
 
-func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
+// resumeCandidate is filename-derived metadata for one shard. Resume needs to
+// know which shard is newest, and that is answerable from the name alone, so
+// candidates carry no file contents.
+type resumeCandidate struct {
+	path     string
+	base     string
+	seqStart uint64
+}
+
+// sessionResumeCandidates returns every shard belonging to sessionID, newest
+// first.
+//
+// Two deliberate differences from the read paths in query.go:
+//
+// It filters on parsed session EQUALITY, not on an "evidence-<session>-"
+// prefix. Prefix matching let a shard of session "s-evil" be adopted as the
+// chain head of session "s".
+//
+// It applies NO MaxEvidenceReadDirectoryEntries ceiling. That bound exists so a
+// truncated read cannot present partial evidence as complete, which is a real
+// hazard for query, verification and the dashboard, and it stays enforced
+// there. Resume is different: it consumes exactly one tail entry from one file
+// and does not verify the chain, so a count ceiling here bought no integrity
+// and instead permanently bricked receipt emission once a directory passed the
+// limit. Only filename metadata is unbounded; every content read below is still
+// bounded by readEntriesForResume.
+func (r *Recorder) sessionResumeCandidates(sessionID string) ([]resumeCandidate, error) {
 	dir := filepath.Clean(r.cfg.Dir)
+	// Match ensureFile, which writes filepath.Base(sessionID) into the name.
+	wantSession := filepath.Base(sessionID)
+
 	directory, err := os.Open(dir)
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
 	defer func() { _ = directory.Close() }()
 
-	prefix := "evidence-" + filepath.Base(sessionID) + "-"
-	files := make([]string, 0)
+	candidates := make([]resumeCandidate, 0)
 	for {
 		dirEntries, readErr := directory.ReadDir(128)
 		for _, de := range dirEntries {
@@ -902,12 +962,18 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 				continue
 			}
 			name := de.Name()
-			if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
-				files = append(files, filepath.Join(dir, name))
-				if len(files) > MaxEvidenceReadDirectoryEntries {
-					return nil, fmt.Errorf("%w: evidence session %s exceeds %d matching files", ErrEvidenceReadLimitExceeded, sessionID, MaxEvidenceReadDirectoryEntries)
-				}
+			if !strings.HasSuffix(name, ".jsonl") {
+				continue
 			}
+			parsedSession, seqStart, ok := ParseEvidenceFilename(name)
+			if !ok || parsedSession != wantSession {
+				continue
+			}
+			candidates = append(candidates, resumeCandidate{
+				path:     filepath.Join(dir, name),
+				base:     name,
+				seqStart: seqStart,
+			})
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
@@ -917,10 +983,27 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 		}
 	}
 
-	sort.Slice(files, func(i, j int) bool {
-		return extractSeqStart(files[i]) < extractSeqStart(files[j])
+	// Newest first, and total so the chosen head never depends on directory
+	// order. sort.Slice is not stable, so basename breaks seqStart ties.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].seqStart != candidates[j].seqStart {
+			return candidates[i].seqStart > candidates[j].seqStart
+		}
+		return candidates[i].base > candidates[j].base
 	})
-	return files, nil
+
+	// One shared rule, applied identically by every consumer of this directory
+	// contract. See evidencename.CheckNoDuplicateSeqStart for why refusing beats
+	// each scanner tie-breaking its own way.
+	names := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		names = append(names, c.base)
+	}
+	if err := evidencename.CheckNoDuplicateSeqStart(names); err != nil {
+		return nil, fmt.Errorf("evidence session %s: %w", wantSession, err)
+	}
+
+	return candidates, nil
 }
 
 func readEntriesForResume(path string) ([]Entry, error) {
@@ -1297,7 +1380,7 @@ func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirec
 		}
 		health.TotalEvidenceFiles++
 		if strings.HasSuffix(name, ".jsonl") {
-			if sessionID, _, ok := parseEvidenceFilename(name); ok {
+			if sessionID, _, ok := ParseEvidenceFilename(name); ok {
 				counts[sessionID]++
 				if counts[sessionID] > health.MaxSessionFiles {
 					health.MaxSessionFiles = counts[sessionID]
@@ -1358,10 +1441,10 @@ func (h EvidenceDirectoryHealth) FileCountVerdict() string {
 	}
 	if h.OverSessionFileLimit {
 		return fmt.Sprintf(
-			"evidence session %q has %d JSONL shard(s), over the %d-file bounded resume cap",
+			"evidence session %q has %d JSONL shard(s), over the %d-file evidence read cap; receipt emission is unaffected, but evidence view, serve and query refuse past this",
 			h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession)
 	}
 	return fmt.Sprintf(
-		"evidence session %q has %d JSONL shard(s), near the %d-file bounded resume cap; warning threshold is %d",
+		"evidence session %q has %d JSONL shard(s), near the %d-file evidence read cap; warning threshold is %d",
 		h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession, h.WarningThreshold)
 }

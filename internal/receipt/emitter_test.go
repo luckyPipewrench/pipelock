@@ -1226,31 +1226,63 @@ func TestSideEffectFromMCPAction(t *testing.T) {
 	}
 }
 
-func TestRecorderSeqStart(t *testing.T) {
+// The emitter scans the same recorder directory as the recorder's own resume,
+// so the two must agree on which shards belong to a session. They did not: this
+// scan matched an "evidence-<session>-" PREFIX while the recorder parses the
+// session out of the name. For session "proxy", the file
+// evidence-proxy-evil-999.jsonl satisfies the prefix but belongs to session
+// "proxy-evil".
+//
+// Neutralization: restore prefix matching in recorderFiles and this fails,
+// because the foreign shard is returned.
+func TestRecorderFiles_IgnoresForeignSessionSharingPrefix(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		path string
-		want uint64
-	}{
-		{name: "normal", path: "session-5.jsonl", want: 5},
-		{name: "zero", path: "session-0.jsonl", want: 0},
-		{name: "no_dash", path: "nodash.jsonl", want: 0},
-		{name: "non_numeric", path: "foo-bar.jsonl", want: 0},
-		{name: "max_uint64", path: "session-18446744073709551615.jsonl", want: 18446744073709551615},
-		{name: "with_leading_dirs", path: "/tmp/evidence/session-7.jsonl", want: 7},
-		{name: "evidence_prefix", path: "evidence-proxy-42.jsonl", want: 42},
+	dir := t.TempDir()
+	mine := filepath.Join(dir, "evidence-"+recorderSessionID+"-5.jsonl")
+	foreign := filepath.Join(dir, "evidence-"+recorderSessionID+"-evil-999.jsonl")
+	for _, p := range []string{mine, foreign} {
+		if err := os.WriteFile(p, []byte(""), 0o600); err != nil {
+			t.Fatalf("WriteFile(%q): %v", p, err)
+		}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := recorderSeqStart(tt.path)
-			if got != tt.want {
-				t.Errorf("recorderSeqStart(%q) = %d, want %d", tt.path, got, tt.want)
-			}
-		})
+	files, err := recorderFiles(dir)
+	if err != nil {
+		t.Fatalf("recorderFiles: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("recorderFiles returned %d files (%v), want only the session's own shard", len(files), files)
+	}
+	if filepath.Base(files[0]) != filepath.Base(mine) {
+		t.Fatalf("recorderFiles returned %q, want %q", files[0], mine)
+	}
+}
+
+func TestRecorderFiles_SortsUint64SequenceStarts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	names := []string{
+		"evidence-" + recorderSessionID + "-9223372036854775808.jsonl",
+		"evidence-" + recorderSessionID + "-9.jsonl",
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o600); err != nil {
+			t.Fatalf("WriteFile(%q): %v", name, err)
+		}
+	}
+
+	files, err := recorderFiles(dir)
+	if err != nil {
+		t.Fatalf("recorderFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("recorderFiles returned %d files (%v), want 2", len(files), files)
+	}
+	if filepath.Base(files[0]) != names[1] || filepath.Base(files[1]) != names[0] {
+		t.Fatalf("recorderFiles order = [%s, %s], want [%s, %s]",
+			filepath.Base(files[0]), filepath.Base(files[1]), names[1], names[0])
 	}
 }
 

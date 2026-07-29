@@ -11,11 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -473,13 +474,53 @@ type receiptTail struct {
 var errNoReceiptTail = errors.New("no action receipt tail")
 
 func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
-	files, err := filepath.Glob(filepath.Join(filepath.Clean(dir), "evidence-"+filepath.Base(sessionID)+"-*.jsonl"))
+	// A glob of "evidence-<session>-*.jsonl" has the same hole prefix matching
+	// did: for session "s" it also matches "evidence-s-evil-999.jsonl", which
+	// belongs to session "s-evil", and that file sorts highest so the reported
+	// tail would come from another session. Enumerate and compare the parsed
+	// session instead.
+	clean := filepath.Clean(dir)
+	wantSession := filepath.Base(sessionID)
+	dirEntries, err := os.ReadDir(clean)
 	if err != nil {
+		// filepath.Glob, which this replaced, reported no matches and no error
+		// for a directory that does not exist, and a caller relies on that: an
+		// absent recorder directory means there is no tail yet, not a failure.
+		// Preserve exactly that case. Every other error (permission denied, for
+		// one) now surfaces instead of being silently reported as "no tail",
+		// which Glob could not distinguish.
+		if errors.Is(err, fs.ErrNotExist) {
+			return receiptTail{}, errNoReceiptTail
+		}
 		return receiptTail{}, err
 	}
+	files := make([]string, 0, len(dirEntries))
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		parsedSession, _, ok := recorder.ParseEvidenceFilename(de.Name())
+		if !ok || parsedSession != wantSession {
+			continue
+		}
+		files = append(files, filepath.Join(clean, de.Name()))
+	}
+	// Total order, for the same reason as the recorder's candidate sort:
+	// sort.Slice is not stable and a non-numeric trailing segment parses to 0,
+	// so ties must not be resolved by directory order.
 	sort.Slice(files, func(i, j int) bool {
-		return evidenceFileStartSeq(files[i]) < evidenceFileStartSeq(files[j])
+		si, sj := evidenceFileStartSeq(files[i]), evidenceFileStartSeq(files[j])
+		if si != sj {
+			return si < sj
+		}
+		return filepath.Base(files[i]) < filepath.Base(files[j])
 	})
+	// An ambiguous shard set makes "the tail" undefined, and this feeds the
+	// self-audit divergence check, so guessing would produce either a false
+	// alarm or a missed one.
+	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+		return receiptTail{}, err
+	}
 	for i := len(files) - 1; i >= 0; i-- {
 		tail, err := readLastReceiptTailFromFile(files[i])
 		if err == nil {
@@ -567,17 +608,16 @@ func parseReceiptTailLine(line []byte) (receiptTail, bool, error) {
 	return receiptTail{seq: rcpt.ActionRecord.ChainSeq, hash: hash}, true, nil
 }
 
+// evidenceFileStartSeq delegates to the shared parser. Membership is decided
+// with recorder.ParseEvidenceFilename, so deriving the ORDERING key from a
+// second implementation would let the two drift apart on exactly the inputs
+// that matter.
 func evidenceFileStartSeq(path string) uint64 {
-	name := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-	idx := strings.LastIndex(name, "-")
-	if idx < 0 {
+	_, seq, ok := recorder.ParseEvidenceFilename(path)
+	if !ok {
 		return 0
 	}
-	n, err := strconv.ParseUint(name[idx+1:], 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
+	return seq
 }
 
 type anchorState struct {

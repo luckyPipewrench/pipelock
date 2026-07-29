@@ -28,13 +28,21 @@ const (
 
 	// maxEvidenceDoctorFiles bounds the doctor's own read. It is deliberately
 	// larger than recorder.MaxEvidenceReadDirectoryEntries because the two caps
-	// exist for opposite reasons: the recorder's cap protects the resume path,
-	// where a partial read would silently continue an incomplete chain, so it
-	// must fail closed. The doctor only reports, so a partial view is merely
-	// incomplete rather than dangerous - and refusing to read an over-cap
-	// directory would blind the one tool an operator has for diagnosing exactly
-	// that state. A truncated scan is therefore reported, never treated as
-	// healthy, and never allowed to exit zero.
+	// exist for different reasons: that ceiling guards the evidence READ paths
+	// (query, verification, the dashboard), where a partial read would present
+	// incomplete evidence as complete, so it must fail closed. The doctor only
+	// reports, so a partial view is merely incomplete rather than dangerous -
+	// and refusing to read an over-cap directory would blind the one tool an
+	// operator has for diagnosing exactly that state. A truncated scan is
+	// therefore reported, never treated as healthy, and never allowed to exit
+	// zero.
+	//
+	// Recorder resume is not gated by that ceiling at all. It enumerates a
+	// session's shards uncapped to find the newest one holding entries, which
+	// may mean skipping several empty shards, and then reads only that tail
+	// under the bounded per-file limits. This budget still needs to exceed the
+	// ceiling so the doctor stays useful on the over-cap directories that
+	// motivated it.
 	maxEvidenceDoctorFiles = 16 * recorder.MaxEvidenceReadDirectoryEntries
 
 	// maxDoctorRefsPerFinding bounds per-finding detail. A directory with

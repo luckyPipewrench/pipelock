@@ -288,10 +288,11 @@ func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
-		name       string
-		files      int
-		wantStatus string
-		wantDetail string
+		name           string
+		files          int
+		wantStatus     string
+		wantDetail     string
+		wantDetailAlso string
 	}{
 		{
 			name:       "below_warning",
@@ -305,19 +306,25 @@ func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
 			wantDetail: fmt.Sprintf("warning threshold is %d", recorder.EvidenceFileWarningThreshold),
 		},
 		{
-			// Exactly at the cap is still resumable, so this must warn rather
-			// than fail. This is the boundary an off-by-one would flip.
+			// Exactly at the cap the read paths still work, so this must warn
+			// rather than fail. This is the boundary an off-by-one would flip.
 			name:       "at_cap",
 			files:      recorder.MaxEvidenceReadDirectoryEntries,
 			wantStatus: doctorStatusWarn,
 		},
 		{
-			// Past the bounded resume cap the chain can no longer be
-			// resumed, so doctor must fail rather than warn.
+			// Past the cap the evidence READ paths refuse, so doctor must fail
+			// rather than warn. Receipt emission is deliberately unaffected:
+			// resume is no longer gated by shard count, and the detail string
+			// has to say so, because an operator reading "over the cap" during
+			// an incident otherwise concludes their receipts have stopped.
 			name:       "over_cap",
 			files:      recorder.MaxEvidenceReadDirectoryEntries + 1,
 			wantStatus: doctorStatusFail,
-			wantDetail: fmt.Sprintf("over the %d-file bounded resume cap", recorder.MaxEvidenceReadDirectoryEntries),
+			wantDetail: fmt.Sprintf("over the %d-file evidence read cap", recorder.MaxEvidenceReadDirectoryEntries),
+			// The disclaimer is the operator-critical half: without it someone
+			// reading "over the cap" mid-incident concludes receipts stopped.
+			wantDetailAlso: "receipt emission is unaffected",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -331,6 +338,9 @@ func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
 			check := checkDoctorFlightRecorder(cfg)
 			if check.Status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q; check=%+v", check.Status, tt.wantStatus, check)
+			}
+			if tt.wantDetailAlso != "" && !strings.Contains(check.Detail, tt.wantDetailAlso) {
+				t.Fatalf("detail = %q, want substring %q", check.Detail, tt.wantDetailAlso)
 			}
 			if tt.wantDetail != "" && !strings.Contains(check.Detail, tt.wantDetail) {
 				t.Fatalf("detail = %q, want substring %q", check.Detail, tt.wantDetail)

@@ -339,6 +339,43 @@ func TestValidateAnchorStateMarkerRejectsMalformedFields(t *testing.T) {
 	}
 }
 
+// readLastReceiptTail used to enumerate with a glob of
+// "evidence-<session>-*.jsonl", which for session "s" also matched
+// "evidence-s-evil-999.jsonl" belonging to session "s-evil". That file sorts
+// highest, so the reported tail could come from another session entirely.
+//
+// Neutralization: restore the glob and this fails, because the foreign shard is
+// read and its malformed content surfaces instead of errNoReceiptTail.
+func TestReadLastReceiptTailIgnoresForeignSessionSharingPrefix(t *testing.T) {
+	dir := t.TempDir()
+	foreign := filepath.Join(dir, "evidence-s-evil-999.jsonl")
+	if err := os.WriteFile(foreign, []byte("{\"type\":\"action_receipt\",\"detail\":\"not-an-object\"}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile foreign: %v", err)
+	}
+
+	if _, err := readLastReceiptTail(dir, "s"); !errors.Is(err, errNoReceiptTail) {
+		t.Fatalf("readLastReceiptTail err = %v, want errNoReceiptTail (foreign session shard must be ignored)", err)
+	}
+}
+
+func TestReadLastReceiptTailReadsOwnTailWithForeignHigherShard(t *testing.T) {
+	h, _, e, _ := newEvidenceHealthTestMonitor(t, nil)
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/own-tail")
+
+	foreign := filepath.Join(h.recorder.Dir(), "evidence-proxy-evil-999.jsonl")
+	if err := os.WriteFile(foreign, []byte("{\"type\":\"action_receipt\",\"detail\":\"not-an-object\"}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile foreign: %v", err)
+	}
+
+	tail, err := readLastReceiptTail(h.recorder.Dir(), transcriptRootSessionID)
+	if err != nil {
+		t.Fatalf("readLastReceiptTail: %v", err)
+	}
+	if tail.hash == "" {
+		t.Fatalf("readLastReceiptTail returned empty hash: %+v", tail)
+	}
+}
+
 func TestEvidenceHealthParserHelpersRejectMalformedInputs(t *testing.T) {
 	for _, tt := range []struct {
 		path string
@@ -1142,3 +1179,40 @@ func samplerErrorCount(t *testing.T, m *metrics.Metrics) float64 {
 	}
 	return 0
 }
+
+// The ReadDir error branch that is NOT a missing directory must surface rather
+// than be reported as an absent tail. filepath.Glob, which this replaced,
+// could not tell the two apart.
+func TestReadLastReceiptTailSurfacesNonNotExistReadDirError(t *testing.T) {
+	// chmod cannot make a directory unreadable on Windows, and Geteuid
+	// returns -1 there so the root skip below never fires. The Windows CI job
+	// filters to -run "TestWindows" so this does not execute there today, but
+	// the skip keeps the test honest if that filter ever widens.
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions are not enforced this way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a mode-0000 directory, so the unreadable case cannot be staged")
+	}
+	dir := t.TempDir()
+	evidenceDir := filepath.Join(dir, "evidence")
+	if err := os.Mkdir(evidenceDir, evidenceDirTestMode); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.Chmod(evidenceDir, 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(evidenceDir, evidenceDirTestMode) })
+
+	_, err := readLastReceiptTail(evidenceDir, "proxy")
+	if err == nil {
+		t.Fatal("readLastReceiptTail succeeded against an unreadable directory")
+	}
+	if errors.Is(err, errNoReceiptTail) {
+		t.Fatalf("err = %v, want the underlying read error, not errNoReceiptTail", err)
+	}
+}
+
+// A directory mode expressed as a named constant; a bare octal literal here
+// trips the file-permission linter even though this is a directory.
+const evidenceDirTestMode = os.FileMode(0o750)

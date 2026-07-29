@@ -310,7 +310,7 @@ func TestFlightRecorderEvidenceWarningNearAndOverLimit(t *testing.T) {
 		{
 			name:  "over_limit_says_over",
 			files: recorder.MaxEvidenceReadDirectoryEntries + 1,
-			want:  []string{"proxy", "over", "bounded resume cap"},
+			want:  []string{"proxy", "over", "evidence read cap", "receipt emission is unaffected"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

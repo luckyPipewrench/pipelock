@@ -394,7 +394,9 @@ To trigger cleanup immediately, run:
 pipelock evidence expire --config pipelock.yaml
 ```
 
-`pipelock doctor` warns when any session approaches the 256-shard bounded resume cap, using a 200-shard warning threshold so operators have headroom before receipt resume fails closed.
+`pipelock doctor` warns when any session passes 200 shards. Receipt emission is not affected by shard count. Resume scans the session's shards to find the newest one that actually holds entries, walking past empty shards left by a crash between file creation and the first write, and reads only that tail. The candidate scan is not capped and each file read is, so emission keeps working past the 256-entry ceiling that stops the read paths. The scan does hold one filename and sequence per shard in memory while it runs, so it is bounded by available resources rather than unconditionally, and bounding that is tracked follow-up work. The 256-shard ceiling applies to the evidence read paths (`evidence view`, `evidence serve`, query, and the dashboard), which refuse rather than show a truncated view, so those surfaces degrade on a directory past it.
+
+The warning matters anyway, because nothing prunes chain shards. Retention expires raw sidecars only; `.jsonl` shards are the hash-chain spine and removing one breaks full-history verification and can strand external anchors, so a long-running session grows without bound. Treat a warning as a signal to archive and verify, not as a countdown to an outage.
 
 Expired raw sidecars are gone. If you need long-term raw-payload recovery, either increase `retention_days` or copy evidence files to external storage before they expire. If you need to reduce JSONL storage, archive the chain first and verify the archive before pruning local shards.
 

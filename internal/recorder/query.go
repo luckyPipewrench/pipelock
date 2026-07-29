@@ -11,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // QueryFilter specifies criteria for filtering evidence entries.
@@ -69,8 +69,14 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 		}
 	}
 
+	// Total order. sort.Slice is unstable and an unparseable trailing
+	// segment yields sequence 0, so ties must not fall to directory order.
 	sort.Slice(files, func(i, j int) bool {
-		return extractSeqStart(files[i]) < extractSeqStart(files[j])
+		si, sj := extractSeqStart(files[i]), extractSeqStart(files[j])
+		if si != sj {
+			return si < sj
+		}
+		return filepath.Base(files[i]) < filepath.Base(files[j])
 	})
 
 	result := &QueryResult{
@@ -216,32 +222,24 @@ func readDirectoryEntries(dir string, maxEntries int) ([]os.DirEntry, bool, erro
 }
 
 func evidenceFileSessionID(name string) (string, bool) {
-	sessionID, _, ok := parseEvidenceFilename(name)
+	sessionID, _, ok := ParseEvidenceFilename(name)
 	return sessionID, ok
 }
 
-func parseEvidenceFilename(name string) (sessionID string, seqStart int, ok bool) {
-	name = filepath.Base(name)
-	if !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, ".jsonl") {
-		return "", 0, false
-	}
-	rest := strings.TrimPrefix(name, "evidence-")
-	rest = strings.TrimSuffix(rest, ".jsonl")
-	lastDash := strings.LastIndex(rest, "-")
-	if lastDash < 0 {
-		return "", 0, false
-	}
-	n, err := strconv.Atoi(rest[lastDash+1:])
-	if err != nil {
-		n = 0
-	}
-	return rest[:lastDash], n, true
+// ParseEvidenceFilename splits an evidence shard filename into its session ID
+// and starting sequence.
+//
+// It delegates to evidencename.Parse, which is the single definition shared
+// with the contract verifier. Callers MUST compare the returned sessionID for
+// equality rather than prefix-testing the filename; see that package for why.
+func ParseEvidenceFilename(name string) (sessionID string, seqStart uint64, ok bool) {
+	return evidencename.Parse(name)
 }
 
 // extractSeqStart parses the numeric seqStart from an evidence filename.
 // Returns 0 if the filename cannot be parsed.
-func extractSeqStart(path string) int {
-	_, seqStart, ok := parseEvidenceFilename(path)
+func extractSeqStart(path string) uint64 {
+	_, seqStart, ok := ParseEvidenceFilename(path)
 	if !ok {
 		return 0
 	}

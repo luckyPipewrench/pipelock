@@ -21,12 +21,27 @@ const (
 	MaxEvidenceReadFileBytes int64 = 8 << 20
 
 	// MaxEvidenceReadDirectoryEntries matches the bounded dashboard evidence
-	// directory ceiling.
+	// directory ceiling. It applies to READ paths (query, verification, the
+	// dashboard), where a truncated read would present partial evidence as
+	// complete.
+	//
+	// It deliberately does NOT apply to recorder resume. Resume enumerates the
+	// session's shards uncapped and reads them newest first until one yields a
+	// tail entry, so it may inspect several empty shards left by a crash before
+	// adopting a head. Every one of those reads is bounded by the per-file
+	// limits above. Resume never verifies the chain, so the directory ceiling
+	// bought no integrity there while permanently ending receipt emission once
+	// a directory grew past it. See sessionResumeCandidates.
 	MaxEvidenceReadDirectoryEntries = 256
 
-	// EvidenceFileWarningThreshold warns before a recorder session reaches the
-	// fail-closed bounded resume ceiling. 200 is ~78% of the 256-file cap,
-	// leaving operational headroom while avoiding noise for small installs.
+	// EvidenceFileWarningThreshold warns while a recorder session is still well
+	// under the read ceiling. 200 is ~78% of the 256-file cap, leaving
+	// operational headroom while avoiding noise for small installs.
+	//
+	// Resume no longer fails at the cap, so this is not a countdown to a write
+	// outage. It remains load-bearing for two reasons: the read paths above do
+	// still refuse past the ceiling, and unbounded shard growth is itself the
+	// symptom worth surfacing, because retention cannot prune chain shards.
 	EvidenceFileWarningThreshold = 200
 
 	// MaxEvidenceReadEntries matches the recorder's default shard size. A

@@ -732,6 +732,19 @@ func TestWatcher_OverflowCoalescingPreservesPendingPriority(t *testing.T) {
 	}
 }
 
+func TestWatcher_TryOverflowSendDoesNotBlockOnFullLane(t *testing.T) {
+	w := &fsWatcher{overflow: make(chan Finding, 1)}
+	pending := Finding{Path: "pending-agent", IsAgent: true}
+	w.overflow <- pending
+
+	if w.tryOverflowSend(Finding{Path: "incoming-agent", IsAgent: true}) {
+		t.Fatal("send to a full overflow lane unexpectedly succeeded")
+	}
+	if got := <-w.overflow; got != pending {
+		t.Fatalf("pending finding = %+v, want %+v", got, pending)
+	}
+}
+
 func TestWatcher_EmptyFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
@@ -838,12 +851,13 @@ func (s *countingDLPScanner) ScanTextForDLP(context.Context, string) scanner.Tex
 }
 
 type blockingDLPScanner struct {
+	once    sync.Once
 	entered chan struct{}
 	release chan struct{}
 }
 
 func (s *blockingDLPScanner) ScanTextForDLP(context.Context, string) scanner.TextDLPResult {
-	close(s.entered)
+	s.once.Do(func() { close(s.entered) })
 	<-s.release
 	return scanner.TextDLPResult{
 		Matches: []scanner.TextDLPMatch{{

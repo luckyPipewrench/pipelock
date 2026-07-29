@@ -5,6 +5,7 @@ package filesentry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -371,76 +372,11 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	w.mu.Unlock()
 }
 
-// flushScan runs a DLP scan synchronously during Close. Channels remain open
-// until every pending scan finishes, so a saturated normal buffer can use the
-// same agent-priority overflow lane as live scans.
+// flushScan runs a DLP scan synchronously during Close. Close keeps both
+// delivery channels open until every pending and registered scan finishes, so
+// the flush can use the same agent-priority overflow lane as live scans.
 func (w *fsWatcher) flushScan(path string, isAgent bool) {
-	if w.cfg.ScanContent != nil && !*w.cfg.ScanContent {
-		return
-	}
-
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		w.logError(fmt.Errorf("filesentry: open failed, file left unscanned: %s: %w", path, err))
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	info, err := f.Stat()
-	if err != nil {
-		w.logError(fmt.Errorf("filesentry: stat failed, file left unscanned: %s: %w", path, err))
-		return
-	}
-	if info.IsDir() || info.Size() == 0 {
-		return
-	}
-	sizeCap := w.effectiveMaxFileSize()
-	if info.Size() > sizeCap {
-		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (%d bytes > cap %d): %s", info.Size(), sizeCap, path))
-		return
-	}
-
-	data, err := io.ReadAll(io.LimitReader(f, sizeCap+1))
-	if err != nil {
-		w.logError(fmt.Errorf("filesentry: read failed, file left unscanned: %s: %w", path, err))
-		return
-	}
-	if len(data) == 0 {
-		return
-	}
-	if int64(len(data)) > sizeCap {
-		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (grew beyond cap %d while reading): %s", sizeCap, path))
-		return
-	}
-
-	result := w.scanner.ScanTextForDLP(context.Background(), string(data))
-	if result.Clean {
-		return
-	}
-
-	for _, m := range result.Matches {
-		finding := Finding{
-			Path:        path,
-			PatternName: m.PatternName,
-			Severity:    m.Severity,
-			Encoded:     m.Encoded,
-			IsAgent:     isAgent,
-		}
-		var overflowErr error
-		select {
-		case w.findings <- finding:
-		default:
-			// Close owns channel lifetime while flushes run, and live scan
-			// writers have already observed closed=true. Holding mu preserves
-			// enqueueOverflow's single-writer invariant.
-			w.mu.Lock()
-			overflowErr = w.enqueueOverflow(finding)
-			w.mu.Unlock()
-		}
-		if overflowErr != nil {
-			w.logError(overflowErr)
-		}
-	}
+	w.doScan(context.Background(), path, isAgent, true)
 }
 
 // scanFile reads a file and runs DLP scanning on its content.
@@ -507,8 +443,9 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent, registered
 			Encoded:     m.Encoded,
 			IsAgent:     isAgent,
 		}
-		// Hold the lock across the closed check AND the send. Without this,
-		// Close() can close w.findings between the check and the send.
+		// Hold the lock across the closed check and delivery. This prevents
+		// Close from closing either channel during a send and serializes every
+		// overflow writer; Close closes channels only after scanWG.Wait.
 		w.mu.Lock()
 		if w.closed && !registered {
 			w.mu.Unlock()
@@ -548,17 +485,37 @@ func (w *fsWatcher) enqueueOverflow(f Finding) error {
 	select {
 	case pending := <-w.overflow:
 		if pending.IsAgent {
-			w.overflow <- pending
+			if !w.tryOverflowSend(pending) {
+				return errors.Join(
+					overflowError(pending, "priority lane refilled concurrently"),
+					overflowError(f, "agent overflow already pending"),
+				)
+			}
 			return overflowError(f, "agent overflow already pending")
 		}
 		displacedErr := overflowError(pending, "replaced by agent-attributed overflow")
-		w.overflow <- f
+		if !w.tryOverflowSend(f) {
+			return errors.Join(displacedErr, overflowError(f, "priority lane refilled concurrently"))
+		}
 		return displacedErr
 	default:
 	}
 
-	w.overflow <- f
+	if !w.tryOverflowSend(f) {
+		return overflowError(f, "priority lane refilled concurrently")
+	}
 	return nil
+}
+
+// tryOverflowSend degrades a lost single-writer invariant to a reported drop
+// instead of blocking while holding w.mu and preventing Close from completing.
+func (w *fsWatcher) tryOverflowSend(f Finding) bool {
+	select {
+	case w.overflow <- f:
+		return true
+	default:
+		return false
+	}
 }
 
 func overflowError(f Finding, reason string) error {

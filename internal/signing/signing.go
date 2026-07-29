@@ -332,6 +332,13 @@ func LoadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("public key is empty")
 	}
 
+	// Inline key material is unambiguous and must win over filesystem lookup.
+	// Otherwise an untrusted working directory can replace a pinned literal
+	// with a same-named file.
+	if key, err := ParsePublicKey(input); err == nil {
+		return key, nil
+	}
+
 	cleanPath := filepath.Clean(input)
 	if _, err := os.Stat(cleanPath); err == nil {
 		data, readErr := os.ReadFile(cleanPath)

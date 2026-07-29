@@ -94,7 +94,7 @@ function crossCheck(packet: AuditPacket, chain: ChainResult, receipts: Receipt[]
   if (packet.verifier?.root_hash && packet.verifier.root_hash !== chain.root_hash) {
     errors.push(`root_hash mismatch: chain=${chain.root_hash} packet=${packet.verifier.root_hash}`);
   }
-  if ((packet.verifier?.final_seq ?? 0) !== 0 && packet.verifier?.final_seq !== chain.final_seq) {
+  if (packet.verifier?.final_seq !== undefined && packet.verifier.final_seq !== chain.final_seq) {
     errors.push(
       `final_seq mismatch: chain=${chain.final_seq} packet=${String(packet.verifier?.final_seq)}`,
     );
@@ -163,8 +163,20 @@ export async function verifyAuditPacket(
   try {
     const evidencePath = resolveArtifactPath(baseDir, packet.artifacts?.evidence ?? "");
     receipts = extractReceipts(evidencePath);
-    const keyInput =
-      opts.signerKey.trim() === "" ? (packet.verifier?.signer_key ?? "") : opts.signerKey;
+    let keyInput = opts.signerKey;
+    if (keyInput.trim() === "") {
+      const packetKey = packet.verifier?.signer_key ?? "";
+      if (opts.expectSha256.trim() !== "" || opts.noTrustRequired) {
+        keyInput = packetKey;
+      } else if (
+        packet.verifier?.verdict === "self_consistent_only" &&
+        opts.allowSelfConsistentOnly
+      ) {
+        keyInput = packetKey;
+      } else {
+        throw new Error("trusted Audit Packet verification requires --key or --expect-sha256");
+      }
+    }
     chain = await verifyChain(receipts, resolveSignerKey(keyInput), {
       allowUnpinned: opts.allowSelfConsistentOnly,
     });

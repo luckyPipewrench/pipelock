@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Audit Packet verification now requires external trust.** The Go, Rust, and
+  TypeScript verifiers reject empty receipt chains and no longer accept a
+  packet's embedded signer key as its own trust anchor. Supply `--key` or an
+  out-of-band `--expect-sha256` pin; explicitly weaker structural modes remain
+  available where documented.
+
+### ⚠️ Breaking Changes / Upgrade Notes
+
+- **Trusted Audit Packet verification requires `--key` or
+  `--expect-sha256`.** Existing automation that invokes `audit-packet` without
+  an external trust anchor now fails closed. Add the trusted signer public key
+  or a separately obtained SHA-256 digest of `packet.json`.
+
 ## [3.2.0] - 2026-07-17
 
 ### Added

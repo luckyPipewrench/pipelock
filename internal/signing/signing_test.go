@@ -1206,6 +1206,26 @@ func TestLoadPublicKey(t *testing.T) {
 			t.Error("inline hex key does not match")
 		}
 	})
+
+	t.Run("inline_hex_wins_over_same_named_file", func(t *testing.T) {
+		dir := t.TempDir()
+		otherPub, _, _ := GenerateKeyPair()
+		if err := os.WriteFile(
+			filepath.Join(dir, hexKey),
+			[]byte(hex.EncodeToString(otherPub)),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		key, err := LoadPublicKey(hexKey)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(key, pub) {
+			t.Error("same-named file replaced the inline key")
+		}
+	})
 }
 
 func TestAtomicWrite_RenameError(t *testing.T) {

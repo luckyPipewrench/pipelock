@@ -5,6 +5,7 @@ package auditpacket
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -211,9 +212,61 @@ type Verifier struct {
 	ReceiptCount int    `json:"receipt_count,omitempty"`
 	RootHash     string `json:"root_hash,omitempty"`
 	FinalSeq     int    `json:"final_seq,omitempty"`
-	SignerKey    string `json:"signer_key,omitempty"`
-	OutputFile   string `json:"output_file,omitempty"`
-	Error        string `json:"error,omitempty"`
+	// FinalSeqPresent preserves the distinction between an omitted optional
+	// field and an explicitly supplied zero for verifier cross-checks.
+	FinalSeqPresent bool   `json:"-"`
+	SignerKey       string `json:"signer_key,omitempty"`
+	OutputFile      string `json:"output_file,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// UnmarshalJSON records whether final_seq was present. A plain int cannot
+// distinguish an omitted optional value from an attacker-supplied zero.
+func (v *Verifier) UnmarshalJSON(data []byte) error {
+	type verifierAlias Verifier
+	var decoded verifierAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*v = Verifier(decoded)
+	canonicalNames := [...]string{
+		"verdict",
+		"trusted",
+		"receipt_count",
+		"root_hash",
+		"final_seq",
+		"signer_key",
+		"output_file",
+		"error",
+	}
+	for name := range fields {
+		for _, canonical := range canonicalNames {
+			if strings.EqualFold(name, canonical) && name != canonical {
+				return fmt.Errorf("verifier field %q must use canonical name %s", name, canonical)
+			}
+		}
+	}
+	_, v.FinalSeqPresent = fields["final_seq"]
+	return nil
+}
+
+// MarshalJSON preserves an explicitly present final_seq=0 during round trips.
+func (v Verifier) MarshalJSON() ([]byte, error) {
+	type verifierAlias Verifier
+	if !v.FinalSeqPresent || v.FinalSeq != 0 {
+		return json.Marshal(verifierAlias(v))
+	}
+	return json.Marshal(struct {
+		verifierAlias
+		FinalSeq int `json:"final_seq"`
+	}{
+		verifierAlias: verifierAlias(v),
+		FinalSeq:      v.FinalSeq,
+	})
 }
 
 // Receipt is the inline form of a receipt entry. Consumers SHOULD prefer

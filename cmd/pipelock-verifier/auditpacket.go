@@ -181,7 +181,14 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return nil
 	}
 
-	chainResult, chainReceipts, chainErr := reverifyChain(baseDir, &packet, opts.signerKey)
+	signerKey, keyErr := auditPacketSignerKey(&packet, opts)
+	if keyErr != nil {
+		report.ChainCheck = statusFail
+		report.Errors = append(report.Errors, fmt.Sprintf("chain: %v", keyErr))
+		emitReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, keyErr)
+	}
+	chainResult, chainReceipts, chainErr := reverifyChain(baseDir, &packet, signerKey)
 	if chainErr != nil {
 		report.ChainCheck = statusFail
 		report.Errors = append(report.Errors, fmt.Sprintf("chain: %v", chainErr))
@@ -312,15 +319,31 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 	if err != nil {
 		return receipt.ChainResult{}, nil, fmt.Errorf("extract receipts: %w", err)
 	}
-	keyHex := strings.TrimSpace(signerOverride)
-	if keyHex == "" {
-		keyHex = strings.TrimSpace(packet.Verifier.SignerKey)
+	if len(receipts) == 0 {
+		return receipt.ChainResult{}, nil, errors.New("empty chain")
 	}
+	keyHex := strings.TrimSpace(signerOverride)
 	resolvedKey, err := resolveSignerKey(keyHex)
 	if err != nil {
 		return receipt.ChainResult{}, nil, fmt.Errorf("resolve signer key: %w", err)
 	}
 	return receipt.VerifyChain(receipts, resolvedKey), receipts, nil
+}
+
+// auditPacketSignerKey selects only trust material the relying party explicitly
+// anchored. A packet's own signer_key is not external trust unless the packet
+// bytes were hash-pinned or the caller deliberately requested a weaker mode.
+func auditPacketSignerKey(packet *auditpacket.Packet, opts auditPacketOptions) (string, error) {
+	if key := strings.TrimSpace(opts.signerKey); key != "" {
+		return key, nil
+	}
+	if strings.TrimSpace(opts.expectedSHA) != "" || opts.relaxTrust {
+		return strings.TrimSpace(packet.Verifier.SignerKey), nil
+	}
+	if packet.Verifier.Verdict == auditpacket.VerdictSelfConsistentOnly && opts.allowSCO {
+		return strings.TrimSpace(packet.Verifier.SignerKey), nil
+	}
+	return "", errors.New("trusted Audit Packet verification requires --key or --expect-sha256")
 }
 
 // crossCheck enforces that the packet's claimed totals, receipt_count, and
@@ -355,7 +378,8 @@ func crossCheck(packet *auditpacket.Packet, chain receipt.ChainResult, receipts 
 	if packet.Verifier.RootHash != "" && packet.Verifier.RootHash != chain.RootHash {
 		errs = append(errs, fmt.Errorf("root_hash mismatch: chain=%s packet=%s", chain.RootHash, packet.Verifier.RootHash))
 	}
-	if packet.Verifier.FinalSeq != 0 && (packet.Verifier.FinalSeq < 0 || uint64(packet.Verifier.FinalSeq) != chain.FinalSeq) {
+	if (packet.Verifier.FinalSeqPresent || packet.Verifier.FinalSeq != 0) &&
+		(packet.Verifier.FinalSeq < 0 || uint64(packet.Verifier.FinalSeq) != chain.FinalSeq) {
 		errs = append(errs, fmt.Errorf("final_seq mismatch: chain=%d packet=%d", chain.FinalSeq, packet.Verifier.FinalSeq))
 	}
 

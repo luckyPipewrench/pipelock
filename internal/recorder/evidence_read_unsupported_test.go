@@ -16,7 +16,7 @@ func TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform(t *testing.T) {
 		t.Fatalf("access error = %v, want %v", accessErr, errEvidenceFileAccessUnsupported)
 	}
 
-	file, info, err := openRegularEvidenceFile("unused", "evidence file", accessErr)
+	file, info, err := openRegularEvidenceFile("unused", accessErr)
 	if file != nil || info != nil {
 		t.Fatalf("open result = (%v, %v), want nil handles", file, info)
 	}

@@ -114,6 +114,7 @@ type installEnv struct {
 	serviceUnitChanged       bool
 	installServiceWasActive  bool
 	installServiceStateKnown bool
+	serviceHomeReadOnlyPaths []string
 }
 
 // defaultInstallEnv wires installEnv to the real OS. Callers fill in

@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -49,6 +52,9 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		return nil, nil, fmt.Errorf("resolve operator home for config migration: %w", err)
 	}
 	ctx.operatorHome = home
+	if err := migrateFileSentryWatchPaths(ctx, mapping); err != nil {
+		return nil, nil, err
+	}
 
 	if err := migrateScalarFile(ctx, mapping, []string{"license_file"}, filepath.Join(env.configDir, "license.token"), modeConfigSecret); err != nil {
 		return nil, nil, err
@@ -76,8 +82,11 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	// blocked destinations, and anomaly categories. Put observability on a
 	// distinct loopback listener; the containment rules allow only the proxy
 	// port and drop agent-owned traffic to other loopback ports.
-	if strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen"))) == "" {
+	metricsListen := strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen")))
+	if metricsListen == "" {
 		setMappingScalar(mapping, "metrics_listen", containMetricsListen)
+	} else if err := validateContainMetricsListen(metricsListen, env.proxyPort); err != nil {
+		return nil, nil, err
 	}
 
 	if err := migrateScalarDir(ctx, mapping, []string{"rules", "rules_dir"}, filepath.Join(env.dataDir, "rules")); err != nil {
@@ -102,12 +111,121 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		return nil, nil, err
 	}
 	migrateRedirectProfiles(ctx, mapping)
+	paths, err := containHomeReadOnlyPathsFromMapping(mapping)
+	if err != nil {
+		return nil, nil, err
+	}
+	env.serviceHomeReadOnlyPaths = paths
 
 	out, err := encodeYAML(root)
 	if err != nil {
 		return nil, nil, err
 	}
 	return out, ctx.artifacts, nil
+}
+
+func migrateFileSentryWatchPaths(ctx *configMigrationContext, root *yaml.Node) error {
+	paths := getMappingPath(root, []string{"file_sentry", "watch_paths"})
+	if paths == nil {
+		return nil
+	}
+	if paths.Kind != yaml.SequenceNode {
+		return nil // the selected binary's config preflight reports the schema error
+	}
+	for i, item := range paths.Content {
+		pathNode := item
+		if item.Kind == yaml.MappingNode {
+			pathNode = mappingValue(item, "path")
+		}
+		if pathNode == nil || pathNode.Kind != yaml.ScalarNode || strings.TrimSpace(pathNode.Value) == "" {
+			continue
+		}
+		path := strings.TrimSpace(pathNode.Value)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(ctx.configDir, path)
+		}
+		path = filepath.Clean(path)
+		if strings.ContainsAny(path, "\x00\r\n:") {
+			return fmt.Errorf("file_sentry.watch_paths[%d] %q cannot be represented safely in a systemd bind path", i, path)
+		}
+		pathNode.Value = path
+	}
+	return nil
+}
+
+func containHomeReadOnlyPaths(data []byte) ([]string, error) {
+	root, err := parseSingleYAMLDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return nil, errors.New("pipelock config must be a YAML mapping")
+	}
+	return containHomeReadOnlyPathsFromMapping(mapping)
+}
+
+func containHomeReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
+	fileSentry := getMappingPath(root, []string{"file_sentry"})
+	if fileSentry == nil || !yamlBool(mappingValue(fileSentry, "enabled")) {
+		return nil, nil
+	}
+	watchPaths := mappingValue(fileSentry, "watch_paths")
+	if watchPaths == nil || watchPaths.Kind != yaml.SequenceNode {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	for i, item := range watchPaths.Content {
+		pathNode := item
+		if item.Kind == yaml.MappingNode {
+			pathNode = mappingValue(item, "path")
+		}
+		path := scalarValue(pathNode)
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("file_sentry.watch_paths[%d] %q must be absolute in the managed config", i, path)
+		}
+		path = filepath.Clean(path)
+		if strings.ContainsAny(path, "\x00\r\n:") {
+			return nil, fmt.Errorf("file_sentry.watch_paths[%d] %q cannot be represented safely in a systemd bind path", i, path)
+		}
+		if isProtectedHomePath(path) {
+			seen[path] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func isProtectedHomePath(path string) bool {
+	for _, root := range []string{"/home", "/root", "/run/user"} {
+		if path == root || strings.HasPrefix(path, root+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateContainMetricsListen(listen string, proxyPort int) error {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("metrics_listen %q is unsafe for containment: %w", listen, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("metrics_listen %q is unsafe for containment: use a numeric loopback address on a dedicated port", listen)
+	}
+	parsedPort, err := strconv.Atoi(port)
+	if err != nil || parsedPort == proxyPort {
+		return fmt.Errorf("metrics_listen %q is unsafe for containment: use a port other than the agent-accessible proxy port %d", listen, proxyPort)
+	}
+	return nil
 }
 
 func parseSingleYAMLDocument(data []byte) (*yaml.Node, error) {

@@ -325,14 +325,25 @@ func TestStepEnableSystemUnit_ActiveDisabledChangeEnablesAndRestarts(t *testing.
 	}
 }
 
-func TestRenderSystemUnit_FileSentryHomeIsVisibleReadOnly(t *testing.T) {
+func TestRenderSystemUnit_FileSentryHomeIsNarrowlyVisibleReadOnly(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.serviceHomeReadOnlyPaths = []string{"/home/operator/project", "/home/operator/project with spaces"}
+	body := renderSystemUnit(env)
+	if !strings.Contains(body, "ProtectHome=tmpfs") {
+		t.Fatalf("system unit does not hide unlisted home paths:\n%s", body)
+	}
+	for _, want := range []string{`BindReadOnlyPaths=-"/home/operator/project"`, `BindReadOnlyPaths=-"/home/operator/project with spaces"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("system unit missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderSystemUnit(env)
-	if !strings.Contains(body, "ProtectHome=read-only") {
-		t.Fatalf("system unit does not expose DAC-authorized home paths read-only:\n%s", body)
-	}
-	if strings.Contains(body, "ProtectHome=true") || strings.Contains(body, "ProtectHome=false") {
-		t.Fatalf("system unit has unsafe/inaccessible ProtectHome mode:\n%s", body)
+	if !strings.Contains(body, "ProtectHome=true") || strings.Contains(body, "BindReadOnlyPaths=") {
+		t.Fatalf("system unit weakens home isolation without file-sentry paths:\n%s", body)
 	}
 }
 

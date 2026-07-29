@@ -1292,7 +1292,7 @@ func (r *Recorder) ExpireOldFiles() (int, error) {
 // directories are created 0o750 and owned by the service, so no other
 // unprivileged principal can rename entries within them.
 func removeExpiredEvidenceFile(path string, cutoff time.Time) (bool, error) {
-	file, info, err := openRegularEvidenceFile(path, "evidence file", validateEvidenceFileAccess())
+	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil

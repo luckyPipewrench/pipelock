@@ -19,7 +19,7 @@ import (
 // an availability gate.
 func ReadHeadEntriesBounded(path string, maxEntries int, maxBytes int64) ([]Entry, bool, error) {
 	limits := directionalEntryReadLimits(maxEntries, maxBytes)
-	file, info, err := openRegularEvidenceFile(path, "evidence file", validateEvidenceFileAccess())
+	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
 	if err != nil {
 		return nil, false, err
 	}
@@ -45,7 +45,7 @@ func ReadHeadEntriesBounded(path string, maxEntries int, maxBytes int64) ([]Entr
 // Truncated reports that older bytes or entries were not returned.
 func ReadTailEntriesBounded(path string, maxEntries int, maxBytes int64) ([]Entry, bool, error) {
 	limits := directionalEntryReadLimits(maxEntries, maxBytes)
-	file, info, err := openRegularEvidenceFile(path, "evidence file", validateEvidenceFileAccess())
+	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
 	if err != nil {
 		return nil, false, err
 	}

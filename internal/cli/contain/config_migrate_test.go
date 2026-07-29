@@ -188,6 +188,50 @@ func TestMigratePipelockConfigForContain_PreservesExplicitMetricsListener(t *tes
 	}
 }
 
+func TestMigratePipelockConfigForContain_RejectsAgentReachableMetricsListener(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	origLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == containInstallOperatorUser {
+			return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+		}
+		return origLookup(name)
+	}
+	for _, listen := range []string{"0.0.0.0:9191", "[::]:9191", "localhost:9191", "127.0.0.1:8888"} {
+		t.Run(listen, func(t *testing.T) {
+			_, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte("metrics_listen: \""+listen+"\"\n"))
+			if err == nil || !strings.Contains(err.Error(), "unsafe for containment") {
+				t.Fatalf("migrate error = %v, want containment refusal", err)
+			}
+		})
+	}
+}
+
+func TestMigratePipelockConfigForContain_NarrowsFileSentryHomeVisibility(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := "/home/operator"
+	origLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == containInstallOperatorUser {
+			return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+		}
+		return origLookup(name)
+	}
+	sourceDir := filepath.Join(home, "config")
+	out, _, err := migratePipelockConfigForContain(env, filepath.Join(sourceDir, "pipelock.yaml"), []byte("file_sentry:\n  enabled: true\n  watch_paths:\n    - ../project\n    - path: /tmp/outside-home\n      required: true\n"))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	wantHome := filepath.Join(home, "project")
+	if !strings.Contains(string(out), wantHome) {
+		t.Fatalf("relative watch path was not made absolute: %s", out)
+	}
+	if len(env.serviceHomeReadOnlyPaths) != 1 || env.serviceHomeReadOnlyPaths[0] != wantHome {
+		t.Fatalf("service home paths = %#v, want [%q]", env.serviceHomeReadOnlyPaths, wantHome)
+	}
+}
+
 func TestMigratePipelockConfigForContainRejectsInvalidDocuments(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	tests := []struct {

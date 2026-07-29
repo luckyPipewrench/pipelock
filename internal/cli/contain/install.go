@@ -126,6 +126,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	env.serviceUnitChanged = false
 	env.installServiceWasActive = false
 	env.installServiceStateKnown = false
+	env.serviceHomeReadOnlyPaths = nil
 	if opts.operatorUser != "" {
 		env.operatorUser = opts.operatorUser
 	}
@@ -914,6 +915,18 @@ func stepStagePipelockConfig(opts installOpts) step {
 			migrated = nil
 			staged = false
 			if opts.configSource == "" {
+				data, err := env.readFile(managedPipelockConfigPath(env))
+				if errors.Is(err, os.ErrNotExist) {
+					return false, nil
+				}
+				if err != nil {
+					return false, fmt.Errorf("read managed config for service sandbox: %w", err)
+				}
+				paths, err := containHomeReadOnlyPaths(data)
+				if err != nil {
+					return false, fmt.Errorf("read file_sentry paths for service sandbox: %w", err)
+				}
+				env.serviceHomeReadOnlyPaths = paths
 				return false, nil
 			}
 			data, err := env.readFile(opts.configSource)
@@ -1395,7 +1408,7 @@ func stepWriteSystemUnit() step {
 func renderSystemUnit(env *installEnv) string {
 	configPath := managedPipelockConfigPath(env)
 	capturePath := filepath.Join(env.dataDir, "captures")
-	return strings.Join([]string{
+	body := strings.Join([]string{
 		"[Unit]",
 		"Description=Pipelock AI Egress Proxy",
 		"Documentation=https://github.com/luckyPipewrench/pipelock",
@@ -1412,10 +1425,18 @@ func renderSystemUnit(env *installEnv) string {
 		"",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-		// The proxy needs read access to explicitly DAC/ACL-authorized file-sentry
-		// paths under /home. read-only keeps the mount immutable while Unix
-		// permissions still hide every path not granted to pipelock-proxy.
-		"ProtectHome=read-only",
+	}, "\n")
+	if len(env.serviceHomeReadOnlyPaths) == 0 {
+		body += "\nProtectHome=true"
+	} else {
+		// tmpfs hides every home path, then the bind allow-list exposes only the
+		// configured file-sentry roots. DAC/ACL checks still apply inside them.
+		body += "\nProtectHome=tmpfs"
+		for _, path := range env.serviceHomeReadOnlyPaths {
+			body += "\nBindReadOnlyPaths=-" + strconv.Quote(strings.ReplaceAll(path, "%", "%%"))
+		}
+	}
+	return body + "\n" + strings.Join([]string{
 		"ReadWritePaths=" + env.dataDir,
 		"PrivateTmp=true",
 		"ProtectKernelTunables=true",

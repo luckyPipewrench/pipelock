@@ -43,7 +43,7 @@ func TestReadEvidenceFileBounded_HappyPathAndHash(t *testing.T) {
 
 func TestOpenRegularEvidenceFileRejectsUnsupportedPlatform(t *testing.T) {
 	want := errors.New("unsupported evidence access")
-	file, info, err := openRegularEvidenceFile("unused", "evidence file", want)
+	file, info, err := openRegularEvidenceFile("unused", want)
 	if file != nil || info != nil {
 		t.Fatalf("open result = (%v, %v), want nil handles", file, info)
 	}

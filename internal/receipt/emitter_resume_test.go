@@ -150,6 +150,39 @@ func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
 	}
 }
 
+func TestResume_SelectsOldestHeadAndNewestTail(t *testing.T) {
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec1 := newTestRecorder(t, dir, priv)
+	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
+	emitOne(t, e1)
+	emitOne(t, e1)
+	emitOne(t, e1)
+	if err := rec1.Close(); err != nil {
+		t.Fatalf("close rec1: %v", err)
+	}
+	receipts := allReceiptsRaw(t, dir)
+	if len(receipts) != 3 {
+		t.Fatalf("receipt count = %d, want 3", len(receipts))
+	}
+	if receipts[0].ActionRecord.Timestamp.Equal(receipts[2].ActionRecord.Timestamp) {
+		t.Fatal("test setup produced indistinguishable head and tail timestamps")
+	}
+
+	rec2 := newTestRecorder(t, dir, priv)
+	defer func() { _ = rec2.Close() }()
+	e2 := NewEmitter(EmitterConfig{Recorder: rec2, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
+	if err := e2.InitError(); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if e2.chainSeq != receipts[2].ActionRecord.ChainSeq+1 {
+		t.Fatalf("chainSeq = %d, want newest tail + 1 (%d)", e2.chainSeq, receipts[2].ActionRecord.ChainSeq+1)
+	}
+	if !e2.chainStart.Equal(receipts[0].ActionRecord.Timestamp) {
+		t.Fatalf("chainStart = %s, want oldest head %s", e2.chainStart, receipts[0].ActionRecord.Timestamp)
+	}
+}
+
 // Legacy recorder shards may be larger than the current 8 MiB rotation cap.
 // Receipt resume needs the first receipt for chainStart and the last receipt
 // for live chain state; neither lookup requires loading the entire shard.

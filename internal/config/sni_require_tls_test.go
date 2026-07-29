@@ -4,6 +4,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,6 +28,23 @@ func TestForwardProxySNIRequireTLSValidation(t *testing.T) {
 	cfg.ForwardProxy.SNIRequireTLS = &requireTLS
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("explicit legacy opt-out with SNI verification disabled: %v", err)
+	}
+}
+
+func TestAuditPresetDoesNotEnforceSNIRequireTLS(t *testing.T) {
+	path, err := filepath.Abs("../../configs/audit.yaml")
+	if err != nil {
+		t.Fatalf("Abs(audit preset): %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(audit preset): %v", err)
+	}
+	if cfg.EnforceEnabled() {
+		t.Fatal("audit preset unexpectedly enables enforcement")
+	}
+	if cfg.ForwardProxy.SNIRequireTLSEnabled() {
+		t.Fatal("audit preset unexpectedly enforces TLS-only CONNECT")
 	}
 }
 

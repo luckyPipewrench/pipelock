@@ -75,7 +75,9 @@ func ConsumeFindings(opts ConsumerOpts) func() {
 		defer close(done)
 		blockMode := opts.Action == config.ActionBlock
 		cancelled := false
-		for f := range opts.Watcher.Findings() {
+		findings := opts.Watcher.Findings()
+		overflow := opts.Watcher.OverflowFindings()
+		handle := func(f Finding) {
 			writeFindingLog(opts.Log, f)
 			if opts.OnFinding != nil {
 				opts.OnFinding(f.PatternName, f.Severity, f.IsAgent)
@@ -86,6 +88,22 @@ func ConsumeFindings(opts ConsumerOpts) func() {
 					opts.OnBlock(f)
 				}
 				opts.Cancel()
+			}
+		}
+		for findings != nil || overflow != nil {
+			select {
+			case f, ok := <-findings:
+				if !ok {
+					findings = nil
+					continue
+				}
+				handle(f)
+			case f, ok := <-overflow:
+				if !ok {
+					overflow = nil
+					continue
+				}
+				handle(f)
 			}
 		}
 	}()

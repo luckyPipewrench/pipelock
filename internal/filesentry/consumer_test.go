@@ -17,11 +17,17 @@ import (
 // stubWatcher is a Watcher that drives Findings() from a pre-seeded
 // channel. Arm / Start / Close are no-ops sufficient for testing the
 // consumer's enforcement decisions in isolation from fsnotify.
-type stubWatcher struct{ ch chan Finding }
+type stubWatcher struct {
+	ch       chan Finding
+	overflow chan Finding
+}
 
 func (s *stubWatcher) Arm() error                    { return nil }
 func (s *stubWatcher) Start(_ context.Context) error { return nil }
 func (s *stubWatcher) Findings() <-chan Finding      { return s.ch }
+func (s *stubWatcher) OverflowFindings() <-chan Finding {
+	return s.overflow
+}
 func (s *stubWatcher) DegradedPaths() []DegradedPath { return nil }
 func (s *stubWatcher) Close() error                  { return nil }
 
@@ -35,7 +41,34 @@ func makeWatcher(t *testing.T, findings ...Finding) Watcher {
 		ch <- f
 	}
 	close(ch)
-	return &stubWatcher{ch: ch}
+	overflow := make(chan Finding)
+	close(overflow)
+	return &stubWatcher{ch: ch, overflow: overflow}
+}
+
+func TestConsumeFindings_BlockMode_AgentOverflowCancels(t *testing.T) {
+	findings := make(chan Finding)
+	close(findings)
+	overflow := make(chan Finding, 1)
+	overflow <- Finding{
+		Path:        "/tmp/overflow",
+		PatternName: "OverflowSecret",
+		Severity:    "critical",
+		IsAgent:     true,
+	}
+	close(overflow)
+	var cancelCount atomic.Int32
+
+	wait := ConsumeFindings(ConsumerOpts{
+		Watcher: &stubWatcher{ch: findings, overflow: overflow},
+		Action:  config.ActionBlock,
+		Cancel:  func() { cancelCount.Add(1) },
+	})
+	wait()
+
+	if cancelCount.Load() != 1 {
+		t.Fatalf("agent overflow must cancel exactly once, got %d", cancelCount.Load())
+	}
 }
 
 func TestConsumeFindings_WarnMode_NoCancel(t *testing.T) {

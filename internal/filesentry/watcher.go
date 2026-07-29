@@ -36,6 +36,11 @@ type Watcher interface {
 	Start(ctx context.Context) error
 	// Findings returns a channel that receives DLP findings as they are detected.
 	Findings() <-chan Finding
+	// OverflowFindings returns a priority lane for findings detected while the
+	// normal buffer is saturated. Long-lived consumers must drain both
+	// channels; agent findings on this lane remain enforcement-relevant in
+	// block mode. Single-probe diagnostics cannot saturate the normal buffer.
+	OverflowFindings() <-chan Finding
 	// DegradedPaths returns the configured watch_paths entries whose Arm()
 	// install failed and whose entry was not marked required:true. Empty
 	// when the watcher is fully armed. Safe to call concurrently.

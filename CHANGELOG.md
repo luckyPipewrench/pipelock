@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--expect-sha256`.** Existing automation that invokes `audit-packet` without
   an external trust anchor now fails closed. Add the trusted signer public key
   or a separately obtained SHA-256 digest of `packet.json`.
+
 ## [3.3.0] - 2026-07-28
 
 ### Breaking Changes / Upgrade Notes
@@ -70,9 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusal is availability-class, so strict startup starts *without* that bundle's
   rules rather than aborting, and reports the shortfall through the
   `rule_bundle_degraded` audit event, `/stats`, and a Prometheus gauge.
-- **Adding the bundle-version configuration field changed the canonical policy
-  hash.** Receipt policy hashes shift on upgrade for every deployment, even where
-  the new field is never set. This is expected for a policy-surface addition.
+- **The canonical policy hash changed.** Both the new bundle-version
+  configuration field and the new default response pattern move it, so receipt
+  policy hashes shift on upgrade for every deployment, even one that never sets
+  the new field. This is expected for a policy-surface addition.
 - **Control-actor names are reserved in agent configuration.** An existing agent
   configured under a reserved name will now be rejected at load.
 - **Rekor log-key acceptance is narrowed**, and operators may now drop the vendor
@@ -87,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Opaque high-entropy egress detection** across request bodies, WebSocket
   frames, and agent-to-agent traffic, catching encoded exfiltration that carries
   no recognizable credential shape.
+- **Detection for safety-reclassification injection directives**, the shape that
+  tells a model to treat its earlier safety instructions as advisory before
+  handing it the real task. Added as a default response pattern, so it ships in
+  every preset and in the quickstart config rather than only where an operator
+  opts in.
 - **Enterprise counterparty-attestation verifier**, with caller-driven
   replay-store compaction. The verifier ships as reserved foundation.
 - **Receipt-chain auto-anchoring.** When an anchor point is configured, checkpoints
@@ -111,6 +118,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interception is off, so silent blind spots surface at load.
 - **Read-only conductor decision replay** in the dashboard, which also now records
   the authenticated principal on its audit lines.
+- **Startup and receipt observability for liveness and coverage.** The configured
+  heartbeat cadence is recorded in the `session_open` record, so a witness can
+  judge observed heartbeat spacing against the intended interval rather than
+  guessing it. Startup also reports the resolved listener port and the armed
+  watch-path count, so a deployment that bound somewhere unintended or armed
+  fewer paths than expected is visible at boot instead of at incident time.
 
 ### Fixed
 
@@ -217,6 +230,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   examples for hot reload, learn-and-lock, receipt verification, request-policy
   GraphQL, MCP media policy, reverse-proxy server-sent-event streaming, OpenCode
   integration, and SIEM events.
+
+### Security
+
+- **Dependency advisories resolved.** `golang.org/x/net` updated to v0.56.0, and
+  the TypeScript verifier's `fast-uri` updated to 3.1.4 for GHSA-4c8g-83qw-93j6.
+
 ## [3.2.0] - 2026-07-17
 
 ### Added

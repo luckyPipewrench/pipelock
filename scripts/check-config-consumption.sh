@@ -10,8 +10,10 @@ set -euo pipefail
 # runtime code reads is a silent lie to the operator (2026-06: five conductor
 # follower knobs shipped validated-but-inert, and the guide claimed behavior).
 #
-# Heuristic: a field counts as consumed when `.FieldName` appears in any
-# non-test Go file outside internal/config/. Common field names (Enabled,
+# Heuristic: a field counts as consumed when `.FieldName` or a conventional
+# `.FieldNameEnabled()` accessor call appears in any non-test Go file outside
+# internal/config/. The accessor form keeps tri-state/default semantics in one
+# place without making this gate misclassify a live field as inert. Common field names (Enabled,
 # Action, ...) are shared across many structs, so they always count as
 # consumed — false negatives are accepted; the tripwire exists to catch
 # uniquely-named fields with ZERO references, which is exactly how dead knobs
@@ -41,7 +43,7 @@ FIELDS="$(grep -P '^\t[A-Z][A-Za-z0-9]*\s+\S+.*yaml:"' "$SCHEMA" \
 
 fail=0
 while IFS= read -r field; do
-  if ! grep -qE "\.${field}\b" "$CORPUS"; then
+  if ! grep -qE "\.${field}\b" "$CORPUS" && ! grep -qE "\.${field}Enabled\(" "$CORPUS"; then
     if [ -f "$ALLOWLIST" ] && grep -qE "^${field}([[:space:]]|$)" "$ALLOWLIST"; then
       continue
     fi

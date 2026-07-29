@@ -8,6 +8,7 @@ package conductor
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestPolicyHashForeignSchemeIsRejected pins the upgrade break that a release
@@ -91,5 +92,44 @@ func TestPolicyHashForeignSchemeIsRejected(t *testing.T) {
 	bundle.PolicyHash = legacyHash
 	if status := bundle.PolicyHashStatus(); status != PolicyHashKnownLegacy {
 		t.Fatalf("PolicyHashStatus(legacy hash) = %q, want %q", status, PolicyHashKnownLegacy)
+	}
+}
+
+// TestValidateAtTimeAllowLegacyPolicyHashStillChecksValidity pins that tolerating
+// an unreproducible policy hash relaxed only the hash decision. The freshness
+// window is a separate guard and a tolerated bundle must still be refused outside
+// it, otherwise the tolerance would quietly hand callers an expired or not-yet
+// valid bundle that the strict path would have rejected.
+func TestValidateAtTimeAllowLegacyPolicyHashStillChecksValidity(t *testing.T) {
+	bundle := testPolicyBundle()
+	bundle.PolicyHash = testHash("ab")
+	if status := bundle.PolicyHashStatus(); status != PolicyHashUnknownUnverified {
+		t.Fatalf("fixture PolicyHashStatus() = %q, want %q", status, PolicyHashUnknownUnverified)
+	}
+
+	// In window: the hash is tolerated and the bundle is accepted.
+	inWindow := bundle.NotBefore.Add(time.Minute)
+	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(inWindow); err != nil {
+		t.Fatalf("ValidateAtTimeAllowLegacyPolicyHash(in window) = %v, want nil", err)
+	}
+
+	// Before NotBefore: refused despite the tolerated hash. The window start
+	// deliberately tolerates bounded clock skew (MessageNotBeforeSkew), so the
+	// probe has to sit clearly outside that allowance to be testing the guard
+	// rather than the skew.
+	tooEarly := bundle.NotBefore.Add(-(MessageNotBeforeSkew + time.Minute))
+	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(tooEarly); err == nil {
+		t.Fatal("ValidateAtTimeAllowLegacyPolicyHash(before not_before beyond skew) = nil, want refusal")
+	}
+
+	// And just inside the skew allowance is still accepted, so the test above is
+	// pinning the guard rather than accidentally pinning the skew window.
+	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(bundle.NotBefore.Add(-time.Second)); err != nil {
+		t.Fatalf("ValidateAtTimeAllowLegacyPolicyHash(within not_before skew) = %v, want nil", err)
+	}
+
+	// After ExpiresAt: likewise refused.
+	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(bundle.ExpiresAt.Add(time.Minute)); err == nil {
+		t.Fatal("ValidateAtTimeAllowLegacyPolicyHash(after expires_at) = nil, want refusal")
 	}
 }

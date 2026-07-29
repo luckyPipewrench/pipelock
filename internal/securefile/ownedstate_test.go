@@ -1,3 +1,9 @@
+//go:build !windows
+
+// The permission refusals asserted here depend on POSIX mode bits.
+// secperm.TooPermissive and OwnedGroupWritableAllowed are deliberate no-ops on
+// Windows, so these assertions cannot hold there.
+
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 

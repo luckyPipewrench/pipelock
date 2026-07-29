@@ -70,7 +70,9 @@ func (m *Metrics) registerConductorMetrics(reg *prometheus.Registry) {
 	m.conductorPolicyHashStatuses = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "pipelock",
 		Name:      "conductor_policy_bundle_policy_hash_status_count",
-		Help:      "Loaded Conductor policy bundles by policy hash status.",
+		Help: "Conductor policy bundles by policy hash status, counted when the store " +
+			"was loaded at startup. It is a snapshot and does not move as bundles are " +
+			"published; alert on unknown_unverified, which can only change across a restart.",
 	}, []string{"status"})
 	reg.MustRegister(
 		m.conductorAuditQueuePending,

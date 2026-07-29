@@ -87,7 +87,7 @@ func TestConductorPolicyHashStatusMetricIsBounded(t *testing.T) {
 		conductor.PolicyHashStatus("future-x"): 99,
 	})
 
-	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(`# HELP pipelock_conductor_policy_bundle_policy_hash_status_count Loaded Conductor policy bundles by policy hash status.
+	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(`# HELP pipelock_conductor_policy_bundle_policy_hash_status_count Conductor policy bundles by policy hash status, counted when the store was loaded at startup. It is a snapshot and does not move as bundles are published; alert on unknown_unverified, which can only change across a restart.
 # TYPE pipelock_conductor_policy_bundle_policy_hash_status_count gauge
 pipelock_conductor_policy_bundle_policy_hash_status_count{status="current"} 4
 pipelock_conductor_policy_bundle_policy_hash_status_count{status="known_legacy"} 2

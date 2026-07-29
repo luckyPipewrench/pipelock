@@ -857,16 +857,6 @@ func (b PolicyBundle) PolicyHashStatus() PolicyHashStatus {
 	return PolicyHashUnknownUnverified
 }
 
-// UsesLegacyPolicyHash reports whether the bundle validates only through the
-// pre-loaded-config policy_hash scheme. It is an upgrade signal for operators;
-// it is not a trust decision and must not replace signature verification.
-//
-// Deprecated: it cannot distinguish a hash this build simply cannot compute from
-// one that is current. Use PolicyHashStatus.
-func (b PolicyBundle) UsesLegacyPolicyHash() bool {
-	return b.PolicyHashStatus() == PolicyHashKnownLegacy
-}
-
 // ValidateAtTime extends Validate with a freshness check: now must fall inside
 // [NotBefore, ExpiresAt]. Callers that apply the bundle must use this variant -
 // Validate alone passes a future-dated or already-expired bundle.

@@ -80,9 +80,14 @@ func TestPolicyHashForeignSchemeIsRejected(t *testing.T) {
 		t.Fatalf("VerifyPayloadHash() error = %v, want nil (only policy_hash differs)", err)
 	}
 
-	// And UsesLegacyPolicyHash cannot describe it either, so the existing
-	// operator-facing warning does not fire for this class.
-	if bundle.UsesLegacyPolicyHash() {
-		t.Fatal("UsesLegacyPolicyHash() = true for a foreign-scheme hash, want false")
+	// A bundle whose hash IS reproducible must still report so, otherwise the
+	// tolerance would be hiding real drift rather than describing it.
+	bundle.PolicyHash = currentHash
+	if status := bundle.PolicyHashStatus(); status != PolicyHashCurrent {
+		t.Fatalf("PolicyHashStatus(current hash) = %q, want %q", status, PolicyHashCurrent)
+	}
+	bundle.PolicyHash = legacyHash
+	if status := bundle.PolicyHashStatus(); status != PolicyHashKnownLegacy {
+		t.Fatalf("PolicyHashStatus(legacy hash) = %q, want %q", status, PolicyHashKnownLegacy)
 	}
 }

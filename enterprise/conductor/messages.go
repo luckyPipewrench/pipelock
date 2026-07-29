@@ -766,7 +766,28 @@ func (b PolicyBundle) validateHashes(allowLegacyPolicyHash bool) error {
 		}
 		legacyPolicyHash, legacyErr := b.Payload.LegacyPolicyHash()
 		if legacyErr != nil || !strings.EqualFold(b.PolicyHash, legacyPolicyHash) {
-			return fmt.Errorf("%w: policy_hash", ErrHashMismatch)
+			// Neither scheme this build can compute reproduces the stored value.
+			// That is the normal state for a bundle published before a release
+			// moved the canonical policy hash, and it is permanent: the value is
+			// derived from the whole config struct, so no amount of added schemes
+			// can reproduce a prior release's. Refusing here is what stopped the
+			// leader from booting after upgrade and what stopped followers from
+			// applying an in-flight bundle mid-rollout.
+			//
+			// This is deliberately NOT a tamper gate and was never one. On the
+			// leader nothing verifies signatures, so an attacker able to rewrite
+			// the store rewrites payload_sha256, policy_hash and the record hash
+			// together; strict recompute only catches corruption or a partial
+			// edit. On followers the cryptographic gate is VerifySignaturesAt,
+			// which callers MUST run before reaching here.
+			//
+			// What still holds for this bundle: payload_sha256 binds the raw
+			// payload and is schema-independent, the record's canonical hash
+			// pins it, expiry and chain checks apply, and the publisher's
+			// signature covers policy_hash itself. So the value is a signed
+			// opaque string. Callers surface it as
+			// PolicyHashUnknownUnverified and must never call it verified.
+			return nil
 		}
 	}
 	return nil
@@ -786,16 +807,64 @@ func (b PolicyBundle) VerifyPayloadHash() error {
 	return nil
 }
 
+// PolicyHashStatus describes which policy_hash scheme, if any, this build could
+// reproduce from a bundle's payload. A boolean cannot express the third case,
+// which is the one that matters on upgrade.
+type PolicyHashStatus string
+
+const (
+	// PolicyHashCurrent means the stored policy_hash matches what this build
+	// computes from the payload. The value is a verified digest of the policy.
+	PolicyHashCurrent PolicyHashStatus = "current"
+	// PolicyHashKnownLegacy means the stored policy_hash matches the
+	// pre-loaded-config scheme. Still a verified digest, under an older rule.
+	PolicyHashKnownLegacy PolicyHashStatus = "known_legacy"
+	// PolicyHashUnknownUnverified means the stored policy_hash matches no scheme
+	// this build can compute, so this build cannot say what policy content the
+	// value stands for.
+	//
+	// This is the NORMAL state for any bundle published before a release that
+	// moved the canonical policy hash, and it is not recoverable by adding more
+	// schemes: PolicyHash is derived from the whole config struct via
+	// config.CanonicalPolicyHash, so reproducing a prior release's value would
+	// require that release's entire config schema frozen in this binary. The
+	// pre-loaded-config scheme is the exception precisely because it hashes raw
+	// YAML and so is schema-independent.
+	//
+	// The value remains covered by the publisher's signature, so it is a signed
+	// opaque string. It must never be presented as verified or attested policy
+	// content.
+	PolicyHashUnknownUnverified PolicyHashStatus = "unknown_unverified"
+)
+
+// Reproducible reports whether this build could recompute the policy_hash and
+// found it correct. Only a reproducible status may be described to an operator
+// as a verified digest of the policy.
+func (s PolicyHashStatus) Reproducible() bool {
+	return s == PolicyHashCurrent || s == PolicyHashKnownLegacy
+}
+
+// PolicyHashStatus reports which scheme reproduces the bundle's policy_hash. It
+// is an upgrade and evidence signal for operators; it is not a trust decision
+// and must not replace signature verification.
+func (b PolicyBundle) PolicyHashStatus() PolicyHashStatus {
+	if policyHash, err := b.Payload.PolicyHash(); err == nil && strings.EqualFold(b.PolicyHash, policyHash) {
+		return PolicyHashCurrent
+	}
+	if legacyPolicyHash, err := b.Payload.LegacyPolicyHash(); err == nil && strings.EqualFold(b.PolicyHash, legacyPolicyHash) {
+		return PolicyHashKnownLegacy
+	}
+	return PolicyHashUnknownUnverified
+}
+
 // UsesLegacyPolicyHash reports whether the bundle validates only through the
 // pre-loaded-config policy_hash scheme. It is an upgrade signal for operators;
 // it is not a trust decision and must not replace signature verification.
+//
+// Deprecated: it cannot distinguish a hash this build simply cannot compute from
+// one that is current. Use PolicyHashStatus.
 func (b PolicyBundle) UsesLegacyPolicyHash() bool {
-	policyHash, err := b.Payload.PolicyHash()
-	if err == nil && strings.EqualFold(b.PolicyHash, policyHash) {
-		return false
-	}
-	legacyPolicyHash, err := b.Payload.LegacyPolicyHash()
-	return err == nil && strings.EqualFold(b.PolicyHash, legacyPolicyHash)
+	return b.PolicyHashStatus() == PolicyHashKnownLegacy
 }
 
 // ValidateAtTime extends Validate with a freshness check: now must fall inside
@@ -803,6 +872,22 @@ func (b PolicyBundle) UsesLegacyPolicyHash() bool {
 // Validate alone passes a future-dated or already-expired bundle.
 func (b PolicyBundle) ValidateAtTime(now time.Time) error {
 	if err := b.Validate(); err != nil {
+		return err
+	}
+	return withinValidity(now, b.NotBefore, b.ExpiresAt)
+}
+
+// ValidateAtTimeAllowLegacyPolicyHash is ValidateAtTime for a bundle that is
+// already stored or already signature-verified, tolerating a policy_hash this
+// build cannot reproduce.
+//
+// CALLER CONTRACT: only use this AFTER VerifySignaturesAt has succeeded, or on a
+// record read from local storage the caller already trusts. The policy_hash
+// tolerance is not a tamper gate, so the cryptographic gate must come first.
+// Reaching this without verifying signatures would apply a bundle whose
+// provenance was never established.
+func (b PolicyBundle) ValidateAtTimeAllowLegacyPolicyHash(now time.Time) error {
+	if err := b.ValidateAllowLegacyPolicyHash(); err != nil {
 		return err
 	}
 	return withinValidity(now, b.NotBefore, b.ExpiresAt)

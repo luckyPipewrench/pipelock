@@ -51,14 +51,26 @@ func TestPolicyHashForeignSchemeIsRejected(t *testing.T) {
 	}
 	bundle.PolicyHash = foreignHash
 
-	// Both entry points reject it today. The strict path rejecting is correct and
-	// must stay that way for publish. The tolerant path rejecting is the bug: it
-	// exists precisely to let an older already-signed bundle load.
+	// Publish stays strict: a publisher must always produce a hash its own build
+	// can reproduce, and that is the only place the check means anything.
 	if err := bundle.Validate(); !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("Validate(foreign scheme policy_hash) = %v, want ErrHashMismatch", err)
 	}
-	if err := bundle.ValidateAllowLegacyPolicyHash(); !errors.Is(err, ErrHashMismatch) {
-		t.Fatalf("ValidateAllowLegacyPolicyHash(foreign scheme policy_hash) = %v, want ErrHashMismatch", err)
+
+	// Reading an already-stored bundle tolerates it, because refusing here is
+	// what stopped the leader booting after upgrade and stopped followers
+	// applying mid-rollout, while protecting nothing: see validateHashes.
+	if err := bundle.ValidateAllowLegacyPolicyHash(); err != nil {
+		t.Fatalf("ValidateAllowLegacyPolicyHash(foreign scheme policy_hash) = %v, want nil", err)
+	}
+
+	// Tolerated is not the same as verified, and the status must say so.
+	status := bundle.PolicyHashStatus()
+	if status != PolicyHashUnknownUnverified {
+		t.Fatalf("PolicyHashStatus() = %q, want %q", status, PolicyHashUnknownUnverified)
+	}
+	if status.Reproducible() {
+		t.Fatal("PolicyHashStatus().Reproducible() = true for a hash this build cannot compute, want false")
 	}
 
 	// Everything else about the bundle is sound, which is what makes the refusal

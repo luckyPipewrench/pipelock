@@ -472,7 +472,14 @@ func verifyBundle(now time.Time, bundle conductor.PolicyBundle, opts verifyOptio
 	if err := bundle.VerifyPayloadHash(); err != nil {
 		return err
 	}
-	if err := bundle.ValidateAtTime(now); err != nil {
+	// Ordering is load-bearing: VerifySignaturesAt above is the cryptographic
+	// gate, and only because it has already run may this tolerate a policy_hash
+	// this build cannot reproduce. A bundle published before a release moved the
+	// canonical policy hash is in exactly that position, and refusing it here
+	// stopped followers applying policy for the whole of a rolling upgrade.
+	// Moving this call above VerifySignaturesAt would apply a bundle whose
+	// provenance was never established.
+	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(now); err != nil {
 		return err
 	}
 	if bundle.StreamSwitchAuthorization != nil {

@@ -200,15 +200,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A verified inline PNG in a query parameter no longer trips the entropy
-  gate.** Legitimate `data:image/png;base64` payloads were indistinguishable
-  from an encoded blob and were blocked on entropy alone. The carve-out is
-  deliberately narrow: only a strict true-color PNG in an exact data-URL
-  envelope, whose bytes are fully accounted for and which decodes successfully,
-  is excised before the entropy check. A payload that merely looks like an
-  image, carries data before, after, or around the image, hides bytes in
-  metadata segments, or is paletted or JPEG stays entropy-scanned, and the
-  verification itself is allocation-bounded.
+- **A verified inline image no longer trips content scanning on its own
+  opacity.** Legitimate `data:image/png;base64` payloads were indistinguishable
+  from an encoded blob. Response scanning and text DLP now excise a verified
+  image before evaluating the surrounding content, and text DLP keeps the
+  decoded bytes in scope, so a secret hidden inside the image is still detected.
+  The carve-out is deliberately narrow: only a strict PNG or JPEG in an exact
+  data-URL envelope, whose bytes are fully accounted for and which decodes
+  successfully, is excised. A payload that merely looks like an image, carries
+  data before, after, or around the image, or hides bytes in metadata segments
+  is scanned normally, and the verification itself is allocation-bounded.
+  **URL query parameters are deliberately not covered.** A high-entropy image
+  payload in a query parameter still blocks on entropy, so a deployment that
+  passes inline media through URLs must exempt it explicitly rather than rely on
+  the carve-out.
 - **The containment guide states the enforced nftables minimum.** It documented
   0.6 while the install path requires 0.8, which is the version that supports
   the check mode used by install and rollback validation.

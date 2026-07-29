@@ -100,6 +100,7 @@ Enterprise server modes use the license Secret as `PIPELOCK_LICENSE_KEY` because
 | `conductorFollower.serverCASecretRef.name` | `""` | Existing Secret containing the Conductor server CA |
 | `conductorFollower.clientSecretRef.name` | `""` | Existing Kubernetes TLS Secret for follower mTLS client identity; must contain `tls.crt` and `tls.key`, mounted at `client_cert_path` and `client_key_path` |
 | `conductorFollower.trustRosterSecretRef.name` | `""` | Existing Secret containing the signed trust roster |
+| `conductorFollower.auditQueueKeyringSecretRef.name` | `""` | Existing Secret containing the audit-queue encryption keyring; mounted separately from the queue PVC |
 | `conductorFollower.persistence.bundleCache.enabled` | `false` | PVC for signed policy bundle cache |
 | `conductorFollower.persistence.auditQueue.enabled` | `false` | PVC for durable audit queue |
 
@@ -107,6 +108,8 @@ The follower audit queue is single-writer. Pipelock uses an advisory lock for
 one host / local-filesystem scope, but it is not a distributed lock for shared
 RWX, network, or overlay PVCs. Use ReadWriteOnce storage, leader election, or a
 separate audit queue per pod when running multiple followers.
+Records on that PVC are encrypted; the keyring Secret is mandatory for
+followers and must not be stored on the queue PVC.
 
 ### Fleet sink
 

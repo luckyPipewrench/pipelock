@@ -808,6 +808,7 @@ conductor:
   client_key_path: "/etc/pipelock/conductor/client.key"
   bundle_cache_dir: "/var/lib/pipelock/conductor/bundles"
   durable_audit_queue_dir: "/var/lib/pipelock/conductor/audit-queue"
+  durable_audit_queue_keyring: "/etc/pipelock/secrets/audit-queue-keyring.json"
   audit_signing_key_id: "instance-audit-1"
   recorder_key_id: "instance-recorder-1"
   poll_interval: "30s"
@@ -836,6 +837,12 @@ opening the same queue at the same time. That lock is not a distributed lock.
 Cross-host single-writer safety on shared RWX, network, or overlay PVCs is a
 deployment responsibility: use ReadWriteOnce storage, Kubernetes leader
 election, or give each pod its own durable audit queue.
+
+Queue records are AES-256-GCM encrypted. Keep
+`durable_audit_queue_keyring` outside the queue volume so a widened or copied
+PVC exposes ciphertext rather than the audit payload. Startup migrates legacy
+plaintext records and records written under retained keys to the active key;
+an unavailable key or authentication failure blocks queue startup.
 
 Upgrade note: `honor_remote_kill_switch` defaults to true. Existing
 Conductor-enabled followers that only use audit batching must either set

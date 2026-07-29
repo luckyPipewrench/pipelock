@@ -547,6 +547,7 @@ func validConductorConfig(t *testing.T) Conductor {
 		ClientKeyPath:              filepath.Join(root, "client.key"),
 		BundleCacheDir:             filepath.Join(root, "bundles"),
 		DurableAuditQueueDir:       filepath.Join(root, "audit-queue"),
+		DurableAuditQueueKeyring:   filepath.Join(root, "secrets", "audit-queue-keyring.json"),
 		PollInterval:               "30s",
 		HonorRemoteKillSwitch:      true,
 		EmergencyStream:            ptrBool(true),
@@ -555,6 +556,18 @@ func validConductorConfig(t *testing.T) Conductor {
 		MaxMinVersionMinorSkew:     1,
 		MaxCapabilityThreshold:     7,
 		StalePolicy:                ConductorStalePolicy{GraceMultiplier: 1, AfterGrace: ConductorStaleStrictDenyAll},
+	}
+}
+
+func TestValidateConductor_QueueKeyringOutsideQueue(t *testing.T) {
+	cfg := Defaults()
+	cfg.Conductor = validConductorConfig(t)
+	cfg.Conductor.DurableAuditQueueKeyring = filepath.Join(cfg.Conductor.DurableAuditQueueDir, "keyring.json")
+	configureConductorRecorder(t, cfg)
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "must be outside") {
+		t.Fatalf("Validate() = %v, want queue-key separation refusal", err)
 	}
 }
 

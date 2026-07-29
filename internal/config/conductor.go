@@ -92,16 +92,20 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 		return fmt.Errorf("conductor.trust_roster_root_fingerprint: %w", err)
 	}
 	for field, value := range map[string]string{
-		"conductor.trust_roster_path":       cfg.TrustRosterPath,
-		"conductor.server_ca_file":          cfg.ServerCAFile,
-		"conductor.client_cert_path":        cfg.ClientCertPath,
-		"conductor.client_key_path":         cfg.ClientKeyPath,
-		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
-		"conductor.durable_audit_queue_dir": cfg.DurableAuditQueueDir,
+		"conductor.trust_roster_path":           cfg.TrustRosterPath,
+		"conductor.server_ca_file":              cfg.ServerCAFile,
+		"conductor.client_cert_path":            cfg.ClientCertPath,
+		"conductor.client_key_path":             cfg.ClientKeyPath,
+		"conductor.bundle_cache_dir":            cfg.BundleCacheDir,
+		"conductor.durable_audit_queue_dir":     cfg.DurableAuditQueueDir,
+		"conductor.durable_audit_queue_keyring": cfg.DurableAuditQueueKeyring,
 	} {
 		if err := validateConductorAbsolutePath(field, value); err != nil {
 			return err
 		}
+	}
+	if pathWithin(cfg.DurableAuditQueueDir, cfg.DurableAuditQueueKeyring) {
+		return fmt.Errorf("conductor.durable_audit_queue_keyring must be outside conductor.durable_audit_queue_dir")
 	}
 	if strings.TrimSpace(cfg.EnrollmentTokenPath) != "" {
 		if err := validateConductorAbsolutePath("conductor.enrollment_token_path", cfg.EnrollmentTokenPath); err != nil {
@@ -112,8 +116,9 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 		}
 	}
 	for field, value := range map[string]string{
-		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
-		"conductor.durable_audit_queue_dir": cfg.DurableAuditQueueDir,
+		"conductor.bundle_cache_dir":            cfg.BundleCacheDir,
+		"conductor.durable_audit_queue_dir":     cfg.DurableAuditQueueDir,
+		"conductor.durable_audit_queue_keyring": cfg.DurableAuditQueueKeyring,
 	} {
 		if err := validateConductorPrivateParent(field, value); err != nil {
 			return err
@@ -130,6 +135,14 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 		}
 	}
 	return nil
+}
+
+func pathWithin(parent, candidate string) bool {
+	rel, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(candidate))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func validateConductorDurations(cfg Conductor) error {

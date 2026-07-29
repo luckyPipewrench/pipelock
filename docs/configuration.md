@@ -3141,6 +3141,7 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  durable_audit_queue_keyring: /etc/pipelock/secrets/audit-queue-keyring.json
   enrollment_token_path: /etc/pipelock/conductor/enrollment-token
   poll_interval: 30s
   honor_remote_kill_switch: true
@@ -3158,6 +3159,7 @@ conductor:
 | `client_cert_path` / `client_key_path` | (required) | Follower mTLS client certificate and private key. |
 | `bundle_cache_dir` | (required) | Directory caching verified policy bundles across restarts. |
 | `durable_audit_queue_dir` | (required) | On-disk queue for signed evidence batches awaiting delivery to the audit sink. |
+| `durable_audit_queue_keyring` | (required) | Encryption keyring for durable queue records. Must be outside `durable_audit_queue_dir`; mount it from a separate Secret or volume. |
 | `audit_signing_key_id` | `instance_id` | Key ID the follower signs audit batches with. |
 | `recorder_key_id` | `instance_id` | Key ID for the follower's flight-recorder checkpoints. |
 | `enrollment_token_path` | (none) | Path to a single-use enrollment token file. When set, the follower auto-enrolls on startup, registering its audit public key with Conductor so it appears in `fleet status` and its evidence is ingested. Enrollment is best-effort (a failed enroll logs a warning and never blocks enforcement); a marker under `bundle_cache_dir` skips normal restart retries. If the leader accepts the token but the marker write fails, the next restart may retry the already-consumed token and log a warning while enforcement continues. Must be an absolute path with no world-writable ancestor. Unset means no auto-enroll (enroll out of band with `pipelock conductor enroll`). |

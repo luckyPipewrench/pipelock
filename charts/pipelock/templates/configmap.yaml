@@ -38,6 +38,7 @@ data:
       "trust_roster_path" (printf "%s/%s" .Values.conductorFollower.trustRosterSecretRef.mountPath .Values.conductorFollower.trustRosterSecretRef.key)
       "bundle_cache_dir" .Values.conductorFollower.persistence.bundleCache.mountPath
       "durable_audit_queue_dir" .Values.conductorFollower.persistence.auditQueue.mountPath
+      "durable_audit_queue_keyring" (printf "%s/%s" .Values.conductorFollower.auditQueueKeyringSecretRef.mountPath .Values.conductorFollower.auditQueueKeyringSecretRef.key)
       "trust_roster_root_fingerprint" .Values.conductorFollower.trustRosterRootFingerprint
       "audit_signing_key_id" .Values.conductorFollower.auditSigningKeyID
       "recorder_key_id" .Values.conductorFollower.recorderKeyID

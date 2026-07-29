@@ -105,6 +105,7 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(enrollmentTokenCmd())
 	cmd.AddCommand(storeCmd())
 	cmd.AddCommand(followerCmd())
+	cmd.AddCommand(auditQueueKeyCmd())
 	return cmd
 }
 

@@ -151,6 +151,13 @@ conductorFollower:
     name: ""
     key: "trust-roster.json"
     mountPath: "/etc/pipelock/conductor/trust"
+  # Existing Secret created from `pipelock conductor audit-queue-key init`.
+  # Keep this separate from the auditQueue PVC: access to the queue volume
+  # alone must expose only ciphertext.
+  auditQueueKeyringSecretRef:
+    name: ""
+    key: "audit-queue-keyring.json"
+    mountPath: "/etc/pipelock/conductor/audit-queue-key"
   persistence:
     bundleCache:
       enabled: false

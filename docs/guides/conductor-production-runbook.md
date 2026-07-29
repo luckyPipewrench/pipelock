@@ -342,6 +342,7 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  durable_audit_queue_keyring: /etc/pipelock/secrets/audit-queue-keyring.json
   # audit_signing_key_id and recorder_key_id default to instance_id when omitted; override only if the audit sink expects a different key id
   # audit_signing_key_id: edge-01-audit
   # recorder_key_id: edge-01-recorder
@@ -359,6 +360,44 @@ A follower **must produce signed evidence** to participate: config validation
 rejects `conductor.enabled: true` unless the flight recorder is enabled with
 signing checkpoints and a `signing_key_path`. On Kubernetes, use
 [`values-enterprise-follower.yaml`](../../charts/pipelock/examples/values-enterprise-follower.yaml):
+
+Create the queue keyring before the first start, then store it on a separate
+secret mount rather than the queue PVC:
+
+```bash
+pipelock conductor audit-queue-key init \
+  --keyring /etc/pipelock/secrets/audit-queue-keyring.json
+```
+
+Day-2 lifecycle commands require the follower to be stopped so they can take
+the queue's exclusive lock:
+
+```bash
+pipelock conductor audit-queue-key inspect --keyring /etc/pipelock/secrets/audit-queue-keyring.json --queue-dir /var/lib/pipelock/audit-queue
+pipelock conductor audit-queue-key rotate --keyring /etc/pipelock/secrets/audit-queue-keyring.json --queue-dir /var/lib/pipelock/audit-queue
+pipelock conductor audit-queue-key migrate --keyring /etc/pipelock/secrets/audit-queue-keyring.json --queue-dir /var/lib/pipelock/audit-queue
+pipelock conductor audit-queue-key revoke sha256:0123456789abcdef --keyring /etc/pipelock/secrets/audit-queue-keyring.json --queue-dir /var/lib/pipelock/audit-queue
+pipelock conductor audit-queue-key recover --backup /etc/pipelock/secrets/audit-queue-keyring.json.bak --keyring /etc/pipelock/secrets/audit-queue-keyring.json --queue-dir /var/lib/pipelock/audit-queue
+```
+
+Rotation saves the pre-rotation keyring as `KEYRING.bak.previous`, then writes
+the rotated keyring—with both old and new decryptors—to the live file and
+`KEYRING.bak` before re-encrypting records. An interruption therefore retains
+both decryptors; rerun `migrate` to converge. Revocation refuses the active key
+and any key still referenced by a pending, inflight, or dead-letter record.
+Recovery first proves `KEYRING.bak` decrypts every queued record before
+replacing the live file.
+Use the inactive key ID printed by `inspect` in place of the example
+`sha256:0123456789abcdef` value.
+
+Kubernetes Secret mounts are read-only, so keep an operator-owned source copy
+of the keyring. Rotate that source against an empty temporary queue, update the
+Secret while the follower Deployment is scaled to zero, then scale it back up:
+startup holds the queue lock and migrates every PVC record before delivery
+resumes. The rotated keyring retains the old key during that migration. After
+`inspect` reports zero records for the old ID, revoke it in the source file and
+update the Secret again. Never delete the old key from the Secret before the
+PVC migration has completed.
 
 ```bash
 helm install pipelock-follower ./charts/pipelock \

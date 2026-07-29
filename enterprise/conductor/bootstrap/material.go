@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -59,6 +60,7 @@ func generateMaterial(layout Layout, opts Options, identity controlplane.Followe
 		filepath.Dir(layout.ConductorServerCertPath),
 		layout.ConductorStorageDir,
 		filepath.Dir(layout.FollowerClientCertPath),
+		filepath.Dir(layout.FollowerQueueKeyring),
 		layout.FollowerBundleCacheDir,
 		layout.FollowerAuditQueueDir,
 		layout.FollowerRecorderDir,
@@ -124,6 +126,13 @@ func generateMaterial(layout Layout, opts Options, identity controlplane.Followe
 	if err := writePublicKey(layout.FollowerAuditPubPath, auditPub); err != nil {
 		return nil, err
 	}
+	queueKeyring, err := auditbatcher.NewKeyring()
+	if err != nil {
+		return nil, fmt.Errorf("generate follower audit queue keyring: %w", err)
+	}
+	if err := queueKeyring.Save(layout.FollowerQueueKeyring); err != nil {
+		return nil, fmt.Errorf("write follower audit queue keyring: %w", err)
+	}
 
 	// 5. Conductor control keys + roster-root, then a signed trust roster.
 	rootFingerprint, err := generateTrust(layout, opts)
@@ -182,6 +191,9 @@ func loadMaterial(layout Layout) (*materialSet, error) {
 	auditKey, err := signing.LoadPrivateKeyFile(layout.FollowerAuditKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load follower audit key: %w", err)
+	}
+	if _, err := auditbatcher.LoadKeyring(layout.FollowerQueueKeyring); err != nil {
+		return nil, fmt.Errorf("load follower audit queue keyring: %w", err)
 	}
 	rootPub, err := signing.LoadPublicKeyFile(layout.RosterRootPubPath)
 	if err != nil {

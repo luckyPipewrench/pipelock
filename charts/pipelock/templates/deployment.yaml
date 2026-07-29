@@ -157,6 +157,11 @@ spec:
               mountPath: {{ .Values.conductorFollower.trustRosterSecretRef.mountPath | quote }}
               readOnly: true
             {{- end }}
+            {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.auditQueueKeyringSecretRef.name }}
+            - name: conductor-audit-queue-keyring
+              mountPath: {{ .Values.conductorFollower.auditQueueKeyringSecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.persistence.bundleCache.enabled }}
             - name: conductor-bundle-cache
               mountPath: {{ .Values.conductorFollower.persistence.bundleCache.mountPath | quote }}
@@ -210,6 +215,15 @@ spec:
             items:
               - key: {{ .Values.conductorFollower.trustRosterSecretRef.key | quote }}
                 path: {{ .Values.conductorFollower.trustRosterSecretRef.key | quote }}
+        {{- end }}
+        {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.auditQueueKeyringSecretRef.name }}
+        - name: conductor-audit-queue-keyring
+          secret:
+            secretName: {{ .Values.conductorFollower.auditQueueKeyringSecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.conductorFollower.auditQueueKeyringSecretRef.key | quote }}
+                path: {{ .Values.conductorFollower.auditQueueKeyringSecretRef.key | quote }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

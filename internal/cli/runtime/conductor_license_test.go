@@ -123,6 +123,7 @@ func conductorLicenseGateConfigYAML(t *testing.T) string {
 	trustPath := filepath.Join(certDir, "trust-roster.json")
 	bundleCacheDir := filepath.Join(certDir, "bundles")
 	auditQueueDir := filepath.Join(certDir, "audit-queue")
+	auditQueueKeyring := filepath.Join(tmp, "secrets", "audit-queue-keyring.json")
 	if err := os.WriteFile(caPath, clientPEM, 0o600); err != nil {
 		t.Fatalf("WriteFile(ca): %v", err)
 	}
@@ -156,6 +157,7 @@ func conductorLicenseGateConfigYAML(t *testing.T) string {
 		"  trust_roster_path: " + strconv.Quote(trustPath) + "\n" +
 		"  bundle_cache_dir: " + strconv.Quote(bundleCacheDir) + "\n" +
 		"  durable_audit_queue_dir: " + strconv.Quote(auditQueueDir) + "\n" +
+		"  durable_audit_queue_keyring: " + strconv.Quote(auditQueueKeyring) + "\n" +
 		"  honor_remote_kill_switch: false\n"
 }
 

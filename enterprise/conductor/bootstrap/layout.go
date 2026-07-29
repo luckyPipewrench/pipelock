@@ -39,6 +39,7 @@ type Layout struct {
 	FollowerConfigPath     string
 	FollowerBundleCacheDir string
 	FollowerAuditQueueDir  string
+	FollowerQueueKeyring   string
 	FollowerRecorderDir    string
 
 	// Trust roster + its root keypair + the Conductor control keys it pins.
@@ -90,6 +91,7 @@ func newLayout(dir string) (Layout, error) {
 		FollowerConfigPath:     j("follower", "follower.yaml"),
 		FollowerBundleCacheDir: j("follower", "bundles"),
 		FollowerAuditQueueDir:  j("follower", "audit-queue"),
+		FollowerQueueKeyring:   j("follower-secrets", "audit-queue-keyring.json"),
 		FollowerRecorderDir:    j("follower", "recorder"),
 
 		TrustRosterPath:      j("trust", "trust-roster.json"),

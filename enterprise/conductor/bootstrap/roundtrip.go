@@ -302,9 +302,21 @@ func produceSignedBatch(ctx context.Context, queueDir, recorderDir string, opts 
 	if err := ctx.Err(); err != nil {
 		return auditbatcher.Batch{}, err
 	}
+	queueKeyringPath := filepath.Join(filepath.Dir(queueDir), "queue-secrets", "keyring.json")
+	keyring, err := auditbatcher.NewKeyring()
+	if err != nil {
+		return auditbatcher.Batch{}, fmt.Errorf("generate proof audit queue keyring: %w", err)
+	}
+	if err := auditbatcher.EnsureKeyringParent(queueKeyringPath); err != nil {
+		return auditbatcher.Batch{}, err
+	}
+	if err := keyring.Save(queueKeyringPath); err != nil {
+		return auditbatcher.Batch{}, fmt.Errorf("save proof audit queue keyring: %w", err)
+	}
 	queue, err := auditbatcher.Open(auditbatcher.Config{
 		Dir:             queueDir,
 		MaxPayloadBytes: conductorcore.MaxAuditPayloadBytes,
+		Keyring:         keyring,
 	})
 	if err != nil {
 		return auditbatcher.Batch{}, fmt.Errorf("open audit queue: %w", err)

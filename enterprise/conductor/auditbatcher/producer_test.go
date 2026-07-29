@@ -34,7 +34,7 @@ func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey recorder: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestProducer_CloseRacesWithObserver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestNewProducer_RequiresRecorderPublicKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestNewProducer_RejectsInvalidConfig(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	pub := priv.Public().(ed25519.PublicKey)
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestProducer_AdvancesChainTailOnDroppedSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue"), MaxPending: 1})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue"), MaxPending: 1})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestProducer_ReleaseDroppedPreservesConcurrentDrops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestProducer_EnqueueSegmentDropPaths(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+			q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 			if err != nil {
 				t.Fatalf("Open queue: %v", err)
 			}

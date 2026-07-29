@@ -17,11 +17,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
+
+var testQueueKeyrings sync.Map
 
 func TestQueueEnqueueClaimAckRoundTrip(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
@@ -94,7 +97,7 @@ func TestQueuePersistsAcrossOpen(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -107,7 +110,7 @@ func TestQueuePersistsAcrossOpen(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reopened, err := Open(Config{Dir: dir})
+	reopened, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
@@ -126,13 +129,13 @@ func TestQueuePersistsAcrossOpen(t *testing.T) {
 // ErrQueueLocked rather than silently allowing two writers.
 func TestQueueOpenLocksDirectory(t *testing.T) {
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	defer func() { _ = q.Close() }()
 
-	if _, err := Open(Config{Dir: dir}); !errors.Is(err, ErrQueueLocked) {
+	if _, err := testOpen(t, Config{Dir: dir}); !errors.Is(err, ErrQueueLocked) {
 		t.Fatalf("Open(second) error = %v, want ErrQueueLocked", err)
 	}
 }
@@ -142,7 +145,7 @@ func TestQueueOpenLocksDirectory(t *testing.T) {
 // (fd gone) is indistinguishable from an explicit Close here.
 func TestQueueCloseReleasesLock(t *testing.T) {
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -154,7 +157,7 @@ func TestQueueCloseReleasesLock(t *testing.T) {
 		t.Fatalf("Close(second) error = %v", err)
 	}
 
-	reopened, err := Open(Config{Dir: dir})
+	reopened, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(after close) error = %v", err)
 	}
@@ -214,7 +217,7 @@ func TestQueueLockFileNotTreatedAsRecord(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -246,7 +249,7 @@ func TestQueueReleaseAndRecoverInflight(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -268,7 +271,7 @@ func TestQueueReleaseAndRecoverInflight(t *testing.T) {
 	if err := q.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	reopened, err := Open(Config{Dir: dir})
+	reopened, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
@@ -282,7 +285,7 @@ func TestQueueReleaseWithRetryPersistsAccounting(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -300,12 +303,12 @@ func TestQueueReleaseWithRetryPersistsAccounting(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reopened, err := Open(Config{Dir: dir})
+	reopened, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
 	defer func() { _ = reopened.Close() }()
-	record, err := readRecord(filepath.Join(reopened.pendingDir, id), conductor.MaxAuditPayloadBytes)
+	record, err := reopened.readRecord(filepath.Join(reopened.pendingDir, id))
 	if err != nil {
 		t.Fatalf("readRecord() error = %v", err)
 	}
@@ -347,7 +350,7 @@ func TestQueueDropMovesInflightToDeadWithReason(t *testing.T) {
 	}
 	assertStats(t, q, Stats{Dead: 1})
 
-	record, err := readRecord(filepath.Join(q.deadDir, id), conductor.MaxAuditPayloadBytes)
+	record, err := q.readRecord(filepath.Join(q.deadDir, id))
 	if err != nil {
 		t.Fatalf("readRecord(dead) error = %v", err)
 	}
@@ -573,7 +576,7 @@ func TestQueueClaimCorruptRecordReportsMoveToDeadErrors(t *testing.T) {
 }
 
 func TestOpenRequiresQueueDir(t *testing.T) {
-	_, err := Open(Config{})
+	_, err := testOpen(t, Config{})
 	if err == nil || !strings.Contains(err.Error(), "queue dir required") {
 		t.Fatalf("Open() = %v, want queue dir required", err)
 	}
@@ -684,7 +687,7 @@ func TestOpenRejectsSymlinkQueueDir(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("Symlink() error = %v", err)
 	}
-	_, err := Open(Config{Dir: link})
+	_, err := testOpen(t, Config{Dir: link})
 	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("Open() = %v, want symlink rejection", err)
 	}
@@ -703,7 +706,7 @@ func TestOpenRejectsSymlinkQueueSubdir(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(queueDir, "pending")); err != nil {
 		t.Fatalf("Symlink() error = %v", err)
 	}
-	_, err := Open(Config{Dir: queueDir})
+	_, err := testOpen(t, Config{Dir: queueDir})
 	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("Open() = %v, want symlink subdir rejection", err)
 	}
@@ -720,7 +723,7 @@ func TestOpenRejectsSymlinkParent(t *testing.T) {
 		t.Fatalf("Symlink() error = %v", err)
 	}
 
-	_, err := Open(Config{Dir: filepath.Join(linkParent, "queue")})
+	_, err := testOpen(t, Config{Dir: filepath.Join(linkParent, "queue")})
 	if err == nil || !strings.Contains(err.Error(), "ancestor") || !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("Open() = %v, want symlink ancestor rejection", err)
 	}
@@ -731,7 +734,7 @@ func TestOpenSweepsStaleTempFiles(t *testing.T) {
 	// be cleaned up on Open. listRecordFiles already filters them so they
 	// won't get claimed, but without sweep they accumulate forever.
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -748,7 +751,7 @@ func TestOpenSweepsStaleTempFiles(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reopened, err := Open(Config{Dir: dir})
+	reopened, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
@@ -808,7 +811,7 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	dir := t.TempDir()
-	q, err := Open(Config{Dir: dir})
+	q, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -824,7 +827,10 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 	recoveredAgainID := id + "-recovered-1" + recordExt
 	// Simulate prior recovery debris: pending/<id> and pending/<id>-recovered
 	// both exist when the next Open() runs the recovery sweep.
-	originalContent := []byte(`{"version":1,"sentinel":"do-not-clobber"}`)
+	originalContent, err := encryptDiskRecord(validDiskRecord(batch), q.keyring)
+	if err != nil {
+		t.Fatalf("encryptDiskRecord(collision sentinel) error = %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(q.pendingDir, id), originalContent, fileMode); err != nil {
 		t.Fatalf("WriteFile(pending/<id>) error = %v", err)
 	}
@@ -835,7 +841,7 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reopened, err := Open(Config{Dir: dir})
+	reopened, err := testOpen(t, Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
@@ -985,7 +991,7 @@ func TestReadRecordStrictDecodeFailures(t *testing.T) {
 			name: "unsupported_version",
 			edit: func(t *testing.T, record diskRecord) []byte {
 				t.Helper()
-				record.Version++
+				record.Version = 99
 				data, err := json.Marshal(record)
 				if err != nil {
 					t.Fatalf("Marshal() error = %v", err)
@@ -1254,12 +1260,31 @@ func TestDurableWriteAndMoveToDeadErrorPaths(t *testing.T) {
 func openTestQueue(t *testing.T, cfg Config) *Queue {
 	t.Helper()
 	cfg.Dir = t.TempDir()
-	q, err := Open(cfg)
+	q, err := testOpen(t, cfg)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = q.Close() })
 	return q
+}
+
+func testOpen(t *testing.T, cfg Config) (*Queue, error) {
+	t.Helper()
+	if cfg.Keyring == nil {
+		key := t.Name() + "\x00" + filepath.Clean(cfg.Dir)
+		if existing, ok := testQueueKeyrings.Load(key); ok {
+			cfg.Keyring = existing.(*Keyring)
+		} else {
+			keyring, err := NewKeyring()
+			if err != nil {
+				t.Fatalf("NewKeyring() error = %v", err)
+			}
+			actual, _ := testQueueKeyrings.LoadOrStore(key, keyring)
+			cfg.Keyring = actual.(*Keyring)
+			t.Cleanup(func() { testQueueKeyrings.Delete(key) })
+		}
+	}
+	return Open(cfg)
 }
 
 func assertStats(t *testing.T, q *Queue, want Stats) {

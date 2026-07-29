@@ -45,6 +45,7 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 	caPath := filepath.Join(tmp, "boss-ca.pem")
 	clientCertPath := filepath.Join(tmp, "client.crt")
 	clientKeyPath := filepath.Join(tmp, "client.key")
+	queueKeyringPath := filepath.Join(tmp, "secrets", "audit-queue-keyring.json")
 	// conductor.enabled requires a real signed roster + pinned fingerprint even
 	// with honor_remote_kill_switch:false - the policy-bundle poller verifies
 	// signed bundles against the pinned trust root.
@@ -53,6 +54,7 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 	writePrivateTestFile(t, caPath, clientPEM)
 	writePrivateTestFile(t, clientCertPath, clientPEM)
 	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+	writeTestQueueKeyring(t, queueKeyringPath)
 
 	cfgPath := writeServerTestConfig(t, strings.Join([]string{
 		"mode: balanced",
@@ -75,6 +77,7 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 		"  client_key_path: " + strconv.Quote(clientKeyPath),
 		"  bundle_cache_dir: " + strconv.Quote(filepath.Join(tmp, "bundles")),
 		"  durable_audit_queue_dir: " + strconv.Quote(filepath.Join(tmp, "audit-queue")),
+		"  durable_audit_queue_keyring: " + strconv.Quote(queueKeyringPath),
 		"  audit_signing_key_id: audit-key-1",
 		"  recorder_key_id: recorder-key-1",
 		"  honor_remote_kill_switch: false",

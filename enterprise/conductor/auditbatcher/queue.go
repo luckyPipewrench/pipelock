@@ -19,9 +19,9 @@
 package auditbatcher
 
 import (
+	"crypto/aes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,7 +33,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
-	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
@@ -62,6 +61,7 @@ type Config struct {
 	Dir             string
 	MaxPending      int
 	MaxPayloadBytes uint64
+	Keyring         *Keyring
 }
 
 type Batch struct {
@@ -92,6 +92,7 @@ type Queue struct {
 	deadDir         string
 	maxPending      int
 	maxPayloadBytes uint64
+	keyring         *Keyring
 	now             func() time.Time
 	mu              sync.Mutex
 	closed          bool
@@ -125,6 +126,9 @@ func Open(cfg Config) (*Queue, error) {
 	if cfg.MaxPayloadBytes == 0 {
 		cfg.MaxPayloadBytes = conductor.MaxAuditPayloadBytes
 	}
+	if cfg.Keyring == nil {
+		return nil, errors.New("auditbatcher: queue encryption keyring required")
+	}
 	dir, pendingDir, inflightDir, deadDir, err := ensurePrivateQueueDirs(cleanDir)
 	if err != nil {
 		return nil, err
@@ -140,6 +144,7 @@ func Open(cfg Config) (*Queue, error) {
 		deadDir:         deadDir,
 		maxPending:      cfg.MaxPending,
 		maxPayloadBytes: cfg.MaxPayloadBytes,
+		keyring:         cfg.Keyring,
 		now:             func() time.Time { return time.Now().UTC() },
 		lockFile:        lockFile,
 	}
@@ -161,6 +166,9 @@ func Open(cfg Config) (*Queue, error) {
 		if err := sweepStaleTempsLocked(dir); err != nil {
 			return nil, err
 		}
+	}
+	if err := q.migrateRecordsLocked(); err != nil {
+		return nil, err
 	}
 	if err := q.recoverInflightLocked(); err != nil {
 		return nil, err
@@ -222,7 +230,7 @@ func (q *Queue) Enqueue(batch Batch) (string, error) {
 		Envelope:   batch.Envelope,
 		Payload:    append([]byte(nil), batch.Payload...),
 	}
-	data, err := json.Marshal(record)
+	data, err := encryptDiskRecord(record, q.keyring)
 	if err != nil {
 		return "", fmt.Errorf("auditbatcher: marshal record: %w", err)
 	}
@@ -266,7 +274,7 @@ func (q *Queue) Claim() (*Lease, error) {
 		if err := fsyncDir(q.inflightDir); err != nil {
 			return nil, err
 		}
-		record, err := readRecord(inflightPath, q.maxPayloadBytes)
+		record, _, _, err := readRecordWithKeyring(inflightPath, q.maxPayloadBytes, q.keyring)
 		if err != nil {
 			if !errors.Is(err, ErrCorruptRecord) {
 				return nil, err
@@ -436,6 +444,39 @@ func (q *Queue) recoverInflightLocked() error {
 	return fsyncDir(q.pendingDir)
 }
 
+// migrateRecordsLocked encrypts legacy plaintext records and re-encrypts
+// records written under retained rotation keys. It runs while Open holds the
+// exclusive queue lock and before inflight recovery, so no worker can observe
+// a partially migrated queue. Each replacement is individually atomic and
+// durable; a crash simply resumes from the remaining records on next Open.
+func (q *Queue) migrateRecordsLocked() error {
+	active := q.keyring.ActiveKeyID()
+	for _, dir := range []string{q.pendingDir, q.inflightDir, q.deadDir} {
+		files, err := listRecordFiles(dir)
+		if err != nil {
+			return err
+		}
+		for _, id := range files {
+			path := filepath.Join(dir, id)
+			record, keyID, legacy, err := readRecordWithKeyring(path, q.maxPayloadBytes, q.keyring)
+			if err != nil {
+				return fmt.Errorf("auditbatcher: migrate queue record %s: %w", id, err)
+			}
+			if !legacy && keyID == active {
+				continue
+			}
+			data, err := encryptDiskRecord(record, q.keyring)
+			if err != nil {
+				return fmt.Errorf("auditbatcher: encrypt queue record %s: %w", id, err)
+			}
+			if err := durableWrite(path, data); err != nil {
+				return fmt.Errorf("auditbatcher: migrate queue record %s: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
 // uniqueRecoveryPath finds a free filename in pendingDir for a recovered
 // inflight record. The plain id is tried first; if taken, recovery suffixes
 // are appended after the full original id so recovered records keep the same
@@ -544,23 +585,39 @@ func validateBatch(batch Batch, maxPayloadBytes uint64) error {
 }
 
 func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
+	record, _, _, err := readRecordWithKeyring(path, maxPayloadBytes, nil)
+	return record, err
+}
+
+func (q *Queue) readRecord(path string) (diskRecord, error) {
+	record, _, _, err := readRecordWithKeyring(path, q.maxPayloadBytes, q.keyring)
+	return record, err
+}
+
+func readRecordWithKeyring(path string, maxPayloadBytes uint64, keyring *Keyring) (diskRecord, string, bool, error) {
 	path = filepath.Clean(path)
 	limit, err := recordReadLimit(maxPayloadBytes)
 	if err != nil {
-		return diskRecord{}, err
+		return diskRecord{}, "", false, err
+	}
+	if keyring != nil {
+		limit, err = encryptedRecordReadLimit(limit)
+		if err != nil {
+			return diskRecord{}, "", false, err
+		}
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		return diskRecord{}, fmt.Errorf("auditbatcher: stat record: %w", err)
+		return diskRecord{}, "", false, fmt.Errorf("auditbatcher: stat record: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record %s must not be a symlink", path))
+		return diskRecord{}, "", false, corruptRecordError(fmt.Errorf("auditbatcher: record %s must not be a symlink", path))
 	}
 	if !info.Mode().IsRegular() {
-		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record %s is not a regular file", path))
+		return diskRecord{}, "", false, corruptRecordError(fmt.Errorf("auditbatcher: record %s is not a regular file", path))
 	}
 	if info.Size() > limit {
-		return diskRecord{}, corruptRecordError(fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit))
+		return diskRecord{}, "", false, corruptRecordError(fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit))
 	}
 	// OwnedState: this is Pipelock own durable audit-queue state, written by
 	// durableWrite at 0600. Kubernetes fsGroup re-widens it to 0660 on every
@@ -569,43 +626,33 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 	// becomes ErrCorruptRecord and Claim moves the record to dead/, so strictness
 	// costs delivery of that audit data rather than merely delaying it.
 	//
-	// The confidentiality tradeoff, stated plainly because it is real: a queued
-	// record carries the batch envelope and the raw recorder payload, and decision
-	// entries can include matched-pattern context and policy evidence. Accepting
-	// group read means any process sharing the fsGroup can read that from disk.
-	// Refusing it does NOT prevent that: the platform has already widened the file,
-	// so a co-tenant of the group can read it whether or not Pipelock will. Strict
-	// mode would therefore leave the exposure in place and discard our own audit
-	// delivery on top of it, which is the worse of the two.
-	//
-	// Closing the exposure properly means encrypting these records at rest under a
-	// key that does not live on the widened volume. That is a separate piece of
-	// work with its own key lifecycle, and until it exists this state sits inside
-	// the workload/volume trust boundary alongside flight-recorder evidence.
+	// Queue records are encrypted before durableWrite under a keyring required to
+	// live outside this queue directory. Group access to the widened volume can
+	// therefore expose ciphertext and metadata, but not the audit payload.
 	data, err := securefile.Read(path, securefile.Options{
 		MaxBytes:      limit,
 		RejectSymlink: true,
 		OwnedState:    true,
 	})
 	if err != nil {
-		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: read record: %w", err))
+		return diskRecord{}, "", false, corruptRecordError(fmt.Errorf("auditbatcher: read record: %w", err))
 	}
 
-	var record diskRecord
-	if err := contract.DecodeStrictJSON(data, &record); err != nil {
-		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: decode record: %w", err))
+	record, keyID, legacy, err := decryptDiskRecord(data, keyring)
+	if err != nil {
+		return diskRecord{}, keyID, legacy, corruptRecordError(err)
 	}
 	if record.Version != recordVersion {
-		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record version=%d want=%d", record.Version, recordVersion))
+		return diskRecord{}, keyID, legacy, corruptRecordError(fmt.Errorf("auditbatcher: plaintext version=%d want=%d", record.Version, recordVersion))
 	}
 	if record.EnqueuedAt.IsZero() {
-		return diskRecord{}, corruptRecordError(errors.New("auditbatcher: missing enqueued_at"))
+		return diskRecord{}, keyID, legacy, corruptRecordError(errors.New("auditbatcher: missing enqueued_at"))
 	}
 	batch := Batch{Envelope: record.Envelope, Payload: record.Payload}
 	if err := validateBatch(batch, maxPayloadBytes); err != nil {
-		return diskRecord{}, corruptRecordError(err)
+		return diskRecord{}, keyID, legacy, corruptRecordError(err)
 	}
-	return record, nil
+	return record, keyID, legacy, nil
 }
 
 func corruptRecordError(err error) error {
@@ -623,6 +670,24 @@ func recordReadLimit(maxPayloadBytes uint64) (int64, error) {
 	return uint64ToInt64(encodedPayloadBytes + maxRecordMetadataBytes)
 }
 
+func encryptedRecordReadLimit(plaintextLimit int64) (int64, error) {
+	if plaintextLimit < 0 {
+		return 0, fmt.Errorf("auditbatcher: encrypted record plaintext limit must not be negative: %d", plaintextLimit)
+	}
+	plaintextBytes := uint64(plaintextLimit)
+	if plaintextBytes > maxRecordReadBytes-aes.BlockSize {
+		return 0, fmt.Errorf("auditbatcher: encrypted record plaintext limit too large: %d", plaintextLimit)
+	}
+	ciphertextBytes := plaintextBytes + aes.BlockSize
+	// encoding/json represents []byte as padded standard base64. Check before
+	// multiplying so a hostile configured limit cannot wrap the calculation.
+	if ciphertextBytes > ((maxRecordReadBytes-encryptedRecordMetadataBytes)/4)*3-2 {
+		return 0, fmt.Errorf("auditbatcher: encrypted record ciphertext limit too large: %d", ciphertextBytes)
+	}
+	encodedCiphertextBytes := ((ciphertextBytes + 2) / 3) * 4
+	return uint64ToInt64(encodedCiphertextBytes + encryptedRecordMetadataBytes)
+}
+
 func uint64ToInt64(value uint64) (int64, error) {
 	if value > maxRecordReadBytes {
 		return 0, fmt.Errorf("auditbatcher: record read limit too large: %d", value)
@@ -636,12 +701,12 @@ func uint64ToInt64(value uint64) (int64, error) {
 
 func (q *Queue) updateInflightRecordLocked(id string, mutate func(*diskRecord)) error {
 	path := filepath.Join(q.inflightDir, id)
-	record, err := readRecord(path, q.maxPayloadBytes)
+	record, _, _, err := readRecordWithKeyring(path, q.maxPayloadBytes, q.keyring)
 	if err != nil {
 		return fmt.Errorf("auditbatcher: annotate inflight %s: %w", id, err)
 	}
 	mutate(&record)
-	data, err := json.Marshal(record)
+	data, err := encryptDiskRecord(record, q.keyring)
 	if err != nil {
 		return fmt.Errorf("auditbatcher: marshal annotated record %s: %w", id, err)
 	}

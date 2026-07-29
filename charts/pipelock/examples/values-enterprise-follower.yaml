@@ -41,6 +41,9 @@ conductorFollower:
   trustRosterSecretRef:
     name: conductor-trust-roster
     key: trust-roster.json
+  auditQueueKeyringSecretRef:
+    name: follower-audit-queue-keyring
+    key: audit-queue-keyring.json
   persistence:
     bundleCache:
       enabled: true

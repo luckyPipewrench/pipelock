@@ -450,6 +450,7 @@ func layoutMaterialPaths(layout Layout) []string {
 		layout.FollowerConfigPath,
 		layout.FollowerBundleCacheDir,
 		layout.FollowerAuditQueueDir,
+		layout.FollowerQueueKeyring,
 		layout.FollowerRecorderDir,
 		layout.TrustRosterPath,
 		layout.RosterRootKeyPath,

@@ -346,23 +346,26 @@ func TestBuildConductorBundlePollerRejectsBadRosterEvenWithHonorFalse(t *testing
 func TestBuildConductorAuditTransportReleasesQueueOnConstructorFailure(t *testing.T) {
 	dir := t.TempDir()
 	queueDir := filepath.Join(dir, "audit-queue")
+	queueKeyringPath := filepath.Join(dir, "secrets", "audit-queue-keyring.json")
+	keyring := writeTestQueueKeyring(t, queueKeyringPath)
 	caPath := filepath.Join(dir, "boss-ca.pem")
 	writePrivateTestFile(t, caPath, []byte("not a PEM bundle"))
 
 	cfg := &config.Config{
 		Conductor: config.Conductor{
-			Enabled:              true,
-			ConductorURL:         "https://conductor.example",
-			ServerCAFile:         caPath,
-			ClientCertPath:       filepath.Join(dir, "missing-client.crt"),
-			ClientKeyPath:        filepath.Join(dir, "missing-client.key"),
-			DurableAuditQueueDir: queueDir,
+			Enabled:                  true,
+			ConductorURL:             "https://conductor.example",
+			ServerCAFile:             caPath,
+			ClientCertPath:           filepath.Join(dir, "missing-client.crt"),
+			ClientKeyPath:            filepath.Join(dir, "missing-client.key"),
+			DurableAuditQueueDir:     queueDir,
+			DurableAuditQueueKeyring: queueKeyringPath,
 		},
 	}
 	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil {
 		t.Fatal("buildConductorAuditTransport() error = nil, want mTLS constructor failure")
 	}
-	reopened, err := auditbatcher.Open(auditbatcher.Config{Dir: queueDir})
+	reopened, err := auditbatcher.Open(auditbatcher.Config{Dir: queueDir, Keyring: keyring})
 	if err != nil {
 		t.Fatalf("Open(queue after failed build) error = %v, want lock released", err)
 	}
@@ -1163,6 +1166,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 	caPath := filepath.Join(tmp, "boss-ca.pem")
 	clientCertPath := filepath.Join(tmp, "client.crt")
 	clientKeyPath := filepath.Join(tmp, "client.key")
+	queueKeyringPath := filepath.Join(tmp, "secrets", "audit-queue-keyring.json")
 	// A real signed roster is mandatory whenever conductor.enabled, independent
 	// of honor_remote_kill_switch: the policy-bundle poller must verify signed
 	// bundles against a pinned trust root before applying them.
@@ -1171,6 +1175,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 	writePrivateTestFile(t, caPath, clientPEM)
 	writePrivateTestFile(t, clientCertPath, clientPEM)
 	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+	writeTestQueueKeyring(t, queueKeyringPath)
 
 	recorderDir := filepath.Join(tmp, "recorder")
 	cfgPath := writeServerTestConfig(t, strings.Join([]string{
@@ -1194,6 +1199,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 		"  client_key_path: " + strconv.Quote(clientKeyPath),
 		"  bundle_cache_dir: " + strconv.Quote(filepath.Join(tmp, "bundles")),
 		"  durable_audit_queue_dir: " + strconv.Quote(filepath.Join(tmp, "audit-queue")),
+		"  durable_audit_queue_keyring: " + strconv.Quote(queueKeyringPath),
 		"  audit_signing_key_id: audit-key-1",
 		"  recorder_key_id: recorder-key-1",
 		"  honor_remote_kill_switch: false",

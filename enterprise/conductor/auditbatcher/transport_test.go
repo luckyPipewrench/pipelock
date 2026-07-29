@@ -94,7 +94,7 @@ func TestTransportDeliverOnceRetryReleasesRecord(t *testing.T) {
 	}
 	assertStats(t, q, Stats{Pending: 1})
 
-	record, err := readRecord(filepath.Join(q.pendingDir, id), q.maxPayloadBytes)
+	record, err := q.readRecord(filepath.Join(q.pendingDir, id))
 	if err != nil {
 		t.Fatalf("readRecord(pending) error = %v", err)
 	}
@@ -131,7 +131,7 @@ func TestTransportDeliverOnceClientErrorDropsRecord(t *testing.T) {
 	}
 	assertStats(t, q, Stats{Dead: 1})
 
-	record, err := readRecord(filepath.Join(q.deadDir, id), q.maxPayloadBytes)
+	record, err := q.readRecord(filepath.Join(q.deadDir, id))
 	if err != nil {
 		t.Fatalf("readRecord(dead) error = %v", err)
 	}
@@ -344,7 +344,7 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 	default:
 		t.Fatalf("stats=%+v, want one pending or inflight record", stats)
 	}
-	record, err := readRecord(recordPath, q.maxPayloadBytes)
+	record, err := q.readRecord(recordPath)
 	if err != nil {
 		t.Fatalf("readRecord(%s) error = %v", recordPath, err)
 	}
@@ -409,7 +409,7 @@ func TestTransportDeliverOnceDropsAfterMaxAttempts(t *testing.T) {
 
 	// Poison must now be dead-lettered with reason max_retries.
 	assertStats(t, q, Stats{Pending: 1, Dead: 1})
-	deadRecord, err := readRecord(filepath.Join(q.deadDir, poisonID), q.maxPayloadBytes)
+	deadRecord, err := q.readRecord(filepath.Join(q.deadDir, poisonID))
 	if err != nil {
 		t.Fatalf("readRecord(dead) error = %v", err)
 	}
@@ -498,7 +498,7 @@ func TestTransportDeliverOnceDropsCorruptMaxRetryCountWithoutOverflow(t *testing
 		t.Fatalf("Enqueue() error = %v", err)
 	}
 	path := filepath.Join(q.pendingDir, id)
-	record, err := readRecord(path, q.maxPayloadBytes)
+	record, err := q.readRecord(path)
 	if err != nil {
 		t.Fatalf("readRecord() error = %v", err)
 	}
@@ -529,7 +529,7 @@ func TestTransportDeliverOnceDropsCorruptMaxRetryCountWithoutOverflow(t *testing
 		t.Fatal("DeliverOnce() error = nil, want drop error")
 	}
 	assertStats(t, q, Stats{Dead: 1})
-	deadRecord, err := readRecord(filepath.Join(q.deadDir, id), q.maxPayloadBytes)
+	deadRecord, err := q.readRecord(filepath.Join(q.deadDir, id))
 	if err != nil {
 		t.Fatalf("readRecord(dead) error = %v", err)
 	}

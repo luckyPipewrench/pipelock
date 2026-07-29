@@ -236,6 +236,7 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  durable_audit_queue_keyring: /etc/pipelock/secrets/audit-queue-keyring.json
   audit_signing_key_id: edge-01-audit
   recorder_key_id: edge-01-recorder
   poll_interval: 30s

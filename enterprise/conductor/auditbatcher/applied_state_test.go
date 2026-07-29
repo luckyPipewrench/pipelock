@@ -26,7 +26,7 @@ func newAppliedStateProducer(t *testing.T, cfg ProducerConfig) (*Producer, *Queu
 	if err != nil {
 		t.Fatalf("GenerateKey recorder: %v", err)
 	}
-	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}

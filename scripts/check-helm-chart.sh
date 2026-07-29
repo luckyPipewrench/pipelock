@@ -48,6 +48,10 @@ expect_template_error "/image/digest" \
 expect_template_error "conductorFollower.conductorURL is required" \
   --set conductorFollower.enabled=true
 
+expect_template_error "conductorFollower.auditQueueKeyringSecretRef.name is required" \
+  -f "$chart/examples/values-enterprise-follower.yaml" \
+  --set conductorFollower.auditQueueKeyringSecretRef.name=
+
 expect_template_error "enterprise modes require explicit networkPolicy.ingress and networkPolicy.egress rules" \
   --set mode=conductor \
   --set networkPolicy.enabled=true \
@@ -97,6 +101,8 @@ grep -q -- "- run" "$render_dir/default.yaml"
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-audit-queue" "$render_dir/values-enterprise-follower.yaml"
+grep -q -- "conductor-audit-queue-keyring" "$render_dir/values-enterprise-follower.yaml"
+grep -q -- "durable_audit_queue_keyring:" "$render_dir/values-enterprise-follower.yaml"
 
 grep -q -- "- conductor" "$render_dir/values-enterprise-conductor.yaml"
 grep -q -- "- serve" "$render_dir/values-enterprise-conductor.yaml"

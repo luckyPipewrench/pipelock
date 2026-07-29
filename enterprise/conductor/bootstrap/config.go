@@ -35,6 +35,7 @@ conductor:
   client_key_path: %q
   bundle_cache_dir: %q
   durable_audit_queue_dir: %q
+  durable_audit_queue_keyring: %q
   audit_signing_key_id: %q
   recorder_key_id: %q
   poll_interval: 30s
@@ -65,6 +66,7 @@ flight_recorder:
 		layout.FollowerClientKeyPath,
 		layout.FollowerBundleCacheDir,
 		layout.FollowerAuditQueueDir,
+		layout.FollowerQueueKeyring,
 		auditKeyID,
 		recorderKeyID,
 		layout.FollowerRecorderDir,

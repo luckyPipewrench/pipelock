@@ -139,6 +139,7 @@ Validate mode and security-critical enterprise chart requirements.
 {{- $_ := required "conductorFollower.serverCASecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.serverCASecretRef.name -}}
 {{- $_ := required "conductorFollower.clientSecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.clientSecretRef.name -}}
 {{- $_ := required "conductorFollower.trustRosterSecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.trustRosterSecretRef.name -}}
+{{- $_ := required "conductorFollower.auditQueueKeyringSecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.auditQueueKeyringSecretRef.name -}}
 {{- end -}}
 {{- end }}
 

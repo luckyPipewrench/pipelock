@@ -45,3 +45,9 @@ Exit codes match the Go and TypeScript verifiers:
 The verifier embeds the Audit Packet v0 schema at compile time, validates structural invariants, verifies Ed25519 receipt signatures, replays receipt chains with the `genesis` root, and cross-checks packet totals, receipt count, root hash, final sequence, and verdict consistency. The `receipt` command also verifies EvidenceReceipt v2 `proxy_decision_with_spans` receipts with a pinned `--key`, including the JCS preimage and strict source-span payload shape.
 
 Signer keys may be raw 32-byte hex, the versioned `pipelock-ed25519-public-v1` text format, or a file containing either form.
+Trusted Audit Packet verification requires an external `--key` or an
+out-of-band `--expect-sha256` packet digest. A packet's embedded signer key
+cannot establish its own provenance. The explicitly weaker
+`--allow-self-consistent-only` and `--no-trust-required` modes retain their
+documented opt-in behavior. `--offline` skips receipt-chain verification while
+still validating the schema and packet-level trust fields.

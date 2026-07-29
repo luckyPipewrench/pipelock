@@ -5,6 +5,7 @@ package filesentry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -26,11 +27,6 @@ const debounceDelay = 50 * time.Millisecond
 // Large enough to avoid blocking the watcher goroutine under burst writes.
 const findingsChanSize = 64
 
-// flushSendTimeout is the maximum time flushScan waits to deliver a finding
-// during Close(). Short enough to prevent test hangs when the consumer has
-// stopped reading, long enough to deliver findings under normal shutdown.
-const flushSendTimeout = 2 * time.Second
-
 // maxFileSize is the default maximum file size to scan when file_sentry
 // max_file_bytes is unset. Files larger than the effective cap are skipped to
 // avoid unbounded memory use from scanning large binaries; the skip is
@@ -44,8 +40,13 @@ type fsWatcher struct {
 	lineage  Lineage
 	watcher  *fsnotify.Watcher
 	findings chan Finding
+	// overflow is a one-entry priority lane used when findings is saturated.
+	// Agent-attributed findings replace a queued non-agent overflow so block
+	// mode cannot be bypassed by filling the normal delivery channel first.
+	overflow chan Finding
 	onError  func(error) // optional callback for non-fatal errors (e.g. runtime watch failures)
 	mu       sync.Mutex
+	scanWG   sync.WaitGroup         // debounce scans that began before Close
 	timers   map[string]*time.Timer // per-path debounce timers
 	pidSnap  map[string]bool        // per-path agent attribution snapshot at event time
 	closed   bool
@@ -81,6 +82,7 @@ func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage, onError func
 		lineage:  lin,
 		watcher:  w,
 		findings: make(chan Finding, findingsChanSize),
+		overflow: make(chan Finding, 1),
 		timers:   make(map[string]*time.Timer),
 		pidSnap:  make(map[string]bool),
 		onError:  onError,
@@ -195,6 +197,12 @@ func (w *fsWatcher) Findings() <-chan Finding {
 	return w.findings
 }
 
+// OverflowFindings returns the priority lane for findings detected while the
+// normal delivery buffer is saturated.
+func (w *fsWatcher) OverflowFindings() <-chan Finding {
+	return w.overflow
+}
+
 // Close stops the watcher, flushes pending debounced scans, and closes the
 // findings channel so consumer goroutines exit their range loops.
 // Pending timers are stopped and their scans run synchronously so that
@@ -233,7 +241,13 @@ func (w *fsWatcher) Close() error {
 		w.flushScan(path, pendingAgent[i])
 	}
 
+	// A timer may have removed itself from timers and started scanning just
+	// before Close set closed=true. Wait for those registered scans before
+	// closing their delivery channels.
+	w.scanWG.Wait()
+
 	close(w.findings)
+	close(w.overflow)
 	return err
 }
 
@@ -306,6 +320,10 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	// the quiet period. The snapshot is consumed by scanFile after debounce.
 	if w.lineage != nil {
 		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return
+		}
 		w.pidSnap[ev.Name] = w.lineage.HasFileOpen(ev.Name)
 		w.mu.Unlock()
 	}
@@ -319,6 +337,10 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	// does nothing. Without this, the old callback would delete the new
 	// timer's map entry, causing the new callback to scan without cleanup.
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
 	if existing, ok := w.timers[ev.Name]; ok {
 		existing.Stop()
 	}
@@ -328,6 +350,10 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	var timer *time.Timer
 	timer = time.AfterFunc(debounceDelay, func() {
 		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return
+		}
 		// Only proceed if this timer is still the active one for this path.
 		if current, ok := w.timers[path]; !ok || current != timer {
 			w.mu.Unlock()
@@ -337,91 +363,32 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 		// Consume the PID snapshot (take the cached value, then clean up).
 		isAgent := w.pidSnap[path]
 		delete(w.pidSnap, path)
+		w.scanWG.Add(1)
 		w.mu.Unlock()
-		w.scanFile(ctx, path, isAgent)
+		defer w.scanWG.Done()
+		w.doScan(ctx, path, isAgent, true)
 	})
 	w.timers[path] = timer
 	w.mu.Unlock()
 }
 
-// flushScan runs a DLP scan synchronously during Close, sending findings
-// with a blocking send (the consumer is still running and the channel is
-// still open at this point). This ensures the last debounced writes are
-// not dropped even if the buffer is full.
+// flushScan runs a DLP scan synchronously during Close. Close keeps both
+// delivery channels open until every pending and registered scan finishes, so
+// the flush can use the same agent-priority overflow lane as live scans.
 func (w *fsWatcher) flushScan(path string, isAgent bool) {
-	if w.cfg.ScanContent != nil && !*w.cfg.ScanContent {
-		return
-	}
-
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		w.logError(fmt.Errorf("filesentry: open failed, file left unscanned: %s: %w", path, err))
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	info, err := f.Stat()
-	if err != nil {
-		w.logError(fmt.Errorf("filesentry: stat failed, file left unscanned: %s: %w", path, err))
-		return
-	}
-	if info.IsDir() || info.Size() == 0 {
-		return
-	}
-	sizeCap := w.effectiveMaxFileSize()
-	if info.Size() > sizeCap {
-		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (%d bytes > cap %d): %s", info.Size(), sizeCap, path))
-		return
-	}
-
-	data, err := io.ReadAll(io.LimitReader(f, sizeCap+1))
-	if err != nil {
-		w.logError(fmt.Errorf("filesentry: read failed, file left unscanned: %s: %w", path, err))
-		return
-	}
-	if len(data) == 0 {
-		return
-	}
-	if int64(len(data)) > sizeCap {
-		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (grew beyond cap %d while reading): %s", sizeCap, path))
-		return
-	}
-
-	result := w.scanner.ScanTextForDLP(context.Background(), string(data))
-	if result.Clean {
-		return
-	}
-
-	for _, m := range result.Matches {
-		select {
-		case w.findings <- Finding{
-			Path:        path,
-			PatternName: m.PatternName,
-			Severity:    m.Severity,
-			Encoded:     m.Encoded,
-			IsAgent:     isAgent,
-		}:
-		case <-time.After(flushSendTimeout):
-			// Timed out - consumer stopped reading. Log but don't block
-			// shutdown indefinitely. Buffer is 64, so this only fires
-			// when the consumer is truly gone.
-			if w.onError != nil {
-				w.onError(fmt.Errorf("filesentry: flush finding dropped (channel full, consumer stopped): %s", path))
-			}
-		}
-	}
+	w.doScan(context.Background(), path, isAgent, true)
 }
 
 // scanFile reads a file and runs DLP scanning on its content.
 // isAgent is the PID attribution result snapshotted at event time.
 func (w *fsWatcher) scanFile(ctx context.Context, path string, isAgent bool) {
-	w.doScan(ctx, path, isAgent, true)
+	w.doScan(ctx, path, isAgent, false)
 }
 
-// doScan is the shared scan implementation. When checkClosed is true,
-// it guards channel sends against w.closed (normal event loop path).
-// When false, it sends directly (flush during Close).
-func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, checkClosed bool) {
+// doScan is the shared scan implementation. A registered debounce scan may
+// finish after Close begins because Close waits for scanWG before closing the
+// delivery channels. Direct callers do not have that lifetime guarantee.
+func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent, registered bool) {
 	if w.cfg.ScanContent != nil && !*w.cfg.ScanContent {
 		return
 	}
@@ -476,24 +443,88 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, check
 			Encoded:     m.Encoded,
 			IsAgent:     isAgent,
 		}
-		if checkClosed {
-			// Hold the lock across the closed check AND the send. Without this,
-			// Close() can close w.findings between the check and the send.
-			w.mu.Lock()
-			if w.closed {
-				w.mu.Unlock()
-				return
-			}
+		// Hold the lock across the closed check and delivery. This prevents
+		// Close from closing either channel during a send and serializes every
+		// overflow writer; Close closes channels only after scanWG.Wait.
+		w.mu.Lock()
+		if w.closed && !registered {
+			w.mu.Unlock()
+			return
 		}
+		var overflowErr error
 		select {
 		case w.findings <- f:
 		default:
-			// Channel full - drop finding rather than blocking the watcher.
+			overflowErr = w.enqueueOverflow(f)
 		}
-		if checkClosed {
-			w.mu.Unlock()
+		w.mu.Unlock()
+		if overflowErr != nil {
+			w.logError(overflowErr)
 		}
 	}
+}
+
+// enqueueOverflow preserves visibility and block-mode enforcement without
+// blocking timer goroutines or growing an unbounded queue. The caller holds
+// w.mu, which also prevents Close from closing overflow during this send.
+func (w *fsWatcher) enqueueOverflow(f Finding) error {
+	select {
+	case w.overflow <- f:
+		return nil
+	default:
+	}
+
+	if !f.IsAgent {
+		return overflowError(f, "priority lane already occupied")
+	}
+
+	// An agent finding is enforcement-relevant. Replace a pending non-agent
+	// sample so ConsumeFindings is guaranteed to observe an agent overflow and
+	// cancel in block mode. If the consumer raced us and drained the lane, the
+	// direct retry below succeeds.
+	select {
+	case pending := <-w.overflow:
+		if pending.IsAgent {
+			return errors.Join(
+				w.tryOverflowSendError(pending, "priority lane refilled concurrently"),
+				overflowError(f, "agent overflow already pending"),
+			)
+		}
+		displacedErr := overflowError(pending, "replaced by agent-attributed overflow")
+		return errors.Join(displacedErr, w.tryOverflowSendError(f, "priority lane refilled concurrently"))
+	default:
+	}
+
+	return w.tryOverflowSendError(f, "priority lane refilled concurrently")
+}
+
+// tryOverflowSend degrades a lost single-writer invariant to a reported drop
+// instead of blocking while holding w.mu and preventing Close from completing.
+func (w *fsWatcher) tryOverflowSend(f Finding) bool {
+	select {
+	case w.overflow <- f:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *fsWatcher) tryOverflowSendError(f Finding, reason string) error {
+	if w.tryOverflowSend(f) {
+		return nil
+	}
+	return overflowError(f, reason)
+}
+
+func overflowError(f Finding, reason string) error {
+	return fmt.Errorf(
+		"filesentry: finding delivery overflow (%s): path=%s pattern=%s severity=%s agent=%t",
+		reason,
+		f.Path,
+		f.PatternName,
+		f.Severity,
+		f.IsAgent,
+	)
 }
 
 // isIgnored checks if a path matches any configured ignore pattern.

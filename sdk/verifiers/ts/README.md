@@ -49,6 +49,13 @@ Exit codes match the Go verifier:
 
 `audit-packet` validates `packet.json` against `sdk/audit-packet/v0.json`, applies the structural v0 checks, and re-verifies the referenced receipt chain unless `--offline` is set. `chain` accepts either an `evidence.jsonl` file or a recorder session directory with `--dir`. `receipt` verifies one receipt JSON file. For EvidenceReceipt v2, `receipt` requires a pinned `--key`, verifies the JCS preimage, and enforces strict validation for supported v2 payload kinds, including source-span rules for `proxy_decision_with_spans`.
 
+Trusted Audit Packet verification requires an external `--key` or an
+out-of-band `--expect-sha256` packet digest. A packet's embedded signer key
+cannot establish its own provenance. The explicitly weaker
+`--allow-self-consistent-only` and `--no-trust-required` modes retain their
+documented opt-in behavior. `--offline` is schema-only and deliberately skips
+receipt-chain verification.
+
 ## Development
 
 ```bash

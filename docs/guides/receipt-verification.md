@@ -493,8 +493,8 @@ pipelock-verifier chain evidence-proxy-0.jsonl \
   --expect-payload-kind shadow_delta \
   --expect-contract sha256:...
 
-# Verify an Audit Packet directory or packet.json file
-pipelock-verifier audit-packet ./audit-packet
+# Verify an Audit Packet with a signer key obtained outside the packet
+pipelock-verifier audit-packet ./audit-packet --key ./trusted-signing-key.pub
 ```
 
 For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public

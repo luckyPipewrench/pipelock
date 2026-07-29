@@ -44,11 +44,11 @@ pub fn verify_chain_with_options(
 ) -> ChainResult {
     if receipts.is_empty() {
         return ChainResult {
-            valid: true,
+            valid: false,
             receipt_count: 0,
             final_seq: 0,
             root_hash: String::new(),
-            error: None,
+            error: Some("empty chain".to_string()),
             broken_at_seq: None,
         };
     }

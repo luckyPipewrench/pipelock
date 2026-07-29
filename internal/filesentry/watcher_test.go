@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -548,7 +550,7 @@ func TestWatcher_FlushScanReportsSkippedFiles(t *testing.T) {
 	}
 }
 
-func TestWatcher_ScanFileDropsWhenFindingChannelFull(t *testing.T) {
+func TestWatcher_ScanFileUsesOverflowLaneWhenFindingChannelFull(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
@@ -582,6 +584,273 @@ func TestWatcher_ScanFileDropsWhenFindingChannelFull(t *testing.T) {
 	if got := len(fsw.findings); got != cap(fsw.findings) {
 		t.Fatalf("findings len = %d, want channel to remain full at %d", got, cap(fsw.findings))
 	}
+	select {
+	case finding := <-fsw.overflow:
+		if finding.Path != secretPath {
+			t.Fatalf("overflow path = %q, want %q", finding.Path, secretPath)
+		}
+	default:
+		t.Fatal("saturated finding was not preserved in the overflow lane")
+	}
+}
+
+func TestWatcher_FlushUsesOverflowLaneWhenFindingChannelFull(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: dir}},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	fsw := w.(*fsWatcher)
+
+	for i := 0; i < cap(fsw.findings); i++ {
+		fsw.findings <- Finding{Path: fmt.Sprintf("preload-%d", i)}
+	}
+
+	secretPath := filepath.Join(dir, "shutdown-secret.txt")
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	fsw.flushScan(secretPath, true)
+
+	select {
+	case finding := <-fsw.overflow:
+		if !finding.IsAgent || finding.Path != secretPath {
+			t.Fatalf("overflow finding = %+v, want agent flush for %q", finding, secretPath)
+		}
+	default:
+		t.Fatal("saturated shutdown finding was not preserved in overflow lane")
+	}
+}
+
+func TestWatcher_AgentOverflowReplacesNonAgentSample(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: dir}},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(defaults)
+	defer sc.Close()
+
+	var errorsMu sync.Mutex
+	var errorsSeen []string
+	w, err := NewWatcher(cfg, sc, nil, func(err error) {
+		errorsMu.Lock()
+		defer errorsMu.Unlock()
+		errorsSeen = append(errorsSeen, err.Error())
+	})
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	fsw := w.(*fsWatcher)
+
+	for i := 0; i < cap(fsw.findings); i++ {
+		fsw.findings <- Finding{Path: fmt.Sprintf("preload-%d", i)}
+	}
+	fsw.overflow <- Finding{Path: "non-agent-overflow", IsAgent: false}
+
+	secretPath := filepath.Join(dir, "agent-secret.txt")
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	fsw.scanFile(context.Background(), secretPath, true)
+
+	select {
+	case finding := <-fsw.overflow:
+		if !finding.IsAgent || finding.Path != secretPath {
+			t.Fatalf("overflow finding = %+v, want agent finding for %q", finding, secretPath)
+		}
+	default:
+		t.Fatal("agent finding did not replace non-agent overflow sample")
+	}
+	errorsMu.Lock()
+	defer errorsMu.Unlock()
+	if len(errorsSeen) != 1 || !strings.Contains(errorsSeen[0], "replaced by agent-attributed overflow") {
+		t.Fatalf("displaced finding was not reported: %v", errorsSeen)
+	}
+}
+
+func TestWatcher_OverflowCoalescingPreservesPendingPriority(t *testing.T) {
+	tests := []struct {
+		name       string
+		pending    Finding
+		incoming   Finding
+		wantReason string
+	}{
+		{
+			name:       "non-agent does not replace occupied lane",
+			pending:    Finding{Path: "pending-agent", IsAgent: true},
+			incoming:   Finding{Path: "incoming-non-agent", IsAgent: false},
+			wantReason: "priority lane already occupied",
+		},
+		{
+			name:       "second agent does not replace pending agent",
+			pending:    Finding{Path: "pending-agent", IsAgent: true},
+			incoming:   Finding{Path: "incoming-agent", IsAgent: true},
+			wantReason: "agent overflow already pending",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &fsWatcher{overflow: make(chan Finding, 1)}
+			w.overflow <- tt.pending
+
+			err := w.enqueueOverflow(tt.incoming)
+			if err == nil || !strings.Contains(err.Error(), tt.wantReason) {
+				t.Fatalf("enqueueOverflow error = %v, want %q", err, tt.wantReason)
+			}
+			select {
+			case got := <-w.overflow:
+				if got != tt.pending {
+					t.Fatalf("pending finding = %+v, want %+v", got, tt.pending)
+				}
+			default:
+				t.Fatal("pending priority finding was lost")
+			}
+		})
+	}
+}
+
+func TestWatcher_TryOverflowSendDoesNotBlockOnFullLane(t *testing.T) {
+	w := &fsWatcher{overflow: make(chan Finding, 1)}
+	pending := Finding{Path: "pending-agent", IsAgent: true}
+	w.overflow <- pending
+
+	if w.tryOverflowSend(Finding{Path: "incoming-agent", IsAgent: true}) {
+		t.Fatal("send to a full overflow lane unexpectedly succeeded")
+	}
+	if got := <-w.overflow; got != pending {
+		t.Fatalf("pending finding = %+v, want %+v", got, pending)
+	}
+}
+
+func TestWatcher_TryOverflowSendError(t *testing.T) {
+	t.Run("available_lane", func(t *testing.T) {
+		w := &fsWatcher{overflow: make(chan Finding, 1)}
+		incoming := Finding{Path: "incoming-agent", IsAgent: true}
+		if err := w.tryOverflowSendError(incoming, "lane refilled"); err != nil {
+			t.Fatalf("tryOverflowSendError: %v", err)
+		}
+		if got := <-w.overflow; got != incoming {
+			t.Fatalf("overflow finding = %+v, want %+v", got, incoming)
+		}
+	})
+
+	t.Run("full_lane", func(t *testing.T) {
+		w := &fsWatcher{overflow: make(chan Finding, 1)}
+		pending := Finding{Path: "pending-agent", IsAgent: true}
+		w.overflow <- pending
+		err := w.tryOverflowSendError(Finding{Path: "incoming-agent", IsAgent: true}, "lane refilled")
+		if err == nil || !strings.Contains(err.Error(), "lane refilled") {
+			t.Fatalf("tryOverflowSendError error = %v, want lane refilled", err)
+		}
+		if got := <-w.overflow; got != pending {
+			t.Fatalf("pending finding = %+v, want %+v", got, pending)
+		}
+	})
+}
+
+func TestWatcher_ClosedGuardsRejectNewWork(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		lineage Lineage
+	}{
+		{name: "before_lineage_snapshot", lineage: &mockLineage{hasFileOpen: true}},
+		{name: "before_timer_registration"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &fsWatcher{
+				cfg:     &config.FileSentry{},
+				lineage: tt.lineage,
+				timers:  make(map[string]*time.Timer),
+				pidSnap: make(map[string]bool),
+				closed:  true,
+			}
+			w.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+			if len(w.timers) != 0 || len(w.pidSnap) != 0 {
+				t.Fatalf("closed watcher accepted work: timers=%d pid snapshots=%d", len(w.timers), len(w.pidSnap))
+			}
+		})
+	}
+
+	t.Run("timer_callback", func(t *testing.T) {
+		sc := &countingDLPScanner{}
+		w := &fsWatcher{
+			cfg:      &config.FileSentry{ScanContent: ptrBool(true)},
+			scanner:  sc,
+			findings: make(chan Finding, 1),
+			overflow: make(chan Finding, 1),
+			timers:   make(map[string]*time.Timer),
+			pidSnap:  make(map[string]bool),
+		}
+		w.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+		w.mu.Lock()
+		w.closed = true
+		timer := w.timers[path]
+		w.mu.Unlock()
+		if timer == nil {
+			t.Fatal("debounce timer was not registered")
+		}
+
+		deadline := time.Now().Add(5 * debounceDelay)
+		testwait.For(
+			t,
+			filesentryPositiveBackstop,
+			func() bool { return time.Now().After(deadline) },
+			"debounce timer to fire after watcher closure",
+		)
+		if timer.Stop() {
+			t.Fatal("debounce timer had not fired")
+		}
+		if got := sc.calls.Load(); got != 0 {
+			t.Fatalf("closed timer callback ran %d scans", got)
+		}
+	})
+
+	t.Run("direct_scan", func(t *testing.T) {
+		sc := &countingDLPScanner{}
+		w := &fsWatcher{
+			cfg:      &config.FileSentry{ScanContent: ptrBool(true)},
+			scanner:  sc,
+			findings: make(chan Finding, 1),
+			overflow: make(chan Finding, 1),
+			closed:   true,
+		}
+		w.scanFile(context.Background(), path, true)
+		if got := sc.calls.Load(); got != 1 {
+			t.Fatalf("DLP scans = %d, want one scan stopped at delivery", got)
+		}
+		if got := len(w.findings) + len(w.overflow); got != 0 {
+			t.Fatalf("closed watcher delivered %d findings", got)
+		}
+	})
 }
 
 func TestWatcher_EmptyFileSkipped(t *testing.T) {
@@ -686,6 +955,70 @@ func (s *countingDLPScanner) ScanTextForDLP(context.Context, string) scanner.Tex
 			PatternName: "test secret",
 			Severity:    "critical",
 		}},
+	}
+}
+
+type blockingDLPScanner struct {
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingDLPScanner) ScanTextForDLP(context.Context, string) scanner.TextDLPResult {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return scanner.TextDLPResult{
+		Matches: []scanner.TextDLPMatch{{
+			PatternName: "shutdown secret",
+			Severity:    "critical",
+		}},
+	}
+}
+
+func TestWatcher_CloseWaitsForInFlightDebounceScan(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sc := &blockingDLPScanner{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	w, err := NewWatcher(&config.FileSentry{ScanContent: ptrBool(true)}, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	fsw := w.(*fsWatcher)
+	fsw.handleEvent(context.Background(), fsnotify.Event{Name: secretPath, Op: fsnotify.Write})
+
+	select {
+	case <-sc.entered:
+	case <-time.After(filesentryPositiveBackstop):
+		t.Fatal("debounce scan did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- w.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before in-flight scan completed: %v", err)
+	case <-time.After(filesentryNegativeObservation / 10):
+	}
+
+	close(sc.release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(filesentryPositiveBackstop):
+		t.Fatal("Close did not finish after scan release")
+	}
+
+	finding, ok := <-w.Findings()
+	if !ok || finding.Path != secretPath {
+		t.Fatalf("in-flight finding = %+v, open=%t, want path %q", finding, ok, secretPath)
 	}
 }
 
@@ -1125,8 +1458,8 @@ func TestWatcher_StartContextCancelled(t *testing.T) {
 }
 
 func TestWatcher_FindingsChannelFull(t *testing.T) {
-	// When the findings channel is full, new findings should be dropped
-	// (not block the watcher).
+	// When the findings channel is full, the watcher remains non-blocking and
+	// exposes saturation through the priority overflow lane.
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
@@ -1161,19 +1494,19 @@ func TestWatcher_FindingsChannelFull(t *testing.T) {
 		}
 	}
 
-	// Poll until at least one finding arrives, proving debounce completed
-	// without deadlock. The channel is bounded (findingsChanSize), so
-	// overflow writes are dropped - but at least some should arrive.
+	// Wait until saturation reaches the overflow lane before draining. This
+	// proves burst handling remains non-blocking while making overflow visible.
 	deadline := time.After(filesentryPositiveBackstop)
-	drained := 0
-	for drained == 0 {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for len(w.(*fsWatcher).overflow) == 0 {
 		select {
-		case <-w.Findings():
-			drained++
+		case <-tick.C:
 		case <-deadline:
-			t.Fatal("timeout: no findings arrived (channel full test)")
+			t.Fatal("timeout: saturation did not reach the overflow lane")
 		}
 	}
+	drained := 0
 	// Drain remaining without blocking.
 	for {
 		select {
@@ -1185,6 +1518,12 @@ func TestWatcher_FindingsChannelFull(t *testing.T) {
 	}
 done:
 	_ = drained // at least 1 guaranteed by waitLoop above
+	select {
+	case <-w.(*fsWatcher).OverflowFindings():
+		// Saturation was visible instead of silently dropping every overflow.
+	default:
+		t.Fatal("expected a finding on the overflow lane")
+	}
 }
 
 func TestWatcher_PermissionDeniedSubdir(t *testing.T) {

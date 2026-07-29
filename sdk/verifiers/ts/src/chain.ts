@@ -30,7 +30,7 @@ export async function verifyChain(
   options: VerifyChainOptions = {},
 ): Promise<ChainResult> {
   if (receipts.length === 0) {
-    return { valid: true, receipt_count: 0, final_seq: 0, root_hash: "" };
+    return broken(0, "empty chain");
   }
 
   if (receipts[0]?.record_type === evidenceRecordType) {

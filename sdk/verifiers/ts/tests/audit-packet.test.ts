@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,8 +9,11 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { verifyAuditPacket } from "../src/audit-packet.js";
 import type { AuditPacket } from "../src/types.js";
+import { resolveSignerKey, sha256Hex } from "../src/util.js";
 
 const publicKey = "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678";
+const versionedPublicKey =
+  "pipelock-ed25519-public-v1\nRlWn5gXBLrsApGA3iBwzxbyl63S0WgLo5yYaf/WiFng=";
 const rootHash = "be904bd5ca82adc26c2969872c23925f22ff24e33faf44a1185b9ffc0e2c2b5a";
 
 function basePacket(): AuditPacket {
@@ -81,7 +84,7 @@ function writePacket(mutator?: (packet: AuditPacket) => void): string {
 }
 
 const defaultOptions = {
-  signerKey: "",
+  signerKey: publicKey,
   offline: false,
   allowSelfConsistentOnly: false,
   noTrustRequired: false,
@@ -94,6 +97,112 @@ test("audit packet verifies end to end", async () => {
   assert.equal(report.schema_check, "pass");
   assert.equal(report.chain_check, "pass");
   assert.equal(report.cross_check, "pass");
+});
+
+test("audit packet requires external trust for valid verdict", async () => {
+  const report = await verifyAuditPacket(writePacket(), { ...defaultOptions, signerKey: "" });
+  assert.equal(report.valid, false);
+  assert.equal(report.chain_check, "fail");
+  assert.ok(report.errors?.some((err) => err.includes("requires --key or --expect-sha256")));
+});
+
+test("packet hash can anchor the embedded signer key", async () => {
+  const dir = writePacket();
+  const packetBytes = readFileSync(path.join(dir, "packet.json"));
+  const report = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: "",
+    expectSha256: sha256Hex(packetBytes),
+  });
+  assert.equal(report.valid, true, JSON.stringify(report.errors));
+});
+
+test("wrong packet hash cannot anchor the embedded signer key", async () => {
+  const report = await verifyAuditPacket(writePacket(), {
+    ...defaultOptions,
+    signerKey: "",
+    expectSha256: "a".repeat(64),
+  });
+  assert.equal(report.valid, false);
+  assert.ok(report.errors?.some((err) => err.includes("packet sha256 mismatch")));
+});
+
+test("explicit self-consistent mode uses the unpinned chain", async () => {
+  const dir = writePacket((packet) => {
+    packet.verifier!.verdict = "self_consistent_only";
+    packet.verifier!.trusted = false;
+    delete packet.verifier!.signer_key;
+  });
+  const report = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: "",
+    allowSelfConsistentOnly: true,
+  });
+  assert.equal(report.valid, true, JSON.stringify(report.errors));
+});
+
+test("explicit no-trust mode can use the packet key", async () => {
+  const dir = writePacket((packet) => {
+    packet.verifier!.verdict = "error";
+    packet.verifier!.trusted = false;
+  });
+  const report = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: "",
+    noTrustRequired: true,
+  });
+  assert.equal(report.valid, true, JSON.stringify(report.errors));
+});
+
+test("audit packet rejects an empty chain", async () => {
+  const dir = writePacket((packet) => {
+    packet.summary!.receipt_count = 0;
+    packet.summary!.totals!.allow = 0;
+    packet.verifier!.receipt_count = 0;
+    packet.verifier!.root_hash = "";
+    packet.verifier!.final_seq = 0;
+  });
+  writeFileSync(path.join(dir, "evidence.jsonl"), "\n", { mode: 0o600 });
+
+  const report = await verifyAuditPacket(dir, defaultOptions);
+  assert.equal(report.valid, false);
+  assert.equal(report.chain_check, "fail");
+  assert.ok(report.errors?.some((err) => err.includes("empty chain")));
+});
+
+test("literal signer key wins over a same-named cwd file", () => {
+  const dir = writePacket();
+  writeFileSync(path.join(dir, publicKey), "0".repeat(64), { mode: 0o600 });
+  const result = spawnSync(
+    process.execPath,
+    [path.resolve("dist/src/cli.js"), "audit-packet", ".", "--key", publicKey],
+    {
+      cwd: dir,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("versioned literal signer key wins over a same-named cwd file", () => {
+  const dir = writePacket();
+  const shadow = path.join(dir, versionedPublicKey);
+  mkdirSync(path.dirname(shadow), { recursive: true, mode: 0o700 });
+  writeFileSync(shadow, "0".repeat(64), { mode: 0o600 });
+  const result = spawnSync(
+    process.execPath,
+    [path.resolve("dist/src/cli.js"), "audit-packet", ".", "--key", versionedPublicKey],
+    {
+      cwd: dir,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("versioned signer keys reject malformed base64", () => {
+  const malformed = versionedPublicKey.replace("RlWn", "Rl!Wn");
+  assert.throws(() => resolveSignerKey(malformed), /malformed base64/u);
 });
 
 test("audit packet detects totals mismatch", async () => {
@@ -136,6 +245,17 @@ test("audit packet detects final_seq mismatch", async () => {
   const report = await verifyAuditPacket(
     writePacket((packet) => {
       packet.verifier!.final_seq = 3;
+    }),
+    defaultOptions,
+  );
+  assert.equal(report.cross_check, "fail");
+  assert.ok(report.errors?.some((err) => err.includes("final_seq")));
+});
+
+test("audit packet detects present final_seq zero mismatch", async () => {
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.verifier!.final_seq = 0;
     }),
     defaultOptions,
   );

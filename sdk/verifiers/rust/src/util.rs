@@ -234,25 +234,44 @@ pub fn resolve_signer_key(input: &str) -> Result<String> {
         return Ok(String::new());
     }
 
-    let mut value = trimmed.to_string();
-    let path = Path::new(trimmed);
-    if path.exists() {
-        value = fs::read_to_string(path)
-            .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?
-            .trim()
-            .to_string();
+    // Both supported literal forms are unambiguously key material. Parse them
+    // before consulting the filesystem so an untrusted working directory
+    // cannot replace a pinned literal with a same-named file.
+    if (trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()))
+        || trimmed
+            .lines()
+            .next()
+            .is_some_and(|line| line.trim_end_matches('\r') == "pipelock-ed25519-public-v1")
+    {
+        return parse_signer_key_value(trimmed);
     }
 
+    let path = Path::new(trimmed);
+    let value = if path.exists() {
+        fs::read_to_string(path)
+            .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?
+            .trim()
+            .to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    parse_signer_key_value(&value)
+}
+
+fn parse_signer_key_value(value: &str) -> Result<String> {
     let mut lines = value.lines();
     if lines.next().map(|line| line.trim_end_matches('\r')) == Some("pipelock-ed25519-public-v1") {
         let body = lines.next().unwrap_or("").trim();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(body)
             .map_err(|err| VerifierError::Runtime(format!("decode public key: {err}")))?;
-        value = hex::encode(bytes);
+        let decoded = hex::encode(bytes);
+        decode_hex(&decoded, 32, "public key").map_err(VerifierError::Runtime)?;
+        return Ok(decoded);
     }
 
-    decode_hex(&value, 32, "public key").map_err(VerifierError::Runtime)?;
+    decode_hex(value, 32, "public key").map_err(VerifierError::Runtime)?;
     Ok(value.to_ascii_lowercase())
 }
 

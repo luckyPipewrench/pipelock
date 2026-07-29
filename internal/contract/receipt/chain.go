@@ -214,35 +214,51 @@ func ExtractEvidenceReceiptsFromSessionDir(dir, sessionID string) ([]EvidenceRec
 	// the prefix but belongs to session "s-evil", so prefix matching folded
 	// another session's receipts into this one's chain order.
 	wantSession := filepath.Base(sessionID)
-	files := make([]string, 0)
+	// Parse once per file rather than on every comparator call. A session's
+	// shard count is unbounded over time now that resume no longer caps the
+	// directory, and the two sibling scanners in this change already
+	// precompute the same way.
+	type shard struct {
+		path     string
+		base     string
+		seqStart uint64
+	}
+	shards := make([]shard, 0)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		parsedSession, _, ok := parseEvidenceName(name)
+		parsedSession, seqStart, ok := parseEvidenceName(name)
 		if !ok || parsedSession != wantSession {
 			continue
 		}
-		files = append(files, filepath.Join(clean, name))
+		shards = append(shards, shard{
+			path:     filepath.Join(clean, name),
+			base:     name,
+			seqStart: seqStart,
+		})
 	}
 	// Total order. sort.Slice is not stable, and a non-numeric trailing segment
 	// parses to sequence 0, so several distinct names can tie. Without a
 	// tie-break the resulting chain order would depend on directory order.
-	sort.Slice(files, func(i, j int) bool {
-		si, sj := evidenceSeqStart(files[i]), evidenceSeqStart(files[j])
-		if si != sj {
-			return si < sj
+	sort.Slice(shards, func(i, j int) bool {
+		if shards[i].seqStart != shards[j].seqStart {
+			return shards[i].seqStart < shards[j].seqStart
 		}
-		return filepath.Base(files[i]) < filepath.Base(files[j])
+		return shards[i].base < shards[j].base
 	})
+	files := make([]string, 0, len(shards))
+	for _, s := range shards {
+		files = append(files, s.path)
+	}
 
 	// Refuse an ambiguous shard set rather than concatenating receipts in an
 	// order that depended on which of two indistinguishable names sorted
 	// first. A verifier presenting that as a chain is the same hazard as a
 	// truncated read presented as complete.
 	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("evidence session %s in %s: %w", wantSession, clean, err)
 	}
 
 	var out []EvidenceReceipt
@@ -304,8 +320,4 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 // guarantees that rather than two copies plus a drift test.
 func parseEvidenceName(path string) (sessionID string, seqStart uint64, ok bool) {
 	return evidencename.Parse(path)
-}
-
-func evidenceSeqStart(path string) uint64 {
-	return evidencename.SeqStart(path)
 }

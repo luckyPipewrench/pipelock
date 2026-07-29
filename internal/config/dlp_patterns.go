@@ -34,6 +34,8 @@ var defaultDLPPatternSet = []DLPPattern{
 	{Name: "Stripe Webhook Secret", Regex: `whsec_[a-zA-Z0-9_\-]{20,}`, Severity: SeverityCritical},
 
 	// Source control tokens
+	// GitHub tokens are base64url-ish after a short "gh?_"/"github_pat_"
+	// prefix. Keep these unanchored so glued-key exfiltration still matches.
 	{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: SeverityCritical},
 	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical},
 	// GitLab personal access tokens: "glpat-" prefix, 20+ chars.

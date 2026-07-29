@@ -97,7 +97,7 @@ func tokenClasses() []classPattern {
 		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA|AGPA|AROA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}\b`), priority: 100},
-		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},
+		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?i)(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{36,})`), priority: 100},
 		// All documented GitLab token prefixes (token overview: glpat-,
 		// gloas-, gldt-, glrt-/glrtr-, glcbt-, glptt-, glft-, glimt-,
 		// glagent-, glwt-, glsoat-, glffct-) share the gl<type>- + base64url

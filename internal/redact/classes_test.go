@@ -220,6 +220,39 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 	}
 }
 
+func TestDefaultMatcher_GitHubTokenInOpaqueRunStillMatches(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "classic",
+			input: strings.Repeat("A", 260) + "." + "ghp_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		},
+		{
+			name:  "fine-grained",
+			input: strings.Repeat("A", 260) + "." + "github_pat_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		},
+		{
+			name:  "uppercase classic",
+			input: strings.Repeat("A", 260) + "." + "GHP_" + strings.Repeat("B", 40) + "." + strings.Repeat("C", 260),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, got := range m.Scan(tc.input) {
+				if got.Class == ClassGitHubToken {
+					return
+				}
+			}
+			t.Fatalf("expected %s token in opaque run to match", tc.name)
+		})
+	}
+}
+
 func TestDefaultMatcher_ProviderKeyGlueParity(t *testing.T) {
 	t.Parallel()
 	m := NewDefaultMatcher()

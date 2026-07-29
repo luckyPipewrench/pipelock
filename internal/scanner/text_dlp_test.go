@@ -1364,6 +1364,74 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_GitHubTokensInLongOpaqueRunsStillBlock(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	classic := "ghp_" + strings.Repeat("D", 40)
+	fineGrained := "github_pat_" + strings.Repeat("E", 40)
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "classic token delimited by prose",
+			text: "token=" + classic,
+			want: "GitHub Token",
+		},
+		{
+			name: "fine grained token delimited by prose",
+			text: "token=" + fineGrained,
+			want: "GitHub Fine-Grained PAT",
+		},
+		{
+			name: "classic glued token still blocks",
+			text: "prefixZ" + classic,
+			want: "GitHub Token",
+		},
+		{
+			name: "fine grained glued token still blocks",
+			text: "prefixZ" + fineGrained,
+			want: "GitHub Fine-Grained PAT",
+		},
+		{
+			name: "classic token-shaped substring inside opaque run",
+			text: strings.Repeat("A", 260) + classic + strings.Repeat("B", 260),
+			want: "GitHub Token",
+		},
+		{
+			name: "classic token-shaped substring inside dotted opaque run",
+			text: strings.Repeat("A", 260) + "." + classic + "." + strings.Repeat("B", 260),
+			want: "GitHub Token",
+		},
+		{
+			name: "fine grained token-shaped substring inside opaque run",
+			text: strings.Repeat("C", 260) + fineGrained + strings.Repeat("F", 260),
+			want: "GitHub Fine-Grained PAT",
+		},
+		{
+			name: "credential context in long opaque run still blocks",
+			text: strings.Repeat("A", 260) + ".token." + classic + "." + strings.Repeat("B", 260),
+			want: "GitHub Token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Fatalf("expected %q match, got clean", tt.want)
+			}
+			if !hasTextDLPMatch(result.Matches, tt.want, "") {
+				t.Fatalf("missing %q in matches: %v", tt.want, result.Matches)
+			}
+		})
+	}
+}
+
 func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 	cfg := testConfig()
 	s := MustNew(cfg)

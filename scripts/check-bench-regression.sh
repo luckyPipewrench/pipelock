@@ -101,7 +101,9 @@ current="$(mktemp "$TMPDIR/pipelock-bench-current.XXXXXX")"
 summary="$(mktemp "$TMPDIR/pipelock-benchstat.XXXXXX")"
 failures="$(mktemp "$TMPDIR/pipelock-bench-failures.XXXXXX")"
 benchstat_warnings="$(mktemp "$TMPDIR/pipelock-benchstat-warnings.XXXXXX")"
-trap 'rm -f "$current" "$summary" "$failures" "$benchstat_warnings"' EXIT
+baseline_normalized="$(mktemp "$TMPDIR/pipelock-bench-baseline-normalized.XXXXXX")"
+current_normalized="$(mktemp "$TMPDIR/pipelock-bench-current-normalized.XXXXXX")"
+trap 'rm -f "$current" "$summary" "$failures" "$benchstat_warnings" "$baseline_normalized" "$current_normalized"' EXIT
 
 printf 'bench-regression: baseline=%s threshold=+%s%% count=%s benchtime=%s\n' "$BENCH_BASELINE" "$threshold" "$BENCH_COUNT" "$BENCH_TIME"
 printf 'bench-regression: running:'
@@ -110,9 +112,15 @@ printf '\n'
 
 "${bench_cmd[@]}" >"$current"
 
+# Benchmark names end in the effective GOMAXPROCS (for example -4 or -16).
+# Normalize that run metadata for both the display and the enforced comparison
+# so a baseline remains comparable on a machine with a different CPU count.
+awk '{ if ($1 ~ /^Benchmark/) sub(/-[0-9]+$/, "", $1); print }' "$BENCH_BASELINE" >"$baseline_normalized"
+awk '{ if ($1 ~ /^Benchmark/) sub(/-[0-9]+$/, "", $1); print }' "$current" >"$current_normalized"
+
 # Optional human-readable summary; display-only, never gates the result.
 if [[ -n "$benchstat_bin" ]]; then
-	if "$benchstat_bin" -alpha "$BENCHSTAT_ALPHA" "$BENCH_BASELINE" "$current" >"$summary" 2>"$benchstat_warnings"; then
+	if "$benchstat_bin" -alpha "$BENCHSTAT_ALPHA" "$baseline_normalized" "$current_normalized" >"$summary" 2>"$benchstat_warnings"; then
 		cat "$summary"
 	else
 		echo "bench-regression: benchstat summary unavailable (continuing with raw comparison):" >&2
@@ -133,6 +141,12 @@ fi
 # the code without disabling errexit globally.
 awk_status=0
 awk -v threshold="$threshold" '
+	function benchmark_name(raw) {
+		# Go appends the effective GOMAXPROCS (for example -4 or -16) to
+		# benchmark names. It is run metadata, not benchmark identity.
+		sub(/-[0-9]+$/, "", raw)
+		return raw
+	}
 	function nsop(   i, v) {
 		for (i = 1; i <= NF; i++) {
 			if ($i == "ns/op") {
@@ -143,14 +157,16 @@ awk -v threshold="$threshold" '
 	}
 	FNR == NR {
 		if ($1 ~ /^Benchmark/) {
+			name = benchmark_name($1)
 			v = nsop()
-			if (v >= 0 && (!($1 in base) || v < base[$1])) base[$1] = v
+			if (v >= 0 && (!(name in base) || v < base[name])) base[name] = v
 		}
 		next
 	}
 	$1 ~ /^Benchmark/ {
+		name = benchmark_name($1)
 		v = nsop()
-		if (v >= 0 && (!($1 in cur) || v < cur[$1])) cur[$1] = v
+		if (v >= 0 && (!(name in cur) || v < cur[name])) cur[name] = v
 	}
 	END {
 		for (name in cur) {

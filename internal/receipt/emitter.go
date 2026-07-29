@@ -1047,11 +1047,13 @@ func (e *Emitter) resumeChain() error {
 
 	var lastReceipt *Receipt
 	for i := len(files) - 1; i >= 0 && lastReceipt == nil; i-- {
-		entries, readErr := recorder.ReadEntries(files[i])
+		entries, truncated, readErr := recorder.ReadTailEntriesBounded(
+			files[i], recorder.MaxEvidenceReadEntries, recorder.MaxEvidenceReadFileBytes,
+		)
 		if readErr != nil {
 			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
 		}
-		for j := len(entries) - 1; j >= 0; j-- {
+		for j := range entries {
 			switch entries[j].Type {
 			case transcriptRootEntryType:
 				// A transcript root is a clean-shutdown checkpoint that seals the
@@ -1078,6 +1080,9 @@ func (e *Emitter) resumeChain() error {
 				break
 			}
 		}
+		if lastReceipt == nil && truncated {
+			return fmt.Errorf("reading existing evidence file %s: %w: no action receipt found in bounded tail", filepath.Base(files[i]), recorder.ErrEvidenceReadLimitExceeded)
+		}
 	}
 	if lastReceipt == nil {
 		return nil
@@ -1085,7 +1090,9 @@ func (e *Emitter) resumeChain() error {
 
 	var firstReceipt *Receipt
 	for _, file := range files {
-		entries, readErr := recorder.ReadEntries(file)
+		entries, truncated, readErr := recorder.ReadHeadEntriesBounded(
+			file, recorder.MaxEvidenceReadEntries, recorder.MaxEvidenceReadFileBytes,
+		)
 		if readErr != nil {
 			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(file), readErr)
 		}
@@ -1102,6 +1109,9 @@ func (e *Emitter) resumeChain() error {
 		}
 		if firstReceipt != nil {
 			break
+		}
+		if truncated {
+			return fmt.Errorf("reading existing evidence file %s: %w: no action receipt found in bounded head", filepath.Base(file), recorder.ErrEvidenceReadLimitExceeded)
 		}
 	}
 

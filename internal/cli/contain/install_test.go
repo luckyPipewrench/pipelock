@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -168,8 +169,14 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 	env := &installEnv{
 		runCmd: runner.run,
-		stat:   os.Stat,
-		lstat:  os.Lstat,
+		dialCtx: func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
+			client, server := net.Pipe()
+			_ = server.Close()
+			return client, nil
+		},
+		wait:  func(context.Context, time.Duration) error { return nil },
+		stat:  os.Stat,
+		lstat: os.Lstat,
 		readFile: func(p string) ([]byte, error) {
 			return os.ReadFile(filepath.Clean(p))
 		},
@@ -2123,13 +2130,12 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 30 steps total after combining the runtime
-	// contract steps with the credential guard and the operator evidence ACL
-	// step. Changing this count is a documented breaking change for the
-	// dry-run / verify probe-4 inventory.
+	// Sanity: the install flow has 31 steps total after combining the runtime
+	// contract steps, credential guard, operator evidence ACL, and final
+	// readiness gate. Changing this count changes documented dry-run output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 30 {
-		t.Errorf("installSteps count: got %d, want 30", len(steps))
+	if len(steps) != 31 {
+		t.Errorf("installSteps count: got %d, want 31", len(steps))
 	}
 }
 

@@ -379,6 +379,29 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 		label = AuditA2AScan
 	}
 
+	// Most scanner labels have static guidance. Return before normalizing the
+	// reason so hot-path blocks such as URL length do not allocate a lowercase
+	// copy that no branch will inspect.
+	switch label {
+	case AuditCrossRequestEntropy,
+		AuditResponseScan,
+		AuditMediaPolicy,
+		AuditRequestPolicy,
+		AuditReverseSubmit,
+		AuditRedaction,
+		AuditA2AScan,
+		AuditAgentBudget,
+		AuditSessionAnomaly,
+		ScannerEntropy,
+		ScannerDenialOfWallet,
+		ScannerSSRF,
+		ScannerSSRFMetadata,
+		ScannerCoreSSRF:
+		// These labels route on reason below.
+	default:
+		return GuidanceFor(label)
+	}
+
 	lowerReason := strings.ToLower(reason)
 	if label == AuditCrossRequestEntropy && strings.Contains(lowerReason, "cross-request entropy") {
 		return RemediationGuidance{

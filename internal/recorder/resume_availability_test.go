@@ -92,6 +92,102 @@ func TestRecorder_ResumeSucceedsPastDirectoryCap(t *testing.T) {
 	}
 }
 
+// Legacy releases could write shards larger than the current 8 MiB rotation
+// ceiling. Upgrade resume needs only the final entry, so a valid historical
+// shard above the whole-file reader cap must not disable all future receipts.
+//
+// Neutralization: restore the whole-file ReadEvidenceFileBounded call in
+// readEntriesForResume and this fails with ErrEvidenceReadLimitExceeded.
+func TestRecorder_ResumeSucceedsFromLegacyShardAboveReadCap(t *testing.T) {
+	dir := t.TempDir()
+	const session = "legacy-large"
+	path := filepath.Join(dir, "evidence-"+session+"-0.jsonl")
+	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, filePermissions)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	encoder := json.NewEncoder(file)
+	detail := map[string]string{"padding": strings.Repeat("x", 2048)}
+	var lastSeq uint64
+	for seq := uint64(0); ; seq++ {
+		entry := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  seq,
+			Timestamp: time.Unix(1712345678, 0).UTC(),
+			SessionID: session,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   "legacy oversized shard fixture",
+			Detail:    detail,
+			PrevHash:  fmt.Sprintf("prev-%d", seq),
+			Hash:      fmt.Sprintf("hash-%d", seq),
+		}
+		if err := encoder.Encode(entry); err != nil {
+			_ = file.Close()
+			t.Fatalf("Encode seq %d: %v", seq, err)
+		}
+		lastSeq = seq
+		if seq%128 == 0 {
+			info, statErr := file.Stat()
+			if statErr != nil {
+				_ = file.Close()
+				t.Fatalf("Stat: %v", statErr)
+			}
+			if info.Size() > recorder.MaxEvidenceReadFileBytes+(1<<20) {
+				break
+			}
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rec := newResumeRecorder(t, dir)
+	if err := rec.Record(recorder.Entry{
+		SessionID: session,
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "must resume from a legacy oversized shard",
+		Detail:    map[string]string{"safe": "value"},
+	}); err != nil {
+		t.Fatalf("Record after legacy oversized shard: %v", err)
+	}
+	nextPath := filepath.Join(dir, fmt.Sprintf("evidence-%s-%d.jsonl", session, lastSeq+1))
+	if _, err := os.Stat(nextPath); err != nil {
+		t.Fatalf("next resumed shard %q: %v", filepath.Base(nextPath), err)
+	}
+}
+
+func TestRecorder_ResumeRejectsMalformedAndOverlongTail(t *testing.T) {
+	tests := []struct {
+		name string
+		tail []byte
+	}{
+		{name: "truncated json", tail: []byte(`{"v":2,"seq":9`)},
+		{name: "overlong line", tail: []byte(strings.Repeat("x", recorder.MaxEntryLineBytes+1))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "evidence-bad-tail-0.jsonl")
+			if err := os.WriteFile(path, tt.tail, filePermissions); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			rec := newResumeRecorder(t, dir)
+			err := rec.Record(recorder.Entry{
+				SessionID: "bad-tail",
+				Type:      testType,
+				Transport: testTransport,
+				Summary:   "malformed tail must fail closed",
+				Detail:    map[string]string{"safe": "value"},
+			})
+			if err == nil {
+				t.Fatal("Record succeeded; want malformed tail refusal")
+			}
+		})
+	}
+}
+
 // Resume must keep walking down past empty newest shards. A one-shot "highest
 // few names" scan would hand resume only the empty files, fall through to
 // genesis, and fork the chain from sequence 0.

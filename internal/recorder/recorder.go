@@ -5,7 +5,6 @@ package recorder
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -1007,17 +1006,12 @@ func (r *Recorder) sessionResumeCandidates(sessionID string) ([]resumeCandidate,
 }
 
 func readEntriesForResume(path string) ([]Entry, error) {
-	limits := defaultEntryReadLimits()
-	data, err := ReadEvidenceFileBounded(path, limits.MaxBytes)
+	entries, truncated, err := ReadTailEntriesBounded(path, 1, int64(maxEntryWireLineBytes))
 	if err != nil {
 		return nil, err
 	}
-	entries, truncated, bytesRead, err := readEntriesFromReader(bytes.NewReader(data), limits)
-	if err != nil {
-		return nil, err
-	}
-	if truncated {
-		return nil, readLimitExceededError(path, limits, bytesRead)
+	if len(entries) == 0 && truncated {
+		return nil, fmt.Errorf("%w: no complete evidence tail entry within %d bytes", ErrEvidenceReadLimitExceeded, maxEntryWireLineBytes)
 	}
 	return entries, nil
 }

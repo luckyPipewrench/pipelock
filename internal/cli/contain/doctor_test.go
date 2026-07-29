@@ -219,6 +219,17 @@ func TestCheckNodeThroughProxy(t *testing.T) {
 }
 
 func TestCheckDNSFailure(t *testing.T) {
+	t.Run("clean failure via Pipelock policy denial 403", func(t *testing.T) {
+		env := newDoctorEnv(t, func(args []string) (string, int, error) {
+			if !argsContain(args, dnsFailureHost, "%{http_connect}") {
+				t.Fatalf("did not target nxdomain: %v", args)
+			}
+			return "curl: (56) CONNECT tunnel failed, response 403\n403", 56, nil
+		})
+		if res := checkDNSFailure(context.Background(), env); res.status != statusPass {
+			t.Fatalf("got %q (%s)", res.status, res.detail)
+		}
+	})
 	t.Run("clean failure via attributed proxy CONNECT 5xx", func(t *testing.T) {
 		env := newDoctorEnv(t, func(args []string) (string, int, error) {
 			if !argsContain(args, dnsFailureHost, "%{http_connect}") {
@@ -238,6 +249,8 @@ func TestCheckDNSFailure(t *testing.T) {
 		}{
 			{name: "proxy unavailable", out: "curl: (7) Failed to connect\n000", code: 7},
 			{name: "TLS failure after CONNECT", out: "curl: (35) TLS error\n200", code: 35},
+			{name: "proxy authentication required", out: "curl: (56) CONNECT failed\n407", code: 56},
+			{name: "unrelated client denial", out: "curl: (56) CONNECT failed\n404", code: 56},
 			{name: "no status", out: "curl failed", code: 56},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

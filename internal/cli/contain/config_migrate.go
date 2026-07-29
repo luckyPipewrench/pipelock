@@ -16,6 +16,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const containMetricsListen = "127.0.0.1:9091"
+
 type migratedConfigArtifact struct {
 	path string
 	dir  bool
@@ -68,6 +70,14 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	}
 	if err := migrateTLSCA(ctx, mapping); err != nil {
 		return nil, nil, err
+	}
+	// The agent can reach the main proxy listener by design. Keeping /metrics
+	// and /stats there gives a contained process an oracle for scanner hits,
+	// blocked destinations, and anomaly categories. Put observability on a
+	// distinct loopback listener; the containment rules allow only the proxy
+	// port and drop agent-owned traffic to other loopback ports.
+	if strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen"))) == "" {
+		setMappingScalar(mapping, "metrics_listen", containMetricsListen)
 	}
 
 	if err := migrateScalarDir(ctx, mapping, []string{"rules", "rules_dir"}, filepath.Join(env.dataDir, "rules")); err != nil {

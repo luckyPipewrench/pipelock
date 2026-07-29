@@ -36,9 +36,11 @@ MCP servers spoken to over a child-process stdio pipe are not on the network. Pi
 
 ## UDP and direct DNS egress
 
-Pipelock inspects HTTP and HTTPS. It does not inspect DNS lookups or arbitrary UDP. DNS is allowed to leave the host so that name resolution works at all.
+Pipelock inspects HTTP and HTTPS. It does not inspect DNS lookups or arbitrary UDP payloads.
 
-**Integrator action.** If DNS-based exfiltration is in the threat model, use a DNS-layer firewall such as `dnsdist`, `unbound` with a blocklist, or AdGuard Home. Alternatively, run the agent inside a network namespace where DNS is constrained to a known resolver. UDP egress to non-DNS destinations should be blocked at the host firewall.
+The behavior depends on deployment mode. Under `pipelock contain`, the nftables ruleset drops agent-owned `udp dport 53` and `tcp dport 53` across IPv4 and IPv6, so direct DNS does **not** leave the host from the agent UID. Name resolution for the contained agent is expected to use the mediated proxy path. Outside `pipelock contain`—for example, sidecar and reverse-proxy deployments without that ruleset—DNS may leave the workload so name resolution works.
+
+**Integrator action.** Under `pipelock contain`, confirm the direct-DNS drop rules with `pipelock contain verify`. For non-contained deployments where DNS exfiltration is in scope, use a DNS-layer firewall such as `dnsdist`, `unbound` with a blocklist, or AdGuard Home, or constrain the agent to a known resolver in its network namespace. Block UDP egress to non-DNS destinations at the host or workload firewall.
 
 ## Processes that mint their own CA trust
 

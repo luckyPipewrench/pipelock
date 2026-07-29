@@ -194,7 +194,7 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read managed config: %v", err)
 	}
-	if string(got) != "mode: balanced\n" {
+	if string(got) != "mode: balanced\nmetrics_listen: 127.0.0.1:9091\n" {
 		t.Fatalf("managed config = %q, want the promoted candidate", got)
 	}
 }

@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Extra coverage for the install step builders that hit error / undo paths
@@ -120,7 +122,7 @@ func TestStepWritePipelockConfig_CopiesFromSource(t *testing.T) {
 	}
 	dst := filepath.Join(env.configDir, "pipelock.yaml")
 	got, _ := os.ReadFile(dst) //nolint:gosec // tmpdir-scoped test path
-	if string(got) != "mode: balanced\n" {
+	if string(got) != "mode: balanced\nmetrics_listen: 127.0.0.1:9091\n" {
 		t.Errorf("dst: %q", got)
 	}
 }
@@ -144,7 +146,7 @@ func TestStepWritePipelockConfig_SkipsWhenIdentical(t *testing.T) {
 	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(dst, body, 0o600); err != nil {
+	if err := os.WriteFile(dst, []byte("mode: balanced\nmetrics_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
 		t.Fatalf("write dst: %v", err)
 	}
 	applied := applyStagePromote(t, env, installOpts{configSource: src})
@@ -171,7 +173,7 @@ func TestStepWritePipelockConfig_OverwritesAndWarnsOnDifference(t *testing.T) {
 		t.Errorf("expected overwrite when --config differs")
 	}
 	got, _ := os.ReadFile(dst) //nolint:gosec // tmpdir-scoped test path
-	if string(got) != "mode: strict\n" {
+	if string(got) != "mode: strict\nmetrics_listen: 127.0.0.1:9091\n" {
 		t.Errorf("dst not overwritten: %q", got)
 	}
 	bak, _ := os.ReadFile(dst + ".bak") //nolint:gosec // tmpdir-scoped test path
@@ -180,6 +182,23 @@ func TestStepWritePipelockConfig_OverwritesAndWarnsOnDifference(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "WARN: --config") {
 		t.Errorf("expected warning in output, got %q", buf.String())
+	}
+}
+
+func TestStepWaitPipelockReadyFailsWhenServiceExited(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.dialCtx = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		return nil, errors.New("connection refused")
+	}
+	runner.on("systemctl show pipelock --property=ActiveState,SubState",
+		"ActiveState=failed\nSubState=failed\n", 0, nil)
+
+	applied, err := stepWaitPipelockReady().apply(t.Context(), env)
+	if applied {
+		t.Fatal("readiness step reported a mutation")
+	}
+	if err == nil || !strings.Contains(err.Error(), "service exited before readiness") {
+		t.Fatalf("readiness error = %v, want exited-service refusal", err)
 	}
 }
 
@@ -257,6 +276,147 @@ func TestStepEnableSystemUnit_SkipsWhenActive(t *testing.T) {
 	if applied {
 		t.Errorf("expected skip when unit already active")
 	}
+}
+
+func TestStepEnableSystemUnit_RestartsActiveServiceAfterRuntimeChange(t *testing.T) {
+	for _, changed := range []struct {
+		name  string
+		apply func(*installEnv)
+	}{
+		{name: "binary", apply: func(env *installEnv) { env.serviceBinaryChanged = true }},
+		{name: "config", apply: func(env *installEnv) { env.serviceConfigChanged = true }},
+		{name: "unit", apply: func(env *installEnv) { env.serviceUnitChanged = true }},
+	} {
+		t.Run(changed.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			changed.apply(env)
+			runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
+			runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
+			runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "enabled\n", 0, nil)
+			runner.on(argvFor(testSystemctl, "restart", "pipelock"), "", 0, nil)
+
+			applied, err := stepEnableSystemUnit().apply(context.Background(), env)
+			if err != nil || !applied {
+				t.Fatalf("apply = %v, %v; want true, nil", applied, err)
+			}
+			if !runnerSawSystemctl(runner, "restart", "pipelock") {
+				t.Fatalf("changed %s did not restart active service: %v", changed.name, runner.calls)
+			}
+		})
+	}
+}
+
+func TestStepEnableSystemUnit_ActiveDisabledChangeEnablesAndRestarts(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.serviceBinaryChanged = true
+	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "disabled\n", 1, nil)
+
+	applied, err := stepEnableSystemUnit().apply(context.Background(), env)
+	if err != nil || !applied {
+		t.Fatalf("apply = %v, %v; want true, nil", applied, err)
+	}
+	if !runnerSawSystemctl(runner, "enable", "pipelock") || !runnerSawSystemctl(runner, "restart", "pipelock") {
+		t.Fatalf("active disabled changed service was not enabled and restarted: %v", runner.calls)
+	}
+	if runnerSawSystemctl(runner, "enable", "--now", "pipelock") {
+		t.Fatalf("active service should not use enable --now: %v", runner.calls)
+	}
+}
+
+func TestRenderSystemUnit_FileSentryHomeIsVisibleReadOnly(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	body := renderSystemUnit(env)
+	if !strings.Contains(body, "ProtectHome=read-only") {
+		t.Fatalf("system unit does not expose DAC-authorized home paths read-only:\n%s", body)
+	}
+	if strings.Contains(body, "ProtectHome=true") || strings.Contains(body, "ProtectHome=false") {
+		t.Fatalf("system unit has unsafe/inaccessible ProtectHome mode:\n%s", body)
+	}
+}
+
+func TestChangedRuntimeArtifacts_RollbackRestoresAndRestartsPriorService(t *testing.T) {
+	t.Run("binary", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		if err := os.WriteFile(filepath.Clean(env.pipelockTarget), []byte("old binary"), 0o600); err != nil {
+			t.Fatalf("WriteFile old binary: %v", err)
+		}
+		step := stepInstallPipelockBinary()
+		if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+			t.Fatalf("apply = %v, %v", applied, err)
+		}
+		env.installServiceStateKnown = true
+		env.installServiceWasActive = true
+		if err := step.undo(context.Background(), env); err != nil {
+			t.Fatalf("undo: %v", err)
+		}
+		assertRestoredFileAndRestart(t, env.pipelockTarget, "old binary", runner)
+	})
+
+	t.Run("config", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		managed := managedPipelockConfigPath(env)
+		if err := os.WriteFile(managed, []byte("old config"), 0o600); err != nil {
+			t.Fatalf("WriteFile old config: %v", err)
+		}
+		if err := os.WriteFile(stagedPipelockConfigPath(env), []byte("new config"), 0o600); err != nil {
+			t.Fatalf("WriteFile staged config: %v", err)
+		}
+		step := stepPromotePipelockConfig(installOpts{configSource: "/candidate.yaml"})
+		if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+			t.Fatalf("apply = %v, %v", applied, err)
+		}
+		env.installServiceStateKnown = true
+		env.installServiceWasActive = true
+		if err := step.undo(context.Background(), env); err != nil {
+			t.Fatalf("undo: %v", err)
+		}
+		assertRestoredFileAndRestart(t, managed, "old config", runner)
+	})
+
+	t.Run("unit", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		if err := os.WriteFile(env.systemUnitPath, []byte("old unit"), 0o600); err != nil {
+			t.Fatalf("WriteFile old unit: %v", err)
+		}
+		step := stepWriteSystemUnit()
+		if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+			t.Fatalf("apply = %v, %v", applied, err)
+		}
+		env.installServiceStateKnown = true
+		env.installServiceWasActive = true
+		if err := step.undo(context.Background(), env); err != nil {
+			t.Fatalf("undo: %v", err)
+		}
+		assertRestoredFileAndRestart(t, env.systemUnitPath, "old unit", runner)
+		if !runnerSawSystemctl(runner, "daemon-reload") {
+			t.Fatalf("unit rollback did not reload systemd: %v", runner.calls)
+		}
+	})
+}
+
+func assertRestoredFileAndRestart(t *testing.T, path, want string, runner *fakeRunner) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile restored artifact: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("restored artifact = %q, want %q", got, want)
+	}
+	if !runnerSawSystemctl(runner, "restart", "pipelock") {
+		t.Fatalf("rollback did not restart prior active service: %v", runner.calls)
+	}
+}
+
+func runnerSawSystemctl(runner *fakeRunner, args ...string) bool {
+	for _, call := range runner.calls {
+		if call.name == testSystemctl && strings.Join(call.args, "\x00") == strings.Join(args, "\x00") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStepEnableSystemUnit_EnablesWhenActiveButDisabled(t *testing.T) {

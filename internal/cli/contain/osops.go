@@ -28,7 +28,9 @@ type installEnv struct {
 	// runCmd shells out. Returns merged stdout+stderr (bounded), the
 	// process exit code, and a startup error (nil if the binary ran even
 	// when it exited non-zero). Same contract as verify.go's runCommand.
-	runCmd runCommand
+	runCmd  runCommand
+	dialCtx dialFunc
+	wait    waitFunc
 
 	// stat / readFile / writeFile / removeFile mirror the os package. They
 	// are abstracted only so tests can run on a tmpdir without sudo. Path
@@ -107,6 +109,11 @@ type installEnv struct {
 	prevNFTPersistStateKnown bool
 	preflightBinaryHash      string
 	archivedBackups          map[string][]string
+	serviceBinaryChanged     bool
+	serviceConfigChanged     bool
+	serviceUnitChanged       bool
+	installServiceWasActive  bool
+	installServiceStateKnown bool
 }
 
 // defaultInstallEnv wires installEnv to the real OS. Callers fill in
@@ -118,6 +125,8 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
 		runCmd:             realRunCommand,
+		dialCtx:            realDial,
+		wait:               waitForReadiness,
 		stat:               os.Stat,
 		lstat:              os.Lstat,
 		readFile:           os.ReadFile,

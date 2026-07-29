@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -431,6 +432,95 @@ func TestHandlerStreamStatusDropsInactiveRemoteKill(t *testing.T) {
 	}
 	if !resp.EmergencyControlsRead {
 		t.Fatal("EmergencyControlsRead = false, want true with enumerable emergency store")
+	}
+}
+
+func TestHandlerStreamStatusNewerInactiveShadowsActiveForSameAudience(t *testing.T) {
+	store := mustStore(t)
+	publishStreamFixture(t, store)
+	emergency := mustEmergencyStore(t)
+
+	active, activeResolver := signedRemoteKillMessageWithResolver(t, "kill-active", 1, conductor.KillSwitchActive, testNow.Add(-time.Minute))
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), active, testNow.Add(-time.Minute)); err != nil {
+		t.Fatalf("PublishRemoteKill(active) error = %v", err)
+	}
+	inactive, _ := signedRemoteKillMessageWithResolver(t, "kill-inactive", 2, conductor.KillSwitchInactive, testNow)
+	var inactiveResolver conductor.SignatureKeyResolver
+	inactive.Signatures, inactiveResolver = signConductorPreimage(t, inactive.SignablePreimage, signing.PurposeRemoteKillSigning, "resume-signer-1", "resume-signer-2")
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
+		t.Fatalf("PublishRemoteKill(inactive) error = %v", err)
+	}
+
+	handler := newStreamStatusTestHandler(t, store, emergency, activeResolver, inactiveResolver)
+	w := getStreamStatus(t, handler, StreamStatusPath+"?org_id=org-main", streamAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp streamStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.ActiveRemoteKills) != 0 {
+		t.Fatalf("active kills = %+v, want none after newer resume for same audience", resp.ActiveRemoteKills)
+	}
+}
+
+func TestHandlerStreamStatusInactiveDoesNotShadowDifferentAudience(t *testing.T) {
+	store := mustStore(t)
+	publishStreamFixture(t, store)
+	emergency := mustEmergencyStore(t)
+
+	active, activeResolver := signedRemoteKillMessageWithResolver(t, "kill-active", 1, conductor.KillSwitchActive, testNow.Add(-time.Minute))
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), active, testNow.Add(-time.Minute)); err != nil {
+		t.Fatalf("PublishRemoteKill(active) error = %v", err)
+	}
+	inactive, _ := signedRemoteKillMessageWithResolver(t, "kill-inactive", 2, conductor.KillSwitchInactive, testNow)
+	inactive.Audience = conductor.Audience{InstanceIDs: []string{"other-instance"}}
+	var inactiveResolver conductor.SignatureKeyResolver
+	inactive.Signatures, inactiveResolver = signConductorPreimage(t, inactive.SignablePreimage, signing.PurposeRemoteKillSigning, "other-kill-signer-1", "other-kill-signer-2")
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
+		t.Fatalf("PublishRemoteKill(inactive) error = %v", err)
+	}
+
+	handler := newStreamStatusTestHandler(t, store, emergency, activeResolver, inactiveResolver)
+	w := getStreamStatus(t, handler, StreamStatusPath+"?org_id=org-main", streamAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp streamStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.ActiveRemoteKills) != 1 || resp.ActiveRemoteKills[0].MessageID != "kill-active" {
+		t.Fatalf("active kills = %+v, want active record for unaffected audience", resp.ActiveRemoteKills)
+	}
+}
+
+func TestRemoteKillAudienceCovers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		covering conductor.Audience
+		target   conductor.Audience
+		want     bool
+	}{
+		{name: "wildcard covers targeted id", covering: conductor.Audience{InstanceIDs: []string{"*"}}, target: conductor.Audience{InstanceIDs: []string{"one"}}, want: true},
+		{name: "targeted id does not cover wildcard", covering: conductor.Audience{InstanceIDs: []string{"one"}}, target: conductor.Audience{InstanceIDs: []string{"*"}}, want: false},
+		{name: "id superset", covering: conductor.Audience{InstanceIDs: []string{"one", "two"}}, target: conductor.Audience{InstanceIDs: []string{"two"}}, want: true},
+		{name: "id subset", covering: conductor.Audience{InstanceIDs: []string{"one"}}, target: conductor.Audience{InstanceIDs: []string{"one", "two"}}, want: false},
+		{name: "weaker labels cover stronger labels", covering: conductor.Audience{Labels: map[string]string{"ring": "stable"}}, target: conductor.Audience{Labels: map[string]string{"ring": "stable", "zone": "east"}}, want: true},
+		{name: "stronger labels do not cover weaker labels", covering: conductor.Audience{Labels: map[string]string{"ring": "stable", "zone": "east"}}, target: conductor.Audience{Labels: map[string]string{"ring": "stable"}}, want: false},
+		{name: "label mismatch", covering: conductor.Audience{Labels: map[string]string{"ring": "canary"}}, target: conductor.Audience{Labels: map[string]string{"ring": "stable"}}, want: false},
+		{name: "covering ids do not cover target labels", covering: conductor.Audience{InstanceIDs: []string{"one"}}, target: conductor.Audience{Labels: map[string]string{"ring": "stable"}}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := remoteKillAudienceCovers(tt.covering, tt.target); got != tt.want {
+				t.Fatalf("remoteKillAudienceCovers() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

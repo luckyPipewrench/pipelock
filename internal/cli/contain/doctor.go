@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -384,9 +385,11 @@ const dnsFailureHost = "pipelock-doctor-nonexistent.invalid"
 // than succeeding, hanging, or failing without proxy attribution.
 func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 	// %{http_connect} is the proxy's CONNECT response. It gives this check a
-	// positive attribution signal: a 5xx proves Pipelock handled the request and
-	// rejected the unresolvable target. A bare nonzero curl exit could instead be
-	// a dead proxy, TLS failure, or unrelated transport error.
+	// positive attribution signal: the local Pipelock CONNECT response proves the
+	// proxy handled the request. Pipelock returns 403 for a scanner/policy denial
+	// (including DNS resolution failure) and 5xx for upstream failures. A bare
+	// nonzero curl exit could instead be a dead proxy, TLS failure, or unrelated
+	// transport error.
 	name, args := env.sudoAgent(env.curlProxyArgsWithWriteOut("https://"+dnsFailureHost+"/", "%{http_connect}")...)
 	out, code, err := env.runCmd(ctx, name, args...)
 	if res, done := classifyAgentRun(out, err, "curl"); done {
@@ -396,7 +399,7 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 		return skip("curl not available for the agent", "install curl on the host")
 	}
 	connectCode, ok := trailingHTTPCode(out)
-	if code != 0 && ok && connectCode >= 500 && connectCode < 600 {
+	if code != 0 && ok && (connectCode == http.StatusForbidden || connectCode >= 500 && connectCode < 600) {
 		return pass(fmt.Sprintf("proxy CONNECT returned HTTP %d for the unresolvable host (curl exit %d, clean failure)", connectCode, code))
 	}
 	if code == 0 && ok && connectCode == 200 {

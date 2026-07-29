@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -145,6 +146,12 @@ func (h *Handler) activeEmergencyControls(ctx context.Context, q StreamStatusQue
 		if err != nil {
 			return nil, nil, false, err
 		}
+		// A resume is a newer inactive message for the same audience, not a
+		// deletion of the earlier active record. Mirror follower selection here:
+		// first select the newest valid record per identical audience, then report
+		// it only when that effective record is active. Otherwise status lies until
+		// the superseded active record's TTL expires even though followers resumed.
+		effective := make([]StoredRemoteKill, 0, len(records))
 		for _, record := range records {
 			msg := record.Message
 			if !emergencyInScope(msg.OrgID, msg.FleetID, q) {
@@ -153,7 +160,35 @@ func (h *Handler) activeEmergencyControls(ctx context.Context, q StreamStatusQue
 			if err := msg.ValidateAtTime(now); err != nil {
 				continue
 			}
+			replaced := false
+			for i := range effective {
+				if conductor.AudiencesEqual(effective[i].Message.Audience, msg.Audience) {
+					if newerRemoteKill(record, effective[i]) {
+						effective[i] = record
+					}
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				effective = append(effective, record)
+			}
+		}
+		for _, record := range effective {
+			msg := record.Message
 			if msg.State != conductor.KillSwitchActive {
+				continue
+			}
+			shadowed := false
+			for _, candidate := range effective {
+				if candidate.Message.State == conductor.KillSwitchInactive &&
+					newerRemoteKill(candidate, record) &&
+					remoteKillAudienceCovers(candidate.Message.Audience, msg.Audience) {
+					shadowed = true
+					break
+				}
+			}
+			if shadowed {
 				continue
 			}
 			kills = append(kills, ActiveRemoteKill{
@@ -204,6 +239,37 @@ func (h *Handler) activeEmergencyControls(ctx context.Context, q StreamStatusQue
 		}
 	}
 	return kills, rollbacks, read, nil
+}
+
+// remoteKillAudienceCovers reports whether every follower matched by target is
+// also matched by covering. Audience matching is the union of an instance-ID
+// selector and a label selector, so both target branches must be covered. This
+// lets a newer wildcard resume shadow an older targeted kill without letting a
+// narrow resume falsely clear a broader kill from operator status.
+func remoteKillAudienceCovers(covering, target conductor.Audience) bool {
+	if slices.Contains(covering.InstanceIDs, "*") {
+		return true
+	}
+	if slices.Contains(target.InstanceIDs, "*") {
+		return false
+	}
+	for _, id := range target.InstanceIDs {
+		if !slices.Contains(covering.InstanceIDs, id) {
+			return false
+		}
+	}
+	if len(target.Labels) == 0 {
+		return true
+	}
+	if len(covering.Labels) == 0 {
+		return false
+	}
+	for key, want := range covering.Labels {
+		if target.Labels[key] != want {
+			return false
+		}
+	}
+	return true
 }
 
 // emergencyInScope reports whether an org/fleet-keyed emergency control matches

@@ -17,7 +17,9 @@ import (
 const (
 	// MaxEvidenceReadFileBytes matches the bounded dashboard evidence
 	// verification ceiling: one evidence source may contribute at most 8 MiB
-	// to in-memory verifier/resume reads.
+	// to in-memory verifier and online UI reads. Recorder resume uses a
+	// separately bounded single-entry tail read so legacy shards larger than
+	// this whole-file ceiling remain upgradeable.
 	MaxEvidenceReadFileBytes int64 = 8 << 20
 
 	// MaxEvidenceReadDirectoryEntries matches the bounded dashboard evidence

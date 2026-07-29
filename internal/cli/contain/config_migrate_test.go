@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMigratePipelockConfigForContain_RewritesHomePaths(t *testing.T) {
@@ -142,7 +143,7 @@ learn_lock:
 	}
 }
 
-func TestMigratePipelockConfigForContain_EmptyMappingIsNoOp(t *testing.T) {
+func TestMigratePipelockConfigForContain_EmptyMappingSeparatesObservability(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	home := t.TempDir()
 	origLookup := env.lookupUser
@@ -159,8 +160,31 @@ func TestMigratePipelockConfigForContain_EmptyMappingIsNoOp(t *testing.T) {
 	if len(artifacts) != 0 {
 		t.Fatalf("expected no artifacts, got %+v", artifacts)
 	}
-	if strings.TrimSpace(string(out)) != "{}" {
-		t.Fatalf("output: %q", out)
+	var cfg map[string]any
+	if err := yaml.Unmarshal(out, &cfg); err != nil {
+		t.Fatalf("decode migrated config: %v", err)
+	}
+	if got := cfg["metrics_listen"]; got != containMetricsListen {
+		t.Fatalf("metrics_listen = %v, want %q", got, containMetricsListen)
+	}
+}
+
+func TestMigratePipelockConfigForContain_PreservesExplicitMetricsListener(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	origLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == containInstallOperatorUser {
+			return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+		}
+		return origLookup(name)
+	}
+	out, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte("metrics_listen: 127.0.0.1:9191\n"))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !strings.Contains(string(out), "127.0.0.1:9191") {
+		t.Fatalf("explicit metrics listener changed: %s", out)
 	}
 }
 

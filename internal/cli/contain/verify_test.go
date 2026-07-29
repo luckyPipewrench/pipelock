@@ -208,12 +208,15 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		runCmd:        rejectAllRun,
 		dropCounter:   rejectAllDropCounter,
 		dialCtx:       rejectAllDial,
-		lookupUser:    rejectAllLookup,
-		groupIDs:      rejectAllGroupIDs,
-		stat:          os.Stat,
-		readFile:      rejectAllReadFile,
-		selfPath:      rejectAllSelfPath,
-		hashFile:      rejectAllHashFile,
+		wait: func(context.Context, time.Duration) error {
+			return nil
+		},
+		lookupUser: rejectAllLookup,
+		groupIDs:   rejectAllGroupIDs,
+		stat:       os.Stat,
+		readFile:   rejectAllReadFile,
+		selfPath:   rejectAllSelfPath,
+		hashFile:   rejectAllHashFile,
 	}
 	env.launchPath = filepath.Join(env.wrapperDir, "plk-launch")
 	for _, opt := range opts {
@@ -1657,6 +1660,44 @@ func TestProbeLoopbackListen(t *testing.T) {
 		}
 		if !strings.Contains(gotDetail, "refused") {
 			t.Fatalf("detail: got %q, want substring refused", gotDetail)
+		}
+	})
+
+	t.Run("slow startup becomes ready", func(t *testing.T) {
+		attempts := 0
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
+				attempts++
+				if attempts < 3 {
+					return nil, errors.New("connection refused")
+				}
+				return &fakeConn{}, nil
+			}
+			e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != "systemctl" || !containsArg(args, "show") {
+					t.Fatalf("unexpected readiness command: %s %v", name, args)
+				}
+				return "ActiveState=active\nSubState=running\n", 0, nil
+			}
+		})
+		gotStatus, _ := probeLoopbackListen(context.Background(), env)
+		if gotStatus != statusPass || attempts != 3 {
+			t.Fatalf("status=%q attempts=%d, want pass after 3", gotStatus, attempts)
+		}
+	})
+
+	t.Run("service exits before binding", func(t *testing.T) {
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
+				return nil, errors.New("connection refused")
+			}
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+				return "ActiveState=failed\nSubState=failed\n", 0, nil
+			}
+		})
+		gotStatus, gotDetail := probeLoopbackListen(context.Background(), env)
+		if gotStatus != statusFail || !strings.Contains(gotDetail, "exited before readiness") {
+			t.Fatalf("status=%q detail=%q, want failed-service diagnosis", gotStatus, gotDetail)
 		}
 	})
 }

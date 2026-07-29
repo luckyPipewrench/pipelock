@@ -121,6 +121,11 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 		ctx = context.Background()
 	}
 	env.archivedBackups = make(map[string][]string)
+	env.serviceBinaryChanged = false
+	env.serviceConfigChanged = false
+	env.serviceUnitChanged = false
+	env.installServiceWasActive = false
+	env.installServiceStateKnown = false
 	if opts.operatorUser != "" {
 		env.operatorUser = opts.operatorUser
 	}
@@ -315,6 +320,27 @@ func installSteps(opts installOpts) []step {
 		stepWriteAgentToolConfigs(),
 		stepWriteWrapperInventory(),
 		stepInstallSudoers(),
+		stepWaitPipelockReady(),
+	}
+}
+
+func stepWaitPipelockReady() step {
+	return step{
+		name: "wait-pipelock-ready",
+		desc: "confirm the installed proxy is accepting connections before declaring success",
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			status, detail := probeLoopbackListen(ctx, &probeEnv{
+				serviceName: "pipelock",
+				port:        env.proxyPort,
+				runCmd:      env.runCmd,
+				dialCtx:     env.dialCtx,
+				wait:        env.wait,
+			})
+			if status != statusPass {
+				return false, fmt.Errorf("installed proxy failed readiness: %s", detail)
+			}
+			return false, nil
+		},
 	}
 }
 
@@ -932,6 +958,7 @@ func stepPromotePipelockConfig(opts installOpts) step {
 		desc: "promote the accepted config to /etc/pipelock/pipelock.yaml",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			configWritten = false
+			env.serviceConfigChanged = false
 			if opts.configSource == "" {
 				return false, nil
 			}
@@ -958,13 +985,17 @@ func stepPromotePipelockConfig(opts installOpts) step {
 				return false, err
 			}
 			configWritten = true
+			env.serviceConfigChanged = true
 			return true, discardStagedPipelockConfig(env)
 		},
-		undo: func(_ context.Context, env *installEnv) error {
+		undo: func(ctx context.Context, env *installEnv) error {
 			if !configWritten {
 				return nil
 			}
-			return restoreBackup(env, managedPipelockConfigPath(env))
+			if err := restoreBackup(env, managedPipelockConfigPath(env)); err != nil {
+				return err
+			}
+			return restartRestoredServiceIfNeeded(ctx, env)
 		},
 	}
 }
@@ -1173,6 +1204,7 @@ func stepInstallPipelockBinary() step {
 		name: "install-pipelock-binary",
 		desc: "install pipelock binary to /usr/local/bin/pipelock (0o755)",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			env.serviceBinaryChanged = false
 			if env.preflightBinaryHash != "" {
 				srcHash, err := env.hashFile(env.pipelockBinary)
 				if err != nil {
@@ -1209,10 +1241,14 @@ func stepInstallPipelockBinary() step {
 			if err := backupAndWrite(env, env.pipelockTarget, data, modeWrapperExec); err != nil {
 				return false, err
 			}
+			env.serviceBinaryChanged = true
 			return true, nil
 		},
-		undo: func(_ context.Context, env *installEnv) error {
-			return restoreBackup(env, env.pipelockTarget)
+		undo: func(ctx context.Context, env *installEnv) error {
+			if err := restoreBackup(env, env.pipelockTarget); err != nil {
+				return err
+			}
+			return restartRestoredServiceIfNeeded(ctx, env)
 		},
 	}
 }
@@ -1328,6 +1364,7 @@ func stepWriteSystemUnit() step {
 		name: "write-system-unit",
 		desc: "write /etc/systemd/system/pipelock.service",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			env.serviceUnitChanged = false
 			body := renderSystemUnit(env)
 			// Idempotency: only write if content differs.
 			if existing, err := env.readFile(env.systemUnitPath); err == nil && string(existing) == body {
@@ -1336,14 +1373,17 @@ func stepWriteSystemUnit() step {
 			if err := backupAndWrite(env, env.systemUnitPath, []byte(body), modeUnitFile); err != nil {
 				return false, err
 			}
+			env.serviceUnitChanged = true
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			if err := restoreBackup(env, env.systemUnitPath); err != nil {
 				return err
 			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
-			return nil
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return err
+			}
+			return restartRestoredServiceIfNeeded(ctx, env)
 		},
 	}
 }
@@ -1372,7 +1412,10 @@ func renderSystemUnit(env *installEnv) string {
 		"",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-		"ProtectHome=true",
+		// The proxy needs read access to explicitly DAC/ACL-authorized file-sentry
+		// paths under /home. read-only keeps the mount immutable while Unix
+		// permissions still hide every path not granted to pipelock-proxy.
+		"ProtectHome=read-only",
 		"ReadWritePaths=" + env.dataDir,
 		"PrivateTmp=true",
 		"ProtectKernelTunables=true",
@@ -1410,10 +1453,23 @@ func stepEnableSystemUnit() step {
 			wasActive = strings.TrimSpace(activeOut) == systemctlActive
 			wasEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
 			preStateKnown = true
+			env.installServiceWasActive = wasActive
+			env.installServiceStateKnown = true
+			runtimeChanged := env.serviceBinaryChanged || env.serviceConfigChanged || env.serviceUnitChanged
 			if wasActive && wasEnabled {
-				// Re-issuing enable when already enabled is a no-op anyway,
-				// but skip to keep the dry-run/run output clean.
-				return false, nil
+				if !runtimeChanged {
+					return false, nil
+				}
+				return true, runOrErr(ctx, env, "systemctl", "restart", "pipelock")
+			}
+			if wasActive {
+				if err := runOrErr(ctx, env, "systemctl", "enable", "pipelock"); err != nil {
+					return true, err
+				}
+				if runtimeChanged {
+					return true, runOrErr(ctx, env, "systemctl", "restart", "pipelock")
+				}
+				return true, nil
 			}
 			return true, runOrErr(ctx, env, "systemctl", "enable", "--now", "pipelock")
 		},
@@ -1435,6 +1491,13 @@ func stepEnableSystemUnit() step {
 			return nil
 		},
 	}
+}
+
+func restartRestoredServiceIfNeeded(ctx context.Context, env *installEnv) error {
+	if !env.installServiceStateKnown || !env.installServiceWasActive {
+		return nil
+	}
+	return runOrErr(ctx, env, "systemctl", "restart", "pipelock")
 }
 
 // ---------------------------------------------------------------------------

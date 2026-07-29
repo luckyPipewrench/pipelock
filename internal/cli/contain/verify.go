@@ -43,7 +43,9 @@ const (
 	defaultNFTTable     = "pipelock_containment"
 	defaultNFTChain     = "output_filter"
 
-	probeDialTimeout = 2 * time.Second
+	probeDialTimeout  = 2 * time.Second
+	readinessTimeout  = 5 * time.Second
+	readinessInterval = 100 * time.Millisecond
 
 	// curl flags shared between the egress canary and the operator
 	// reachability probe. Connect timeout is intentionally lower than
@@ -104,6 +106,8 @@ type runCommand func(ctx context.Context, name string, args ...string) (output s
 // net.Dialer.DialContext + a timeout.
 type dialFunc func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error)
 
+type waitFunc func(ctx context.Context, duration time.Duration) error
+
 // lookupUserFunc is the os/user.Lookup signature, factored so tests can
 // substitute a deterministic lookup.
 type lookupUserFunc func(name string) (*user.User, error)
@@ -147,6 +151,7 @@ type probeEnv struct {
 	runCmd      runCommand
 	dropCounter dropCounterFunc
 	dialCtx     dialFunc
+	wait        waitFunc
 	lookupUser  lookupUserFunc
 	groupIDs    groupIDsFunc
 	stat        func(path string) (os.FileInfo, error)
@@ -183,6 +188,7 @@ func defaultProbeEnv() *probeEnv {
 		runCmd:             realRunCommand,
 		dropCounter:        readContainmentDropCounter,
 		dialCtx:            realDial,
+		wait:               waitForReadiness,
 		lookupUser:         user.Lookup,
 		groupIDs:           realGroupIDs,
 		stat:               os.Stat,
@@ -283,6 +289,17 @@ func (w *errorTrackingWriter) Err() error {
 func realDial(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{Timeout: timeout}
 	return d.DialContext(ctx, network, address)
+}
+
+func waitForReadiness(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // probe is one verification step. Probes are walked in slice order;
@@ -1611,13 +1628,37 @@ func scanPipelockCertCN(data []byte) (int, string, error) {
 func probeLoopbackListen(ctx context.Context, env *probeEnv) (string, string) {
 	addr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", env.port))
 	start := time.Now()
-	conn, err := env.dialCtx(ctx, "tcp", addr, probeDialTimeout)
-	if err != nil {
-		return statusFail, fmt.Sprintf("dial %s: %v", addr, err)
+	readyCtx, cancel := context.WithTimeout(ctx, readinessTimeout)
+	defer cancel()
+	maxAttempts := int(readinessTimeout/readinessInterval) + 1
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		conn, err := env.dialCtx(readyCtx, "tcp", addr, min(probeDialTimeout, readinessInterval))
+		if err == nil {
+			elapsed := time.Since(start)
+			_ = conn.Close()
+			return statusPass, fmt.Sprintf("%s accepted TCP within %s", addr, formatDialDuration(elapsed))
+		}
+		lastErr = err
+
+		out, code, showErr := env.runCmd(readyCtx, "systemctl", "show", env.serviceName,
+			"--property=ActiveState,SubState",
+		)
+		if showErr == nil && code == 0 {
+			fields := parseSystemdShow(out)
+			if fields["ActiveState"] != systemctlActive || fields["SubState"] != "running" {
+				return statusFail, fmt.Sprintf("dial %s: %v; service exited before readiness (ActiveState=%s SubState=%s)",
+					addr, err, fields["ActiveState"], fields["SubState"])
+			}
+		}
+		if attempt == maxAttempts-1 {
+			break
+		}
+		if err := env.wait(readyCtx, readinessInterval); err != nil {
+			break
+		}
 	}
-	elapsed := time.Since(start)
-	_ = conn.Close()
-	return statusPass, fmt.Sprintf("%s accepted TCP within %s", addr, formatDialDuration(elapsed))
+	return statusFail, fmt.Sprintf("dial %s: service did not become ready within %s (last error: %v)", addr, readinessTimeout, lastErr)
 }
 
 // formatDialDuration renders an elapsed dial time at millisecond

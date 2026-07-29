@@ -1161,7 +1161,7 @@ func TestRecorder_ResumeIsNotCappedByMatchingSessionFileCount(t *testing.T) {
 	}
 }
 
-func TestRecorder_ResumeRejectsOverCapTailRead(t *testing.T) {
+func TestRecorder_ResumeAcceptsOverCapLegacyTailRead(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "evidence-resume-tail-cap-0.jsonl")
 	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, filePermissions)
@@ -1213,18 +1213,15 @@ func TestRecorder_ResumeRejectsOverCapTailRead(t *testing.T) {
 		SessionID: "resume-tail-cap",
 		Type:      testType,
 		Transport: testTransport,
-		Summary:   "must fail closed before unbounded tail read",
+		Summary:   "must resume through a bounded tail read",
 		Detail:    map[string]string{"safe": "value"},
 	})
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("Record error = %v, want ErrEvidenceReadLimitExceeded", err)
-	}
-	if got := err.Error(); !strings.Contains(got, "bytes") || strings.Contains(got, "entries") {
-		t.Fatalf("Record error = %q, want byte-limit diagnosis only", got)
+	if err != nil {
+		t.Fatalf("Record after over-cap legacy shard: %v", err)
 	}
 }
 
-func TestRecorder_ResumeRejectsOverCapTailEntriesReportsEntryLimit(t *testing.T) {
+func TestRecorder_ResumeAcceptsLegacyShardPastEntryReadCap(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "evidence-resume-entry-cap-0.jsonl")
 
@@ -1267,14 +1264,11 @@ func TestRecorder_ResumeRejectsOverCapTailEntriesReportsEntryLimit(t *testing.T)
 		SessionID: "resume-entry-cap",
 		Type:      testType,
 		Transport: testTransport,
-		Summary:   "must fail closed on over-cap tail entries",
+		Summary:   "must resume from one bounded tail entry",
 		Detail:    map[string]string{"safe": "value"},
 	})
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("Record error = %v, want ErrEvidenceReadLimitExceeded", err)
-	}
-	if got := err.Error(); !strings.Contains(got, "entries") || strings.Contains(got, "bytes") {
-		t.Fatalf("Record error = %q, want entry-limit diagnosis only", got)
+	if err != nil {
+		t.Fatalf("Record after legacy shard past entry read cap: %v", err)
 	}
 }
 

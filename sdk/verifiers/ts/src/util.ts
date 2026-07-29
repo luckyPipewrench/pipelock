@@ -174,13 +174,27 @@ export function resolveSignerKey(input: string): string {
   const trimmed = input.trim();
   if (trimmed === "") return "";
 
+  // Both supported literal forms are unambiguously key material. Parse them
+  // before consulting the filesystem so an untrusted working directory
+  // cannot replace a pinned literal with a same-named file.
+  if (/^[0-9a-f]{64}$/iu.test(trimmed) || /^pipelock-ed25519-public-v1\r?\n/u.test(trimmed)) {
+    return parseSignerKeyValue(trimmed);
+  }
+
   let value = trimmed;
   if (existsSync(trimmed)) {
     value = readFileSync(trimmed, "utf8").trim();
   }
 
-  if (value.startsWith("pipelock-ed25519-public-v1\n")) {
-    const body = value.split(/\n/u)[1]?.trim() ?? "";
+  return parseSignerKeyValue(value);
+}
+
+function parseSignerKeyValue(value: string): string {
+  if (/^pipelock-ed25519-public-v1\r?\n/u.test(value)) {
+    const body = value.split(/\r?\n/u)[1]?.trim() ?? "";
+    if (!/^[A-Za-z0-9+/]{43}=$/u.test(body)) {
+      throw new Error("invalid public key: malformed base64");
+    }
     value = Buffer.from(body, "base64").toString("hex");
   }
 

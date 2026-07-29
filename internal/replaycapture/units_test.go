@@ -259,6 +259,17 @@ func TestVerifyPacketBytes_BrowserBundlePath(t *testing.T) {
 	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, eng.PublicKeyHex()); err != nil {
 		t.Fatalf("VerifyPacketBytes valid bundle: %v", err)
 	}
+	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, "  "+eng.PublicKeyHex()+"\n"); err != nil {
+		t.Fatalf("VerifyPacketBytes key with surrounding whitespace: %v", err)
+	}
+	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, ""); err == nil ||
+		!strings.Contains(err.Error(), "external signer key is required") {
+		t.Fatalf("missing external signer key error = %v", err)
+	}
+	if err := VerifyPacketBytes(packetJSON, nil, eng.PublicKeyHex()); err == nil ||
+		!strings.Contains(err.Error(), "empty chain") {
+		t.Fatalf("empty evidence error = %v", err)
+	}
 	if err := VerifyPacketBytes([]byte("{"), evidenceJSONL, eng.PublicKeyHex()); err == nil ||
 		!strings.Contains(err.Error(), "parsing packet.json") {
 		t.Fatalf("malformed packet error = %v", err)

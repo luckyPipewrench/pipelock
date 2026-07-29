@@ -4,12 +4,16 @@
 mod common;
 
 use pipelock_verifier_rs::audit_packet::{verify_audit_packet, AuditPacketOptions};
+use pipelock_verifier_rs::util::sha256_hex;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const PUBLIC_KEY: &str = "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678";
+const VERSIONED_PUBLIC_KEY: &str =
+    "pipelock-ed25519-public-v1\nRlWn5gXBLrsApGA3iBwzxbyl63S0WgLo5yYaf/WiFng=";
 const ROOT_HASH: &str = "be904bd5ca82adc26c2969872c23925f22ff24e33faf44a1185b9ffc0e2c2b5a";
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
@@ -40,6 +44,139 @@ fn audit_packet_verifies_end_to_end() {
     assert_eq!(report.schema_check, "pass");
     assert_eq!(report.chain_check, "pass");
     assert_eq!(report.cross_check, "pass");
+}
+
+#[test]
+fn audit_packet_requires_external_trust_for_valid_verdict() {
+    let packet_dir = write_packet(None);
+    let report = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: String::new(),
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert!(!report.valid);
+    assert_eq!(report.chain_check, "fail");
+    assert!(has_error(
+        &report.errors,
+        "requires --key or --expect-sha256"
+    ));
+}
+
+#[test]
+fn packet_hash_can_anchor_embedded_signer_key() {
+    let packet_dir = write_packet(None);
+    let packet_bytes = fs::read(packet_dir.join("packet.json")).unwrap();
+    let report = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: String::new(),
+            expect_sha256: sha256_hex(&packet_bytes),
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert!(report.valid, "{:?}", report.errors);
+}
+
+#[test]
+fn wrong_packet_hash_cannot_anchor_embedded_signer_key() {
+    let packet_dir = write_packet(None);
+    let report = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: String::new(),
+            expect_sha256: "a".repeat(64),
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert!(!report.valid);
+    assert!(has_error(&report.errors, "packet sha256 mismatch"));
+}
+
+#[test]
+fn explicit_self_consistent_mode_uses_unpinned_chain() {
+    let packet_dir = write_packet(Some(|packet| {
+        packet["verifier"]["verdict"] = Value::from("self_consistent_only");
+        packet["verifier"]["trusted"] = Value::from(false);
+        packet["verifier"]
+            .as_object_mut()
+            .unwrap()
+            .remove("signer_key");
+    }));
+    let report = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: String::new(),
+            allow_self_consistent_only: true,
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert!(report.valid, "{:?}", report.errors);
+}
+
+#[test]
+fn explicit_no_trust_mode_can_use_packet_key() {
+    let packet_dir = write_packet(Some(|packet| {
+        packet["verifier"]["verdict"] = Value::from("error");
+        packet["verifier"]["trusted"] = Value::from(false);
+    }));
+    let report = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: String::new(),
+            no_trust_required: true,
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert!(report.valid, "{:?}", report.errors);
+}
+
+#[test]
+fn audit_packet_rejects_empty_chain() {
+    let packet_dir = write_packet(Some(|packet| {
+        packet["summary"]["receipt_count"] = Value::from(0);
+        packet["summary"]["totals"]["allow"] = Value::from(0);
+        packet["verifier"]["receipt_count"] = Value::from(0);
+        packet["verifier"]["root_hash"] = Value::from("");
+        packet["verifier"]["final_seq"] = Value::from(0);
+    }));
+    fs::write(packet_dir.join("evidence.jsonl"), "\n").unwrap();
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert!(!report.valid);
+    assert_eq!(report.chain_check, "fail");
+    assert!(has_error(&report.errors, "empty chain"));
+}
+
+#[test]
+fn literal_signer_key_wins_over_same_named_cwd_file() {
+    let packet_dir = write_packet(None);
+    fs::write(packet_dir.join(PUBLIC_KEY), "0".repeat(64)).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .current_dir(&packet_dir)
+        .args(["audit-packet", ".", "--key", PUBLIC_KEY])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn versioned_literal_signer_key_wins_over_same_named_cwd_file() {
+    let packet_dir = write_packet(None);
+    let shadow = packet_dir.join(VERSIONED_PUBLIC_KEY);
+    fs::create_dir_all(shadow.parent().unwrap()).unwrap();
+    fs::write(shadow, "0".repeat(64)).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .current_dir(&packet_dir)
+        .args(["audit-packet", ".", "--key", VERSIONED_PUBLIC_KEY])
+        .status()
+        .unwrap();
+    assert!(status.success());
 }
 
 #[test]
@@ -216,7 +353,7 @@ fn write_packet(mutator: Option<fn(&mut Value)>) -> PathBuf {
 
 fn default_options() -> AuditPacketOptions {
     AuditPacketOptions {
-        signer_key: String::new(),
+        signer_key: PUBLIC_KEY.to_string(),
         offline: false,
         allow_self_consistent_only: false,
         no_trust_required: false,

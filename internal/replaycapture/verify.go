@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -102,6 +103,10 @@ func validateInMemoryPacketArtifacts(pkt auditpacket.Packet) error {
 }
 
 func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) error {
+	keyHex = strings.TrimSpace(keyHex)
+	if keyHex == "" {
+		return fmt.Errorf("external signer key is required")
+	}
 	if err := jsonscan.RejectUnsafeNumbers(evidenceJSONL); err != nil {
 		return fmt.Errorf("extracting evidence: %w", err)
 	}
@@ -109,11 +114,10 @@ func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) e
 	if err != nil {
 		return fmt.Errorf("extracting evidence: %w", err)
 	}
-	key := keyHex
-	if key == "" {
-		key = pkt.Verifier.SignerKey
+	if len(receipts) == 0 {
+		return fmt.Errorf("chain verification failed: empty chain")
 	}
-	chain := receipt.VerifyChain(receipts, key)
+	chain := receipt.VerifyChain(receipts, keyHex)
 	if !chain.Valid {
 		return fmt.Errorf("chain verification failed: %s", chain.Error)
 	}
@@ -127,7 +131,8 @@ func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) e
 	if pkt.Verifier.RootHash != "" && pkt.Verifier.RootHash != chain.RootHash {
 		return fmt.Errorf("root_hash mismatch: packet=%s chain=%s", pkt.Verifier.RootHash, chain.RootHash)
 	}
-	if pkt.Verifier.FinalSeq != 0 && (pkt.Verifier.FinalSeq < 0 || uint64(pkt.Verifier.FinalSeq) != chain.FinalSeq) {
+	if (pkt.Verifier.FinalSeqPresent || pkt.Verifier.FinalSeq != 0) &&
+		(pkt.Verifier.FinalSeq < 0 || uint64(pkt.Verifier.FinalSeq) != chain.FinalSeq) {
 		return fmt.Errorf("final_seq mismatch: packet=%d chain=%d", pkt.Verifier.FinalSeq, chain.FinalSeq)
 	}
 	if err := crossCheckTotals(pkt.Summary, receipts); err != nil {

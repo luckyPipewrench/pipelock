@@ -43,13 +43,10 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
         }
     }
 
-    let packet_text = match std::fs::read_to_string(&packet_path) {
+    let packet_text = match String::from_utf8(raw_packet) {
         Ok(text) => text,
         Err(err) => {
-            push_error(
-                &mut report,
-                format!("packet json: read {}: {err}", packet_path.display()),
-            );
+            push_error(&mut report, format!("packet json: invalid UTF-8: {err}"));
             return Ok(report);
         }
     };
@@ -104,10 +101,23 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
             return Ok(report);
         }
     };
-    let key_input = if opts.signer_key.trim().is_empty() {
-        string_at(&packet, &["verifier", "signer_key"]).unwrap_or("")
-    } else {
+    let packet_key = string_at(&packet, &["verifier", "signer_key"]).unwrap_or("");
+    let packet_key_allowed = !opts.expect_sha256.trim().is_empty()
+        || opts.no_trust_required
+        || (string_at(&packet, &["verifier", "verdict"]) == Some("self_consistent_only")
+            && opts.allow_self_consistent_only);
+    let key_input = if !opts.signer_key.trim().is_empty() {
         opts.signer_key.as_str()
+    } else if packet_key_allowed {
+        packet_key
+    } else {
+        report.chain_check = "fail".to_string();
+        push_error(
+            &mut report,
+            "chain: trusted Audit Packet verification requires --key or --expect-sha256"
+                .to_string(),
+        );
+        return Ok(report);
     };
     let key_hex = match resolve_signer_key(key_input) {
         Ok(key) => key,

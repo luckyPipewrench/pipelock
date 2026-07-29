@@ -70,6 +70,37 @@ func TestExampleConformsToV0(t *testing.T) {
 	}
 }
 
+func TestVerifierUnmarshalTracksPresentFinalSeqZero(t *testing.T) {
+	var present auditpacket.Verifier
+	if err := json.Unmarshal([]byte(`{"verdict":"invalid","trusted":false,"final_seq":0}`), &present); err != nil {
+		t.Fatalf("unmarshal present final_seq: %v", err)
+	}
+	if !present.FinalSeqPresent {
+		t.Fatal("explicit final_seq=0 must be distinguishable from omission")
+	}
+	roundTrip, err := json.Marshal(present)
+	if err != nil {
+		t.Fatalf("marshal present final_seq: %v", err)
+	}
+	if !bytes.Contains(roundTrip, []byte(`"final_seq":0`)) {
+		t.Fatalf("explicit final_seq=0 was lost during round trip: %s", roundTrip)
+	}
+
+	var omitted auditpacket.Verifier
+	if err := json.Unmarshal([]byte(`{"verdict":"invalid","trusted":false}`), &omitted); err != nil {
+		t.Fatalf("unmarshal omitted final_seq: %v", err)
+	}
+	if omitted.FinalSeqPresent {
+		t.Fatal("omitted final_seq must remain absent")
+	}
+
+	var nonCanonical auditpacket.Verifier
+	err = json.Unmarshal([]byte(`{"verdict":"invalid","trusted":false,"Final_Seq":0}`), &nonCanonical)
+	if err == nil || !strings.Contains(err.Error(), "canonical name final_seq") {
+		t.Fatalf("non-canonical final_seq error = %v", err)
+	}
+}
+
 // TestSchemaFileIsValidJSON guards against the schema file becoming malformed
 // during edits. We do NOT invoke a full JSON Schema validator (that would
 // require a third-party dep). The schema's job is enforced externally; here we

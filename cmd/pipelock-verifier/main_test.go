@@ -324,18 +324,40 @@ func runRoot(t *testing.T, args ...string) (string, string, int) {
 	return stdout.String(), stderr.String(), exitCodeFor(err)
 }
 
+func runAuditPacketWithKey(t *testing.T, key string, args ...string) (string, string, int) {
+	t.Helper()
+	fullArgs := []string{"audit-packet", "--key", key}
+	fullArgs = append(fullArgs, args...)
+	return runRoot(t, fullArgs...)
+}
+
 func TestAuditPacket_HappyPath(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 3)
 	dir := t.TempDir()
 	fix.writePacketDir(t, dir, nil)
 
-	stdout, stderr, code := runRoot(t, "audit-packet", dir)
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "VALID") {
 		t.Errorf("stdout missing VALID: %s", stdout)
+	}
+}
+
+func TestAuditPacket_ValidVerdictRequiresExternalTrustAnchor(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+
+	_, stderr, code := runRoot(t, "audit-packet", dir)
+	if code == cliutil.ExitOK {
+		t.Fatal("packet-supplied signer key must not establish external trust")
+	}
+	if !strings.Contains(stderr, "requires --key or --expect-sha256") {
+		t.Fatalf("unexpected error: %q", stderr)
 	}
 }
 
@@ -367,7 +389,7 @@ func TestAuditPacket_SchemaViolation(t *testing.T) {
 		p.SchemaVersion = "pipelock.audit_packet.v999" // forbidden
 	})
 
-	stdout, stderr, code := runRoot(t, "audit-packet", dir)
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("expected non-zero exit on schema violation, stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -386,7 +408,7 @@ func TestAuditPacket_TotalsMismatch(t *testing.T) {
 		p.Summary.Totals.Block = 1
 	})
 
-	stdout, stderr, code := runRoot(t, "audit-packet", dir)
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("expected mismatch failure, stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -406,7 +428,7 @@ func TestAuditPacket_ReceiptCountMismatch(t *testing.T) {
 		p.Summary.Totals.Allow = 2
 	})
 
-	_, stderr, code := runRoot(t, "audit-packet", dir)
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("expected receipt_count mismatch failure, stderr=%q", stderr)
 	}
@@ -426,7 +448,7 @@ func TestAuditPacket_VerdictTamperedToInvalid(t *testing.T) {
 		p.Verifier.Trusted = false
 	})
 
-	_, stderr, code := runRoot(t, "audit-packet", dir)
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("expected verdict-vs-chain mismatch failure, stderr=%q", stderr)
 	}
@@ -522,6 +544,20 @@ func TestAuditPacket_ExpectedSHAMatch(t *testing.T) {
 	}
 }
 
+func TestAuditPacket_RejectsEmptyChain(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 0)
+	pkt := fix.writePacketDir(t, t.TempDir(), nil)
+
+	_, stderr, code := runRoot(t, "audit-packet", "--key", fix.keyHex, pkt)
+	if code == cliutil.ExitOK {
+		t.Fatalf("empty audit-packet chain should fail, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "empty chain") {
+		t.Fatalf("expected empty-chain error, got %q", stderr)
+	}
+}
+
 func TestAuditPacket_PathContainmentRejected(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 1)
@@ -534,7 +570,7 @@ func TestAuditPacket_PathContainmentRejected(t *testing.T) {
 		p.Artifacts.Evidence = "../../../etc/passwd"
 	})
 
-	_, stderr, code := runRoot(t, "audit-packet", dir)
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("expected containment rejection, stderr=%q", stderr)
 	}
@@ -546,7 +582,7 @@ func TestAuditPacket_JSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	fix.writePacketDir(t, dir, nil)
 
-	stdout, _, code := runRoot(t, "audit-packet", "--json", dir)
+	stdout, _, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("happy path failed under --json: code=%d", code)
 	}
@@ -568,7 +604,7 @@ func TestAuditPacket_PacketAsFileArg(t *testing.T) {
 	dir := t.TempDir()
 	pkt := fix.writePacketDir(t, dir, nil)
 
-	_, stderr, code := runRoot(t, "audit-packet", pkt)
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, pkt)
 	if code != cliutil.ExitOK {
 		t.Fatalf("file-arg form should pass, stderr=%q", stderr)
 	}
@@ -1691,7 +1727,7 @@ func TestAuditPacket_VerdictTamperedToValidWithBrokenChain(t *testing.T) {
 		t.Fatalf("write tampered evidence: %v", err)
 	}
 
-	_, stderr, code := runRoot(t, "audit-packet", dir)
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("broken chain with valid claim should fail, stderr=%q", stderr)
 	}
@@ -1893,7 +1929,7 @@ func TestAuditPacket_BadEvidence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "evidence.jsonl"), []byte("not a recorder line\n"), 0o600); err != nil {
 		t.Fatalf("write bad evidence: %v", err)
 	}
-	_, _, code := runRoot(t, "audit-packet", dir)
+	_, _, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("bad evidence should fail")
 	}
@@ -1927,7 +1963,7 @@ func TestAuditPacket_FinalSeqAndRootHashCrossCheck(t *testing.T) {
 		// when set it must match the chain.
 		p.Verifier.FinalSeq = 99
 	})
-	_, stderr, code := runRoot(t, "audit-packet", dir)
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("final_seq mismatch should fail")
 	}
@@ -1939,12 +1975,40 @@ func TestAuditPacket_FinalSeqAndRootHashCrossCheck(t *testing.T) {
 	fix.writePacketDir(t, dir2, func(p *auditpacket.Packet) {
 		p.Verifier.RootHash = strings.Repeat("a", 64)
 	})
-	_, stderr, code = runRoot(t, "audit-packet", dir2)
+	_, stderr, code = runAuditPacketWithKey(t, fix.keyHex, dir2)
 	if code == cliutil.ExitOK {
 		t.Fatalf("root_hash mismatch should fail")
 	}
 	if !strings.Contains(stderr, "root_hash mismatch") {
 		t.Errorf("expected root_hash mismatch error, got %q", stderr)
+	}
+}
+
+func TestAuditPacket_PresentFinalSeqZeroIsCrossChecked(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 3)
+	dir := t.TempDir()
+	pktPath := fix.writePacketDir(t, dir, nil)
+	raw, err := os.ReadFile(filepath.Clean(pktPath))
+	if err != nil {
+		t.Fatalf("read packet: %v", err)
+	}
+	needle := []byte(`"signer_key":`)
+	replacement := []byte(`"final_seq": 0, "signer_key":`)
+	raw = bytes.Replace(raw, needle, replacement, 1)
+	if !bytes.Contains(raw, replacement) {
+		t.Fatal("fixture did not gain an explicit final_seq=0")
+	}
+	if err := os.WriteFile(pktPath, raw, 0o600); err != nil {
+		t.Fatalf("rewrite packet: %v", err)
+	}
+
+	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
+	if code == cliutil.ExitOK {
+		t.Fatal("present final_seq=0 must be compared with the nonempty chain")
+	}
+	if !strings.Contains(stderr, "final_seq mismatch") {
+		t.Fatalf("expected final_seq mismatch, got %q", stderr)
 	}
 }
 
@@ -1993,7 +2057,7 @@ func TestAuditPacket_ReportContainsRunMetadata(t *testing.T) {
 		p.Run.SHA = "deadbeefcafebabe"
 	})
 
-	stdout, _, code := runRoot(t, "audit-packet", "--json", dir)
+	stdout, _, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("happy path failed: stdout=%q", stdout)
 	}

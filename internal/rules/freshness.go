@@ -173,7 +173,11 @@ func readFreshnessStatePair(rulesDir string) (*FreshnessState, bool, error) {
 }
 
 func readFreshnessStateFile(path, rulesDir, label string) (*FreshnessState, bool, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxFreshnessStateBytes, DisallowedPerms: 0o037})
+	// OwnedState: this is Pipelock own rules freshness state, written by
+	// writeFreshnessStateFile at 0600. Kubernetes fsGroup re-widens it to 0660 on
+	// every mount, so a strict group-write refusal would make rollback freshness
+	// state unreadable forever on non-root persistent volumes.
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxFreshnessStateBytes, OwnedState: true})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, false, nil
@@ -268,7 +272,12 @@ func freshnessDigest(rulesDir string, highest map[string]uint64) string {
 }
 
 func readFreshnessContext(rulesDir string) (bool, error) {
-	data, err := securefile.Read(freshnessContextPath(rulesDir), securefile.Options{MaxBytes: maxFreshnessStateBytes, DisallowedPerms: 0o037})
+	// OwnedState: this is Pipelock own rules freshness context, written by
+	// writeFreshnessContext at 0600. Kubernetes fsGroup re-widens it to 0660 on
+	// every mount, so a strict group-write refusal would fail the context-present
+	// guard after restart even though the context is not operator credential
+	// material.
+	data, err := securefile.Read(freshnessContextPath(rulesDir), securefile.Options{MaxBytes: maxFreshnessStateBytes, OwnedState: true})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil

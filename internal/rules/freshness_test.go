@@ -275,6 +275,36 @@ func TestFreshnessState_LoadMissing(t *testing.T) {
 	}
 }
 
+func TestFreshnessState_LoadAcceptsOwnedGroupWritableStateAndContext(t *testing.T) {
+	dir := t.TempDir()
+	state := &FreshnessState{
+		HighestSeen: map[string]uint64{
+			"standard:pipelock-standard": 42,
+		},
+	}
+	if err := SaveFreshnessState(dir, state); err != nil {
+		t.Fatalf("SaveFreshnessState: %v", err)
+	}
+	groupWritableMode := os.FileMode(0o660)
+	for _, path := range []string{
+		filepath.Join(dir, freshnessFilename),
+		freshnessSecondaryPath(dir),
+		freshnessContextPath(dir),
+	} {
+		if err := os.Chmod(path, groupWritableMode); err != nil {
+			t.Fatalf("Chmod(%s) error = %v", path, err)
+		}
+	}
+
+	loaded, err := LoadFreshnessState(dir)
+	if err != nil {
+		t.Fatalf("LoadFreshnessState(owned group-writable state) error = %v", err)
+	}
+	if loaded.HighestSeen["standard:pipelock-standard"] != 42 {
+		t.Fatalf("loaded freshness state = %+v, want saved high-water mark", loaded.HighestSeen)
+	}
+}
+
 func TestFreshnessState_PrimaryOnlyBackfillsSecondaryAndContext(t *testing.T) {
 	t.Parallel()
 

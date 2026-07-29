@@ -377,6 +377,49 @@ func TestReadConductorEnrollmentToken(t *testing.T) {
 			t.Fatalf("readConductorEnrollmentToken() = %q, want %q", got, token)
 		}
 	})
+
+	t.Run("group writable token rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "token")
+		token := "pl_" + "enroll_runtime"
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatalf("write token: %v", err)
+		}
+		groupWritableMode := os.FileMode(0o660)
+		if err := os.Chmod(path, groupWritableMode); err != nil {
+			t.Fatalf("Chmod() error = %v", err)
+		}
+		if _, err := readConductorEnrollmentToken(path); err == nil ||
+			!strings.Contains(err.Error(), "permissions") {
+			t.Fatalf("readConductorEnrollmentToken(group-writable) error = %v, want permission rejection", err)
+		}
+	})
+}
+
+func TestReadConductorEnrollmentMarkerAcceptsOwnedGroupWritableMarker(t *testing.T) {
+	cfg := conductorEnrollmentTestConfig(t)
+	markerPath := filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName)
+	if err := writeConductorEnrollmentMarker(markerPath, enrollmentclient.Response{
+		OrgID:       cfg.Conductor.OrgID,
+		FleetID:     cfg.Conductor.FleetID,
+		InstanceID:  cfg.Conductor.InstanceID,
+		Environment: "prod",
+		AuditKeyID:  cfg.Conductor.AuditSigningKeyID,
+		EnrolledAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("writeConductorEnrollmentMarker() error = %v", err)
+	}
+	groupWritableMode := os.FileMode(0o660)
+	if err := os.Chmod(markerPath, groupWritableMode); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	_, marked, err := readConductorEnrollmentMarker(markerPath, cfg.Conductor)
+	if err != nil {
+		t.Fatalf("readConductorEnrollmentMarker(owned group-writable marker) error = %v", err)
+	}
+	if !marked {
+		t.Fatal("readConductorEnrollmentMarker(owned group-writable marker) marked=false, want true")
+	}
 }
 
 func TestReadConductorEnrollmentMarkerRejectsDuplicateKeys(t *testing.T) {

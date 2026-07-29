@@ -98,6 +98,35 @@ func TestLoadManifestRejectsDuplicateAndOversizedJSON(t *testing.T) {
 	}
 }
 
+func TestLoadManifestAcceptsOwnedGroupWritableManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), manifestFile)
+	data, err := json.Marshal(manifest{
+		Schema:          manifestSchema,
+		TrustDomain:     defaultTrustDomain,
+		OrgID:           defaultOrgID,
+		FleetID:         defaultFleetID,
+		InstanceID:      defaultInstanceID,
+		Environment:     defaultEnvironment,
+		ConductorID:     defaultConductorID,
+		ConductorURL:    "https://conductor.example",
+		RootFingerprint: "root-fingerprint",
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	groupWritableMode := os.FileMode(0o660)
+	if err := os.Chmod(path, groupWritableMode); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	if _, err := loadManifest(path); err != nil {
+		t.Fatalf("loadManifest(owned group-writable manifest) error = %v", err)
+	}
+}
+
 // privateFleetDir returns an absolute fleet directory whose ancestors are not
 // world-writable. The conductor config validator rejects world-writable
 // parents, and the shared /tmp (mode 1777) trips that check, so fleet material

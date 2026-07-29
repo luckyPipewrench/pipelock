@@ -255,7 +255,11 @@ func writeManifest(layout Layout, opts Options, identity controlplane.FollowerId
 }
 
 func loadManifest(path string) (manifest, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: manifestMaxBytes, DisallowedPerms: 0o037})
+	// OwnedState: this is Pipelock own bootstrap completion manifest, written by
+	// writeManifest at 0600. Kubernetes fsGroup re-widens it to 0660 on every
+	// mount, so a strict group-write refusal would make idempotent bootstrap
+	// reloads fail even though private keys and tokens keep their strict reads.
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: manifestMaxBytes, OwnedState: true})
 	if err != nil {
 		return manifest{}, fmt.Errorf("read bootstrap manifest: %w", err)
 	}

@@ -562,10 +562,14 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 	if info.Size() > limit {
 		return diskRecord{}, corruptRecordError(fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit))
 	}
+	// OwnedState: this is Pipelock own durable audit-queue state, written by
+	// durableWrite at 0600. Kubernetes fsGroup re-widens it to 0660 on every
+	// mount, so a strict group-write refusal would keep a non-root follower from
+	// recovering or delivering queued audit batches after restart.
 	data, err := securefile.Read(path, securefile.Options{
-		MaxBytes:        limit,
-		DisallowedPerms: 0o077,
-		RejectSymlink:   true,
+		MaxBytes:      limit,
+		RejectSymlink: true,
+		OwnedState:    true,
 	})
 	if err != nil {
 		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: read record: %w", err))

@@ -137,7 +137,11 @@ func conductorEnrollmentMarked(path string, cfg config.Conductor) (bool, error) 
 }
 
 func readConductorEnrollmentMarker(path string, cfg config.Conductor) (conductorEnrollmentMarker, bool, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: conductorEnrollmentFileMaxSize, DisallowedPerms: 0o077})
+	// OwnedState: this is Pipelock own enrollment marker, written by
+	// writeConductorEnrollmentMarker at 0600. Kubernetes fsGroup re-widens it to
+	// 0660 on every mount, so a strict group-write refusal would make an already
+	// enrolled non-root follower retry enrollment forever after restart.
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: conductorEnrollmentFileMaxSize, OwnedState: true})
 	if os.IsNotExist(err) {
 		return conductorEnrollmentMarker{}, false, nil
 	}

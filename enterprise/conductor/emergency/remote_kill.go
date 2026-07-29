@@ -577,7 +577,11 @@ func remoteKillReplayContextPresent(path string) (bool, error) {
 }
 
 func readRemoteKillStateContext(path string) (bool, error) {
-	data, err := securefile.Read(remoteKillStateContextPath(path), securefile.Options{MaxBytes: maxRemoteKillStateBytes, DisallowedPerms: 0o037})
+	// OwnedState: this is Pipelock own remote-kill replay context, written by
+	// writeRemoteKillStateContext at 0600. Kubernetes fsGroup re-widens it to
+	// 0660 on every mount, so a strict group-write refusal would hide the replay
+	// context and weaken the missing-state fail-closed check after restart.
+	data, err := securefile.Read(remoteKillStateContextPath(path), securefile.Options{MaxBytes: maxRemoteKillStateBytes, OwnedState: true})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil

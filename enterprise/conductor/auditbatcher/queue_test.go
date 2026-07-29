@@ -1065,6 +1065,25 @@ func TestReadRecordRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestReadRecordAcceptsOwnedGroupWritableRecord(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "record.json")
+	if err := writeDiskRecord(path, validDiskRecord(signedTestBatch(t, "batch-owned-group-record", priv))); err != nil {
+		t.Fatalf("writeDiskRecord() error = %v", err)
+	}
+	groupWritableMode := os.FileMode(0o660)
+	if err := os.Chmod(path, groupWritableMode); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	if _, err := readRecord(path, conductor.MaxAuditPayloadBytes); err != nil {
+		t.Fatalf("readRecord(owned group-writable record) error = %v", err)
+	}
+}
+
 func TestReadRecordRejectsSymlinkRecord(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

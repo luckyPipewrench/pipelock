@@ -138,6 +138,22 @@ func TestLoadFileValidContainmentCapsuleStillBinds(t *testing.T) {
 	}
 }
 
+func TestLoadFileRejectsGroupWritableProof(t *testing.T) {
+	_, data := mintContainmentCapsule(t)
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	groupWritableMode := os.FileMode(0o660)
+	if err := os.Chmod(path, groupWritableMode); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "permissions") {
+		t.Fatalf("LoadFile(group-writable proof) error = %v, want permission rejection", err)
+	}
+}
+
 func TestLoadRuntimeRelativeOverrideRejected(t *testing.T) {
 	t.Setenv(RuntimeProofEnv, "relative/proof.json")
 	if _, err := LoadRuntime(); err == nil {

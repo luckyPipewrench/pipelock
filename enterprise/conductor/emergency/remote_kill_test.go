@@ -695,6 +695,26 @@ func TestRemoteKillApplierRejectsReplayAfterPrimaryStateDeletion(t *testing.T) {
 	}
 }
 
+func TestReadRemoteKillStateContextAcceptsOwnedGroupWritableContext(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := writeRemoteKillStateContext(statePath); err != nil {
+		t.Fatalf("writeRemoteKillStateContext() error = %v", err)
+	}
+	contextPath := remoteKillStateContextPath(statePath)
+	groupWritableMode := os.FileMode(0o660)
+	if err := os.Chmod(contextPath, groupWritableMode); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	found, err := readRemoteKillStateContext(statePath)
+	if err != nil {
+		t.Fatalf("readRemoteKillStateContext(owned group-writable context) error = %v", err)
+	}
+	if !found {
+		t.Fatal("readRemoteKillStateContext(owned group-writable context) found=false, want true")
+	}
+}
+
 func TestRemoteKillApplierRejectsReplayAfterPrimaryAndSecondaryDeletion(t *testing.T) {
 	oldMsg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
 	statePath := filepath.Join(t.TempDir(), "state.json")

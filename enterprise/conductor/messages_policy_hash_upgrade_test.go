@@ -133,3 +133,51 @@ func TestValidateAtTimeAllowLegacyPolicyHashStillChecksValidity(t *testing.T) {
 		t.Fatal("ValidateAtTimeAllowLegacyPolicyHash(after expires_at) = nil, want refusal")
 	}
 }
+
+// TestPolicyHashUnparseableConfigIsToleratedWhenReadingStoredState covers the
+// second door into the same upgrade failure, which the first version of this fix
+// left open.
+//
+// Computing policy_hash parses the bundle's config through the CURRENT schema, so
+// a stored bundle whose config sets a field this release removed does not merely
+// produce a DIFFERENT hash, it makes the computation ERROR. Returning that error
+// before consulting the tolerance put the leader straight back to not starting.
+//
+// This is not hypothetical for this release: it removes three denial-of-wallet
+// budget fields, and a bundle published before that removal can carry them.
+func TestPolicyHashUnparseableConfigIsToleratedWhenReadingStoredState(t *testing.T) {
+	bundle := testPolicyBundle()
+	// A field the current schema rejects, standing in for anything a later release
+	// removes. The point is that PolicyHash cannot be computed at all.
+	bundle.Payload = PolicyBundlePayload{
+		ConfigYAML: "mode: strict\ndlp:\n  removed_knob_from_a_later_release: true\n",
+	}
+	bundle.PayloadSHA256 = mustPayloadHash(bundle.Payload)
+
+	if _, err := bundle.Payload.PolicyHash(); err == nil {
+		t.Fatal("fixture PolicyHash() = nil error, want a parse failure so this test exercises the error path")
+	}
+
+	// Publish stays strict: the build computing the hash is the build that made the
+	// bundle, so a config it cannot parse is a real error and must surface.
+	if err := bundle.Validate(); err == nil {
+		t.Fatal("Validate(unparseable config) = nil, want the parse error to surface on the strict path")
+	}
+
+	// Reading stored state tolerates it. Refusing here is the crashloop this
+	// change exists to prevent, and the payload digest above still binds the
+	// payload.
+	if err := bundle.ValidateAllowLegacyPolicyHash(); err != nil {
+		t.Fatalf("ValidateAllowLegacyPolicyHash(unparseable config) = %v, want nil", err)
+	}
+
+	// And it reports itself as unreproducible rather than current, so nothing
+	// downstream can present the stored hash as a verified digest.
+	status := bundle.PolicyHashStatus()
+	if status != PolicyHashUnknownUnverified {
+		t.Fatalf("PolicyHashStatus() = %q, want %q", status, PolicyHashUnknownUnverified)
+	}
+	if status.Reproducible() {
+		t.Fatal("PolicyHashStatus().Reproducible() = true for an unparseable config, want false")
+	}
+}

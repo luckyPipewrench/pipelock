@@ -775,7 +775,23 @@ func (b PolicyBundle) validateHashes(allowLegacyPolicyHash bool) error {
 	}
 	policyHash, err := b.Payload.PolicyHash()
 	if err != nil {
-		return err
+		// Computing the hash parses the bundle's config through the CURRENT
+		// schema, so this errors for a stored bundle whose config carries a field
+		// this release removed. That is the same upgrade case the tolerance below
+		// exists for, reached by a different door, and refusing here would put the
+		// leader back to not starting. It is exactly the shape this release
+		// produces, since it removes three budget fields a previously published
+		// bundle may well set.
+		//
+		// Publish keeps the hard failure: there the computing build is the build
+		// that produced the bundle, so an unparseable config is a real error. When
+		// reading stored state the hash is simply not reproducible by this build,
+		// which is what PolicyHashStatus already reports for this case, and the
+		// payload digest checked above still binds the raw payload.
+		if !allowLegacyPolicyHash {
+			return err
+		}
+		return nil
 	}
 	if !strings.EqualFold(b.PolicyHash, policyHash) {
 		if !allowLegacyPolicyHash {

@@ -800,7 +800,11 @@ func (s *FileEnrollmentStore) load() error {
 }
 
 func loadEnrollmentState(path string, maxBytes int64) (enrollmentDiskState, error) {
-	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxBytes, DisallowedPerms: 0o037})
+	// OwnedState: this is Pipelock own enrollment state, written by saveLocked
+	// at 0600. Kubernetes fsGroup re-widens it to 0660 on every mount, so a strict
+	// group-write refusal here stopped the leader from starting at all on any
+	// non-root deployment using a persistent volume.
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxBytes, OwnedState: true})
 	if err != nil {
 		return enrollmentDiskState{}, fmt.Errorf("read enrollment store: %w", err)
 	}

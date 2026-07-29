@@ -26,6 +26,19 @@ type Options struct {
 	MaxBytes        int64
 	DisallowedPerms fs.FileMode
 	RejectSymlink   bool
+	// OwnedState marks a file Pipelock writes and owns, rather than an
+	// operator-supplied credential. For those files group read/write is accepted
+	// when the group is one this process belongs to and no other-perms are set,
+	// because a container platform widens the mode of its own volumes: Kubernetes
+	// fsGroup ORs writable files with 0660 on every mount, so a file we wrote at
+	// 0600 comes back group-writable and refusing it means a non-root workload
+	// cannot use a persistent volume at all.
+	//
+	// It does NOT relax anything for credentials or private keys. Leave it false
+	// for those: group-write there is a real confidentiality and tamper concern,
+	// not a platform artifact. See secperm.OwnedGroupWritableAllowed for what the
+	// check can and cannot prove.
+	OwnedState bool
 }
 
 // Read opens a bounded regular file and verifies that the descriptor still
@@ -73,8 +86,8 @@ func Read(path string, opts Options) ([]byte, error) {
 	if !before.Mode().IsRegular() {
 		return nil, fmt.Errorf("%q is not a regular file", clean)
 	}
-	if secperm.TooPermissive(before.Mode().Perm(), opts.DisallowedPerms) {
-		return nil, fmt.Errorf("%q has insecure permissions %04o", clean, before.Mode().Perm())
+	if err := checkPerm(clean, before, opts); err != nil {
+		return nil, err
 	}
 	file, err := openRegularNonblocking(resolved)
 	if err != nil {
@@ -88,8 +101,8 @@ func Read(path string, opts Options) ([]byte, error) {
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
 		return nil, fmt.Errorf("%q changed during secure open", clean)
 	}
-	if secperm.TooPermissive(after.Mode().Perm(), opts.DisallowedPerms) {
-		return nil, fmt.Errorf("%q has insecure permissions %04o", clean, after.Mode().Perm())
+	if err := checkPerm(clean, after, opts); err != nil {
+		return nil, err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, opts.MaxBytes+1))
 	if err != nil {
@@ -99,4 +112,19 @@ func Read(path string, opts Options) ([]byte, error) {
 		return nil, fmt.Errorf("%q exceeds %d bytes", clean, opts.MaxBytes)
 	}
 	return data, nil
+}
+
+// checkPerm applies the permission policy for one stat of the target. Both the
+// pre-open and post-open checks go through it so the two cannot drift.
+func checkPerm(clean string, info fs.FileInfo, opts Options) error {
+	if opts.OwnedState {
+		if err := secperm.OwnedGroupWritableAllowed(info); err != nil {
+			return fmt.Errorf("%q %w", clean, err)
+		}
+		return nil
+	}
+	if secperm.TooPermissive(info.Mode().Perm(), opts.DisallowedPerms) {
+		return fmt.Errorf("%q has insecure permissions %04o", clean, info.Mode().Perm())
+	}
+	return nil
 }

@@ -745,6 +745,114 @@ func TestWatcher_TryOverflowSendDoesNotBlockOnFullLane(t *testing.T) {
 	}
 }
 
+func TestWatcher_TryOverflowSendError(t *testing.T) {
+	t.Run("available_lane", func(t *testing.T) {
+		w := &fsWatcher{overflow: make(chan Finding, 1)}
+		incoming := Finding{Path: "incoming-agent", IsAgent: true}
+		if err := w.tryOverflowSendError(incoming, "lane refilled"); err != nil {
+			t.Fatalf("tryOverflowSendError: %v", err)
+		}
+		if got := <-w.overflow; got != incoming {
+			t.Fatalf("overflow finding = %+v, want %+v", got, incoming)
+		}
+	})
+
+	t.Run("full_lane", func(t *testing.T) {
+		w := &fsWatcher{overflow: make(chan Finding, 1)}
+		pending := Finding{Path: "pending-agent", IsAgent: true}
+		w.overflow <- pending
+		err := w.tryOverflowSendError(Finding{Path: "incoming-agent", IsAgent: true}, "lane refilled")
+		if err == nil || !strings.Contains(err.Error(), "lane refilled") {
+			t.Fatalf("tryOverflowSendError error = %v, want lane refilled", err)
+		}
+		if got := <-w.overflow; got != pending {
+			t.Fatalf("pending finding = %+v, want %+v", got, pending)
+		}
+	})
+}
+
+func TestWatcher_ClosedGuardsRejectNewWork(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		lineage Lineage
+	}{
+		{name: "before_lineage_snapshot", lineage: &mockLineage{hasFileOpen: true}},
+		{name: "before_timer_registration"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &fsWatcher{
+				cfg:     &config.FileSentry{},
+				lineage: tt.lineage,
+				timers:  make(map[string]*time.Timer),
+				pidSnap: make(map[string]bool),
+				closed:  true,
+			}
+			w.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+			if len(w.timers) != 0 || len(w.pidSnap) != 0 {
+				t.Fatalf("closed watcher accepted work: timers=%d pid snapshots=%d", len(w.timers), len(w.pidSnap))
+			}
+		})
+	}
+
+	t.Run("timer_callback", func(t *testing.T) {
+		sc := &countingDLPScanner{}
+		w := &fsWatcher{
+			cfg:      &config.FileSentry{ScanContent: ptrBool(true)},
+			scanner:  sc,
+			findings: make(chan Finding, 1),
+			overflow: make(chan Finding, 1),
+			timers:   make(map[string]*time.Timer),
+			pidSnap:  make(map[string]bool),
+		}
+		w.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+		w.mu.Lock()
+		w.closed = true
+		timer := w.timers[path]
+		w.mu.Unlock()
+		if timer == nil {
+			t.Fatal("debounce timer was not registered")
+		}
+
+		deadline := time.Now().Add(5 * debounceDelay)
+		testwait.For(
+			t,
+			filesentryPositiveBackstop,
+			func() bool { return time.Now().After(deadline) },
+			"debounce timer to fire after watcher closure",
+		)
+		if timer.Stop() {
+			t.Fatal("debounce timer had not fired")
+		}
+		if got := sc.calls.Load(); got != 0 {
+			t.Fatalf("closed timer callback ran %d scans", got)
+		}
+	})
+
+	t.Run("direct_scan", func(t *testing.T) {
+		sc := &countingDLPScanner{}
+		w := &fsWatcher{
+			cfg:      &config.FileSentry{ScanContent: ptrBool(true)},
+			scanner:  sc,
+			findings: make(chan Finding, 1),
+			overflow: make(chan Finding, 1),
+			closed:   true,
+		}
+		w.scanFile(context.Background(), path, true)
+		if got := sc.calls.Load(); got != 1 {
+			t.Fatalf("DLP scans = %d, want one scan stopped at delivery", got)
+		}
+		if got := len(w.findings) + len(w.overflow); got != 0 {
+			t.Fatalf("closed watcher delivered %d findings", got)
+		}
+	})
+}
+
 func TestWatcher_EmptyFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{

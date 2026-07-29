@@ -485,26 +485,17 @@ func (w *fsWatcher) enqueueOverflow(f Finding) error {
 	select {
 	case pending := <-w.overflow:
 		if pending.IsAgent {
-			if !w.tryOverflowSend(pending) {
-				return errors.Join(
-					overflowError(pending, "priority lane refilled concurrently"),
-					overflowError(f, "agent overflow already pending"),
-				)
-			}
-			return overflowError(f, "agent overflow already pending")
+			return errors.Join(
+				w.tryOverflowSendError(pending, "priority lane refilled concurrently"),
+				overflowError(f, "agent overflow already pending"),
+			)
 		}
 		displacedErr := overflowError(pending, "replaced by agent-attributed overflow")
-		if !w.tryOverflowSend(f) {
-			return errors.Join(displacedErr, overflowError(f, "priority lane refilled concurrently"))
-		}
-		return displacedErr
+		return errors.Join(displacedErr, w.tryOverflowSendError(f, "priority lane refilled concurrently"))
 	default:
 	}
 
-	if !w.tryOverflowSend(f) {
-		return overflowError(f, "priority lane refilled concurrently")
-	}
-	return nil
+	return w.tryOverflowSendError(f, "priority lane refilled concurrently")
 }
 
 // tryOverflowSend degrades a lost single-writer invariant to a reported drop
@@ -516,6 +507,13 @@ func (w *fsWatcher) tryOverflowSend(f Finding) bool {
 	default:
 		return false
 	}
+}
+
+func (w *fsWatcher) tryOverflowSendError(f Finding, reason string) error {
+	if w.tryOverflowSend(f) {
+		return nil
+	}
+	return overflowError(f, reason)
 }
 
 func overflowError(f Finding, reason string) error {

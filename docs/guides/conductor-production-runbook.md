@@ -326,6 +326,8 @@ remote-kill, but it does **not** appear in `conductor fleet status` and the audi
 sink cannot verify its evidence — the Conductor has no audit key registered for
 it. Enrollment is what turns both on.
 
+For a direct follower deployment, mount each path exactly as configured:
+
 ```yaml
 # pipelock-enterprise-skip-id: conductor-production-follower
 conductor:
@@ -358,12 +360,18 @@ flight_recorder:
 
 A follower **must produce signed evidence** to participate: config validation
 rejects `conductor.enabled: true` unless the flight recorder is enabled with
-signing checkpoints and a `signing_key_path`. On Kubernetes, use
+signing checkpoints and a `signing_key_path`. The YAML above is a manual-mount
+example; do not copy its paths into Helm-generated configuration. On Kubernetes,
+use
 [`values-enterprise-follower.yaml`](../../charts/pipelock/examples/values-enterprise-follower.yaml):
 
 Create a writable operator-owned source keyring before the first start, then
 import it into a Kubernetes Secret mounted separately from the queue PVC. The
-mounted copy is runtime-only and read-only:
+chart renders `durable_audit_queue_keyring` from
+`auditQueueKeyringSecretRef.mountPath` and `.key` (the example resolves to
+`/etc/pipelock/conductor/audit-queue-key/audit-queue-keyring.json`). The mounted
+copy is runtime-only and read-only. Keep the operator source directory at
+`0700`: it contains the raw symmetric key and has no group consumer.
 
 ```bash
 install -d -m 700 "$PWD/operator-secrets"

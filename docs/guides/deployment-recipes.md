@@ -24,7 +24,8 @@ Each tier is strictly stronger than the previous one. Tier 1 assumes the agent c
 
 > **Verify NetworkPolicy enforcement on your CNI before relying on Tier 3.** Tier 3's boundary is an
 > **egress** policy on the agent pod, so it depends on your CNI enforcing egress rules — if it does not,
-> the agent keeps a direct route out and the tier collapses to Tier 1. Separately, NetworkPolicies are
+> the kernel-enforced boundary is lost and direct egress may be available. Treat the deployment as
+> unprotected unless proxy configuration is separately enforced and verified. Separately, NetworkPolicies are
 > additive with no deny rule, so a narrow policy cannot override a broader one that already permits the
 > traffic; and on one k3s cluster a namespace-wide policy selecting every pod with `podSelector: {}` while
 > declaring both `Ingress` and `Egress` in one object was observed defeating a more specific per-pod

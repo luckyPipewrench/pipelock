@@ -2255,7 +2255,7 @@ Findings are reported as stderr warnings and Prometheus metrics (`pipelock_file_
 
 `action: block` is the fail-closed enforcement boundary. The cancel fires from the consumer goroutine after the log line and metric emission, which means there is unavoidable latency between the kernel write and the proxy teardown: the file has already been written to disk by the time the scan completes. Block prevents the agent from continuing to act on the leak, it does not prevent the write itself. For write-time interception the operator must layer Landlock or a sandbox at the deployment level.
 
-Files larger than `max_file_bytes` are skipped to bound memory use, but the skip is surfaced through the watcher's error path instead of being silently dropped. Stat/read failures are surfaced the same way. Write events are debounced (50ms quiet window) to avoid scanning partial writes.
+Files larger than `max_file_bytes` are skipped to bound memory use, but the skip is surfaced through the watcher's error path instead of being silently dropped. Stat/read failures are surfaced the same way. Write events are debounced (50ms quiet window) to avoid scanning partial writes. Blocking findings use a priority overflow lane when the primary delivery channel is saturated, and watcher close waits for in-flight debounce scans before reporting shutdown complete.
 
 ## Community Rules
 

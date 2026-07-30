@@ -368,6 +368,20 @@ are pruned at startup.
   closing the teardown window. Under `continue_last_known_good` the follower keeps
   serving its last applied bundle instead (see
   [Follower configuration](#follower-configuration)).
+- **Policy-hash-moving upgrades stay inspectable.** A stored bundle may carry a
+  signed policy hash that this newer binary cannot recompute because the config
+  schema changed. Startup, offline inspect, and repair tolerate that only after
+  signature verification and report it as `unknown_unverified` rather than
+  describing the hash as reproduced. The Prometheus gauge
+  `pipelock_conductor_policy_bundle_policy_hash_status_count` reports
+  `current`, `known_legacy`, and `unknown_unverified` counts from the store load;
+  alert on nonzero `unknown_unverified` and inspect the bundle history before
+  publishing new policy.
+- **Kubernetes-owned state files may be group-readable or group-writable.**
+  Pipelock-owned Conductor state accepts group bits when the group belongs to
+  the process, which matches Kubernetes `fsGroup` volume behavior across
+  restarts. Operator-supplied credentials and private keys keep the stricter
+  permission policy.
 - **Capability separation holds.** Conductor never receives agent secrets and
   never scans traffic for a follower.
 

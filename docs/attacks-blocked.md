@@ -269,9 +269,10 @@ ClientHello(SNI=evil.com)           ← TLS handshake to wrong server
 forward_proxy:
   enabled: true
   sni_verification: true
+  sni_require_tls: true
 ```
 
-**Why it works:** After sending the `200 OK` response, pipelock peeks at the first bytes of tunnel data using `bufio.Reader.Peek()`. If the data starts with a TLS ClientHello (record type `0x16`), pipelock parses it to extract the SNI extension and compares it to the CONNECT target. A mismatch causes immediate connection close. Malformed TLS data (starts with `0x16` but fails to parse) is also blocked (fail-closed). Non-TLS CONNECT traffic and valid TLS without an SNI extension pass through normally.
+**Why it works:** After sending the `200 OK` response, pipelock peeks at the first bytes of tunnel data using `bufio.Reader.Peek()`. If the data starts with a TLS ClientHello (record type `0x16`), pipelock parses it to extract the SNI extension and compares it to the CONNECT target. A mismatch causes immediate connection close. Malformed TLS data (starts with `0x16` but fails to parse) is also blocked (fail-closed). With `sni_require_tls: true`, non-TLS CONNECT traffic and TLS without an SNI extension are blocked too; without it, those legacy shapes remain hostname-only opaque tunnels.
 
 ---
 

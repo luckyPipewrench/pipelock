@@ -121,6 +121,7 @@ Scope and limits:
 
 - **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). A `SIGKILL` (or power loss) terminates the process before the seal runs, so the tail is truncated with no root. Detecting that case requires an external/periodic anchor and is not closed here.
 - **Restart resumes cleanly.** A transcript root is a per-run checkpoint, not a permanent seal. The next start by the same writer resumes emission into the same hash-linked chain (a continuous per-writer chain still verifies), so receipts are never silently bricked by a prior clean shutdown.
+- **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query, verification, and dashboard paths. Those content-read paths stay bounded so a truncated scan cannot be mistaken for complete evidence. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
 
 ### Key-free evidence capture (`--capture-output`)
 

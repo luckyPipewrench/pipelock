@@ -66,3 +66,13 @@ suppress:
 `exempt_domains` prevents URL DLP from blocking a key on the provider's own host.
 `suppress` covers request-body and request-header findings on the same provider
 route. The same key remains blocked on every other destination.
+
+## Provider-Opaque Fields
+
+Some provider APIs legitimately carry long opaque identifiers or provider-bound
+token-like values inside known JSON fields. Pipelock scans those fields with
+their provider provenance intact: a match that is valid only inside that
+provider-opaque field is capped at warn, while the same token shape in ordinary
+content still blocks according to its severity. Malformed JSON, multiple JSON
+roots, or a critical match outside the validated opaque field fail closed rather
+than inheriting the downgrade.

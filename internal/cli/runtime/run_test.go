@@ -1033,6 +1033,10 @@ logging:
 			cancel()
 			return err
 		}
+		if err := waitForPortOrCommandExitResult(mcpAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
 
 		baseURL := "http://" + mcpAddr
 		sessionID := initializeRunMCPListenerSession(t, baseURL)

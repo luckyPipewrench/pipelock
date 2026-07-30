@@ -173,6 +173,33 @@ func TestAuditQueueKeyInitRefusesSymlinkedKeyringIntoQueueDir(t *testing.T) {
 	}
 }
 
+func TestAuditQueueKeyInitRefusesRelativeKeyringInsideQueueDir(t *testing.T) {
+	root := t.TempDir()
+	// A relative --queue-dir and a relative keyring path that resolves inside it.
+	// The old lexical filepath.Rel between a relative and an absolute path errored
+	// and returned "outside"; canonicalizing both to absolute physical paths
+	// catches it.
+	t.Chdir(root)
+	if err := os.MkdirAll("queue", 0o750); err != nil {
+		t.Fatalf("MkdirAll(queue) error = %v", err)
+	}
+	// Relative --queue-dir with an ABSOLUTE keyring inside it: the exact bypass a
+	// lexical filepath.Rel misses (Rel of a relative parent against an absolute
+	// candidate errors, so the old check reported "outside").
+	absKeyring := filepath.Join(root, "queue", "keyring.json")
+	cmd := auditQueueKeyCmd()
+	cmd.SetArgs([]string{"init", "--keyring", absKeyring, "--queue-dir", "queue"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "must be outside") {
+		t.Fatalf("init relative keyring inside queue error = %v, want \"must be outside\"", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "queue", "keyring.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("refused init must not create the relative keyring inside the queue; stat err = %v", statErr)
+	}
+}
+
 func TestAuditQueueKeyInspectReportsUnreadableRecords(t *testing.T) {
 	root := t.TempDir()
 	keyringPath := filepath.Join(root, "secrets", "keyring.json")

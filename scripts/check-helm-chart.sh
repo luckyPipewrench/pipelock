@@ -104,7 +104,8 @@ grep -q -- "pipelock-follower-audit-queue" "$render_dir/values-enterprise-follow
 grep -q -- 'secretName: "follower-audit-queue-keyring"' "$render_dir/values-enterprise-follower.yaml"
 grep -q -- 'key: "audit-queue-keyring.json"' "$render_dir/values-enterprise-follower.yaml"
 grep -q -- 'mountPath: "/etc/pipelock/conductor/audit-queue-key"' "$render_dir/values-enterprise-follower.yaml"
-grep -q -A2 -- 'name: conductor-audit-queue-keyring' "$render_dir/values-enterprise-follower.yaml" | grep -q -- 'readOnly: true'
+keyring_mount_block=$(grep -A2 -- 'name: conductor-audit-queue-keyring' "$render_dir/values-enterprise-follower.yaml" || true)
+[[ "$keyring_mount_block" == *"readOnly: true"* ]]
 grep -q -- 'durable_audit_queue_keyring: /etc/pipelock/conductor/audit-queue-key/audit-queue-keyring.json' "$render_dir/values-enterprise-follower.yaml"
 
 grep -q -- "- conductor" "$render_dir/values-enterprise-conductor.yaml"

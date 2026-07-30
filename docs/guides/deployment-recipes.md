@@ -32,7 +32,7 @@ Each tier is strictly stronger than the previous one. Tier 1 assumes the agent c
 > `Egress`-only objects restored expected behaviour. Prove your own policies with a positive control and
 > then a negative test rather than trusting that they read correctly — see
 > [NetworkPolicy Semantics](../cli/init-sidecar.md#networkpolicy-semantics).
-
+>
 > **Future work: kernel-level transparent interception.** TPROXY / `IP_TRANSPARENT`-based interception that redirects packets at the kernel before they leave the host would let pipelock transparently capture agent traffic without any agent cooperation or per-UID filtering. Pipelock does not currently set `IP_TRANSPARENT` on its listen socket, so a TPROXY recipe requires pipelock code changes, not just documentation. This is on the roadmap.
 
 ## Docker Compose (Recommended for Local Development)

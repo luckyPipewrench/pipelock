@@ -292,7 +292,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Local integrity and sidecar state use explicit permission policies.**
   Integrity manifests, MCP integrity state, and SVID sidecar state reject group-
   or world-writable files instead of inheriting a looser generic read policy.
-- **Durable audit queue records are encrypted at rest with AES-256-GCM.**
+- **Keyring-enabled durable audit queue records are encrypted at rest with AES-256-GCM.**
   Startup migrates plaintext records only after the keyring is available, retired
   keys remain available for migration, corrupt records are quarantined, and
   encrypted recovery enforces the maximum record size across restart and

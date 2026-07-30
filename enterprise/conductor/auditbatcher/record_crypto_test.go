@@ -80,7 +80,7 @@ func TestQueuePlaintextModeWritesLegacyRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue(plaintext) error = %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(q.pendingDir, id))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(q.pendingDir, id)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestQueuePlaintextModeWritesLegacyRecords(t *testing.T) {
 		t.Fatalf("Open(plaintext reopen) error = %v", err)
 	}
 	defer func() { _ = reopened.Close() }()
-	reopenedData, err := os.ReadFile(filepath.Join(reopened.pendingDir, id))
+	reopenedData, err := os.ReadFile(filepath.Clean(filepath.Join(reopened.pendingDir, id)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -503,9 +503,9 @@ func TestTransportDeliverOnceDropsCorruptMaxRetryCountWithoutOverflow(t *testing
 		t.Fatalf("readRecord() error = %v", err)
 	}
 	record.RetryCount = ^uint64(0)
-	data, err := json.Marshal(record)
+	data, err := encryptDiskRecord(record, q.keyring)
 	if err != nil {
-		t.Fatalf("Marshal(record) error = %v", err)
+		t.Fatalf("encryptDiskRecord(record) error = %v", err)
 	}
 	if err := durableWrite(path, data); err != nil {
 		t.Fatalf("durableWrite(record) error = %v", err)

@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,7 @@ func TestEncryptedRecordTamperFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	original := append([]byte(nil), data...)
 	needle := []byte(`"ciphertext":"`)
 	start := bytes.Index(data, needle)
 	if start < 0 {
@@ -141,8 +143,86 @@ func TestEncryptedRecordTamperFailsClosed(t *testing.T) {
 	}
 
 	_, err = q.readRecord(path)
-	if err == nil || !errors.Is(err, ErrCorruptRecord) || !strings.Contains(err.Error(), "decrypt record") {
-		t.Fatalf("tampered read error = %v, want fail-closed decrypt ErrCorruptRecord", err)
+	if err == nil || !errors.Is(err, ErrRecordAuthFailed) || errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("tampered read error = %v, want dedicated authentication failure", err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(Config{Dir: q.dir, Keyring: q.keyring}); !errors.Is(err, ErrRecordAuthFailed) {
+		t.Fatalf("Open(tampered record) error = %v, want ErrRecordAuthFailed", err)
+	}
+	if err := os.WriteFile(path, original, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(Config{Dir: q.dir, Keyring: q.keyring})
+	if err != nil {
+		t.Fatalf("Open after failed startup retained queue lock: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+}
+
+func TestEncryptedRecordTamperBlocksStartupInEveryQueueState(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"pending", "inflight", "dead"} {
+		t.Run(state, func(t *testing.T) {
+			dir := t.TempDir()
+			keyring, err := NewKeyring()
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := Open(Config{Dir: dir, Keyring: keyring})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := q.Enqueue(signedTestBatch(t, "batch-tamper-"+state, priv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(q.pendingDir, id)
+			switch state {
+			case "inflight":
+				if _, err := q.Claim(); err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(q.inflightDir, id)
+			case "dead":
+				lease, err := q.Claim()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := q.Drop(lease.ID, "tamper fixture"); err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(q.deadDir, id)
+			}
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			needle := []byte(`"ciphertext":"`)
+			at := bytes.Index(data, needle) + len(needle)
+			if at < len(needle) || at >= len(data) {
+				t.Fatal("ciphertext field absent")
+			}
+			if data[at] == 'A' {
+				data[at] = 'B'
+			} else {
+				data[at] = 'A'
+			}
+			if err := os.WriteFile(path, data, fileMode); err != nil {
+				t.Fatal(err)
+			}
+			if err := q.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(Config{Dir: dir, Keyring: keyring}); !errors.Is(err, ErrRecordAuthFailed) {
+				t.Fatalf("Open(tampered %s record) error = %v, want ErrRecordAuthFailed", state, err)
+			}
+		})
 	}
 }
 
@@ -222,8 +302,8 @@ func TestOpenFailsClosedWhenRecordKeyUnavailable(t *testing.T) {
 	}
 
 	_, err = Open(Config{Dir: dir, Keyring: wrongKeys})
-	if err == nil || !errors.Is(err, ErrCorruptRecord) || !strings.Contains(err.Error(), "unavailable") {
-		t.Fatalf("Open(wrong keyring) error = %v, want unavailable-key ErrCorruptRecord", err)
+	if err == nil || errors.Is(err, ErrCorruptRecord) || !errors.Is(err, errQueueKeyUnavailable) {
+		t.Fatalf("Open(wrong keyring) error = %v, want dedicated unavailable-key failure", err)
 	}
 }
 
@@ -305,6 +385,9 @@ func TestKeyringRevocationGuards(t *testing.T) {
 }
 
 func TestLoadKeyringRejectsWorldReadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve POSIX mode bits")
+	}
 	keyring, err := NewKeyring()
 	if err != nil {
 		t.Fatal(err)
@@ -321,6 +404,9 @@ func TestLoadKeyringRejectsWorldReadableFile(t *testing.T) {
 
 func chmodTestFixture(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve POSIX mode bits")
+	}
 	if err := os.Chmod(filepath.Clean(path), mode); err != nil {
 		t.Fatalf("Chmod(%s, %04o) error = %v", path, mode, err)
 	}
@@ -456,6 +542,9 @@ func TestMigrationQuarantineAndRewriteFailures(t *testing.T) {
 
 func restrictDirectoryWrites(t *testing.T, path string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve POSIX directory mode bits")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -469,6 +558,9 @@ func restrictDirectoryWrites(t *testing.T, path string) {
 }
 
 func TestEncryptedRecordReadLimitAndFileReadFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve POSIX unreadable-file mode bits")
+	}
 	keyring, err := NewKeyring()
 	if err != nil {
 		t.Fatal(err)

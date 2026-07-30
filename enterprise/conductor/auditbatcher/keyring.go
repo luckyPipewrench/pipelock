@@ -109,19 +109,84 @@ func (k *Keyring) File() (KeyringFile, error) {
 }
 
 func (k *Keyring) Save(path string) error {
-	file, err := k.File()
+	data, err := k.marshal()
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(file)
-	if err != nil {
-		return fmt.Errorf("auditbatcher: encode queue keyring: %w", err)
-	}
-	data = append(data, '\n')
 	if err := atomicfile.Write(filepath.Clean(path), data, 0o600); err != nil {
 		return fmt.Errorf("auditbatcher: write queue keyring: %w", err)
 	}
 	return nil
+}
+
+func (k *Keyring) marshal() ([]byte, error) {
+	file, err := k.File()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(file)
+	if err != nil {
+		return nil, fmt.Errorf("auditbatcher: encode queue keyring: %w", err)
+	}
+	data = append(data, '\n')
+	return data, nil
+}
+
+// LoadOrCreateKeyring reuses a valid durable keyring and creates one only when
+// absent. Creation publishes a fully written temporary file with an atomic
+// no-replace hard link, so concurrent callers cannot overwrite or observe a
+// partially written keyring.
+func LoadOrCreateKeyring(path string) (*Keyring, error) {
+	clean := filepath.Clean(path)
+	keyring, err := LoadKeyring(clean)
+	if err == nil {
+		return keyring, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := EnsureKeyringParent(clean); err != nil {
+		return nil, err
+	}
+	keyring, err = NewKeyring()
+	if err != nil {
+		return nil, err
+	}
+	data, err := keyring.marshal()
+	if err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(clean), ".keyring-init-*")
+	if err != nil {
+		return nil, fmt.Errorf("auditbatcher: create queue keyring temporary file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("auditbatcher: chmod queue keyring temporary file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("auditbatcher: write queue keyring temporary file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("auditbatcher: sync queue keyring temporary file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, fmt.Errorf("auditbatcher: close queue keyring temporary file: %w", err)
+	}
+	if err := os.Link(tmpPath, clean); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return LoadKeyring(clean)
+		}
+		return nil, fmt.Errorf("auditbatcher: publish queue keyring exclusively: %w", err)
+	}
+	if err := fsyncDir(filepath.Dir(clean)); err != nil {
+		return nil, fmt.Errorf("auditbatcher: sync queue keyring parent: %w", err)
+	}
+	return keyring, nil
 }
 
 func (k *Keyring) Rotate() (string, error) {

@@ -19,13 +19,17 @@ import (
 
 const (
 	encryptedRecordVersion = 2
+	queueAEADOverheadBytes = 16
 	// encryptedRecordMetadataBytes bounds the v2 JSON fields outside
 	// ciphertext. The ciphertext itself is base64-expanded by encoding/json
 	// and must be accounted for separately.
 	encryptedRecordMetadataBytes = 1024
 )
 
-var errQueueKeyUnavailable = errors.New("auditbatcher: queue encryption key unavailable")
+var (
+	errQueueKeyUnavailable = errors.New("auditbatcher: queue encryption key unavailable")
+	ErrRecordAuthFailed    = errors.New("auditbatcher: encrypted record authentication failed")
+)
 
 var queueRecordAAD = []byte("pipelock/conductor/audit-queue/v2")
 
@@ -100,11 +104,11 @@ func decryptDiskRecord(data []byte, keyring *Keyring) (diskRecord, string, bool,
 			return diskRecord{}, encrypted.KeyID, false, err
 		}
 		if len(encrypted.Nonce) != aead.NonceSize() {
-			return diskRecord{}, encrypted.KeyID, false, errors.New("auditbatcher: invalid record nonce length")
+			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("%w: invalid nonce length", ErrRecordAuthFailed)
 		}
 		plaintext, err := aead.Open(nil, encrypted.Nonce, encrypted.Ciphertext, recordAAD(encrypted.KeyID))
 		if err != nil {
-			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("auditbatcher: decrypt record: %w", err)
+			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("%w: decrypt record: %w", ErrRecordAuthFailed, err)
 		}
 		var record diskRecord
 		if err := contract.DecodeStrictJSON(plaintext, &record); err != nil {

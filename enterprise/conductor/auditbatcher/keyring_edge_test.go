@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -115,6 +117,91 @@ func TestKeyringLoadSaveAndParentErrors(t *testing.T) {
 	}
 	if err := keyring.Save(child); err == nil || !strings.Contains(err.Error(), "write queue keyring") {
 		t.Fatalf("Save(file parent) error = %v", err)
+	}
+}
+
+func TestLoadKeyringRejectsOversizedAndPermissiveFiles(t *testing.T) {
+	oversized := filepath.Join(t.TempDir(), "oversized.json")
+	if err := os.WriteFile(oversized, bytes.Repeat([]byte{'x'}, keyringMaxSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKeyring(oversized); err == nil {
+		t.Fatal("LoadKeyring(oversized) error = nil")
+	}
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissive := filepath.Join(t.TempDir(), "permissive.json")
+	if err := keyring.Save(permissive); err != nil {
+		t.Fatal(err)
+	}
+	chmodTestFixture(t, permissive, 0o622)
+	if _, err := LoadKeyring(permissive); err == nil {
+		t.Fatal("LoadKeyring(permissive) error = nil")
+	}
+}
+
+func TestLoadOrCreateKeyringReusesAndConvergesConcurrently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets", "keyring.json")
+	const callers = 8
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keyring, err := LoadOrCreateKeyring(path)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- keyring.ActiveKeyID()
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	want := ""
+	for id := range ids {
+		if want == "" {
+			want = id
+		}
+		if id != want {
+			t.Fatalf("concurrent keyring id = %q, want %q", id, want)
+		}
+	}
+	loaded, err := LoadOrCreateKeyring(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ActiveKeyID() != want {
+		t.Fatalf("reused keyring id = %q, want %q", loaded.ActiveKeyID(), want)
+	}
+}
+
+func TestLoadOrCreateKeyringFailsClosedOnInvalidExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keyring.json")
+	if err := os.WriteFile(path, []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateKeyring(path); err == nil || !strings.Contains(err.Error(), "decode queue keyring") {
+		t.Fatalf("LoadOrCreateKeyring(invalid) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "not-json" {
+		t.Fatalf("invalid durable keyring was overwritten: %q", data)
 	}
 }
 

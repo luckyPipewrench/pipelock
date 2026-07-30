@@ -8,6 +8,7 @@ package auditbatcher
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -161,6 +162,16 @@ func RecoverQueueKeyring(queueDir, livePath, backupPath string) (string, error) 
 	if usage[UnreadableRecordID] > 0 {
 		return "", fmt.Errorf("recovery keyring cannot decrypt %d queue record(s)", usage[UnreadableRecordID])
 	}
+	// Recovery intentionally reinstates the backup verbatim, including any key
+	// revoked after that backup was taken. Preserve the current live keyring so
+	// the operator can reverse an accidental or stale recovery.
+	live, err := LoadKeyring(livePath)
+	if err != nil {
+		return "", fmt.Errorf("load live keyring before recovery: %w", err)
+	}
+	if err := live.Save(livePath + ".pre-recover"); err != nil {
+		return "", fmt.Errorf("preserve live keyring before recovery: %w", err)
+	}
 	if err := backup.Save(livePath); err != nil {
 		return "", err
 	}
@@ -171,7 +182,17 @@ func lockQueueForKeyMaintenance(dir string, maxPayloadBytes uint64) (*Queue, err
 	if maxPayloadBytes == 0 {
 		maxPayloadBytes = conductor.MaxAuditPayloadBytes
 	}
-	root, pending, inflight, dead, err := ensurePrivateQueueDirs(filepath.Clean(dir))
+	cleanDir := filepath.Clean(dir)
+	for _, required := range []string{cleanDir, filepath.Join(cleanDir, "pending"), filepath.Join(cleanDir, "inflight"), filepath.Join(cleanDir, "dead")} {
+		info, err := os.Lstat(required)
+		if err != nil {
+			return nil, fmt.Errorf("auditbatcher: maintenance requires an initialized queue at %s: %w", cleanDir, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("auditbatcher: maintenance queue path %s must be a real directory", required)
+		}
+	}
+	root, pending, inflight, dead, err := ensurePrivateQueueDirs(cleanDir)
 	if err != nil {
 		return nil, err
 	}

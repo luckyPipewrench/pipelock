@@ -101,8 +101,11 @@ grep -q -- "- run" "$render_dir/default.yaml"
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-audit-queue" "$render_dir/values-enterprise-follower.yaml"
-grep -q -- "conductor-audit-queue-keyring" "$render_dir/values-enterprise-follower.yaml"
-grep -q -- "durable_audit_queue_keyring:" "$render_dir/values-enterprise-follower.yaml"
+grep -q -- 'secretName: "follower-audit-queue-keyring"' "$render_dir/values-enterprise-follower.yaml"
+grep -q -- 'key: "audit-queue-keyring.json"' "$render_dir/values-enterprise-follower.yaml"
+grep -q -- 'mountPath: "/etc/pipelock/conductor/audit-queue-key"' "$render_dir/values-enterprise-follower.yaml"
+grep -q -A2 -- 'name: conductor-audit-queue-keyring' "$render_dir/values-enterprise-follower.yaml" | grep -q -- 'readOnly: true'
+grep -q -- 'durable_audit_queue_keyring: /etc/pipelock/conductor/audit-queue-key/audit-queue-keyring.json' "$render_dir/values-enterprise-follower.yaml"
 
 grep -q -- "- conductor" "$render_dir/values-enterprise-conductor.yaml"
 grep -q -- "- serve" "$render_dir/values-enterprise-conductor.yaml"

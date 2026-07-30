@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestAuditQueueKeyLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("keyring mode = %o, want 600", info.Mode().Perm())
 	}
 	original, err := auditbatcher.LoadKeyring(keyringPath)
@@ -34,6 +35,13 @@ func TestAuditQueueKeyLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldID := original.ActiveKeyID()
+	queue, err := auditbatcher.Open(auditbatcher.Config{Dir: queueDir, Keyring: original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	out := runAuditQueueKeyCommand(t, "inspect", "--keyring", keyringPath, "--queue-dir", queueDir)
 	if !strings.Contains(out, oldID+" records=0 active") {

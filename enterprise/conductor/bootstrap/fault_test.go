@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 )
 
@@ -126,6 +127,34 @@ func TestProduceSignedBatch_FailsWhenQueueKeyringCannotBeSaved(t *testing.T) {
 	}
 	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil {
 		t.Fatal("produceSignedBatch with directory keyring target should fail")
+	}
+}
+
+func TestProduceSignedBatchReusesDurableQueueKeyring(t *testing.T) {
+	_, opts, id, _ := freshMaterial(t)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queueDir := filepath.Join(opts.Dir, "proof-reuse", "queue")
+	recorderDir := filepath.Join(opts.Dir, "proof-reuse", "recorder")
+	if _, err := produceSignedBatch(context.Background(), queueDir, recorderDir, opts, id, priv, pub); err != nil {
+		t.Fatal(err)
+	}
+	keyringPath := filepath.Join(filepath.Dir(queueDir), "queue-secrets", "keyring.json")
+	before, err := auditbatcher.LoadKeyring(keyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := produceSignedBatch(context.Background(), queueDir, recorderDir, opts, id, priv, pub); err != nil {
+		t.Fatal(err)
+	}
+	after, err := auditbatcher.LoadKeyring(keyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ActiveKeyID() != before.ActiveKeyID() {
+		t.Fatalf("bootstrap replaced durable queue key %q with %q", before.ActiveKeyID(), after.ActiveKeyID())
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -120,6 +121,13 @@ func TestQueueKeyMaintenanceLifecycleAcrossRecordStates(t *testing.T) {
 	if err := RevokeQueueKeyringKey(queueDir, keyringPath, oldID); err != nil {
 		t.Fatal(err)
 	}
+	revoked, err := LoadKeyring(keyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(revoked.KeyIDs(), oldID) {
+		t.Fatalf("revoked key %q remains before recovery", oldID)
+	}
 
 	recoveredID, err := RecoverQueueKeyring(queueDir, keyringPath, backupPath)
 	if err != nil {
@@ -127,6 +135,20 @@ func TestQueueKeyMaintenanceLifecycleAcrossRecordStates(t *testing.T) {
 	}
 	if recoveredID != newID {
 		t.Fatalf("RecoverQueueKeyring active = %q, want %q", recoveredID, newID)
+	}
+	recovered, err := LoadKeyring(keyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(recovered.KeyIDs(), oldID) {
+		t.Fatalf("recovery did not intentionally reinstate backup key %q", oldID)
+	}
+	preRecover, err := LoadKeyring(keyringPath + ".pre-recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(preRecover.KeyIDs(), oldID) {
+		t.Fatalf("pre-recover snapshot unexpectedly contains revoked key %q", oldID)
 	}
 
 	wrong, err := NewKeyring()
@@ -275,6 +297,28 @@ func TestQueueKeyMaintenanceErrorPaths(t *testing.T) {
 
 	if _, err := RecoverQueueKeyring(queueDir, backupDir, backupPath); err == nil {
 		t.Fatal("RecoverQueueKeyring(directory live path) error = nil")
+	}
+}
+
+func TestQueueKeyMaintenanceRefusesUninitializedQueue(t *testing.T) {
+	root := t.TempDir()
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyringPath := filepath.Join(root, "keys", "keyring.json")
+	if err := EnsureKeyringParent(keyringPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyring.Save(keyringPath); err != nil {
+		t.Fatal(err)
+	}
+	queueDir := filepath.Join(root, "mistyped-queue")
+	if err := RevokeQueueKeyringKey(queueDir, keyringPath, "missing"); err == nil || !strings.Contains(err.Error(), "initialized queue") {
+		t.Fatalf("RevokeQueueKeyringKey(uninitialized) error = %v", err)
+	}
+	if _, err := os.Stat(queueDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("maintenance created typo queue: %v", err)
 	}
 }
 

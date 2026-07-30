@@ -560,14 +560,31 @@ func validConductorConfig(t *testing.T) Conductor {
 }
 
 func TestValidateConductor_QueueKeyringOutsideQueue(t *testing.T) {
-	cfg := Defaults()
-	cfg.Conductor = validConductorConfig(t)
-	cfg.Conductor.DurableAuditQueueKeyring = filepath.Join(cfg.Conductor.DurableAuditQueueDir, "keyring.json")
-	configureConductorRecorder(t, cfg)
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "must be outside") {
-		t.Fatalf("Validate() = %v, want queue-key separation refusal", err)
+	for _, tc := range []struct {
+		name    string
+		keyring func(string) string
+		wantErr bool
+	}{
+		{name: "equal", keyring: func(queue string) string { return queue }, wantErr: true},
+		{name: "descendant", keyring: func(queue string) string { return filepath.Join(queue, "keyring.json") }, wantErr: true},
+		{name: "sibling", keyring: func(queue string) string { return filepath.Join(filepath.Dir(queue), "secrets", "keyring.json") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Conductor = validConductorConfig(t)
+			cfg.Conductor.DurableAuditQueueKeyring = tc.keyring(cfg.Conductor.DurableAuditQueueDir)
+			configureConductorRecorder(t, cfg)
+			err := cfg.Validate()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "must be outside") {
+					t.Fatalf("Validate() = %v, want queue-key separation refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() = %v, want sibling keyring accepted", err)
+			}
+		})
 	}
 }
 

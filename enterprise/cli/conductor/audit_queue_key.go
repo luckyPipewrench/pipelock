@@ -117,7 +117,7 @@ func auditQueueKeyRotateCmd() *cobra.Command {
 		},
 	}
 	addAuditQueueKeyFlags(cmd, &opts)
-	cmd.Flags().StringVar(&opts.backup, "backup", "", "pre-rotation backup path (default KEYRING.bak)")
+	cmd.Flags().StringVar(&opts.backup, "backup", "", "post-rotation recovery backup path; pre-rotation state uses BACKUP.previous (default KEYRING.bak)")
 	return cmd
 }
 

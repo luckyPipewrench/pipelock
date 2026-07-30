@@ -19,7 +19,6 @@
 package auditbatcher
 
 import (
-	"crypto/aes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -657,6 +656,9 @@ func readRecordWithKeyring(path string, maxPayloadBytes uint64, keyring *Keyring
 
 	record, keyID, legacy, err := decryptDiskRecord(data, keyring)
 	if err != nil {
+		if errors.Is(err, errQueueKeyUnavailable) || errors.Is(err, ErrRecordAuthFailed) {
+			return diskRecord{}, keyID, legacy, err
+		}
 		return diskRecord{}, keyID, legacy, corruptRecordError(err)
 	}
 	if record.Version != recordVersion {
@@ -692,10 +694,10 @@ func encryptedRecordReadLimit(plaintextLimit int64) (int64, error) {
 		return 0, fmt.Errorf("auditbatcher: encrypted record plaintext limit must not be negative: %d", plaintextLimit)
 	}
 	plaintextBytes := uint64(plaintextLimit)
-	if plaintextBytes > maxRecordReadBytes-aes.BlockSize {
+	if plaintextBytes > maxRecordReadBytes-queueAEADOverheadBytes {
 		return 0, fmt.Errorf("auditbatcher: encrypted record plaintext limit too large: %d", plaintextLimit)
 	}
-	ciphertextBytes := plaintextBytes + aes.BlockSize
+	ciphertextBytes := plaintextBytes + queueAEADOverheadBytes
 	// encoding/json represents []byte as padded standard base64. Check before
 	// multiplying so a hostile configured limit cannot wrap the calculation.
 	if ciphertextBytes > ((maxRecordReadBytes-encryptedRecordMetadataBytes)/4)*3-2 {

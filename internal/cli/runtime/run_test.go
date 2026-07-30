@@ -688,6 +688,47 @@ func doMCPPostWithStartupRetry(
 	}
 }
 
+func acceptHTTPStatusOK(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusOK
+}
+
+func acceptMCPInitializeResponse(resp *http.Response) bool {
+	return acceptHTTPStatusOK(resp) && resp.Header.Get("Mcp-Session-Id") != ""
+}
+
+func TestDoMCPPostWithStartupRetry_RetriesRejectedResponse(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Mcp-Session-Id", "ready-session")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	cmdErr := make(chan error)
+	var stderr strings.Builder
+	resp := doMCPPostWithStartupRetry(
+		t,
+		addr,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		cmdErr,
+		&stderr,
+		acceptMCPInitializeResponse,
+	)
+	defer func() { _ = resp.Body.Close() }()
+
+	if got := resp.Header.Get("Mcp-Session-Id"); got != "ready-session" {
+		t.Fatalf("Mcp-Session-Id = %q, want ready-session", got)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2", got)
+	}
+}
+
 // doGet issues a context-aware GET and fails the test on error.
 func doGet(t *testing.T, client *http.Client, url string) *http.Response {
 	t.Helper()
@@ -939,7 +980,7 @@ logging:
 
 		mcpResp := doMCPPostWithStartupRetry(t, mcpAddr,
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use `+secret+` to deploy"}}}`,
-			cmdErr, &stderr, nil)
+			cmdErr, &stderr, acceptHTTPStatusOK)
 		_ = mcpResp.Body.Close()
 		if mcpResp.StatusCode != http.StatusOK {
 			t.Fatalf("mcp listener status = %d, want 200", mcpResp.StatusCode)
@@ -1130,7 +1171,7 @@ logging:
 
 		resp := doMCPPostWithStartupRetry(t, mcpAddr,
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`,
-			cmdErr, &stderr, nil)
+			cmdErr, &stderr, acceptHTTPStatusOK)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
 				t.Errorf("close mcp response body: %v", err)
@@ -1175,9 +1216,7 @@ func initializeRunMCPListenerSessionWithStartupRetry(
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
 		cmdErr,
 		stderr,
-		func(resp *http.Response) bool {
-			return resp.StatusCode == http.StatusOK && resp.Header.Get("Mcp-Session-Id") != ""
-		},
+		acceptMCPInitializeResponse,
 	)
 	defer func() { _ = resp.Body.Close() }()
 	return resp.Header.Get("Mcp-Session-Id")

@@ -7,22 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Audit Packet verification now requires external trust.** The Go, Rust, and
-  TypeScript verifiers reject empty receipt chains and no longer accept a
-  packet's embedded signer key as its own trust anchor. Supply `--key` or an
-  out-of-band `--expect-sha256` pin; explicitly weaker structural modes remain
-  available where documented.
-
-### ⚠️ Breaking Changes / Upgrade Notes
-
-- **Trusted Audit Packet verification requires `--key` or
-  `--expect-sha256`.** Existing automation that invokes `audit-packet` without
-  an external trust anchor now fails closed. Add the trusted signer public key
-  or a separately obtained SHA-256 digest of `packet.json`.
-
-## [3.3.0] - 2026-07-28
+## [3.3.0] - 2026-07-30
 
 ### Breaking Changes / Upgrade Notes
 
@@ -83,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a placeholder. Tooling that parsed the previous value should be rechecked.
 - **`pipelock mcp scan` and `pipelock mcp explain` verdicts are scoped to
   injection**, so response findings no longer widen those two commands' verdicts.
+- **Trusted Audit Packet verification requires `--key` or
+  `--expect-sha256`.** Existing automation that invokes `audit-packet` without
+  an external trust anchor now fails closed. Add the trusted signer public key
+  or a separately obtained SHA-256 digest of `packet.json`.
+- **Forward-proxy CONNECT tunnels can require TLS with SNI.** Shipped profiles
+  enable `forward_proxy.sni_require_tls` when SNI verification is on, so raw
+  CONNECT bytes and TLS handshakes without SNI are blocked unless an operator
+  chooses the documented compatibility opt-out.
+- **Conductor followers need a durable audit-queue keyring before encrypted
+  queue records are enabled.** Existing plaintext records migrate after startup
+  can open the keyring; missing or unauthenticated keyrings fail closed.
 
 ### Added
 
@@ -124,9 +120,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guessing it. Startup also reports the resolved listener port and the armed
   watch-path count, so a deployment that bound somewhere unintended or armed
   fewer paths than expected is visible at boot instead of at incident time.
+- **Forward-proxy TLS/SNI enforcement for opaque CONNECT tunnels.**
+  `forward_proxy.sni_require_tls` blocks non-TLS and missing-SNI tunnels when
+  SNI verification is configured, with validation and reload coverage for the
+  explicit compatibility opt-out.
+- **Encrypted Conductor durable audit queues.** Enterprise followers can use a
+  Secret-backed audit-queue keyring, Helm mounts it read-only outside the queue
+  directory, and `pipelock conductor audit-queue-key` now supports key
+  initialization, inspection, rotation, migration, revocation, and recovery.
 
 ### Fixed
 
+- **Audit Packet verification now requires external trust.** The Go, Rust, and
+  TypeScript verifiers reject empty receipt chains and no longer accept a
+  packet's embedded signer key as its own trust anchor. Explicitly weaker
+  structural modes remain available where documented.
 - **Matched credentials are no longer written to the audit stream by the
   immutable core detectors.** Redaction of content-bearing URL, target, and
   resource fields was keyed on a scanner-name allowlist that covered the
@@ -178,6 +186,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reload left the previous limits enforcing. Budgets now update in place without
   resetting each subject's accumulated consumption, meaning a retune no longer
   hands every active subject a fresh allowance.
+- **File-sentry block findings survive backpressure and shutdown.** Saturated
+  delivery channels no longer hide agent-attributed blocking findings, and close
+  waits for in-flight debounce scans before reporting shutdown complete.
+- **Provider-opaque GitHub token matches warn only inside validated opaque
+  provider fields.** Generic content still blocks on enforceable tokens,
+  malformed or multiple-root JSON fails closed, and critical matches keep
+  priority over opaque-field downgrades.
+- **Full evidence directories no longer stop receipt emission.** Recorder resume
+  no longer applies the read-path directory cap to the one tail record it needs,
+  while query, verification, and dashboard reads keep bounded scans. Evidence
+  shard matching now uses parsed session equality so similar session prefixes
+  cannot cross-contaminate receipt chains or health tails.
+- **Conductor leaders survive policy-hash-moving upgrades.** Stored bundles with
+  legacy or unknown policy-hash derivations load after signature verification,
+  offline inspect and repair use the same tolerance, and a bounded metric reports
+  current, known-legacy, and unknown-unverified policy hash status counts.
+- **Conductor local state works on Kubernetes group-owned volumes.** State files
+  written and owned by Pipelock may use group read/write when the group belongs
+  to the process, while operator-supplied credentials and private keys keep the
+  stricter permission policy.
+- **Containment reinstall handles changed managed inputs as an operator
+  lifecycle.** Reinstall restarts changed managed inputs, rolls back failures,
+  and waits for proxy readiness before reporting success.
+- **Conductor remote-kill status reports the newest effective state.** Resume
+  and supersede overlaps no longer make follower audiences appear active or
+  recovered incorrectly.
 - **MCP protocol revision 2026-07-28 is mediated without a silent downgrade.**
   That revision makes `Mcp-Method` and `Mcp-Name` required on Streamable HTTP
   POST, and the reverse proxy stripped both in transit. An upstream that enforces
@@ -247,6 +281,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dependency advisories resolved.** `golang.org/x/net` updated to v0.56.0, and
   the TypeScript verifier's `fast-uri` updated to 3.1.4 for GHSA-4c8g-83qw-93j6.
+- **Local integrity and sidecar state use explicit permission policies.**
+  Integrity manifests, MCP integrity state, and SVID sidecar state reject group-
+  or world-writable files instead of inheriting a looser generic read policy.
+- **Durable audit queue records are encrypted at rest with AES-256-GCM.**
+  Startup migrates plaintext records only after the keyring is available, retired
+  keys remain available for migration, corrupt records are quarantined, and
+  encrypted recovery enforces the maximum record size across restart and
+  delivery.
 
 ## [3.2.0] - 2026-07-17
 

@@ -1325,6 +1325,7 @@ func TestEnsureFile_StatErrorFailsClosedWithOpenFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	if err := rec.Record(Entry{
 		SessionID: "stat-error",

@@ -106,7 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrently advanced ceremonies fail closed. Deployment-specific stop, key
   replacement, restart, and rollback steps remain operator-run. Successors must
   use purpose-bound `receipt-signing` JSON keys; legacy retiring keys remain
-  accepted for migration from existing recorder deployments.
+  accepted for migration from existing recorder deployments. Cross-process
+  ceremony locking currently requires Unix `flock` and fails closed on Windows;
+  the artifact output filesystem must support hard links.
 - **OCSF syslog output format**, OCSF over HTTP, and audit-sink delivery health
   metrics.
 - **Delivery-failure accounting for webhook and OTLP sinks**, with an atomic sink

@@ -92,6 +92,36 @@ func TestWrite_Success(t *testing.T) {
 	}
 }
 
+func TestWriteNewCreatesAndRefusesReplacement(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ceremony.json")
+	if err := WriteNew(target, []byte("first"), 0o600); err != nil {
+		t.Fatalf("WriteNew first: %v", err)
+	}
+	if err := WriteNew(target, []byte("second"), 0o600); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("WriteNew existing error = %v, want os.ErrExist", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile("ceremony.json")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "first" {
+		t.Fatalf("existing target changed: %q", data)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %04o, want 0600", got)
+	}
+}
+
 func TestWriteFuncStreamsAndPreservesTargetOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "out.txt")

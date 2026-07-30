@@ -35,6 +35,41 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	})
 }
 
+// WriteNew atomically and durably creates path without replacing an existing
+// file. The fully written and synced temporary file is published with a hard
+// link, whose create-if-absent semantics close the stat-then-rename race.
+func WriteNew(path string, data []byte, perm os.FileMode) error {
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting permissions: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	if err := os.Link(tmpPath, path); err != nil {
+		return fmt.Errorf("publishing new file: %w", err)
+	}
+	syncDir(dir)
+	return nil
+}
+
 // WriteFunc atomically and durably publishes data written by writeFn without
 // buffering the complete payload in memory.
 func WriteFunc(path string, perm os.FileMode, writeFn func(io.Writer) error) error {

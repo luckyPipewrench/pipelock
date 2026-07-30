@@ -3304,6 +3304,7 @@ The old string form, `learn_lock.environment: production`, is not accepted by th
 Two commands compose the trust topology:
 
 - `pipelock signing key generate --purpose <purpose> --out <path>` writes a new Ed25519 keypair to a 0o600 JSON file with explicit purpose binding. Purposes cover deployment-level trust (root, activation, recovery, receipt, rules) and Conductor control-plane purpose strings; run `pipelock signing key generate --help` for the authoritative list and reserved-purpose notes. Conductor rollback, remote-kill, and trust-root-rotation are threshold key types — generate one key per approver and never deploy a single-signer authority.
+- `pipelock signing receipt-rotation endorse --chain DIR --prior-key-file OLD --new-key-file NEW --root-key ROOT --out FILE` creates an old-key-signed successor authorization only after the pinned receipt chain verifies and ends in a signed clean-shutdown seal. It does not replace keys or manage the Pipelock process.
 - `pipelock signing roster build --root <root.json> --include id=,key=,purpose=,...` composes a signed `RosterEnvelope` from the root key plus a list of public-key includes. The output JSON is what `learn_lock.roster_path` consumes and what `pipelock signing roster verify` accepts.
 
 End-to-end example:

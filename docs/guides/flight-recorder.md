@@ -179,6 +179,56 @@ rotated chain now stays offline-verifiable. See the
 [receipt verification guide](receipt-verification.md#chains-that-rotated-the-signing-key)
 for the verification flow.
 
+To let a verifier trust the successor from the original pinned key instead of
+pinning every segment key separately, prepare an old-key-signed rotation
+endorsement while Pipelock is stopped:
+
+```bash
+sudo pipelock signing pubkey \
+  --key-file /etc/pipelock/keys/flight-recorder-signing.key \
+  --out /etc/pipelock/keys/flight-recorder-signing.root.pub
+
+sudo pipelock signing key generate \
+  --purpose receipt-signing \
+  --out /etc/pipelock/keys/flight-recorder-signing.next.json
+
+sudo systemctl stop pipelock
+
+sudo pipelock signing receipt-rotation endorse \
+  --chain /var/lib/pipelock/evidence \
+  --session proxy \
+  --prior-key-file /etc/pipelock/keys/flight-recorder-signing.key \
+  --new-key-file /etc/pipelock/keys/flight-recorder-signing.next.json \
+  --root-key /etc/pipelock/keys/flight-recorder-signing.root.pub \
+  --out /etc/pipelock/keys/receipt-rotation-2026-07-30.json
+
+sudo install -m 0600 \
+  /etc/pipelock/keys/flight-recorder-signing.next.json \
+  /etc/pipelock/keys/flight-recorder-signing.key
+sudo systemctl start pipelock
+```
+
+The endorsement command does not stop, restart, or replace keys. It refuses an
+open chain, an unpinned root, a retiring key that does not sign the closed tail,
+a reused successor, and an existing output file. Keep the retiring key in
+offline custody until the retention window for its receipts expires.
+
+After the restarted process emits at least one receipt, verify from the original
+root:
+
+```bash
+pipelock verify-receipt \
+  --chain /var/lib/pipelock/evidence \
+  --session proxy \
+  --key /etc/pipelock/keys/flight-recorder-signing.root.pub \
+  --rotation-endorsement /etc/pipelock/keys/receipt-rotation-2026-07-30.json
+```
+
+For a later rotation, pin the same original root and pass each earlier
+`--rotation-endorsement` to both the endorsement command and the verifier. This
+proves the full delegation path instead of treating the latest key as a new
+root.
+
 ## Evidence File Format
 
 Each file is named `evidence-<session_id>-<seq_start>.jsonl`. One JSON object per line. Example entry:

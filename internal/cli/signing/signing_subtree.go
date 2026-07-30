@@ -45,6 +45,8 @@ trusting them in production.
 
 Subcommand groups:
   key         Generate deployment-level signing keys
+  receipt-rotation
+              Prepare old-key-endorsed receipt signing-key rotations
   roster      Build, show, and verify key rosters
   recovery    Verify recovery authorizations
   transition  Verify root transition documents`,
@@ -70,7 +72,7 @@ Subcommand groups:
 	}
 	transition.AddCommand(transitionVerifyCmd())
 
-	cmd.AddCommand(keyGenerateGroupCmd(), pubkeyCmd(), roster, recovery, transition)
+	cmd.AddCommand(keyGenerateGroupCmd(), pubkeyCmd(), receiptRotationGroupCmd(), roster, recovery, transition)
 	return cmd
 }
 

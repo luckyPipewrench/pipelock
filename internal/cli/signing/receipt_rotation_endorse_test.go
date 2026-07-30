@@ -1,0 +1,408 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package signing
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
+)
+
+func TestReceiptRotationEndorseCmdCreatesVerifiedArtifact(t *testing.T) {
+	dir := t.TempDir()
+	pubA, privA := generateRotationTestKey(t)
+	_, privB := generateRotationTestKey(t)
+	emitClosedInto(t, dir, privA, 2, 0)
+
+	priorPath := saveRotationTestKey(t, dir, "prior.key", privA)
+	newPath := saveRotationTestKey(t, dir, "new.key", privB)
+	outPath := filepath.Join(dir, "rotation.json")
+	now := time.Date(2026, 7, 30, 15, 4, 5, 123, time.UTC)
+
+	var out bytes.Buffer
+	cmd := receiptRotationEndorseCmd(func() time.Time { return now })
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"--chain", dir,
+		"--session", "proxy",
+		"--prior-key-file", priorPath,
+		"--new-key-file", newPath,
+		"--root-key", hex.EncodeToString(pubA),
+		"--out", outPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+
+	endorsement, err := receipt.LoadRotationEndorsementFile(outPath)
+	if err != nil {
+		t.Fatalf("LoadRotationEndorsementFile: %v", err)
+	}
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, "proxy")
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	tail := receipts[len(receipts)-1]
+	tailHash, err := receipt.ReceiptHash(tail)
+	if err != nil {
+		t.Fatalf("ReceiptHash: %v", err)
+	}
+	if endorsement.SessionID != "proxy" ||
+		endorsement.PriorSignerKey != hex.EncodeToString(pubA) ||
+		endorsement.PriorFinalSeq != tail.ActionRecord.ChainSeq ||
+		endorsement.PriorTailHash != tailHash ||
+		endorsement.RotatedAt != now.Format(time.RFC3339Nano) {
+		t.Fatalf("endorsement does not match the verified tail: %#v", endorsement)
+	}
+	if endorsement.NewSignerKey != hex.EncodeToString(privB.Public().(ed25519.PublicKey)) {
+		t.Fatalf("successor = %q, want new key", endorsement.NewSignerKey)
+	}
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %04o, want 0600", got)
+	}
+	if !strings.Contains(out.String(), "Pipelock remains stopped") {
+		t.Fatalf("operator restart warning missing:\n%s", out.String())
+	}
+}
+
+func TestReceiptRotationEndorseCmdSupportsPreviouslyEndorsedChain(t *testing.T) {
+	dir := t.TempDir()
+	pubA, privA := generateRotationTestKey(t)
+	_, privB := generateRotationTestKey(t)
+	_, privC := generateRotationTestKey(t)
+
+	emitClosedInto(t, dir, privA, 1, 0)
+	receiptsA, err := receipt.ExtractReceiptsFromSessionDir(dir, "proxy")
+	if err != nil {
+		t.Fatalf("extract A: %v", err)
+	}
+	endorsementAB := signRotationTestEndorsement(t, receiptsA[len(receiptsA)-1], "proxy", privA, privB)
+	endorsementABPath := saveRotationTestEndorsement(t, dir, "rotation-ab.json", endorsementAB)
+	emitClosedInto(t, dir, privB, 1, 1)
+
+	priorPath := saveRotationTestKey(t, dir, "prior-b.key", privB)
+	newPath := saveRotationTestKey(t, dir, "new-c.key", privC)
+	outPath := filepath.Join(dir, "rotation-bc.json")
+	cmd := receiptRotationEndorseCmd(time.Now)
+	cmd.SetArgs([]string{
+		"--chain", dir,
+		"--prior-key-file", priorPath,
+		"--new-key-file", newPath,
+		"--root-key", hex.EncodeToString(pubA),
+		"--rotation-endorsement", endorsementABPath,
+		"--out", outPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute previously endorsed chain: %v", err)
+	}
+	if _, err := receipt.LoadRotationEndorsementFile(outPath); err != nil {
+		t.Fatalf("new endorsement invalid: %v", err)
+	}
+}
+
+func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
+	t.Run("open chain", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		rec, err := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+		}, nil, privA)
+		if err != nil {
+			t.Fatalf("recorder.New: %v", err)
+		}
+		t.Cleanup(func() { _ = rec.Close() })
+		emitter := receipt.NewEmitter(receipt.EmitterConfig{
+			Recorder: rec,
+			PrivKey:  privA,
+		})
+		if err := emitter.EmitSessionOpen(); err != nil {
+			t.Fatalf("EmitSessionOpen: %v", err)
+		}
+		if err := emitter.Emit(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   "allow",
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    "https://example.com/open",
+			SessionID: "agent-session",
+		}); err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+
+		err = executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "chain is still open") {
+			t.Fatalf("error = %v, want open-chain refusal", err)
+		}
+	})
+
+	t.Run("wrong pinned root", func(t *testing.T) {
+		dir := t.TempDir()
+		_, privA := generateRotationTestKey(t)
+		pubWrong, _ := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubWrong), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "not valid from the pinned root") {
+			t.Fatalf("error = %v, want pinned-root refusal", err)
+		}
+	})
+
+	t.Run("retiring key does not sign tail", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privWrong := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		err := executeRotationEndorseTestCmd(t, dir, privWrong, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "retiring key does not sign") {
+			t.Fatalf("error = %v, want retiring-key refusal", err)
+		}
+	})
+
+	t.Run("same successor key", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privA, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "successor key must differ") {
+			t.Fatalf("error = %v, want same-key refusal", err)
+		}
+	})
+
+	t.Run("wrong successor key purpose", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+		priorPath := saveRotationTestKey(t, dir, "prior.key", privA)
+		newPath := saveRotationJSONKey(t, dir, "new.json", privB, "roster-root")
+
+		cmd := receiptRotationEndorseCmd(time.Now)
+		cmd.SetArgs([]string{
+			"--chain", dir,
+			"--prior-key-file", priorPath,
+			"--new-key-file", newPath,
+			"--root-key", hex.EncodeToString(pubA),
+			"--out", filepath.Join(dir, "rotation.json"),
+		})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), `purpose mismatch: file="roster-root" expected="receipt-signing"`) {
+			t.Fatalf("error = %v, want key-purpose refusal", err)
+		}
+	})
+
+	t.Run("existing output", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+		outPath := filepath.Join(dir, "rotation.json")
+		if err := os.WriteFile(outPath, []byte("keep"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), outPath)
+		if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+			t.Fatalf("error = %v, want overwrite refusal", err)
+		}
+		root, openErr := os.OpenRoot(dir)
+		if openErr != nil {
+			t.Fatalf("OpenRoot: %v", openErr)
+		}
+		defer func() { _ = root.Close() }()
+		data, readErr := root.ReadFile(filepath.Base(outPath))
+		if readErr != nil || string(data) != "keep" {
+			t.Fatalf("existing artifact changed: data=%q err=%v", data, readErr)
+		}
+	})
+}
+
+func TestConfirmRotationTailStableRejectsConcurrentAdvance(t *testing.T) {
+	dir := t.TempDir()
+	_, priv := generateRotationTestKey(t)
+	emitClosedInto(t, dir, priv, 1, 0)
+	before, err := receipt.ExtractReceiptsFromSessionDir(dir, "proxy")
+	if err != nil {
+		t.Fatalf("extract initial chain: %v", err)
+	}
+	expectedTail := before[len(before)-1]
+
+	emitClosedInto(t, dir, priv, 1, 1)
+	err = confirmRotationTailStable(dir, "proxy", expectedTail)
+	if err == nil || !strings.Contains(err.Error(), "chain changed during rotation preparation") {
+		t.Fatalf("error = %v, want concurrent-advance refusal", err)
+	}
+}
+
+func executeRotationEndorseTestCmd(
+	t *testing.T,
+	dir string,
+	priorKey, newKey ed25519.PrivateKey,
+	rootKey, outPath string,
+) error {
+	t.Helper()
+	priorPath := saveRotationTestKey(t, dir, "prior-"+filepath.Base(outPath)+".key", priorKey)
+	newPath := saveRotationTestKey(t, dir, "new-"+filepath.Base(outPath)+".key", newKey)
+	cmd := receiptRotationEndorseCmd(time.Now)
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		"--chain", dir,
+		"--prior-key-file", priorPath,
+		"--new-key-file", newPath,
+		"--root-key", rootKey,
+		"--out", outPath,
+	})
+	return cmd.Execute()
+}
+
+func generateRotationTestKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return pub, priv
+}
+
+func emitClosedInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx int) {
+	t.Helper()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:  rec,
+		PrivKey:   priv,
+		Principal: "test",
+		Actor:     "test",
+	})
+	if err := emitter.InitError(); err != nil {
+		t.Fatalf("emitter init error: %v", err)
+	}
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	for i := range count {
+		if err := emitter.Emit(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   "allow",
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    "https://example.com/" + strconv.Itoa(startIdx+i),
+			SessionID: "agent-session",
+		}); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+	if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+		t.Fatalf("EmitSessionClose: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+}
+
+func saveRotationTestKey(t *testing.T, dir, name string, key ed25519.PrivateKey) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := domsigning.SavePrivateKey(key, path); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	return path
+}
+
+func saveRotationJSONKey(
+	t *testing.T,
+	dir, name string,
+	key ed25519.PrivateKey,
+	purpose string,
+) string {
+	t.Helper()
+	file := keyFile{
+		SchemaVersion: keyFileSchemaVersion,
+		Purpose:       purpose,
+		KeyID:         "test-key",
+		Public:        hex.EncodeToString(key.Public().(ed25519.PublicKey)),
+		Private:       hex.EncodeToString(key),
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(file)
+	if err != nil {
+		t.Fatalf("Marshal key: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	return path
+}
+
+func signRotationTestEndorsement(
+	t *testing.T,
+	tail receipt.Receipt,
+	sessionID string,
+	priorKey, newKey ed25519.PrivateKey,
+) receipt.RotationEndorsement {
+	t.Helper()
+	tailHash, err := receipt.ReceiptHash(tail)
+	if err != nil {
+		t.Fatalf("ReceiptHash: %v", err)
+	}
+	endorsement, err := receipt.SignRotationEndorsement(receipt.RotationEndorsement{
+		SessionID:     sessionID,
+		PriorFinalSeq: tail.ActionRecord.ChainSeq,
+		PriorTailHash: tailHash,
+		NewSignerKey:  hex.EncodeToString(newKey.Public().(ed25519.PublicKey)),
+		RotatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}, priorKey)
+	if err != nil {
+		t.Fatalf("SignRotationEndorsement: %v", err)
+	}
+	return endorsement
+}
+
+func saveRotationTestEndorsement(
+	t *testing.T,
+	dir, name string,
+	endorsement receipt.RotationEndorsement,
+) string {
+	t.Helper()
+	data, err := json.Marshal(endorsement)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}

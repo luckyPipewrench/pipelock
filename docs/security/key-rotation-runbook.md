@@ -78,6 +78,15 @@ Hold the dual-trust roster live for a soak period before sunsetting the old key.
 
 The soak exists so that any artifact signed by the old key in the last hours before cutover is still verifiable from the live roster. Shortening the soak under time pressure is a known way to strand pending verifications.
 
+For `receipt-signing`, `pipelock signing receipt-rotation endorse` can bind the
+successor key to the final signed tail of a cleanly stopped recorder session.
+The command requires an explicitly pinned root and all earlier endorsements, so
+it verifies the complete delegation path before creating the next endorsement.
+It prepares the public ceremony artifact only; the deployment operator remains
+responsible for the stop, key replacement, restart, and post-restart chain
+verification. See [Flight Recorder: Rotating the signing key](../guides/flight-recorder.md#rotating-the-signing-key)
+for the complete systemd example.
+
 ## Sunset the old key
 
 After the soak window, build a subsequent roster that includes the new key as `status=active` and the old key as `status=revoked`. The roster build command accepts `status=revoked` on an `--include` entry.

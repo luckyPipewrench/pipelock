@@ -510,6 +510,14 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		mux.Handle("/", noCacheStatic(http.FileServer(http.Dir(f.staticDir))))
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving static UI from %s at /\n", f.staticDir)
+		if len(f.embedOrigins) == 0 {
+			// Serving a UI with no --embed-origin ships frame-ancestors 'none'
+			// (see brokerContentSecurityPolicy), so the page cannot load in an
+			// iframe. That is the correct default for a standalone broker but
+			// silently breaks one meant to be embedded, so say so loudly rather
+			// than let a dropped flag surface only when an embed goes blank.
+			_, _ = fmt.Fprintln(out, "WARNING: serving a static UI with no --embed-origin; frame-ancestors is 'none' and the page will NOT load in an iframe. Pass --embed-origin for each site that embeds this broker.")
+		}
 	}
 	if len(f.externalScriptOrigins) > 0 {
 		_, _ = fmt.Fprintf(out, "trusting external script origin(s): %s\n", strings.Join(f.externalScriptOrigins, ", "))

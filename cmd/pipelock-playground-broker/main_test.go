@@ -388,6 +388,70 @@ func TestBuildServerStaticDir(t *testing.T) {
 	}
 }
 
+// Serving a UI with no --embed-origin ships frame-ancestors 'none', so the page
+// cannot be iframed. That is a correct default but a silent one: it is exactly
+// how a dropped --embed-origin on a deploy surfaced only as a blank embed. The
+// broker must warn loudly when it serves a UI it cannot embed, and stay quiet
+// (no false alarm) once an embed origin is configured.
+func TestBuildServerStaticDirWarnsWhenNotEmbeddable(t *testing.T) {
+	dir := t.TempDir()
+	uiDir := filepath.Join(dir, "ui")
+	if err := os.MkdirAll(uiDir, 0o750); err != nil {
+		t.Fatalf("mkdir ui: %v", err)
+	}
+	writeTestFile(t, uiDir, "index.html", "<html><body>live demo ui</body></html>")
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return fakeProvider{}, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	flags := func(embedOrigins []string) *serveFlags {
+		return &serveFlags{
+			listen: defaultListen, provider: "fake", flyApp: "playground-test",
+			flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
+			staticDir: uiDir, internalPort: 8080, concurrency: 2,
+			codes: []string{"outer-code"}, maxPerCode: defaultMaxPerCode,
+			gateSecretFile: gateSecretFile, ipRate: defaultIPRate, ipBurst: defaultIPBurst,
+			codeRate: defaultCodeRate, codeBurst: defaultCodeBurst,
+			globalDailyBudget: 10,
+			unsafeNoHumanGate: true,
+			sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
+			vmDailyTurnBudget:     10,
+			requireSessionSecrets: false,
+			embedOrigins:          embedOrigins,
+		}
+	}
+
+	const warn = "WARNING: serving a static UI with no --embed-origin"
+
+	cases := []struct {
+		name         string
+		embedOrigins []string
+		wantWarn     bool
+	}{
+		{name: "no_embed_origin_warns", embedOrigins: nil, wantWarn: true},
+		{name: "embed_origin_configured_silent", embedOrigins: []string{testEmbedOrigin}, wantWarn: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			srv, _, _, _, err := buildServer(context.Background(), &out, flags(tc.embedOrigins))
+			if err != nil {
+				t.Fatalf("buildServer: %v", err)
+			}
+			t.Cleanup(srv.Close)
+			if got := strings.Contains(out.String(), warn); got != tc.wantWarn {
+				t.Fatalf("not-embeddable warning present = %v, want %v; output %q", got, tc.wantWarn, out.String())
+			}
+		})
+	}
+}
+
 func TestBrokerSecurityHeaders(t *testing.T) {
 	dir := t.TempDir()
 	uiDir := filepath.Join(dir, "ui")

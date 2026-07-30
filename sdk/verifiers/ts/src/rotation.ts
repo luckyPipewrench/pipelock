@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
@@ -218,14 +218,34 @@ export async function verifyRotationEndorsement(
 }
 
 export async function loadRotationEndorsementFile(file: string): Promise<RotationEndorsement> {
-  let text: string;
+  const normalized = path.normalize(file);
+  let descriptor: number;
   try {
-    text = readFileSync(path.normalize(file), "utf8");
+    descriptor = openSync(normalized, "r");
   } catch (err) {
     throw new RuntimeError(`read ${file}: ${(err as Error).message}`);
   }
-  if (Buffer.byteLength(text, "utf8") > 64 * 1024) {
-    throw new InvalidError("rotation endorsement exceeds 65536 bytes");
+  let text: string;
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new InvalidError("rotation endorsement must be a regular file");
+    }
+    const data = Buffer.allocUnsafe(64 * 1024 + 1);
+    let total = 0;
+    while (total < data.length) {
+      const count = readSync(descriptor, data, total, data.length - total, null);
+      if (count === 0) break;
+      total += count;
+    }
+    if (total > 64 * 1024) {
+      throw new InvalidError("rotation endorsement exceeds 65536 bytes");
+    }
+    text = data.subarray(0, total).toString("utf8");
+  } catch (err) {
+    if (err instanceof InvalidError) throw err;
+    throw new RuntimeError(`read ${file}: ${(err as Error).message}`);
+  } finally {
+    closeSync(descriptor);
   }
   try {
     const parsed = materializeStrictJSON(parseJSONStrict(text));

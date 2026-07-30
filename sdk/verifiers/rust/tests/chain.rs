@@ -406,6 +406,22 @@ fn rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields() {
         let _ = fs::remove_file(path);
         assert!(error.contains(want), "{name}: {error}");
     }
+
+    let oversized = base.with_extension("oversized.json");
+    fs::write(&oversized, vec![0; 64 * 1024 + 1]).unwrap();
+    let error = load_rotation_endorsement_file(&oversized)
+        .expect_err("oversized endorsement should fail")
+        .to_string();
+    let _ = fs::remove_file(oversized);
+    assert!(error.contains("exceeds 65536 bytes"), "{error}");
+
+    let directory = base.with_extension("directory");
+    fs::create_dir(&directory).unwrap();
+    let error = load_rotation_endorsement_file(&directory)
+        .expect_err("endorsement directory should fail")
+        .to_string();
+    let _ = fs::remove_dir(directory);
+    assert!(error.contains("must be a regular file"), "{error}");
 }
 
 #[test]

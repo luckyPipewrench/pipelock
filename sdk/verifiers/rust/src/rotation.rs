@@ -10,7 +10,8 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 const ENDORSEMENT_VERSION: u64 = 1;
@@ -187,15 +188,24 @@ pub fn verify_rotation_endorsement(endorsement: &RotationEndorsement) -> Result<
 }
 
 pub fn load_rotation_endorsement_file(path: &Path) -> Result<RotationEndorsement> {
-    let metadata = fs::metadata(path)
+    let file = File::open(path)
+        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    let metadata = file
+        .metadata()
         .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
-    if metadata.len() > MAX_ENDORSEMENT_BYTES {
+    if !metadata.file_type().is_file() {
+        return Err(invalid("rotation endorsement must be a regular file"));
+    }
+    let mut reader = file.take(MAX_ENDORSEMENT_BYTES + 1);
+    let mut data = Vec::new();
+    reader
+        .read_to_end(&mut data)
+        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    if data.len() as u64 > MAX_ENDORSEMENT_BYTES {
         return Err(invalid(format!(
             "rotation endorsement exceeds {MAX_ENDORSEMENT_BYTES} bytes"
         )));
     }
-    let data = fs::read(path)
-        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
     let endorsement: RotationEndorsement = serde_json::from_slice(&data)
         .map_err(|err| invalid(format!("unmarshal rotation endorsement: {err}")))?;
     verify_rotation_endorsement(&endorsement)?;

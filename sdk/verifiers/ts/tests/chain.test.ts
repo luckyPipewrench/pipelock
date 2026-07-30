@@ -318,6 +318,12 @@ test("rotation endorsement file rejects duplicate, unknown, and trailing fields"
     const trailing = join(dir, "trailing.json");
     writeFileSync(trailing, `${source}\n{}`);
     await assert.rejects(loadRotationEndorsementFile(trailing), /trailing tokens/u);
+
+    const oversized = join(dir, "oversized.json");
+    writeFileSync(oversized, Buffer.alloc(64 * 1024 + 1));
+    await assert.rejects(loadRotationEndorsementFile(oversized), /exceeds 65536 bytes/u);
+
+    await assert.rejects(loadRotationEndorsementFile(dir), /must be a regular file/u);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

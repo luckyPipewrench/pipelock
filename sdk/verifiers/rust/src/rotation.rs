@@ -10,8 +10,10 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs::{File, OpenOptions};
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 const ENDORSEMENT_VERSION: u64 = 1;
@@ -187,13 +189,18 @@ pub fn verify_rotation_endorsement(endorsement: &RotationEndorsement) -> Result<
         .map_err(|_| invalid("rotation endorsement signature verification failed"))
 }
 
-pub fn load_rotation_endorsement_file(path: &Path) -> Result<RotationEndorsement> {
-    let path_metadata = fs::metadata(path)
-        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
-    if !path_metadata.file_type().is_file() {
-        return Err(invalid("rotation endorsement must be a regular file"));
+fn open_rotation_endorsement(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = File::open(path)
+    options.open(path)
+}
+
+pub fn load_rotation_endorsement_file(path: &Path) -> Result<RotationEndorsement> {
+    let file = open_rotation_endorsement(path)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
     let metadata = file
         .metadata()
@@ -386,7 +393,8 @@ pub fn verify_chain_with_endorsements(
         let prior_key = prior
             .get("signer_key")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let prior_seq = prior
             .get("action_record")
             .and_then(|record| record.get("chain_seq"))

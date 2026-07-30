@@ -327,6 +327,32 @@ test("rotation endorsement file rejects duplicate, unknown, and trailing fields"
     writeFileSync(malformedUtf8, Buffer.from([0xff]));
     await assert.rejects(loadRotationEndorsementFile(malformedUtf8), /not valid UTF-8/u);
 
+    if (process.platform !== "win32") {
+      const fifo = join(dir, "fifo.json");
+      const created = spawnSync("mkfifo", [fifo], { encoding: "utf8", timeout: 2_000 });
+      assert.equal(created.status, 0, created.stderr);
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          [
+            'import { loadRotationEndorsementFile } from "./dist/src/rotation.js";',
+            "try {",
+            "  await loadRotationEndorsementFile(process.argv[1]);",
+            "  process.exit(1);",
+            "} catch (error) {",
+            "  process.exit(/must be a regular file/u.test(error.message) ? 0 : 1);",
+            "}",
+          ].join("\n"),
+          fifo,
+        ],
+        { encoding: "utf8", timeout: 2_000 },
+      );
+      assert.notEqual((child.error as NodeJS.ErrnoException | undefined)?.code, "ETIMEDOUT");
+      assert.equal(child.status, 0, child.stderr);
+    }
+
     await assert.rejects(loadRotationEndorsementFile(dir), /must be a regular file/u);
   } finally {
     rmSync(dir, { recursive: true, force: true });

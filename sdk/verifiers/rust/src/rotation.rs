@@ -10,7 +10,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 
@@ -188,6 +188,11 @@ pub fn verify_rotation_endorsement(endorsement: &RotationEndorsement) -> Result<
 }
 
 pub fn load_rotation_endorsement_file(path: &Path) -> Result<RotationEndorsement> {
+    let path_metadata = fs::metadata(path)
+        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
+    if !path_metadata.file_type().is_file() {
+        return Err(invalid("rotation endorsement must be a regular file"));
+    }
     let file = File::open(path)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
     let metadata = file

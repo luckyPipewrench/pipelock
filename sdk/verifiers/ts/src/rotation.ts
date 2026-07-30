@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
@@ -219,6 +219,14 @@ export async function verifyRotationEndorsement(
 
 export async function loadRotationEndorsementFile(file: string): Promise<RotationEndorsement> {
   const normalized = path.normalize(file);
+  try {
+    if (!statSync(normalized).isFile()) {
+      throw new InvalidError("rotation endorsement must be a regular file");
+    }
+  } catch (err) {
+    if (err instanceof InvalidError) throw err;
+    throw new RuntimeError(`stat ${file}: ${(err as Error).message}`);
+  }
   let descriptor: number;
   try {
     descriptor = openSync(normalized, "r");
@@ -240,7 +248,11 @@ export async function loadRotationEndorsementFile(file: string): Promise<Rotatio
     if (total > 64 * 1024) {
       throw new InvalidError("rotation endorsement exceeds 65536 bytes");
     }
-    text = data.subarray(0, total).toString("utf8");
+    const bytes = data.subarray(0, total);
+    text = bytes.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) {
+      throw new InvalidError("rotation endorsement is not valid UTF-8");
+    }
   } catch (err) {
     if (err instanceof InvalidError) throw err;
     throw new RuntimeError(`read ${file}: ${(err as Error).message}`);

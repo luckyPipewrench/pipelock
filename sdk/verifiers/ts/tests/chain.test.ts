@@ -323,6 +323,10 @@ test("rotation endorsement file rejects duplicate, unknown, and trailing fields"
     writeFileSync(oversized, Buffer.alloc(64 * 1024 + 1));
     await assert.rejects(loadRotationEndorsementFile(oversized), /exceeds 65536 bytes/u);
 
+    const malformedUtf8 = join(dir, "malformed-utf8.json");
+    writeFileSync(malformedUtf8, Buffer.from([0xff]));
+    await assert.rejects(loadRotationEndorsementFile(malformedUtf8), /not valid UTF-8/u);
+
     await assert.rejects(loadRotationEndorsementFile(dir), /must be a regular file/u);
   } finally {
     rmSync(dir, { recursive: true, force: true });

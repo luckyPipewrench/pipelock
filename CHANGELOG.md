@@ -157,7 +157,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agents offline. It now refuses before any stop, unit write, restart, or
   ruleset load, and it also refuses when no config exists at all. The binary is
   digest-checked across the preflight and the copy, so the binary that was
-  validated is the binary that becomes the service.
+  validated is the binary that becomes the service. Upgrade note: the service
+  sandbox now requires `metrics_listen` on a dedicated loopback port, so run
+  `pipelock contain install --config <your-config>` when upgrading a contained
+  host. The `--config` path migrates a config with `metrics_listen` unset by
+  assigning a dedicated loopback port; a plain `pipelock contain install` refuses
+  rather than rewriting the already-installed managed config in place.
 - **Cloud metadata endpoints are hard-floored against every exemption and at dial
   time**, closing the path where an exemption could reach instance metadata.
 - **Legacy `inet_aton` IPv4 literals no longer bypass SSRF checks**, and IP-literal

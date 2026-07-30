@@ -104,11 +104,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorder session, then verify from the original pinned root. Missing,
   replayed, malformed, cross-session, duplicate, boundary-mismatched, or
   concurrently advanced ceremonies fail closed. Deployment-specific stop, key
-  replacement, restart, and rollback steps remain operator-run. Successors must
-  use purpose-bound `receipt-signing` JSON keys; legacy retiring keys remain
-  accepted for migration from existing recorder deployments. Cross-process
-  ceremony locking currently requires Unix `flock` and fails closed on Windows;
-  the artifact output filesystem must support hard links.
+  replacement, and restart steps remain operator-run. Rollback is safe only
+  before the successor emits; after activation, recover forward to a fresh key
+  because reinstalling a retired signer creates an unendorsable trust cycle.
+  Successors must use purpose-bound `receipt-signing` JSON keys; legacy retiring
+  keys remain accepted for migration from existing recorder deployments.
+  Cross-process ceremony locking currently requires Unix `flock` and fails
+  closed on Windows; the artifact output filesystem must support hard links.
 - **Installable receipt-verifier parity for endorsed rotations.** The TypeScript
   and Rust verifier packages now accept repeatable rotation endorsements and
   verify a rotated ActionReceipt v1 chain from one pinned root. Their `0.2.0`

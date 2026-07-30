@@ -208,6 +208,13 @@ sudo install -m 0600 \
 sudo systemctl start pipelock
 ```
 
+Rollback is safe only before the restarted process emits with the successor:
+restore the retiring key and restart. Once the successor has emitted, do not
+reinstall an earlier signer. That creates an `A -> B -> A` cycle which cannot be
+authorized by the endorsement ceremony. If the activated successor must be
+replaced, generate a fresh key and rotate forward from `B -> C`, passing the
+earlier endorsement when preparing and verifying the new boundary.
+
 The endorsement command does not stop, restart, or replace keys. It refuses an
 open chain, an unpinned root, a retiring key that does not sign the closed tail,
 a successor that signed any earlier segment, and an existing output file. The

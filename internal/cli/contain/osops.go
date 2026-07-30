@@ -114,6 +114,8 @@ type installEnv struct {
 	serviceUnitChanged       bool
 	installServiceWasActive  bool
 	installServiceStateKnown bool
+	deferServiceRestart      bool
+	serviceRestartPending    bool
 	serviceReadOnlyPaths     []string
 }
 

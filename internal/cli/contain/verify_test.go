@@ -1686,6 +1686,34 @@ func TestProbeLoopbackListen(t *testing.T) {
 		}
 	})
 
+	t.Run("service state polling is throttled while dialing stays frequent", func(t *testing.T) {
+		dials := 0
+		statePolls := 0
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
+				dials++
+				if dials < 7 {
+					return nil, errors.New("connection refused")
+				}
+				return &fakeConn{}, nil
+			}
+			e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != "systemctl" || !containsArg(args, "show") {
+					t.Fatalf("unexpected readiness command: %s %v", name, args)
+				}
+				statePolls++
+				return "ActiveState=active\nSubState=running\n", 0, nil
+			}
+		})
+		gotStatus, _ := probeLoopbackListen(context.Background(), env)
+		if gotStatus != statusPass || dials != 7 {
+			t.Fatalf("status=%q dials=%d, want pass after 7", gotStatus, dials)
+		}
+		if statePolls != 2 {
+			t.Fatalf("systemctl state polls=%d, want 2 for 6 failed dials", statePolls)
+		}
+	})
+
 	t.Run("service exits before binding", func(t *testing.T) {
 		env := makeProbeEnv(t, func(e *probeEnv) {
 			e.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {

@@ -85,6 +85,8 @@ func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied 
 	if len(applied) == 0 {
 		return
 	}
+	env.deferServiceRestart = true
+	env.serviceRestartPending = false
 	_, _ = fmt.Fprintln(w, "rolling back applied steps:")
 	for i := len(applied) - 1; i >= 0; i-- {
 		s := applied[i]
@@ -97,6 +99,13 @@ func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied 
 			continue
 		}
 		_, _ = fmt.Fprintf(w, "  [ OK ] undo %s\n", s.name)
+	}
+	env.deferServiceRestart = false
+	restartPending := env.serviceRestartPending
+	if err := restartRestoredServiceAfterRollback(ctx, env); err != nil {
+		_, _ = fmt.Fprintf(w, "  [FAIL] restart restored pipelock service: %v\n", err)
+	} else if restartPending {
+		_, _ = fmt.Fprintln(w, "  [ OK ] restart restored pipelock service")
 	}
 }
 

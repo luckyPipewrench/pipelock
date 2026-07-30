@@ -139,11 +139,11 @@ func migrateFileSentryWatchPaths(ctx *configMigrationContext, root *yaml.Node) e
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(ctx.configDir, path)
 		}
-		path = filepath.Clean(path)
-		if strings.ContainsAny(path, "\x00\r\n:") {
-			return fmt.Errorf("file_sentry.watch_paths[%d] %q cannot be represented safely in a systemd bind path", i, path)
+		cleaned, err := sanitizeSystemdBindPath(path)
+		if err != nil {
+			return fmt.Errorf("file_sentry.watch_paths[%d] %q: %w", i, path, err)
 		}
-		pathNode.Value = path
+		pathNode.Value = cleaned
 	}
 	return nil
 }
@@ -189,12 +189,12 @@ func containServiceReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
 		if !filepath.IsAbs(path) {
 			return nil, fmt.Errorf("file_sentry.watch_paths[%d] %q must be absolute in the managed config", i, path)
 		}
-		path = filepath.Clean(path)
-		if strings.ContainsAny(path, "\x00\r\n:") {
-			return nil, fmt.Errorf("file_sentry.watch_paths[%d] %q cannot be represented safely in a systemd bind path", i, path)
+		cleaned, err := sanitizeSystemdBindPath(path)
+		if err != nil {
+			return nil, fmt.Errorf("file_sentry.watch_paths[%d] %q: %w", i, path, err)
 		}
-		if isServiceSandboxHiddenPath(path) {
-			seen[path] = struct{}{}
+		if isServiceSandboxHiddenPath(cleaned) {
+			seen[cleaned] = struct{}{}
 		}
 	}
 	paths := make([]string, 0, len(seen))
@@ -203,6 +203,14 @@ func containServiceReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+func sanitizeSystemdBindPath(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	if strings.ContainsAny(cleaned, "\x00\r\n:") {
+		return "", errors.New("cannot be represented safely in a systemd bind path")
+	}
+	return cleaned, nil
 }
 
 func isServiceSandboxHiddenPath(path string) bool {

@@ -523,6 +523,37 @@ func TestHandlerStreamStatusNewerInactiveWildcardShadowsNarrowerActiveAudience(t
 	}
 }
 
+func TestHandlerStreamStatusInactiveInAnotherFleetDoesNotShadowActiveKill(t *testing.T) {
+	store := mustStore(t)
+	publishStreamFixture(t, store)
+	emergency := mustEmergencyStore(t)
+
+	active, activeResolver := signedRemoteKillMessageWithAudience(t, "kill-prod", 1, conductor.KillSwitchActive, testNow.Add(-time.Minute), conductor.Audience{InstanceIDs: []string{"pl-prod-1"}})
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), active, testNow.Add(-time.Minute)); err != nil {
+		t.Fatalf("PublishRemoteKill(active prod) error = %v", err)
+	}
+	inactive, _ := signedRemoteKillMessageWithAudience(t, "resume-staging", 2, conductor.KillSwitchInactive, testNow, conductor.Audience{InstanceIDs: []string{"*"}})
+	inactive.FleetID = "staging"
+	var inactiveResolver conductor.SignatureKeyResolver
+	inactive.Signatures, inactiveResolver = signConductorPreimage(t, inactive.SignablePreimage, signing.PurposeRemoteKillSigning, "staging-resume-signer-1", "staging-resume-signer-2")
+	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
+		t.Fatalf("PublishRemoteKill(inactive staging) error = %v", err)
+	}
+
+	handler := newStreamStatusTestHandler(t, store, emergency, activeResolver, inactiveResolver)
+	w := getStreamStatus(t, handler, StreamStatusPath+"?org_id=org-main", streamAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp streamStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.ActiveRemoteKills) != 1 || resp.ActiveRemoteKills[0].MessageID != "kill-prod" {
+		t.Fatalf("active kills = %+v, want prod kill unaffected by staging resume", resp.ActiveRemoteKills)
+	}
+}
+
 func TestRemoteKillAudienceCovers(t *testing.T) {
 	t.Parallel()
 

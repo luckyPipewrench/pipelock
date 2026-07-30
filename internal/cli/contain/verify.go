@@ -1637,6 +1637,7 @@ func probeLoopbackListen(ctx context.Context, env *probeEnv) (string, string) {
 	readyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	maxAttempts := int(timeout/readinessInterval) + 1
+	const serviceStatePollEvery = 5
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		conn, err := env.dialCtx(readyCtx, "tcp", addr, min(probeDialTimeout, readinessInterval))
@@ -1647,14 +1648,16 @@ func probeLoopbackListen(ctx context.Context, env *probeEnv) (string, string) {
 		}
 		lastErr = err
 
-		out, code, showErr := env.runCmd(readyCtx, "systemctl", "show", env.serviceName,
-			"--property=ActiveState,SubState",
-		)
-		if showErr == nil && code == 0 {
-			fields := parseSystemdShow(out)
-			if fields["ActiveState"] != systemctlActive || fields["SubState"] != "running" {
-				return statusFail, fmt.Sprintf("dial %s: %v; service exited before readiness (ActiveState=%s SubState=%s)",
-					addr, err, fields["ActiveState"], fields["SubState"])
+		if attempt%serviceStatePollEvery == 0 || attempt == maxAttempts-1 {
+			out, code, showErr := env.runCmd(readyCtx, "systemctl", "show", env.serviceName,
+				"--property=ActiveState,SubState",
+			)
+			if showErr == nil && code == 0 {
+				fields := parseSystemdShow(out)
+				if fields["ActiveState"] != systemctlActive || fields["SubState"] != "running" {
+					return statusFail, fmt.Sprintf("dial %s: %v; service exited before readiness (ActiveState=%s SubState=%s)",
+						addr, err, fields["ActiveState"], fields["SubState"])
+				}
 			}
 		}
 		if attempt == maxAttempts-1 {

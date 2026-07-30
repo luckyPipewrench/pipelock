@@ -162,7 +162,9 @@ func (h *Handler) activeEmergencyControls(ctx context.Context, q StreamStatusQue
 			}
 			replaced := false
 			for i := range effective {
-				if conductor.AudiencesEqual(effective[i].Message.Audience, msg.Audience) {
+				effectiveMsg := effective[i].Message
+				if effectiveMsg.OrgID == msg.OrgID && effectiveMsg.FleetID == msg.FleetID &&
+					conductor.AudiencesEqual(effectiveMsg.Audience, msg.Audience) {
 					if newerRemoteKill(record, effective[i]) {
 						effective[i] = record
 					}
@@ -182,6 +184,8 @@ func (h *Handler) activeEmergencyControls(ctx context.Context, q StreamStatusQue
 			shadowed := false
 			for _, candidate := range effective {
 				if candidate.Message.State == conductor.KillSwitchInactive &&
+					candidate.Message.OrgID == msg.OrgID &&
+					candidate.Message.FleetID == msg.FleetID &&
 					newerRemoteKill(candidate, record) &&
 					remoteKillAudienceCovers(candidate.Message.Audience, msg.Audience) {
 					shadowed = true

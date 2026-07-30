@@ -94,6 +94,41 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 			t.Errorf("remediationGuidance has label %q not enumerated in the canonical block-label set", label)
 		}
 	}
+
+	routed := []struct {
+		name      string
+		label     string
+		reason    string
+		want      string
+		immutable bool
+	}{
+		{"cross-request entropy", AuditCrossRequestEntropy, "cross-request entropy exceeded", "bits_per_window", false},
+		{"response integrity", AuditResponseScan, "compressed response cannot be scanned", "scan-integrity failure", false},
+		{"media policy", AuditMediaPolicy, "image exceeds limit", "max_image_bytes", false},
+		{"request policy", AuditRequestPolicy, "body exceeds max_body_bytes", "request_body_scanning.max_body_bytes", false},
+		{"reverse submit", AuditReverseSubmit, "method not in allowed_methods", "reverse_proxy.allowed_methods", false},
+		{"redaction", AuditRedaction, "non_json_body", "allowlist_unparseable_routes", false},
+		{"a2a", AuditA2AScan, "invalid JSON", "no exemption knob", false},
+		{"agent budget", AuditAgentBudget, "request budget exceeded", "max_requests_per_session", false},
+		{"session anomaly", AuditSessionAnomaly, "baseline_deviation", "baseline show", false},
+		{"query entropy", ScannerEntropy, "high entropy query value", "query_entropy_param_exclusions", false},
+		{"denial of wallet", ScannerDenialOfWallet, "tool call limit exceeded", "max_tool_calls_per_session", false},
+		{"ssrf metadata", ScannerSSRF, "metadata endpoint blocked", "non-overridable SSRF deny", true},
+		{"ssrf metadata label", ScannerSSRFMetadata, "metadata endpoint blocked", "non-overridable SSRF deny", true},
+		{"core ssrf metadata", ScannerCoreSSRF, "metadata endpoint blocked", "non-overridable SSRF deny", true},
+		{"static dlp", ScannerDLP, "reason is irrelevant", remediationGuidance[ScannerDLP].OperatorKnob, remediationGuidance[ScannerDLP].Immutable},
+	}
+	for _, tt := range routed {
+		t.Run("routing/"+tt.name, func(t *testing.T) {
+			got, ok := GuidanceForResult(tt.label, tt.reason)
+			if !ok {
+				t.Fatalf("GuidanceForResult(%q) not found", tt.label)
+			}
+			if !strings.Contains(got.OperatorKnob, tt.want) || got.Immutable != tt.immutable {
+				t.Fatalf("GuidanceForResult(%q, %q) = %#v, want knob containing %q immutable=%v", tt.label, tt.reason, got, tt.want, tt.immutable)
+			}
+		})
+	}
 }
 
 func TestRemediationGuidanceAgentReasonsAreNonProcedural(t *testing.T) {

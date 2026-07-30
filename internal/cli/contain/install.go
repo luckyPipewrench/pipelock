@@ -1532,6 +1532,18 @@ func restartRestoredServiceIfNeeded(ctx context.Context, env *installEnv) error 
 	if !env.installServiceStateKnown || !env.installServiceWasActive {
 		return nil
 	}
+	if env.deferServiceRestart {
+		env.serviceRestartPending = true
+		return nil
+	}
+	return runOrErr(ctx, env, "systemctl", "restart", "pipelock")
+}
+
+func restartRestoredServiceAfterRollback(ctx context.Context, env *installEnv) error {
+	if !env.serviceRestartPending {
+		return nil
+	}
+	env.serviceRestartPending = false
 	return runOrErr(ctx, env, "systemctl", "restart", "pipelock")
 }
 

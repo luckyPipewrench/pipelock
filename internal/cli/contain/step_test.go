@@ -105,6 +105,59 @@ func TestRunSteps_SkippedStepNotRolledBack(t *testing.T) {
 	}
 }
 
+func TestRunSteps_ReadinessFailureRestartsActiveServiceAfterRollbackCompletes(t *testing.T) {
+	var order []string
+	restarts := 0
+	env := &installEnv{
+		installServiceStateKnown: true,
+		installServiceWasActive:  true,
+		runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == "systemctl" && strings.Join(args, " ") == "restart pipelock" {
+				restarts++
+				order = append(order, "restart")
+			}
+			return "", 0, nil
+		},
+	}
+	restoreStep := func(name string) step {
+		return step{
+			name: name,
+			desc: name,
+			apply: func(context.Context, *installEnv) (bool, error) {
+				order = append(order, "apply-"+name)
+				return true, nil
+			},
+			undo: func(ctx context.Context, env *installEnv) error {
+				order = append(order, "restore-"+name)
+				return restartRestoredServiceIfNeeded(ctx, env)
+			},
+		}
+	}
+	steps := []step{
+		restoreStep("config"),
+		restoreStep("binary"),
+		{
+			name: "wait-pipelock-ready",
+			desc: "readiness",
+			apply: func(context.Context, *installEnv) (bool, error) {
+				order = append(order, "readiness-failed")
+				return false, errors.New("connection refused")
+			},
+		},
+	}
+	var out bytes.Buffer
+	if _, err := runSteps(context.Background(), env, &out, steps); err == nil {
+		t.Fatal("runSteps readiness error = nil")
+	}
+	want := "apply-config,apply-binary,readiness-failed,restore-binary,restore-config,restart"
+	if got := strings.Join(order, ","); got != want {
+		t.Fatalf("rollback order = %q, want %q", got, want)
+	}
+	if restarts != 1 {
+		t.Fatalf("restart count = %d, want exactly 1 after all restores", restarts)
+	}
+}
+
 func TestRunSteps_FailureMidwayRollsBackInReverse(t *testing.T) {
 	var order []string
 	mkApply := func(label string) func(context.Context, *installEnv) (bool, error) {

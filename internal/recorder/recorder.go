@@ -859,7 +859,10 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		if len(entries) == 0 {
 			continue
 		}
-		last := entries[len(entries)-1]
+		// Directional tail reads return newest-first. Resume explicitly from the
+		// first entry so a future increase to the bounded window cannot select an
+		// older sequence and fork the chain.
+		last := entries[0]
 
 		// NOTE: We do NOT recompute and verify the tail hash here because
 		// ComputeHash is not round-trip stable for entries whose Detail was

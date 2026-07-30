@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +214,9 @@ func TestEnsureEvidenceFileUnchanged_RejectsMutation(t *testing.T) {
 }
 
 func TestReadDirectionalEntriesBounded_RejectsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "evidence-target-0.jsonl")
 	link := filepath.Join(dir, "evidence-link-0.jsonl")

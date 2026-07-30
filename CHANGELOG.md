@@ -98,8 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Receipt-chain auto-anchoring.** When an anchor point is configured, checkpoints
   are anchored automatically, and the anchor bundle v1 format is now a published
   spec with a schema.
-- **Old-key-endorsed signing key rotation**, so a rotation no longer orphans the
-  receipt chain that preceded it.
+- **Receipt rotation-endorsement verification.** Operators can pin the retiring
+  key and supply an old-key-signed endorsement that binds its successor to the
+  exact prior sequence, tail hash, timestamp, and recorder session. Missing,
+  replayed, malformed, cross-session, duplicate, and boundary-mismatched
+  endorsements fail closed. Endorsement generation/emission and an atomic
+  rotation ceremony are not yet shipped.
 - **OCSF syslog output format**, OCSF over HTTP, and audit-sink delivery health
   metrics.
 - **Delivery-failure accounting for webhook and OTLP sinks**, with an atomic sink
@@ -117,6 +121,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interception is off, so silent blind spots surface at load.
 - **Read-only conductor decision replay** in the dashboard, which also now records
   the authenticated principal on its audit lines.
+- **Human-gated codeless playground sessions.** A broker protected by Turnstile
+  or a complete Cloudflare Access configuration can omit public invite codes
+  without weakening the human gate, per-IP limits, or global limits.
+- **Privacy-safe playground analytics relay.** The optional same-origin relay
+  accepts only a closed counts-only event schema, disables person profiles and
+  GeoIP, and bounds forwarding with per-IP rate limits and a process-wide daily
+  budget.
+- **Explicit external CSP origin allowlists for the playground broker.** Trusted
+  runtime script and browser-connection origins are validated as exact HTTPS
+  origins and widened only in their corresponding CSP directives; defaults
+  remain closed.
 - **Startup and receipt observability for liveness and coverage.** The configured
   heartbeat cadence is recorded in the `session_open` record, so a witness can
   judge observed heartbeat spacing against the intended interval rather than
@@ -166,6 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host. The `--config` path migrates a config with `metrics_listen` unset by
   assigning a dedicated loopback port; a plain `pipelock contain install` refuses
   rather than rewriting the already-installed managed config in place.
+  **The supplied `--config` is the intended replacement for the managed
+  `/etc/pipelock/pipelock.yaml` when their contents differ.** Pass the current
+  production config, not another local profile; install warns before replacement
+  and preserves the prior managed file as `.bak`.
 - **Cloud metadata endpoints are hard-floored against every exemption and at dial
   time**, closing the path where an exemption could reach instance metadata.
 - **Legacy `inet_aton` IPv4 literals no longer bypass SSRF checks**, and IP-literal
@@ -243,6 +262,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Public-facing playground and license-service surfaces are hardened**, alongside
   provider health reporting, containment capture and UID handling, deployment
   contract validation, and request boundary validation.
+- **Playground brokers warn when a served static UI cannot be embedded.** The
+  closed-by-default `frame-ancestors 'none'` policy is unchanged, but an omitted
+  embed origin is now visible at startup instead of surfacing only as a blank
+  iframe.
 - **WASM verifier compilation is restored.**
 
 ### Changed

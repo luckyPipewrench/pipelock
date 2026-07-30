@@ -151,6 +151,7 @@ type Recorder struct {
 	file           *os.File
 	ceremonyLock   *os.File
 	ceremonyDir    os.FileInfo
+	evidenceDir    os.FileInfo
 	fileEntryCount int
 	fileSeqStart   uint64
 	fileGeneration uint64
@@ -264,6 +265,13 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	}
 	r.ceremonyLock = ceremonyLock
 	r.ceremonyDir = ceremonyDir
+	r.evidenceDir = ceremonyDir
+	if r.evidenceDir == nil {
+		r.evidenceDir, err = os.Stat(filepath.Clean(cfg.Dir))
+		if err != nil {
+			return nil, fmt.Errorf("stat evidence directory: %w", err)
+		}
+	}
 
 	return r, nil
 }
@@ -1063,16 +1071,17 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 		_, _ = fmt.Fprintf(os.Stderr,
 			"pipelock: recorder: evidence directory %s disappeared mid-run and was recreated; prior receipts are lost\n",
 			r.cfg.Dir)
-		// Drop the stale fd so the next OpenFile lands in the freshly
-		// recreated directory. Ignore close errors - the fd was
-		// already pointing at an unlinked inode.
-		if r.file != nil {
-			r.waitDurableForCurrentFileLocked()
-			_ = r.file.Close()
-			r.file = nil
-			r.writer = nil
-			r.fileEntryCount = 0
+	}
+
+	dirReplaced := r.evidenceDir != nil && !os.SameFile(dirInfo, r.evidenceDir)
+	if dirReplaced && r.file != nil {
+		// An atomic directory swap never exposes a missing path. Close the
+		// stale file before refreshing the directory lock so the next write
+		// cannot continue through an fd in the old directory inode.
+		if err := r.closeFile(); err != nil {
+			return fmt.Errorf("closing evidence file after directory replacement: %w", err)
 		}
+		r.fileEntryCount = 0
 	}
 
 	// This comparison is deliberately before the open-file short circuit.
@@ -1082,6 +1091,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	if err := r.ensureEvidenceWriterCeremonyLock(dirInfo); err != nil {
 		return fmt.Errorf("refreshing recorder receipt ceremony lock: %w", err)
 	}
+	r.evidenceDir = dirInfo
 
 	if r.file != nil {
 		return nil
@@ -1155,10 +1165,8 @@ func (r *Recorder) ensureEntryCapacityLocked(sessionID string, seq uint64, lineB
 	if lineBytes > MaxEvidenceReadFileBytes {
 		return fmt.Errorf("%w: serialized evidence entry exceeds %d bytes", ErrEvidenceReadLimitExceeded, MaxEvidenceReadFileBytes)
 	}
-	if r.file == nil {
-		if err := r.ensureFile(sessionID, seq); err != nil {
-			return fmt.Errorf("opening evidence file: %w", err)
-		}
+	if err := r.ensureFile(sessionID, seq); err != nil {
+		return fmt.Errorf("opening evidence file: %w", err)
 	}
 	info, err := r.file.Stat()
 	if err != nil {

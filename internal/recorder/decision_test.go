@@ -1325,11 +1325,6 @@ func TestEnsureFile_StatErrorFailsClosedWithOpenFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer func() {
-		if err := rec.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	}()
 
 	if err := rec.Record(Entry{
 		SessionID: "stat-error",
@@ -1358,5 +1353,8 @@ func TestEnsureFile_StatErrorFailsClosedWithOpenFile(t *testing.T) {
 	}
 	if rec.file == nil {
 		t.Fatal("non-NotExist stat error should not close the existing file")
+	}
+	if err := rec.Close(); err == nil || !strings.Contains(err.Error(), "stat evidence directory") {
+		t.Fatalf("Close with untrusted evidence path error = %v", err)
 	}
 }

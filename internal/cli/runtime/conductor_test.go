@@ -386,6 +386,19 @@ func TestBuildConductorAuditTransportRejectsMissingQueueKeyring(t *testing.T) {
 	}
 }
 
+func TestBuildConductorAuditTransportRejectsEmptyQueueKeyring(t *testing.T) {
+	cfg := &config.Config{
+		Conductor: config.Conductor{
+			Enabled:                  true,
+			DurableAuditQueueDir:     filepath.Join(t.TempDir(), "audit-queue"),
+			DurableAuditQueueKeyring: "",
+		},
+	}
+	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil || !strings.Contains(err.Error(), "queue keyring is required") {
+		t.Fatalf("buildConductorAuditTransport() error = %v, want empty keyring refusal", err)
+	}
+}
+
 // TestBuildConductorBundlePollerDisabled confirms the poller is a no-op (nil,
 // nil) when conductor is not enabled.
 func TestBuildConductorBundlePollerDisabled(t *testing.T) {

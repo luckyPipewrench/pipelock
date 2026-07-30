@@ -95,7 +95,7 @@ func RotateQueueKeyring(queueDir, keyringPath, backupPath string) (string, strin
 	// The ordinary recovery backup is post-rotation and can therefore decrypt
 	// both old records and records written under the new active key.
 	if err := keyring.Save(backupPath); err != nil {
-		return "", "", fmt.Errorf("save rotated keyring backup: %w", err)
+		return oldID, newID, fmt.Errorf("new key saved but rotated keyring backup failed; rerun with a valid backup path: %w", err)
 	}
 	if err := q.migrateRecordsLocked(); err != nil {
 		return oldID, newID, fmt.Errorf("new key saved but queue migration incomplete; rerun migrate: %w", err)

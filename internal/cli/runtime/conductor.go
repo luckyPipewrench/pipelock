@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -172,6 +173,9 @@ func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config, bun
 func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*auditbatcher.Queue, *auditbatcher.Transport, error) {
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil, nil
+	}
+	if strings.TrimSpace(cfg.Conductor.DurableAuditQueueKeyring) == "" {
+		return nil, nil, errors.New("conductor durable audit queue keyring is required")
 	}
 	keyring, err := auditbatcher.LoadKeyring(cfg.Conductor.DurableAuditQueueKeyring)
 	if err != nil {

@@ -52,6 +52,22 @@ expect_template_error "conductorFollower.auditQueueKeyringSecretRef.name is requ
   -f "$chart/examples/values-enterprise-follower.yaml" \
   --set conductorFollower.auditQueueKeyringSecretRef.name=
 
+expect_template_error "conductorFollower.auditQueueKeyringSecretRef.key is required" \
+  -f "$chart/examples/values-enterprise-follower.yaml" \
+  --set conductorFollower.auditQueueKeyringSecretRef.key=
+
+expect_template_error "conductorFollower.auditQueueKeyringSecretRef.mountPath is required" \
+  -f "$chart/examples/values-enterprise-follower.yaml" \
+  --set conductorFollower.auditQueueKeyringSecretRef.mountPath=
+
+for overlapping_keyring_mount in \
+  /var/lib/pipelock/conductor/audit-queue \
+  /var/lib/pipelock/conductor/audit-queue/keys; do
+  expect_template_error "conductorFollower.auditQueueKeyringSecretRef.mountPath must be outside" \
+    -f "$chart/examples/values-enterprise-follower.yaml" \
+    --set "conductorFollower.auditQueueKeyringSecretRef.mountPath=${overlapping_keyring_mount}"
+done
+
 expect_template_error "enterprise modes require explicit networkPolicy.ingress and networkPolicy.egress rules" \
   --set mode=conductor \
   --set networkPolicy.enabled=true \

@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
@@ -109,8 +110,8 @@ func TestProduceSignedBatch_FailsWhenQueueKeyringCannotBeCreated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil {
-		t.Fatal("produceSignedBatch with unusable keyring parent should fail")
+	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil || !strings.Contains(err.Error(), "load or initialize proof audit queue keyring") {
+		t.Fatalf("produceSignedBatch with unusable keyring parent error = %v, want keyring initialization failure", err)
 	}
 }
 
@@ -125,8 +126,8 @@ func TestProduceSignedBatch_FailsWhenQueueKeyringCannotBeSaved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil {
-		t.Fatal("produceSignedBatch with directory keyring target should fail")
+	if _, err := produceSignedBatch(context.Background(), filepath.Join(queueParent, "queue"), filepath.Join(opts.Dir, "recorder"), opts, id, priv, pub); err == nil || !strings.Contains(err.Error(), "load or initialize proof audit queue keyring") {
+		t.Fatalf("produceSignedBatch with directory keyring target error = %v, want keyring initialization failure", err)
 	}
 }
 
@@ -163,8 +164,8 @@ func TestLoadMaterialRejectsMissingQueueKeyring(t *testing.T) {
 	if err := os.Remove(layout.FollowerQueueKeyring); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadMaterial(layout); err == nil {
-		t.Fatal("loadMaterial with missing queue keyring should fail")
+	if _, err := loadMaterial(layout); err == nil || !strings.Contains(err.Error(), "load follower audit queue keyring") {
+		t.Fatalf("loadMaterial with missing queue keyring error = %v, want queue keyring load failure", err)
 	}
 }
 
@@ -185,8 +186,8 @@ func TestGenerateMaterialFailsWhenQueueKeyringTargetIsDirectory(t *testing.T) {
 		InstanceID:  opts.InstanceID,
 		Environment: opts.Environment,
 	}
-	if _, err := generateMaterial(layout, opts, id); err == nil {
-		t.Fatal("generateMaterial with keyring directory target should fail")
+	if _, err := generateMaterial(layout, opts, id); err == nil || !strings.Contains(err.Error(), "write follower audit queue keyring") {
+		t.Fatalf("generateMaterial with keyring directory target error = %v, want queue keyring write failure", err)
 	}
 }
 

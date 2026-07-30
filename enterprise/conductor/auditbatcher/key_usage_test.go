@@ -291,8 +291,20 @@ func TestQueueKeyMaintenanceErrorPaths(t *testing.T) {
 	if err := os.MkdirAll(backupDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := RotateQueueKeyring(queueDir, keyringPath, backupDir); err == nil || !strings.Contains(err.Error(), "rotated keyring backup") {
+	activeBeforeRotation := keyring.ActiveKeyID()
+	oldID, newID, err := RotateQueueKeyring(queueDir, keyringPath, backupDir)
+	if err == nil || !strings.Contains(err.Error(), "rotated keyring backup") {
 		t.Fatalf("RotateQueueKeyring(directory backup) error = %v", err)
+	}
+	if oldID != activeBeforeRotation || newID == "" || newID == oldID {
+		t.Fatalf("RotateQueueKeyring(directory backup) IDs = (%q, %q), want (%q, new non-empty ID)", oldID, newID, activeBeforeRotation)
+	}
+	rotated, err := LoadKeyring(keyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.ActiveKeyID() != newID {
+		t.Fatalf("persisted active key = %q, want returned new ID %q", rotated.ActiveKeyID(), newID)
 	}
 
 	if _, err := RecoverQueueKeyring(queueDir, backupDir, backupPath); err == nil {

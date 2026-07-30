@@ -7,8 +7,10 @@ package auditbatcher
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -143,6 +145,41 @@ func TestLoadKeyringRejectsOversizedAndPermissiveFiles(t *testing.T) {
 	chmodTestFixture(t, permissive, 0o622)
 	if _, err := LoadKeyring(permissive); err == nil {
 		t.Fatal("LoadKeyring(permissive) error = nil")
+	}
+}
+
+func TestKeyringRefusesUnreloadableRotation(t *testing.T) {
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; ; i++ {
+		key := sha256.Sum256([]byte(fmt.Sprintf("retained-key-%d", i)))
+		id := queueKeyID(key[:])
+		keyring.keys[id] = key
+		if _, err := keyring.marshal(); err != nil {
+			delete(keyring.keys, id)
+			break
+		}
+	}
+	activeBefore := keyring.ActiveKeyID()
+	countBefore := len(keyring.KeyIDs())
+	if _, err := keyring.Rotate(); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Rotate(oversized) error = %v, want size-limit refusal", err)
+	}
+	if keyring.ActiveKeyID() != activeBefore || len(keyring.KeyIDs()) != countBefore {
+		t.Fatal("failed rotation mutated the keyring")
+	}
+	path := filepath.Join(t.TempDir(), "keyring.json")
+	if err := keyring.Save(path); err != nil {
+		t.Fatalf("Save(keyring after refused rotation): %v", err)
+	}
+	reloaded, err := LoadKeyring(path)
+	if err != nil {
+		t.Fatalf("LoadKeyring(after refused rotation): %v", err)
+	}
+	if reloaded.ActiveKeyID() != activeBefore {
+		t.Fatalf("reloaded active key = %q, want %q", reloaded.ActiveKeyID(), activeBefore)
 	}
 }
 

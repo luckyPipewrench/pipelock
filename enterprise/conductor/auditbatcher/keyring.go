@@ -129,6 +129,9 @@ func (k *Keyring) marshal() ([]byte, error) {
 		return nil, fmt.Errorf("auditbatcher: encode queue keyring: %w", err)
 	}
 	data = append(data, '\n')
+	if len(data) > keyringMaxSize {
+		return nil, fmt.Errorf("auditbatcher: queue keyring size %d exceeds %d-byte limit; revoke unused keys before rotating further", len(data), keyringMaxSize)
+	}
 	return data, nil
 }
 
@@ -201,8 +204,14 @@ func (k *Keyring) Rotate() (string, error) {
 	if k.keys == nil {
 		k.keys = make(map[string][queueKeyBytes]byte)
 	}
+	oldActive := k.active
 	k.keys[id] = key
 	k.active = id
+	if _, err := k.marshal(); err != nil {
+		delete(k.keys, id)
+		k.active = oldActive
+		return "", err
+	}
 	return id, nil
 }
 

@@ -140,6 +140,12 @@ Validate mode and security-critical enterprise chart requirements.
 {{- $_ := required "conductorFollower.clientSecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.clientSecretRef.name -}}
 {{- $_ := required "conductorFollower.trustRosterSecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.trustRosterSecretRef.name -}}
 {{- $_ := required "conductorFollower.auditQueueKeyringSecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.auditQueueKeyringSecretRef.name -}}
+{{- $_ := required "conductorFollower.auditQueueKeyringSecretRef.key is required when conductorFollower.enabled=true" .Values.conductorFollower.auditQueueKeyringSecretRef.key -}}
+{{- $keyringMountPath := clean (required "conductorFollower.auditQueueKeyringSecretRef.mountPath is required when conductorFollower.enabled=true" .Values.conductorFollower.auditQueueKeyringSecretRef.mountPath) -}}
+{{- $queueMountPath := clean (required "conductorFollower.persistence.auditQueue.mountPath is required when conductorFollower.enabled=true" .Values.conductorFollower.persistence.auditQueue.mountPath) -}}
+{{- if or (eq $keyringMountPath $queueMountPath) (hasPrefix (printf "%s/" (trimSuffix "/" $queueMountPath)) $keyringMountPath) -}}
+{{- fail "conductorFollower.auditQueueKeyringSecretRef.mountPath must be outside conductorFollower.persistence.auditQueue.mountPath" -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

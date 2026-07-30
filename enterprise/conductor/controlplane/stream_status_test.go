@@ -534,8 +534,14 @@ func TestHandlerStreamStatusInactiveInAnotherFleetDoesNotShadowActiveKill(t *tes
 	}
 	inactive, _ := signedRemoteKillMessageWithAudience(t, "resume-staging", 2, conductor.KillSwitchInactive, testNow, conductor.Audience{InstanceIDs: []string{"*"}})
 	inactive.FleetID = "staging"
+	inactivePreimage, err := inactive.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(inactive staging) error = %v", err)
+	}
 	var inactiveResolver conductor.SignatureKeyResolver
-	inactive.Signatures, inactiveResolver = signConductorPreimage(t, inactive.SignablePreimage, signing.PurposeRemoteKillSigning, "staging-resume-signer-1", "staging-resume-signer-2")
+	inactive.Signatures, inactiveResolver = signConductorPreimage(t, func() ([]byte, error) {
+		return inactivePreimage, nil
+	}, signing.PurposeRemoteKillSigning, "staging-resume-signer-1", "staging-resume-signer-2")
 	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
 		t.Fatalf("PublishRemoteKill(inactive staging) error = %v", err)
 	}

@@ -116,7 +116,7 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		{"ssrf metadata", ScannerSSRF, "metadata endpoint blocked", "non-overridable SSRF deny", true},
 		{"ssrf metadata label", ScannerSSRFMetadata, "metadata endpoint blocked", "non-overridable SSRF deny", true},
 		{"core ssrf metadata", ScannerCoreSSRF, "metadata endpoint blocked", "non-overridable SSRF deny", true},
-		{"static dlp", ScannerDLP, "reason is irrelevant", remediationGuidance[ScannerDLP].OperatorKnob, remediationGuidance[ScannerDLP].Immutable},
+		{"static dlp", ScannerDLP, "reason is irrelevant", "dlp.patterns[].exempt_domains", false},
 	}
 	for _, tt := range routed {
 		t.Run("routing/"+tt.name, func(t *testing.T) {

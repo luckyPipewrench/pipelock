@@ -104,7 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorder session, then verify from the original pinned root. Missing,
   replayed, malformed, cross-session, duplicate, boundary-mismatched, or
   concurrently advanced ceremonies fail closed. Deployment-specific stop, key
-  replacement, restart, and rollback steps remain operator-run.
+  replacement, restart, and rollback steps remain operator-run. Successors must
+  use purpose-bound `receipt-signing` JSON keys; legacy retiring keys remain
+  accepted for migration from existing recorder deployments.
 - **OCSF syslog output format**, OCSF over HTTP, and audit-sink delivery health
   metrics.
 - **Delivery-failure accounting for webhook and OTLP sinks**, with an atomic sink

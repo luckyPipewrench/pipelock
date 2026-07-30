@@ -100,6 +100,21 @@ func TestReceiptRotationEndorseCmdSupportsPreviouslyEndorsedChain(t *testing.T) 
 	emitClosedInto(t, dir, privB, 1, 1)
 
 	priorPath := saveRotationTestKey(t, dir, "prior-b.key", privB)
+	reusedPath := saveRotationTestKey(t, dir, "reused-a.key", privA)
+	reusedCmd := receiptRotationEndorseCmd(time.Now)
+	reusedCmd.SilenceUsage = true
+	reusedCmd.SetArgs([]string{
+		"--chain", dir,
+		"--prior-key-file", priorPath,
+		"--new-key-file", reusedPath,
+		"--root-key", hex.EncodeToString(pubA),
+		"--rotation-endorsement", endorsementABPath,
+		"--out", filepath.Join(dir, "rotation-ba.json"),
+	})
+	if err := reusedCmd.Execute(); err == nil || !strings.Contains(err.Error(), "retired keys must not be reinstated") {
+		t.Fatalf("reused successor error = %v, want retired-key refusal", err)
+	}
+
 	newPath := saveRotationTestKey(t, dir, "new-c.key", privC)
 	outPath := filepath.Join(dir, "rotation-bc.json")
 	cmd := receiptRotationEndorseCmd(time.Now)
@@ -120,6 +135,29 @@ func TestReceiptRotationEndorseCmdSupportsPreviouslyEndorsedChain(t *testing.T) 
 }
 
 func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
+	t.Run("relative output path", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), "rotation.json")
+		if err == nil || !strings.Contains(err.Error(), "--out must be absolute") {
+			t.Fatalf("error = %v, want absolute-path refusal", err)
+		}
+	})
+
+	t.Run("empty chain", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "receipt chain is empty") {
+			t.Fatalf("error = %v, want empty-chain refusal", err)
+		}
+	})
+
 	t.Run("open chain", func(t *testing.T) {
 		dir := t.TempDir()
 		pubA, privA := generateRotationTestKey(t)
@@ -145,7 +183,7 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 			Verdict:   "allow",
 			Transport: "fetch",
 			Method:    http.MethodGet,
-			Target:    "https://example.com/open",
+			Target:    "https://api.vendor.example/open",
 			SessionID: "agent-session",
 		}); err != nil {
 			t.Fatalf("Emit: %v", err)
@@ -213,6 +251,79 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 		err := cmd.Execute()
 		if err == nil || !strings.Contains(err.Error(), `purpose mismatch: file="roster-root" expected="receipt-signing"`) {
 			t.Fatalf("error = %v, want key-purpose refusal", err)
+		}
+	})
+
+	t.Run("wrong retiring key purpose", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+		priorPath := saveRotationJSONKey(t, dir, "prior.json", privA, "roster-root")
+		newPath := saveRotationTestKey(t, dir, "new.json", privB)
+
+		cmd := receiptRotationEndorseCmd(time.Now)
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{
+			"--chain", dir,
+			"--prior-key-file", priorPath,
+			"--new-key-file", newPath,
+			"--root-key", hex.EncodeToString(pubA),
+			"--out", filepath.Join(dir, "rotation.json"),
+		})
+		if err := cmd.Execute(); err == nil ||
+			!strings.Contains(err.Error(), `purpose mismatch: file="roster-root" expected="receipt-signing"`) {
+			t.Fatalf("error = %v, want retiring-key purpose refusal", err)
+		}
+	})
+
+	t.Run("legacy successor has no purpose binding", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+		priorPath := saveRotationTestKey(t, dir, "prior.json", privA)
+		newPath := filepath.Join(dir, "new-legacy.key")
+		if err := domsigning.SavePrivateKey(privB, newPath); err != nil {
+			t.Fatalf("SavePrivateKey: %v", err)
+		}
+
+		cmd := receiptRotationEndorseCmd(time.Now)
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{
+			"--chain", dir,
+			"--prior-key-file", priorPath,
+			"--new-key-file", newPath,
+			"--root-key", hex.EncodeToString(pubA),
+			"--out", filepath.Join(dir, "rotation.json"),
+		})
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "purpose-bound JSON private key required") {
+			t.Fatalf("error = %v, want strict successor-purpose refusal", err)
+		}
+	})
+
+	t.Run("legacy retiring key remains migration compatible", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+		priorPath := filepath.Join(dir, "prior-legacy.key")
+		if err := domsigning.SavePrivateKey(privA, priorPath); err != nil {
+			t.Fatalf("SavePrivateKey: %v", err)
+		}
+		newPath := saveRotationTestKey(t, dir, "new.json", privB)
+
+		cmd := receiptRotationEndorseCmd(time.Now)
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{
+			"--chain", dir,
+			"--prior-key-file", priorPath,
+			"--new-key-file", newPath,
+			"--root-key", hex.EncodeToString(pubA),
+			"--out", filepath.Join(dir, "rotation.json"),
+		})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("legacy retiring key rejected: %v", err)
 		}
 	})
 
@@ -317,7 +428,7 @@ func emitClosedInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, st
 			Verdict:   "allow",
 			Transport: "fetch",
 			Method:    http.MethodGet,
-			Target:    "https://example.com/" + strconv.Itoa(startIdx+i),
+			Target:    "https://api.vendor.example/" + strconv.Itoa(startIdx+i),
 			SessionID: "agent-session",
 		}); err != nil {
 			t.Fatalf("Emit %d: %v", i, err)
@@ -333,11 +444,7 @@ func emitClosedInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, st
 
 func saveRotationTestKey(t *testing.T, dir, name string, key ed25519.PrivateKey) string {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := domsigning.SavePrivateKey(key, path); err != nil {
-		t.Fatalf("SavePrivateKey: %v", err)
-	}
-	return path
+	return saveRotationJSONKey(t, dir, name, key, domsigning.PurposeReceiptSigning.String())
 }
 
 func saveRotationJSONKey(

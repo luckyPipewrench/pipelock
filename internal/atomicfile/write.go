@@ -45,29 +45,17 @@ func WriteNew(path string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("setting permissions: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("syncing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Link(tmpPath, path); err != nil {
-		return fmt.Errorf("publishing new file: %w", err)
-	}
-	syncDir(dir)
-	return nil
+	return finalizePublish(
+		tmp,
+		path,
+		perm,
+		func(w io.Writer) error {
+			_, writeErr := w.Write(data)
+			return writeErr
+		},
+		os.Link,
+		"publishing new file",
+	)
 }
 
 // WriteFunc atomically and durably publishes data written by writeFn without
@@ -92,16 +80,26 @@ func finalize(f file, targetPath string, data []byte) error {
 }
 
 func finalizeFunc(f file, targetPath string, perm os.FileMode, writeFn func(io.Writer) error) error {
+	return finalizePublish(f, targetPath, perm, writeFn, os.Rename, "renaming to target")
+}
+
+func finalizePublish(
+	f file,
+	targetPath string,
+	perm os.FileMode,
+	writeFn func(io.Writer) error,
+	publish func(string, string) error,
+	publishError string,
+) error {
 	tmpPath := f.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if err := writeFn(f); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 	if err := f.Chmod(perm); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("setting permissions: %w", err)
 	}
 	// fsync the file's data+metadata before the rename so the target dentry can
@@ -109,16 +107,13 @@ func finalizeFunc(f file, targetPath string, perm os.FileMode, writeFn func(io.W
 	// on a regular file means the write is not durable, so it fails closed.
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("syncing temp file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("closing temp file: %w", err)
 	}
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("renaming to target: %w", err)
+	if err := publish(tmpPath, targetPath); err != nil {
+		return fmt.Errorf("%s: %w", publishError, err)
 	}
 	// fsync the parent directory so the rename itself (the new dentry) is durable
 	// and the file is findable after a crash. This is best-effort: some

@@ -98,9 +98,11 @@ func TestWriteNewCreatesAndRefusesReplacement(t *testing.T) {
 	if err := WriteNew(target, []byte("first"), 0o600); err != nil {
 		t.Fatalf("WriteNew first: %v", err)
 	}
+	assertNoAtomicTemps(t, dir)
 	if err := WriteNew(target, []byte("second"), 0o600); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("WriteNew existing error = %v, want os.ErrExist", err)
 	}
+	assertNoAtomicTemps(t, dir)
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
@@ -119,6 +121,48 @@ func TestWriteNewCreatesAndRefusesReplacement(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode = %04o, want 0600", got)
+	}
+}
+
+func TestFinalizePublish_PublishError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	injected := errors.New("link failed")
+	ff := newFaultFile(t, dir)
+	tmpPath := ff.Name()
+
+	err := finalizePublish(
+		ff,
+		target,
+		0o600,
+		func(w io.Writer) error {
+			_, writeErr := io.WriteString(w, "data")
+			return writeErr
+		},
+		func(_, _ string) error { return injected },
+		"publishing new file",
+	)
+	if !errors.Is(err, injected) || !strings.Contains(err.Error(), "publishing new file") {
+		t.Fatalf("error = %v, want wrapped publish failure", err)
+	}
+	if _, err := os.Stat(tmpPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp file %s still exists after publish error", tmpPath)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target %s should not exist after publish error", target)
+	}
+}
+
+func assertNoAtomicTemps(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp-") {
+			t.Fatalf("leaked temp file %q", entry.Name())
+		}
 	}
 }
 

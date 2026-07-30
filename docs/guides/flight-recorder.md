@@ -210,8 +210,12 @@ sudo systemctl start pipelock
 
 The endorsement command does not stop, restart, or replace keys. It refuses an
 open chain, an unpinned root, a retiring key that does not sign the closed tail,
-a reused successor, and an existing output file. Keep the retiring key in
-offline custody until the retention window for its receipts expires.
+a successor that signed any earlier segment, and an existing output file. The
+successor must be the purpose-bound JSON file produced by
+`pipelock signing key generate --purpose receipt-signing`; a legacy purpose-less
+retiring key remains accepted so existing deployments can migrate. Keep the
+retiring key in offline custody until the retention window for its receipts
+expires.
 
 After the restarted process emits at least one receipt, verify from the original
 root:

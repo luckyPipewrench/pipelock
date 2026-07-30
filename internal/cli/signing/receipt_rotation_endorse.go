@@ -4,8 +4,6 @@
 package signing
 
 import (
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,7 +53,9 @@ pass each earlier endorsement in order with --rotation-endorsement.
 This command does not replace either key or restart Pipelock. After it succeeds,
 install --new-key-file at the configured flight_recorder.signing_key_path and
 restart Pipelock. Verify the resulting chain with the pinned root and every
-endorsement.
+endorsement. The successor must be a purpose-bound JSON key generated with
+"pipelock signing key generate --purpose receipt-signing". A legacy retiring
+key remains accepted so existing recorder deployments can migrate.
 
 Example:
   pipelock signing receipt-rotation endorse \
@@ -77,7 +77,7 @@ Example:
 			if err != nil {
 				return fmt.Errorf("load --prior-key-file: %w", err)
 			}
-			newKey, err := domsigning.LoadPrivateKeyFileForPurpose(
+			newKey, err := domsigning.LoadPrivateKeyFileForPurposeStrict(
 				filepath.Clean(newKeyFile),
 				domsigning.PurposeReceiptSigning,
 			)
@@ -122,13 +122,20 @@ Example:
 			if !isCleanSessionClose(tail) {
 				return errors.New("receipt chain is still open: stop Pipelock cleanly and require a final signed session_close before rotation")
 			}
-			priorPub := priorKey.Public().(ed25519.PublicKey)
-			priorKeyHex := hex.EncodeToString(priorPub)
+			priorKeyHex, err := domsigning.PublicKeyHexFromPrivateKey(priorKey)
+			if err != nil {
+				return fmt.Errorf("derive retiring public key: %w", err)
+			}
 			if tail.SignerKey != priorKeyHex {
 				return fmt.Errorf("retiring key does not sign the chain tail: tail=%s retiring=%s", tail.SignerKey, priorKeyHex)
 			}
 			if priorKeyHex == newKeyHex {
 				return errors.New("successor key must differ from the retiring key")
+			}
+			for _, chainReceipt := range receipts {
+				if chainReceipt.SignerKey == newKeyHex {
+					return errors.New("successor key already signed this chain; retired keys must not be reinstated")
+				}
 			}
 			tailHash, err := receipt.ReceiptHash(tail)
 			if err != nil {
@@ -175,7 +182,7 @@ Example:
 	cmd.Flags().StringVar(&chainDir, "chain", "", "flight-recorder evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "recorder session/writer ID")
 	cmd.Flags().StringVar(&priorKeyFile, "prior-key-file", "", "retiring receipt-signing private key file")
-	cmd.Flags().StringVar(&newKeyFile, "new-key-file", "", "successor receipt-signing private key file")
+	cmd.Flags().StringVar(&newKeyFile, "new-key-file", "", "purpose-bound JSON successor receipt-signing private key file")
 	cmd.Flags().StringArrayVar(&rootKeys, "root-key", nil, "pinned root public key (hex or file path); repeat if needed")
 	cmd.Flags().StringArrayVar(&priorEndorsementPaths, "rotation-endorsement", nil, "earlier rotation endorsement; repeat in chain order")
 	cmd.Flags().StringVar(&outPath, "out", "", "absolute path for the new endorsement JSON")

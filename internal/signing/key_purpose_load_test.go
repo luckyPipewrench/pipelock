@@ -55,6 +55,13 @@ func TestLoadPrivateKeyFileForPurpose(t *testing.T) {
 	if _, err := LoadPrivateKeyFileForPurpose(legacyPath, PurposeReceiptSigning); err != nil {
 		t.Fatalf("legacy purpose-less key rejected: %v", err)
 	}
+	if _, err := LoadPrivateKeyFileForPurposeStrict(legacyPath, PurposeReceiptSigning); err == nil ||
+		!strings.Contains(err.Error(), "purpose-bound JSON private key required") {
+		t.Fatalf("strict legacy-key error = %v", err)
+	}
+	if _, err := LoadPrivateKeyFileForPurposeStrict(jsonPath, PurposeReceiptSigning); err != nil {
+		t.Fatalf("strict matching-purpose key rejected: %v", err)
+	}
 
 	if runtime.GOOS != "windows" {
 		linkPath := filepath.Join(dir, "receipt-link.json")

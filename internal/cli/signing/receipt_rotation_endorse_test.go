@@ -159,6 +159,20 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed chain", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "extract receipt chain") {
+			t.Fatalf("error = %v, want malformed-chain refusal", err)
+		}
+	})
+
 	t.Run("open chain", func(t *testing.T) {
 		dir := t.TempDir()
 		pubA, privA := generateRotationTestKey(t)
@@ -241,6 +255,53 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubWrong), filepath.Join(dir, "rotation.json"))
 		if err == nil || !strings.Contains(err.Error(), "not valid from the pinned root") {
 			t.Fatalf("error = %v, want pinned-root refusal", err)
+		}
+	})
+
+	t.Run("invalid pinned root", func(t *testing.T) {
+		dir := t.TempDir()
+		_, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, "not-a-public-key", filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "load --root-key") {
+			t.Fatalf("error = %v, want invalid-root refusal", err)
+		}
+	})
+
+	t.Run("empty pinned root", func(t *testing.T) {
+		dir := t.TempDir()
+		_, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, "", filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "at least one non-empty --root-key") {
+			t.Fatalf("error = %v, want empty-root refusal", err)
+		}
+	})
+
+	t.Run("invalid prior endorsement", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+		priorPath := saveRotationTestKey(t, dir, "prior.json", privA)
+		newPath := saveRotationTestKey(t, dir, "new.json", privB)
+
+		cmd := receiptRotationEndorseCmd(time.Now)
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{
+			"--chain", dir,
+			"--prior-key-file", priorPath,
+			"--new-key-file", newPath,
+			"--root-key", hex.EncodeToString(pubA),
+			"--rotation-endorsement", filepath.Join(dir, "missing-endorsement.json"),
+			"--out", filepath.Join(dir, "rotation.json"),
+		})
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "load prior rotation endorsement") {
+			t.Fatalf("error = %v, want prior-endorsement load refusal", err)
 		}
 	})
 
@@ -387,6 +448,19 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 			t.Fatalf("existing artifact changed: data=%q err=%v", data, readErr)
 		}
 	})
+
+	t.Run("output directory missing", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedInto(t, dir, privA, 1, 0)
+
+		outPath := filepath.Join(dir, "missing", "rotation.json")
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), outPath)
+		if err == nil || !strings.Contains(err.Error(), "write rotation endorsement") {
+			t.Fatalf("error = %v, want output-write refusal", err)
+		}
+	})
 }
 
 func TestConfirmRotationTailStableRejectsConcurrentAdvance(t *testing.T) {
@@ -406,18 +480,41 @@ func TestConfirmRotationTailStableRejectsConcurrentAdvance(t *testing.T) {
 	}
 }
 
+func TestConfirmRotationTailStableReadFailures(t *testing.T) {
+	t.Run("missing directory", func(t *testing.T) {
+		err := confirmRotationTailStable(filepath.Join(t.TempDir(), "missing"), "proxy", receipt.Receipt{})
+		if err == nil || !strings.Contains(err.Error(), "re-read receipt chain") {
+			t.Fatalf("error = %v, want re-read failure", err)
+		}
+	})
+	t.Run("empty chain", func(t *testing.T) {
+		err := confirmRotationTailStable(t.TempDir(), "proxy", receipt.Receipt{})
+		if err == nil || !strings.Contains(err.Error(), "chain disappeared") {
+			t.Fatalf("error = %v, want empty-chain failure", err)
+		}
+	})
+}
+
 func TestSuccessorAppearsInPriorEndorsements(t *testing.T) {
 	endorsements := []receipt.RotationEndorsement{{
 		PriorSignerKey: "retired-a",
 		NewSignerKey:   "retired-b",
 	}}
-	for _, key := range []string{"retired-a", "retired-b"} {
-		if !successorAppearsInPriorEndorsements(key, endorsements) {
-			t.Fatalf("key %q was not detected in prior endorsement", key)
-		}
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{name: "prior signer", key: "retired-a", want: true},
+		{name: "endorsed signer", key: "retired-b", want: true},
+		{name: "fresh signer", key: "fresh-c", want: false},
 	}
-	if successorAppearsInPriorEndorsements("fresh-c", endorsements) {
-		t.Fatal("fresh key incorrectly detected in prior endorsement")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := successorAppearsInPriorEndorsements(tt.key, endorsements); got != tt.want {
+				t.Fatalf("successorAppearsInPriorEndorsements(%q) = %t, want %t", tt.key, got, tt.want)
+			}
+		})
 	}
 }
 

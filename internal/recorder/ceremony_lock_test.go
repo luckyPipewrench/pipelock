@@ -6,7 +6,9 @@ package recorder
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -61,6 +63,47 @@ func TestEvidenceCeremonyLockRequiresStoppedRecorder(t *testing.T) {
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("Close after ceremony release: %v", err)
+	}
+}
+
+func TestEvidenceCeremonyLockErrorAndEmptyLifecyclePaths(t *testing.T) {
+	if !supportsEvidenceCeremonyLock() {
+		t.Skip("platform does not provide cross-process ceremony locking")
+	}
+	var nilLock *EvidenceCeremonyLock
+	if err := nilLock.Close(); err != nil {
+		t.Fatalf("nil lock close: %v", err)
+	}
+	missingDir := filepath.Join(t.TempDir(), "missing")
+	if _, err := AcquireEvidenceCeremonyLock(missingDir); err == nil ||
+		!strings.Contains(err.Error(), "opening receipt ceremony lock") {
+		t.Fatalf("missing-dir ceremony error = %v", err)
+	}
+	if _, err := acquireEvidenceWriterCeremonyLock(missingDir); err == nil ||
+		!strings.Contains(err.Error(), "opening receipt ceremony lock") {
+		t.Fatalf("missing-dir writer error = %v", err)
+	}
+	originalTryLock := tryAcquireEvidenceCeremonyLock
+	tryAcquireEvidenceCeremonyLock = func(*os.File) (bool, error) {
+		return false, errors.New("injected lock failure")
+	}
+	t.Cleanup(func() { tryAcquireEvidenceCeremonyLock = originalTryLock })
+	if _, err := AcquireEvidenceCeremonyLock(t.TempDir()); err == nil ||
+		!strings.Contains(err.Error(), "injected lock failure") {
+		t.Fatalf("injected ceremony-lock error = %v", err)
+	}
+	tryAcquireEvidenceCeremonyLock = originalTryLock
+
+	dir := t.TempDir()
+	rec := &Recorder{cfg: Config{Dir: dir}}
+	if err := rec.releaseEvidenceWriterCeremonyLock(); err != nil {
+		t.Fatalf("release absent writer lock: %v", err)
+	}
+	if err := rec.ensureEvidenceWriterCeremonyLock(); err != nil {
+		t.Fatalf("acquire missing writer lock: %v", err)
+	}
+	if err := rec.releaseEvidenceWriterCeremonyLock(); err != nil {
+		t.Fatalf("release acquired writer lock: %v", err)
 	}
 }
 

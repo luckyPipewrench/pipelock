@@ -402,6 +402,14 @@ func TestWrite_BadDirectory(t *testing.T) {
 	}
 }
 
+func TestWriteNew_BadDirectory(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "nonexistent", "file.txt")
+	err := WriteNew(target, []byte("data"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "creating temp file") {
+		t.Fatalf("WriteNew error = %v, want temp-file creation failure", err)
+	}
+}
+
 func TestWrite_OverwriteExisting(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "existing.txt")

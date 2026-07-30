@@ -101,7 +101,7 @@ point at the published packages, so the public docs are never ahead of reality.
 ## Auto-publish on release tag
 
 `.github/workflows/publish-verifiers.yaml` publishes both verifiers automatically
-when a `verifier-v*` tag is pushed (e.g. `verifier-v0.1.1`). The verifiers version
+when a `verifier-v*` tag is pushed (e.g. `verifier-v0.2.0`). The verifiers version
 independently of pipelock, so a pipelock `v*` release tag does NOT trigger it.
 Authentication is OIDC trusted publishing on both registries: no npm or crates.io
 tokens are stored in the repository. `workflow_dispatch` runs the build/verify path
@@ -141,7 +141,7 @@ a GitHub publisher with:
 ### Cutting a release
 
 1. Bump the version in `sdk/verifiers/ts/package.json` and `sdk/verifiers/rust/Cargo.toml` (keep them in lockstep; re-vendor the schema if the canonical one changed) and merge it.
-2. Tag and push: `git tag verifier-v0.1.1 && git push origin verifier-v0.1.1`.
+2. Tag and push: `git tag verifier-v0.2.0 && git push origin verifier-v0.2.0`.
 3. The `build` job runs the tests and verification builds, then the two publish jobs wait for your environment approval and publish both packages. No tokens.
 
 Try it first with the `workflow_dispatch` dry run (Actions, Publish verifiers, Run

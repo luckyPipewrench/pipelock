@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "session_id": "conformance-session",
+  "prior_signer_key": "970955695494cf0fb3109671e673ecaeb0a161e834861a325b97b0656e3c9cd1",
+  "prior_final_seq": 2,
+  "prior_tail_hash": "f41965657ef61c3f7fb79cd850fd8d80b4ab3d6752ccaf26675ab1c05a6ac066",
+  "new_signer_key": "54a17337d815b3685aa6cda7fd77950a293b4a1be84aa8a3aff964576827e5be",
+  "rotated_at": "2026-04-15T12:00:20Z",
+  "endorsement": "ed25519:a8eeadfb827bf2fb7efe897b6403670802a9345bcb50db3d0f2bc0630ee4b759f3cf9102c458457f4b98c76ee875e83336b0b7630e7cfbee41f24262c74c0800"
+}

@@ -9,6 +9,7 @@ pub mod cli;
 pub mod output;
 pub mod receipt;
 pub mod recorder;
+pub mod rotation;
 pub mod schema;
 pub mod signing;
 pub mod strict;

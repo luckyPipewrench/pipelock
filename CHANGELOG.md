@@ -109,6 +109,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepted for migration from existing recorder deployments. Cross-process
   ceremony locking currently requires Unix `flock` and fails closed on Windows;
   the artifact output filesystem must support hard links.
+- **Installable receipt-verifier parity for endorsed rotations.** The TypeScript
+  and Rust verifier packages now accept repeatable rotation endorsements and
+  verify a rotated ActionReceipt v1 chain from one pinned root. Their `0.2.0`
+  releases include every verifier hardening change since the original `0.1.0`
+  packages. The standalone Python verifier adds the same root-plus-endorsement
+  contract in `0.4.0`.
 - **OCSF syslog output format**, OCSF over HTTP, and audit-sink delivery health
   metrics.
 - **Delivery-failure accounting for webhook and OTLP sinks**, with an atomic sink
@@ -217,7 +223,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retuning the MCP denial-of-wallet gates required a restart to take effect, so a
   reload left the previous limits enforcing. Budgets now update in place without
   resetting each subject's accumulated consumption, meaning a retune no longer
-  hands every active subject a fresh allowance.
+  hands every active subject a fresh allowance. Increasing the budget window
+  also extends live subject expiries from their original start; decreasing it
+  applies to new subjects without shortening an already-enforcing window.
 - **File-sentry block findings survive backpressure and shutdown.** Saturated
   delivery channels no longer hide agent-attributed blocking findings, and close
   waits for in-flight debounce scans before reporting shutdown complete.

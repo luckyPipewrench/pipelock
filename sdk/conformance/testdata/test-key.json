@@ -4,6 +4,9 @@
   "rotated_public_key_hex": "970955695494cf0fb3109671e673ecaeb0a161e834861a325b97b0656e3c9cd1",
   "rotated_seed_hex": "0d9b4b8d28f13d4ab1081b398e7b9d5243629cb1c4173437a3f9826fc80ad2ce",
   "rotated_seed_phrase": "pipelock-conformance-rotated-test-key-v1",
+  "rotated_twice_public_key_hex": "54a17337d815b3685aa6cda7fd77950a293b4a1be84aa8a3aff964576827e5be",
+  "rotated_twice_seed_hex": "7d7d7f0b4c6379e23590a24d0a82a1ba05812dd5b7982e3f8e4dee4284485f50",
+  "rotated_twice_seed_phrase": "pipelock-conformance-rotated-twice-test-key-v1",
   "seed_hex": "c8ee65622000420b20ff7ec4e790006b7883ddfd3823ff9ccc2fc050c389bd48",
   "seed_phrase": "pipelock-conformance-test-key-v1"
 }

@@ -34,7 +34,7 @@ The package exposes `pipelock-verifier-ts` after build.
 
 ```bash
 pipelock-verifier-ts audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline]
-pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE] [--dir] [--session-id ID]
+pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--dir] [--session-id ID]
 pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE]
 ```
 
@@ -48,6 +48,21 @@ Exit codes match the Go verifier:
 | 64   | CLI usage error |
 
 `audit-packet` validates `packet.json` against `sdk/audit-packet/v0.json`, applies the structural v0 checks, and re-verifies the referenced receipt chain unless `--offline` is set. `chain` accepts either an `evidence.jsonl` file or a recorder session directory with `--dir`. `receipt` verifies one receipt JSON file. For EvidenceReceipt v2, `receipt` requires a pinned `--key`, verifies the JCS preimage, and enforces strict validation for supported v2 payload kinds, including source-span rules for `proxy_decision_with_spans`.
+
+For an ActionReceipt v1 chain that rotated signing keys, pin the original root
+and pass one `--rotation-endorsement` for each rotation boundary:
+
+```bash
+pipelock-verifier-ts chain evidence.jsonl \
+  --key receipt-root.pub \
+  --session-id proxy \
+  --rotation-endorsement rotation-2026-07-30.json
+```
+
+Each endorsement is verified under the retiring key and matched to the exact
+prior sequence, tail hash, recorder session, and successor key. Missing,
+altered, duplicate, replayed, cross-session, and unused endorsements fail
+closed.
 
 Trusted Audit Packet verification requires an external `--key` or an
 out-of-band `--expect-sha256` packet digest. A packet's embedded signer key

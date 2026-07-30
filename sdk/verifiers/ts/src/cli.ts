@@ -10,6 +10,7 @@ import { verifyChain } from "./chain.js";
 import { emitAuditPacket, emitChain, emitReceipt } from "./output.js";
 import { extractReceipts, extractReceiptsFromSessionDir } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
+import { loadRotationEndorsementFile, verifyChainWithEndorsements } from "./rotation.js";
 import { runAARPCommand } from "./aarp/cli.js";
 import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util.js";
 
@@ -29,7 +30,7 @@ function usage(command?: string): string {
     return "Usage: pipelock-verifier-ts audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]";
   }
   if (command === "chain") {
-    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned] [--dir] [--session-id ID]";
+    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]";
   }
   if (command === "receipt") {
     return "Usage: pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]";
@@ -81,6 +82,7 @@ async function runChainCommand(args: string[]): Promise<number> {
       "allow-unpinned": { type: "boolean", default: false },
       dir: { type: "boolean", default: false },
       "session-id": { type: "string", default: "proxy" },
+      "rotation-endorsement": { type: "string", multiple: true, default: [] },
     },
   });
   const target = requireOneArg(parsed.positionals, "chain");
@@ -119,7 +121,20 @@ async function runChainCommand(args: string[]): Promise<number> {
     return 1;
   }
   const allowUnpinned = parsed.values["allow-unpinned"] === true;
-  const result = await verifyChain(receipts, keyHex, { allowUnpinned });
+  const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
+  if (endorsementPaths.length > 0 && allowUnpinned) {
+    throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
+  }
+  const endorsements = await Promise.all(
+    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
+  );
+  const result =
+    endorsements.length > 0
+      ? await verifyChainWithEndorsements(receipts, keyHex, {
+          sessionID,
+          endorsements,
+        })
+      : await verifyChain(receipts, keyHex, { allowUnpinned });
   const report: ChainCommandReport = {
     path: label,
     valid: result.valid,

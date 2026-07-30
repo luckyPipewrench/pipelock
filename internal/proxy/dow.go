@@ -162,9 +162,24 @@ func (m *DoWSubjectManager) UpdateConfig(cfg DoWConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg = cfg
-	m.window = normalizeDoWSubjectWindow(cfg, m.idleTTL)
+	newWindow := normalizeDoWSubjectWindow(cfg, m.idleTTL)
+	extendLiveWindows := newWindow > m.window
+	m.window = newWindow
+	var earliest time.Time
 	for _, entry := range m.subjects {
+		if extendLiveWindows {
+			extendedExpiry := entry.windowStart.Add(newWindow)
+			if extendedExpiry.After(entry.expiresAt) {
+				entry.expiresAt = extendedExpiry
+			}
+			if earliest.IsZero() || entry.expiresAt.Before(earliest) {
+				earliest = entry.expiresAt
+			}
+		}
 		entry.tracker.UpdateConfig(cfg)
+	}
+	if extendLiveWindows {
+		m.nextExpiry = earliest
 	}
 }
 

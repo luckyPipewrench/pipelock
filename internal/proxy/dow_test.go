@@ -865,6 +865,50 @@ func TestDoWSubjectManager_UpdateConfigShrinksWindowOnlyForNewEntries(t *testing
 	}
 }
 
+func TestDoWSubjectManager_UpdateConfigExtendsLiveSubjectExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			WindowMinutes:          1,
+			Action:                 actionBlock,
+		},
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("first call blocked: %s", result.Reason)
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); result.Allowed {
+		t.Fatal("second call should spend past the original limit")
+	}
+
+	manager.UpdateConfig(DoWConfig{
+		MaxToolCallsPerSession: 1,
+		WindowMinutes:          60,
+		Action:                 actionBlock,
+	})
+	wantExpiry := time.Date(2026, 7, 30, 13, 0, 0, 0, time.UTC)
+	if got := manager.subjects["subject-a"].expiresAt; !got.Equal(wantExpiry) {
+		t.Fatalf("live subject expiry = %s, want extended expiry %s", got, wantExpiry)
+	}
+	if !manager.nextExpiry.Equal(wantExpiry) {
+		t.Fatalf("nextExpiry = %s, want extended expiry %s", manager.nextExpiry, wantExpiry)
+	}
+
+	now = now.Add(2 * time.Minute)
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":3}`); result.Allowed {
+		t.Fatal("extending the window reset the live subject at its old expiry")
+	}
+
+	now = time.Date(2026, 7, 30, 13, 0, 1, 0, time.UTC)
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":4}`); !result.Allowed {
+		t.Fatalf("subject did not receive a new budget after the extended expiry: %s", result.Reason)
+	}
+}
+
 func TestDoWSubjectManager_RepeatedUpdateConfigDoesNotResetSpend(t *testing.T) {
 	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
 		TrackerConfig: DoWConfig{

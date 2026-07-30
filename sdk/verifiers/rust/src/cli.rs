@@ -6,6 +6,7 @@ use crate::chain::verify_chain_with_options;
 use crate::output::{emit_audit_packet, emit_chain, emit_receipt};
 use crate::receipt::run_receipt;
 use crate::recorder::{extract_receipts, extract_receipts_from_session_dir};
+use crate::rotation::{load_rotation_endorsement_file, verify_chain_with_endorsements};
 use crate::types::ChainCommandReport;
 use crate::util::{resolve_signer_key, Result, VerifierError};
 use std::fs;
@@ -23,6 +24,7 @@ struct ParsedArgs {
     expect_sha256: String,
     dir: bool,
     session_id: String,
+    rotation_endorsements: Vec<String>,
 }
 
 pub fn run(args: &[String]) -> Result<i32> {
@@ -100,7 +102,21 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         return Ok(1);
     }
 
-    let result = verify_chain_with_options(&receipts, &key_hex, parsed.allow_unpinned);
+    if !parsed.rotation_endorsements.is_empty() && parsed.allow_unpinned {
+        return Err(VerifierError::Usage(
+            "--rotation-endorsement cannot be combined with --allow-unpinned".to_string(),
+        ));
+    }
+    let endorsements = parsed
+        .rotation_endorsements
+        .iter()
+        .map(|path| load_rotation_endorsement_file(&PathBuf::from(path)))
+        .collect::<Result<Vec<_>>>()?;
+    let result = if endorsements.is_empty() {
+        verify_chain_with_options(&receipts, &key_hex, parsed.allow_unpinned)
+    } else {
+        verify_chain_with_endorsements(&receipts, &parsed.session_id, &endorsements, &key_hex)
+    };
     let report = ChainCommandReport {
         path: label,
         valid: result.valid,
@@ -186,6 +202,19 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                     })?
                     .clone();
             }
+            "--rotation-endorsement" if command == "chain" => {
+                index += 1;
+                parsed.rotation_endorsements.push(
+                    args.get(index)
+                        .ok_or_else(|| {
+                            VerifierError::Usage(format!(
+                                "--rotation-endorsement requires a value\n{}",
+                                usage(Some(command))
+                            ))
+                        })?
+                        .clone(),
+                );
+            }
             _ => {
                 if flag == "--key" {
                     parsed.key = inline_value.expect("split flag produced value").to_string();
@@ -195,6 +224,10 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                 } else if flag == "--session-id" && command == "chain" {
                     parsed.session_id =
                         inline_value.expect("split flag produced value").to_string();
+                } else if flag == "--rotation-endorsement" && command == "chain" {
+                    parsed
+                        .rotation_endorsements
+                        .push(inline_value.expect("split flag produced value").to_string());
                 } else {
                     return Err(VerifierError::Usage(format!(
                         "Unknown option {arg}\n{}",
@@ -230,7 +263,7 @@ fn require_one_arg<'a>(positionals: &'a [String], command: &str) -> Result<&'a s
 fn usage(command: Option<&str>) -> String {
     match command {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
-        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
+        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
         _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|receipt} PATH [flags]"
             .to_string(),

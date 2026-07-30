@@ -31,7 +31,7 @@ It provides these commands:
 
 ```text
 pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]
-pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--dir] [--session-id ID]
+pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--dir] [--session-id ID]
 pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE]
 ```
 
@@ -43,6 +43,21 @@ Exit codes match the Go and TypeScript verifiers:
 - `64` usage error
 
 The verifier embeds the Audit Packet v0 schema at compile time, validates structural invariants, verifies Ed25519 receipt signatures, replays receipt chains with the `genesis` root, and cross-checks packet totals, receipt count, root hash, final sequence, and verdict consistency. The `receipt` command also verifies EvidenceReceipt v2 `proxy_decision_with_spans` receipts with a pinned `--key`, including the JCS preimage and strict source-span payload shape.
+
+For an ActionReceipt v1 chain that rotated signing keys, pin the original root
+and pass one `--rotation-endorsement` for each rotation boundary:
+
+```bash
+pipelock-verifier-rs chain evidence.jsonl \
+  --key receipt-root.pub \
+  --session-id proxy \
+  --rotation-endorsement rotation-2026-07-30.json
+```
+
+Each endorsement is verified under the retiring key and matched to the exact
+prior sequence, tail hash, recorder session, and successor key. Missing,
+altered, duplicate, replayed, cross-session, and unused endorsements fail
+closed.
 
 Signer keys may be raw 32-byte hex, the versioned `pipelock-ed25519-public-v1` text format, or a file containing either form.
 Trusted Audit Packet verification requires an external `--key` or an

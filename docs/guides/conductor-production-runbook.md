@@ -375,14 +375,14 @@ kubectl -n pipelock create secret generic follower-audit-queue-keyring \
 
 Day-2 lifecycle commands require the follower to be stopped and must run in an
 operator maintenance environment that mounts the real queue PVC at
-`/var/lib/pipelock/audit-queue` while keeping the operator source keyring on a
+`/var/lib/pipelock/conductor/audit-queue` while keeping the operator source keyring on a
 different writable volume. Inspection may use the read-only runtime mount;
 rotate, revoke, and recover must never target that Secret mount:
 
 ```bash
 kubectl -n pipelock scale deployment pipelock-follower --replicas=0
 export KEYRING="$PWD/operator-secrets/audit-queue-keyring.json"
-export QUEUE_DIR=/var/lib/pipelock/audit-queue
+export QUEUE_DIR=/var/lib/pipelock/conductor/audit-queue
 pipelock conductor audit-queue-key inspect --keyring "$KEYRING" --queue-dir "$QUEUE_DIR"
 pipelock conductor audit-queue-key rotate --keyring "$KEYRING" --queue-dir "$QUEUE_DIR"
 pipelock conductor audit-queue-key migrate --keyring "$KEYRING" --queue-dir "$QUEUE_DIR"

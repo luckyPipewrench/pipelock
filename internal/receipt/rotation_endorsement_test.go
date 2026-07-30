@@ -122,7 +122,7 @@ func TestFindRotationPriorTailFailsClosedWhenLaterSegmentIsMissing(t *testing.T)
 	}
 }
 
-func TestVerifyChainWithEndorsements_RepeatedKeysAndRedundantRootEndorsement(t *testing.T) {
+func TestVerifyChainWithEndorsements_RepeatedKeysRequireEveryEndorsement(t *testing.T) {
 	t.Parallel()
 	pubA, privA := generateTestKey(t)
 	_, privB := generateTestKey(t)
@@ -130,14 +130,11 @@ func TestVerifyChainWithEndorsements_RepeatedKeysAndRedundantRootEndorsement(t *
 	endorsements := []RotationEndorsement{
 		endorsementForBoundary(t, chain, boundaries[2], privA),
 		endorsementForBoundary(t, chain, boundaries[0], privA),
-		// A is already pinned as a root. Supplying B's valid endorsement of
-		// the B -> A boundary is redundant but should be consumed, not rejected
-		// as unused operator input.
 		endorsementForBoundary(t, chain, boundaries[1], privB),
 	}
 
 	result := VerifyChainWithEndorsements("proxy", chain, endorsements, []string{hex.EncodeToString(pubA)})
-	if !result.Valid || strings.Join(result.TrustBasis, ",") != "root,endorsed,root,endorsed" {
+	if !result.Valid || strings.Join(result.TrustBasis, ",") != "root,endorsed,endorsed,endorsed" {
 		t.Fatalf("repeated-key endorsement chain rejected: %+v", result)
 	}
 }
@@ -156,11 +153,11 @@ func TestVerifyChainWithEndorsements_FailsClosedWithoutEndorsement(t *testing.T)
 		t.Fatalf("failure did not identify successor: %+v", result)
 	}
 
-	// Backward-compatible operator-attested trust remains available when both
-	// keys are explicitly pinned. No endorsement may silently override it.
+	// In endorsement mode, extra roots do not silently replace a boundary
+	// endorsement. The root set authenticates genesis only.
 	result = VerifyChainWithEndorsements("proxy", chain, nil, []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)})
-	if !result.Valid || strings.Join(result.TrustBasis, ",") != "root,root" {
-		t.Fatalf("explicit root trust rejected: %+v", result)
+	if result.Valid || result.UntrustedSignerKey != hex.EncodeToString(pubB) || len(result.EndorsementGaps) != 1 {
+		t.Fatalf("pre-pinned successor bypassed its endorsement: %+v", result)
 	}
 }
 

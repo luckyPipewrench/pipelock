@@ -161,6 +161,10 @@ func (m *DoWSubjectManager) UpdateConfig(cfg DoWConfig) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Decide liveness under the old window before applying a new one. An
+	// already-expired subject gets a fresh budget; only still-live spend is
+	// preserved or extended.
+	m.reapExpiredLocked(m.now())
 	m.cfg = cfg
 	newWindow := normalizeDoWSubjectWindow(cfg, m.idleTTL)
 	extendLiveWindows := newWindow > m.window

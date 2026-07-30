@@ -909,6 +909,38 @@ func TestDoWSubjectManager_UpdateConfigExtendsLiveSubjectExpiry(t *testing.T) {
 	}
 }
 
+func TestDoWSubjectManager_UpdateConfigDoesNotReviveExpiredSubject(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
+		TrackerConfig: DoWConfig{
+			MaxToolCallsPerSession: 1,
+			WindowMinutes:          1,
+			Action:                 actionBlock,
+		},
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":1}`); !result.Allowed {
+		t.Fatalf("first call blocked: %s", result.Reason)
+	}
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":2}`); result.Allowed {
+		t.Fatal("second call should spend past the original limit")
+	}
+
+	now = now.Add(2 * time.Minute)
+	manager.UpdateConfig(DoWConfig{
+		MaxToolCallsPerSession: 1,
+		WindowMinutes:          60,
+		Action:                 actionBlock,
+	})
+
+	if result := manager.Check("subject-a", toolGetWeather, `{"turn":3}`); !result.Allowed {
+		t.Fatalf("expired subject was revived instead of receiving a fresh budget: %s", result.Reason)
+	}
+}
+
 func TestDoWSubjectManager_RepeatedUpdateConfigDoesNotResetSpend(t *testing.T) {
 	manager := NewDoWSubjectManager(DoWSubjectManagerConfig{
 		TrackerConfig: DoWConfig{

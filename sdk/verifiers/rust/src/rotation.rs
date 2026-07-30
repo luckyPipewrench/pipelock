@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::aarp::envelope::validate_timestamp;
+use crate::canonical::go_json_bytes;
 use crate::chain::{receipt_hash, verify_chain};
 use crate::types::{ChainResult, Receipt};
 use crate::util::{decode_hex, Result, VerifierError};
@@ -115,15 +116,6 @@ fn canonical_utc_timestamp(value: &str) -> bool {
         && !fraction.ends_with('0')
 }
 
-fn go_html_escape(serialized: String) -> String {
-    serialized
-        .replace('&', "\\u0026")
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029")
-}
-
 fn endorsement_digest(endorsement: &RotationEndorsement) -> Result<[u8; 32]> {
     let canonical = CanonicalRotationEndorsement {
         version: endorsement.version,
@@ -134,12 +126,11 @@ fn endorsement_digest(endorsement: &RotationEndorsement) -> Result<[u8; 32]> {
         new_signer_key: &endorsement.new_signer_key,
         rotated_at: &endorsement.rotated_at,
     };
-    let encoded = serde_json::to_string(&canonical)
-        .map(go_html_escape)
+    let encoded = go_json_bytes(&canonical)
         .map_err(|err| invalid(format!("marshal rotation endorsement: {err}")))?;
     let mut hasher = Sha256::new();
     hasher.update(ENDORSEMENT_DOMAIN);
-    hasher.update(encoded.as_bytes());
+    hasher.update(encoded);
     Ok(hasher.finalize().into())
 }
 
@@ -291,6 +282,35 @@ pub fn verify_chain_with_endorsements(
             broken_at_seq: None,
         };
     }
+    let mut authorized_signer = receipts[0]
+        .get("signer_key")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    for receipt in &receipts[1..] {
+        let signer = receipt
+            .get("signer_key")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let transition = receipt
+            .get("action_record")
+            .and_then(|record| record.get("key_transition"))
+            .is_some();
+        if !transition && signer != authorized_signer {
+            return ChainResult {
+                valid: false,
+                receipt_count: receipts.len(),
+                final_seq: 0,
+                root_hash: String::new(),
+                error: Some("signer key changed without a key_transition boundary".to_string()),
+                broken_at_seq: None,
+            };
+        }
+        if transition {
+            authorized_signer = signer;
+        }
+    }
     let all_keys = receipts
         .iter()
         .filter_map(|receipt| receipt.get("signer_key")?.as_str())
@@ -376,12 +396,10 @@ pub fn verify_chain_with_endorsements(
                 "multiple rotation endorsements match one receipt boundary",
             );
         }
-        if let Some(endorsement_index) = matches.first() {
-            used.insert(*endorsement_index);
-        }
-        if !roots.contains(&successor) && matches.is_empty() {
+        let Some(endorsement_index) = matches.first() else {
             return fail(base, "rotation endorsement does not match receipt boundary");
-        }
+        };
+        used.insert(*endorsement_index);
     }
     if used.len() != endorsements.len() {
         return fail(

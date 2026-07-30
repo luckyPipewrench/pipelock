@@ -198,8 +198,8 @@ func VerifyChainIntegrityTrusted(receipts []Receipt, trustedKeys []string) Chain
 // VerifyChainWithEndorsements verifies a rotated receipt chain while allowing
 // an old-key-signed endorsement to authorize each successor key. Root keys are
 // still supplied out of band. An absent, invalid, duplicate, replayed, or
-// boundary-mismatched endorsement fails closed for a successor that is not a
-// root key.
+// boundary-mismatched endorsement fails closed for every successor. The root
+// set authenticates the genesis signer; it does not bypass transition proof.
 func VerifyChainWithEndorsements(sessionID string, receipts []Receipt, endorsements []RotationEndorsement, rootTrustedKeys []string) ChainResult {
 	if strings.TrimSpace(sessionID) == "" {
 		return ChainResult{Error: "rotation endorsement verification requires a recorder session ID", FailureKind: ChainFailureTrust}
@@ -284,17 +284,10 @@ func VerifyChainWithEndorsements(sessionID string, receipts []Receipt, endorseme
 			}
 			match = endorsementIndex
 		}
-		_, rooted := rootSet[segment.SignerKey]
-		if match >= 0 {
-			used[match] = struct{}{}
-		}
-		if rooted {
-			base.TrustBasis = append(base.TrustBasis, "root")
-			continue
-		}
 		if match < 0 {
 			return endorsementFailure(base, segment.SignerKey, errors.New("rotation endorsement does not match receipt boundary"))
 		}
+		used[match] = struct{}{}
 		base.TrustBasis = append(base.TrustBasis, "endorsed")
 	}
 	if len(used) != len(endorsements) {

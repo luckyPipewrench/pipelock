@@ -285,6 +285,37 @@ fn rotation_endorsement_trust_fails_closed_when_absent_altered_or_duplicated() {
         .unwrap_or_default()
         .contains("does not match receipt boundary"));
 
+    let pre_pinned_successor = verify_chain_with_endorsements(
+        &receipts,
+        "conformance-session",
+        &[],
+        &conformance_trusted_keys(),
+    );
+    assert!(!pre_pinned_successor.valid);
+    assert!(pre_pinned_successor
+        .error
+        .unwrap_or_default()
+        .contains("does not match receipt boundary"));
+
+    let mut unmarked_switch =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    sign_action_receipt_with_conformance_key_fields(
+        &mut unmarked_switch[1],
+        "rotated_seed_hex",
+        "rotated_public_key_hex",
+    );
+    let forged = verify_chain_with_endorsements(
+        &unmarked_switch,
+        "conformance-session",
+        &[],
+        &conformance_key(),
+    );
+    assert!(!forged.valid);
+    assert!(forged
+        .error
+        .unwrap_or_default()
+        .contains("without a key_transition boundary"));
+
     let mut altered = endorsement.clone();
     altered.prior_tail_hash = "0".repeat(64);
     assert!(verify_rotation_endorsement(&altered)
@@ -728,11 +759,19 @@ fn sign_evidence_receipt(receipt: &mut Value) {
 }
 
 fn sign_action_receipt_with_conformance_key(receipt: &mut Value) {
+    sign_action_receipt_with_conformance_key_fields(receipt, "seed_hex", "public_key_hex");
+}
+
+fn sign_action_receipt_with_conformance_key_fields(
+    receipt: &mut Value,
+    seed_field: &str,
+    public_key_field: &str,
+) {
     let root = common::repo_root();
     let data =
         fs::read_to_string(root.join("sdk/conformance/testdata/test-key.json")).expect("read key");
     let value: Value = serde_json::from_str(&data).expect("parse key");
-    let seed: [u8; 32] = hex::decode(value["seed_hex"].as_str().expect("seed_hex"))
+    let seed: [u8; 32] = hex::decode(value[seed_field].as_str().expect("seed field"))
         .expect("decode seed")
         .try_into()
         .expect("seed length");
@@ -740,5 +779,5 @@ fn sign_action_receipt_with_conformance_key(receipt: &mut Value) {
     let digest = Sha256::digest(canonicalize_action_record(&receipt["action_record"]));
     let signature = key.sign(&digest);
     receipt["signature"] = json!(format!("ed25519:{}", hex::encode(signature.to_bytes())));
-    receipt["signer_key"] = value["public_key_hex"].clone();
+    receipt["signer_key"] = value[public_key_field].clone();
 }

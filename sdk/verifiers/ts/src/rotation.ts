@@ -8,7 +8,7 @@ import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { receiptHash, verifyChain } from "./chain.js";
 import type { ChainResult, Receipt } from "./types.js";
-import { decodeHex, RuntimeError } from "./util.js";
+import { decodeHex, InvalidError, RuntimeError } from "./util.js";
 
 const endorsementVersion = 1;
 const endorsementDomain = "pipelock-rotation-endorsement-v1\u0000";
@@ -51,11 +51,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function materializeStrictJSON(value: unknown): unknown {
   if (value instanceof RawNumber) {
     if (!/^(?:0|[1-9][0-9]*)$/u.test(value.literal)) {
-      throw new Error("rotation endorsement numbers must be non-negative integers");
+      throw new InvalidError("rotation endorsement numbers must be non-negative integers");
     }
     const parsed = Number(value.literal);
     if (!Number.isSafeInteger(parsed)) {
-      throw new Error("rotation endorsement integer exceeds the safe range");
+      throw new InvalidError("rotation endorsement integer exceeds the safe range");
     }
     return parsed;
   }
@@ -84,7 +84,7 @@ function hasLoneSurrogate(value: string): boolean {
 
 function requireCanonicalString(value: unknown, field: string): string {
   if (typeof value !== "string" || value === "" || hasLoneSurrogate(value)) {
-    throw new Error(`rotation endorsement ${field} is invalid`);
+    throw new InvalidError(`rotation endorsement ${field} is invalid`);
   }
   return value;
 }
@@ -92,7 +92,7 @@ function requireCanonicalString(value: unknown, field: string): string {
 function requireHex(value: unknown, bytes: number, field: string): string {
   const text = requireCanonicalString(value, field);
   if (text !== text.toLowerCase() || !new RegExp(`^[0-9a-f]{${bytes * 2}}$`, "u").test(text)) {
-    throw new Error(`rotation endorsement ${field} is invalid`);
+    throw new InvalidError(`rotation endorsement ${field} is invalid`);
   }
   return text;
 }
@@ -107,7 +107,7 @@ function requireCanonicalTimestamp(value: unknown): string {
     match === null ||
     !validDateTime(match.groups?.["date"] ?? "", match.groups?.["time"] ?? "")
   ) {
-    throw new Error("rotation endorsement rotated_at must be canonical UTC RFC3339Nano");
+    throw new InvalidError("rotation endorsement rotated_at must be canonical UTC RFC3339Nano");
   }
   return text;
 }
@@ -136,27 +136,27 @@ function validDateTime(date: string, time: string): boolean {
 }
 
 function normalizeEndorsement(value: unknown): RotationEndorsement {
-  if (!isObject(value)) throw new Error("rotation endorsement must be a JSON object");
+  if (!isObject(value)) throw new InvalidError("rotation endorsement must be a JSON object");
   for (const key of Object.keys(value)) {
     if (!endorsementFields.has(key)) {
-      throw new Error(`rotation endorsement contains unknown field ${key}`);
+      throw new InvalidError(`rotation endorsement contains unknown field ${key}`);
     }
   }
   if (Object.keys(value).length !== endorsementFields.size) {
-    throw new Error("rotation endorsement is missing a required field");
+    throw new InvalidError("rotation endorsement is missing a required field");
   }
   if (value["version"] !== endorsementVersion) {
-    throw new Error(`unsupported rotation endorsement version ${String(value["version"])}`);
+    throw new InvalidError(`unsupported rotation endorsement version ${String(value["version"])}`);
   }
   const sessionID = requireCanonicalString(value["session_id"], "session_id");
-  if (sessionID.trim() === "") throw new Error("rotation endorsement session_id is empty");
+  if (sessionID.trim() === "") throw new InvalidError("rotation endorsement session_id is empty");
   const priorSignerKey = requireHex(value["prior_signer_key"], 32, "prior_signer_key");
   const newSignerKey = requireHex(value["new_signer_key"], 32, "new_signer_key");
   if (priorSignerKey === newSignerKey) {
-    throw new Error("rotation endorsement successor key must differ from prior key");
+    throw new InvalidError("rotation endorsement successor key must differ from prior key");
   }
   if (!Number.isSafeInteger(value["prior_final_seq"]) || (value["prior_final_seq"] as number) < 0) {
-    throw new Error("rotation endorsement prior_final_seq is invalid");
+    throw new InvalidError("rotation endorsement prior_final_seq is invalid");
   }
   return {
     version: endorsementVersion,
@@ -200,7 +200,9 @@ export async function verifyRotationEndorsement(
 ): Promise<RotationEndorsement> {
   const endorsement = normalizeEndorsement(value);
   if (!endorsement.endorsement.startsWith(signaturePrefix)) {
-    throw new Error(`invalid endorsement signature format: missing ${signaturePrefix} prefix`);
+    throw new InvalidError(
+      `invalid endorsement signature format: missing ${signaturePrefix} prefix`,
+    );
   }
   const signature = decodeHex(
     endorsement.endorsement.slice(signaturePrefix.length),
@@ -211,7 +213,7 @@ export async function verifyRotationEndorsement(
   const valid = await ed25519.verifyAsync(signature, endorsementDigest(endorsement), publicKey, {
     zip215: false,
   });
-  if (!valid) throw new Error("rotation endorsement signature verification failed");
+  if (!valid) throw new InvalidError("rotation endorsement signature verification failed");
   return endorsement;
 }
 
@@ -223,10 +225,15 @@ export async function loadRotationEndorsementFile(file: string): Promise<Rotatio
     throw new RuntimeError(`read ${file}: ${(err as Error).message}`);
   }
   if (Buffer.byteLength(text, "utf8") > 64 * 1024) {
-    throw new Error("rotation endorsement exceeds 65536 bytes");
+    throw new InvalidError("rotation endorsement exceeds 65536 bytes");
   }
-  const parsed = materializeStrictJSON(parseJSONStrict(text));
-  return verifyRotationEndorsement(parsed as RotationEndorsement);
+  try {
+    const parsed = materializeStrictJSON(parseJSONStrict(text));
+    return await verifyRotationEndorsement(parsed as RotationEndorsement);
+  } catch (err) {
+    if (err instanceof InvalidError) throw err;
+    throw new InvalidError((err as Error).message);
+  }
 }
 
 function sessionOpen(receipt: Receipt): Record<string, unknown> | undefined {
@@ -274,6 +281,19 @@ export async function verifyChainWithEndorsements(
         ? "empty chain"
         : "rotation endorsements supplied for an empty receipt chain",
     );
+  }
+  let authorizedSigner = receipts[0]?.signer_key?.toLowerCase() ?? "";
+  for (let index = 1; index < receipts.length; index++) {
+    const receipt = receipts[index] as Receipt;
+    const signer = receipt.signer_key?.toLowerCase() ?? "";
+    const transition = receipt.action_record?.key_transition !== undefined;
+    if (!transition && signer !== authorizedSigner) {
+      return broken(
+        { valid: false, receipt_count: receipts.length, final_seq: 0, root_hash: "" },
+        "signer key changed without a key_transition boundary",
+      );
+    }
+    if (transition) authorizedSigner = signer;
   }
   const allKeys = [
     ...new Set(
@@ -327,11 +347,10 @@ export async function verifyChainWithEndorsements(
     if (matches.length > 1) {
       return broken(base, "multiple rotation endorsements match one receipt boundary");
     }
-    if (matches.length === 1)
-      used.add((matches[0] as { endorsementIndex: number }).endorsementIndex);
-    if (!roots.has(successor) && matches.length === 0) {
+    if (matches.length === 0) {
       return broken(base, "rotation endorsement does not match receipt boundary");
     }
+    used.add((matches[0] as { endorsementIndex: number }).endorsementIndex);
   }
   if (used.size !== endorsements.length) {
     return broken(base, "unused rotation endorsement does not match a required boundary");

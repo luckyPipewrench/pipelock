@@ -1,6 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use serde::Serialize;
 use serde_json::{Map, Number, Value};
 use unicode_normalization::UnicodeNormalization;
 
@@ -216,6 +217,10 @@ pub fn canonicalize_receipt(receipt: &Value) -> Vec<u8> {
 
 pub fn canonical_json_string(value: &Value) -> String {
     go_html_escape(&serde_json::to_string(value).expect("serialize JSON value"))
+}
+
+pub(crate) fn go_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_string(value).map(|encoded| go_html_escape(&encoded).into_bytes())
 }
 
 pub fn canonicalize_jcs_value(value: &Value) -> Result<Vec<u8>, String> {

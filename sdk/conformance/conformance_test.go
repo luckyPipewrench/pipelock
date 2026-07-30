@@ -734,64 +734,71 @@ func buildG1RotatedChain(
 	privA ed25519.PrivateKey,
 	pubB ed25519.PublicKey,
 	privB ed25519.PrivateKey,
-) []receipt.Receipt {
+) ([]receipt.Receipt, receipt.Receipt) {
 	t.Helper()
 	chain := buildG1ValidChain(t, privA)[:3]
-	chain = appendG1RotatedSegment(
+	chain, priorTail := appendG1RotatedSegment(
 		t,
 		chain,
-		pubA,
-		privB,
-		g1RotatedRunNonce,
-		g1RotatedOpenNonce,
-		"rotated",
-		"epoch-2026-04-rotated",
+		g1RotatedSegmentOptions{
+			priorPub:  pubA,
+			newPriv:   privB,
+			runNonce:  g1RotatedRunNonce,
+			openNonce: g1RotatedOpenNonce,
+			suffix:    "rotated",
+			keyEpoch:  "epoch-2026-04-rotated",
+		},
 	)
 
 	result := receipt.VerifyChainTrusted(chain, []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)})
 	if !result.Valid {
 		t.Fatalf("rotated fixture VerifyChainTrusted: %s", result.Error)
 	}
-	return chain
+	return chain, priorTail
+}
+
+type g1RotatedSegmentOptions struct {
+	priorPub  ed25519.PublicKey
+	newPriv   ed25519.PrivateKey
+	runNonce  string
+	openNonce string
+	suffix    string
+	keyEpoch  string
 }
 
 func appendG1RotatedSegment(
 	t *testing.T,
 	chain []receipt.Receipt,
-	priorPub ed25519.PublicKey,
-	newPriv ed25519.PrivateKey,
-	runNonce string,
-	openNonce string,
-	suffix string,
-	keyEpoch string,
-) []receipt.Receipt {
+	opts g1RotatedSegmentOptions,
+) ([]receipt.Receipt, receipt.Receipt) {
 	t.Helper()
-	priorTail := mustReceiptHash(t, chain[len(chain)-1])
-	priorSeq := chain[len(chain)-1].ActionRecord.ChainSeq
+	priorTailReceipt := chain[len(chain)-1]
+	priorTail := mustReceiptHash(t, priorTailReceipt)
+	priorSeq := priorTailReceipt.ActionRecord.ChainSeq
 	policyHash := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 	open := receipt.SessionOpen{
-		RunNonce:         runNonce,
-		OpenNonce:        openNonce,
+		RunNonce:         opts.runNonce,
+		OpenNonce:        opts.openNonce,
 		RecorderSession:  recorderSessionID,
 		PolicyHash:       policyHash,
-		SignerKeyEpoch:   keyEpoch,
+		SignerKeyEpoch:   opts.keyEpoch,
 		HeartbeatSeconds: 60,
 		ChainOpenSeq:     0,
 		PriorChainHead:   priorTail,
 		PriorChainSeq:    priorSeq,
 	}
 	openAR := fixedActionRecord(0, priorTail)
-	openAR.ActionID = "g1-session-open-" + suffix
+	openAR.ActionID = "g1-session-open-" + opts.suffix
 	openAR.ActionType = receipt.ActionUnclassified
 	openAR.Target = "receipt-session:open"
 	openAR.PolicyHash = policyHash
 	openAR.Transport = "receipt_session"
 	openAR.Method = ""
 	openAR.Layer = "session_control"
-	openAR.RunNonce = runNonce
+	openAR.RunNonce = opts.runNonce
 	openAR.KeyTransition = &receipt.KeyTransition{
-		PriorSignerKey: hex.EncodeToString(priorPub),
+		PriorSignerKey: hex.EncodeToString(opts.priorPub),
 		PriorChainSeq:  priorSeq,
 		PriorChainHash: priorTail,
 	}
@@ -799,24 +806,24 @@ func appendG1RotatedSegment(
 		Kind: receipt.SessionControlOpen,
 		Open: &open,
 	}
-	openReceipt := signReceipt(t, openAR, newPriv)
+	openReceipt := signReceipt(t, openAR, opts.newPriv)
 	chain = append(chain, openReceipt)
 	prevHash := mustReceiptHash(t, openReceipt)
 
 	heartbeatAR := fixedActionRecord(1, prevHash)
-	heartbeatAR.ActionID = "g1-session-heartbeat-" + suffix
+	heartbeatAR.ActionID = "g1-session-heartbeat-" + opts.suffix
 	heartbeatAR.ActionType = receipt.ActionUnclassified
 	heartbeatAR.Target = "receipt-session:heartbeat"
 	heartbeatAR.PolicyHash = policyHash
 	heartbeatAR.Transport = "receipt_session"
 	heartbeatAR.Method = ""
 	heartbeatAR.Layer = "session_control"
-	heartbeatAR.RunNonce = runNonce
+	heartbeatAR.RunNonce = opts.runNonce
 	heartbeatAR.SessionControl = &receipt.SessionControl{
 		Kind: receipt.SessionControlHeartbeat,
 		Heartbeat: &receipt.SessionHeartbeat{
-			RunNonce:         runNonce,
-			OpenNonce:        openNonce,
+			RunNonce:         opts.runNonce,
+			OpenNonce:        opts.openNonce,
 			Beat:             1,
 			ChainHead:        prevHash,
 			ChainSeqHead:     0,
@@ -825,34 +832,34 @@ func appendG1RotatedSegment(
 			DurabilityBlocks: 10,
 		},
 	}
-	heartbeatReceipt := signReceipt(t, heartbeatAR, newPriv)
+	heartbeatReceipt := signReceipt(t, heartbeatAR, opts.newPriv)
 	chain = append(chain, heartbeatReceipt)
 	prevHash = mustReceiptHash(t, heartbeatReceipt)
 
 	closeAR := fixedActionRecord(2, prevHash)
-	closeAR.ActionID = "g1-session-close-" + suffix
+	closeAR.ActionID = "g1-session-close-" + opts.suffix
 	closeAR.ActionType = receipt.ActionUnclassified
 	closeAR.Target = "receipt-session:close"
 	closeAR.PolicyHash = policyHash
 	closeAR.Transport = "receipt_session"
 	closeAR.Method = ""
 	closeAR.Layer = "session_control"
-	closeAR.RunNonce = runNonce
+	closeAR.RunNonce = opts.runNonce
 	closeAR.SessionControl = &receipt.SessionControl{
 		Kind: receipt.SessionControlClose,
 		Close: &receipt.SessionClose{
-			RunNonce:         runNonce,
-			OpenNonce:        openNonce,
+			RunNonce:         opts.runNonce,
+			OpenNonce:        opts.openNonce,
 			FinalSeq:         2,
 			RootHash:         prevHash,
 			ReceiptCount:     3,
-			CloseReason:      suffix + "-normal",
+			CloseReason:      opts.suffix + "-normal",
 			FsyncErrorsGated: 7,
 			DurabilityBlocks: 11,
 		},
 	}
-	chain = append(chain, signReceipt(t, closeAR, newPriv))
-	return chain
+	chain = append(chain, signReceipt(t, closeAR, opts.newPriv))
+	return chain, priorTailReceipt
 }
 
 func signReceipt(t *testing.T, ar receipt.ActionRecord, priv ed25519.PrivateKey) receipt.Receipt {
@@ -1013,9 +1020,8 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousOC), wrapInFlightRecorderEntries(t, g1AmbiguousOpenClose))
 	g1AmbiguousHeartbeatClose := buildG1AmbiguousHeartbeatCloseChain(t, priv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousHC), wrapInFlightRecorderEntries(t, g1AmbiguousHeartbeatClose))
-	g1Rotated := buildG1RotatedChain(t, pub, priv, rotatedPub, rotatedPriv)
+	g1Rotated, priorTail := buildG1RotatedChain(t, pub, priv, rotatedPub, rotatedPriv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedValid), wrapInFlightRecorderEntries(t, g1Rotated))
-	priorTail := g1Rotated[2]
 	rotationEndorsement, err := receipt.SignRotationEndorsement(receipt.RotationEndorsement{
 		SessionID:     recorderSessionID,
 		PriorFinalSeq: priorTail.ActionRecord.ChainSeq,
@@ -1036,18 +1042,19 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	if !endorsedResult.Valid {
 		t.Fatalf("VerifyChainWithEndorsements: %s", endorsedResult.Error)
 	}
-	g1RotatedTwice := appendG1RotatedSegment(
+	g1RotatedTwice, secondPriorTail := appendG1RotatedSegment(
 		t,
 		cloneReceipts(g1Rotated),
-		rotatedPub,
-		rotatedTwicePriv,
-		g1RotatedTwiceNonce,
-		g1RotatedTwiceOpen,
-		"rotated-twice",
-		"epoch-2026-04-rotated-twice",
+		g1RotatedSegmentOptions{
+			priorPub:  rotatedPub,
+			newPriv:   rotatedTwicePriv,
+			runNonce:  g1RotatedTwiceNonce,
+			openNonce: g1RotatedTwiceOpen,
+			suffix:    "rotated-twice",
+			keyEpoch:  "epoch-2026-04-rotated-twice",
+		},
 	)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedTwice), wrapInFlightRecorderEntries(t, g1RotatedTwice))
-	secondPriorTail := g1RotatedTwice[5]
 	secondEndorsement, err := receipt.SignRotationEndorsement(receipt.RotationEndorsement{
 		SessionID:     recorderSessionID,
 		PriorFinalSeq: secondPriorTail.ActionRecord.ChainSeq,
@@ -1372,6 +1379,15 @@ func TestConformance_G1RotatedTwiceVerifiesFromRoot(t *testing.T) {
 	)
 	if !result.Valid {
 		t.Fatalf("VerifyChainWithEndorsements: %s", result.Error)
+	}
+	missingSecond := receipt.VerifyChainWithEndorsements(
+		recorderSessionID,
+		receipts,
+		[]receipt.RotationEndorsement{first},
+		[]string{hex.EncodeToString(pub)},
+	)
+	if missingSecond.Valid {
+		t.Fatal("twice-rotated chain verified with only the first endorsement")
 	}
 }
 

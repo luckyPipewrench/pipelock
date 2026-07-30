@@ -3,6 +3,7 @@
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +19,7 @@ import {
   verifyRotationEndorsement,
 } from "../src/rotation.js";
 import type { JSONObject, Receipt } from "../src/types.js";
+import { InvalidError } from "../src/util.js";
 
 const validChain = "../../conformance/testdata/valid-chain.jsonl";
 const brokenChain = "../../conformance/testdata/broken-chain.jsonl";
@@ -231,6 +233,45 @@ test("rotation endorsement trust fails closed when absent, altered, or duplicate
   assert.equal(missing.valid, false);
   assert.match(missing.error ?? "", /does not match receipt boundary/u);
 
+  const unpinned = await verifyChainWithEndorsements(receipts, "", {
+    sessionID: "conformance-session",
+    endorsements: [endorsement],
+  });
+  assert.equal(unpinned.valid, false);
+  assert.match(unpinned.error ?? "", /requires at least one trusted root key/u);
+
+  const successorKey = receipts.find(
+    (receipt) => receipt.action_record?.key_transition !== undefined,
+  )?.signer_key;
+  assert.ok(successorKey);
+  const prePinnedSuccessor = await verifyChainWithEndorsements(
+    receipts,
+    `${rootKey},${successorKey}`,
+    {
+      sessionID: "conformance-session",
+      endorsements: [],
+    },
+  );
+  assert.equal(prePinnedSuccessor.valid, false);
+  assert.match(prePinnedSuccessor.error ?? "", /does not match receipt boundary/u);
+
+  const keyInfo = JSON.parse(readFileSync(testKey, "utf8")) as {
+    rotated_public_key_hex: string;
+    rotated_seed_hex: string;
+  };
+  const unmarkedSwitch = extractReceipts(g1ValidChain);
+  await signActionReceiptWithKey(
+    unmarkedSwitch[1]!,
+    keyInfo.rotated_seed_hex,
+    keyInfo.rotated_public_key_hex,
+  );
+  const forged = await verifyChainWithEndorsements(unmarkedSwitch, rootKey, {
+    sessionID: "conformance-session",
+    endorsements: [],
+  });
+  assert.equal(forged.valid, false);
+  assert.match(forged.error ?? "", /without a key_transition boundary/u);
+
   const altered = { ...endorsement, prior_tail_hash: "0".repeat(64) };
   await assert.rejects(verifyRotationEndorsement(altered), /signature verification failed/u);
   await assert.rejects(
@@ -267,6 +308,7 @@ test("rotation endorsement file rejects duplicate, unknown, and trailing fields"
   try {
     const duplicate = join(dir, "duplicate.json");
     writeFileSync(duplicate, source.replace('"version": 1,', '"version": 1, "version": 1,'));
+    await assert.rejects(loadRotationEndorsementFile(duplicate), InvalidError);
     await assert.rejects(loadRotationEndorsementFile(duplicate), /duplicate object key/u);
 
     const unknown = join(dir, "unknown.json");
@@ -279,6 +321,23 @@ test("rotation endorsement file rejects duplicate, unknown, and trailing fields"
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("rotation endorsements cannot be combined with allow-unpinned", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "dist/src/cli.js",
+      "chain",
+      g1RotatedCloseCountValid,
+      "--rotation-endorsement",
+      g1RotationEndorsement,
+      "--allow-unpinned",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /cannot be combined with --allow-unpinned/u);
 });
 
 test("g1 rotated close receipt_count invalid fixture is rejected", async () => {
@@ -554,12 +613,20 @@ async function signActionReceiptWithTestKey(receipt: Receipt): Promise<void> {
     public_key_hex: string;
     seed_hex: string;
   };
+  await signActionReceiptWithKey(receipt, keyInfo.seed_hex, keyInfo.public_key_hex);
+}
+
+async function signActionReceiptWithKey(
+  receipt: Receipt,
+  seedHex: string,
+  publicKeyHex: string,
+): Promise<void> {
   const digest = createHash("sha256")
     .update(canonicalizeActionRecord(receipt.action_record!))
     .digest();
-  const sig = await ed25519.signAsync(digest, Buffer.from(keyInfo.seed_hex, "hex"));
+  const sig = await ed25519.signAsync(digest, Buffer.from(seedHex, "hex"));
   receipt.signature = `ed25519:${Buffer.from(sig).toString("hex")}`;
-  receipt.signer_key = keyInfo.public_key_hex;
+  receipt.signer_key = publicKeyHex;
 }
 
 function trustedKeys(): string {

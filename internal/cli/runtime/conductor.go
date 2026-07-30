@@ -194,6 +194,12 @@ func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*audi
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening conductor audit queue: %w", err)
 	}
+	if allowPlaintext {
+		slog.Warn("conductor durable audit queue running unencrypted at rest",
+			"component", "conductor_audit_queue",
+			"queue_dir", cfg.Conductor.DurableAuditQueueDir,
+		)
+	}
 	opened := false
 	defer func() {
 		if !opened {

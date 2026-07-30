@@ -208,10 +208,10 @@ func TestQueueOperationsFailAfterClose(t *testing.T) {
 	}
 }
 
-// TestQueueLockFileNotTreatedAsRecord proves the .lock file lives under the
-// queue root but is invisible to Claim/Stats (it is not a .json record) and is
-// not swept as a stale temp.
-func TestQueueLockFileNotTreatedAsRecord(t *testing.T) {
+// TestQueueRootStateFilesNotTreatedAsRecords proves root-local queue state is
+// invisible to Claim/Stats. Record enumeration scans only pending/, inflight/,
+// and dead/, so root files such as .lock and queue-state.json are not records.
+func TestQueueRootStateFilesNotTreatedAsRecords(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
@@ -226,6 +226,9 @@ func TestQueueLockFileNotTreatedAsRecord(t *testing.T) {
 	// Lock file exists at the queue root.
 	if _, err := os.Stat(filepath.Join(q.dir, lockFileName)); err != nil {
 		t.Fatalf("Stat(lock file) error = %v, want present", err)
+	}
+	if _, err := os.Stat(filepath.Join(q.dir, queueStateFileName)); err != nil {
+		t.Fatalf("Stat(queue state) error = %v, want present", err)
 	}
 	// Fresh queue is empty - the lock file must not count as a record.
 	assertStats(t, q, Stats{})

@@ -58,6 +58,37 @@ func TestQueueEncryptsRecordsAtRest(t *testing.T) {
 	}
 }
 
+func TestEncryptedOpenWritesEncryptionSeenMarker(t *testing.T) {
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(Config{Dir: t.TempDir(), Keyring: keyring})
+	if err != nil {
+		t.Fatalf("Open(encrypted) error = %v", err)
+	}
+	defer func() { _ = q.Close() }()
+
+	data, err := os.ReadFile(filepath.Clean(q.queueStatePath()))
+	if err != nil {
+		t.Fatalf("ReadFile(queue state) error = %v", err)
+	}
+	var state queueState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("Unmarshal(queue state) error = %v", err)
+	}
+	if !state.EncryptionSeen {
+		t.Fatalf("queue state encryption_seen = false, want true: %s", data)
+	}
+	info, err := os.Stat(q.queueStatePath())
+	if err != nil {
+		t.Fatalf("Stat(queue state) error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != fileMode {
+		t.Fatalf("queue state mode = %#o, want %#o", got, fileMode)
+	}
+}
+
 func TestQueuePlaintextModeWritesLegacyRecords(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -119,6 +150,63 @@ func TestQueuePlaintextModeWritesLegacyRecords(t *testing.T) {
 	}
 }
 
+func TestPlaintextModeOpensNeverEncryptedQueueWithoutMarker(t *testing.T) {
+	dir := t.TempDir()
+	q, err := Open(Config{Dir: dir, AllowPlaintext: true})
+	if err != nil {
+		t.Fatalf("Open(never encrypted plaintext) error = %v", err)
+	}
+	defer func() { _ = q.Close() }()
+
+	if _, err := os.Stat(filepath.Join(q.dir, queueStateFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Stat(queue state) error = %v, want missing marker", err)
+	}
+}
+
+func TestPlaintextModeFailsClosedAfterEncryptedQueueDrainsEmpty(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring, err := NewKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	encrypted, err := Open(Config{Dir: dir, Keyring: keyring})
+	if err != nil {
+		t.Fatalf("Open(encrypted) error = %v", err)
+	}
+	if _, err := encrypted.Enqueue(signedTestBatch(t, "batch-encrypted-drained", priv)); err != nil {
+		t.Fatalf("Enqueue(encrypted) error = %v", err)
+	}
+	lease, err := encrypted.Claim()
+	if err != nil {
+		t.Fatalf("Claim(encrypted) error = %v", err)
+	}
+	if err := encrypted.Ack(lease.ID); err != nil {
+		t.Fatalf("Ack(encrypted) error = %v", err)
+	}
+	assertStats(t, encrypted, Stats{})
+	if err := encrypted.Close(); err != nil {
+		t.Fatalf("Close(encrypted) error = %v", err)
+	}
+
+	_, err = Open(Config{Dir: dir, AllowPlaintext: true})
+	if !errors.Is(err, errQueueEncryptionPreviouslySeen) {
+		t.Fatalf("Open(plaintext after drained encrypted queue) error = %v, want errQueueEncryptionPreviouslySeen", err)
+	}
+	for _, sub := range []string{"pending", "inflight", "dead"} {
+		files, listErr := listRecordFiles(filepath.Join(dir, sub))
+		if listErr != nil {
+			t.Fatalf("listRecordFiles(%s) error = %v", sub, listErr)
+		}
+		if len(files) != 0 {
+			t.Fatalf("%s records = %d, want drained empty queue", sub, len(files))
+		}
+	}
+}
+
 func TestPlaintextModeFailsClosedOnEncryptedRecord(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -138,6 +226,12 @@ func TestPlaintextModeFailsClosedOnEncryptedRecord(t *testing.T) {
 	}
 	if err := encrypted.Close(); err != nil {
 		t.Fatalf("Close(encrypted) error = %v", err)
+	}
+	// Simulate an upgraded queue that contains pre-marker encrypted records. The
+	// record-level v2 guard must remain fail-closed even when the new marker is
+	// absent.
+	if err := os.Remove(filepath.Join(dir, queueStateFileName)); err != nil {
+		t.Fatalf("Remove(queue state) error = %v", err)
 	}
 
 	_, err = Open(Config{Dir: dir, AllowPlaintext: true})

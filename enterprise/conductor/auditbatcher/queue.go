@@ -47,7 +47,12 @@ const (
 	recordExt              = ".json"
 )
 
-const lockFileName = ".lock"
+const (
+	lockFileName       = ".lock"
+	queueStateFileName = "queue-state.json"
+)
+
+const maxQueueStateBytes = 1024
 
 var (
 	ErrQueueEmpty    = errors.New("auditbatcher: queue empty")
@@ -56,6 +61,8 @@ var (
 	ErrQueueLocked   = errors.New("auditbatcher: queue already locked by another process")
 	ErrQueueClosed   = errors.New("auditbatcher: queue closed")
 )
+
+var errQueueEncryptionPreviouslySeen = errors.New("auditbatcher: durable audit queue previously ran encrypted; refusing plaintext open without a keyring")
 
 type Config struct {
 	Dir             string
@@ -116,6 +123,10 @@ type diskRecord struct {
 	DroppedReason string                       `json:"dropped_reason,omitempty"`
 }
 
+type queueState struct {
+	EncryptionSeen bool `json:"encryption_seen"`
+}
+
 func Open(cfg Config) (*Queue, error) {
 	if strings.TrimSpace(cfg.Dir) == "" {
 		return nil, errors.New("auditbatcher: queue dir required")
@@ -163,10 +174,17 @@ func Open(cfg Config) (*Queue, error) {
 	// so they're invisible to claim but visible to df). Opening fresh is the
 	// only safe time to remove them - no other writer could legitimately
 	// have a .tmp-* in flight before Open returns.
-	for _, dir := range []string{q.pendingDir, q.inflightDir, q.deadDir} {
+	for _, dir := range []string{q.dir, q.pendingDir, q.inflightDir, q.deadDir} {
 		if err := sweepStaleTempsLocked(dir); err != nil {
 			return nil, err
 		}
+	}
+	if q.keyring == nil {
+		if err := q.verifyPlaintextOpenAllowedLocked(); err != nil {
+			return nil, err
+		}
+	} else if err := q.markEncryptionSeenLocked(); err != nil {
+		return nil, err
 	}
 	if err := q.migrateRecordsLocked(); err != nil {
 		return nil, err
@@ -534,6 +552,62 @@ func (q *Queue) verifyPlaintextRecordsLocked() error {
 		}
 	}
 	return nil
+}
+
+func (q *Queue) verifyPlaintextOpenAllowedLocked() error {
+	seen, err := q.queueEncryptionSeenLocked()
+	if err != nil {
+		return err
+	}
+	if seen {
+		return errQueueEncryptionPreviouslySeen
+	}
+	return nil
+}
+
+func (q *Queue) markEncryptionSeenLocked() error {
+	seen, err := q.queueEncryptionSeenLocked()
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+	// Defense-in-depth against accidental downgrade-after-encryption, such as a
+	// config or Secret regression after the queue drains empty. This is not a
+	// cryptographic guarantee: a writer on the queue volume can delete the marker.
+	// Encrypted v2 records remain the strong signal when any records exist.
+	data, err := json.Marshal(queueState{EncryptionSeen: true})
+	if err != nil {
+		return fmt.Errorf("auditbatcher: marshal queue state: %w", err)
+	}
+	if err := durableWrite(q.queueStatePath(), append(data, '\n')); err != nil {
+		return fmt.Errorf("auditbatcher: write queue state: %w", err)
+	}
+	return nil
+}
+
+func (q *Queue) queueEncryptionSeenLocked() (bool, error) {
+	data, err := securefile.Read(q.queueStatePath(), securefile.Options{
+		MaxBytes:      maxQueueStateBytes,
+		RejectSymlink: true,
+		OwnedState:    true,
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("auditbatcher: read queue state: %w", err)
+	}
+	var state queueState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false, fmt.Errorf("auditbatcher: decode queue state: %w", err)
+	}
+	return state.EncryptionSeen, nil
+}
+
+func (q *Queue) queueStatePath() string {
+	return filepath.Join(q.dir, queueStateFileName)
 }
 
 // uniqueRecoveryPath finds a free filename in pendingDir for a recovered

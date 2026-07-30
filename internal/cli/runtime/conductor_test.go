@@ -6,6 +6,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -19,6 +20,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -388,6 +390,10 @@ func TestBuildConductorAuditTransportRejectsMissingQueueKeyring(t *testing.T) {
 
 func TestBuildConductorAuditTransportOpensPlaintextWhenQueueKeyringEmpty(t *testing.T) {
 	dir := t.TempDir()
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	cfg := &config.Config{
 		Conductor: config.Conductor{
 			Enabled:                  true,
@@ -399,6 +405,12 @@ func TestBuildConductorAuditTransportOpensPlaintextWhenQueueKeyringEmpty(t *test
 	}
 	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil || strings.Contains(err.Error(), "queue keyring is required") {
 		t.Fatalf("buildConductorAuditTransport() error = %v, want later constructor failure after plaintext queue open", err)
+	}
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, "level=WARN") ||
+		!strings.Contains(gotLogs, "conductor durable audit queue running unencrypted at rest") ||
+		!strings.Contains(gotLogs, "component=conductor_audit_queue") {
+		t.Fatalf("plaintext queue warning log = %q, want WARN unencrypted advisory", gotLogs)
 	}
 	// The plaintext-mode Open must actually have run: it lays down the private
 	// queue subdirectories. If the keyring check had blocked, these would not exist.

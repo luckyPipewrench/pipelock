@@ -334,7 +334,7 @@ test("rotation endorsements cannot be combined with allow-unpinned", () => {
       g1RotationEndorsement,
       "--allow-unpinned",
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: 10_000 },
   );
   assert.equal(result.status, 64);
   assert.match(result.stderr, /cannot be combined with --allow-unpinned/u);

@@ -506,8 +506,30 @@ func (q *Queue) verifyPlaintextRecordsLocked() error {
 		}
 		for _, id := range files {
 			path := filepath.Join(dir, id)
-			if _, _, _, err := readRecordWithKeyring(path, q.maxPayloadBytes, nil); err != nil {
+			_, _, _, err := readRecordWithKeyring(path, q.maxPayloadBytes, nil)
+			if err == nil {
+				continue
+			}
+			// Fail closed on a v2 encrypted record found in plaintext mode (a
+			// keyring was configured and then removed): errQueueKeyUnavailable is
+			// not ErrCorruptRecord, so it takes this branch and blocks startup
+			// rather than silently dropping still-encrypted evidence.
+			if errors.Is(err, errQueueKeyUnavailable) || !errors.Is(err, ErrCorruptRecord) {
 				return fmt.Errorf("auditbatcher: plaintext queue record %s: %w", id, err)
+			}
+			// A corrupt record already quarantined in dead/ must not turn a later
+			// restart into a permanent availability failure. Mirror encrypted-mode
+			// migration: skip dead-letter corruption, quarantine a corrupt live
+			// record so the remaining queue can still open.
+			if dir == q.deadDir {
+				continue
+			}
+			deadPath, pathErr := uniqueDeadPath(q.deadDir, id)
+			if pathErr != nil {
+				return fmt.Errorf("auditbatcher: quarantine queue record %s: %w", id, errors.Join(err, pathErr))
+			}
+			if moveErr := moveToDead(path, deadPath); moveErr != nil {
+				return fmt.Errorf("auditbatcher: quarantine queue record %s: %w", id, errors.Join(err, moveErr))
 			}
 		}
 	}

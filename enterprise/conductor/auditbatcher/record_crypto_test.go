@@ -157,6 +157,40 @@ func TestPlaintextModeFailsClosedOnEncryptedRecord(t *testing.T) {
 	}
 }
 
+func TestPlaintextModeToleratesCorruptDeadLetterAndQuarantinesCorruptLive(t *testing.T) {
+	dir := t.TempDir()
+	q, err := Open(Config{Dir: dir, AllowPlaintext: true})
+	if err != nil {
+		t.Fatalf("Open(plaintext) error = %v", err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+	// A corrupt record already quarantined in dead/ must not block startup.
+	deadFile := filepath.Join(dir, "dead", "00000000000000000001-corrupt"+recordExt)
+	if err := os.WriteFile(deadFile, []byte("{ not a valid record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A corrupt live record must be quarantined to dead/, not block startup.
+	liveFile := filepath.Join(dir, "pending", "00000000000000000002-corrupt"+recordExt)
+	if err := os.WriteFile(liveFile, []byte("{ also not a valid record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(Config{Dir: dir, AllowPlaintext: true})
+	if err != nil {
+		t.Fatalf("Open(plaintext with corrupt dead + live records) error = %v, want success", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	pending, _ := listRecordFiles(filepath.Join(dir, "pending"))
+	dead, _ := listRecordFiles(filepath.Join(dir, "dead"))
+	if len(pending) != 0 {
+		t.Fatalf("corrupt live record not quarantined: pending=%d, want 0", len(pending))
+	}
+	if len(dead) != 2 {
+		t.Fatalf("dead-letter records after open = %d, want 2 (pre-existing corrupt + quarantined live)", len(dead))
+	}
+}
+
 func TestEncryptedRecordMaxPayloadSurvivesRestartAndClaim(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

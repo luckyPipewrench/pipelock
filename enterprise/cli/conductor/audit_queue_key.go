@@ -86,7 +86,7 @@ func createAuditQueueKeyring(cmd *cobra.Command, path string) error {
 // at-rest encryption boundary, so init refuses it up front rather than deferring
 // to config validation at proxy start.
 func keyringWithinQueueDir(queueDir, keyring string) bool {
-	rel, err := filepath.Rel(filepath.Clean(queueDir), filepath.Clean(keyring))
+	rel, err := filepath.Rel(canonicalContainmentPath(queueDir), canonicalContainmentPath(keyring))
 	if err != nil {
 		return false
 	}
@@ -94,6 +94,35 @@ func keyringWithinQueueDir(queueDir, keyring string) bool {
 		return false
 	}
 	return true
+}
+
+// canonicalContainmentPath returns an absolute, symlink-resolved path so a
+// relative path or a symlinked parent cannot defeat the queue/keyring
+// separation check. The keyring file itself may not exist yet, so it resolves
+// symlinks on the deepest existing ancestor and re-appends the remaining
+// components physically.
+func canonicalContainmentPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	abs = filepath.Clean(abs)
+	rest := ""
+	cur := abs
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			if rest == "" {
+				return resolved
+			}
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 func auditQueueKeyInspectCmd() *cobra.Command {

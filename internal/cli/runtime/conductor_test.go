@@ -400,6 +400,13 @@ func TestBuildConductorAuditTransportOpensPlaintextWhenQueueKeyringEmpty(t *test
 	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil || strings.Contains(err.Error(), "queue keyring is required") {
 		t.Fatalf("buildConductorAuditTransport() error = %v, want later constructor failure after plaintext queue open", err)
 	}
+	// The plaintext-mode Open must actually have run: it lays down the private
+	// queue subdirectories. If the keyring check had blocked, these would not exist.
+	for _, sub := range []string{"pending", "inflight", "dead"} {
+		if _, statErr := os.Stat(filepath.Join(cfg.Conductor.DurableAuditQueueDir, sub)); statErr != nil {
+			t.Fatalf("plaintext queue subdir %q not created (Open did not run in plaintext mode): %v", sub, statErr)
+		}
+	}
 	reopened, err := auditbatcher.Open(auditbatcher.Config{
 		Dir:            cfg.Conductor.DurableAuditQueueDir,
 		AllowPlaintext: true,

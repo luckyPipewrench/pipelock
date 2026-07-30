@@ -646,7 +646,14 @@ func waitForPortOrCommandExitResult(addr string, cmdErr <-chan error, stderr fmt
 	}
 }
 
-func doMCPPostWithStartupRetry(t *testing.T, addr string, body string, cmdErr <-chan error, stderr fmt.Stringer) *http.Response {
+func doMCPPostWithStartupRetry(
+	t *testing.T,
+	addr string,
+	body string,
+	cmdErr <-chan error,
+	stderr fmt.Stringer,
+	accept func(*http.Response) bool,
+) *http.Response {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -662,9 +669,14 @@ func doMCPPostWithStartupRetry(t *testing.T, addr string, body string, cmdErr <-
 
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			return resp
+			if accept == nil || accept(resp) {
+				return resp
+			}
+			lastErr = fmt.Errorf("HTTP %d response was not protocol-ready", resp.StatusCode)
+			_ = resp.Body.Close()
+		} else {
+			lastErr = err
 		}
-		lastErr = err
 
 		select {
 		case <-ctx.Done():
@@ -927,7 +939,7 @@ logging:
 
 		mcpResp := doMCPPostWithStartupRetry(t, mcpAddr,
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use `+secret+` to deploy"}}}`,
-			cmdErr, &stderr)
+			cmdErr, &stderr, nil)
 		_ = mcpResp.Body.Close()
 		if mcpResp.StatusCode != http.StatusOK {
 			t.Fatalf("mcp listener status = %d, want 200", mcpResp.StatusCode)
@@ -1033,13 +1045,8 @@ logging:
 			cancel()
 			return err
 		}
-		if err := waitForPortOrCommandExitResult(mcpAddr, cmdErr, &stderr); err != nil {
-			cancel()
-			return err
-		}
-
+		sessionID := initializeRunMCPListenerSessionWithStartupRetry(t, mcpAddr, cmdErr, &stderr)
 		baseURL := "http://" + mcpAddr
-		sessionID := initializeRunMCPListenerSession(t, baseURL)
 		postRunMCPListenerToolCall(t, baseURL, sessionID, "")
 		body := postRunMCPListenerToolCall(t, baseURL, sessionID, "tool call limit exceeded: 2/1")
 		if !strings.Contains(body, "tool call limit exceeded: 2/1") {
@@ -1123,7 +1130,7 @@ logging:
 
 		resp := doMCPPostWithStartupRetry(t, mcpAddr,
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`,
-			cmdErr, &stderr)
+			cmdErr, &stderr, nil)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
 				t.Errorf("close mcp response body: %v", err)
@@ -1154,28 +1161,26 @@ logging:
 	})
 }
 
-func initializeRunMCPListenerSession(t *testing.T, baseURL string) string {
+func initializeRunMCPListenerSessionWithStartupRetry(
+	t *testing.T,
+	addr string,
+	cmdErr <-chan error,
+	stderr fmt.Stringer,
+) string {
 	t.Helper()
-	req, err := http.NewRequestWithContext(
-		context.Background(),
-		http.MethodPost,
-		baseURL+"/",
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`),
+
+	resp := doMCPPostWithStartupRetry(
+		t,
+		addr,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		cmdErr,
+		stderr,
+		func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK && resp.Header.Get("Mcp-Session-Id") != ""
+		},
 	)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("initialize POST: %v", err)
-	}
 	defer func() { _ = resp.Body.Close() }()
-	sessionID := resp.Header.Get("Mcp-Session-Id")
-	if sessionID == "" {
-		t.Fatal("initialize response missing Mcp-Session-Id")
-	}
-	return sessionID
+	return resp.Header.Get("Mcp-Session-Id")
 }
 
 func postRunMCPListenerToolCall(t *testing.T, baseURL, sessionID, wantBody string) string {

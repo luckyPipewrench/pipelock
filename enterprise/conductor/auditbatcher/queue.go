@@ -21,6 +21,7 @@ package auditbatcher
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -61,6 +62,7 @@ type Config struct {
 	MaxPending      int
 	MaxPayloadBytes uint64
 	Keyring         *Keyring
+	AllowPlaintext  bool
 }
 
 type Batch struct {
@@ -125,7 +127,7 @@ func Open(cfg Config) (*Queue, error) {
 	if cfg.MaxPayloadBytes == 0 {
 		cfg.MaxPayloadBytes = conductor.MaxAuditPayloadBytes
 	}
-	if cfg.Keyring == nil {
+	if cfg.Keyring == nil && !cfg.AllowPlaintext {
 		return nil, errors.New("auditbatcher: queue encryption keyring required")
 	}
 	dir, pendingDir, inflightDir, deadDir, err := ensurePrivateQueueDirs(cleanDir)
@@ -229,7 +231,7 @@ func (q *Queue) Enqueue(batch Batch) (string, error) {
 		Envelope:   batch.Envelope,
 		Payload:    append([]byte(nil), batch.Payload...),
 	}
-	data, err := encryptDiskRecord(record, q.keyring)
+	data, err := marshalQueueRecord(record, q.keyring)
 	if err != nil {
 		return "", fmt.Errorf("auditbatcher: marshal record: %w", err)
 	}
@@ -449,6 +451,9 @@ func (q *Queue) recoverInflightLocked() error {
 // a partially migrated queue. Each replacement is individually atomic and
 // durable; a crash simply resumes from the remaining records on next Open.
 func (q *Queue) migrateRecordsLocked() error {
+	if q.keyring == nil {
+		return q.verifyPlaintextRecordsLocked()
+	}
 	active := q.keyring.ActiveKeyID()
 	for _, dir := range []string{q.pendingDir, q.inflightDir, q.deadDir} {
 		files, err := listRecordFiles(dir)
@@ -487,6 +492,22 @@ func (q *Queue) migrateRecordsLocked() error {
 			}
 			if err := durableWrite(path, data); err != nil {
 				return fmt.Errorf("auditbatcher: migrate queue record %s: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (q *Queue) verifyPlaintextRecordsLocked() error {
+	for _, dir := range []string{q.pendingDir, q.inflightDir, q.deadDir} {
+		files, err := listRecordFiles(dir)
+		if err != nil {
+			return err
+		}
+		for _, id := range files {
+			path := filepath.Join(dir, id)
+			if _, _, _, err := readRecordWithKeyring(path, q.maxPayloadBytes, nil); err != nil {
+				return fmt.Errorf("auditbatcher: plaintext queue record %s: %w", id, err)
 			}
 		}
 	}
@@ -642,9 +663,11 @@ func readRecordWithKeyring(path string, maxPayloadBytes uint64, keyring *Keyring
 	// becomes ErrCorruptRecord and Claim moves the record to dead/, so strictness
 	// costs delivery of that audit data rather than merely delaying it.
 	//
-	// Queue records are encrypted before durableWrite under a keyring required to
-	// live outside this queue directory. Group access to the widened volume can
-	// therefore expose ciphertext and metadata, but not the audit payload.
+	// When a keyring is configured, queue records are encrypted before
+	// durableWrite under a keyring required to live outside this queue directory.
+	// Group access to the widened volume can therefore expose ciphertext and
+	// metadata, but not the audit payload. Plaintext compatibility mode is
+	// explicit and keeps the pre-encryption v1 record format.
 	data, err := securefile.Read(path, securefile.Options{
 		MaxBytes:      limit,
 		RejectSymlink: true,
@@ -725,7 +748,7 @@ func (q *Queue) updateInflightRecordLocked(id string, mutate func(*diskRecord)) 
 		return fmt.Errorf("auditbatcher: annotate inflight %s: %w", id, err)
 	}
 	mutate(&record)
-	data, err := encryptDiskRecord(record, q.keyring)
+	data, err := marshalQueueRecord(record, q.keyring)
 	if err != nil {
 		return fmt.Errorf("auditbatcher: marshal annotated record %s: %w", id, err)
 	}
@@ -733,6 +756,13 @@ func (q *Queue) updateInflightRecordLocked(id string, mutate func(*diskRecord)) 
 		return fmt.Errorf("auditbatcher: write annotated record %s: %w", id, err)
 	}
 	return nil
+}
+
+func marshalQueueRecord(record diskRecord, keyring *Keyring) ([]byte, error) {
+	if keyring == nil {
+		return json.Marshal(record)
+	}
+	return encryptDiskRecord(record, keyring)
 }
 
 func normalizeAccountingReason(reason string) string {

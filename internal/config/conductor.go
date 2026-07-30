@@ -92,20 +92,32 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 		return fmt.Errorf("conductor.trust_roster_root_fingerprint: %w", err)
 	}
 	for field, value := range map[string]string{
-		"conductor.trust_roster_path":           cfg.TrustRosterPath,
-		"conductor.server_ca_file":              cfg.ServerCAFile,
-		"conductor.client_cert_path":            cfg.ClientCertPath,
-		"conductor.client_key_path":             cfg.ClientKeyPath,
-		"conductor.bundle_cache_dir":            cfg.BundleCacheDir,
-		"conductor.durable_audit_queue_dir":     cfg.DurableAuditQueueDir,
-		"conductor.durable_audit_queue_keyring": cfg.DurableAuditQueueKeyring,
+		"conductor.trust_roster_path":       cfg.TrustRosterPath,
+		"conductor.server_ca_file":          cfg.ServerCAFile,
+		"conductor.client_cert_path":        cfg.ClientCertPath,
+		"conductor.client_key_path":         cfg.ClientKeyPath,
+		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
+		"conductor.durable_audit_queue_dir": cfg.DurableAuditQueueDir,
 	} {
 		if err := validateConductorAbsolutePath(field, value); err != nil {
 			return err
 		}
 	}
-	if pathWithin(cfg.DurableAuditQueueDir, cfg.DurableAuditQueueKeyring) {
-		return fmt.Errorf("conductor.durable_audit_queue_keyring must be outside conductor.durable_audit_queue_dir")
+	if strings.TrimSpace(cfg.DurableAuditQueueKeyring) == "" {
+		*warnings = append(*warnings, Warning{
+			Field:   "conductor.durable_audit_queue_keyring",
+			Message: "conductor.durable_audit_queue_keyring is unset; the durable audit queue runs UNENCRYPTED at rest. Set it to enable AES-GCM encryption.",
+		})
+	} else {
+		if err := validateConductorAbsolutePath("conductor.durable_audit_queue_keyring", cfg.DurableAuditQueueKeyring); err != nil {
+			return err
+		}
+		if pathWithin(cfg.DurableAuditQueueDir, cfg.DurableAuditQueueKeyring) {
+			return fmt.Errorf("conductor.durable_audit_queue_keyring must be outside conductor.durable_audit_queue_dir")
+		}
+		if err := validateConductorPrivateParent("conductor.durable_audit_queue_keyring", cfg.DurableAuditQueueKeyring); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(cfg.EnrollmentTokenPath) != "" {
 		if err := validateConductorAbsolutePath("conductor.enrollment_token_path", cfg.EnrollmentTokenPath); err != nil {
@@ -116,9 +128,8 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 		}
 	}
 	for field, value := range map[string]string{
-		"conductor.bundle_cache_dir":            cfg.BundleCacheDir,
-		"conductor.durable_audit_queue_dir":     cfg.DurableAuditQueueDir,
-		"conductor.durable_audit_queue_keyring": cfg.DurableAuditQueueKeyring,
+		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
+		"conductor.durable_audit_queue_dir": cfg.DurableAuditQueueDir,
 	} {
 		if err := validateConductorPrivateParent(field, value); err != nil {
 			return err

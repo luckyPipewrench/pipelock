@@ -43,28 +43,38 @@ func auditQueueKeyInitCmd() *cobra.Command {
 		Short: "Create a new audit-queue keyring",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := os.Lstat(opts.keyring); err == nil {
-				return fmt.Errorf("audit queue keyring already exists: %s", opts.keyring)
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("inspect audit queue keyring: %w", err)
+			if strings.TrimSpace(opts.queueDir) != "" {
+				return auditbatcher.WithQueueMaintenanceLock(opts.queueDir, func() error {
+					return createAuditQueueKeyring(cmd, opts.keyring)
+				})
 			}
-			keyring, err := auditbatcher.NewKeyring()
-			if err != nil {
-				return err
-			}
-			if err := auditbatcher.EnsureKeyringParent(opts.keyring); err != nil {
-				return err
-			}
-			if err := keyring.Save(opts.keyring); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "created audit queue keyring %s (active %s)\n", opts.keyring, keyring.ActiveKeyID())
-			return nil
+			return createAuditQueueKeyring(cmd, opts.keyring)
 		},
 	}
 	cmd.Flags().StringVar(&opts.keyring, "keyring", "", "path to the keyring file (required; keep outside the audit queue volume)")
 	_ = cmd.MarkFlagRequired("keyring")
+	cmd.Flags().StringVar(&opts.queueDir, "queue-dir", "", "initialized durable audit queue directory to lock while preparing this keyring")
 	return cmd
+}
+
+func createAuditQueueKeyring(cmd *cobra.Command, path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("audit queue keyring already exists: %s; use rotate or recover instead of clobbering it", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect audit queue keyring: %w", err)
+	}
+	keyring, err := auditbatcher.NewKeyring()
+	if err != nil {
+		return err
+	}
+	if err := auditbatcher.EnsureKeyringParent(path); err != nil {
+		return err
+	}
+	if err := keyring.Save(path); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "created audit queue keyring %s (active %s)\n", path, keyring.ActiveKeyID())
+	return nil
 }
 
 func auditQueueKeyInspectCmd() *cobra.Command {

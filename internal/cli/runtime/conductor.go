@@ -174,17 +174,22 @@ func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*audi
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil, nil
 	}
+	var keyring *auditbatcher.Keyring
+	allowPlaintext := false
 	if strings.TrimSpace(cfg.Conductor.DurableAuditQueueKeyring) == "" {
-		return nil, nil, errors.New("conductor durable audit queue keyring is required")
-	}
-	keyring, err := auditbatcher.LoadKeyring(cfg.Conductor.DurableAuditQueueKeyring)
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading conductor audit queue keyring: %w", err)
+		allowPlaintext = true
+	} else {
+		var err error
+		keyring, err = auditbatcher.LoadKeyring(cfg.Conductor.DurableAuditQueueKeyring)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading conductor audit queue keyring: %w", err)
+		}
 	}
 	q, err := auditbatcher.Open(auditbatcher.Config{
 		Dir:             cfg.Conductor.DurableAuditQueueDir,
 		MaxPayloadBytes: conductor.MaxAuditPayloadBytes,
 		Keyring:         keyring,
+		AllowPlaintext:  allowPlaintext,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening conductor audit queue: %w", err)

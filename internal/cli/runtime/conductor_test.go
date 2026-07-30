@@ -386,17 +386,28 @@ func TestBuildConductorAuditTransportRejectsMissingQueueKeyring(t *testing.T) {
 	}
 }
 
-func TestBuildConductorAuditTransportRejectsEmptyQueueKeyring(t *testing.T) {
+func TestBuildConductorAuditTransportOpensPlaintextWhenQueueKeyringEmpty(t *testing.T) {
+	dir := t.TempDir()
 	cfg := &config.Config{
 		Conductor: config.Conductor{
 			Enabled:                  true,
-			DurableAuditQueueDir:     filepath.Join(t.TempDir(), "audit-queue"),
+			ConductorURL:             "https://conductor.example",
+			ServerCAFile:             filepath.Join(dir, "missing-ca.pem"),
+			DurableAuditQueueDir:     filepath.Join(dir, "audit-queue"),
 			DurableAuditQueueKeyring: "",
 		},
 	}
-	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil || !strings.Contains(err.Error(), "queue keyring is required") {
-		t.Fatalf("buildConductorAuditTransport() error = %v, want empty keyring refusal", err)
+	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil || strings.Contains(err.Error(), "queue keyring is required") {
+		t.Fatalf("buildConductorAuditTransport() error = %v, want later constructor failure after plaintext queue open", err)
 	}
+	reopened, err := auditbatcher.Open(auditbatcher.Config{
+		Dir:            cfg.Conductor.DurableAuditQueueDir,
+		AllowPlaintext: true,
+	})
+	if err != nil {
+		t.Fatalf("Open(queue after plaintext build) error = %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
 }
 
 // TestBuildConductorBundlePollerDisabled confirms the poller is a no-op (nil,

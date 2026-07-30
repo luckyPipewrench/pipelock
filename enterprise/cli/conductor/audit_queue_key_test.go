@@ -115,6 +115,16 @@ func TestAuditQueueKeyCommandsRespectQueueLock(t *testing.T) {
 	if !errors.Is(err, auditbatcher.ErrQueueLocked) {
 		t.Fatalf("migrate while queue live error = %v, want ErrQueueLocked", err)
 	}
+
+	initPath := filepath.Join(root, "secrets", "second-keyring.json")
+	cmd = auditQueueKeyCmd()
+	cmd.SetArgs([]string{"init", "--keyring", initPath, "--queue-dir", queueDir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if !errors.Is(err, auditbatcher.ErrQueueLocked) {
+		t.Fatalf("init while queue live error = %v, want ErrQueueLocked", err)
+	}
 }
 
 func TestAuditQueueKeyInspectReportsUnreadableRecords(t *testing.T) {
@@ -153,8 +163,12 @@ func TestAuditQueueKeyInitRefusesOverwrite(t *testing.T) {
 	cmd.SetArgs([]string{"init", "--keyring", path})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "already exists") {
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("second init error = %v, want overwrite refusal", err)
+	}
+	if !strings.Contains(err.Error(), "rotate or recover") {
+		t.Fatalf("second init error = %v, want lifecycle guidance", err)
 	}
 }
 

@@ -95,6 +95,9 @@ func decryptDiskRecord(data []byte, keyring *Keyring) (diskRecord, string, bool,
 		if err := contract.DecodeStrictJSON(data, &encrypted); err != nil {
 			return diskRecord{}, "", false, fmt.Errorf("auditbatcher: decode encrypted record: %w", err)
 		}
+		if keyring == nil {
+			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("%w: %q", errQueueKeyUnavailable, encrypted.KeyID)
+		}
 		key, ok := keyring.key(encrypted.KeyID)
 		if !ok {
 			return diskRecord{}, encrypted.KeyID, false, fmt.Errorf("%w: %q", errQueueKeyUnavailable, encrypted.KeyID)

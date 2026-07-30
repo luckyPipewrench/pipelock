@@ -344,6 +344,8 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  # Optional: omit to keep the existing plaintext-compatible durable queue.
+  # Set only after provisioning the keyring outside the queue directory.
   durable_audit_queue_keyring: /etc/pipelock/secrets/audit-queue-keyring.json
   # audit_signing_key_id and recorder_key_id default to instance_id when omitted; override only if the audit sink expects a different key id
   # audit_signing_key_id: edge-01-audit
@@ -365,9 +367,14 @@ example; do not copy its paths into Helm-generated configuration. On Kubernetes,
 use
 [`values-enterprise-follower.yaml`](../../charts/pipelock/examples/values-enterprise-follower.yaml):
 
-Create a writable operator-owned source keyring before the first start, then
-import it into a Kubernetes Secret mounted separately from the queue PVC. The
-chart renders `durable_audit_queue_keyring` from
+Existing followers can upgrade with no queue-keyring change: when
+`durable_audit_queue_keyring` is unset, the follower keeps using the
+plaintext-compatible durable audit queue and emits a warning that queued records
+are unencrypted at rest.
+
+To enable encryption, create a writable operator-owned source keyring outside
+the queue directory, then import it into a Kubernetes Secret mounted separately
+from the queue PVC. The chart renders `durable_audit_queue_keyring` from
 `auditQueueKeyringSecretRef.mountPath` and `.key` (the example resolves to
 `/etc/pipelock/conductor/audit-queue-key/audit-queue-keyring.json`). The mounted
 copy is runtime-only and read-only. Keep the operator source directory at
@@ -379,6 +386,20 @@ pipelock conductor audit-queue-key init \
   --keyring "$PWD/operator-secrets/audit-queue-keyring.json"
 kubectl -n pipelock create secret generic follower-audit-queue-keyring \
   --from-file=audit-queue-keyring.json="$PWD/operator-secrets/audit-queue-keyring.json"
+```
+
+For a live follower, scale down before providing the Secret and setting
+`durable_audit_queue_keyring`, then scale back up. On first start with the
+keyring configured, legacy plaintext queue records auto-encrypt under the active
+key before delivery resumes:
+
+```bash
+kubectl -n pipelock scale deployment pipelock-follower --replicas=0
+kubectl -n pipelock create secret generic follower-audit-queue-keyring \
+  --from-file=audit-queue-keyring.json="$PWD/operator-secrets/audit-queue-keyring.json"
+# Update the follower config or Helm values to set durable_audit_queue_keyring
+# to the mounted Secret path, then apply the rollout.
+kubectl -n pipelock scale deployment pipelock-follower --replicas=1
 ```
 
 Day-2 lifecycle commands require the follower to be stopped and must run in an

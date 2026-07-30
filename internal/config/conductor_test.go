@@ -65,6 +65,25 @@ func TestValidateConductor_Enabled(t *testing.T) {
 	}
 }
 
+func TestValidateConductor_QueueKeyringOptionalWarning(t *testing.T) {
+	cfg := Defaults()
+	cfg.Conductor = validConductorConfig(t)
+	cfg.Conductor.DurableAuditQueueKeyring = ""
+	configureConductorRecorder(t, cfg)
+
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings() error = %v", err)
+	}
+	for _, warning := range warnings {
+		if warning.Field == "conductor.durable_audit_queue_keyring" &&
+			strings.Contains(warning.Message, "UNENCRYPTED at rest") {
+			return
+		}
+	}
+	t.Fatalf("warnings = %+v, want unencrypted durable queue warning", warnings)
+}
+
 // TestValidateConductor_RequiresFingerprintRegardlessOfHonor locks in the
 // contract that a pinned trust-roster root fingerprint is mandatory whenever
 // conductor.enabled, INDEPENDENT of honor_remote_kill_switch. The honor flag
@@ -568,6 +587,7 @@ func TestValidateConductor_QueueKeyringOutsideQueue(t *testing.T) {
 		{name: "equal", keyring: func(queue string) string { return queue }, wantErr: true},
 		{name: "descendant", keyring: func(queue string) string { return filepath.Join(queue, "keyring.json") }, wantErr: true},
 		{name: "sibling", keyring: func(queue string) string { return filepath.Join(filepath.Dir(queue), "secrets", "keyring.json") }},
+		{name: "omitted", keyring: func(string) string { return "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()

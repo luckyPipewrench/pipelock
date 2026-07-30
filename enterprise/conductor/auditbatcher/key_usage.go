@@ -178,6 +178,15 @@ func RecoverQueueKeyring(queueDir, livePath, backupPath string) (string, error) 
 	return backup.ActiveKeyID(), nil
 }
 
+func WithQueueMaintenanceLock(dir string, fn func() error) error {
+	q, err := lockQueueForKeyMaintenance(dir, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = q.releaseLock() }()
+	return fn()
+}
+
 func lockQueueForKeyMaintenance(dir string, maxPayloadBytes uint64) (*Queue, error) {
 	if maxPayloadBytes == 0 {
 		maxPayloadBytes = conductor.MaxAuditPayloadBytes

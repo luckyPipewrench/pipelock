@@ -3141,6 +3141,8 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  # Optional: set to enable AES-GCM encryption for durable audit queue records.
+  # When unset, the queue remains plaintext-compatible and validation emits a warning.
   durable_audit_queue_keyring: /etc/pipelock/secrets/audit-queue-keyring.json
   enrollment_token_path: /etc/pipelock/conductor/enrollment-token
   poll_interval: 30s
@@ -3159,7 +3161,7 @@ conductor:
 | `client_cert_path` / `client_key_path` | (required) | Follower mTLS client certificate and private key. |
 | `bundle_cache_dir` | (required) | Directory caching verified policy bundles across restarts. |
 | `durable_audit_queue_dir` | (required) | On-disk queue for signed evidence batches awaiting delivery to the audit sink. |
-| `durable_audit_queue_keyring` | (required) | Encryption keyring for durable queue records. Must be outside `durable_audit_queue_dir`; mount it from a separate Secret or volume. |
+| `durable_audit_queue_keyring` | (none) | Optional encryption keyring for durable queue records. When unset, the follower keeps the plaintext-compatible queue format and emits an advisory warning that records are unencrypted at rest. Set this absolute path to enable AES-GCM encryption; it must be outside `durable_audit_queue_dir` and mounted from a separate Secret or volume. |
 | `audit_signing_key_id` | `instance_id` | Key ID the follower signs audit batches with. |
 | `recorder_key_id` | `instance_id` | Key ID for the follower's flight-recorder checkpoints. |
 | `enrollment_token_path` | (none) | Path to a single-use enrollment token file. When set, the follower auto-enrolls on startup, registering its audit public key with Conductor so it appears in `fleet status` and its evidence is ingested. Enrollment is best-effort (a failed enroll logs a warning and never blocks enforcement); a marker under `bundle_cache_dir` skips normal restart retries. If the leader accepts the token but the marker write fails, the next restart may retry the already-consumed token and log a warning while enforcement continues. Must be an absolute path with no world-writable ancestor. Unset means no auto-enroll (enroll out of band with `pipelock conductor enroll`). |
@@ -3173,7 +3175,7 @@ conductor:
 | `stale_policy.grace_multiplier` | `1` | Number of original bundle-validity windows added after expiry before the after-grace action applies. Must be greater than zero. |
 | `stale_policy.after_grace` | `strict_deny_all` | Runtime action after the grace window. `strict_deny_all` engages the independent `conductor_stale` kill-switch source; `continue_last_known_good` keeps serving the expired last-applied bundle and emits an advisory warning. |
 
-When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all file paths absolute, and no world-writable ancestor directory on any configured path.
+When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all required file paths absolute, and no world-writable ancestor directory on any configured path. `durable_audit_queue_keyring` is validated only when set; an unset keyring is valid but warns because the durable queue is unencrypted at rest.
 
 **Stale-policy enforcement.** The follower evaluates the active bundle
 immediately at startup and on the runtime check interval. A missing, unreadable,

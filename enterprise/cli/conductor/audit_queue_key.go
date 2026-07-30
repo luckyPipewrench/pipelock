@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,6 +45,9 @@ func auditQueueKeyInitCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(opts.queueDir) != "" {
+				if keyringWithinQueueDir(opts.queueDir, opts.keyring) {
+					return fmt.Errorf("keyring %q must be outside the audit queue directory %q; a keyring on the queue volume defeats at-rest encryption", opts.keyring, opts.queueDir)
+				}
 				return auditbatcher.WithQueueMaintenanceLock(opts.queueDir, func() error {
 					return createAuditQueueKeyring(cmd, opts.keyring)
 				})
@@ -75,6 +79,21 @@ func createAuditQueueKeyring(cmd *cobra.Command, path string) error {
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "created audit queue keyring %s (active %s)\n", path, keyring.ActiveKeyID())
 	return nil
+}
+
+// keyringWithinQueueDir reports whether keyring resolves to the queue directory
+// itself or a descendant of it. A keyring stored on the queue volume defeats the
+// at-rest encryption boundary, so init refuses it up front rather than deferring
+// to config validation at proxy start.
+func keyringWithinQueueDir(queueDir, keyring string) bool {
+	rel, err := filepath.Rel(filepath.Clean(queueDir), filepath.Clean(keyring))
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 func auditQueueKeyInspectCmd() *cobra.Command {

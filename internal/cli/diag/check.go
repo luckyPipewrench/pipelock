@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -144,6 +145,16 @@ func checkConfigAdvisories(cfg *config.Config) []string {
 				"conductor.enabled is true but no license granting the \"fleet\" feature was found; "+
 					"the proxy will refuse to start (install an Enterprise license with fleet or set PIPELOCK_LICENSE_KEY)")
 		}
+	}
+
+	// A conductor follower with no keyring configured runs its durable audit
+	// queue UNENCRYPTED at rest. That is a supported compatibility posture, but
+	// the operator must see it here before deploy, not infer it from the runtime
+	// startup log.
+	if cfg.Conductor.Enabled && strings.TrimSpace(cfg.Conductor.DurableAuditQueueKeyring) == "" {
+		advisories = append(advisories,
+			"conductor.durable_audit_queue_keyring is unset; the durable audit queue runs UNENCRYPTED at rest "+
+				"(set it to enable AES-GCM encryption of queued audit records)")
 	}
 
 	if cfg.Conductor.Enabled && cfg.FlightRecorder.SigningKeyPath != "" {

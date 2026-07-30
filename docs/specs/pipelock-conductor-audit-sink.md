@@ -808,6 +808,8 @@ conductor:
   client_key_path: "/etc/pipelock/conductor/client.key"
   bundle_cache_dir: "/var/lib/pipelock/conductor/bundles"
   durable_audit_queue_dir: "/var/lib/pipelock/conductor/audit-queue"
+  # Optional. Set it to encrypt the durable audit queue at rest (AES-GCM). When
+  # unset, the queue runs unencrypted and the proxy warns at startup.
   durable_audit_queue_keyring: "/etc/pipelock/secrets/audit-queue-keyring.json"
   audit_signing_key_id: "instance-audit-1"
   recorder_key_id: "instance-recorder-1"

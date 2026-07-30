@@ -636,13 +636,7 @@ func (r *Recorder) Close() (retErr error) {
 	}
 	r.closed = true
 	defer func() {
-		if r.ceremonyLock == nil {
-			return
-		}
-		unlockErr := unlockEvidenceFile(r.ceremonyLock)
-		closeErr := r.ceremonyLock.Close()
-		r.ceremonyLock = nil
-		retErr = errors.Join(retErr, unlockErr, closeErr)
+		retErr = errors.Join(retErr, r.releaseEvidenceWriterCeremonyLock())
 	}()
 
 	if r.sinceCheckpoint > 0 {
@@ -1073,6 +1067,10 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 			r.writer = nil
 			r.fileEntryCount = 0
 		}
+	}
+
+	if err := r.ensureEvidenceWriterCeremonyLock(); err != nil {
+		return fmt.Errorf("refreshing recorder receipt ceremony lock: %w", err)
 	}
 
 	if r.file != nil {

@@ -66,6 +66,41 @@ func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, error) {
 	return file, nil
 }
 
+func (r *Recorder) ensureEvidenceWriterCeremonyLock() error {
+	if !supportsEvidenceCeremonyLock() {
+		return nil
+	}
+	path := filepath.Join(filepath.Clean(r.cfg.Dir), ceremonyLockFilename)
+	pathInfo, pathErr := os.Stat(path)
+	var heldInfo os.FileInfo
+	var heldErr error
+	if r.ceremonyLock != nil {
+		heldInfo, heldErr = r.ceremonyLock.Stat()
+	}
+	if pathErr == nil && heldErr == nil && os.SameFile(pathInfo, heldInfo) {
+		return nil
+	}
+	if err := r.releaseEvidenceWriterCeremonyLock(); err != nil {
+		return fmt.Errorf("release stale receipt ceremony lock: %w", err)
+	}
+	lock, err := acquireEvidenceWriterCeremonyLock(r.cfg.Dir)
+	if err != nil {
+		return err
+	}
+	r.ceremonyLock = lock
+	return nil
+}
+
+func (r *Recorder) releaseEvidenceWriterCeremonyLock() error {
+	if r.ceremonyLock == nil {
+		return nil
+	}
+	unlockErr := unlockEvidenceFile(r.ceremonyLock)
+	closeErr := r.ceremonyLock.Close()
+	r.ceremonyLock = nil
+	return errors.Join(unlockErr, closeErr)
+}
+
 func openEvidenceCeremonyLockFile(dir string) (*os.File, error) {
 	path := filepath.Join(filepath.Clean(dir), ceremonyLockFilename)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|evidenceReadNoFollowFlag, 0o600)

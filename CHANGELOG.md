@@ -76,9 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enable `forward_proxy.sni_require_tls` when SNI verification is on, so raw
   CONNECT bytes and TLS handshakes without SNI are blocked unless an operator
   chooses the documented compatibility opt-out.
-- **Conductor followers need a durable audit-queue keyring before encrypted
-  queue records are enabled.** Existing plaintext records migrate after startup
-  can open the keyring; missing or unauthenticated keyrings fail closed.
+- **Conductor durable audit-queue encryption is opt-in via a keyring.**
+  Encryption is enabled only when `conductor.durable_audit_queue_keyring` is set;
+  an existing follower with no keyring keeps a plaintext queue (a startup and
+  `pipelock check` advisory names it) so upgrades do not break. When a keyring is
+  configured, existing plaintext records migrate on startup and a missing or
+  invalid keyring, or a still-encrypted record without its key, fails closed.
 
 ### Added
 

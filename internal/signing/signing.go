@@ -410,17 +410,21 @@ func LoadPrivateKeyFileForPurpose(path string, expectedPurpose KeyPurpose) (ed25
 // LoadPrivateKeyFileForPurposeStrict securely loads a purpose-bound JSON key
 // and rejects legacy keys that cannot prove their intended purpose.
 func LoadPrivateKeyFileForPurposeStrict(path string, expectedPurpose KeyPurpose) (ed25519.PrivateKey, error) {
-	data, err := securefile.Read(path, securefile.Options{
-		MaxBytes:        privateKeyFileMaxBytes,
-		DisallowedPerms: 0o037,
+	return readAndDecodePrivateKeyFile(path, func(encoded string) (ed25519.PrivateKey, error) {
+		return DecodePrivateKeyForPurposeStrict(encoded, expectedPurpose)
 	})
-	if err != nil {
-		return nil, fmt.Errorf("reading private key: %w", err)
-	}
-	return DecodePrivateKeyForPurposeStrict(string(data), expectedPurpose)
 }
 
 func loadPrivateKeyFileForPurpose(path string, expectedPurpose KeyPurpose) (ed25519.PrivateKey, error) {
+	return readAndDecodePrivateKeyFile(path, func(encoded string) (ed25519.PrivateKey, error) {
+		return DecodePrivateKeyForPurpose(encoded, expectedPurpose)
+	})
+}
+
+func readAndDecodePrivateKeyFile(
+	path string,
+	decode func(string) (ed25519.PrivateKey, error),
+) (ed25519.PrivateKey, error) {
 	data, err := securefile.Read(path, securefile.Options{
 		MaxBytes:        privateKeyFileMaxBytes,
 		DisallowedPerms: 0o037,
@@ -428,5 +432,5 @@ func loadPrivateKeyFileForPurpose(path string, expectedPurpose KeyPurpose) (ed25
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}
-	return DecodePrivateKeyForPurpose(string(data), expectedPurpose)
+	return decode(string(data))
 }

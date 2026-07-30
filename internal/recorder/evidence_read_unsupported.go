@@ -17,6 +17,14 @@ const (
 	evidenceReadNonblockFlag = 0
 )
 
+func supportsEvidenceCeremonyLock() bool {
+	return false
+}
+
+func tryLockEvidenceFileForCeremonyWrite(_ *os.File) error {
+	return errEvidenceFileAccessUnsupported
+}
+
 // validateEvidenceFileAccess rejects filesystem evidence operations.
 func validateEvidenceFileAccess() error {
 	return errEvidenceFileAccessUnsupported

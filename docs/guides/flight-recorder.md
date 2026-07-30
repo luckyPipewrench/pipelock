@@ -217,6 +217,14 @@ retiring key remains accepted so existing deployments can migrate. Keep the
 retiring key in offline custody until the retention window for its receipts
 expires.
 
+The command also acquires an exclusive lock on the evidence directory from
+before verification through endorsement publication. A running recorder holds
+the conflicting writer lock, so the command refuses to proceed even if the
+chain happens to end in a close receipt. Platforms without cross-process
+ceremony locking fail closed; this currently excludes Windows. The output
+directory must support hard links so create-only publication stays atomic and
+never exposes a partially written signed artifact.
+
 After the restarted process emits at least one receipt, verify from the original
 root:
 

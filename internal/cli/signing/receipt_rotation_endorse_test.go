@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,7 +77,7 @@ func TestReceiptRotationEndorseCmdCreatesVerifiedArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("mode = %04o, want 0600", got)
 	}
 	if !strings.Contains(out.String(), "Pipelock remains stopped") {
@@ -188,10 +189,45 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("recorder.Close: %v", err)
+		}
 
 		err = executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
-		if err == nil || !strings.Contains(err.Error(), "chain is still open") {
+		if err == nil || !strings.Contains(err.Error(), "lacks a graceful shutdown seal") {
 			t.Fatalf("error = %v, want open-chain refusal", err)
+		}
+	})
+
+	t.Run("active recorder holds ceremony lock", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		rec, err := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+		}, nil, privA)
+		if err != nil {
+			t.Fatalf("recorder.New: %v", err)
+		}
+		t.Cleanup(func() { _ = rec.Close() })
+
+		err = executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "requires a stopped recorder") {
+			t.Fatalf("error = %v, want active-recorder refusal", err)
+		}
+	})
+
+	t.Run("non-graceful close reason", func(t *testing.T) {
+		dir := t.TempDir()
+		pubA, privA := generateRotationTestKey(t)
+		_, privB := generateRotationTestKey(t)
+		emitClosedIntoWithReason(t, dir, privA, 1, 0, "crash_recovery")
+
+		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
+		if err == nil || !strings.Contains(err.Error(), "lacks a graceful shutdown seal") {
+			t.Fatalf("error = %v, want non-graceful-close refusal", err)
 		}
 	})
 
@@ -370,6 +406,21 @@ func TestConfirmRotationTailStableRejectsConcurrentAdvance(t *testing.T) {
 	}
 }
 
+func TestSuccessorAppearsInPriorEndorsements(t *testing.T) {
+	endorsements := []receipt.RotationEndorsement{{
+		PriorSignerKey: "retired-a",
+		NewSignerKey:   "retired-b",
+	}}
+	for _, key := range []string{"retired-a", "retired-b"} {
+		if !successorAppearsInPriorEndorsements(key, endorsements) {
+			t.Fatalf("key %q was not detected in prior endorsement", key)
+		}
+	}
+	if successorAppearsInPriorEndorsements("fresh-c", endorsements) {
+		t.Fatal("fresh key incorrectly detected in prior endorsement")
+	}
+}
+
 func executeRotationEndorseTestCmd(
 	t *testing.T,
 	dir string,
@@ -401,6 +452,17 @@ func generateRotationTestKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKe
 }
 
 func emitClosedInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx int) {
+	t.Helper()
+	emitClosedIntoWithReason(t, dir, priv, count, startIdx, "graceful_shutdown")
+}
+
+func emitClosedIntoWithReason(
+	t *testing.T,
+	dir string,
+	priv ed25519.PrivateKey,
+	count, startIdx int,
+	closeReason string,
+) {
 	t.Helper()
 	rec, err := recorder.New(recorder.Config{
 		Enabled:            true,
@@ -434,7 +496,7 @@ func emitClosedInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, st
 			t.Fatalf("Emit %d: %v", i, err)
 		}
 	}
-	if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+	if err := emitter.EmitSessionClose(closeReason); err != nil {
 		t.Fatalf("EmitSessionClose: %v", err)
 	}
 	if err := rec.Close(); err != nil {

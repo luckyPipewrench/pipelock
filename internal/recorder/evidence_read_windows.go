@@ -12,6 +12,14 @@ const (
 	evidenceReadNonblockFlag = 0
 )
 
+func supportsEvidenceCeremonyLock() bool {
+	return false
+}
+
+func tryLockEvidenceFileForCeremonyWrite(_ *os.File) error {
+	return nil
+}
+
 // validateEvidenceFileAccess permits evidence access through the Windows
 // descriptor-identity validation path.
 func validateEvidenceFileAccess() error {

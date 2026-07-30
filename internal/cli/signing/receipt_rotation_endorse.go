@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -47,8 +48,10 @@ func receiptRotationEndorseCmd(now func() time.Time) *cobra.Command {
 
 Pipelock MUST be stopped cleanly before this command runs. The command fails
 closed unless the presented chain verifies from an explicitly pinned root and
-ends in a signed session_close receipt. For a chain that has rotated before,
-pass each earlier endorsement in order with --rotation-endorsement.
+ends in a signed graceful-shutdown session_close receipt. It holds an exclusive
+evidence-directory ceremony lock through publication and refuses an active
+recorder. For a chain that has rotated before, pass each earlier endorsement in
+order with --rotation-endorsement.
 
 This command does not replace either key or restart Pipelock. After it succeeds,
 install --new-key-file at the configured flight_recorder.signing_key_path and
@@ -70,6 +73,12 @@ Example:
 				return fmt.Errorf("--out must be absolute, got %q", outPath)
 			}
 			cleanOut := filepath.Clean(outPath)
+			ceremonyLock, err := recorder.AcquireEvidenceCeremonyLock(filepath.Clean(chainDir))
+			if err != nil {
+				return fmt.Errorf("lock stopped receipt chain: %w", err)
+			}
+			defer func() { _ = ceremonyLock.Close() }()
+
 			priorKey, err := domsigning.LoadPrivateKeyFileForPurpose(
 				filepath.Clean(priorKeyFile),
 				domsigning.PurposeReceiptSigning,
@@ -120,7 +129,7 @@ Example:
 
 			tail := receipts[len(receipts)-1]
 			if !isCleanSessionClose(tail) {
-				return errors.New("receipt chain is still open: stop Pipelock cleanly and require a final signed session_close before rotation")
+				return errors.New("receipt chain lacks a graceful shutdown seal: stop Pipelock cleanly and require a final signed session_close before rotation")
 			}
 			priorKeyHex, err := domsigning.PublicKeyHexFromPrivateKey(priorKey)
 			if err != nil {
@@ -136,6 +145,9 @@ Example:
 				if chainReceipt.SignerKey == newKeyHex {
 					return errors.New("successor key already signed this chain; retired keys must not be reinstated")
 				}
+			}
+			if successorAppearsInPriorEndorsements(newKeyHex, priorEndorsements) {
+				return errors.New("successor key appears in an earlier rotation endorsement; retired keys must not be reinstated")
 			}
 			tailHash, err := receipt.ReceiptHash(tail)
 			if err != nil {
@@ -222,8 +234,18 @@ func confirmRotationTailStable(chainDir, sessionID string, expected receipt.Rece
 }
 
 func isCleanSessionClose(r receipt.Receipt) bool {
-	control := r.ActionRecord.SessionControl
-	return control != nil &&
-		control.Kind == receipt.SessionControlClose &&
-		control.Close != nil
+	return receipt.IsGracefulSessionCloseSeal(r)
+}
+
+func successorAppearsInPriorEndorsements(
+	successor string,
+	priorEndorsements []receipt.RotationEndorsement,
+) bool {
+	for _, priorEndorsement := range priorEndorsements {
+		if priorEndorsement.PriorSignerKey == successor ||
+			priorEndorsement.NewSignerKey == successor {
+			return true
+		}
+	}
+	return false
 }

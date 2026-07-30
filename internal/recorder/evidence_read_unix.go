@@ -16,6 +16,14 @@ const (
 	evidenceReadNonblockFlag = syscall.O_NONBLOCK
 )
 
+func supportsEvidenceCeremonyLock() bool {
+	return true
+}
+
+func tryLockEvidenceFileForCeremonyWrite(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+}
+
 // validateEvidenceFileAccess permits evidence access where no-follow,
 // nonblocking opens and advisory locks are available.
 func validateEvidenceFileAccess() error {

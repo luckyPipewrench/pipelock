@@ -28,6 +28,8 @@ const (
 	SessionControlClose SessionControlKind = "session_close"
 )
 
+const gracefulSessionCloseReason = "graceful_shutdown"
+
 // genesisSessionOpenPrefix tags a chain_prev_hash whose value is a bound
 // session-open genesis rather than the legacy literal "genesis" sentinel.
 // A verifier that sees this prefix MUST recompute ComputeSessionOpenGenesis
@@ -109,6 +111,16 @@ type SessionClose struct {
 
 	FsyncErrorsGated uint64 `json:"fsync_errors_gated"`
 	DurabilityBlocks uint64 `json:"durability_blocks"`
+}
+
+// IsGracefulSessionCloseSeal reports whether a receipt is the durable terminal
+// seal emitted by Pipelock's normal graceful-shutdown path.
+func IsGracefulSessionCloseSeal(r Receipt) bool {
+	control := r.ActionRecord.SessionControl
+	return control != nil &&
+		control.Kind == SessionControlClose &&
+		control.Close != nil &&
+		control.Close.CloseReason == gracefulSessionCloseReason
 }
 
 // ComputeSessionOpenGenesis returns the bound genesis value for a first-chain

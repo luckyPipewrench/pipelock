@@ -149,6 +149,7 @@ type Recorder struct {
 	prevHash       string
 	writer         *bufio.Writer
 	file           *os.File
+	ceremonyLock   *os.File
 	fileEntryCount int
 	fileSeqStart   uint64
 	fileGeneration uint64
@@ -255,6 +256,12 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		copy(pub[:], keyBytes)
 		r.escrowPub = &pub
 	}
+
+	ceremonyLock, err := acquireEvidenceWriterCeremonyLock(cfg.Dir)
+	if err != nil {
+		return nil, err
+	}
+	r.ceremonyLock = ceremonyLock
 
 	return r, nil
 }
@@ -616,7 +623,7 @@ func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) e
 }
 
 // Close flushes and closes the recorder, writing a final checkpoint.
-func (r *Recorder) Close() error {
+func (r *Recorder) Close() (retErr error) {
 	if r.nop {
 		return nil
 	}
@@ -628,6 +635,15 @@ func (r *Recorder) Close() error {
 		return nil
 	}
 	r.closed = true
+	defer func() {
+		if r.ceremonyLock == nil {
+			return
+		}
+		unlockErr := unlockEvidenceFile(r.ceremonyLock)
+		closeErr := r.ceremonyLock.Close()
+		r.ceremonyLock = nil
+		retErr = errors.Join(retErr, unlockErr, closeErr)
+	}()
 
 	if r.sinceCheckpoint > 0 {
 		r.waitDurableForCurrentFileLocked()

@@ -119,7 +119,7 @@ func TestWriteNewCreatesAndRefusesReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("mode = %04o, want 0600", got)
 	}
 }

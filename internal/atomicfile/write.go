@@ -37,7 +37,9 @@ func Write(path string, data []byte, perm os.FileMode) error {
 
 // WriteNew atomically and durably creates path without replacing an existing
 // file. The fully written and synced temporary file is published with a hard
-// link, whose create-if-absent semantics close the stat-then-rename race.
+// link, whose create-if-absent semantics close the stat-then-rename race. The
+// target filesystem must support hard links; WriteNew fails rather than fall
+// back to a directly visible partial write on filesystems that do not.
 func WriteNew(path string, data []byte, perm os.FileMode) error {
 	path = filepath.Clean(path)
 	dir := filepath.Dir(path)

@@ -150,6 +150,7 @@ type Recorder struct {
 	writer         *bufio.Writer
 	file           *os.File
 	ceremonyLock   *os.File
+	ceremonyDir    os.FileInfo
 	fileEntryCount int
 	fileSeqStart   uint64
 	fileGeneration uint64
@@ -257,11 +258,12 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		r.escrowPub = &pub
 	}
 
-	ceremonyLock, err := acquireEvidenceWriterCeremonyLock(cfg.Dir)
+	ceremonyLock, ceremonyDir, err := acquireEvidenceWriterCeremonyLock(cfg.Dir)
 	if err != nil {
 		return nil, err
 	}
 	r.ceremonyLock = ceremonyLock
+	r.ceremonyDir = ceremonyDir
 
 	return r, nil
 }
@@ -1040,7 +1042,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	// silent" repro). Statting the configured dir on every call catches
 	// the disappearance while r.file is still the stale fd.
 	dir := filepath.Clean(r.cfg.Dir)
-	_, statErr := os.Stat(dir)
+	dirInfo, statErr := os.Stat(dir)
 	if statErr != nil && !os.IsNotExist(statErr) {
 		// Fail-closed: a non-NotExist stat error (permission denied,
 		// transient I/O failure, mount unmapped) means we cannot trust
@@ -1053,6 +1055,10 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	if dirMissing {
 		if mkErr := os.MkdirAll(dir, dirPermissions); mkErr != nil {
 			return fmt.Errorf("evidence directory %s disappeared and could not be recreated: %w", r.cfg.Dir, mkErr)
+		}
+		dirInfo, statErr = os.Stat(dir)
+		if statErr != nil {
+			return fmt.Errorf("stat recreated evidence directory %s: %w", r.cfg.Dir, statErr)
 		}
 		_, _ = fmt.Fprintf(os.Stderr,
 			"pipelock: recorder: evidence directory %s disappeared mid-run and was recreated; prior receipts are lost\n",
@@ -1069,7 +1075,11 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 		}
 	}
 
-	if err := r.ensureEvidenceWriterCeremonyLock(); err != nil {
+	// This comparison is deliberately before the open-file short circuit.
+	// It detects directory replacement while r.file still names an unlinked
+	// inode, but reuses the stat above and cached identity metadata rather
+	// than adding filesystem calls to every receipt.
+	if err := r.ensureEvidenceWriterCeremonyLock(dirInfo); err != nil {
 		return fmt.Errorf("refreshing recorder receipt ceremony lock: %w", err)
 	}
 

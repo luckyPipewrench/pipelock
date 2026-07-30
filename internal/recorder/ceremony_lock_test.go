@@ -76,11 +76,11 @@ func TestEvidenceCeremonyLockErrorAndEmptyLifecyclePaths(t *testing.T) {
 	}
 	missingDir := filepath.Join(t.TempDir(), "missing")
 	if _, err := AcquireEvidenceCeremonyLock(missingDir); err == nil ||
-		!strings.Contains(err.Error(), "opening receipt ceremony lock") {
+		!strings.Contains(err.Error(), "opening evidence directory for receipt ceremony lock") {
 		t.Fatalf("missing-dir ceremony error = %v", err)
 	}
-	if _, err := acquireEvidenceWriterCeremonyLock(missingDir); err == nil ||
-		!strings.Contains(err.Error(), "opening receipt ceremony lock") {
+	if _, _, err := acquireEvidenceWriterCeremonyLock(missingDir); err == nil ||
+		!strings.Contains(err.Error(), "opening evidence directory for receipt ceremony lock") {
 		t.Fatalf("missing-dir writer error = %v", err)
 	}
 	originalTryLock := tryAcquireEvidenceCeremonyLock
@@ -99,7 +99,11 @@ func TestEvidenceCeremonyLockErrorAndEmptyLifecyclePaths(t *testing.T) {
 	if err := rec.releaseEvidenceWriterCeremonyLock(); err != nil {
 		t.Fatalf("release absent writer lock: %v", err)
 	}
-	if err := rec.ensureEvidenceWriterCeremonyLock(); err != nil {
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat evidence directory: %v", err)
+	}
+	if err := rec.ensureEvidenceWriterCeremonyLock(dirInfo); err != nil {
 		t.Fatalf("acquire missing writer lock: %v", err)
 	}
 	if err := rec.releaseEvidenceWriterCeremonyLock(); err != nil {

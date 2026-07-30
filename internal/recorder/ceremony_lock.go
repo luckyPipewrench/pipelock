@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 )
 
-const ceremonyLockFilename = ".pipelock-receipt-ceremony.lock"
-
 var tryAcquireEvidenceCeremonyLock = tryLockEvidenceFileForExpiry
 
 // EvidenceCeremonyLock proves that no recorder is writing in an evidence
@@ -26,7 +24,7 @@ func AcquireEvidenceCeremonyLock(dir string) (*EvidenceCeremonyLock, error) {
 	if !supportsEvidenceCeremonyLock() {
 		return nil, errors.New("receipt ceremony locking is unsupported on this platform")
 	}
-	file, err := openEvidenceCeremonyLockFile(dir)
+	file, _, err := openEvidenceCeremonyLock(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -53,41 +51,38 @@ func (l *EvidenceCeremonyLock) Close() error {
 	return errors.Join(unlockErr, closeErr)
 }
 
-func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, error) {
+func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error) {
 	if !supportsEvidenceCeremonyLock() {
-		return nil, nil
+		return nil, nil, nil
 	}
-	file, err := openEvidenceCeremonyLockFile(dir)
+	file, info, err := openEvidenceCeremonyLock(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := tryLockEvidenceFileForCeremonyWrite(file); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("locking recorder against receipt ceremonies: %w", err)
+		return nil, nil, fmt.Errorf("locking recorder against receipt ceremonies: %w", err)
 	}
-	return file, nil
+	return file, info, nil
 }
 
-func (r *Recorder) ensureEvidenceWriterCeremonyLock() error {
+func (r *Recorder) ensureEvidenceWriterCeremonyLock(dirInfo os.FileInfo) error {
 	if !supportsEvidenceCeremonyLock() {
 		return nil
 	}
-	path := filepath.Join(filepath.Clean(r.cfg.Dir), ceremonyLockFilename)
-	pathInfo, pathErr := os.Stat(path)
-	if r.ceremonyLock != nil {
-		heldInfo, heldErr := r.ceremonyLock.Stat()
-		if pathErr == nil && heldErr == nil && os.SameFile(pathInfo, heldInfo) {
-			return nil
-		}
+	if r.ceremonyLock != nil && r.ceremonyDir != nil &&
+		dirInfo != nil && os.SameFile(dirInfo, r.ceremonyDir) {
+		return nil
 	}
 	if err := r.releaseEvidenceWriterCeremonyLock(); err != nil {
 		return fmt.Errorf("release stale receipt ceremony lock: %w", err)
 	}
-	lock, err := acquireEvidenceWriterCeremonyLock(r.cfg.Dir)
+	lock, lockDirInfo, err := acquireEvidenceWriterCeremonyLock(r.cfg.Dir)
 	if err != nil {
 		return err
 	}
 	r.ceremonyLock = lock
+	r.ceremonyDir = lockDirInfo
 	return nil
 }
 
@@ -98,14 +93,23 @@ func (r *Recorder) releaseEvidenceWriterCeremonyLock() error {
 	unlockErr := unlockEvidenceFile(r.ceremonyLock)
 	closeErr := r.ceremonyLock.Close()
 	r.ceremonyLock = nil
+	r.ceremonyDir = nil
 	return errors.Join(unlockErr, closeErr)
 }
 
-func openEvidenceCeremonyLockFile(dir string) (*os.File, error) {
-	path := filepath.Join(filepath.Clean(dir), ceremonyLockFilename)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|evidenceReadNoFollowFlag, 0o600)
+func openEvidenceCeremonyLock(dir string) (*os.File, os.FileInfo, error) {
+	file, err := os.Open(filepath.Clean(dir))
 	if err != nil {
-		return nil, fmt.Errorf("opening receipt ceremony lock: %w", err)
+		return nil, nil, fmt.Errorf("opening evidence directory for receipt ceremony lock: %w", err)
 	}
-	return file, nil
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("stat evidence directory for receipt ceremony lock: %w", err)
+	}
+	if !info.IsDir() {
+		_ = file.Close()
+		return nil, nil, errors.New("receipt ceremony lock target is not an evidence directory")
+	}
+	return file, info, nil
 }

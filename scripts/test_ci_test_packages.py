@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from scripts.ci_test_packages import SHARDS, package_in_tree, package_suffix, select_packages
@@ -48,6 +49,21 @@ class TestPackageSharding(unittest.TestCase):
 
         self.assertEqual(matrix_shards, SHARDS)
         self.assertEqual(loop_shards, SHARDS)
+
+    def test_pr_ci_runs_all_script_unittests(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+
+        command = "python3 -m unittest discover -s scripts -p '*test*.py'"
+        self.assertIn(command, workflow)
+
+        test_files = sorted(
+            path.name
+            for path in (root / "scripts").glob("*.py")
+            if path.name.startswith("test") or path.name.endswith("_test.py")
+        )
+        missed = [name for name in test_files if not fnmatchcase(name, "*test*.py")]
+        self.assertEqual(missed, [])
 
     def test_every_package_is_selected_exactly_once(self) -> None:
         packages = [

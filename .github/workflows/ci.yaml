@@ -391,16 +391,10 @@ jobs:
       - name: Python pin policy
         run: bash scripts/check-python-pins.sh
 
-      # These modules had no PR-time runner and were only executed by the
-      # release workflow, so a break in them stayed invisible until tag time.
-      # Modules are named explicitly because scripts/ is not an importable
-      # package, so unittest discovery cannot walk it.
+      # Release-tooling tests had no PR-time runner, so breaks stayed invisible
+      # until tag time. The pattern covers both test_*.py and *_test.py modules.
       - name: Release tooling unit tests
-        run: |
-          python3 -m unittest \
-            scripts.test_ci_test_packages \
-            scripts.test_ci_test_with_retry \
-            scripts.test_git_version
+        run: python3 -m unittest discover -s scripts -p '*test*.py'
 
       - name: Test stability policy
         run: bash scripts/check-test-stability.sh

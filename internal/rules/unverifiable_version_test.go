@@ -28,6 +28,7 @@ func TestErrUnverifiableVersionOnlyMarksTheUnknownCase(t *testing.T) {
 		{"devel", "3.0.0", "devel", true, true},
 		{"unset", "3.0.0", "", true, true},
 		{"git describe", "3.0.0", "2.0.0-147-gf1c242a0", true, true},
+		{"git describe always bare commit", "3.0.0", "9cc0fe5", true, true},
 
 		// Checked and genuinely NOT met: must never be downgraded.
 		{"release below min", "3.0.0", "2.9.0", true, false},
@@ -35,6 +36,7 @@ func TestErrUnverifiableVersionOnlyMarksTheUnknownCase(t *testing.T) {
 
 		// Checked and malformed: fails closed, and is not the unknown case.
 		{"malformed version", "3.0.0", "not-a-version", true, false},
+		{"short hex version", "3.0.0", "abc123", true, false},
 
 		// Requirement satisfied: no error at all.
 		{"release meets min", "2.0.0", "3.0.0", false, false},

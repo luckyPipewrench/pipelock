@@ -546,7 +546,7 @@ func isDevelopmentCurrentVersion(s string) bool {
 	if err == nil && prereleaseHasIdentifier(v.prerelease, "dev") {
 		return true
 	}
-	return isGitDescribeVersion(s)
+	return isGitDescribeVersion(s) || isBareGitCommitVersion(s)
 }
 
 func prereleaseHasIdentifier(prerelease, ident string) bool {
@@ -579,6 +579,13 @@ func isGitDescribeVersion(s string) bool {
 		return false
 	}
 	return isHexString(shorthash[1:])
+}
+
+func isBareGitCommitVersion(s string) bool {
+	// `git describe --always` emits a bare abbreviated commit id when no matching
+	// tag is reachable, which is still a source build with no orderable release.
+	const minShortHashLen = 7
+	return len(s) >= minShortHashLen && isHexString(s)
 }
 
 func isHexString(s string) bool {

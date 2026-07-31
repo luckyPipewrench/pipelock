@@ -5,12 +5,38 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 from scripts.ci_test_packages import SHARDS, package_in_tree, package_suffix, select_packages
+
+
+def _defines_unittest_testcase(path: Path) -> bool:
+    """Report whether a module defines a unittest.TestCase subclass.
+
+    Parses rather than imports, so surveying the tree cannot execute module-level
+    code, and so a module that fails to import is still counted rather than
+    silently dropped from the inventory.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        # Unreadable or unparseable: assume it may hold tests rather than
+        # quietly shrinking the inventory this guard is built from.
+        return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            # Matches `unittest.TestCase` and a bare imported `TestCase`.
+            if isinstance(base, ast.Attribute) and base.attr == "TestCase":
+                return True
+            if isinstance(base, ast.Name) and base.id == "TestCase":
+                return True
+    return False
 
 
 class TestPackageSharding(unittest.TestCase):
@@ -57,13 +83,31 @@ class TestPackageSharding(unittest.TestCase):
         command = "python3 -m unittest discover -s scripts -p '*test*.py'"
         self.assertIn(command, workflow)
 
-        test_files = sorted(
+        # Build the inventory of real test modules INDEPENDENTLY of the naming
+        # convention, by asking which files actually define a unittest.TestCase.
+        # Deriving the inventory from a name filter makes the assertion vacuous:
+        # every name matching `startswith("test")` or `endswith("_test.py")`
+        # necessarily contains "test", so it always matches the CI pattern and
+        # the check can never fail. A module named `TestHelpers.py` or
+        # `helpers_check.py` is the case that actually matters, and a
+        # name-derived inventory cannot see it.
+        defines_tests = sorted(
             path.name
-            for path in (root / "scripts").glob("*.py")
-            if path.name.startswith("test") or path.name.endswith("_test.py")
+            for path in (root / "scripts").rglob("*.py")
+            if _defines_unittest_testcase(path)
         )
-        missed = [name for name in test_files if not fnmatchcase(name, "*test*.py")]
-        self.assertEqual(missed, [])
+        self.assertTrue(
+            defines_tests,
+            "found no unittest.TestCase modules under scripts/, so this guard is inert",
+        )
+        missed = [name for name in defines_tests if not fnmatchcase(name, "*test*.py")]
+        self.assertEqual(
+            missed,
+            [],
+            "these modules define tests that CI discovery would never collect: "
+            f"{missed}. Either rename them to match '*test*.py' or widen the "
+            "discovery pattern in the CI lint job.",
+        )
 
     def test_every_package_is_selected_exactly_once(self) -> None:
         packages = [

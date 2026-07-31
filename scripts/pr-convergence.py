@@ -64,8 +64,19 @@ BLOCKED_MERGE_STATES = {"BLOCKED", "DRAFT", "UNKNOWN"}
 FINAL_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED"}
 
 
-class GhReadError(RuntimeError):
+class DataSourceError(RuntimeError):
+    """Raised when a required read source cannot be gathered."""
+
+    def __init__(self, source: str, message: str) -> None:
+        super().__init__(message)
+        self.source = source
+
+
+class GhReadError(DataSourceError):
     """Raised when a read-only GitHub source cannot be gathered."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("gh", message)
 
 
 def parse_iso8601(value: Any) -> dt.datetime | None:
@@ -110,8 +121,9 @@ def gh_args_are_read_only(args: list[str]) -> bool:
         if arg in {"-X", "--method"}:
             if idx + 1 >= len(args) or args[idx + 1].upper() != "GET":
                 return False
-        if arg.startswith("-X") and arg != "-XGET":
-            return False
+        if arg.startswith("-X") and arg != "-X":
+            if arg[2:].upper() != "GET":
+                return False
         if arg.startswith("--method=") and arg.split("=", 1)[1].upper() != "GET":
             return False
     return True
@@ -147,7 +159,7 @@ class GhClient:
             raise GhReadError(f"gh returned invalid JSON: {exc}") from exc
 
     def api(self, path: str, *, paginate: bool = False, accept: str | None = None) -> Any:
-        args = ["api", path, "-X", "GET"]
+        args = ["api", path]
         if accept:
             args.extend(["-H", f"Accept: {accept}"])
         if paginate:
@@ -188,7 +200,6 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
               path
               line
               originalLine
-              diffSide
               commit { oid }
               originalCommit { oid }
             }
@@ -827,8 +838,18 @@ def classify_pr_state(
 def load_snapshot(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        if path.stat().st_mode & 0o022:
+            raise DataSourceError("snapshot", f"snapshot is group/other writable: {path}")
+        with path.open("r", encoding="utf-8") as handle:
+            snapshot = json.load(handle)
+    except DataSourceError:
+        raise
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DataSourceError("snapshot", f"failed to read snapshot {path}: {exc}") from exc
+    if not isinstance(snapshot, dict):
+        raise DataSourceError("snapshot", "snapshot root was not an object")
+    return snapshot
 
 
 def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
@@ -836,6 +857,7 @@ def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(snapshot, handle, indent=2, sort_keys=True)
         handle.write("\n")
+    path.chmod(0o600)
 
 
 def compact_summary(result: dict[str, Any]) -> str:
@@ -939,12 +961,12 @@ def main(argv: list[str]) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
-    except GhReadError as exc:
+    except DataSourceError as exc:
         error_result = {
             "status": "DATA_SOURCE_UNAVAILABLE",
             "ready": False,
             "status_reason": STATUS_DOCS["DATA_SOURCE_UNAVAILABLE"],
-            "errors": [{"source": "gh", "message": str(exc)}],
+            "errors": [{"source": exc.source, "message": str(exc)}],
         }
         print(json.dumps(error_result, indent=2, sort_keys=True))
         raise SystemExit(1) from exc

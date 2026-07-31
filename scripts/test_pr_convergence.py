@@ -12,6 +12,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT_PATH = pathlib.Path(__file__).with_name("pr-convergence.py")
@@ -71,6 +72,56 @@ class PrConvergenceStatusTest(unittest.TestCase):
                 ["api", "graphql", "-f", "query=mutation { addComment(input: {}) { clientMutationId } }"]
             )
         )
+        self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "merge", "7"]))
+        self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "comment", "7"]))
+        self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "close", "7"]))
+        self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "edit", "7"]))
+        self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "review", "7", "--approve"]))
+
+    def test_gh_invocation_guard_allows_plain_reads(self) -> None:
+        self.assertTrue(pr_convergence.gh_args_are_read_only(["api", "repos/owner/repo/pulls/7"]))
+        self.assertTrue(
+            pr_convergence.gh_args_are_read_only(
+                ["api", "repos/owner/repo/pulls/7", "--paginate", "--slurp"]
+            )
+        )
+        self.assertTrue(
+            pr_convergence.gh_args_are_read_only(
+                ["api", "repos/owner/repo/pulls/7", "-H", "Accept: application/vnd.github+json"]
+            )
+        )
+        self.assertTrue(
+            pr_convergence.gh_args_are_read_only(["api", "repos/owner/repo/pulls/7", "-X", "GET"])
+        )
+        self.assertTrue(
+            pr_convergence.gh_args_are_read_only(["api", "repos/owner/repo/pulls/7", "-XGET"])
+        )
+        self.assertTrue(
+            pr_convergence.gh_args_are_read_only(
+                ["api", "repos/owner/repo/pulls/7", "--method=GET"]
+            )
+        )
+
+    def test_gh_client_api_constructs_plain_read_call(self) -> None:
+        calls: list[list[str]] = []
+
+        class RecordingGhClient(pr_convergence.GhClient):
+            def run(self, args: list[str]) -> object:
+                calls.append(args)
+                return {"number": 7}
+
+        payload = RecordingGhClient("owner/repo").api("repos/owner/repo/pulls/7")
+        self.assertEqual(payload, {"number": 7})
+        self.assertEqual(calls, [["api", "repos/owner/repo/pulls/7"]])
+        self.assertTrue(pr_convergence.gh_args_are_read_only(calls[0]))
+
+    def test_gh_client_blocks_mutation_before_executing_gh(self) -> None:
+        with mock.patch.object(pr_convergence.subprocess, "run") as run:
+            with self.assertRaises(pr_convergence.GhReadError):
+                pr_convergence.GhClient("owner/repo").run(
+                    ["api", "repos/owner/repo/issues/7/comments", "-X", "POST"]
+                )
+        run.assert_not_called()
 
     def test_clean_state_without_snapshot_is_ready(self) -> None:
         result = classify(load_fixture())
@@ -98,6 +149,32 @@ class PrConvergenceStatusTest(unittest.TestCase):
             pr_convergence.write_snapshot(path, second["snapshot"])
 
         self.assertEqual(second["status"], "READY")
+
+    def test_snapshot_write_uses_owner_only_permissions(self) -> None:
+        data = load_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "snapshot.json"
+            pr_convergence.write_snapshot(path, classify(data)["snapshot"])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_corrupt_snapshot_fails_closed_as_data_source_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "snapshot.json"
+            path.write_text("{bad", encoding="utf-8")
+            with self.assertRaises(pr_convergence.DataSourceError) as raised:
+                pr_convergence.load_snapshot(path)
+
+        self.assertEqual(raised.exception.source, "snapshot")
+
+    def test_group_writable_snapshot_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "snapshot.json"
+            path.write_text("{}", encoding="utf-8")
+            path.chmod(0o660)
+            with self.assertRaises(pr_convergence.DataSourceError) as raised:
+                pr_convergence.load_snapshot(path)
+
+        self.assertEqual(raised.exception.source, "snapshot")
 
     def test_ai_review_top_level_comment_is_explicitly_blocking(self) -> None:
         result = classify(load_fixture("pr_convergence_ai_review.json"))

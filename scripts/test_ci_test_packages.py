@@ -31,15 +31,19 @@ def _defines_unittest_testcase(path: Path) -> bool:
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError):
-        # Unreadable or unparseable: assume it may hold tests rather than
-        # quietly shrinking the inventory this guard is built from.
+    except (OSError, SyntaxError, UnicodeError, ValueError):
+        # Unreadable, undecodable, or unparseable: assume it may hold tests
+        # rather than quietly shrinking the inventory this guard is built from.
+        # UnicodeError matters because read_text raises it BEFORE ast.parse ever
+        # runs, so a file that is not valid UTF-8 would otherwise abort the whole
+        # CI check rather than fall back.
         return True
 
-    # Resolve how this module refers to unittest.TestCase, so an unrelated class
-    # that merely happens to be named TestCase is not mistaken for one.
-    testcase_names = set()
-    unittest_names = {"unittest"}
+    # Resolve how this module refers to unittest.TestCase, so a class that merely
+    # happens to be named TestCase, or a module that binds the name `unittest` to
+    # something unrelated, is not mistaken for the standard library.
+    testcase_names: set[str] = set()
+    unittest_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "unittest":
             for alias in node.names:
@@ -48,11 +52,31 @@ def _defines_unittest_testcase(path: Path) -> bool:
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "unittest":
-                    unittest_names.add(alias.asname or alias.name)
+                    unittest_names.add(alias.asname or "unittest")
+                elif alias.name.startswith("unittest.") and alias.asname is None:
+                    # `import unittest.mock` also binds the name `unittest`.
+                    unittest_names.add("unittest")
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
+    def class_defs_in_module_scope(body: list[ast.stmt]):
+        """Yield classes reachable in the module namespace at import time.
+
+        Descends through module-level control flow, because a class declared
+        inside `if`/`try`/`with` at module level IS bound in the module namespace
+        and IS collected by unittest. Does NOT descend into class or function
+        bodies, because a class nested there is not a module-level test case and
+        counting it would put non-test helpers in the inventory.
+        """
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                yield node
+            elif isinstance(node, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
+                yield from class_defs_in_module_scope(node.body)
+                yield from class_defs_in_module_scope(getattr(node, "orelse", []))
+                yield from class_defs_in_module_scope(getattr(node, "finalbody", []))
+                for handler in getattr(node, "handlers", []):
+                    yield from class_defs_in_module_scope(handler.body)
+
+    for node in class_defs_in_module_scope(tree.body):
         for base in node.bases:
             # `unittest.TestCase`, including an aliased `import unittest as ut`.
             if isinstance(base, ast.Attribute) and base.attr == "TestCase":

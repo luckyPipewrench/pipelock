@@ -174,7 +174,7 @@ jobs:
         with:
           # GoReleaser still emits separate checksums.txt.sig/.pem assets.
           # Cosign v3 requires the new bundle format and rejects those flags.
-          cosign-release: 'v2.6.1'
+          cosign-release: 'v3.1.2'
 
       - name: Set GOVERSION
         run: echo "GOVERSION=$(go env GOVERSION)" >> "$GITHUB_ENV"

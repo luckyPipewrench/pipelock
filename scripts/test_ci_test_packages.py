@@ -20,6 +20,14 @@ def _defines_unittest_testcase(path: Path) -> bool:
     Parses rather than imports, so surveying the tree cannot execute module-level
     code, and so a module that fails to import is still counted rather than
     silently dropped from the inventory.
+
+    Deliberately errs toward INCLUDING a module. The two mistakes are not
+    symmetric: over-including a non-test module fails this guard loudly with a
+    message a human resolves in seconds, while under-including a real test module
+    silently restores the bug the guard exists to catch. That is why the search
+    walks the whole tree rather than only module-level classes: a TestCase
+    subclass declared inside a module-level `if` is still collected by unittest
+    at import time, but it does not appear in `tree.body`.
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -27,14 +35,32 @@ def _defines_unittest_testcase(path: Path) -> bool:
         # Unreadable or unparseable: assume it may hold tests rather than
         # quietly shrinking the inventory this guard is built from.
         return True
+
+    # Resolve how this module refers to unittest.TestCase, so an unrelated class
+    # that merely happens to be named TestCase is not mistaken for one.
+    testcase_names = set()
+    unittest_names = {"unittest"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "unittest":
+            for alias in node.names:
+                if alias.name == "TestCase":
+                    testcase_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "unittest":
+                    unittest_names.add(alias.asname or alias.name)
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         for base in node.bases:
-            # Matches `unittest.TestCase` and a bare imported `TestCase`.
+            # `unittest.TestCase`, including an aliased `import unittest as ut`.
             if isinstance(base, ast.Attribute) and base.attr == "TestCase":
-                return True
-            if isinstance(base, ast.Name) and base.id == "TestCase":
+                value = base.value
+                if isinstance(value, ast.Name) and value.id in unittest_names:
+                    return True
+            # A bare `TestCase` that this module actually imported from unittest.
+            if isinstance(base, ast.Name) and base.id in testcase_names:
                 return True
     return False
 

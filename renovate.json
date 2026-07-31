@@ -47,6 +47,13 @@
       "enabled": false
     },
     {
+      "description": "Hold cosign at 2.x in the release workflow. GoReleaser emits separate checksums.txt.sig/.pem assets; cosign 3.x requires the new bundle format and rejects the flags that produce them. Advancing it needs a release-signing migration we have not scoped, and a major bump here breaks artifact signing at tag time rather than in PR CI. Only the cosign-release version is held; the cosign-installer action itself still updates.",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["sigstore/cosign"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "Hold jsonschema at 0.18.x in the Rust verifier. 0.19+ renames JSONSchema to Validator and changes the compile/validate API, needs manual migration.",
       "matchManagers": ["cargo"],
       "matchFileNames": ["sdk/verifiers/rust/**"],

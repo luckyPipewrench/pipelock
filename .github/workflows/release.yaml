@@ -409,8 +409,8 @@ jobs:
           exit 1
 
       # Move the v2 floating tag so `uses: luckyPipewrench/pipelock@v2`
-      # always resolves to the latest release. Safe because the trigger
-      # is v*.*.* which won't re-fire on the v2 push.
+      # always resolves to the latest release. Safe because the trigger requires
+      # two dotted components, so a bare `v2` push cannot re-fire this workflow.
       - name: Update v2 floating tag for GitHub Action
         env:
           TAG_NAME: ${{ github.ref_name }}

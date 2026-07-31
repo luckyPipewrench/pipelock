@@ -28,9 +28,10 @@ fi
 # OPTIONAL prerelease and NO build metadata: '+' is invalid in an OCI/Docker tag
 # (tagChars is [A-Za-z0-9_.-]), so a '+build' version would pass an abstract-SemVer
 # check yet break the container publish or mismatch the provenance subject. This
-# gate is the real guard (the 'v*.*.*' release trigger is only a coarse prefilter
-# that also matches v1.2.beta and v1.2.3.4), so a malformed tag fails
-# closed BEFORE anything is built or pushed.
+# gate is the real guard (the 'v[0-9]*.[0-9]*.[0-9]*' release trigger is only a
+# coarse prefilter: it rejects non-product prefixes like verifier-v0.2.0 and bare
+# floating pointers like v2, but still admits v1.2.3.4 and v3.2.0+build.1), so a
+# malformed tag fails closed BEFORE anything is built or pushed.
 release_tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
 if ! printf '%s\n' "$VERSION" | grep -qE "$release_tag_re"; then
   echo "check-release-ready: tag '$VERSION' must be vMAJOR.MINOR.PATCH[-prerelease] with no build metadata" >&2

@@ -897,8 +897,7 @@ def compact_summary(result: dict[str, Any]) -> str:
             f"previous_snapshot_found={change['previous_snapshot_found']}"
         ),
     ]
-    if result["errors"]:
-        lines.append(f"errors: {len(result['errors'])} source(s) unavailable")
+    lines.append(f"errors: {len(result['errors'])} source(s) unavailable")
     return "\n".join(lines)
 
 

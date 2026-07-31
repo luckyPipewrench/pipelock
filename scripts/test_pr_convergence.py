@@ -128,6 +128,10 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertEqual(result["status"], "READY")
         self.assertTrue(result["ready"])
 
+    def test_compact_summary_reports_zero_unavailable_sources(self) -> None:
+        result = classify(load_fixture())
+        self.assertIn("errors: 0 source(s) unavailable", pr_convergence.compact_summary(result))
+
     def test_two_consecutive_clean_snapshots_are_ready(self) -> None:
         data = load_fixture()
         first = classify(data, snapshot_requested=True)

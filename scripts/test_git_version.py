@@ -51,8 +51,17 @@ class GitVersionScriptTest(unittest.TestCase):
         self._git("add", "file.txt")
         self._git("commit", "-qm", message)
 
-    def _tag(self, name: str) -> None:
-        self._git("tag", "-a", name, "-m", name)
+    def _tag(self, name: str, *, tagger_date: str | None = None) -> None:
+        env = None
+        if tagger_date is not None:
+            env = {**os.environ, "GIT_COMMITTER_DATE": tagger_date}
+        subprocess.run(
+            ("git", "-C", str(self.repo), "tag", "-a", name, "-m", name),
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
 
     def _version(self) -> str:
         """Run the script with the throwaway repo as the working directory."""
@@ -91,7 +100,7 @@ class GitVersionScriptTest(unittest.TestCase):
         self.assertNotIn("erifier", version)
 
     def test_prerelease_product_tag_is_preserved(self) -> None:
-        """`v[0-9]*` must not exclude a legitimate prerelease tag.
+        """The dotted product glob must not exclude a legitimate prerelease tag.
 
         The suffix text is irrelevant to tag selection; what matters is that a
         hyphenated suffix after the patch digit survives intact.
@@ -99,6 +108,22 @@ class GitVersionScriptTest(unittest.TestCase):
         self._commit("one")
         self._tag("v1.2.3-beta.1")
         self.assertEqual(self._version(), "1.2.3-beta.1")
+
+    def test_floating_action_tag_does_not_shadow_product_version(self) -> None:
+        """The repo carries floating v1/v2 tags for the GitHub Action."""
+        self._commit("one")
+        self._tag("v3.3.0", tagger_date="2026-07-01T00:00:00Z")
+        self._tag("v2", tagger_date="2026-07-02T00:00:00Z")
+        self._commit("two")
+
+        version = self._version()
+
+        self.assertTrue(
+            version.startswith("3.3.0-1-g"),
+            f"expected a 3.3.0 development version, got {version!r}",
+        )
+        self.assertNotEqual(version, "2")
+        self.assertFalse(version.startswith("2-"), f"floating action tag shadowed product tag: {version!r}")
 
     def test_no_product_tag_falls_back_to_a_commit_id(self) -> None:
         """A verifier-only repo must not borrow that unrelated version."""

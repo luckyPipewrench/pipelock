@@ -10,8 +10,8 @@
 # `verifier-v0.2.0`), and an unfiltered `git describe --tags` selects whichever
 # tag is nearest in history regardless of series. Because callers then strip one
 # leading "v", a nearby verifier tag produced malformed versions such as
-# `erifier-v0.2.0-1-gabc1234`. Matching `v[0-9]*` requires a digit immediately
-# after the "v", which excludes every non-product tag prefix.
+# `erifier-v0.2.0-1-gabc1234`. Matching dotted product tags excludes both
+# non-product tag prefixes and floating action pointer tags such as `v1`/`v2`.
 #
 # When no product tag is reachable this prints the abbreviated commit rather
 # than guessing a version number: an honest commit id is preferable to a version
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-if version="$(git describe --tags --always --dirty --match 'v[0-9]*' 2>/dev/null)" &&
+if version="$(git describe --tags --always --dirty --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)" &&
 	[ -n "$version" ]; then
 	# Strip at most one leading "v" so `v3.3.0` reports as `3.3.0`. Abbreviated
 	# commit ids are hexadecimal and therefore never start with "v".

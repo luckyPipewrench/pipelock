@@ -1,0 +1,79 @@
+{
+  "base_pull_candidates": [],
+  "check_runs": {
+    "check_runs": [
+      {
+        "conclusion": "success",
+        "head_sha": "head222",
+        "name": "unit",
+        "status": "completed"
+      }
+    ]
+  },
+  "commits": [
+    {
+      "commit": {
+        "committer": {
+          "date": "2026-01-01T10:00:00Z"
+        }
+      },
+      "sha": "head222"
+    }
+  ],
+  "compare": {
+    "ahead_by": 1,
+    "behind_by": 0,
+    "status": "ahead"
+  },
+  "errors": [],
+  "issue_comments": [],
+  "pr_number": 7,
+  "pull": {
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "owner/repo"
+      },
+      "sha": "base111"
+    },
+    "draft": false,
+    "head": {
+      "ref": "feature",
+      "repo": {
+        "full_name": "owner/repo"
+      },
+      "sha": "head222"
+    },
+    "html_url": "https://github.com/owner/repo/pull/7",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "number": 7,
+    "state": "open",
+    "title": "Neutral fixture"
+  },
+  "repo": "owner/repo",
+  "review_comments": [],
+  "review_threads": [],
+  "reviews": [
+    {
+      "body": "Looks good.",
+      "commit_id": "head222",
+      "html_url": "https://github.com/owner/repo/pull/7#pullrequestreview-1",
+      "id": 1,
+      "state": "APPROVED",
+      "submitted_at": "2026-01-01T10:05:00Z",
+      "user": {
+        "login": "reviewer-a"
+      }
+    }
+  ],
+  "status": {
+    "statuses": [
+      {
+        "context": "license",
+        "sha": "head222",
+        "state": "success"
+      }
+    ]
+  }
+}

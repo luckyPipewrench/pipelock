@@ -13,6 +13,24 @@ from scripts.ci_test_packages import SHARDS, package_in_tree, package_suffix, se
 
 
 class TestPackageSharding(unittest.TestCase):
+    def test_release_cosign_matches_goreleaser_signature_format(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/release.yaml").read_text(encoding="utf-8")
+        goreleaser = (root / ".goreleaser.yaml").read_text(encoding="utf-8")
+
+        version_match = re.search(r"^\s*cosign-release:\s*['\"]v(\d+)\.", workflow, re.MULTILINE)
+        self.assertIsNotNone(version_match, "release workflow cosign version not found")
+
+        uses_legacy_outputs = (
+            "--output-certificate=" in goreleaser and "--output-signature=" in goreleaser
+        )
+        if uses_legacy_outputs:
+            self.assertLess(
+                int(version_match.group(1)),
+                3,
+                "Cosign v3 requires bundle output; legacy .sig/.pem flags fail during release",
+            )
+
     def test_release_workflow_uses_every_supported_shard(self) -> None:
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yaml").read_text(
             encoding="utf-8",

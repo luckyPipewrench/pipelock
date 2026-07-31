@@ -5,12 +5,32 @@
 
 from __future__ import annotations
 
+import re
 import unittest
+from pathlib import Path
 
-from scripts.ci_test_packages import package_in_tree, package_suffix, select_packages
+from scripts.ci_test_packages import SHARDS, package_in_tree, package_suffix, select_packages
 
 
 class TestPackageSharding(unittest.TestCase):
+    def test_release_workflow_uses_every_supported_shard(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yaml").read_text(
+            encoding="utf-8",
+        )
+
+        matrix_match = re.search(r"^\s*shard:\s*\[([^\]]+)\]\s*$", workflow, re.MULTILINE)
+        self.assertIsNotNone(matrix_match, "release workflow shard matrix not found")
+        matrix_shards = tuple(
+            value.strip().strip("'\"") for value in matrix_match.group(1).split(",")
+        )
+
+        loop_match = re.search(r"^\s*for shard in ([^;]+); do\s*$", workflow, re.MULTILINE)
+        self.assertIsNotNone(loop_match, "release workflow coverage loop not found")
+        loop_shards = tuple(loop_match.group(1).split())
+
+        self.assertEqual(matrix_shards, SHARDS)
+        self.assertEqual(loop_shards, SHARDS)
+
     def test_every_package_is_selected_exactly_once(self) -> None:
         packages = [
             "example.test/pipelock/cmd/pipelock",

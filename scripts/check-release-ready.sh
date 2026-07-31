@@ -56,6 +56,12 @@ note() { printf '  [FAIL] %s\n' "$1" >&2; fail=1; }
 
 echo "release-ready gate: version=$VER"
 
+# 0a. The release workflow's test matrix and its coverage loop must consume
+# exactly the shards accepted by ci_test_packages.py. Ordinary CI and release CI
+# are separate workflow surfaces; keeping this assertion in the preflight stops
+# a stale release-only shard name before the tag workflow fans out.
+(cd "$REPO_ROOT" && python3 -m unittest scripts.test_ci_test_packages)
+
 # 1. CHANGELOG: a "## [<ver>] - <YYYY-MM-DD>" heading must exist with a real date.
 # Match the version LITERALLY (grep -F) so metacharacters in a version string
 # (e.g. the '+' in '3.2.0+build.1') are never interpreted as regex; validate the

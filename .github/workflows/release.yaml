@@ -48,7 +48,7 @@ jobs:
             tags: ''
           - name: enterprise
             tags: enterprise
-        shard: ['proxy', 'scanner', 'mcp', 'rest']
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -89,7 +89,7 @@ jobs:
           fi
 
           : > "$tmpdir/shards.txt"
-          for shard in proxy scanner mcp rest; do
+          for shard in proxy scanner mcp rest-0 rest-1 rest-2; do
             if [ -n "$GO_TEST_TAGS" ]; then
               python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$shard"
             else

@@ -261,9 +261,10 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertEqual(raised.exception.source, "snapshot")
 
     def test_group_accessible_snapshot_is_refused(self) -> None:
+        data = classify(load_fixture())["snapshot"]
         with tempfile.TemporaryDirectory() as tmpdir:
             path = pathlib.Path(tmpdir) / "snapshot.json"
-            path.write_text("{}", encoding="utf-8")
+            path.write_text(json.dumps(data), encoding="utf-8")
             path.chmod(0o640)
             with self.assertRaises(pr_convergence.DataSourceError) as raised:
                 pr_convergence.load_snapshot(path)

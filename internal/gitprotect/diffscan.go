@@ -237,10 +237,39 @@ func parseHunkNewStartOK(hunkLine string) (int, bool) {
 	}
 
 	n, err := strconv.Atoi(rest[:end])
-	if err != nil || n < 1 || n > maxDiffLineNumber {
+	if err != nil || n < 0 || n > maxDiffLineNumber {
+		return 1, false
+	}
+	// A whole-file deletion emits "@@ -X,Y +0,0 @@": new_start 0 with new_count 0.
+	// Such a hunk adds no lines, so it is a valid hunk that contributes nothing to
+	// attribute. Accept it so a legitimate file deletion is not rejected as
+	// unattributed content. new_start 0 is only valid when new_count is also 0
+	// (there is no line 0 to add content at), so a "+0,N" with N > 0 stays rejected.
+	if n == 0 {
+		if hunkNewCountZero(rest, end) {
+			return n, true
+		}
 		return 1, false
 	}
 	return n, true
+}
+
+// hunkNewCountZero reports whether the new-side count in a hunk header is
+// explicitly zero, which marks a deletion hunk. rest is the substring after the
+// "+" in the header and startEnd is the index in rest where the new_start token
+// ends. A header with no explicit count (e.g. "+0 ") is not a deletion hunk
+// because the count then defaults to 1.
+func hunkNewCountZero(rest string, startEnd int) bool {
+	if startEnd >= len(rest) || rest[startEnd] != ',' {
+		return false
+	}
+	countStr := rest[startEnd+1:]
+	countEnd := strings.IndexAny(countStr, " @")
+	if countEnd < 0 {
+		countEnd = len(countStr)
+	}
+	c, err := strconv.Atoi(countStr[:countEnd])
+	return err == nil && c == 0
 }
 
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.

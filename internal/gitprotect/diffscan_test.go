@@ -222,6 +222,82 @@ func TestScanDiff_FindsSecret(t *testing.T) {
 	}
 }
 
+func TestScanDiff_WholeFileDeletion(t *testing.T) {
+	// A whole-file deletion emits "@@ -N,M +0,0 @@". It adds no lines, so it must
+	// scan clean rather than fail as unattributed content. Deleting a file that
+	// contained a secret is not a leak - there are no added lines to flag.
+	key := fakeKey("EXAMPLE")
+	diff := "diff --git a/secrets.txt b/secrets.txt\n" +
+		"deleted file mode 100644\n" +
+		"index abc1234..0000000\n" +
+		"--- a/secrets.txt\n" +
+		"+++ /dev/null\n" +
+		"@@ -1,3 +0,0 @@\n" +
+		"-first line\n" +
+		"-key = \"" + key + "\"\n" +
+		"-third line\n"
+	result, err := ScanDiff(diff, testPatterns())
+	if err != nil {
+		t.Fatalf("whole-file deletion should scan clean, got error: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("deletion has no added lines, expected 0 findings, got %d", len(result.Findings))
+	}
+}
+
+func TestParseHunkNewStartOK(t *testing.T) {
+	tests := []struct {
+		name   string
+		hunk   string
+		wantN  int
+		wantOK bool
+	}{
+		{"normal add", "@@ -1,3 +1,5 @@", 1, true},
+		{"add at later line", "@@ -0,0 +5,2 @@", 5, true},
+		{"whole-file deletion", "@@ -1,3 +0,0 @@", 0, true},
+		{"mid-file deletion", "@@ -3,2 +2,0 @@", 2, true},
+		{"malformed zero-start with content", "@@ -1,1 +0,5 @@", 1, false},
+		{"nonnumeric zero-start count", "@@ -1,1 +0,invalid @@", 1, false},
+		{"deletion count at end of header", "@@ -1,1 +0,0", 0, true},
+		{"zero-start no explicit count", "@@ -1,1 +0 @@", 1, false},
+		{"no plus token", "@@ nonsense @@", 1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n, ok := parseHunkNewStartOK(tt.hunk)
+			if n != tt.wantN || ok != tt.wantOK {
+				t.Fatalf("parseHunkNewStartOK(%q) = (%d, %v), want (%d, %v)", tt.hunk, n, ok, tt.wantN, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestScanDiff_MalformedZeroStartHunkNotAcceptedAsDeletion(t *testing.T) {
+	// A "+0,N" with N > 0 is not a valid deletion hunk (there is no line 0 to add
+	// at), so the fix must not accept it as one. Added content under such a hunk
+	// must never be silently accepted: it is either scanned and flagged, or the
+	// input fails closed as unattributed content.
+	secretDiff := "diff --git a/x.go b/x.go\n" +
+		"--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -1,1 +0,5 @@\n" +
+		"+" + `var key = "` + fakeKey("EXAMPLE") + `"` + "\n"
+	result, err := ScanDiff(secretDiff, testPatterns())
+	if err == nil && len(result.Findings) == 0 {
+		t.Fatal("malformed +0,N hunk carrying a secret must not be silently accepted")
+	}
+
+	// The same malformed hunk with benign content fails closed as unattributed.
+	benignDiff := "diff --git a/x.go b/x.go\n" +
+		"--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -1,1 +0,5 @@\n" +
+		"+harmless configuration value\n"
+	if _, err := ScanDiff(benignDiff, testPatterns()); !errors.Is(err, ErrUnattributedAddedLines) {
+		t.Fatalf("malformed +0,N hunk with benign content should fail closed, got: %v", err)
+	}
+}
+
 func TestCompileDLPPatterns_InvalidRegexWithKnownClassFallback(t *testing.T) {
 	patterns := CompileDLPPatterns([]config.DLPPattern{{
 		Name:     testPatternAWSKey,

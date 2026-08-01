@@ -1,6 +1,6 @@
 BINARY := pipelock
 MODULE := github.com/luckyPipewrench/pipelock
-VERSION    ?= $(shell (git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-dev.unknown") | sed 's/^v//')
+VERSION    ?= $(shell ./scripts/git-version.sh 2>/dev/null || echo "0.0.0-dev.unknown")
 BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GO_VERSION := $(shell go version | awk '{print $$3}')

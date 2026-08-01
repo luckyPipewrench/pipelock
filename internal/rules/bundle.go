@@ -546,7 +546,7 @@ func isDevelopmentCurrentVersion(s string) bool {
 	if err == nil && prereleaseHasIdentifier(v.prerelease, "dev") {
 		return true
 	}
-	return isGitDescribeVersion(s)
+	return isGitDescribeVersion(s) || isBareGitCommitVersion(s)
 }
 
 func prereleaseHasIdentifier(prerelease, ident string) bool {
@@ -579,6 +579,23 @@ func isGitDescribeVersion(s string) bool {
 		return false
 	}
 	return isHexString(shorthash[1:])
+}
+
+func isBareGitCommitVersion(s string) bool {
+	// `git describe --always` emits a bare abbreviated commit id when no matching
+	// tag is reachable, which is still a source build with no orderable release.
+	//
+	// Deliberately accepts an all-DIGIT string, which is why this looks looser
+	// than it needs to be. An abbreviated commit id is hexadecimal, so roughly
+	// one in twenty-seven real short hashes contains no a-f letter at all;
+	// requiring a letter would misclassify those legitimate source builds as
+	// malformed and refuse them outright. The accepted cost is that an all-digit
+	// version scheme this project does not use (a CalVer stamp such as 20260731)
+	// is read as a commit id, which downgrades it from a hard refusal to the
+	// unverifiable-source-build path. Do not "tighten" this to require a hex
+	// letter without first weighing that availability regression.
+	const minShortHashLen = 7
+	return len(s) >= minShortHashLen && isHexString(s)
 }
 
 func isHexString(s string) bool {

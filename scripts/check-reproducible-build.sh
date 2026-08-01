@@ -14,7 +14,7 @@ for command in git go cmp sha256sum; do
 	fi
 done
 
-version="${VERSION:-$(git describe --tags --always --dirty | sed 's/^v//')}"
+version="${VERSION:-$(./scripts/git-version.sh)}"
 build_date="$(git show -s --format=%cI HEAD)"
 git_commit="$(git rev-parse --short HEAD)"
 go_version="$(go env GOVERSION)"

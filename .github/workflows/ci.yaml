@@ -391,6 +391,11 @@ jobs:
       - name: Python pin policy
         run: bash scripts/check-python-pins.sh
 
+      # Release-tooling tests had no PR-time runner, so breaks stayed invisible
+      # until tag time. The pattern covers both test_*.py and *_test.py modules.
+      - name: Release tooling unit tests
+        run: python3 -m unittest discover -s scripts -p '*test*.py'
+
       - name: Test stability policy
         run: bash scripts/check-test-stability.sh
 
@@ -500,7 +505,7 @@ jobs:
 
       - name: Build binary
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev.unknown")
+          VERSION=$(./scripts/git-version.sh)
           go build -trimpath -ldflags "-s -w \
             -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=$VERSION \
             -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=$VERSION" \
@@ -511,7 +516,7 @@ jobs:
 
       - name: Build binary (enterprise)
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev.unknown")
+          VERSION=$(./scripts/git-version.sh)
           go build -tags enterprise -trimpath -ldflags "-s -w \
             -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=$VERSION \
             -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=$VERSION" \

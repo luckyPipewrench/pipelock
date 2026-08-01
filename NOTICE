@@ -1,0 +1,14 @@
+Pipelock
+Copyright 2026 Joshua Waldrep
+
+This repository is licensed under two separate licenses.
+
+The core of the project is licensed under the Apache License, Version 2.0.
+See LICENSE for the full license text.
+
+The contents of the enterprise/ directory are NOT covered by the Apache
+License. They are licensed under the Elastic License 2.0 (ELv2). See
+enterprise/LICENSE for the full license text.
+
+Canonical upstream:
+https://github.com/luckyPipewrench/pipelock

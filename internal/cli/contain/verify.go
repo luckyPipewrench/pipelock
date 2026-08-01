@@ -144,6 +144,7 @@ type probeEnv struct {
 	wrapperInvPath     string
 	toolsListPath      string
 	workspacePaths     []string
+	pipelockTarget     string
 	// postureProofPath is the resolved path the current `contain run` writes its
 	// signed posture capsule to. It is exported into the contained launch env as
 	// PIPELOCK_POSTURE_PROOF so an in-child emitter binds the exact capsule this
@@ -187,6 +188,7 @@ func defaultProbeEnv() *probeEnv {
 		pinPath:            defaultIntegrityPin,
 		wrapperInvPath:     defaultWrapperInvPath,
 		toolsListPath:      defaultToolsListPath,
+		pipelockTarget:     defaultPipelockTarget,
 		runCmd:             realRunCommand,
 		dropCounter:        readContainmentDropCounter,
 		dialCtx:            realDial,
@@ -520,11 +522,10 @@ func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string)
 }
 
 // probeBinaryIntegrity reads the integrity pin written at install time and
-// compares it against the SHA-256 of the currently-running binary.
+// compares it against the SHA-256 of the deployed binary systemd executes.
 // Skipped when the pin file is missing (install never happened) or
 // unreadable to this user (run as root to verify). Failure means either
-// the binary was swapped after install OR a different pipelock binary is
-// being used to run verify than the one that was installed.
+// the deployed binary was swapped after install or cannot be verified.
 func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 	data, err := env.readFile(env.pinPath)
 	if err != nil {
@@ -541,20 +542,22 @@ func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("%s contains malformed SHA-256 pin (length %d)", env.pinPath, len(pinned))
 	}
 
-	self, err := env.selfPath()
+	target := filepath.Clean(env.pipelockTarget)
+	got, err := env.hashFile(target)
 	if err != nil {
-		return statusFail, fmt.Sprintf("resolve self path: %v", err)
-	}
-	got, err := env.hashFile(self)
-	if err != nil {
-		return statusFail, fmt.Sprintf("hash %s: %v", self, err)
+		return statusFail, fmt.Sprintf("hash deployed binary %s: %v", target, err)
 	}
 	if got != pinned {
 		// Truncate for readability; full hashes are 64 chars.
-		return statusFail, fmt.Sprintf("binary hash mismatch: pin=%s got=%s (binary swapped after install or different binary running verify)",
+		return statusFail, fmt.Sprintf("binary hash mismatch: pin=%s got=%s (deployed binary swapped after install)",
 			shortHash(pinned), shortHash(got))
 	}
-	return statusPass, fmt.Sprintf("binary hash %s matches pin", shortHash(pinned))
+
+	detail := fmt.Sprintf("binary hash %s matches pin", shortHash(pinned))
+	if self, err := env.selfPath(); err == nil && filepath.Clean(self) != target {
+		detail += fmt.Sprintf(" (note: invoking binary %s differs from deployed binary %s)", filepath.Clean(self), target)
+	}
+	return statusPass, detail
 }
 
 const sha256HexLen = 64

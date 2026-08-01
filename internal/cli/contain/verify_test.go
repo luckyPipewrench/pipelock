@@ -191,23 +191,24 @@ func TestProbeListedToolTargets_AgentContextFailuresSkip(t *testing.T) {
 func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 	t.Helper()
 	env := &probeEnv{
-		port:          8888,
-		operatorUser:  "",
-		proxyUserName: testProxyUser,
-		agentUserName: testAgentUser,
-		wrapperDir:    t.TempDir(),
-		toolWrappers:  []string{"plk-claude", "plk-codex"},
-		caBundlePath:  filepath.Join(t.TempDir(), "combined-ca.pem"),
-		launchPath:    "", // populated below
-		nftTable:      testTable,
-		nftChain:      testChain,
-		nftPath:       testNFT,
-		serviceName:   testService,
-		pinPath:       filepath.Join(t.TempDir(), "binary-pin.sha256"),
-		toolsListPath: filepath.Join(t.TempDir(), "tools.list"),
-		runCmd:        rejectAllRun,
-		dropCounter:   rejectAllDropCounter,
-		dialCtx:       rejectAllDial,
+		port:           8888,
+		operatorUser:   "",
+		proxyUserName:  testProxyUser,
+		agentUserName:  testAgentUser,
+		wrapperDir:     t.TempDir(),
+		toolWrappers:   []string{"plk-claude", "plk-codex"},
+		caBundlePath:   filepath.Join(t.TempDir(), "combined-ca.pem"),
+		launchPath:     "", // populated below
+		nftTable:       testTable,
+		nftChain:       testChain,
+		nftPath:        testNFT,
+		serviceName:    testService,
+		pinPath:        filepath.Join(t.TempDir(), "binary-pin.sha256"),
+		toolsListPath:  filepath.Join(t.TempDir(), "tools.list"),
+		pipelockTarget: defaultPipelockTarget,
+		runCmd:         rejectAllRun,
+		dropCounter:    rejectAllDropCounter,
+		dialCtx:        rejectAllDial,
 		wait: func(context.Context, time.Duration) error {
 			return nil
 		},
@@ -3290,7 +3291,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	}
 	writeFakePEMBundle(t, env.caBundlePath, "Pipelock Test CA")
 
-	// Probe 10: binary integrity. allPassEnv emits matching pin + hash so
+	// Probe 10: deployed binary integrity. allPassEnv emits matching pin + hash so
 	// the probe returns pass. Tests that want to exercise mismatch override
 	// hashFile or readFile after calling allPassEnv.
 	const allPassHash = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
@@ -3306,9 +3307,9 @@ func allPassEnv(t *testing.T) *probeEnv {
 		}
 		return nil, fmt.Errorf("unexpected readFile %s", path)
 	}
-	env.selfPath = func() (string, error) { return "/usr/local/bin/pipelock", nil }
+	env.selfPath = func() (string, error) { return defaultPipelockTarget, nil }
 	env.hashFile = func(path string) (string, error) {
-		if path == "/usr/local/bin/pipelock" {
+		if path == defaultPipelockTarget {
 			return allPassHash, nil
 		}
 		return "", fmt.Errorf("unexpected hashFile %s", path)

@@ -254,28 +254,47 @@ func TestListedToolTargetsRejectMalformedOrUnsafeState(t *testing.T) {
 }
 
 func TestVerificationMetadataFailuresAreVisible(t *testing.T) {
-	t.Run("binary self path", func(t *testing.T) {
-		env := makeProbeEnv(t, func(env *probeEnv) {
-			env.readFile = func(string) ([]byte, error) { return []byte(strings.Repeat("a", sha256HexLen)), nil }
-			env.selfPath = func() (string, error) { return "", os.ErrPermission }
+	for _, tc := range []struct {
+		name       string
+		selfPath   func() (string, error)
+		hashFile   func(string) (string, error)
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name:       "invoking binary path unavailable does not prevent deployed binary verification",
+			selfPath:   func() (string, error) { return "", os.ErrPermission },
+			hashFile:   func(string) (string, error) { return strings.Repeat("a", sha256HexLen), nil },
+			wantStatus: statusPass,
+			wantDetail: "matches pin",
+		},
+		{
+			name:       "deployed binary unreadable",
+			selfPath:   func() (string, error) { return "/bin/pipelock", nil },
+			hashFile:   func(string) (string, error) { return "", os.ErrPermission },
+			wantStatus: statusFail,
+			wantDetail: "hash deployed binary",
+		},
+		{
+			name:       "deployed binary absent",
+			selfPath:   func() (string, error) { return "/bin/pipelock", nil },
+			hashFile:   func(string) (string, error) { return "", os.ErrNotExist },
+			wantStatus: statusFail,
+			wantDetail: "hash deployed binary",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.readFile = func(string) ([]byte, error) { return []byte(strings.Repeat("a", sha256HexLen)), nil }
+				env.selfPath = tc.selfPath
+				env.hashFile = tc.hashFile
+			})
+			status, detail := probeBinaryIntegrity(context.Background(), env)
+			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
+			}
 		})
-		status, detail := probeBinaryIntegrity(context.Background(), env)
-		if status != statusFail || !strings.Contains(detail, "resolve self path") {
-			t.Fatalf("probe = (%q, %q)", status, detail)
-		}
-	})
-
-	t.Run("binary hash", func(t *testing.T) {
-		env := makeProbeEnv(t, func(env *probeEnv) {
-			env.readFile = func(string) ([]byte, error) { return []byte(strings.Repeat("a", sha256HexLen)), nil }
-			env.selfPath = func() (string, error) { return "/bin/pipelock", nil }
-			env.hashFile = func(string) (string, error) { return "", os.ErrPermission }
-		})
-		status, detail := probeBinaryIntegrity(context.Background(), env)
-		if status != statusFail || !strings.Contains(detail, "hash /bin/pipelock") {
-			t.Fatalf("probe = (%q, %q)", status, detail)
-		}
-	})
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -295,6 +314,63 @@ func TestVerificationMetadataFailuresAreVisible(t *testing.T) {
 			_, err := wrappersForVerify(env)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProbeBinaryIntegrityVerifiesDeployedBinary(t *testing.T) {
+	const deployedContents = "deployed binary before mutation"
+
+	tests := []struct {
+		name           string
+		mutateDeployed bool
+		invokingBody   string
+		wantStatus     string
+		wantDetail     string
+	}{
+		{
+			name:           "mutated deployed binary fails even when invoking binary still matches pin",
+			mutateDeployed: true,
+			invokingBody:   deployedContents,
+			wantStatus:     statusFail,
+			wantDetail:     "mismatch",
+		},
+		{
+			name:         "different invoking binary notes but does not fail when deployed binary matches pin",
+			invokingBody: "separate operator binary",
+			wantStatus:   statusPass,
+			wantDetail:   "note: invoking binary",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			deployed := filepath.Join(dir, "deployed-pipelock")
+			invoking := filepath.Join(dir, "invoking-pipelock")
+			pinPath := filepath.Join(dir, "binary-pin.sha256")
+			mustWriteFile(t, deployed, deployedContents)
+			pinned, err := sha256HexOfFile(deployed)
+			if err != nil {
+				t.Fatalf("hash deployed binary before mutation: %v", err)
+			}
+			mustWriteFile(t, pinPath, pinned+"\n")
+			if tc.mutateDeployed {
+				mustWriteFile(t, deployed, "deployed binary after mutation")
+			}
+			mustWriteFile(t, invoking, tc.invokingBody)
+
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.pinPath = pinPath
+				env.pipelockTarget = deployed
+				env.readFile = os.ReadFile
+				env.selfPath = func() (string, error) { return invoking, nil }
+				env.hashFile = sha256HexOfFile
+			})
+			status, detail := probeBinaryIntegrity(context.Background(), env)
+			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
 			}
 		})
 	}

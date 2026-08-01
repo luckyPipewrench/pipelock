@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ CONFLICT_MERGE_STATES = {"DIRTY"}
 BLOCKED_MERGE_STATES = {"BLOCKED", "DRAFT", "UNKNOWN"}
 FINAL_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED"}
 GH_READ_TIMEOUT_SECONDS = 30
+GRAPHQL_MAX_PAGES = 100
 SNAPSHOT_SCHEMA_VERSION = 2
 GRAPHQL_ALLOWED_FIELDS = {"query", "owner", "name", "number", "after", "headRefName"}
 GH_API_FIELD_FLAGS = {"-f", "-F", "--field", "--raw-field"}
@@ -124,6 +126,22 @@ def dotted_get(value: Any, *keys: str) -> Any:
     for key in keys:
         current = as_dict(current).get(key)
     return current
+
+
+def map_open_pull_node(node_value: Any) -> dict[str, Any]:
+    node = as_dict(node_value)
+    return {
+        "number": node.get("number"),
+        "state": str(node.get("state") or "").lower(),
+        "title": node.get("title"),
+        "html_url": node.get("url"),
+        "head": {
+            "ref": node.get("headRefName"),
+            "repo": {
+                "full_name": dotted_get(node, "headRepository", "nameWithOwner"),
+            },
+        },
+    }
 
 
 def option_value(args: list[str], idx: int, names: set[str]) -> tuple[str | None, int] | None:
@@ -269,6 +287,57 @@ class GhClient:
             return pages
         return self.run(args)
 
+    def graphql_paginated_nodes(
+        self,
+        *,
+        query: str,
+        variables: dict[str, Any],
+        connection_path: tuple[str, ...],
+        connection_name: str,
+        nodes_name: str,
+        node_mapper: Callable[[Any], dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        after: str | None = None
+        nodes: list[dict[str, Any]] = []
+        seen_cursors: set[str] = set()
+        for _ in range(GRAPHQL_MAX_PAGES):
+            args = [
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={self.owner}",
+                "-f",
+                f"name={self.name}",
+            ]
+            for name, value in variables.items():
+                flag = "-F" if isinstance(value, int) else "-f"
+                args.extend([flag, f"{name}={value}"])
+            if after:
+                args.extend(["-f", f"after={after}"])
+            data = self.run(args)
+            if not isinstance(data, dict):
+                raise GhReadError("GraphQL response was not an object")
+            repository = as_dict(dotted_get(data, "data", "repository"))
+            connection = dotted_get(repository, *connection_path)
+            if not isinstance(connection, dict):
+                raise GhReadError(f"GraphQL response did not include {connection_name}")
+            page_nodes = connection.get("nodes") or []
+            if not isinstance(page_nodes, list):
+                raise GhReadError(f"GraphQL {nodes_name} nodes was not a list")
+            nodes.extend(node_mapper(node_value) for node_value in page_nodes)
+            page_info = as_dict(connection.get("pageInfo"))
+            if not page_info.get("hasNextPage"):
+                return nodes
+            after = page_info.get("endCursor")
+            if not after:
+                raise GhReadError("GraphQL pagination omitted endCursor")
+            if after in seen_cursors:
+                raise GhReadError(f"GraphQL pagination repeated cursor for {connection_name}")
+            seen_cursors.add(after)
+        raise GhReadError(f"GraphQL pagination exceeded {GRAPHQL_MAX_PAGES} pages for {connection_name}")
+
     def graphql_review_threads(self, pr_number: int) -> list[dict[str, Any]]:
         query = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -304,44 +373,14 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
   }
 }
 """
-        after: str | None = None
-        nodes: list[dict[str, Any]] = []
-        while True:
-            args = [
-                "api",
-                "graphql",
-                "-f",
-                f"query={query}",
-                "-F",
-                f"owner={self.owner}",
-                "-F",
-                f"name={self.name}",
-                "-F",
-                f"number={pr_number}",
-            ]
-            if after:
-                args.extend(["-F", f"after={after}"])
-            data = self.run(args)
-            if not isinstance(data, dict):
-                raise GhReadError("GraphQL response was not an object")
-            data_root = as_dict(data.get("data"))
-            repository = as_dict(data_root.get("repository"))
-            pull = repository.get("pullRequest")
-            if not isinstance(pull, dict):
-                raise GhReadError("GraphQL response did not include pullRequest")
-            threads = pull.get("reviewThreads")
-            if not isinstance(threads, dict):
-                raise GhReadError("GraphQL response did not include reviewThreads")
-            page_nodes = threads.get("nodes") or []
-            if not isinstance(page_nodes, list):
-                raise GhReadError("GraphQL reviewThreads nodes was not a list")
-            nodes.extend(page_nodes)
-            page_info = as_dict(threads.get("pageInfo"))
-            if not page_info.get("hasNextPage"):
-                return nodes
-            after = page_info.get("endCursor")
-            if not after:
-                raise GhReadError("GraphQL pagination omitted endCursor")
+        return self.graphql_paginated_nodes(
+            query=query,
+            variables={"number": pr_number},
+            connection_path=("pullRequest", "reviewThreads"),
+            connection_name="reviewThreads",
+            nodes_name="reviewThreads",
+            node_mapper=as_dict,
+        )
 
     def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, Any]]:
         query = """
@@ -361,56 +400,14 @@ query($owner: String!, $name: String!, $headRefName: String!, $after: String) {
   }
 }
 """
-        after: str | None = None
-        nodes: list[dict[str, Any]] = []
-        while True:
-            args = [
-                "api",
-                "graphql",
-                "-f",
-                f"query={query}",
-                "-F",
-                f"owner={self.owner}",
-                "-F",
-                f"name={self.name}",
-                "-F",
-                f"headRefName={head_ref_name}",
-            ]
-            if after:
-                args.extend(["-F", f"after={after}"])
-            data = self.run(args)
-            if not isinstance(data, dict):
-                raise GhReadError("GraphQL response was not an object")
-            data_root = as_dict(data.get("data"))
-            repository = as_dict(data_root.get("repository"))
-            pulls = repository.get("pullRequests")
-            if not isinstance(pulls, dict):
-                raise GhReadError("GraphQL response did not include pullRequests")
-            page_nodes = pulls.get("nodes") or []
-            if not isinstance(page_nodes, list):
-                raise GhReadError("GraphQL pullRequests nodes was not a list")
-            for node_value in page_nodes:
-                node = as_dict(node_value)
-                nodes.append(
-                    {
-                        "number": node.get("number"),
-                        "state": str(node.get("state") or "").lower(),
-                        "title": node.get("title"),
-                        "html_url": node.get("url"),
-                        "head": {
-                            "ref": node.get("headRefName"),
-                            "repo": {
-                                "full_name": dotted_get(node, "headRepository", "nameWithOwner"),
-                            },
-                        },
-                    }
-                )
-            page_info = as_dict(pulls.get("pageInfo"))
-            if not page_info.get("hasNextPage"):
-                return nodes
-            after = page_info.get("endCursor")
-            if not after:
-                raise GhReadError("GraphQL pagination omitted endCursor")
+        return self.graphql_paginated_nodes(
+            query=query,
+            variables={"headRefName": head_ref_name},
+            connection_path=("pullRequests",),
+            connection_name="pullRequests",
+            nodes_name="pullRequests",
+            node_mapper=map_open_pull_node,
+        )
 
 
 def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:

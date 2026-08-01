@@ -41,6 +41,41 @@ def classify(data: dict, previous: dict | None = None, snapshot_requested: bool 
     )
 
 
+def recording_base_candidate_client(
+    fixture: dict[str, object],
+    candidates: list[dict[str, object]],
+    calls: list[str],
+    head_ref_reads: list[str],
+) -> type:
+    class RecordingGhClient:
+        def __init__(self, repo: str) -> None:
+            self.repo = repo
+            self.owner, self.name = pr_convergence.parse_repo(repo)
+
+        def api(self, path: str, *, paginate: bool = False, accept: str | None = None) -> object:
+            del paginate, accept
+            calls.append(path)
+            if path == "repos/owner/repo/pulls/7":
+                return fixture["pull"]
+            if path.endswith("/check-runs?per_page=100"):
+                return {"check_runs": []}
+            if path.endswith("/status"):
+                return {"statuses": []}
+            if path.endswith("/compare/base111...head222"):
+                return {"behind_by": 0, "ahead_by": 1, "status": "ahead"}
+            return []
+
+        def graphql_review_threads(self, pr_number: int) -> list[dict[str, object]]:
+            del pr_number
+            return []
+
+        def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, object]]:
+            head_ref_reads.append(head_ref_name)
+            return candidates
+
+    return RecordingGhClient
+
+
 class PrConvergenceStatusTest(unittest.TestCase):
     def asserted_status_values(self) -> set[str]:
         source = pathlib.Path(__file__).read_text(encoding="utf-8")
@@ -546,6 +581,119 @@ class PrConvergenceStatusTest(unittest.TestCase):
             with self.assertRaises(pr_convergence.GhReadError):
                 client.graphql_review_threads(7)
 
+    def test_graphql_open_pulls_paginates_and_maps_nodes(self) -> None:
+        client = pr_convergence.GhClient("owner/repo")
+        pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "nodes": [
+                                {
+                                    "number": 6,
+                                    "state": "OPEN",
+                                    "title": "Base PR",
+                                    "url": "https://github.com/owner/repo/pull/6",
+                                    "headRefName": "feature-base",
+                                    "headRepository": {"nameWithOwner": "contributor/repo"},
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                        }
+                    }
+                }
+            },
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "nodes": [
+                                {
+                                    "number": 8,
+                                    "state": "OPEN",
+                                    "title": "Other Base PR",
+                                    "url": "https://github.com/owner/repo/pull/8",
+                                    "headRefName": "feature-base",
+                                    "headRepository": {"nameWithOwner": "fork/repo"},
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": False},
+                        }
+                    }
+                }
+            },
+        ]
+
+        with mock.patch.object(client, "run", side_effect=pages) as run:
+            pulls = client.graphql_open_pulls_by_head_ref("feature-base")
+
+        self.assertEqual([pull["number"] for pull in pulls], [6, 8])
+        self.assertEqual(pulls[0]["state"], "open")
+        self.assertEqual(pulls[1]["head"]["repo"]["full_name"], "fork/repo")
+        first_args = run.call_args_list[0].args[0]
+        second_args = run.call_args_list[1].args[0]
+        self.assertEqual(first_args[first_args.index("headRefName=feature-base") - 1], "-f")
+        self.assertEqual(second_args[second_args.index("after=cursor-1") - 1], "-f")
+
+    def test_graphql_open_pulls_rejects_non_list_nodes(self) -> None:
+        client = pr_convergence.GhClient("owner/repo")
+        response = {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "nodes": {"number": 6},
+                        "pageInfo": {"hasNextPage": False},
+                    }
+                }
+            }
+        }
+
+        with mock.patch.object(client, "run", return_value=response), self.assertRaises(
+            pr_convergence.GhReadError
+        ):
+            client.graphql_open_pulls_by_head_ref("feature-base")
+
+    def test_graphql_open_pulls_rejects_repeated_cursor(self) -> None:
+        client = pr_convergence.GhClient("owner/repo")
+        response = {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                    }
+                }
+            }
+        }
+
+        with mock.patch.object(client, "run", return_value=response), self.assertRaises(
+            pr_convergence.GhReadError
+        ):
+            client.graphql_open_pulls_by_head_ref("feature-base")
+
+    def test_graphql_open_pulls_rejects_page_limit_overflow(self) -> None:
+        client = pr_convergence.GhClient("owner/repo")
+
+        def page(index: int) -> dict[str, object]:
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "nodes": [],
+                            "pageInfo": {"hasNextPage": True, "endCursor": f"cursor-{index}"},
+                        }
+                    }
+                }
+            }
+
+        pages = [page(index) for index in range(pr_convergence.GRAPHQL_MAX_PAGES + 1)]
+        with mock.patch.object(client, "run", side_effect=pages) as run, self.assertRaises(
+            pr_convergence.GhReadError
+        ):
+            client.graphql_open_pulls_by_head_ref("feature-base")
+
+        self.assertEqual(run.call_count, pr_convergence.GRAPHQL_MAX_PAGES)
+
     def test_new_comment_since_snapshot_reports_changed_window(self) -> None:
         data = load_fixture()
         previous = classify(data)["snapshot"]
@@ -832,42 +980,18 @@ class PrConvergenceStatusTest(unittest.TestCase):
         fixture["pull"]["base"]["ref"] = "feature-base"
         calls: list[str] = []
         head_ref_reads: list[str] = []
+        candidates = [
+            {
+                "head": {"ref": "feature-base", "repo": {"full_name": "contributor/repo"}},
+                "html_url": "https://github.com/owner/repo/pull/6",
+                "number": 6,
+                "state": "open",
+                "title": "Base PR",
+            }
+        ]
 
-        class RecordingGhClient:
-            def __init__(self, repo: str) -> None:
-                self.repo = repo
-                self.owner, self.name = pr_convergence.parse_repo(repo)
-
-            def api(self, path: str, *, paginate: bool = False, accept: str | None = None) -> object:
-                del paginate, accept
-                calls.append(path)
-                if path == "repos/owner/repo/pulls/7":
-                    return fixture["pull"]
-                if path.endswith("/check-runs?per_page=100"):
-                    return {"check_runs": []}
-                if path.endswith("/status"):
-                    return {"statuses": []}
-                if path.endswith("/compare/base111...head222"):
-                    return {"behind_by": 0, "ahead_by": 1, "status": "ahead"}
-                return []
-
-            def graphql_review_threads(self, pr_number: int) -> list[dict[str, object]]:
-                del pr_number
-                return []
-
-            def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, object]]:
-                head_ref_reads.append(head_ref_name)
-                return [
-                    {
-                        "head": {"ref": head_ref_name, "repo": {"full_name": "contributor/repo"}},
-                        "html_url": "https://github.com/owner/repo/pull/6",
-                        "number": 6,
-                        "state": "open",
-                        "title": "Base PR",
-                    }
-                ]
-
-        with mock.patch.object(pr_convergence, "GhClient", RecordingGhClient):
+        client = recording_base_candidate_client(fixture, candidates, calls, head_ref_reads)
+        with mock.patch.object(pr_convergence, "GhClient", client):
             data = pr_convergence.gather_pr_state("owner/repo", 7)
 
         self.assertEqual(head_ref_reads, ["feature-base"])
@@ -881,33 +1005,8 @@ class PrConvergenceStatusTest(unittest.TestCase):
         calls: list[str] = []
         head_ref_reads: list[str] = []
 
-        class RecordingGhClient:
-            def __init__(self, repo: str) -> None:
-                self.repo = repo
-                self.owner, self.name = pr_convergence.parse_repo(repo)
-
-            def api(self, path: str, *, paginate: bool = False, accept: str | None = None) -> object:
-                del paginate, accept
-                calls.append(path)
-                if path == "repos/owner/repo/pulls/7":
-                    return fixture["pull"]
-                if path.endswith("/check-runs?per_page=100"):
-                    return {"check_runs": []}
-                if path.endswith("/status"):
-                    return {"statuses": []}
-                if path.endswith("/compare/base111...head222"):
-                    return {"behind_by": 0, "ahead_by": 1, "status": "ahead"}
-                return []
-
-            def graphql_review_threads(self, pr_number: int) -> list[dict[str, object]]:
-                del pr_number
-                return []
-
-            def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, object]]:
-                head_ref_reads.append(head_ref_name)
-                return []
-
-        with mock.patch.object(pr_convergence, "GhClient", RecordingGhClient):
+        client = recording_base_candidate_client(fixture, [], calls, head_ref_reads)
+        with mock.patch.object(pr_convergence, "GhClient", client):
             data = pr_convergence.gather_pr_state("owner/repo", 7)
 
         self.assertEqual(data["base_pull_candidates"], [])

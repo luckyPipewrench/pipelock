@@ -769,6 +769,28 @@ class PrConvergenceStatusTest(unittest.TestCase):
             ["modified:review_thread:thread-1"],
         )
 
+    def test_resolved_thread_since_snapshot_reports_changed_window(self) -> None:
+        data = load_fixture()
+        data["review_threads"] = [
+            {
+                "comments": {"nodes": []},
+                "id": "thread-1",
+                "isOutdated": False,
+                "isResolved": False,
+                "line": 12,
+                "originalLine": 12,
+                "path": "scripts/example.py",
+            }
+        ]
+        previous = classify(data)["snapshot"]
+        data["review_threads"][0]["isResolved"] = True
+        result = classify(data, previous=previous, snapshot_requested=True)
+        self.assertEqual(result["status"], "CHANGED_DURING_WINDOW")
+        self.assertEqual(
+            result["change_detection"]["categories"]["threads"],
+            ["modified:review_thread:thread-1"],
+        )
+
     def test_stacked_pr_base_is_distinct_from_main_base(self) -> None:
         data = load_fixture()
         data["pull"]["base"]["ref"] = "feature-base"

@@ -3,7 +3,18 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Coarse prefilter: v-prefixed with at least two dots (the wildcards also match extra dots like v1.2.3.4; excludes floating v1/v2). Strict SemVer is enforced in the release-preflight gate (check-release-ready.sh).
+      # Coarse prefilter. The leading `[0-9]` is load-bearing: a bare `v*` also
+      # matches tags that merely CONTAIN a dotted version later in the name,
+      # because `*` happily spans the rest of the prefix. `verifier-v0.2.0`
+      # matched the old `v*.*.*` as v + "erifier-v0" + . + "2" + . + "0", which
+      # started a full release run for a verifier tag. Requiring a digit
+      # immediately after the `v` excludes every non-product tag prefix.
+      #
+      # Still deliberately coarse: the wildcards accept extra dots (v1.2.3.4) and
+      # hyphenated prerelease suffixes (v1.2.3-beta.1), and exclude the floating
+      # v1/v2 pointers. Strict SemVer remains enforced in the release-preflight
+      # gate (check-release-ready.sh), which is the fail-closed check.
+      - 'v[0-9]*.[0-9]*.[0-9]*'
 
 # Serialize release publications so two overlapping tag pushes cannot race on the
 # GoReleaser uploads or the shared force-updated v2 tag (an older run could
@@ -398,8 +409,8 @@ jobs:
           exit 1
 
       # Move the v2 floating tag so `uses: luckyPipewrench/pipelock@v2`
-      # always resolves to the latest release. Safe because the trigger
-      # is v*.*.* which won't re-fire on the v2 push.
+      # always resolves to the latest release. Safe because the trigger requires
+      # two dotted components, so a bare `v2` push cannot re-fire this workflow.
       - name: Update v2 floating tag for GitHub Action
         env:
           TAG_NAME: ${{ github.ref_name }}

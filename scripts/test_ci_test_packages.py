@@ -49,6 +49,14 @@ def _defines_unittest_testcase(path: Path) -> bool:
             for alias in node.names:
                 if alias.name == "TestCase":
                     testcase_names.add(alias.asname or alias.name)
+                elif alias.name == "*":
+                    # `from unittest import *` yields a single alias named "*",
+                    # so which names it binds cannot be resolved statically. It
+                    # may well bind TestCase. Include the module rather than let
+                    # an unresolvable import silently drop a real test file,
+                    # which is the exact under-inclusion this guard exists to
+                    # prevent.
+                    return True
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "unittest":

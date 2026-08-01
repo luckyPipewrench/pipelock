@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,7 @@ ACTIONABLE_RE = re.compile(
     r"Actionable\s+comments\s+posted:\s*(\d+)",
     re.IGNORECASE,
 )
-AI_REVIEW_RE = re.compile(r"^\s*##\s+AI Review\b", re.IGNORECASE)
+AI_REVIEW_RE = re.compile(r"^\s*##\s+AI Review\b", re.IGNORECASE | re.MULTILINE)
 CLEAN_AI_MARKERS = (
     "No material security or correctness issues found",
     "Test coverage is adequate",
@@ -62,6 +63,11 @@ PASSING_CHECK_CONCLUSIONS = {"neutral", "skipped", "success"}
 CONFLICT_MERGE_STATES = {"DIRTY"}
 BLOCKED_MERGE_STATES = {"BLOCKED", "DRAFT", "UNKNOWN"}
 FINAL_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED"}
+GH_READ_TIMEOUT_SECONDS = 30
+SNAPSHOT_SCHEMA_VERSION = 2
+GRAPHQL_ALLOWED_FIELDS = {"query", "owner", "name", "number", "after"}
+GH_API_FIELD_FLAGS = {"-f", "-F", "--field", "--raw-field"}
+GH_API_HEADER_FLAGS = {"-H", "--header"}
 
 
 class DataSourceError(RuntimeError):
@@ -105,6 +111,54 @@ def sorted_dict_list(values: list[dict[str, Any]], key: str) -> list[dict[str, A
     return sorted(values, key=lambda item: str(item.get(key, "")))
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def dotted_get(value: Any, *keys: str) -> Any:
+    current = value
+    for key in keys:
+        current = as_dict(current).get(key)
+    return current
+
+
+def option_value(args: list[str], idx: int, names: set[str]) -> tuple[str | None, int] | None:
+    arg = args[idx]
+    if arg in names:
+        if idx + 1 >= len(args):
+            return None
+        return args[idx + 1], idx + 2
+    for name in names:
+        if arg.startswith(f"{name}="):
+            return arg.split("=", 1)[1], idx + 1
+        if name.startswith("-") and len(name) == 2 and arg.startswith(name) and arg != name:
+            return arg[len(name):], idx + 1
+    return None
+
+
+def field_name(value: str) -> str | None:
+    if "=" not in value:
+        return None
+    name, _ = value.split("=", 1)
+    return name or None
+
+
+def graphql_query_is_read_only(query: str) -> bool:
+    stripped = query.lstrip()
+    if not stripped:
+        return False
+    if stripped.startswith("{"):
+        return True
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+    if not match:
+        return False
+    return match.group(1).lower() == "query"
+
+
 def gh_args_are_read_only(args: list[str]) -> bool:
     if not args:
         return False
@@ -112,11 +166,12 @@ def gh_args_are_read_only(args: list[str]) -> bool:
         return len(args) > 1 and args[1] == "view"
     if args[0] != "api":
         return False
-    if len(args) > 1 and args[1] == "graphql":
-        query_args = [arg for arg in args if arg.startswith("query=") or arg.startswith("-fquery=")]
-        query_text = " ".join(query_args).lower()
-        if "mutation" in query_text:
-            return False
+    if len(args) < 2:
+        return False
+    is_graphql = args[1] == "graphql"
+    graphql_query = ""
+    if not is_graphql and args[1].startswith("-"):
+        return False
     for idx, arg in enumerate(args):
         if arg in {"-X", "--method"}:
             if idx + 1 >= len(args) or args[idx + 1].upper() != "GET":
@@ -126,6 +181,42 @@ def gh_args_are_read_only(args: list[str]) -> bool:
                 return False
         if arg.startswith("--method=") and arg.split("=", 1)[1].upper() != "GET":
             return False
+        if arg == "--input" or arg.startswith("--input="):
+            return False
+    idx = 2
+    while idx < len(args):
+        arg = args[idx]
+        if arg in {"--paginate", "--slurp"}:
+            idx += 1
+            continue
+        header = option_value(args, idx, GH_API_HEADER_FLAGS)
+        if header is not None:
+            if header[0] is None:
+                return False
+            idx = header[1]
+            continue
+        method = option_value(args, idx, {"-X", "--method"})
+        if method is not None:
+            if method[0] is None or method[0].upper() != "GET":
+                return False
+            idx = method[1]
+            continue
+        field = option_value(args, idx, GH_API_FIELD_FLAGS)
+        if field is not None:
+            if not is_graphql or field[0] is None:
+                return False
+            name = field_name(field[0])
+            if name not in GRAPHQL_ALLOWED_FIELDS:
+                return False
+            if name == "query":
+                graphql_query = field[0].split("=", 1)[1]
+            idx = field[1]
+            continue
+        if arg.startswith("-"):
+            return False
+        return False
+    if is_graphql and not graphql_query_is_read_only(graphql_query):
+        return False
     return True
 
 
@@ -144,7 +235,10 @@ class GhClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                timeout=GH_READ_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise GhReadError(f"gh timed out after {GH_READ_TIMEOUT_SECONDS}s") from exc
         except OSError as exc:
             raise GhReadError(f"failed to execute gh: {exc}") from exc
         if proc.returncode != 0:
@@ -230,11 +324,9 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
             data = self.run(args)
             if not isinstance(data, dict):
                 raise GhReadError("GraphQL response was not an object")
-            pull = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("pullRequest")
-            )
+            data_root = as_dict(data.get("data"))
+            repository = as_dict(data_root.get("repository"))
+            pull = repository.get("pullRequest")
             if not isinstance(pull, dict):
                 raise GhReadError("GraphQL response did not include pullRequest")
             threads = pull.get("reviewThreads")
@@ -244,7 +336,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
             if not isinstance(page_nodes, list):
                 raise GhReadError("GraphQL reviewThreads nodes was not a list")
             nodes.extend(page_nodes)
-            page_info = threads.get("pageInfo") or {}
+            page_info = as_dict(threads.get("pageInfo"))
             if not page_info.get("hasNextPage"):
                 return nodes
             after = page_info.get("endCursor")
@@ -268,9 +360,10 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
         lambda: client.api(f"repos/{repo}/pulls/{pr_number}"),
     )
     data["pull"] = pull or {}
-    base_ref = data["pull"].get("base", {}).get("ref", "")
-    head_sha = data["pull"].get("head", {}).get("sha", "")
-    base_sha = data["pull"].get("base", {}).get("sha", "")
+    pull_data = as_dict(data["pull"])
+    base_ref = str(dotted_get(pull_data, "base", "ref") or "")
+    head_sha = str(dotted_get(pull_data, "head", "sha") or "")
+    base_sha = str(dotted_get(pull_data, "base", "sha") or "")
 
     data["issue_comments"] = read_source(
         "issue_comments",
@@ -315,11 +408,10 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
         data["status"] = {"statuses": []}
 
     if base_ref:
-        owner, _ = parse_repo(repo)
         data["base_pull_candidates"] = read_source(
             "base_pull_candidates",
             lambda: client.api(
-                f"repos/{repo}/pulls?state=open&head={owner}:{base_ref}&per_page=100",
+                f"repos/{repo}/pulls?state=open&per_page=100",
                 paginate=True,
             ),
         ) or []
@@ -342,14 +434,14 @@ def head_commit_time(commits: list[dict[str, Any]], head_sha: str) -> dt.datetim
     for commit in commits:
         if commit.get("sha") != head_sha:
             continue
-        raw_commit = commit.get("commit") or {}
-        committer = raw_commit.get("committer") or {}
-        author = raw_commit.get("author") or {}
+        raw_commit = as_dict(commit.get("commit"))
+        committer = as_dict(raw_commit.get("committer"))
+        author = as_dict(raw_commit.get("author"))
         return parse_iso8601(committer.get("date")) or parse_iso8601(author.get("date"))
     if commits:
-        raw_commit = (commits[-1].get("commit") or {})
-        committer = raw_commit.get("committer") or {}
-        author = raw_commit.get("author") or {}
+        raw_commit = as_dict(commits[-1].get("commit"))
+        committer = as_dict(raw_commit.get("committer"))
+        author = as_dict(raw_commit.get("author"))
         return parse_iso8601(committer.get("date")) or parse_iso8601(author.get("date"))
     return None
 
@@ -358,14 +450,15 @@ def normalize_review_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
     unresolved: list[dict[str, Any]] = []
     null_line_comments: list[dict[str, Any]] = []
     for thread in threads:
-        comments = ((thread.get("comments") or {}).get("nodes") or [])
+        comments = as_list(dotted_get(thread, "comments", "nodes"))
         normalized_comments: list[dict[str, Any]] = []
-        for comment in comments:
+        for comment_value in comments:
+            comment = as_dict(comment_value)
             line = comment.get("line")
             original_line = comment.get("originalLine")
             item = {
                 "id": comment.get("id"),
-                "author": (comment.get("author") or {}).get("login"),
+                "author": dotted_get(comment, "author", "login"),
                 "path": comment.get("path") or thread.get("path"),
                 "line": line,
                 "original_line": original_line,
@@ -398,13 +491,14 @@ def normalize_review_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
 
 def normalize_review_comments(comments: list[dict[str, Any]]) -> dict[str, Any]:
     null_line_comments: list[dict[str, Any]] = []
-    for comment in comments:
+    for comment_value in comments:
+        comment = as_dict(comment_value)
         if comment.get("line") is not None and comment.get("original_line") is not None:
             continue
         null_line_comments.append(
             {
                 "id": comment.get("id"),
-                "author": (comment.get("user") or {}).get("login"),
+                "author": dotted_get(comment, "user", "login"),
                 "path": comment.get("path"),
                 "line": comment.get("line"),
                 "original_line": comment.get("original_line"),
@@ -424,6 +518,8 @@ def normalize_review_comments(comments: list[dict[str, Any]]) -> dict[str, Any]:
 def ai_review_has_findings(body: str) -> bool:
     if not AI_REVIEW_RE.search(body):
         return False
+    if actionable_count(body) > 0:
+        return True
     return not any(marker in body for marker in CLEAN_AI_MARKERS)
 
 
@@ -433,14 +529,15 @@ def normalize_issue_comments(
 ) -> dict[str, Any]:
     ai_comments: list[dict[str, Any]] = []
     unreviewed: list[dict[str, Any]] = []
-    for comment in comments:
+    for comment_value in comments:
+        comment = as_dict(comment_value)
         body = str(comment.get("body") or "")
         created_at = parse_iso8601(comment.get("created_at"))
         if not AI_REVIEW_RE.search(body):
             continue
         item = {
             "id": comment.get("id"),
-            "author": (comment.get("user") or {}).get("login"),
+            "author": dotted_get(comment, "user", "login"),
             "created_at": comment.get("created_at"),
             "updated_at": comment.get("updated_at"),
             "url": comment.get("html_url"),
@@ -479,7 +576,8 @@ def normalize_reviews(reviews: list[dict[str, Any]], head_sha: str) -> dict[str,
     approvals_stale = 0
     current_changes_requested = 0
 
-    for review in reviews:
+    for review_value in reviews:
+        review = as_dict(review_value)
         body = str(review.get("body") or "")
         count = actionable_count(body)
         actionable_total += count
@@ -487,7 +585,7 @@ def normalize_reviews(reviews: list[dict[str, Any]], head_sha: str) -> dict[str,
         commit_id = review.get("commit_id")
         item = {
             "id": review.get("id"),
-            "author": (review.get("user") or {}).get("login"),
+            "author": dotted_get(review, "user", "login"),
             "state": state,
             "commit_id": commit_id,
             "submitted_at": review.get("submitted_at"),
@@ -568,8 +666,9 @@ def normalize_checks(check_runs_payload: Any, status_payload: Any, head_sha: str
     passing: list[dict[str, str]] = []
     stale: list[dict[str, Any]] = []
 
-    for run in check_runs_from_payload(check_runs_payload):
-        name = str(run.get("name") or run.get("check_suite", {}).get("app", {}).get("slug") or "")
+    for run_value in check_runs_from_payload(check_runs_payload):
+        run = as_dict(run_value)
+        name = str(run.get("name") or dotted_get(run, "check_suite", "app", "slug") or "")
         item_sha = run.get("head_sha")
         if item_sha and item_sha != head_sha:
             stale.append({"type": "check_run", "name": name, "head_sha": item_sha})
@@ -584,7 +683,8 @@ def normalize_checks(check_runs_payload: Any, status_payload: Any, head_sha: str
     statuses = []
     if isinstance(status_payload, dict):
         statuses = status_payload.get("statuses") or []
-    for status in statuses:
+    for status_value in statuses:
+        status = as_dict(status_value)
         name = str(status.get("context") or "")
         item_sha = status.get("sha")
         if item_sha and item_sha != head_sha:
@@ -612,31 +712,37 @@ def normalize_checks(check_runs_payload: Any, status_payload: Any, head_sha: str
 
 
 def normalize_stack(data: dict[str, Any], pr_number: int) -> dict[str, Any]:
-    pull = data.get("pull") or {}
-    base = pull.get("base") or {}
-    head = pull.get("head") or {}
-    candidates = data.get("base_pull_candidates") or []
+    pull = as_dict(data.get("pull"))
+    base = as_dict(pull.get("base"))
+    head = as_dict(pull.get("head"))
+    candidates = as_list(data.get("base_pull_candidates"))
+    base_ref = base.get("ref")
+    default_branch = dotted_get(base, "repo", "default_branch")
     base_pr = None
-    for candidate in candidates:
-        if candidate.get("number") == pr_number:
-            continue
-        base_pr = {
-            "number": candidate.get("number"),
-            "state": candidate.get("state"),
-            "title": candidate.get("title"),
-            "head_ref": (candidate.get("head") or {}).get("ref"),
-            "url": candidate.get("html_url"),
-        }
-        break
-    compare = data.get("compare") or {}
+    if base_ref and base_ref != default_branch:
+        for candidate_value in candidates:
+            candidate = as_dict(candidate_value)
+            candidate_head = as_dict(candidate.get("head"))
+            if candidate.get("number") == pr_number or candidate_head.get("ref") != base_ref:
+                continue
+            base_pr = {
+                "number": candidate.get("number"),
+                "state": candidate.get("state"),
+                "title": candidate.get("title"),
+                "head_ref": candidate_head.get("ref"),
+                "head_repo": dotted_get(candidate_head, "repo", "full_name"),
+                "url": candidate.get("html_url"),
+            }
+            break
+    compare = as_dict(data.get("compare"))
     behind_by = int(compare.get("behind_by") or 0)
     return {
-        "base_ref": base.get("ref"),
+        "base_ref": base_ref,
         "base_sha": base.get("sha"),
-        "base_repo": (base.get("repo") or {}).get("full_name"),
+        "base_repo": dotted_get(base, "repo", "full_name"),
         "head_ref": head.get("ref"),
         "head_sha": head.get("sha"),
-        "head_repo": (head.get("repo") or {}).get("full_name"),
+        "head_repo": dotted_get(head, "repo", "full_name"),
         "base_is_open_pr": base_pr is not None,
         "base_pr": base_pr,
         "head_behind_base": behind_by > 0,
@@ -653,32 +759,35 @@ def build_snapshot(result: dict[str, Any]) -> dict[str, Any]:
     raw_review_comments = result.get("_raw_review_comments", [])
     raw_review_threads = result.get("_raw_review_threads", [])
     thread_fingerprints = []
-    for thread in raw_review_threads:
-        thread_comments = ((thread.get("comments") or {}).get("nodes") or [])
+    for thread_value in raw_review_threads:
+        thread = as_dict(thread_value)
+        thread_comments = as_list(dotted_get(thread, "comments", "nodes"))
         thread_fingerprints.append(
             {
                 "id": thread.get("id"),
+                "kind": "review_thread",
                 "is_resolved": thread.get("isResolved"),
                 "comments": [
                     {
-                        "id": comment.get("id"),
-                        "updated_at": comment.get("updatedAt") or comment.get("createdAt"),
+                        "id": as_dict(comment).get("id"),
+                        "kind": "thread_comment",
+                        "updated_at": as_dict(comment).get("updatedAt") or as_dict(comment).get("createdAt"),
                     }
                     for comment in thread_comments
                 ],
             }
         )
     return {
-        "schema_version": 1,
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "repo": result["repo"],
         "pr_number": result["pr"]["number"],
         "head_sha": result["pr"]["head_sha"],
         "comments": [
-            {"id": item.get("id"), "updated_at": item.get("updated_at")}
+            {"kind": "issue_comment", "id": item.get("id"), "updated_at": item.get("updated_at")}
             for item in result.get("_raw_issue_comments", [])
         ]
         + [
-            {"id": item.get("id"), "updated_at": item.get("updated_at")}
+            {"kind": "review_comment", "id": item.get("id"), "updated_at": item.get("updated_at")}
             for item in raw_review_comments
         ],
         "reviews": [
@@ -699,19 +808,25 @@ def build_snapshot(result: dict[str, Any]) -> dict[str, Any]:
 
 def indexed(items: list[dict[str, Any]], key: str = "id") -> dict[str, dict[str, Any]]:
     output: dict[str, dict[str, Any]] = {}
-    for idx, item in enumerate(items):
+    for idx, item_value in enumerate(items):
+        item = as_dict(item_value)
         value = item.get(key)
-        output[str(value if value is not None else idx)] = item
+        item_key = str(value if value is not None else idx)
+        kind = item.get("kind")
+        if kind:
+            item_key = f"{kind}:{item_key}"
+        output[item_key] = item
     return output
 
 
 def changed_keys(previous: list[dict[str, Any]], current: list[dict[str, Any]], key: str = "id") -> list[str]:
     prev = indexed(previous, key)
     cur = indexed(current, key)
-    changed = sorted(set(cur) - set(prev))
+    changed = [f"added:{item_key}" for item_key in sorted(set(cur) - set(prev))]
+    changed.extend(f"removed:{item_key}" for item_key in sorted(set(prev) - set(cur)))
     for item_key in sorted(set(cur) & set(prev)):
         if cur[item_key] != prev[item_key]:
-            changed.append(item_key)
+            changed.append(f"modified:{item_key}")
     return changed
 
 
@@ -725,14 +840,19 @@ def compare_snapshots(previous: dict[str, Any] | None, current: dict[str, Any]) 
         }
 
     categories = {
-        "comments": changed_keys(previous.get("comments", []), current.get("comments", [])),
-        "reviews": changed_keys(previous.get("reviews", []), current.get("reviews", [])),
-        "checks": changed_keys(previous.get("checks", []), current.get("checks", []), "name"),
+        "comments": changed_keys(as_list(previous.get("comments")), as_list(current.get("comments"))),
+        "reviews": changed_keys(as_list(previous.get("reviews")), as_list(current.get("reviews"))),
+        "threads": changed_keys(as_list(previous.get("threads")), as_list(current.get("threads"))),
+        "checks": changed_keys(as_list(previous.get("checks")), as_list(current.get("checks")), "name"),
         "commits": sorted(
             set(str(item) for item in current.get("commits", []))
             - set(str(item) for item in previous.get("commits", []))
         ),
     }
+    if previous.get("schema_version") != current.get("schema_version"):
+        categories["schema_version"] = [
+            f"modified:{previous.get('schema_version')}->{current.get('schema_version')}"
+        ]
     changed = any(categories.values()) or previous.get("head_sha") != current.get("head_sha")
     if previous.get("head_sha") != current.get("head_sha"):
         categories["head_sha"] = [str(current.get("head_sha"))]
@@ -782,9 +902,9 @@ def classify_pr_state(
     previous_snapshot: dict[str, Any] | None = None,
     snapshot_requested: bool = False,
 ) -> dict[str, Any]:
-    pull = data.get("pull") or {}
+    pull = as_dict(data.get("pull"))
     pr_number = int(data.get("pr_number") or pull.get("number") or 0)
-    head_sha = (pull.get("head") or {}).get("sha") or ""
+    head_sha = dotted_get(pull, "head", "sha") or ""
     commits = data.get("commits") or []
     latest_head_commit_at = head_commit_time(commits, head_sha)
 
@@ -794,9 +914,9 @@ def classify_pr_state(
             "number": pr_number,
             "url": pull.get("html_url"),
             "title": pull.get("title"),
-            "base_ref": (pull.get("base") or {}).get("ref"),
-            "head_ref": (pull.get("head") or {}).get("ref"),
-            "base_sha": (pull.get("base") or {}).get("sha"),
+            "base_ref": dotted_get(pull, "base", "ref"),
+            "head_ref": dotted_get(pull, "head", "ref"),
+            "base_sha": dotted_get(pull, "base", "sha"),
             "head_sha": head_sha,
         },
         "stack": normalize_stack(data, pr_number),
@@ -839,8 +959,17 @@ def load_snapshot(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        if path.stat().st_mode & 0o022:
-            raise DataSourceError("snapshot", f"snapshot is group/other writable: {path}")
+        if path.is_symlink():
+            raise DataSourceError("snapshot", f"snapshot must not be a symlink: {path}")
+        stat_result = path.stat()
+        if stat_result.st_uid != os.geteuid():
+            raise DataSourceError("snapshot", f"snapshot is not owned by the current user: {path}")
+        if stat_result.st_mode & 0o077:
+            raise DataSourceError("snapshot", f"snapshot is group/other accessible: {path}")
+        parent_stat = path.parent.stat()
+        parent_is_sticky = bool(parent_stat.st_mode & 0o1000)
+        if parent_stat.st_mode & 0o022 and not parent_is_sticky:
+            raise DataSourceError("snapshot", f"snapshot directory is group/other writable: {path.parent}")
         with path.open("r", encoding="utf-8") as handle:
             snapshot = json.load(handle)
     except DataSourceError:
@@ -849,15 +978,34 @@ def load_snapshot(path: Path) -> dict[str, Any] | None:
         raise DataSourceError("snapshot", f"failed to read snapshot {path}: {exc}") from exc
     if not isinstance(snapshot, dict):
         raise DataSourceError("snapshot", "snapshot root was not an object")
+    schema_version = snapshot.get("schema_version")
+    if schema_version not in {1, SNAPSHOT_SCHEMA_VERSION}:
+        raise DataSourceError("snapshot", f"unsupported snapshot schema_version: {schema_version}")
+    for key in ("repo", "pr_number", "head_sha"):
+        if key not in snapshot:
+            raise DataSourceError("snapshot", f"snapshot missing required field: {key}")
+    for key in ("comments", "reviews", "threads", "checks", "commits", "ai_review_comments"):
+        if key in snapshot and not isinstance(snapshot[key], list):
+            raise DataSourceError("snapshot", f"snapshot field must be a list: {key}")
     return snapshot
 
 
 def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(snapshot, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    path.chmod(0o600)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(snapshot, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_path, path)
+        path.chmod(0o600)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def compact_summary(result: dict[str, Any]) -> str:

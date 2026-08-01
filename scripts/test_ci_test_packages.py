@@ -45,7 +45,12 @@ def _defines_unittest_testcase(path: Path) -> bool:
     testcase_names: set[str] = set()
     unittest_names: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "unittest":
+        # `node.level == 0` means an absolute import. `ImportFrom.module` is
+        # "unittest" for both `from unittest import ...` and the relative
+        # `from .unittest import ...`, so without the level check a package with
+        # its own local unittest module would be read as importing the standard
+        # library and could fail this guard for an unrelated reason.
+        if isinstance(node, ast.ImportFrom) and node.module == "unittest" and node.level == 0:
             for alias in node.names:
                 if alias.name == "TestCase":
                     testcase_names.add(alias.asname or alias.name)

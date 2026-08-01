@@ -100,6 +100,9 @@ class PrConvergenceStatusTest(unittest.TestCase):
                 ["api", "graphql", "-f", "query=mutation { addComment(input: {}) { clientMutationId } }"]
             )
         )
+        self.assertFalse(
+            pr_convergence.gh_args_are_read_only(["api", "graphql", "-f", "query=@file.graphql"])
+        )
         self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "merge", "7"]))
         self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "comment", "7"]))
         self.assertFalse(pr_convergence.gh_args_are_read_only(["pr", "close", "7"]))

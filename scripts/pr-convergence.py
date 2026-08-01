@@ -65,7 +65,7 @@ BLOCKED_MERGE_STATES = {"BLOCKED", "DRAFT", "UNKNOWN"}
 FINAL_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED"}
 GH_READ_TIMEOUT_SECONDS = 30
 SNAPSHOT_SCHEMA_VERSION = 2
-GRAPHQL_ALLOWED_FIELDS = {"query", "owner", "name", "number", "after"}
+GRAPHQL_ALLOWED_FIELDS = {"query", "owner", "name", "number", "after", "headRefName"}
 GH_API_FIELD_FLAGS = {"-f", "-F", "--field", "--raw-field"}
 GH_API_HEADER_FLAGS = {"-H", "--header"}
 
@@ -343,6 +343,75 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
             if not after:
                 raise GhReadError("GraphQL pagination omitted endCursor")
 
+    def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, Any]]:
+        query = """
+query($owner: String!, $name: String!, $headRefName: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 100, states: OPEN, headRefName: $headRefName, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        state
+        title
+        url
+        headRefName
+        headRepository { nameWithOwner }
+      }
+    }
+  }
+}
+"""
+        after: str | None = None
+        nodes: list[dict[str, Any]] = []
+        while True:
+            args = [
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-F",
+                f"owner={self.owner}",
+                "-F",
+                f"name={self.name}",
+                "-F",
+                f"headRefName={head_ref_name}",
+            ]
+            if after:
+                args.extend(["-F", f"after={after}"])
+            data = self.run(args)
+            if not isinstance(data, dict):
+                raise GhReadError("GraphQL response was not an object")
+            data_root = as_dict(data.get("data"))
+            repository = as_dict(data_root.get("repository"))
+            pulls = repository.get("pullRequests")
+            if not isinstance(pulls, dict):
+                raise GhReadError("GraphQL response did not include pullRequests")
+            page_nodes = pulls.get("nodes") or []
+            if not isinstance(page_nodes, list):
+                raise GhReadError("GraphQL pullRequests nodes was not a list")
+            for node_value in page_nodes:
+                node = as_dict(node_value)
+                nodes.append(
+                    {
+                        "number": node.get("number"),
+                        "state": str(node.get("state") or "").lower(),
+                        "title": node.get("title"),
+                        "html_url": node.get("url"),
+                        "head": {
+                            "ref": node.get("headRefName"),
+                            "repo": {
+                                "full_name": dotted_get(node, "headRepository", "nameWithOwner"),
+                            },
+                        },
+                    }
+                )
+            page_info = as_dict(pulls.get("pageInfo"))
+            if not page_info.get("hasNextPage"):
+                return nodes
+            after = page_info.get("endCursor")
+            if not after:
+                raise GhReadError("GraphQL pagination omitted endCursor")
+
 
 def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
     client = GhClient(repo)
@@ -362,6 +431,7 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
     data["pull"] = pull or {}
     pull_data = as_dict(data["pull"])
     base_ref = str(dotted_get(pull_data, "base", "ref") or "")
+    default_branch = str(dotted_get(pull_data, "base", "repo", "default_branch") or "")
     head_sha = str(dotted_get(pull_data, "head", "sha") or "")
     base_sha = str(dotted_get(pull_data, "base", "sha") or "")
 
@@ -407,13 +477,10 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
         data["check_runs"] = {"check_runs": []}
         data["status"] = {"statuses": []}
 
-    if base_ref:
+    if base_ref and base_ref != default_branch:
         data["base_pull_candidates"] = read_source(
             "base_pull_candidates",
-            lambda: client.api(
-                f"repos/{repo}/pulls?state=open&per_page=100",
-                paginate=True,
-            ),
+            lambda: client.graphql_open_pulls_by_head_ref(base_ref),
         ) or []
     else:
         data["base_pull_candidates"] = []

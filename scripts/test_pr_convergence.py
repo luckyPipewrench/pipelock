@@ -141,6 +141,8 @@ class PrConvergenceStatusTest(unittest.TestCase):
                     "query=query($owner: String!) { repository(owner: $owner, name: \"repo\") { id } }",
                     "-F",
                     "owner=owner",
+                    "-F",
+                    "headRefName=feature-base",
                 ]
             )
         )
@@ -825,10 +827,11 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertEqual(result["status"], "READY")
         self.assertFalse(result["stack"]["base_is_open_pr"])
 
-    def test_base_pull_candidate_read_does_not_filter_to_repo_owner(self) -> None:
+    def test_base_pull_candidate_read_uses_head_ref_graphql_without_owner_filter(self) -> None:
         fixture = load_fixture()
         fixture["pull"]["base"]["ref"] = "feature-base"
         calls: list[str] = []
+        head_ref_reads: list[str] = []
 
         class RecordingGhClient:
             def __init__(self, repo: str) -> None:
@@ -846,19 +849,70 @@ class PrConvergenceStatusTest(unittest.TestCase):
                     return {"statuses": []}
                 if path.endswith("/compare/base111...head222"):
                     return {"behind_by": 0, "ahead_by": 1, "status": "ahead"}
-                if path == "repos/owner/repo/pulls?state=open&per_page=100":
-                    return []
                 return []
 
             def graphql_review_threads(self, pr_number: int) -> list[dict[str, object]]:
                 del pr_number
                 return []
 
-        with mock.patch.object(pr_convergence, "GhClient", RecordingGhClient):
-            pr_convergence.gather_pr_state("owner/repo", 7)
+            def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, object]]:
+                head_ref_reads.append(head_ref_name)
+                return [
+                    {
+                        "head": {"ref": head_ref_name, "repo": {"full_name": "contributor/repo"}},
+                        "html_url": "https://github.com/owner/repo/pull/6",
+                        "number": 6,
+                        "state": "open",
+                        "title": "Base PR",
+                    }
+                ]
 
-        self.assertIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
+        with mock.patch.object(pr_convergence, "GhClient", RecordingGhClient):
+            data = pr_convergence.gather_pr_state("owner/repo", 7)
+
+        self.assertEqual(head_ref_reads, ["feature-base"])
+        self.assertEqual(data["base_pull_candidates"][0]["head"]["repo"]["full_name"], "contributor/repo")
+        self.assertNotIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
         self.assertNotIn("repos/owner/repo/pulls?state=open&head=owner:feature-base&per_page=100", calls)
+
+    def test_default_branch_base_skips_base_pull_candidate_read(self) -> None:
+        fixture = load_fixture()
+        fixture["pull"]["base"]["repo"]["default_branch"] = "main"
+        calls: list[str] = []
+        head_ref_reads: list[str] = []
+
+        class RecordingGhClient:
+            def __init__(self, repo: str) -> None:
+                self.repo = repo
+                self.owner, self.name = pr_convergence.parse_repo(repo)
+
+            def api(self, path: str, *, paginate: bool = False, accept: str | None = None) -> object:
+                del paginate, accept
+                calls.append(path)
+                if path == "repos/owner/repo/pulls/7":
+                    return fixture["pull"]
+                if path.endswith("/check-runs?per_page=100"):
+                    return {"check_runs": []}
+                if path.endswith("/status"):
+                    return {"statuses": []}
+                if path.endswith("/compare/base111...head222"):
+                    return {"behind_by": 0, "ahead_by": 1, "status": "ahead"}
+                return []
+
+            def graphql_review_threads(self, pr_number: int) -> list[dict[str, object]]:
+                del pr_number
+                return []
+
+            def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, object]]:
+                head_ref_reads.append(head_ref_name)
+                return []
+
+        with mock.patch.object(pr_convergence, "GhClient", RecordingGhClient):
+            data = pr_convergence.gather_pr_state("owner/repo", 7)
+
+        self.assertEqual(data["base_pull_candidates"], [])
+        self.assertEqual(head_ref_reads, [])
+        self.assertNotIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
 
 if __name__ == "__main__":
     unittest.main()

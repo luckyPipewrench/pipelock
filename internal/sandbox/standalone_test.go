@@ -229,6 +229,44 @@ func TestLaunchStandalone_ControlDirectoryIsPrivate(t *testing.T) {
 	}
 }
 
+func TestPreflightWithRequirements_IndependentlyReportsNetworkAndHandler(t *testing.T) {
+	requirements := PreflightRequirements{
+		RequireNetNS:        true,
+		RequireProxyHandler: true,
+	}
+	result := PreflightWithRequirements(t.TempDir(), []string{"true"}, nil, requirements)
+	if result.Mode != "required" {
+		t.Fatalf("mode = %q, want required", result.Mode)
+	}
+	if result.Requirements == nil || *result.Requirements != requirements {
+		t.Fatalf("requirements = %#v, want %#v", result.Requirements, requirements)
+	}
+
+	required := make(map[LayerName]bool, len(result.Layers))
+	for _, layer := range result.Layers {
+		required[layer.Name] = layer.Required
+	}
+	if !required[LayerNetNS] {
+		t.Fatal("network namespace was not reported as required")
+	}
+	if required[LayerLandlock] || required[LayerSeccomp] {
+		t.Fatalf("optional layers reported as required: %#v", required)
+	}
+	if !Detect().UserNamespaces && result.Status != StatusError {
+		t.Fatalf("required unavailable network namespace status = %q, want error", result.Status)
+	}
+}
+
+func TestPreflight_BackwardCompatibleStrictWrapper(t *testing.T) {
+	result := Preflight(t.TempDir(), []string{"true"}, nil, false)
+	if result.Requirements != nil {
+		t.Fatalf("legacy Preflight exposed requirements = %#v", result.Requirements)
+	}
+	if result.Mode != "best-effort" {
+		t.Fatalf("legacy Preflight mode = %q, want best-effort", result.Mode)
+	}
+}
+
 func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 	tests := []struct {
 		name string

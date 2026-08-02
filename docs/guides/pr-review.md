@@ -6,9 +6,8 @@ Manual-trigger AI security review for pull requests. Comment `/review` on any PR
 
 | Command | Model | Use When |
 |---------|-------|----------|
-| `/review` | Fast (default: gpt-5.4-mini) | Quick check, most PRs |
-| `/review fast` | Fast (default: gpt-5.4-mini) | Same as `/review` |
-| `/review deep` | Deep (default: gpt-5.4) | Complex changes, security-sensitive code |
+| `/review` | Efficient (default: gpt-5.6-luna, low reasoning) | Quick check, most PRs |
+| `/review deep` | Balanced (default: gpt-5.6-terra, medium reasoning) | Complex changes, security-sensitive code |
 
 ## What It Reviews
 
@@ -36,10 +35,21 @@ Set these in **Settings > Secrets and variables > Actions**:
 | `LITELLM_BASE_URL` | If using LiteLLM | Your LiteLLM proxy URL (e.g., `https://litellm.example.com/v1`) |
 | `LITELLM_API_KEY` | If using LiteLLM | API key for LiteLLM proxy |
 | `OPENAI_API_KEY` | If not using LiteLLM | Direct OpenAI API key (fallback) |
-| `PR_REVIEW_MODEL_FAST` | No | Model for `/review`, `/review fast`, `/review tests`, `/review docs`, `/review stats` (default: `gpt-5.4-mini`) |
-| `PR_REVIEW_MODEL_DEEP` | No | Model for `/review deep` (default: `gpt-5.4`) |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
+
+### Optional GitHub Variables
+
+Set these in **Settings > Secrets and variables > Actions > Variables** only
+when intentionally overriding the reviewed defaults:
+
+| Variable | Default | Used By |
+|----------|---------|---------|
+| `PR_REVIEW_MODEL_FAST` | `gpt-5.6-luna` | `/review`, `/review tests`, `/review docs` |
+| `PR_REVIEW_MODEL_DEEP` | `gpt-5.6-terra` | `/review deep` |
+
+The defaults live in `scripts/pr-review.py`; the workflow passes optional
+repository variables through without maintaining another copy.
 
 ### LiteLLM vs Direct OpenAI
 
@@ -51,11 +61,11 @@ If both are set, LiteLLM takes priority.
 
 ### Switching Models
 
-Override the model via secrets:
+Override the model via repository variables:
 
-```
-PR_REVIEW_MODEL_FAST=gpt-5.4-mini     # fast (~$0.02/review)
-PR_REVIEW_MODEL_DEEP=gpt-5.4          # thorough (~$0.07/review)
+```text
+PR_REVIEW_MODEL_FAST=gpt-5.6-luna
+PR_REVIEW_MODEL_DEEP=gpt-5.6-terra
 ```
 
 With LiteLLM, use any model your proxy supports:
@@ -69,7 +79,7 @@ PR_REVIEW_MODEL_FAST=groq/llama-3.3-70b-versatile
 
 - Only runs when manually triggered (no auto-review on push)
 - Diff is truncated to ~100k chars (~25k tokens) to cap costs
-- `/review fast` uses a cheaper model by default
+- `/review` uses the efficient model by default
 - `/review deep` is opt-in for thorough analysis
 
 ## Files

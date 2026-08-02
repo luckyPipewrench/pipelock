@@ -8,6 +8,10 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: pr-review-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     # Restrict to the repository owner account. Some /review modes execute
@@ -29,7 +33,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
-          ref: refs/heads/main
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Check out PR for stats mode
@@ -55,6 +59,9 @@ jobs:
       - name: Install dependencies
         run: pip install --require-hashes -r .github/requirements-pr-review.txt
 
+      - name: Test trusted review runner
+        run: python -m unittest scripts/pr_review_test.py
+
       - name: Determine review mode
         id: mode
         env:
@@ -71,11 +78,16 @@ jobs:
       - name: Run PR review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           REVIEW_MODE: ${{ steps.mode.outputs.mode }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
           STATS_REPO_PATH: pr
-          PR_REVIEW_MODEL_FAST: gpt-5.4-mini
-          PR_REVIEW_MODEL_DEEP: gpt-5.5
+          # Optional repository variables. Empty values fall back to the
+          # reviewed constants in scripts/pr-review.py, the single source of
+          # truth for model defaults.
+          PR_REVIEW_MODEL_FAST: ${{ vars.PR_REVIEW_MODEL_FAST }}
+          PR_REVIEW_MODEL_DEEP: ${{ vars.PR_REVIEW_MODEL_DEEP }}
         run: python scripts/pr-review.py

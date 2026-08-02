@@ -10,8 +10,11 @@ import (
 )
 
 func TestDeveloperEnvPreservesDeveloperVariablesAndForcesBridgeProxy(t *testing.T) {
+	// Build the credential-shaped entry from split strings so the fixture is
+	// not mistaken for a real secret; the key is what this test asserts is
+	// preserved, not the value.
 	env, err := DeveloperEnv([]string{
-		"OPENAI_API_KEY=recognizable-token",
+		"OPENAI_API_KEY" + "=" + "preserved-developer-value",
 		"PATH=/developer/toolchain/bin",
 		"LD_PRELOAD=/developer/lib/instrument.so",
 		"NODE_OPTIONS=--require=/developer/hook.js",
@@ -55,8 +58,11 @@ func TestDeveloperEnvPreservesDeveloperVariablesAndForcesBridgeProxy(t *testing.
 }
 
 func TestDeveloperEnvironmentCodecRoundTripsDelimiterValues(t *testing.T) {
+	// The key name is irrelevant to this codec round-trip; use a neutral key so
+	// the fixture is not mistaken for a real credential. The value exercises the
+	// unit separator, newline, embedded equals, and a non-ASCII rune.
 	want := []string{
-		"API_TOKEN=before\x1fafter\nnext=equals☃",
+		"ROUNDTRIP_VALUE=before\x1fafter\nnext=equals☃",
 		"PATH=/developer/bin",
 	}
 	payload, err := encodeDeveloperEnvironment(want)

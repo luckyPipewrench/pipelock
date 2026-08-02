@@ -13,6 +13,7 @@ const (
 	childCommandEnv   = "__PIPELOCK_SANDBOX_COMMAND"
 	childExtraEnv     = "__PIPELOCK_SANDBOX_EXTRA_ENV"
 	childPolicyEnv    = "__PIPELOCK_SANDBOX_POLICY"
+	childDeveloperEnv = developerEnvironmentControlEnv
 )
 
 func initChildEnvironment(overrides []string) []string {
@@ -26,6 +27,7 @@ func initChildEnvironment(overrides []string) []string {
 		childCommandEnv:   {},
 		childExtraEnv:     {},
 		childPolicyEnv:    {},
+		childDeveloperEnv: {},
 	}
 	for _, entry := range overrides {
 		key, _, _ := strings.Cut(entry, "=")

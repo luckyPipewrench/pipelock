@@ -28,6 +28,7 @@ func RunStandaloneInit() {
 	commandStr := os.Getenv("__PIPELOCK_SANDBOX_COMMAND")
 	socketPath := os.Getenv(sandboxSocketEnv)
 	extraEnvStr := os.Getenv("__PIPELOCK_SANDBOX_EXTRA_ENV")
+	developerEnvFDStr := os.Getenv(developerEnvironmentControlEnv)
 
 	if workspace == "" || commandStr == "" || socketPath == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] missing workspace, command, or socket path\n")
@@ -40,6 +41,21 @@ func RunStandaloneInit() {
 		extraEnv = strings.Split(extraEnvStr, "\x1f")
 	}
 
+	var developerEnvironment []string
+	useDeveloperEnvironment := developerEnvFDStr != ""
+	if useDeveloperEnvironment {
+		fd, err := developerEnvironmentFDFromControl(developerEnvFDStr)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] developer env transport: %v\n", err)
+			exitSandboxProcess(1)
+		}
+		developerEnvironment, err = readDeveloperEnvironment(fd)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] developer env transport: %v\n", err)
+			exitSandboxProcess(1)
+		}
+	}
+
 	strict := IsStrictMode()
 
 	// Initialize Go's signal thread before RLIMIT_NPROC is lowered. This keeps
@@ -47,14 +63,28 @@ func RunStandaloneInit() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
-	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
-		exitSandboxProcess(1)
+	var env []string
+	var binary string
+	var err error
+	if useDeveloperEnvironment {
+		// SyntheticEnv normally creates this directory before policy resolution.
+		// The developer path preserves the caller environment instead, but the
+		// Landlock policy still needs its private, non-secret scratch directory.
+		if err := os.MkdirAll(sandboxDir, 0o700); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] developer scratch dir: %v\n", err)
+			exitSandboxProcess(1)
+		}
+		binary, err = lookPathIn(command[0], developerEnvironment)
+	} else {
+		// Build synthetic environment.
+		env, err = SyntheticEnv(sandboxDir, workspace, extraEnv)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
+			exitSandboxProcess(1)
+		}
+		binary, err = lookPathIn(command[0], env)
 	}
-	binary, err := lookPathIn(command[0], env)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
 		exitSandboxProcess(127)
@@ -172,8 +202,16 @@ func RunStandaloneInit() {
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 
-	// Add HTTP_PROXY/HTTPS_PROXY to agent's environment.
-	env = appendBridgeProxyEnv(env, bridge.Addr())
+	if useDeveloperEnvironment {
+		env, err = DeveloperEnv(developerEnvironment, bridge.Addr())
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
+			exitSandboxProcess(1)
+		}
+	} else {
+		// Add HTTP_PROXY/HTTPS_PROXY to agent's environment.
+		env = appendBridgeProxyEnv(env, bridge.Addr())
+	}
 
 	// Clean sandbox env vars.
 	for _, key := range []string{
@@ -181,6 +219,7 @@ func RunStandaloneInit() {
 		"__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
 		sandboxSocketEnv, "__PIPELOCK_SANDBOX_EXTRA_ENV",
 		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey,
+		developerEnvironmentControlEnv,
 	} {
 		env = removeEnvKey(env, key)
 	}

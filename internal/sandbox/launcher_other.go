@@ -32,16 +32,18 @@ type LaunchConfig struct {
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
 type StandaloneLaunchConfig struct {
-	Ctx                 context.Context
-	Command             []string
-	Workspace           string
-	Policy              *Policy
-	Strict              bool
-	BestEffort          bool
-	RequireNetNS        bool
-	ExtraEnv            []string
-	ProxyHandler        func(conn net.Conn)
-	RequireProxyHandler bool
+	Ctx                     context.Context
+	Command                 []string
+	Workspace               string
+	Policy                  *Policy
+	Strict                  bool
+	BestEffort              bool
+	RequireNetNS            bool
+	ExtraEnv                []string
+	DeveloperEnvironment    []string
+	UseDeveloperEnvironment bool
+	ProxyHandler            func(conn net.Conn)
+	RequireProxyHandler     bool
 }
 
 // PrepareSandboxCmd returns ErrUnavailable on non-Linux platforms.

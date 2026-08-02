@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -51,6 +52,16 @@ type StandaloneLaunchConfig struct {
 
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
 	ExtraEnv []string
+
+	// DeveloperEnvironment is the caller's complete developer environment for
+	// the final contained command. It is transported over an anonymous pipe,
+	// never through the re-exec control environment.
+	DeveloperEnvironment []string
+
+	// UseDeveloperEnvironment selects DeveloperEnvironment instead of the
+	// ordinary minimal SyntheticEnv. It is opt-in and fails closed on a nil
+	// environment or when combined with ExtraEnv.
+	UseDeveloperEnvironment bool
 
 	// ProxyHandler is called for each connection from the sandboxed agent.
 	// It receives the connection from the bridge proxy and should handle
@@ -97,6 +108,12 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 	if cfg.RequireNetNS && cfg.BestEffort {
 		return errors.New("sandbox: network namespace is required; best_effort is not permitted")
+	}
+	if cfg.UseDeveloperEnvironment && cfg.DeveloperEnvironment == nil {
+		return errors.New("sandbox: developer environment is required when enabled")
+	}
+	if cfg.UseDeveloperEnvironment && len(cfg.ExtraEnv) > 0 {
+		return errors.New("sandbox: developer environment cannot be combined with extra environment")
 	}
 
 	if err := ValidateWorkspace(cfg.Workspace); err != nil {
@@ -175,24 +192,21 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	cmd.Env = []string{
-		standaloneInitEnv + "=1",
-		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
-		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
-		sandboxSocketEnv + "=" + socketPath,
-	}
-	cmd.Env = append(cmd.Env, coverageEnv...)
-	if cfg.Strict {
-		cmd.Env = append(cmd.Env, strictEnvKey+"=1")
-	}
-	if len(cfg.ExtraEnv) > 0 {
-		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_EXTRA_ENV="+strings.Join(cfg.ExtraEnv, "\x1f"))
-	}
 	policyJSON, jsonErr := encodePolicyJSON(&policy)
 	if jsonErr != nil {
 		return fmt.Errorf("encoding sandbox policy: %w", jsonErr)
 	}
-	cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
+	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces)
+
+	var developerPipe *developerEnvironmentPipe
+	if cfg.UseDeveloperEnvironment {
+		developerPipe, err = newDeveloperEnvironmentPipe(cfg.DeveloperEnvironment)
+		if err != nil {
+			return fmt.Errorf("encoding developer environment: %w", err)
+		}
+		defer developerPipe.close()
+		cmd.ExtraFiles = []*os.File{developerPipe.reader}
+	}
 
 	if hasNamespaces {
 		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
@@ -214,7 +228,6 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		}
 	} else {
 		// Best-effort: no namespace isolation. Tell child to skip loopback setup.
-		cmd.Env = append(cmd.Env, noNetNSEnvKey+"=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Pdeathsig: syscall.SIGTERM,
 			Setpgid:   true,
@@ -232,6 +245,20 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting sandbox child: %w", err)
+	}
+	if developerPipe != nil {
+		// ExtraFiles duplicates reader into the re-exec child. Drop the parent's
+		// copy before writing so every failure path closes both local pipe ends.
+		if err := developerPipe.reader.Close(); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("closing developer environment read pipe: %w", err)
+		}
+		if err := developerPipe.writeAndClose(); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("transporting developer environment: %w", err)
+		}
 	}
 
 	// Wait for child to exit.
@@ -259,6 +286,33 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 
 	return waitErr
+}
+
+// standaloneInitControlEnv is the complete re-exec environment. In
+// developer-environment mode it carries only a fixed descriptor number, never
+// a developer-supplied value.
+func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool) []string {
+	env := []string{
+		standaloneInitEnv + "=1",
+		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
+		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
+		sandboxSocketEnv + "=" + socketPath,
+	}
+	env = append(env, coverageEnv...)
+	if cfg.Strict {
+		env = append(env, strictEnvKey+"=1")
+	}
+	if len(cfg.ExtraEnv) > 0 {
+		env = append(env, "__PIPELOCK_SANDBOX_EXTRA_ENV="+strings.Join(cfg.ExtraEnv, "\x1f"))
+	}
+	if cfg.UseDeveloperEnvironment {
+		env = append(env, developerEnvironmentControlEnv+"="+strconv.Itoa(developerEnvironmentFD))
+	}
+	env = append(env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
+	if !hasNamespaces {
+		env = append(env, noNetNSEnvKey+"=1")
+	}
+	return env
 }
 
 // newStandaloneControlDir creates the per-invocation control directory that

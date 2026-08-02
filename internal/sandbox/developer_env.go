@@ -17,6 +17,7 @@ const (
 	developerEnvironmentMaxPayload = 1 << 20
 	developerEnvironmentVersion    = uint32(1)
 	developerEnvironmentFD         = 3
+	developerEnvironmentControlEnv = "__PIPELOCK_SANDBOX_DEVELOPER_ENV_FD"
 )
 
 var developerEnvironmentMagic = [4]byte{'P', 'L', 'K', 'E'}
@@ -50,6 +51,12 @@ func DeveloperEnv(developerEnvironment []string, bridgeAddr string) ([]string, e
 		if isPipelockControlEnvKey(key) || isProxyEnvKey(key) {
 			continue
 		}
+		if IsDangerousEnvKey(key) {
+			// Loader/runtime injection is deliberately final-command-only. The
+			// re-exec control environment never contains developer entries.
+			env = append(env, entry)
+			continue
+		}
 		env = append(env, entry)
 	}
 
@@ -75,7 +82,7 @@ func isProxyEnvKey(key string) bool {
 func validateDeveloperEnvironmentEntry(entry string) (string, error) {
 	key, _, ok := strings.Cut(entry, "=")
 	if !ok || key == "" {
-		return "", fmt.Errorf("sandbox: malformed developer environment entry %q", entry)
+		return "", errors.New("sandbox: malformed developer environment entry")
 	}
 	if strings.IndexByte(entry, 0) >= 0 {
 		return "", fmt.Errorf("sandbox: developer environment entry %q contains NUL", key)
@@ -94,7 +101,11 @@ func encodeDeveloperEnvironment(environment []string) ([]byte, error) {
 	payload := make([]byte, 12)
 	copy(payload, developerEnvironmentMagic[:])
 	binary.BigEndian.PutUint32(payload[4:8], developerEnvironmentVersion)
-	binary.BigEndian.PutUint32(payload[8:12], uint32(len(environment)))
+	count := uint32(0)
+	for range environment {
+		count++
+	}
+	binary.BigEndian.PutUint32(payload[8:12], count)
 
 	seen := make(map[string]struct{}, len(environment))
 	for _, entry := range environment {
@@ -110,8 +121,12 @@ func encodeDeveloperEnvironment(environment []string) ([]byte, error) {
 			return nil, errors.New("sandbox: developer environment payload exceeds 1 MiB")
 		}
 
+		entryLength := uint32(0)
+		for range len(entry) {
+			entryLength++
+		}
 		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(entry)))
+		binary.BigEndian.PutUint32(length[:], entryLength)
 		payload = append(payload, length[:]...)
 		payload = append(payload, entry...)
 	}
@@ -131,7 +146,7 @@ func decodeDeveloperEnvironment(payload []byte) ([]string, error) {
 	}
 
 	count := binary.BigEndian.Uint32(payload[8:12])
-	if uint64(count) > uint64((len(payload)-12)/4) {
+	if int64(count) > int64((len(payload)-12)/4) {
 		return nil, errors.New("sandbox: malformed developer environment entry count")
 	}
 
@@ -144,7 +159,7 @@ func decodeDeveloperEnvironment(payload []byte) ([]string, error) {
 		}
 		entryLength := binary.BigEndian.Uint32(payload[offset : offset+4])
 		offset += 4
-		if uint64(entryLength) > uint64(len(payload)-offset) {
+		if int64(entryLength) > int64(len(payload)-offset) {
 			return nil, errors.New("sandbox: truncated developer environment payload")
 		}
 		entry := string(payload[offset : offset+int(entryLength)])

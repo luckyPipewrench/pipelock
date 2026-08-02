@@ -112,6 +112,17 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if cfg.UseDeveloperEnvironment && cfg.DeveloperEnvironment == nil {
 		return errors.New("sandbox: developer environment is required when enabled")
 	}
+	if cfg.UseDeveloperEnvironment && cfg.BestEffort {
+		// Developer-environment mode forwards the caller's real credentials to
+		// the final command. That is only safe when egress is kernel-mediated
+		// through the network namespace: best_effort explicitly runs without a
+		// namespace and relies on cooperative HTTP_PROXY variables, which an
+		// agent can clear or bypass with raw sockets, turning the preserved
+		// secrets into a direct exfiltration path around the bridge. Requiring a
+		// namespace here (best_effort false) also makes the launch fail closed
+		// when namespaces are unavailable, via the probe check below.
+		return errors.New("sandbox: developer environment requires network namespace isolation; best_effort is not permitted")
+	}
 	if cfg.UseDeveloperEnvironment && len(cfg.ExtraEnv) > 0 {
 		return errors.New("sandbox: developer environment cannot be combined with extra environment")
 	}

@@ -122,6 +122,17 @@ func TestLaunchStandaloneDeveloperEnvironmentFailsClosedBeforeChildStart(t *test
 			},
 			wantErr: "cannot be combined with extra environment",
 		},
+		{
+			name: "best effort not permitted",
+			cfg: StandaloneLaunchConfig{
+				Command:                 []string{"true"},
+				Workspace:               workspace,
+				DeveloperEnvironment:    []string{"OPENAI_API_KEY" + "=" + "preserved-developer-value"},
+				UseDeveloperEnvironment: true,
+				BestEffort:              true,
+			},
+			wantErr: "best_effort is not permitted",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			err := LaunchStandalone(testCase.cfg)

@@ -200,19 +200,14 @@ func RunStandaloneInit() {
 	agentDone := make(chan error, 1)
 	go func() { agentDone <- agentCmd.Wait() }()
 
-	select {
-	case bridgeErr := <-bridgeErr:
-		if bridgeErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: bridge proxy: %v\n", bridgeErr)
-			// The parent observes this non-zero init exit and terminates the
-			// standalone process group, including this agent and its descendants.
-			exitSandboxProcess(1)
-		}
-		// A clean bridge return is only possible during cancellation or Close.
-		// Wait for the command so its established exit behavior is preserved.
-		err = <-agentDone
-	case err = <-agentDone:
+	agentErr, bridgeFailure := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
+	if bridgeFailure != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: bridge proxy: %v\n", bridgeFailure)
+		// The parent observes this non-zero init exit and terminates the
+		// standalone process group, including this agent and its descendants.
+		exitSandboxProcess(1)
 	}
+	err = agentErr
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -220,5 +215,25 @@ func RunStandaloneInit() {
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
+	}
+}
+
+// waitStandaloneAgentAndBridge waits for the agent and its required bridge.
+// When the agent exits first, it shuts the bridge down and consumes its
+// terminal result before returning. This preserves a bridge failure that was
+// already in progress instead of allowing a select race to turn it into a
+// successful agent exit.
+func waitStandaloneAgentAndBridge(agentDone, bridgeErr <-chan error, stopBridge func()) (agentErr, bridgeFailure error) {
+	select {
+	case bridgeFailure = <-bridgeErr:
+		if bridgeFailure != nil {
+			return nil, bridgeFailure
+		}
+		// A clean bridge return is only possible during cancellation or Close.
+		// Wait for the command so its established exit behavior is preserved.
+		return <-agentDone, nil
+	case agentErr = <-agentDone:
+		stopBridge()
+		return agentErr, <-bridgeErr
 	}
 }

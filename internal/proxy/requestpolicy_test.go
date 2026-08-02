@@ -59,46 +59,31 @@ func TestRequestPolicyBlockInfo_HeaderShape(t *testing.T) {
 	}
 }
 
-// TestRequestPolicyBlockInfo_ReceiptGatedOnEmitter asserts the receipt header
-// is populated with the real receipt action_id iff a receipt emitter is
-// configured, and that a missing, empty, or malformed action_id leaves the
-// slot unset without dropping the block's required headers.
-//
-// The fixture uses a zero-value *receipt.Emitter because requestPolicyBlockInfo
-// only consults receiptEmitterPtr.Load() for non-nil presence (mirroring
-// emitReceipt's nil check) - it never calls Emit, so no recorder or signing key
-// is needed to exercise the gating.
-func TestRequestPolicyBlockInfo_ReceiptGatedOnEmitter(t *testing.T) {
+// TestRequestPolicyBlockInfo_ReceiptRequiresRecordedActionID asserts that the
+// block-info helper accepts only a valid action ID. Its caller supplies one
+// solely after receipt emission succeeds; unavailable and failed emitters pass
+// an empty ID and are covered at the enforced request-policy path.
+func TestRequestPolicyBlockInfo_ReceiptRequiresRecordedActionID(t *testing.T) {
 	t.Parallel()
-	realActionID := receipt.NewActionID() // UUIDv7, the form a live block path stamps
+	realActionID := receipt.NewActionID() // UUIDv7, the form a recorded block stamps
 
 	cases := []struct {
 		name        string
-		emitter     *receipt.Emitter
 		actionID    string
 		wantReceipt string
 	}{
 		{
-			name:        "emitter configured: real action_id surfaces in receipt header",
-			emitter:     &receipt.Emitter{},
+			name:        "recorded action_id surfaces in receipt header",
 			actionID:    realActionID,
 			wantReceipt: realActionID,
 		},
 		{
-			name:        "no emitter: receipt header stays unset even with a valid id",
-			emitter:     nil,
-			actionID:    realActionID,
-			wantReceipt: "",
-		},
-		{
-			name:        "emitter configured but empty action_id: receipt header unset",
-			emitter:     &receipt.Emitter{},
+			name:        "empty action_id leaves receipt header unset",
 			actionID:    "",
 			wantReceipt: "",
 		},
 		{
-			name:        "emitter configured but malformed action_id: receipt dropped, block intact",
-			emitter:     &receipt.Emitter{},
+			name:        "malformed action_id is dropped while block remains intact",
 			actionID:    "not-a-valid-receipt-id",
 			wantReceipt: "",
 		},
@@ -106,9 +91,6 @@ func TestRequestPolicyBlockInfo_ReceiptGatedOnEmitter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Proxy{}
-			if tc.emitter != nil {
-				p.receiptEmitterPtr.Store(tc.emitter)
-			}
 			info := p.requestPolicyBlockInfo(tc.actionID)
 
 			h := make(http.Header)

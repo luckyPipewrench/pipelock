@@ -719,8 +719,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				RequestID:   requestID,
 				Agent:       agentName,
 				AuditCtx:    newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName),
-				Emit: func(opts receipt.EmitOpts) {
-					_ = p.emitReceipt(withReceiptPolicyHash(opts, currentCfg.CanonicalPolicyHash()))
+				Emit: func(opts receipt.EmitOpts) error {
+					return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, currentCfg.CanonicalPolicyHash()))
 				},
 			}); rpRes.Block {
 				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
@@ -1024,6 +1024,20 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
 	return p.emitReceiptWithEmitter(opts, p.receiptEmitterPtr.Load())
+}
+
+// emitRequestPolicyReceipt records one request_policy receipt through exactly
+// the emitter loaded for this call. Unlike emitReceipt's optional no-op
+// behavior, an unavailable emitter is an error here so request_policy can omit
+// its optional receipt-reference header rather than advertising an action ID
+// that was never recorded. The enforced block remains independent of this
+// error.
+func (p *Proxy) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	e := p.receiptEmitterPtr.Load()
+	if e == nil {
+		return errReceiptEmitterUnavailable
+	}
+	return p.emitReceiptWithEmitter(opts, e)
 }
 
 var errReceiptEmitterUnavailable = errors.New("receipt emitter unavailable")
@@ -4298,7 +4312,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		RequestID: requestID,
 		Agent:     agent,
 		AuditCtx:  actx,
-		Emit:      emitFetchReceipt,
+		Emit: func(opts receipt.EmitOpts) error {
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		},
 	}); rpRes.Block {
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
 		writeBlockedJSON(w, rpRes.Info, http.StatusForbidden, FetchResponse{

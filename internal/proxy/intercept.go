@@ -1498,7 +1498,7 @@ func newInterceptHandler(
 				RequestID:   ic.RequestID,
 				Agent:       ic.Agent,
 				AuditCtx:    actx,
-				Emit:        func(o receipt.EmitOpts) { _ = interceptEmitReceipt(ic, o) },
+				Emit:        func(o receipt.EmitOpts) error { return interceptEmitReceipt(ic, o) },
 			}
 			if rp := ic.Proxy.prepareRequestPolicyBody(r, &rpInput); rp.Block {
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)

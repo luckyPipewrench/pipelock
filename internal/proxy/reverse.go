@@ -257,6 +257,18 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
 	return rp.emitReceiptWithEmitter(opts, e)
 }
 
+// emitRequestPolicyReceipt records one request_policy receipt through exactly
+// the emitter loaded for this call. An unavailable emitter is reported so the
+// shared request-policy finalizer does not surface a receipt reference without
+// evidence; ordinary optional receipt emission remains a no-op when disabled.
+func (rp *ReverseProxyHandler) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	e := rp.receiptEmitter()
+	if e == nil {
+		return errReceiptEmitterUnavailable
+	}
+	return rp.emitReceiptWithEmitter(opts, e)
+}
+
 func (rp *ReverseProxyHandler) emitRequiredReceipt(opts receipt.EmitOpts) error {
 	e := rp.receiptEmitter()
 	if e == nil {
@@ -841,7 +853,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			RequestID:   requestID,
 			Agent:       agent,
 			AuditCtx:    newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent),
-			Emit:        emitReverseReceipt,
+			Emit: func(opts receipt.EmitOpts) error {
+				if snap.cfg != nil {
+					opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
+				}
+				return rp.emitRequestPolicyReceipt(opts)
+			},
 		}
 		if rp.reqPolicyPrepareFn != nil {
 			if rpRes := rp.reqPolicyPrepareFn(r, &rpInput); rpRes.Block {

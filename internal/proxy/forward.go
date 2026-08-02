@@ -449,7 +449,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		RequestID:   requestID,
 		Agent:       agent,
 		AuditCtx:    targetCtx,
-		Emit:        emitConnectReceipt,
+		Emit: func(opts receipt.EmitOpts) error {
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		},
 	}
 	if rp := p.applyRequestPolicy(connectRPInput); rp.Block {
 		p.metrics.RecordTunnelBlocked(agentLabel)
@@ -1677,7 +1679,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		RequestID:   requestID,
 		Agent:       agent,
 		AuditCtx:    actx,
-		Emit:        emitForwardReceipt,
+		Emit: func(opts receipt.EmitOpts) error {
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		},
 	}
 	if rp := p.prepareRequestPolicyBody(r, &rpInput); rp.Block {
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)

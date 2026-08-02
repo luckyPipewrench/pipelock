@@ -454,29 +454,139 @@ func TestApplyRequestPolicy_OpaqueWithMethodOverrideFailsClosed(t *testing.T) {
 	}
 }
 
-func TestApplyRequestPolicy_BlockCarriesReceiptWhenEmitterConfigured(t *testing.T) {
-	t.Parallel()
-	p := newTestProxyWithConfig(t, reqPolicyConfig(blockRule(http.MethodDelete)))
-	// A configured receipt emitter makes the block stamp the real action_id
-	// into the receipt header and emit a correlated receipt. The gating only
-	// reads the pointer for non-nil presence, so a zero-value emitter suffices.
-	p.receiptEmitterPtr.Store(&receipt.Emitter{})
+func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
+	tests := []struct {
+		name             string
+		installEmitter   bool
+		closeBefore      bool
+		removeBeforeEmit bool
+		reverseEmit      bool
+		wantReceipt      bool
+		wantEmitErr      bool
+	}{
+		{
+			name:        "emitter absent blocks without receipt header",
+			wantEmitErr: true,
+		},
+		{
+			name:           "forward recorder success surfaces receipt header",
+			installEmitter: true,
+			wantReceipt:    true,
+		},
+		{
+			name:           "forward closed recorder keeps block but omits nonexistent receipt header",
+			installEmitter: true,
+			closeBefore:    true,
+			wantEmitErr:    true,
+		},
+		{
+			name:           "reverse recorder success surfaces receipt header",
+			installEmitter: true,
+			reverseEmit:    true,
+			wantReceipt:    true,
+		},
+		{
+			name:           "reverse closed recorder keeps block but omits nonexistent receipt header",
+			installEmitter: true,
+			closeBefore:    true,
+			reverseEmit:    true,
+			wantEmitErr:    true,
+		},
+		{
+			name:             "reload removes forward emitter before request-policy emission",
+			installEmitter:   true,
+			removeBeforeEmit: true,
+			wantEmitErr:      true,
+		},
+		{
+			name:             "reload removes reverse emitter before request-policy emission",
+			installEmitter:   true,
+			removeBeforeEmit: true,
+			reverseEmit:      true,
+			wantEmitErr:      true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reqPolicyConfig(blockRule(http.MethodDelete))
+			p := newTestProxyWithConfig(t, cfg)
+			var emitErr error
+			emitReceipt := p.emitRequestPolicyReceipt
+			if tc.installEmitter {
+				emitter := newRequestPolicyReceiptEmitter(t, cfg, tc.closeBefore)
+				p.receiptEmitterPtr.Store(emitter)
+				if tc.reverseEmit {
+					rp := &ReverseProxyHandler{
+						cfgPtr:            &p.cfgPtr,
+						logger:            p.logger,
+						metrics:           p.metrics,
+						receiptEmitterPtr: p.ReceiptEmitterPtr(),
+					}
+					emitReceipt = rp.emitRequestPolicyReceipt
+				}
+			}
+			emit := func(opts receipt.EmitOpts) error {
+				if tc.removeBeforeEmit {
+					p.receiptEmitterPtr.Store(nil)
+				}
+				emitErr = emitReceipt(opts)
+				return emitErr
+			}
 
-	emitted := 0
-	res := p.applyRequestPolicy(requestPolicyInput{
-		Host: rpTestHost, Method: http.MethodDelete, Path: "/v1/jobs/1",
-		Transport: TransportForward, AuditCtx: audit.LogContext{},
-		Emit: func(receipt.EmitOpts) { emitted++ },
+			res := p.applyRequestPolicy(requestPolicyInput{
+				Host: rpTestHost, Method: http.MethodDelete, Path: "/v1/jobs/1",
+				Transport: TransportForward, Target: "https://" + rpTestHost + "/v1/jobs/1",
+				RequestID: "request-policy-receipt", Agent: "test-agent", AuditCtx: audit.LogContext{}, Emit: emit,
+			})
+			if !res.Block {
+				t.Fatal("request_policy block must not depend on optional receipt recording")
+			}
+			if (emitErr != nil) != tc.wantEmitErr {
+				t.Fatalf("receipt emission error = %v, want error=%t", emitErr, tc.wantEmitErr)
+			}
+			gotReceipt := res.Info.Receipt != ""
+			if gotReceipt != tc.wantReceipt {
+				t.Fatalf("receipt header present = %t, want %t", gotReceipt, tc.wantReceipt)
+			}
+		})
+	}
+}
+
+// newRequestPolicyReceiptEmitter returns a real signed receipt emitter. Closing
+// its recorder before returning forces an actual persistence failure rather
+// than a synthetic callback error, which proves the request-policy header gate
+// follows recorder success while preserving the enforced block.
+func newRequestPolicyReceiptEmitter(t *testing.T, cfg *config.Config, closeBefore bool) *receipt.Emitter {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                t.TempDir(),
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: cfg.CanonicalPolicyHash(),
+		Principal:  "test-principal",
+		Actor:      "test-actor",
 	})
-	if !res.Block {
-		t.Fatal("expected block")
+	if emitter == nil {
+		t.Fatal("receipt.NewEmitter returned nil")
 	}
-	if emitted != 1 {
-		t.Fatalf("expected exactly one receipt emission, got %d", emitted)
+	if closeBefore {
+		if err := rec.Close(); err != nil {
+			t.Fatalf("recorder.Close: %v", err)
+		}
 	}
-	if res.Info.Receipt == "" {
-		t.Error("receipt header should be populated when an emitter is configured")
-	}
+	return emitter
 }
 
 func TestSetupRequestPolicy_InvalidPatternFailsStartup(t *testing.T) {

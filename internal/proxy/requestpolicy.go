@@ -64,7 +64,7 @@ type requestPolicyInput struct {
 	RequestID string
 	Agent     string
 	AuditCtx  audit.LogContext
-	Emit      func(receipt.EmitOpts) // transport's receipt emitter (e.g. p.emitReceipt)
+	Emit      func(receipt.EmitOpts) error // transport's receipt emitter (e.g. p.emitReceipt)
 
 	// DeferBodyPredicate evaluates route-only rules and skips body-predicate
 	// (GraphQL / discriminator) evaluation for this call. The WebSocket
@@ -355,13 +355,15 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		return requestPolicyResult{}
 	}
 
-	// Enforced block.
+	// Enforced block. Receipt recording is best effort: an emission failure
+	// never weakens the policy decision, but it must not leave a response header
+	// pointing at a receipt that was not recorded.
 	p.logger.LogBlocked(in.AuditCtx, blockLayerRequestPolicy, d.RuleName)
 	actionID := ""
-	if in.Emit != nil && p.receiptEmitterPtr.Load() != nil {
-		actionID = receipt.NewActionID()
-		in.Emit(receipt.EmitOpts{
-			ActionID:  actionID,
+	if in.Emit != nil {
+		candidateActionID := receipt.NewActionID()
+		if err := in.Emit(receipt.EmitOpts{
+			ActionID:  candidateActionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerRequestPolicy,
 			Pattern:   d.RuleName,
@@ -370,7 +372,9 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 			Target:    in.Target,
 			RequestID: in.RequestID,
 			Agent:     in.Agent,
-		})
+		}); err == nil {
+			actionID = candidateActionID
+		}
 	}
 	reason := d.Reason
 	if reason == "" {
@@ -388,18 +392,16 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 // layer header and let the reason code convey the layer (the same convention
 // the MCP and contract layers follow).
 //
-// Receipt correlation is gated on a configured receipt emitter, mirroring
-// emitReceipt's nil check. When an emitter is configured, actionID - which MUST
-// be the real receipt action_id (receipt.NewActionID) recorded for this same
-// block - is stamped into the receipt header so the agent can fetch the
-// matching receipt. A decorrelated identifier must never be passed here: an
-// action_id that points at no emitted receipt would make the header lie. When
-// no emitter is configured, or actionID is empty or malformed, the receipt slot
-// stays unset and the block still emits its required headers - the receipt is
-// optional metadata, so dropping it never weakens the block itself.
+// actionID is populated only after the transport receipt callback reports a
+// successful record. It MUST be the real receipt action_id (receipt.NewActionID)
+// recorded for this same block; a decorrelated identifier would make the header
+// lie. When receipt emission is unavailable or fails, actionID stays empty and
+// the receipt slot stays unset while the block still emits its required headers.
+// Receipt correlation is optional metadata, so dropping it never weakens the
+// block itself.
 func (p *Proxy) requestPolicyBlockInfo(actionID string) blockreason.Info {
 	info := blockInfoFor(blockreason.RequestPolicyDeny, "")
-	if actionID == "" || p.receiptEmitterPtr.Load() == nil {
+	if actionID == "" {
 		return info
 	}
 	withReceipt, err := info.WithReceipt(actionID)

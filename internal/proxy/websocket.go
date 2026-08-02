@@ -566,18 +566,20 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// to per-frame evaluation in the relay; only route-only rules gate the
 	// handshake here.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
-		Host:               parsed.Hostname(),
-		Method:             http.MethodGet,
-		Path:               parsed.EscapedPath(),
-		ContentType:        r.Header.Get(headerContentType),
-		Headers:            r.Header,
-		BodyRead:           true,
-		Transport:          TransportWS,
-		Target:             targetURL,
-		RequestID:          requestID,
-		Agent:              agent,
-		AuditCtx:           actx,
-		Emit:               emitWebSocketReceipt,
+		Host:        parsed.Hostname(),
+		Method:      http.MethodGet,
+		Path:        parsed.EscapedPath(),
+		ContentType: r.Header.Get(headerContentType),
+		Headers:     r.Header,
+		BodyRead:    true,
+		Transport:   TransportWS,
+		Target:      targetURL,
+		RequestID:   requestID,
+		Agent:       agent,
+		AuditCtx:    actx,
+		Emit: func(opts receipt.EmitOpts) error {
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		},
 		DeferBodyPredicate: true,
 	}); rpRes.Block {
 		p.metrics.RecordWSBlocked()
@@ -1185,8 +1187,8 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in.RequestID = r.requestID
 	in.Agent = r.agent
 	in.AuditCtx = newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
-	in.Emit = func(opts receipt.EmitOpts) {
-		_ = r.emitReceipt(opts)
+	in.Emit = func(opts receipt.EmitOpts) error {
+		return r.proxy.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, r.cfg.CanonicalPolicyHash()))
 	}
 	res := r.proxy.applyRequestPolicy(in)
 	if !res.Block {

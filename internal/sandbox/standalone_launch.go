@@ -136,10 +136,10 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		ctx = context.Background()
 	}
 
-	// Create sandbox temp directory for the Unix socket.
+	// Create a private per-invocation 0o700 control directory for the Unix socket.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
-	if err := os.MkdirAll(sandboxDir, 0o750); err != nil {
-		return fmt.Errorf("creating sandbox dir: %w", err)
+	if err := ensureStandaloneControlDir(sandboxDir); err != nil {
+		return err
 	}
 	defer func() { _ = os.RemoveAll(sandboxDir) }()
 
@@ -259,6 +259,16 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 
 	return waitErr
+}
+
+func ensureStandaloneControlDir(sandboxDir string) error {
+	if err := os.MkdirAll(sandboxDir, 0o700); err != nil {
+		return fmt.Errorf("creating sandbox dir: %w", err)
+	}
+	if err := os.Chmod(sandboxDir, 0o700); err != nil {
+		return fmt.Errorf("chmod sandbox dir: %w", err)
+	}
+	return nil
 }
 
 type standaloneProxyServer struct {

@@ -208,6 +208,27 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 	}
 }
 
+func TestLaunchStandalone_ControlDirectoryIsPrivate(t *testing.T) {
+	sandboxDir := filepath.Join(t.TempDir(), "control")
+	if err := os.MkdirAll(sandboxDir, 0o750); err != nil {
+		t.Fatalf("create control directory: %v", err)
+	}
+	if err := os.Chmod(sandboxDir, 0o750); err != nil {
+		t.Fatalf("chmod control directory: %v", err)
+	}
+
+	if err := ensureStandaloneControlDir(sandboxDir); err != nil {
+		t.Fatalf("ensure control directory: %v", err)
+	}
+	info, err := os.Stat(sandboxDir)
+	if err != nil {
+		t.Fatalf("stat control directory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("control directory mode = %#o, want 0700", got)
+	}
+}
+
 func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 	tests := []struct {
 		name string

@@ -918,6 +918,33 @@ func TestProbeBinaryIntegrity_FailsOnMalformedPin(t *testing.T) {
 	}
 }
 
+// An uppercase pin is valid hex and the right length, but hashFile returns a
+// lowercase digest, so it could never match. Reporting it as a hash mismatch
+// would read as a swapped binary and send an operator hunting a compromise that
+// did not happen, so it must be reported as a malformed pin instead. hashFile is
+// left unstubbed so the test also proves the pin is rejected before any hashing.
+func TestProbeBinaryIntegrity_UppercasePinIsMalformedNotMismatch(t *testing.T) {
+	env := makeProbeEnv(t)
+	pinPath := filepath.Join(t.TempDir(), "pin")
+	upper := strings.ToUpper(strings.Repeat("ab", 32))
+	if err := os.WriteFile(pinPath, []byte(upper+"\n"), 0o600); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+	env.pinPath = pinPath
+	env.readFile = os.ReadFile
+
+	status, detail := probeBinaryIntegrity(context.Background(), env)
+	if status != statusFail {
+		t.Fatalf("status = %s, want fail", status)
+	}
+	if !strings.Contains(detail, "malformed") {
+		t.Errorf("detail = %q, want it to name the pin as malformed", detail)
+	}
+	if strings.Contains(detail, "mismatch") || strings.Contains(detail, "unstubbed") {
+		t.Errorf("detail = %q, must reject the pin before hashing anything", detail)
+	}
+}
+
 func TestActionRemovePath_RemovesFileAndBak(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	target := filepath.Join(t.TempDir(), "f")

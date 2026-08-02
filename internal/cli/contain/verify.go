@@ -538,7 +538,13 @@ func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 	if pinned == "" {
 		return statusFail, fmt.Sprintf("%s is empty (corrupted pin)", env.pinPath)
 	}
-	if _, err := hex.DecodeString(pinned); err != nil || len(pinned) != sha256HexLen {
+	// Install writes a lowercase hex digest and hashFile returns lowercase, so an
+	// uppercase pin can never match. Rejecting it as malformed here tells the
+	// operator the pin itself is wrong; letting it through reports a hash
+	// mismatch, which reads as a swapped binary and sends them hunting a
+	// compromise that did not happen.
+	if _, err := hex.DecodeString(pinned); err != nil || len(pinned) != sha256HexLen ||
+		pinned != strings.ToLower(pinned) {
 		return statusFail, fmt.Sprintf("%s contains malformed SHA-256 pin (length %d)", env.pinPath, len(pinned))
 	}
 

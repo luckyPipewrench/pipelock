@@ -24,9 +24,11 @@ var developerEnvironmentMagic = [4]byte{'P', 'L', 'K', 'E'}
 
 // DeveloperEnv builds the environment for the final contained command from a
 // caller-supplied developer environment. It intentionally preserves developer
-// credentials and toolchain settings, including loader/runtime variables: the
-// sandbox init process never receives those variables, and this function is
-// called only after containment is established for the final command.
+// credentials and toolchain settings, including loader/runtime variables. The
+// sandbox init process reads these entries from the descriptor as serialized
+// data but never places them in its own control environment nor applies them to
+// itself; this function is called only after containment is established, and its
+// result is applied only to the final command.
 //
 // Pipelock control and proxy variables are removed. The bridge proxy settings
 // are then forced so the final command cannot inherit a caller-controlled
@@ -58,15 +60,7 @@ func DeveloperEnv(developerEnvironment []string, bridgeAddr string) ([]string, e
 		env = append(env, entry)
 	}
 
-	proxyURL := "http://" + bridgeAddr
-	return append(env,
-		"HTTP_PROXY="+proxyURL,
-		"HTTPS_PROXY="+proxyURL,
-		"http_proxy="+proxyURL,
-		"https_proxy="+proxyURL,
-		"NO_PROXY=",
-		"no_proxy=",
-	), nil
+	return append(env, bridgeProxyEnv(bridgeAddr)...), nil
 }
 
 func isPipelockControlEnvKey(key string) bool {

@@ -282,21 +282,26 @@ func exitBridgeChild(err error) {
 }
 
 func appendBridgeProxyEnv(env []string, addr string) []string {
-	env = removeProxyEnvKeys(env)
-	// addr comes from BridgeProxy.Addr(), so it is a listener-backed host:port.
+	// removeProxyEnvKeys strips *_PROXY (including NO_PROXY); bridgeProxyEnv then
+	// re-adds the bridge settings with an explicit empty NO_PROXY.
+	return append(removeProxyEnvKeys(env), bridgeProxyEnv(addr)...)
+}
+
+// bridgeProxyEnv returns the proxy entries that route all HTTP(S) egress through
+// the bridge and clear NO_PROXY so nothing bypasses it. Both the synthetic-env
+// path (appendBridgeProxyEnv) and the developer-env path (DeveloperEnv) use this
+// single source so the two cannot drift and reintroduce a proxy bypass. addr
+// comes from BridgeProxy.Addr(), a listener-backed host:port.
+func bridgeProxyEnv(addr string) []string {
 	proxyURL := "http://" + addr
-	// Force NO_PROXY empty for the same reason DeveloperEnv does: a caller- or
-	// image-supplied NO_PROXY would let the agent bypass the bridge for matching
-	// hosts. removeProxyEnvKeys strips *_PROXY (including NO_PROXY), and these
-	// re-add the bridge settings with an explicit empty NO_PROXY.
-	return append(env,
-		"HTTP_PROXY="+proxyURL,
-		"HTTPS_PROXY="+proxyURL,
-		"http_proxy="+proxyURL,
-		"https_proxy="+proxyURL,
+	return []string{
+		"HTTP_PROXY=" + proxyURL,
+		"HTTPS_PROXY=" + proxyURL,
+		"http_proxy=" + proxyURL,
+		"https_proxy=" + proxyURL,
 		"NO_PROXY=",
 		"no_proxy=",
-	)
+	}
 }
 
 func removeProxyEnvKeys(env []string) []string {

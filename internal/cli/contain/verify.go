@@ -572,7 +572,13 @@ func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 		self = filepath.Clean(self)
 		targetInfo, targetErr := env.stat(target)
 		selfInfo, selfErr := env.stat(self)
-		if targetErr != nil || selfErr != nil || !os.SameFile(targetInfo, selfInfo) {
+		switch {
+		case targetErr != nil || selfErr != nil:
+			// Identity is unknown, not different. Saying the binaries differ here
+			// would assert something unverified, which is the failure this probe
+			// exists to stop making.
+			detail += fmt.Sprintf(" (note: could not compare invoking binary %s with deployed binary %s)", self, target)
+		case !os.SameFile(targetInfo, selfInfo):
 			detail += fmt.Sprintf(" (note: invoking binary %s differs from deployed binary %s)", self, target)
 		}
 	}

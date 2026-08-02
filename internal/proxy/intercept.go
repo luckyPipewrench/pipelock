@@ -686,7 +686,7 @@ func newInterceptHandler(
 		})
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
-		r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), ic.Scanner, r.URL.Hostname(), urlResult))
+		r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), ic.Scanner, r.URL.Hostname(), effectiveURLPort(r.URL), urlResult))
 
 		// Capture observer: record intercept URL verdict for policy replay.
 		if ic.Proxy != nil {

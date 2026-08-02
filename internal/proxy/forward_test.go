@@ -3693,7 +3693,7 @@ func TestSSRFSafeDialContext_DNSRebindBlockCarriesDistinctReason(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	ctx = withSSRFDialScanSnapshot(ctx, "rebind.test", []string{"203.0.113.10"})
+	ctx = withSSRFDialScanSnapshot(ctx, "rebind.test", "443", []string{"203.0.113.10"})
 
 	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "rebind.test:443")
 	if conn != nil {
@@ -3718,7 +3718,7 @@ func TestAllowedSSRFDialScanSnapshotPreservesPublicAllowlistedIP(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	ctx := withAllowedSSRFDialScanSnapshot(context.Background(), sc, "rebind.test", scanner.Result{
+	ctx := withAllowedSSRFDialScanSnapshot(context.Background(), sc, "rebind.test", "443", scanner.Result{
 		Allowed:         true,
 		SSRFResolvedIPs: []string{"203.0.113.10"},
 	})
@@ -3782,7 +3782,7 @@ func TestAllowedSSRFDialScanSnapshotClearsIneligibleSameHost(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	var nilCtx context.Context
-	if got := withAllowedSSRFDialScanSnapshot(nilCtx, sc, "rebind.test", scanner.Result{
+	if got := withAllowedSSRFDialScanSnapshot(nilCtx, sc, "rebind.test", "443", scanner.Result{
 		Allowed:         true,
 		SSRFResolvedIPs: []string{"203.0.113.10"},
 	}); got != nil {
@@ -3791,12 +3791,12 @@ func TestAllowedSSRFDialScanSnapshotClearsIneligibleSameHost(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := withSSRFDialScanSnapshot(context.Background(), "rebind.test", []string{"203.0.113.10"})
+			ctx := withSSRFDialScanSnapshot(context.Background(), "rebind.test", "443", []string{"203.0.113.10"})
 			currentScanner := sc
 			if tc.name == "nil scanner" {
 				currentScanner = nil
 			}
-			ctx = withAllowedSSRFDialScanSnapshot(ctx, currentScanner, "rebind.test", tc.result)
+			ctx = withAllowedSSRFDialScanSnapshot(ctx, currentScanner, "rebind.test", "443", tc.result)
 
 			if isSSRFDNSRebind(ctx, "rebind.test", net.ParseIP("127.0.0.1")) {
 				t.Fatal("stale same-host public snapshot survived an ineligible current scan")
@@ -3836,7 +3836,7 @@ func TestSSRFSafeDialContext_DNSRebindToCoreCIDRsBlockedWhenInternalConfigNil(t 
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			ctx = withSSRFDialScanSnapshot(ctx, tt.host, []string{"203.0.113.10"})
+			ctx = withSSRFDialScanSnapshot(ctx, tt.host, "443", []string{"203.0.113.10"})
 
 			conn, err := p.ssrfSafeDialContext(ctx, "tcp", net.JoinHostPort(tt.host, "443"))
 			if conn != nil {
@@ -5113,7 +5113,7 @@ func TestSSRFDialBlockHelpersEdgeCases(t *testing.T) {
 		t.Fatalf("nil logDetail() = %q, want empty", nilErr.logDetail())
 	}
 
-	ctx := withSSRFDialScanSnapshot(context.Background(), " Rebind.Test. ", []string{"bad-ip", "203.0.113.10", "2001:db8::1%eth0"})
+	ctx := withSSRFDialScanSnapshot(context.Background(), " Rebind.Test. ", "443", []string{"bad-ip", "203.0.113.10", "2001:db8::1%eth0"})
 	if ctx == nil {
 		t.Fatal("snapshot context is nil")
 	}

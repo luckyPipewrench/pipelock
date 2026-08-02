@@ -262,7 +262,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(wsScanCtx)
 	result := sc.Scan(wsScanCtx, scanURL)
-	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, parsed.Hostname(), result))
+	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, parsed.Hostname(), effectiveURLPort(parsed), result))
 
 	// Capture observer: record WebSocket URL verdict for policy replay.
 	{

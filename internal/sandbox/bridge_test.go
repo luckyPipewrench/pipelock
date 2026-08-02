@@ -493,6 +493,13 @@ func TestBridgeProxy_FailAfterCloseIsDropped(t *testing.T) {
 	bp.Close()
 	bp.fail(errors.New("late failure after close"))
 
+	// Assert the drop directly rather than only through Serve's result: Close
+	// does not wait for Serve to return, so the Serve read alone could pass even
+	// if fail() had recorded the late error.
+	if got := bp.getFailure(); got != nil {
+		t.Fatalf("fail() recorded a failure after Close: %v", got)
+	}
+
 	select {
 	case err := <-serveErr:
 		if err != nil {

@@ -272,17 +272,29 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 // As defense in depth against a TOCTOU swap, it re-validates with Lstat (not
 // Stat, so a symlink is detected rather than followed): the result must be a
 // real directory owned by this process. Any deviation fails closed.
-func newStandaloneControlDir() (string, error) {
+func newStandaloneControlDir() (retDir string, retErr error) {
 	sandboxDir, err := os.MkdirTemp("", "pipelock-sandbox-")
 	if err != nil {
 		return "", fmt.Errorf("creating sandbox dir: %w", err)
 	}
+	// On any validation failure below, remove the directory we just created:
+	// the caller's cleanup defer is only installed once this returns a path, so
+	// without this a rejected directory would leak. os.Remove (not RemoveAll) so
+	// a swapped or unexpectedly non-empty path is never recursively deleted.
+	defer func() {
+		if retErr != nil {
+			_ = os.Remove(sandboxDir)
+		}
+	}()
 	info, err := os.Lstat(sandboxDir)
 	if err != nil {
 		return "", fmt.Errorf("stat sandbox dir: %w", err)
 	}
 	if !info.Mode().IsDir() {
 		return "", fmt.Errorf("sandbox control dir %s is not a directory", sandboxDir)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		return "", fmt.Errorf("sandbox control dir %s has mode %04o, want 0700", sandboxDir, perm)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

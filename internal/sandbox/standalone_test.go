@@ -231,6 +231,16 @@ func TestLaunchStandalone_ControlDirectoryIsPrivate(t *testing.T) {
 	if predictable := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid()); dir == predictable {
 		t.Fatalf("control directory uses the predictable per-PID path: %s", dir)
 	}
+	// Two allocations must differ: a predictable implementation would return the
+	// same path both times.
+	dir2, err := newStandaloneControlDir()
+	if err != nil {
+		t.Fatalf("newStandaloneControlDir (second): %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir2) }()
+	if dir2 == dir {
+		t.Fatalf("two control directories share a predictable path: %s", dir)
+	}
 }
 
 func TestPreflightWithRequirements_IndependentlyReportsNetworkAndHandler(t *testing.T) {

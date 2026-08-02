@@ -129,6 +129,12 @@ class ResponseParsingTest(unittest.TestCase):
                 ):
                     pr_review.extract_chat_content(data)
 
+    def test_nonlist_choices_fail_closed(self) -> None:
+        for choices in ({}, "invalid", None, 1):
+            with self.subTest(choices=choices):
+                with self.assertRaisesRegex(pr_review.LLMReviewError, "no choices"):
+                    pr_review.extract_chat_content({"choices": choices})
+
     def test_shape_errors_are_generic_and_fail_closed(self) -> None:
         with self.assertRaises(pr_review.LLMReviewError) as ctx:
             pr_review.extract_chat_content(

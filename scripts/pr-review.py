@@ -199,8 +199,11 @@ def summarize_usage(data: dict) -> str:
     return ", ".join(parts)
 
 
-def extract_chat_content(data: dict) -> str:
+def extract_chat_content(data: object) -> str:
     """Extract visible text from a chat-completions response."""
+    if not isinstance(data, dict):
+        raise LLMReviewError("LLM returned an invalid response shape.")
+
     choices = data.get("choices", [])
     if not isinstance(choices, list) or not choices:
         raise LLMReviewError("LLM returned no choices.")

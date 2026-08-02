@@ -121,6 +121,14 @@ class ModelRoutingTest(unittest.TestCase):
 
 
 class ResponseParsingTest(unittest.TestCase):
+    def test_nonobject_response_roots_fail_closed(self) -> None:
+        for data in ([], "response", None, 1):
+            with self.subTest(data=data):
+                with self.assertRaisesRegex(
+                    pr_review.LLMReviewError, "invalid response shape"
+                ):
+                    pr_review.extract_chat_content(data)
+
     def test_shape_errors_are_generic_and_fail_closed(self) -> None:
         with self.assertRaises(pr_review.LLMReviewError) as ctx:
             pr_review.extract_chat_content(

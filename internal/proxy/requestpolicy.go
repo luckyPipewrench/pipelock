@@ -64,7 +64,9 @@ type requestPolicyInput struct {
 	RequestID string
 	Agent     string
 	AuditCtx  audit.LogContext
-	Emit      func(receipt.EmitOpts) error // transport's receipt emitter (e.g. p.emitReceipt)
+	// Emit must return an error when no receipt is recorded; optional emitters
+	// that treat an unavailable recorder as a successful no-op are invalid here.
+	Emit func(receipt.EmitOpts) error
 
 	// DeferBodyPredicate evaluates route-only rules and skips body-predicate
 	// (GraphQL / discriminator) evaluation for this call. The WebSocket

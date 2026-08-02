@@ -1033,14 +1033,25 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 // that was never recorded. The enforced block remains independent of this
 // error.
 func (p *Proxy) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
-	e := p.receiptEmitterPtr.Load()
-	if e == nil {
-		return errReceiptEmitterUnavailable
-	}
-	return p.emitReceiptWithEmitter(opts, e)
+	return emitRequestPolicyReceiptWithEmitter(
+		opts,
+		p.receiptEmitterPtr.Load(),
+		p.emitReceiptWithEmitter,
+	)
 }
 
 var errReceiptEmitterUnavailable = errors.New("receipt emitter unavailable")
+
+func emitRequestPolicyReceiptWithEmitter(
+	opts receipt.EmitOpts,
+	e *receipt.Emitter,
+	emit func(receipt.EmitOpts, *receipt.Emitter) error,
+) error {
+	if e == nil {
+		return errReceiptEmitterUnavailable
+	}
+	return emit(opts, e)
+}
 
 func requiredReceiptBlockMetricReason(err error) string {
 	if errors.Is(err, errReceiptEmitterUnavailable) {

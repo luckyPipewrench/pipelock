@@ -262,11 +262,11 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
 // shared request-policy finalizer does not surface a receipt reference without
 // evidence; ordinary optional receipt emission remains a no-op when disabled.
 func (rp *ReverseProxyHandler) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
-	e := rp.receiptEmitter()
-	if e == nil {
-		return errReceiptEmitterUnavailable
-	}
-	return rp.emitReceiptWithEmitter(opts, e)
+	return emitRequestPolicyReceiptWithEmitter(
+		opts,
+		rp.receiptEmitter(),
+		rp.emitReceiptWithEmitter,
+	)
 }
 
 func (rp *ReverseProxyHandler) emitRequiredReceipt(opts receipt.EmitOpts) error {

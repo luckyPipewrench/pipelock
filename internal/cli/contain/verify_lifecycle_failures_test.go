@@ -376,6 +376,61 @@ func TestProbeBinaryIntegrityVerifiesDeployedBinary(t *testing.T) {
 	}
 }
 
+func TestProbeBinaryIntegrity_DoesNotMisreportAliasedInvokingBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		alias func(t *testing.T, target, invoking string)
+	}{
+		{
+			name: "symlink",
+			alias: func(t *testing.T, target, invoking string) {
+				t.Helper()
+				if err := os.Symlink(target, invoking); err != nil {
+					t.Fatalf("symlink invoking binary: %v", err)
+				}
+			},
+		},
+		{
+			name: "hardlink",
+			alias: func(t *testing.T, target, invoking string) {
+				t.Helper()
+				if err := os.Link(target, invoking); err != nil {
+					t.Fatalf("hardlink invoking binary: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "deployed-pipelock")
+			invoking := filepath.Join(dir, "invoking-pipelock")
+			pinPath := filepath.Join(dir, "binary-pin.sha256")
+			mustWriteFile(t, target, "installed binary")
+			pinned, err := sha256HexOfFile(target)
+			if err != nil {
+				t.Fatalf("hash deployed binary: %v", err)
+			}
+			mustWriteFile(t, pinPath, pinned+"\n")
+			tc.alias(t, target, invoking)
+
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.pinPath = pinPath
+				env.pipelockTarget = target
+				env.readFile = os.ReadFile
+				env.selfPath = func() (string, error) { return invoking, nil }
+				env.hashFile = sha256HexOfFile
+			})
+			status, detail := probeBinaryIntegrity(context.Background(), env)
+			if status != statusPass {
+				t.Fatalf("status = %q, want pass: %s", status, detail)
+			}
+			if strings.Contains(detail, "note: invoking binary") {
+				t.Fatalf("detail = %q, must not report a path alias as a different binary", detail)
+			}
+		})
+	}
+}
+
 func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 	t.Run("workspace probe registration", func(t *testing.T) {
 		env := makeProbeEnv(t, func(env *probeEnv) {

@@ -522,10 +522,18 @@ func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string)
 }
 
 // probeBinaryIntegrity reads the integrity pin written at install time and
-// compares it against the SHA-256 of the deployed binary systemd executes.
+// compares it against the SHA-256 of the binary at the deployed install path.
 // Skipped when the pin file is missing (install never happened) or
 // unreadable to this user (run as root to verify). Failure means either
 // the deployed binary was swapped after install or cannot be verified.
+//
+// Two limits, stated because a probe should not imply more than it checks.
+// Nothing here reads the unit's effective ExecStart, so this establishes that
+// the binary at the install path is unchanged, not that the running service
+// has that binary mapped; proving the latter needs the live process image.
+// And the pin is written by our own installer, so this is trust-on-first-use
+// drift detection. It does not survive anyone able to rewrite both the binary
+// and the pin, which root can do.
 func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 	data, err := env.readFile(env.pinPath)
 	if err != nil {
@@ -561,7 +569,12 @@ func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 
 	detail := fmt.Sprintf("binary hash %s matches pin", shortHash(pinned))
 	if self, err := env.selfPath(); err == nil && filepath.Clean(self) != target {
-		detail += fmt.Sprintf(" (note: invoking binary %s differs from deployed binary %s)", filepath.Clean(self), target)
+		self = filepath.Clean(self)
+		targetInfo, targetErr := env.stat(target)
+		selfInfo, selfErr := env.stat(self)
+		if targetErr != nil || selfErr != nil || !os.SameFile(targetInfo, selfInfo) {
+			detail += fmt.Sprintf(" (note: invoking binary %s differs from deployed binary %s)", self, target)
+		}
 	}
 	return statusPass, detail
 }

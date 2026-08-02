@@ -153,7 +153,8 @@ func RunStandaloneInit() {
 		exitSandboxProcess(1)
 	}
 
-	go bridge.Serve(ctx)
+	bridgeErr := make(chan error, 1)
+	go func() { bridgeErr <- bridge.Serve(ctx) }()
 	defer bridge.Close()
 
 	// Report summary.
@@ -192,7 +193,27 @@ func RunStandaloneInit() {
 	agentCmd.Env = env
 	agentCmd.Dir = workspace
 
-	if err := agentCmd.Run(); err != nil {
+	if err := agentCmd.Start(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
+		exitSandboxProcess(1)
+	}
+	agentDone := make(chan error, 1)
+	go func() { agentDone <- agentCmd.Wait() }()
+
+	select {
+	case bridgeErr := <-bridgeErr:
+		if bridgeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: bridge proxy: %v\n", bridgeErr)
+			// The parent observes this non-zero init exit and terminates the
+			// standalone process group, including this agent and its descendants.
+			exitSandboxProcess(1)
+		}
+		// A clean bridge return is only possible during cancellation or Close.
+		// Wait for the command so its established exit behavior is preserved.
+		err = <-agentDone
+	case err = <-agentDone:
+	}
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitSandboxProcess(exitErr.ExitCode())

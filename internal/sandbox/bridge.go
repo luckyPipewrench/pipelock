@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 )
 
@@ -34,6 +33,8 @@ type BridgeProxy struct {
 	wg              sync.WaitGroup
 	mu              sync.Mutex
 	closed          bool
+	failure         error
+	failureOnce     sync.Once
 	done            chan struct{}
 	doneOnce        sync.Once
 	watcherDone     chan struct{}
@@ -70,12 +71,13 @@ func (bp *BridgeProxy) Addr() string {
 }
 
 // Serve accepts connections and bridges them to the parent's Unix socket.
-// Blocks until ctx is cancelled or the listener is closed.
-func (bp *BridgeProxy) Serve(ctx context.Context) {
+// It returns nil only when ctx is cancelled or Close shuts down the listener.
+// An unexpected listener failure or an unavailable parent socket is fatal.
+func (bp *BridgeProxy) Serve(ctx context.Context) error {
 	bp.mu.Lock()
 	if bp.closed {
 		bp.mu.Unlock()
-		return
+		return nil
 	}
 	bp.watcherStarted = true
 	bp.mu.Unlock()
@@ -91,13 +93,19 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 	for {
 		conn, err := bp.listener.Accept()
 		if err != nil {
-			return // listener closed
+			if failure := bp.getFailure(); failure != nil {
+				return failure
+			}
+			if bp.isShutdown(ctx) {
+				return nil
+			}
+			return fmt.Errorf("bridge listener accept: %w", err)
 		}
 		bp.mu.Lock()
 		if bp.closed {
 			bp.mu.Unlock()
 			_ = conn.Close()
-			return
+			return nil
 		}
 		bp.trackConnLocked(conn)
 		bp.wg.Add(1)
@@ -108,6 +116,41 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 			bp.handleConn(conn)
 		}(conn)
 	}
+}
+
+func (bp *BridgeProxy) isShutdown(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	return bp.closed
+}
+
+func (bp *BridgeProxy) getFailure() error {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	return bp.failure
+}
+
+// fail records the first fatal bridge failure and wakes Serve by closing the
+// listener. It intentionally does not call Close because this may run from an
+// active connection handler that Close waits on.
+func (bp *BridgeProxy) fail(err error) {
+	bp.failureOnce.Do(func() {
+		bp.mu.Lock()
+		if bp.closed {
+			bp.mu.Unlock()
+			return
+		}
+		bp.failure = err
+		bp.doneOnce.Do(func() { close(bp.done) })
+		_ = bp.listener.Close()
+		for conn := range bp.conns {
+			_ = conn.Close()
+		}
+		bp.mu.Unlock()
+	})
 }
 
 // Close shuts down the proxy and waits for active connections.
@@ -163,7 +206,7 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 	// Connect to parent's proxy via Unix socket.
 	parentConn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", bp.socketPath)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[bridge] connect to parent proxy: %v\n", err)
+		bp.fail(fmt.Errorf("bridge connect to parent proxy: %w", err))
 		return
 	}
 	if !bp.trackConn(parentConn) {

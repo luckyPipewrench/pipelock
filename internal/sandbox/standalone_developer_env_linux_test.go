@@ -7,6 +7,7 @@ package sandbox
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,10 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 			"NODE_OPTIONS=--require=/developer/hook.js",
 		},
 	}
-	controlEnv := standaloneInitControlEnv(cfg, "/tmp/pipelock-sandbox-test/proxy.sock", nil, `{"workspace":"/workspace"}`, true)
+	controlEnv := standaloneInitControlEnv(cfg, "/tmp/pipelock-sandbox-test/proxy.sock", []string{
+		"GOCOVERDIR=/tmp/pipelock-covdata-" + token,
+		"PIPELOCK_SUBPROCESS_COVERAGE=1",
+	}, `{"workspace":"/workspace"}`, true)
 
 	for _, entry := range controlEnv {
 		if strings.Contains(entry, token) || strings.Contains(entry, "LD_PRELOAD") || strings.Contains(entry, "NODE_OPTIONS") {
@@ -46,7 +50,7 @@ func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.
 	const token = "recognizable-api-token-for-final-command-test"
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:   []string{"sh", "-c", "test \"$API_TOKEN\" = \"$EXPECTED_TOKEN\" && test -n \"$HTTP_PROXY\" && test -n \"$HTTPS_PROXY\" && test -z \"$NO_PROXY\" && test -z \"$no_proxy\" && test -z \"$Http_Proxy\" && test -z \"$ALL_proxy\" && ! tr '\\000' '\\n' < \"/proc/$PPID/environ\" | grep -F -q -- \"$EXPECTED_TOKEN\""},
+		Command:   []string{"sh", "-c", "test \"$API_TOKEN\" = \"$EXPECTED_TOKEN\" && test -n \"$HTTP_PROXY\" && test -n \"$HTTPS_PROXY\" && test -z \"$NO_PROXY\" && test -z \"$no_proxy\" && test -z \"$Http_Proxy\" && test -z \"$ALL_proxy\" && test ! -e /proc/self/fd/3 && { test ! -e /proc/$PPID/fd/3 || ! readlink /proc/$PPID/fd/3 | grep -q '^pipe:'; } && ! tr '\\000' '\\n' < \"/proc/$PPID/environ\" | grep -F -q -- \"$EXPECTED_TOKEN\""},
 		Workspace: workspace,
 		DeveloperEnvironment: []string{
 			"PATH=" + os.Getenv("PATH"),
@@ -56,6 +60,28 @@ func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.
 			"ALL_proxy=socks5://attacker.invalid",
 			"NO_proxy=*",
 		},
+		UseDeveloperEnvironment: true,
+	})
+	if err != nil {
+		t.Fatalf("LaunchStandalone: %v", err)
+	}
+}
+
+func TestLaunchStandaloneDeveloperEnvironmentSupportsLargeEnvironment(t *testing.T) {
+	skipIfStandaloneUnavailable(t)
+
+	const valueLength = 100 * 1024
+	value := strings.Repeat("x", valueLength)
+	environment := make([]string, 0, 10)
+	environment = append(environment, "PATH="+os.Getenv("PATH"))
+	for i := range 9 {
+		environment = append(environment, "LARGE_"+strconv.Itoa(i)+"="+value)
+	}
+
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:                 []string{"sh", "-c", "test \"${#LARGE_8}\" -eq 102400"},
+		Workspace:               t.TempDir(),
+		DeveloperEnvironment:    environment,
 		UseDeveloperEnvironment: true,
 	})
 	if err != nil {

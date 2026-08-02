@@ -56,7 +56,7 @@ func TestDeveloperEnvPreservesDeveloperVariablesAndForcesBridgeProxy(t *testing.
 
 func TestDeveloperEnvironmentCodecRoundTripsDelimiterValues(t *testing.T) {
 	want := []string{
-		"API_TOKEN=before\x1fafter\nnext=equals",
+		"API_TOKEN=before\x1fafter\nnext=equals☃",
 		"PATH=/developer/bin",
 	}
 	payload, err := encodeDeveloperEnvironment(want)
@@ -102,4 +102,72 @@ func TestDeveloperEnvironmentCodecFailsClosed(t *testing.T) {
 			t.Fatal("oversize payload decoded successfully")
 		}
 	})
+
+	for _, testCase := range []struct {
+		name    string
+		payload []byte
+	}{
+		{
+			name:    "declared count exceeds payload",
+			payload: []byte{'P', 'L', 'K', 'E', 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff},
+		},
+		{
+			name:    "declared entry length exceeds payload",
+			payload: []byte{'P', 'L', 'K', 'E', 0, 0, 0, 1, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff},
+		},
+		{
+			name:    "trailing bytes",
+			payload: append(append([]byte(nil), payload...), 0),
+		},
+		{
+			name:    "entry without equals",
+			payload: []byte{'P', 'L', 'K', 'E', 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 3, 'k', 'e', 'y'},
+		},
+		{
+			name:    "empty entry key",
+			payload: []byte{'P', 'L', 'K', 'E', 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 6, '=', 'v', 'a', 'l', 'u', 'e'},
+		},
+		{
+			name:    "NUL entry",
+			payload: []byte{'P', 'L', 'K', 'E', 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 5, 'K', '=', 'v', 0, 'x'},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := decodeDeveloperEnvironment(testCase.payload); err == nil {
+				t.Fatal("malformed payload decoded successfully")
+			}
+		})
+	}
+}
+
+func FuzzDeveloperEnvironmentDecoder(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{'P', 'L', 'K', 'E', 0, 0, 0, 1, 0, 0, 0, 0})
+	payload, err := encodeDeveloperEnvironment([]string{"KEY=value"})
+	if err != nil {
+		f.Fatalf("encodeDeveloperEnvironment: %v", err)
+	}
+	f.Add(payload)
+
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		_, _ = decodeDeveloperEnvironment(payload)
+	})
+}
+
+func TestDeveloperEnvironmentControlDescriptorFailsClosed(t *testing.T) {
+	for _, value := range []string{"", "2", "4", "not-a-descriptor"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := developerEnvironmentFDFromControl(value); err == nil {
+				t.Fatal("invalid developer environment descriptor accepted")
+			}
+		})
+	}
+
+	fd, err := developerEnvironmentFDFromControl("3")
+	if err != nil {
+		t.Fatalf("developerEnvironmentFDFromControl(3): %v", err)
+	}
+	if fd != developerEnvironmentFD {
+		t.Fatalf("descriptor = %d, want %d", fd, developerEnvironmentFD)
+	}
 }

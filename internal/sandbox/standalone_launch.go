@@ -298,7 +298,9 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
 		sandboxSocketEnv + "=" + socketPath,
 	}
-	env = append(env, coverageEnv...)
+	if !cfg.UseDeveloperEnvironment {
+		env = append(env, coverageEnv...)
+	}
 	if cfg.Strict {
 		env = append(env, strictEnvKey+"=1")
 	}

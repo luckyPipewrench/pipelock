@@ -18,8 +18,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
@@ -139,8 +137,8 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 
 	// Create a private per-invocation 0o700 control directory for the Unix socket.
-	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
-	if err := ensureStandaloneControlDir(sandboxDir); err != nil {
+	sandboxDir, err := newStandaloneControlDir()
+	if err != nil {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(sandboxDir) }()
@@ -263,36 +261,37 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	return waitErr
 }
 
-func ensureStandaloneControlDir(sandboxDir string) error {
-	if err := os.MkdirAll(sandboxDir, 0o700); err != nil {
-		return fmt.Errorf("creating sandbox dir: %w", err)
-	}
-	// MkdirAll creates the dir 0o700, but a pre-existing directory (a stale
-	// same-PID leftover after a crash) may be looser. Refuse to place the
-	// control socket in a directory group/others can enter rather than
-	// silently widening exposure. (An os.Chmod to 0o700 would auto-fix it but
-	// gosec flags a 0o700 chmod; surfacing the misconfiguration is the safer
-	// choice for a control-socket carrier — same pattern as commitHeaderSidecar.)
-	info, err := os.Stat(sandboxDir)
+// newStandaloneControlDir creates the per-invocation control directory that
+// carries the Unix proxy socket. It uses os.MkdirTemp so the name is
+// unpredictable and the directory is created atomically at 0o700: a predictable
+// /tmp/pipelock-sandbox-<pid> path could be pre-created, symlinked, or squatted
+// in the sticky /tmp before this invocation, letting a same-permission attacker
+// interpose on the control socket. The caller passes the resolved socket path
+// to the child, so the directory name does not need to be predictable.
+//
+// As defense in depth against a TOCTOU swap, it re-validates with Lstat (not
+// Stat, so a symlink is detected rather than followed): the result must be a
+// real directory owned by this process. Any deviation fails closed.
+func newStandaloneControlDir() (string, error) {
+	sandboxDir, err := os.MkdirTemp("", "pipelock-sandbox-")
 	if err != nil {
-		return fmt.Errorf("stat sandbox dir: %w", err)
+		return "", fmt.Errorf("creating sandbox dir: %w", err)
 	}
-	if secperm.TooPermissive(info.Mode().Perm(), 0o077) {
-		return fmt.Errorf("sandbox control dir %s is too permissive (%04o); restrict it to 0700", sandboxDir, info.Mode().Perm())
+	info, err := os.Lstat(sandboxDir)
+	if err != nil {
+		return "", fmt.Errorf("stat sandbox dir: %w", err)
 	}
-	// The directory must be owned by this process. A pre-existing directory
-	// owned by another uid (for example a predicted-PID squat in sticky /tmp)
-	// is a foreign control-socket carrier even at 0700, so mode alone is not
-	// enough. Fail closed when ownership cannot be determined rather than
-	// assume the directory is ours.
+	if !info.Mode().IsDir() {
+		return "", fmt.Errorf("sandbox control dir %s is not a directory", sandboxDir)
+	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fmt.Errorf("sandbox control dir %s ownership is unavailable", sandboxDir)
+		return "", fmt.Errorf("sandbox control dir %s ownership is unavailable", sandboxDir)
 	}
 	if int(stat.Uid) != os.Geteuid() {
-		return fmt.Errorf("sandbox control dir %s is owned by uid %d, not this process (uid %d)", sandboxDir, stat.Uid, os.Geteuid())
+		return "", fmt.Errorf("sandbox control dir %s is owned by uid %d, not this process (uid %d)", sandboxDir, stat.Uid, os.Geteuid())
 	}
-	return nil
+	return sandboxDir, nil
 }
 
 type standaloneProxyServer struct {

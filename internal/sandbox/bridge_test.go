@@ -465,18 +465,42 @@ func TestBridgeProxy_FailWakesServeWithRecordedError(t *testing.T) {
 	go func() { serveErr <- bp.Serve(context.Background()) }()
 
 	// A connection handler records a fatal parent-socket failure; Serve must
-	// wake and return exactly that error rather than a nil shutdown.
-	bp.fail(errors.New("parent socket lost"))
+	// wake and return exactly that error instance rather than a nil shutdown.
+	wantErr := errors.New("parent socket lost")
+	bp.fail(wantErr)
 
 	select {
 	case err := <-serveErr:
-		if err == nil || !strings.Contains(err.Error(), "parent socket lost") {
-			t.Fatalf("Serve error = %v, want the recorded failure", err)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Serve error = %v, want the recorded failure %v", err, wantErr)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve did not return after fail()")
 	}
 	bp.Close()
+}
+
+func TestBridgeProxy_FailAfterCloseIsDropped(t *testing.T) {
+	bp, err := NewBridgeProxy("/tmp/pipelock-parent-socket-not-used", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- bp.Serve(context.Background()) }()
+
+	// Close wins the once/closed ordering: a failure recorded after Close must
+	// be dropped, and Serve must still return the clean nil shutdown result.
+	bp.Close()
+	bp.fail(errors.New("late failure after close"))
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve error = %v, want nil after Close drops a late failure", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after Close")
+	}
 }
 
 func TestBridgeProxy_CloseAndFailAreRaceSafe(t *testing.T) {

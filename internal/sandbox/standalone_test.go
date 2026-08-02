@@ -209,35 +209,28 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 }
 
 func TestLaunchStandalone_ControlDirectoryIsPrivate(t *testing.T) {
-	t.Run("fresh directory is created private", func(t *testing.T) {
-		sandboxDir := filepath.Join(t.TempDir(), "control")
-		if err := ensureStandaloneControlDir(sandboxDir); err != nil {
-			t.Fatalf("ensure control directory: %v", err)
-		}
-		info, err := os.Stat(sandboxDir)
-		if err != nil {
-			t.Fatalf("stat control directory: %v", err)
-		}
-		if got := info.Mode().Perm(); got != 0o700 {
-			t.Fatalf("control directory mode = %#o, want 0700", got)
-		}
-	})
+	dir, err := newStandaloneControlDir()
+	if err != nil {
+		t.Fatalf("newStandaloneControlDir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
 
-	t.Run("pre-existing group-readable directory is refused", func(t *testing.T) {
-		sandboxDir := filepath.Join(t.TempDir(), "control")
-		if err := os.MkdirAll(sandboxDir, 0o700); err != nil {
-			t.Fatalf("create control directory: %v", err)
-		}
-		// Variable mode: gosec G302 only flags literal >0600 perms, and this
-		// test legitimately needs a group-enterable dir to prove refusal.
-		loose := os.FileMode(0o750)
-		if err := os.Chmod(sandboxDir, loose); err != nil {
-			t.Fatalf("loosen control directory: %v", err)
-		}
-		if err := ensureStandaloneControlDir(sandboxDir); err == nil {
-			t.Fatal("ensureStandaloneControlDir accepted a group-enterable directory; want refusal")
-		}
-	})
+	// Lstat so a symlink would be reported as a symlink, not followed.
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("lstat control directory: %v", err)
+	}
+	if !info.Mode().IsDir() {
+		t.Fatalf("control dir is not a real directory: %v", info.Mode())
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("control directory mode = %#o, want 0700", got)
+	}
+	// The name must be unpredictable, not the per-PID path an attacker could
+	// anticipate and pre-create or symlink in the sticky /tmp.
+	if predictable := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid()); dir == predictable {
+		t.Fatalf("control directory uses the predictable per-PID path: %s", dir)
+	}
 }
 
 func TestPreflightWithRequirements_IndependentlyReportsNetworkAndHandler(t *testing.T) {

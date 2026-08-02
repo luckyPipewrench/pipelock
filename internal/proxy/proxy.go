@@ -124,6 +124,12 @@ const (
 	// dialer uses it only to label public-to-internal changes as DNS
 	// rebinding; blocking itself does not depend on the snapshot.
 	ctxKeySSRFDialScanSnapshot
+
+	// ctxKeySSRFDialPort carries the exact destination port of an in-progress
+	// dial so the rebind label only applies when the scan-time snapshot was
+	// taken for the same host:port. The safe dialer sets it from the split
+	// dial address.
+	ctxKeySSRFDialPort
 )
 
 type envelopeEmitterSnapshot struct {
@@ -681,7 +687,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
 			result := currentScanner.Scan(redirectScanCtx, redirectURL)
-			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), result))
+			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), effectiveURLPort(req.URL), result))
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
@@ -3218,6 +3224,11 @@ func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr str
 		return p.scannerPtr.Load()
 	})
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Bind the rebind snapshot to this dial's port so a snapshot taken
+		// for a different port cannot label this block as a rebind.
+		if _, port, splitErr := net.SplitHostPort(addr); splitErr == nil {
+			ctx = withSSRFDialPort(ctx, port)
+		}
 		conn, err := inner(ctx, network, addr)
 		if err != nil {
 			// Translate the MCP dialer's typed metadata refusal into the proxy's
@@ -3276,6 +3287,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	if err != nil {
 		return nil, fmt.Errorf("ssrfSafeDialContext: split addr %q: %w", addr, err)
 	}
+	// Bind the rebind snapshot to this dial's port: a scan-time snapshot only
+	// vouches for the exact host:port it was taken for.
+	ctx = withSSRFDialPort(ctx, port)
 
 	// If the host is already an IP, check it and dial directly.
 	// IsTrustedDomain rejects IP literals, so raw IPs are always
@@ -4358,7 +4372,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
-	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, parsed.Hostname(), result)
+	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, parsed.Hostname(), effectiveURLPort(parsed), result)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		log.LogError(actx, err)

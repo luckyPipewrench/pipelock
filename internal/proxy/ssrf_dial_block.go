@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -15,6 +16,12 @@ import (
 
 type ssrfDialScanSnapshot struct {
 	host string
+	// port is the exact destination TCP port that was scanned and
+	// authorized. A snapshot recorded for host:443 must not vouch for a
+	// dial to host:6443, so the DNS-rebind label (and, once guard grants
+	// exist, the internal-address allow) only applies when the dial port
+	// matches this value. Empty means the recording path had no port.
+	port string
 	ips  map[string]struct{}
 }
 
@@ -44,12 +51,13 @@ func (e *ssrfDialBlockError) logDetail() string {
 	return string(e.reason) + ": " + e.detail
 }
 
-func withSSRFDialScanSnapshot(ctx context.Context, host string, ips []string) context.Context {
+func withSSRFDialScanSnapshot(ctx context.Context, host, port string, ips []string) context.Context {
 	if ctx == nil || host == "" || len(ips) == 0 {
 		return ctx
 	}
 	snapshot := ssrfDialScanSnapshot{
 		host: normalizeSSRFDialHost(host),
+		port: normalizeSSRFDialPort(port),
 		ips:  make(map[string]struct{}, len(ips)),
 	}
 	for _, ipStr := range ips {
@@ -65,7 +73,7 @@ func withSSRFDialScanSnapshot(ctx context.Context, host string, ips []string) co
 	return context.WithValue(ctx, ctxKeySSRFDialScanSnapshot, snapshot)
 }
 
-func withAllowedSSRFDialScanSnapshot(ctx context.Context, sc *scanner.Scanner, host string, result scanner.Result) context.Context {
+func withAllowedSSRFDialScanSnapshot(ctx context.Context, sc *scanner.Scanner, host, port string, result scanner.Result) context.Context {
 	if ctx == nil {
 		return nil
 	}
@@ -81,7 +89,26 @@ func withAllowedSSRFDialScanSnapshot(ctx context.Context, sc *scanner.Scanner, h
 			return clearSnapshot()
 		}
 	}
-	return withSSRFDialScanSnapshot(ctx, host, result.SSRFResolvedIPs)
+	return withSSRFDialScanSnapshot(ctx, host, port, result.SSRFResolvedIPs)
+}
+
+// withSSRFDialPort records the exact destination port of an in-progress dial so
+// isSSRFDNSRebind can require the scan-time snapshot to have been taken for the
+// same port. The dialer sets this from the split dial address; a snapshot taken
+// for a different port cannot influence this dial's verdict.
+func withSSRFDialPort(ctx context.Context, port string) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeySSRFDialPort, normalizeSSRFDialPort(port))
+}
+
+func ssrfDialPortFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	port, _ := ctx.Value(ctxKeySSRFDialPort).(string)
+	return port
 }
 
 func newSSRFDialBlockError(ctx context.Context, host string, ip net.IP, detail string) *ssrfDialBlockError {
@@ -106,6 +133,14 @@ func isSSRFDNSRebind(ctx context.Context, host string, ip net.IP) bool {
 	if normalizeSSRFDialHost(host) != snapshot.host {
 		return false
 	}
+	// A snapshot only vouches for the exact host:port it was taken for. When
+	// both the snapshot and the current dial carry a port and they differ,
+	// the snapshot describes a different destination and must not apply to
+	// this dial. This keeps a host:443 scan from labeling (or, with guard
+	// grants, authorizing) a host:6443 dial.
+	if dialPort := ssrfDialPortFromContext(ctx); dialPort != "" && snapshot.port != "" && dialPort != snapshot.port {
+		return false
+	}
 	ip = normalizeSSRFDialIP(ip)
 	if ip == nil {
 		return false
@@ -116,6 +151,36 @@ func isSSRFDNSRebind(ctx context.Context, host string, ip net.IP) bool {
 
 func normalizeSSRFDialHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+}
+
+// normalizeSSRFDialPort trims surrounding whitespace from a port token. Every
+// current producer (net.SplitHostPort and url.URL.Port) already yields a bare
+// port, so no digit stripping is needed. It intentionally does not
+// scheme-default an empty value: callers that know the scheme resolve the
+// default before recording, and an unknown port stays empty so it never
+// spuriously matches or mismatches a real port.
+func normalizeSSRFDialPort(port string) string {
+	return strings.TrimSpace(port)
+}
+
+// effectiveURLPort returns the explicit port of a URL, or the scheme default
+// for http/https/ws/wss, so the SSRF scan snapshot and the later dial agree on
+// a concrete port even when the URL omitted it.
+func effectiveURLPort(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "wss":
+		return "443"
+	case "http", "ws":
+		return "80"
+	default:
+		return ""
+	}
 }
 
 func normalizeSSRFDialIP(ip net.IP) net.IP {

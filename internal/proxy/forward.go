@@ -168,6 +168,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(host, ":") { // IPv6 literal needs brackets in URL
 		syntheticHost = "[" + host + "]"
 	}
+	// The scanned/contract URL keeps its historical port-less form so the
+	// contract gate and scanner verdict are unchanged; the exact CONNECT port
+	// is bound to the dial snapshot below (from targetPort) and carried in the
+	// receipt target. Whether the CONNECT contract gate should also see the
+	// real port is a separate design question, tracked as a guard adjacent
+	// finding, not decided here.
 	syntheticURL := "https://" + syntheticHost + "/"
 	connectReceiptTarget := "https://" + net.JoinHostPort(host, targetPort) + "/"
 	targetCtx := newConnectAuditContext(p.logger, target, clientIP, requestID, agent)
@@ -180,7 +186,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
-	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, host, result))
+	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, host, targetPort, result))
 
 	// Capture observer: record CONNECT URL verdict for policy replay.
 	{
@@ -1752,7 +1758,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
-	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, r.URL.Hostname(), result)
+	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, r.URL.Hostname(), effectiveURLPort(r.URL), result)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
 	outReq = outReq.WithContext(context.WithValue(outReq.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{emitter: envEmitter}))

@@ -7,6 +7,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -43,6 +44,11 @@ type StandaloneLaunchConfig struct {
 	// instead of kernel-enforced isolation. Mutually exclusive with Strict.
 	BestEffort bool
 
+	// RequireNetNS rejects launches that cannot create a user and network
+	// namespace. It is independent of Strict, which additionally requires the
+	// optional filesystem and syscall containment layers.
+	RequireNetNS bool
+
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
 	ExtraEnv []string
 
@@ -51,6 +57,11 @@ type StandaloneLaunchConfig struct {
 	// it as an HTTP forward proxy (CONNECT tunneling, DLP scanning, etc.).
 	// If nil, connections are closed without forwarding.
 	ProxyHandler func(conn net.Conn)
+
+	// RequireProxyHandler rejects a nil ProxyHandler before the child starts.
+	// This makes the debug-only direct-forward path unreachable for callers
+	// that require scanning.
+	RequireProxyHandler bool
 }
 
 // standaloneProxyConnectionConfig controls how one accepted bridge connection
@@ -81,6 +92,12 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if runtime.GOOS != osLinux {
 		return fmt.Errorf("%w: sandbox requires Linux", ErrUnavailable)
 	}
+	if cfg.RequireProxyHandler && cfg.ProxyHandler == nil {
+		return errors.New("sandbox: proxy handler is required")
+	}
+	if cfg.RequireNetNS && cfg.BestEffort {
+		return errors.New("sandbox: network namespace is required; best_effort is not permitted")
+	}
 
 	if err := ValidateWorkspace(cfg.Workspace); err != nil {
 		return fmt.Errorf("workspace validation: %w", err)
@@ -110,7 +127,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	// on unprivileged processes - if user namespaces work, network namespaces
 	// will too (created inside the user namespace with CAP_SYS_ADMIN).
 	hasNamespaces := probeUserNamespace()
-	if !hasNamespaces && !cfg.BestEffort {
+	if !hasNamespaces && (cfg.RequireNetNS || !cfg.BestEffort) {
 		return fmt.Errorf("%w: user namespaces unavailable (blocked by seccomp or sysctl? use --best-effort for degraded mode)", ErrUnavailable)
 	}
 

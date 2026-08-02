@@ -116,6 +116,35 @@ func TestLaunchStandalone_RejectsInvalidWorkspace(t *testing.T) {
 	}
 }
 
+func TestLaunchStandalone_RequireProxyHandlerRejectsBeforeChildStart(t *testing.T) {
+	workspace := t.TempDir()
+	marker := filepath.Join(workspace, "child-started")
+
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:             []string{"sh", "-c", "touch " + marker},
+		Workspace:           workspace,
+		RequireProxyHandler: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "proxy handler is required") {
+		t.Fatalf("LaunchStandalone error = %v, want required proxy handler error", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("child started despite required proxy handler denial: stat error = %v", statErr)
+	}
+}
+
+func TestLaunchStandalone_RequireNetNSRejectsBestEffort(t *testing.T) {
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:      []string{"true"},
+		Workspace:    t.TempDir(),
+		BestEffort:   true,
+		RequireNetNS: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "network namespace is required") {
+		t.Fatalf("LaunchStandalone error = %v, want required network namespace error", err)
+	}
+}
+
 func TestLaunchStandalone_NonLinuxReturnsError(t *testing.T) {
 	if runtime.GOOS == osLinux {
 		t.Skip("testing non-linux behavior")

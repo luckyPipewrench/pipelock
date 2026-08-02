@@ -3712,6 +3712,93 @@ func TestSSRFSafeDialContext_DNSRebindBlockCarriesDistinctReason(t *testing.T) {
 	}
 }
 
+// TestSSRFDialSnapshotPortBindingPerTransport verifies that each guard-relevant
+// transport records the DNS-rebind scan snapshot with the exact destination
+// port it derives, and that the port is honored at dial time through the real
+// ssrfSafeDialContext. CONNECT derives the port from the CONNECT target; the
+// URL surfaces (forward absolute-URI, fetch, redirect, interception, WebSocket)
+// derive it from effectiveURLPort of the request URL — the same computations
+// their call sites use. A snapshot taken for host:PORT labels a rebinding dial
+// to host:PORT as a DNS rebind, but must NOT vouch for or mislabel a dial to a
+// different port, which is a plain private-IP SSRF. The metadata-safe reverse-
+// proxy dialer records no scanner snapshot; its dial-port binding is covered by
+// TestSSRFDialSnapshotPortBinding.
+func TestSSRFDialSnapshotPortBindingPerTransport(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.DNS.HostOverrides = map[string][]string{"rebind.test": {"127.0.0.1"}}
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	const host = "rebind.test"
+	// A public IP is seen at scan time; the dial rebinds to the internal override.
+	scanResult := scanner.Result{Allowed: true, SSRFResolvedIPs: []string{"203.0.113.10"}}
+
+	connectPort := func(target string) string { _, port, _ := net.SplitHostPort(target); return port }
+	urlPort := func(raw string) string {
+		u, perr := url.Parse(raw)
+		if perr != nil {
+			t.Fatalf("url.Parse(%q): %v", raw, perr)
+		}
+		return effectiveURLPort(u)
+	}
+
+	transports := []struct {
+		name      string
+		scanPort  string // the port this transport binds into the snapshot
+		otherPort string // a different port the snapshot must not vouch for
+	}{
+		{"connect-default", connectPort(host + ":443"), "6443"},
+		{"connect-explicit-port", connectPort(host + ":6443"), "443"},
+		{"forward-absolute-uri", urlPort("https://" + host + "/"), "6443"},
+		{"fetch", urlPort("https://" + host + "/"), "6443"},
+		{"redirect", urlPort("https://" + host + "/"), "6443"},
+		{"interception", urlPort("https://" + host + "/"), "6443"},
+		{"websocket-wss", urlPort("wss://" + host + "/"), "6443"},
+		{"forward-explicit-port", urlPort("https://" + host + ":6443/"), "443"},
+	}
+
+	dialReason := func(t *testing.T, ctx context.Context, addr string) blockreason.Reason {
+		t.Helper()
+		conn, derr := p.ssrfSafeDialContext(ctx, "tcp", addr)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if derr == nil {
+			t.Fatalf("dial %q: expected SSRF block, got nil", addr)
+		}
+		var blocked *ssrfDialBlockError
+		if !errors.As(derr, &blocked) {
+			t.Fatalf("dial %q: error type = %T, want *ssrfDialBlockError: %v", addr, derr, derr)
+		}
+		return blocked.reason
+	}
+
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			// Matching port: the snapshot applies, so the internal rebind is a
+			// DNS rebind.
+			base := withAllowedSSRFDialScanSnapshot(context.Background(), sc, host, tr.scanPort, scanResult)
+			ctxMatch, cancel := context.WithTimeout(base, 2*time.Second)
+			defer cancel()
+			if got := dialReason(t, ctxMatch, net.JoinHostPort(host, tr.scanPort)); got != blockreason.SSRFDNSRebind {
+				t.Fatalf("matching port %s: reason = %s, want %s", tr.scanPort, got, blockreason.SSRFDNSRebind)
+			}
+			// Mismatched port: the snapshot for scanPort must not apply to a
+			// different port, so the internal dial is a plain private-IP block.
+			ctxMismatch, cancel2 := context.WithTimeout(base, 2*time.Second)
+			defer cancel2()
+			if got := dialReason(t, ctxMismatch, net.JoinHostPort(host, tr.otherPort)); got != blockreason.SSRFPrivateIP {
+				t.Fatalf("mismatched port %s (snapshot %s): reason = %s, want %s", tr.otherPort, tr.scanPort, got, blockreason.SSRFPrivateIP)
+			}
+		})
+	}
+}
+
 func TestAllowedSSRFDialScanSnapshotPreservesPublicAllowlistedIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.SSRF.IPAllowlist = []string{"203.0.113.0/24"}

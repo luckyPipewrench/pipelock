@@ -947,37 +947,71 @@ func TestProbeBinaryIntegrity_UppercasePinIsMalformedNotMismatch(t *testing.T) {
 
 // A stat failure leaves file identity unknown rather than different. Reporting a
 // difference there would assert something unverified, which is the exact class of
-// overstatement this probe was changed to stop making.
+// overstatement this probe was changed to stop making. Each lookup is failed
+// independently, because either one alone is enough to leave identity unknown.
 func TestProbeBinaryIntegrity_StatFailureReportsUnknownNotDifference(t *testing.T) {
-	env := makeProbeEnv(t)
-	dir := t.TempDir()
-
-	target := filepath.Join(dir, "pipelock")
-	if err := os.WriteFile(target, []byte("deployed"), 0o600); err != nil {
-		t.Fatalf("write target: %v", err)
-	}
-	env.pipelockTarget = target
-
-	pinPath := filepath.Join(dir, "pin")
 	digest := "cc" + strings.Repeat("0", 62)
-	if err := os.WriteFile(pinPath, []byte(digest+"\n"), 0o600); err != nil {
-		t.Fatalf("write pin: %v", err)
-	}
-	env.pinPath = pinPath
-	env.readFile = os.ReadFile
-	env.hashFile = func(string) (string, error) { return digest, nil }
-	env.selfPath = func() (string, error) { return filepath.Join(dir, "elsewhere"), nil }
-	env.stat = func(string) (os.FileInfo, error) { return nil, errors.New("stat unavailable") }
 
-	status, detail := probeBinaryIntegrity(context.Background(), env)
-	if status != statusPass {
-		t.Fatalf("status = %s, want pass (the deployed binary still matches its pin)", status)
+	tests := []struct {
+		name string
+		fail string // which path's stat fails
+	}{
+		{name: "deployed binary stat fails", fail: "target"},
+		{name: "invoking binary stat fails", fail: "self"},
+		{name: "both stats fail", fail: "both"},
 	}
-	if !strings.Contains(detail, "could not compare") {
-		t.Errorf("detail = %q, want it to say the comparison was unavailable", detail)
-	}
-	if strings.Contains(detail, "differs") {
-		t.Errorf("detail = %q, must not assert a difference it did not verify", detail)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := makeProbeEnv(t)
+			dir := t.TempDir()
+
+			target := filepath.Join(dir, "pipelock")
+			if err := os.WriteFile(target, []byte("deployed"), 0o600); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+			self := filepath.Join(dir, "elsewhere")
+			if err := os.WriteFile(self, []byte("operator copy"), 0o600); err != nil {
+				t.Fatalf("write self: %v", err)
+			}
+
+			pinPath := filepath.Join(dir, "pin")
+			if err := os.WriteFile(pinPath, []byte(digest+"\n"), 0o600); err != nil {
+				t.Fatalf("write pin: %v", err)
+			}
+
+			env.pipelockTarget = target
+			env.pinPath = pinPath
+			env.readFile = os.ReadFile
+			env.hashFile = func(string) (string, error) { return digest, nil }
+			env.selfPath = func() (string, error) { return self, nil }
+			env.stat = func(path string) (os.FileInfo, error) {
+				switch tt.fail {
+				case "both":
+					return nil, errors.New("stat unavailable")
+				case "target":
+					if path == target {
+						return nil, errors.New("stat unavailable")
+					}
+				case "self":
+					if path == self {
+						return nil, errors.New("stat unavailable")
+					}
+				}
+				return os.Stat(path)
+			}
+
+			status, detail := probeBinaryIntegrity(context.Background(), env)
+			if status != statusPass {
+				t.Fatalf("status = %s, want pass (the deployed binary still matches its pin)", status)
+			}
+			if !strings.Contains(detail, "could not compare") {
+				t.Errorf("detail = %q, want it to say the comparison was unavailable", detail)
+			}
+			if strings.Contains(detail, "differs") {
+				t.Errorf("detail = %q, must not assert a difference it did not verify", detail)
+			}
+		})
 	}
 }
 

@@ -34,11 +34,10 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 			t.Fatalf("developer value leaked into re-exec control environment: %q", entry)
 		}
 	}
-	for _, argument := range cfg.Command {
-		if strings.Contains(argument, token) {
-			t.Fatalf("developer token leaked into re-exec argv: %q", argument)
-		}
-	}
+	// The re-exec argv is only the self-executable path (LaunchStandalone runs
+	// exec.CommandContext(ctx, selfExe) with no arguments), so there is no argv
+	// for a developer value to leak into; the control-environment check above is
+	// the meaningful assertion here.
 	if got := envValue(controlEnv, developerEnvironmentControlEnv); got != "3" {
 		t.Fatalf("developer environment descriptor = %q, want 3", got)
 	}
@@ -91,9 +90,17 @@ func TestLaunchStandaloneDeveloperEnvironmentSupportsLargeEnvironment(t *testing
 
 func TestLaunchStandaloneDeveloperEnvironmentFailsClosedBeforeChildStart(t *testing.T) {
 	workspace := t.TempDir()
+	// These cases are rejected by LaunchStandalone BEFORE the namespace probe
+	// (the nil-environment and ExtraEnv-conflict guards), so they fail closed on
+	// any host and can be asserted by exact reason. Duplicate-key rejection
+	// happens later, inside newDeveloperEnvironmentPipe after the probe, so a
+	// LaunchStandalone-level case there could pass for the wrong reason on a host
+	// without namespaces; that path is covered deterministically by
+	// TestDeveloperEnvironmentCodecFailsClosed instead.
 	for _, testCase := range []struct {
-		name string
-		cfg  StandaloneLaunchConfig
+		name    string
+		cfg     StandaloneLaunchConfig
+		wantErr string
 	}{
 		{
 			name: "nil environment",
@@ -102,6 +109,7 @@ func TestLaunchStandaloneDeveloperEnvironmentFailsClosedBeforeChildStart(t *test
 				Workspace:               workspace,
 				UseDeveloperEnvironment: true,
 			},
+			wantErr: "developer environment is required",
 		},
 		{
 			name: "extra environment conflict",
@@ -112,20 +120,16 @@ func TestLaunchStandaloneDeveloperEnvironmentFailsClosedBeforeChildStart(t *test
 				UseDeveloperEnvironment: true,
 				ExtraEnv:                []string{"UNSAFE=1"},
 			},
-		},
-		{
-			name: "duplicate environment",
-			cfg: StandaloneLaunchConfig{
-				Command:                 []string{"true"},
-				Workspace:               workspace,
-				DeveloperEnvironment:    []string{"DUPLICATE=one", "DUPLICATE=two"},
-				UseDeveloperEnvironment: true,
-			},
+			wantErr: "cannot be combined with extra environment",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			if err := LaunchStandalone(testCase.cfg); err == nil {
+			err := LaunchStandalone(testCase.cfg)
+			if err == nil {
 				t.Fatal("LaunchStandalone accepted unsafe developer environment configuration")
+			}
+			if !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, testCase.wantErr)
 			}
 		})
 	}

@@ -285,11 +285,17 @@ func appendBridgeProxyEnv(env []string, addr string) []string {
 	env = removeProxyEnvKeys(env)
 	// addr comes from BridgeProxy.Addr(), so it is a listener-backed host:port.
 	proxyURL := "http://" + addr
+	// Force NO_PROXY empty for the same reason DeveloperEnv does: a caller- or
+	// image-supplied NO_PROXY would let the agent bypass the bridge for matching
+	// hosts. removeProxyEnvKeys strips *_PROXY (including NO_PROXY), and these
+	// re-add the bridge settings with an explicit empty NO_PROXY.
 	return append(env,
 		"HTTP_PROXY="+proxyURL,
 		"HTTPS_PROXY="+proxyURL,
 		"http_proxy="+proxyURL,
 		"https_proxy="+proxyURL,
+		"NO_PROXY=",
+		"no_proxy=",
 	)
 }
 

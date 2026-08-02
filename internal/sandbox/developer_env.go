@@ -51,12 +51,10 @@ func DeveloperEnv(developerEnvironment []string, bridgeAddr string) ([]string, e
 		if isPipelockControlEnvKey(key) || isProxyEnvKey(key) {
 			continue
 		}
-		if IsDangerousEnvKey(key) {
-			// Loader/runtime injection is deliberately final-command-only. The
-			// re-exec control environment never contains developer entries.
-			env = append(env, entry)
-			continue
-		}
+		// Loader/runtime injection keys (LD_PRELOAD, NODE_OPTIONS, ...) are kept
+		// for the FINAL command only, which is safe because the re-exec/init
+		// process never receives developer entries. There is no separate
+		// handling to apply, so they are appended like any other developer key.
 		env = append(env, entry)
 	}
 
@@ -101,6 +99,9 @@ func encodeDeveloperEnvironment(environment []string) ([]byte, error) {
 	payload := make([]byte, 12)
 	copy(payload, developerEnvironmentMagic[:])
 	binary.BigEndian.PutUint32(payload[4:8], developerEnvironmentVersion)
+	// Count via a loop rather than uint32(len(environment)): the latter trips
+	// gosec G115 (int->uint32) and the repo bans net-new nolint directives. The
+	// length is already bounded above, so this cannot overflow.
 	count := uint32(0)
 	for range environment {
 		count++
@@ -121,6 +122,8 @@ func encodeDeveloperEnvironment(environment []string) ([]byte, error) {
 			return nil, errors.New("sandbox: developer environment payload exceeds 1 MiB")
 		}
 
+		// Length via a loop for the same gosec G115 / no-nolint reason as the
+		// entry count above; len(entry) is bounded, so it cannot overflow.
 		entryLength := uint32(0)
 		for range len(entry) {
 			entryLength++

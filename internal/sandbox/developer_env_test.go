@@ -85,12 +85,22 @@ func TestDeveloperEnvironmentCodecFailsClosed(t *testing.T) {
 	}
 
 	t.Run("duplicate key", func(t *testing.T) {
-		duplicate := make([]byte, 0, len(payload)+16)
-		duplicate = append(duplicate, payload[:8]...)
-		binary.BigEndian.PutUint32(duplicate[8:12], 2)
-		duplicate = append(duplicate, payload[12:25]...)
-		duplicate = append(duplicate, 0, 0, 0, 9)
-		duplicate = append(duplicate, "FIRST=two"...)
+		// Hand-build a two-entry payload with the SAME key (the encoder refuses
+		// to produce one), with the header count correctly set to 2, so the
+		// decoder reaches the duplicate-key guard rather than being rejected
+		// earlier by the entry-count guard.
+		var duplicate []byte
+		duplicate = append(duplicate, developerEnvironmentMagic[:]...)
+		var word [4]byte
+		binary.BigEndian.PutUint32(word[:], developerEnvironmentVersion)
+		duplicate = append(duplicate, word[:]...)
+		binary.BigEndian.PutUint32(word[:], 2) // entry count
+		duplicate = append(duplicate, word[:]...)
+		for range 2 {
+			// Length prefix for "FIRST=one" (9 bytes) as big-endian uint32.
+			duplicate = append(duplicate, 0, 0, 0, 9)
+			duplicate = append(duplicate, "FIRST=one"...)
+		}
 		if _, err := decodeDeveloperEnvironment(duplicate); err == nil {
 			t.Fatal("duplicate payload decoded successfully")
 		}

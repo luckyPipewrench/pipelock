@@ -587,7 +587,7 @@ func TestBridgeProxy_ServeContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan struct{})
 	go func() {
-		bp.Serve(ctx)
+		_ = bp.Serve(ctx)
 		close(serveDone)
 	}()
 
@@ -635,7 +635,7 @@ func TestBridgeProxy_HandleConnMultiple(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bp.Serve(ctx)
+	go func() { _ = bp.Serve(ctx) }()
 	defer bp.Close()
 
 	for i := range 3 {

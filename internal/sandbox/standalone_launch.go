@@ -280,6 +280,18 @@ func ensureStandaloneControlDir(sandboxDir string) error {
 	if secperm.TooPermissive(info.Mode().Perm(), 0o077) {
 		return fmt.Errorf("sandbox control dir %s is too permissive (%04o); restrict it to 0700", sandboxDir, info.Mode().Perm())
 	}
+	// The directory must be owned by this process. A pre-existing directory
+	// owned by another uid (for example a predicted-PID squat in sticky /tmp)
+	// is a foreign control-socket carrier even at 0700, so mode alone is not
+	// enough. Fail closed when ownership cannot be determined rather than
+	// assume the directory is ours.
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("sandbox control dir %s ownership is unavailable", sandboxDir)
+	}
+	if int(stat.Uid) != os.Geteuid() {
+		return fmt.Errorf("sandbox control dir %s is owned by uid %d, not this process (uid %d)", sandboxDir, stat.Uid, os.Geteuid())
+	}
 	return nil
 }
 

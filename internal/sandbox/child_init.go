@@ -206,7 +206,10 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	go bridge.Serve(ctx)
+	// The MCP bridge does not yet supervise Serve's failure the way the
+	// standalone path does; explicitly discard it here to keep behavior
+	// unchanged. Hardening this path is tracked as a separate follow-up.
+	go func() { _ = bridge.Serve(ctx) }()
 
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 

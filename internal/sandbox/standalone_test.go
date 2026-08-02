@@ -209,24 +209,35 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 }
 
 func TestLaunchStandalone_ControlDirectoryIsPrivate(t *testing.T) {
-	sandboxDir := filepath.Join(t.TempDir(), "control")
-	if err := os.MkdirAll(sandboxDir, 0o750); err != nil {
-		t.Fatalf("create control directory: %v", err)
-	}
-	if err := os.Chmod(sandboxDir, 0o750); err != nil {
-		t.Fatalf("chmod control directory: %v", err)
-	}
+	t.Run("fresh directory is created private", func(t *testing.T) {
+		sandboxDir := filepath.Join(t.TempDir(), "control")
+		if err := ensureStandaloneControlDir(sandboxDir); err != nil {
+			t.Fatalf("ensure control directory: %v", err)
+		}
+		info, err := os.Stat(sandboxDir)
+		if err != nil {
+			t.Fatalf("stat control directory: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("control directory mode = %#o, want 0700", got)
+		}
+	})
 
-	if err := ensureStandaloneControlDir(sandboxDir); err != nil {
-		t.Fatalf("ensure control directory: %v", err)
-	}
-	info, err := os.Stat(sandboxDir)
-	if err != nil {
-		t.Fatalf("stat control directory: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Fatalf("control directory mode = %#o, want 0700", got)
-	}
+	t.Run("pre-existing group-readable directory is refused", func(t *testing.T) {
+		sandboxDir := filepath.Join(t.TempDir(), "control")
+		if err := os.MkdirAll(sandboxDir, 0o700); err != nil {
+			t.Fatalf("create control directory: %v", err)
+		}
+		// Variable mode: gosec G302 only flags literal >0600 perms, and this
+		// test legitimately needs a group-enterable dir to prove refusal.
+		loose := os.FileMode(0o750)
+		if err := os.Chmod(sandboxDir, loose); err != nil {
+			t.Fatalf("loosen control directory: %v", err)
+		}
+		if err := ensureStandaloneControlDir(sandboxDir); err == nil {
+			t.Fatal("ensureStandaloneControlDir accepted a group-enterable directory; want refusal")
+		}
+	})
 }
 
 func TestPreflightWithRequirements_IndependentlyReportsNetworkAndHandler(t *testing.T) {

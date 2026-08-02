@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
@@ -265,8 +267,18 @@ func ensureStandaloneControlDir(sandboxDir string) error {
 	if err := os.MkdirAll(sandboxDir, 0o700); err != nil {
 		return fmt.Errorf("creating sandbox dir: %w", err)
 	}
-	if err := os.Chmod(sandboxDir, 0o700); err != nil {
-		return fmt.Errorf("chmod sandbox dir: %w", err)
+	// MkdirAll creates the dir 0o700, but a pre-existing directory (a stale
+	// same-PID leftover after a crash) may be looser. Refuse to place the
+	// control socket in a directory group/others can enter rather than
+	// silently widening exposure. (An os.Chmod to 0o700 would auto-fix it but
+	// gosec flags a 0o700 chmod; surfacing the misconfiguration is the safer
+	// choice for a control-socket carrier — same pattern as commitHeaderSidecar.)
+	info, err := os.Stat(sandboxDir)
+	if err != nil {
+		return fmt.Errorf("stat sandbox dir: %w", err)
+	}
+	if secperm.TooPermissive(info.Mode().Perm(), 0o077) {
+		return fmt.Errorf("sandbox control dir %s is too permissive (%04o); restrict it to 0700", sandboxDir, info.Mode().Perm())
 	}
 	return nil
 }

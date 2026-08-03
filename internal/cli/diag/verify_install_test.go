@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	mcpintegrity "github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
+
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -753,8 +755,85 @@ func TestCheckMCPBinaryIntegrity_Pass(t *testing.T) {
 	if r.Status != verifyStatusPass {
 		t.Errorf("expected pass for MCP binary integrity smoke, got %s: %s", r.Status, r.Detail)
 	}
-	if r.Evidence["manifest_entries"] == "" || r.Evidence["hash_prefix"] == "" {
+	if r.Evidence["manifest_entries"] == "" || r.Evidence["hash_prefix"] == "" || r.Evidence["verified_artifact"] == "" {
 		t.Errorf("expected MCP binary integrity evidence, got %+v", r.Evidence)
+	}
+	if !strings.Contains(r.Detail, "current Pipelock executable") || !strings.Contains(r.Detail, "configured MCP servers were not checked") {
+		t.Errorf("expected exact smoke-test subject in detail, got %q", r.Detail)
+	}
+	if r.Evidence["subject_in_configured_manifest"] != "true" || r.Evidence["manifest_match"] != "true" {
+		t.Errorf("expected configured self entry to be verified, got %+v", r.Evidence)
+	}
+}
+
+func TestCheckMCPBinaryIntegrity_PassWhenConfiguredManifestDoesNotListSelf(t *testing.T) {
+	env := testScanEnv(t)
+	manifestPath := filepath.Join(t.TempDir(), "mcp-integrity-server-only.json")
+	manifest := &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{
+			"/opt/mcp/example-server": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}
+	if err := mcpintegrity.SaveManifest(manifestPath, manifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+	env.Cfg.MCPBinaryIntegrity.ManifestPath = manifestPath
+
+	r := checkMCPBinaryIntegrity(env)
+	if r.Status != verifyStatusPass {
+		t.Fatalf("expected mechanism self-test to pass when configured manifest does not list Pipelock, got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["subject_in_configured_manifest"] != "false" || r.Evidence["manifest_match"] != "not_tested" {
+		t.Errorf("configured manifest claim overstated: %+v", r.Evidence)
+	}
+	if r.Evidence["smoke_match"] != "true" || !strings.Contains(r.Detail, "ephemeral self-test entry") {
+		t.Errorf("expected explicit ephemeral self-test evidence, got detail=%q evidence=%+v", r.Detail, r.Evidence)
+	}
+}
+
+func TestCheckMCPBinaryIntegrity_HashMismatch(t *testing.T) {
+	env := testScanEnv(t)
+
+	// Overwrite the manifest with a bogus hash so Verify returns Verified=false.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	resolved, err := mcpintegrity.Resolve([]string{exe}, "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	bogusManifest := &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{
+			resolved.ResolvedPath: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}
+	manifestPath := filepath.Join(t.TempDir(), "mcp-integrity-bad.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, bogusManifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+	env.Cfg.MCPBinaryIntegrity.ManifestPath = manifestPath
+
+	r := checkMCPBinaryIntegrity(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for hash mismatch, got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["manifest_match"] != "false" {
+		t.Errorf("expected manifest_match=false, got %q", r.Evidence["manifest_match"])
+	}
+	// Assert the smoke result too. Without this a regression could report a
+	// failing status alongside smoke_match=true, which is the shape an operator
+	// most easily misreads: a green-looking sub-field next to a red verdict.
+	if r.Evidence["smoke_match"] != "false" {
+		t.Errorf("expected smoke_match=false on the mismatch path, got %q", r.Evidence["smoke_match"])
+	}
+	if r.Evidence["verified_artifact"] != resolved.ResolvedPath {
+		t.Errorf("verified_artifact = %q, want %q", r.Evidence["verified_artifact"], resolved.ResolvedPath)
+	}
+	if !strings.Contains(r.Detail, "mismatch") {
+		t.Errorf("expected detail to mention mismatch, got %q", r.Detail)
 	}
 }
 
@@ -784,6 +863,12 @@ func TestCheckMCPToolProvenance_Pass(t *testing.T) {
 	}
 	if r.Evidence["status"] != "verified" {
 		t.Errorf("expected verified provenance evidence, got %+v", r.Evidence)
+	}
+	if r.Evidence["verified_subject"] != "synthetic_local_tool" {
+		t.Errorf("expected synthetic verified subject, got %+v", r.Evidence)
+	}
+	if !strings.Contains(r.Detail, "synthetic local tool") || !strings.Contains(r.Detail, "upstream tools were not checked") {
+		t.Errorf("expected exact smoke-test subject in detail, got %q", r.Detail)
 	}
 }
 

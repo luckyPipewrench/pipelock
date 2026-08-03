@@ -42,9 +42,11 @@ func mcpIntegrityCmd() *cobra.Command {
 		Short: "MCP binary integrity manifest tooling",
 		Long: `Generate and verify the manifest consumed by mcp_binary_integrity.
 
-The manifest pins the resolved binary path Pipelock will spawn. For interpreter
-commands, it also pins the resolved script path so wrapper enforcement can catch
-both interpreter replacement and script drift before launch.`,
+The manifest records the resolved binary path and hash observed at check time.
+For interpreter commands, it also records the resolved script path so wrapper
+enforcement can detect interpreter replacement and script drift. Note that the
+MCP launcher later executes by pathname, so the manifest does not guarantee
+the spawned artifact is identical to the one hashed.`,
 	}
 	cmd.AddCommand(mcpIntegrityManifestCmd())
 	return cmd

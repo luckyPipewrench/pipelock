@@ -41,8 +41,8 @@ Scanning and local enforcement checks:
 | `scanning_websocket` | WebSocket frame scanning catches a hostile text frame. |
 | `browser_shield` | Browser Shield rewrites shieldable browser content. |
 | `file_sentry` | file_sentry detects a secret written to a watched workspace. |
-| `mcp_binary_integrity_smoke` | MCP binary-integrity manifest loading and hash verification work. |
-| `mcp_tool_provenance_smoke` | MCP tool-provenance signing and verification work offline. |
+| `mcp_binary_integrity_smoke` | MCP binary-integrity manifest loading and hash verification work against the current Pipelock executable. It uses that executable's configured entry when present, otherwise an ephemeral self-test entry. This does not verify configured MCP server binaries. |
+| `mcp_tool_provenance_smoke` | MCP tool-provenance signing and verification work offline using a synthetic tool and ephemeral key. This does not verify upstream tools. |
 
 Containment checks:
 

@@ -692,27 +692,61 @@ func checkMCPBinaryIntegrity(env *VerifyEnv) VerifyResult {
 	if err != nil {
 		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("resolving current executable: %v", err)}
 	}
-	result, err := mcpintegrity.Verify([]string{exe}, &mcpintegrity.Config{Manifests: manifest.Entries}, "")
+	resolved, err := mcpintegrity.Resolve([]string{exe}, "")
+	if err != nil {
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("hashing current executable for MCP binary integrity self-test: %v", err)}
+	}
+	_, subjectInManifest := manifest.Entries[resolved.ResolvedPath]
+	verifyEntries := manifest.Entries
+	manifestMatch := "not_tested"
+	if !subjectInManifest {
+		// A real MCP manifest normally contains server binaries, not Pipelock.
+		// Use an in-memory entry to exercise the hash comparison without
+		// pretending the configured manifest made a claim about this subject.
+		verifyEntries = map[string]string{resolved.ResolvedPath: resolved.ActualHash}
+	}
+	result, err := mcpintegrity.Verify([]string{exe}, &mcpintegrity.Config{Manifests: verifyEntries}, "")
 	if err != nil {
 		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("resolving MCP binary integrity probe: %v", err)}
+	}
+	if subjectInManifest {
+		manifestMatch = fmt.Sprintf("%t", result.Verified)
 	}
 	hashPrefix := result.ActualHash
 	if len(hashPrefix) > 12 {
 		hashPrefix = hashPrefix[:12]
 	}
-	manifestMatch := fmt.Sprintf("%t", result.Verified)
-	detail := "MCP binary integrity manifest parsed and binary hash path succeeded"
-	if result.Verified {
-		detail = "MCP binary integrity smoke target verified against manifest"
+	evidence := map[string]string{
+		"manifest_entries":               fmt.Sprintf("%d", len(manifest.Entries)),
+		"manifest_match":                 manifestMatch,
+		"smoke_match":                    fmt.Sprintf("%t", result.Verified),
+		"subject_in_configured_manifest": fmt.Sprintf("%t", subjectInManifest),
+		"hash_prefix":                    hashPrefix,
+		"verified_artifact":              result.ResolvedPath,
+	}
+	if !result.Verified {
+		detail := fmt.Sprintf("Pipelock executable self-test mismatch: actual %s does not match manifest entry", hashPrefix)
+		if result.ExpectedHash != "" {
+			expected := result.ExpectedHash
+			if len(expected) > 12 {
+				expected = expected[:12]
+			}
+			detail = fmt.Sprintf("Pipelock executable self-test mismatch: actual %s vs manifest %s", hashPrefix, expected)
+		}
+		return VerifyResult{
+			Status:   verifyStatusFail,
+			Detail:   detail,
+			Evidence: evidence,
+		}
+	}
+	detail := "MCP binary-integrity mechanism verified against the current Pipelock executable using an ephemeral self-test entry; the configured manifest did not list this executable, and configured MCP servers were not checked"
+	if subjectInManifest {
+		detail = "MCP binary-integrity mechanism verified the current Pipelock executable against its configured manifest entry; configured MCP servers were not checked"
 	}
 	return VerifyResult{
-		Status: verifyStatusPass,
-		Detail: detail,
-		Evidence: map[string]string{
-			"manifest_entries": fmt.Sprintf("%d", len(manifest.Entries)),
-			"manifest_match":   manifestMatch,
-			"hash_prefix":      hashPrefix,
-		},
+		Status:   verifyStatusPass,
+		Detail:   detail,
+		Evidence: evidence,
 	}
 }
 
@@ -755,10 +789,11 @@ func checkMCPToolProvenance(env *VerifyEnv) VerifyResult {
 	}
 	return VerifyResult{
 		Status: verifyStatusPass,
-		Detail: "MCP tool provenance signed and verified offline",
+		Detail: "MCP tool-provenance mechanism verified with a synthetic local tool and ephemeral key; upstream tools were not checked",
 		Evidence: map[string]string{
-			"mode":   provenance.ModePipelock,
-			"status": result.Status,
+			"mode":             provenance.ModePipelock,
+			"status":           result.Status,
+			"verified_subject": "synthetic_local_tool",
 		},
 	}
 }

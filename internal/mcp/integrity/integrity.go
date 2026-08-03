@@ -1,17 +1,20 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// Package integrity provides pre-spawn binary hash verification for MCP
-// subprocess servers. It resolves symlinks and interpreter shebangs,
-// hashes the actual binary (and script when an interpreter is detected),
-// and compares against a trusted manifest. A second symlink resolution at
-// exec time detects symlink swaps between hash-time and exec-time.
+// Package integrity provides binary hash verification for MCP subprocess
+// servers. It resolves symlinks and interpreter shebangs, hashes the
+// actual binary (and script when an interpreter is detected), and
+// compares against a trusted manifest.
 //
-// NOTE: CheckSymlinkRace detects symlink target changes (path identity)
-// but does NOT detect in-place content replacement after hashing. Full
-// TOCTOU prevention would require fexecve-style fd binding, which Go's
-// os/exec does not support. The gap is documented here and in
-// CheckSymlinkRace so operators understand the threat model.
+// The manifest records the resolved path and hash observed at check time.
+// It does not guarantee the identical artifact is the one eventually
+// spawned, because the MCP launcher later executes by pathname.
+// CheckSymlinkRace can detect symlink target changes (path identity)
+// between hash-time and exec-time, but it currently has no production
+// callers — it is tested and available, not wired into the launch path.
+// In-place content replacement after hashing is not detected by any
+// current mechanism; full TOCTOU prevention would require fexecve-style
+// fd binding, which Go's os/exec does not expose.
 package integrity
 
 import (
@@ -394,11 +397,15 @@ func ResolveAndHash(binary string) (resolvedPath, hash string, err error) {
 // path resolved at hash time. Returns an error if they differ, indicating
 // a symlink swap between hash-time and exec-time.
 //
-// NOTE: This checks path identity (symlink target stability), not content
+// NOTE: This function currently has no production callers — it is tested
+// and available but not wired into the MCP launch path. Wiring it in is
+// tracked separately.
+//
+// This checks path identity (symlink target stability), not content
 // identity. A file whose contents are replaced in-place after hashing
 // will not be detected by this check. Full TOCTOU prevention would
 // require opening the file by fd and using fexecve, which Go's os/exec
-// does not expose. This is a known limitation of the threat model.
+// does not expose.
 func CheckSymlinkRace(originalCommand string, expectedResolved string) error {
 	current, err := resolveBinary(originalCommand)
 	if err != nil {

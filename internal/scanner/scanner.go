@@ -30,6 +30,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
@@ -3573,20 +3574,9 @@ func baseDomain(hostname string) string {
 // "sub.example.com", "a.b.example.com", and "example.com" itself.
 // IP addresses only support exact match - wildcards are not applied to IPs
 // to prevent false matches like "*.168.1.1" matching "192.168.1.1".
+// The implementation now lives in internal/destination, which owns destination
+// vocabulary. This remains the name every existing call site uses, so moving it
+// does not touch the scanner, proxy, CLI, session or content-entropy consumers.
 func MatchDomain(hostname, pattern string) bool {
-	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
-	pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
-
-	// IP addresses: exact match only, no wildcard expansion.
-	// Dots in IPs are not domain separators - "192" is not a subdomain of "168.1.1".
-	if net.ParseIP(hostname) != nil {
-		return hostname == pattern
-	}
-
-	if strings.HasPrefix(pattern, "*.") {
-		suffix := pattern[1:] // ".example.com"
-		base := pattern[2:]   // "example.com"
-		return hostname == base || strings.HasSuffix(hostname, suffix)
-	}
-	return hostname == pattern
+	return destination.MatchDomain(hostname, pattern)
 }

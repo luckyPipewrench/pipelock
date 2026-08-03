@@ -59,3 +59,12 @@ TrustedSubjects  # INERT; same as TrustedIssuers
 PublicAllowlistDefault  # INERT; privacy enforcer does not read it
 WellKnownURL  # INERT; no key-discovery fetch implemented for mediation trusted keys
 ReceiptThreshold  # (A) FlightRecorder.AnchorReceiptThreshold() schema.go -> cli/runtime/auto_anchor.go triggered()
+Guard  # INERT: startup-only guard section, validated at load but no runtime consumer yet; excluded from the canonical policy hash (schema.go json:"-") until the guard evaluator lands. Wire-or-remove tracked in ops as the Guard roadmap runtime-evaluator PR.
+Services  # INERT: Guard.Services validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+ReadWrite  # INERT: GuardManifest.ReadWrite validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+Profiles  # INERT: Guard.Profiles validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+Manifests  # INERT: Guard.Manifests validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+Protocol  # INERT: GuardService.Protocol validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+Host  # INERT: GuardService.Host validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+Port  # INERT: GuardService.Port validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.
+ReadOnly  # INERT: GuardManifest.ReadOnly validated by Config.validateGuard(); consumed by the guard runtime evaluator when it lands. Same ops item as Guard.

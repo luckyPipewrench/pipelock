@@ -7,6 +7,7 @@ The subcommands are:
 | Subcommand | What it does | Mutates state |
 |---|---|---|
 | `install` | Create users, systemd unit, nftables rules, wrappers, sudoers entry, CA bundle, runtime contract | yes (root only) |
+| `upgrade` | Download, verify, replace, re-pin integrity, restart, and verify in one fail-closed command | yes (root only) |
 | `run` | Verify the containment boundary, emit a signed posture capsule, then launch a registered tool as `pipelock-agent` | writes proof + starts process |
 | `verify` | Read-only probes that report pass / fail / skip for the 12 invariants below | no |
 | `doctor` | Live self-test that proves common tooling reaches the internet *through* the proxy, with per-check remediation | no |
@@ -115,6 +116,42 @@ On success, `install` prints a **Next steps** block with:
 ### nftables version compatibility
 
 The nftables step checks the installed `nft` version before generating rules. The containment ruleset requires nftables >= 0.8 (for `meta skuid`, inline `counter log prefix ... drop` syntax, and the `-c`/`--check` validation mode used by the install and rollback paths). On hosts with an older `nft` (seen on some older enterprise Linux images), install fails with a clear error naming the minimum version and the distro-appropriate upgrade command, rather than a cryptic parse error at load time.
+
+## `pipelock contain upgrade`
+
+Upgrade performs a containment-aware binary update in one fail-closed command. It bridges the gap between `pipelock update` (which replaces the binary but leaves the containment integrity pin stale) and `contain install --pipelock-binary` (which re-pins but requires the operator to have already obtained and verified the candidate).
+
+The sequence is:
+
+1. Download and verify the candidate release by invoking the **deployed** binary's `pipelock update --yes` (Ed25519 manifest + checksums + optional cosign), which replaces the binary only after those checks pass.
+2. Re-pin the SHA-256 integrity hash against the newly deployed binary at `/etc/pipelock/integrity/binary-pin.sha256`.
+3. Restart the `pipelock.service` systemd unit and wait for readiness.
+4. Run `contain verify` and require exit 0, which means every probe passed.
+   A failing probe exits 1 and a skipped or inconclusive probe exits 2, so
+   both roll the upgrade back.
+
+If any step after binary replacement fails, the command rolls back both the binary and its integrity pin to the pre-upgrade state, then best-effort restarts the service.
+
+Release-signature verification is performed by the deployed binary at `/usr/local/bin/pipelock`, not by whichever copy of pipelock you invoke this command from. The command deliberately does not pre-check the invoking binary's embedded release keyring: that would decide against one artifact while the upgrade acts on another, and it would refuse a legitimate upgrade whenever an operator runs a custom or RC copy against a healthy deployed binary. A build with no embedded release keyring cannot verify a release, so its `update` step refuses; recover such a host with `contain install --pipelock-binary <path>` after independent signature, checksum, and attestation verification.
+
+Must be run as root.
+
+```bash
+sudo pipelock contain upgrade              # upgrade to the latest release
+sudo pipelock contain upgrade --version v3.2.0  # pin to a specific tag
+```
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--version` | (latest) | Install a specific release tag instead of the latest. |
+
+Exit codes:
+
+- **0** — upgrade completed and all verification probes passed.
+- **1** — upgrade failed; previous state was restored.
+- **2** — precondition error (not root, deployed binary missing or not a regular file, or no integrity pin).
 
 ## `pipelock contain verify`
 

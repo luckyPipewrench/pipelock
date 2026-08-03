@@ -189,6 +189,17 @@ func (o *Options) fillDefaults() error {
 	if o.ReleaseKeyringHex == "" {
 		o.ReleaseKeyringHex = releasetrust.PublicKeyringHex
 	}
+	// NOTE: the keyring preflight deliberately does NOT run here.
+	//
+	// validate() runs for every selfupdate operation, including rollback, which
+	// needs no keyring at all. Gating it here made a development build unable to
+	// roll back, which is the over-strict direction: a gate that blocks a
+	// legitimate operation gets disabled by the operator, and on a recovery path
+	// that is worse than the late failure it was replacing.
+	//
+	// The preflight's real subject is a RELEASE CANDIDATE being deployed to
+	// prove self-update, so its caller belongs in the release process, not in
+	// the update command. See CheckKeyringPreflight in internal/release.
 	if o.Stdout == nil {
 		o.Stdout = os.Stdout
 	}

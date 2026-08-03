@@ -35,7 +35,109 @@ var (
 	ErrReleaseManifest   = errors.New("release manifest invalid")
 	ErrReleaseAsset      = errors.New("release manifest asset invalid")
 	ErrReleaseTrustInput = errors.New("release trust input invalid")
+	ErrKeyringParity     = errors.New("release keyring parity check failed")
 )
+
+// KeyringPreflightResult reports whether a candidate binary's embedded release
+// keyring satisfies the parity contract required before an RC can be used to
+// prove self-update.
+type KeyringPreflightResult struct {
+	// KeyCount is the number of valid Ed25519 public keys parsed from the
+	// candidate keyring. Zero means the keyring was empty or unset.
+	KeyCount int
+
+	// CustomBuild is true when the caller explicitly acknowledged that the
+	// binary is an unofficial/custom build and opted into out-of-band
+	// verification. The preflight still validates keyring format when a
+	// keyring is present, but does not require a non-empty keyring.
+	CustomBuild bool
+}
+
+// CheckKeyringPreflight validates that candidateKeyringHex is non-empty and
+// contains only well-formed Ed25519 public keys. When expectKeyringHex is
+// non-empty the candidate must match it exactly (order-sensitive).
+//
+// For legitimately unofficial/custom builds where the keyring is intentionally
+// absent, pass customBuild=true. The preflight will succeed with an empty
+// keyring ONLY in that mode, and the caller is responsible for out-of-band
+// verification. A non-empty but malformed keyring always fails regardless of
+// customBuild.
+//
+// Failure direction: empty, malformed, mismatched, or any ambiguity fails
+// closed. An unknown state is never a passing state.
+func CheckKeyringPreflight(candidateKeyringHex, expectKeyringHex string, customBuild bool) (KeyringPreflightResult, error) {
+	candidateKeyringHex = strings.TrimSpace(candidateKeyringHex)
+
+	// Empty keyring: fail unless explicitly custom-build-acknowledged.
+	//
+	// The acknowledgement waives the REQUIREMENT for a keyring, never a parity
+	// check that the caller explicitly asked for. When an expected keyring is
+	// supplied, an empty candidate cannot match it, so returning success here
+	// would answer "yes, parity holds" to a question whose answer is plainly
+	// no. Custom-build is an admission that this binary has no keyring, not a
+	// claim that it has the right one.
+	if candidateKeyringHex == "" {
+		if customBuild && strings.TrimSpace(expectKeyringHex) == "" {
+			return KeyringPreflightResult{KeyCount: 0, CustomBuild: true}, nil
+		}
+		if customBuild {
+			return KeyringPreflightResult{}, fmt.Errorf(
+				"%w: candidate binary has no embedded release keyring, so it cannot "+
+					"match the expected keyring; a custom build waives the keyring "+
+					"requirement, not a parity check",
+				ErrKeyringParity)
+		}
+		return KeyringPreflightResult{}, fmt.Errorf(
+			"%w: candidate binary has no embedded release keyring; "+
+				"official RC builds must embed the release keyring via ldflags",
+			ErrKeyringParity)
+	}
+
+	// Parse and validate every key in the candidate keyring.
+	candidateKeys, err := parseKeyring(candidateKeyringHex)
+	if err != nil {
+		return KeyringPreflightResult{}, fmt.Errorf(
+			"%w: candidate keyring is malformed: %w", ErrKeyringParity, err)
+	}
+
+	result := KeyringPreflightResult{
+		KeyCount:    len(candidateKeys),
+		CustomBuild: customBuild,
+	}
+
+	// When an expected keyring is provided, require exact parity.
+	expectKeyringHex = strings.TrimSpace(expectKeyringHex)
+	if expectKeyringHex != "" {
+		expectKeys, err := parseKeyring(expectKeyringHex)
+		if err != nil {
+			return KeyringPreflightResult{}, fmt.Errorf(
+				"%w: expected keyring is malformed: %w", ErrKeyringParity, err)
+		}
+		if len(candidateKeys) != len(expectKeys) {
+			return KeyringPreflightResult{}, fmt.Errorf(
+				"%w: keyring length mismatch: candidate has %d keys, expected %d",
+				ErrKeyringParity, len(candidateKeys), len(expectKeys))
+		}
+		for i := range candidateKeys {
+			if hex.EncodeToString(candidateKeys[i]) != hex.EncodeToString(expectKeys[i]) {
+				return KeyringPreflightResult{}, fmt.Errorf(
+					"%w: key %d mismatch: candidate=%s expected=%s",
+					ErrKeyringParity, i,
+					hex.EncodeToString(candidateKeys[i]),
+					hex.EncodeToString(expectKeys[i]))
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// EmbeddedKeyringPreflight is a convenience that runs CheckKeyringPreflight
+// against the process's own PublicKeyringHex. It is the one-call gate for
+// release tooling to verify whether this binary has a real keyring.
+func EmbeddedKeyringPreflight(expectKeyringHex string, customBuild bool) (KeyringPreflightResult, error) {
+	return CheckKeyringPreflight(PublicKeyringHex, expectKeyringHex, customBuild)
+}
 
 type Manifest struct {
 	Schema             string  `json:"schema"`

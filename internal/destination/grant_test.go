@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func mustGrantSet(t *testing.T, grants ...Grant) GrantSet {
+	t.Helper()
+	gs, err := NewGrantSet(grants...)
+	if err != nil {
+		t.Fatalf("NewGrantSet() unexpected error: %v", err)
+	}
+	return gs
+}
+
 func TestNewGrant_Valid(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -97,7 +106,7 @@ func TestNewGrant_InvalidInputs(t *testing.T) {
 
 func TestGrantSet_EmptyAuthorizesNothing(t *testing.T) {
 	t.Parallel()
-	gs := NewGrantSet()
+	gs := mustGrantSet(t)
 	d, _ := New(NetworkTCP, "api.dev.example", 6443)
 	dec := gs.Evaluate(d)
 	if dec.Matched() {
@@ -114,7 +123,7 @@ func TestGrantSet_ExactMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 
 	d, _ := New(NetworkTCP, "api.dev.example", 6443)
 	dec := gs.Evaluate(d)
@@ -135,7 +144,7 @@ func TestGrantSet_Exactness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 
 	cases := []struct {
 		name    string
@@ -167,7 +176,7 @@ func TestGrantSet_IPExactness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 
 	cases := []struct {
 		name    string
@@ -218,7 +227,7 @@ func TestGrantSet_ResolvedIPNotGranted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 
 	// Query by the IP that api.dev.example might resolve to.
 	d, _ := New(NetworkTCP, "93.184.216.34", 443)
@@ -234,7 +243,7 @@ func TestGrantSet_HostNormalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 
 	d, _ := New(NetworkTCP, "api.dev.example", 443)
 	dec := gs.Evaluate(d)
@@ -273,7 +282,7 @@ func TestGrantSet_AlternativeIPSpellingNormalized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 
 	// Query with standard dotted decimal for the same address.
 	d, _ := New(NetworkTCP, "10.0.0.1", 8080)
@@ -303,7 +312,7 @@ func TestGrantSet_LenAndContains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := NewGrantSet(g)
+	gs := mustGrantSet(t, g)
 	if gs.Len() != 1 {
 		t.Errorf("Len = %d, want 1", gs.Len())
 	}
@@ -329,5 +338,58 @@ func TestGrantSet_LenAndContains(t *testing.T) {
 		if gs.Contains(od) {
 			t.Errorf("Contains(%s) = true; a grant authorizes one destination, not its neighbours", od)
 		}
+	}
+}
+
+func TestNewGrantSet_RejectsInvalidEntriesAllOrNothing(t *testing.T) {
+	t.Parallel()
+	valid, err := NewGrant(NetworkTCP, "api.dev.example", 6443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor := Grant{dest: Destination{Network: NetworkTCP, Host: "169.254.169.254", Port: 80}}
+
+	for _, tc := range []struct {
+		name  string
+		grant Grant
+	}{
+		{name: "zero value", grant: Grant{}},
+		{name: "floor address", grant: floor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gs, err := NewGrantSet(valid, tc.grant)
+			if err == nil {
+				t.Fatal("NewGrantSet should reject an invalid entry")
+			}
+			if gs.Len() != 0 {
+				t.Fatalf("failed construction returned %d live grants, want 0", gs.Len())
+			}
+		})
+	}
+}
+
+func TestGrantSet_DuplicateKeyLastWins(t *testing.T) {
+	t.Parallel()
+	g1, err := NewGrant(NetworkTCP, "api.dev.example", 6443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := NewGrant(NetworkTCP, "API.DEV.EXAMPLE", 6443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := mustGrantSet(t, g1, g2)
+	if gs.Len() != 1 {
+		t.Errorf("Len = %d, want 1 for duplicate destination", gs.Len())
+	}
+}
+
+func TestGrantSet_ContainsHonorsImmutableFloor(t *testing.T) {
+	t.Parallel()
+	metaDest := Destination{Network: NetworkTCP, Host: "169.254.169.254", Port: 80}
+	gs := GrantSet{byKey: map[string]Grant{metaDest.String(): {dest: metaDest}}}
+	if gs.Contains(metaDest) {
+		t.Fatal("Contains must not authorize a destination denied by Evaluate")
 	}
 }

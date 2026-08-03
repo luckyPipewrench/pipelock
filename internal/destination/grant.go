@@ -12,9 +12,11 @@ import (
 // wildcards, no CIDRs, no port ranges. The zero value is not valid.
 //
 // A grant can NEVER override the immutable floor. An attempt to construct a
-// grant naming a cloud-metadata, link-local, multicast, or unspecified address
-// is rejected at construction time, and the evaluator re-checks at decision
-// time as defense in depth.
+// grant naming a cloud-metadata, link-local, multicast, or unspecified IP
+// literal is rejected at construction time, and the evaluator re-checks at
+// decision time as defense in depth. Hostname resolution and dial-time address
+// enforcement belong to the consuming scanner and dialer; a GrantSet does not
+// resolve names.
 type Grant struct {
 	dest Destination
 }
@@ -38,12 +40,18 @@ func NewGrant(network Network, host string, port uint16) (Grant, error) {
 	if err != nil {
 		return Grant{}, fmt.Errorf("destination: invalid grant: %w", err)
 	}
-	if ip := ParseIPLiteral(dest.Host); ip != nil {
-		if IsNonOverridableSSRFTarget(ip) {
-			return Grant{}, fmt.Errorf("%w: %s", ErrGrantFloorViolation, dest.String())
-		}
+	if isFloorHost(dest.Host) {
+		return Grant{}, fmt.Errorf("%w: %s", ErrGrantFloorViolation, dest.String())
 	}
 	return Grant{dest: dest}, nil
+}
+
+// isFloorHost reports whether host is an IP literal on the immutable SSRF
+// floor. DNS names are resolved and checked by the consuming scanner and
+// dialer, not by this transport-neutral value type.
+func isFloorHost(host string) bool {
+	ip := ParseIPLiteral(host)
+	return ip != nil && IsNonOverridableSSRFTarget(ip)
 }
 
 // GrantSet is an immutable collection of grants built through a validating
@@ -52,18 +60,23 @@ type GrantSet struct {
 	byKey map[string]Grant
 }
 
-// NewGrantSet builds a grant set, rejecting any malformed or floor-violating
-// entry. A single bad entry fails the entire set — partial application would
-// leave the operator unable to reason about which grants are live.
-func NewGrantSet(grants ...Grant) GrantSet {
+// NewGrantSet validates and builds a grant set. A single malformed or
+// floor-violating entry fails the entire set; partial application would leave
+// the operator unable to reason about which grants are live. Duplicate exact
+// destinations collapse to one entry.
+func NewGrantSet(grants ...Grant) (GrantSet, error) {
 	if len(grants) == 0 {
-		return GrantSet{}
+		return GrantSet{}, nil
 	}
 	m := make(map[string]Grant, len(grants))
-	for _, g := range grants {
-		m[g.dest.String()] = g
+	for i, g := range grants {
+		validated, err := NewGrant(g.dest.Network, g.dest.Host, g.dest.Port)
+		if err != nil {
+			return GrantSet{}, fmt.Errorf("destination: invalid grant set entry %d: %w", i, err)
+		}
+		m[validated.dest.String()] = validated
 	}
-	return GrantSet{byKey: m}
+	return GrantSet{byKey: m}, nil
 }
 
 // Len returns the number of grants in the set.
@@ -71,19 +84,17 @@ func (gs GrantSet) Len() int { return len(gs.byKey) }
 
 // Contains reports whether the set holds a grant for the exact destination.
 func (gs GrantSet) Contains(d Destination) bool {
-	if gs.byKey == nil {
-		return false
-	}
-	_, ok := gs.byKey[d.String()]
-	return ok
+	return gs.Evaluate(d).Effect == EffectAllow
 }
 
 // Evaluate checks a destination against the grant set and returns a Decision.
 //
-// The immutable floor is checked FIRST: a destination whose IP is
-// non-overridable is denied regardless of any grant. This is defense in depth
-// — NewGrant already rejects floor addresses, but a hand-built or
-// deserialized grant set must not silently authorize metadata.
+// The immutable floor is checked FIRST: a destination whose host is an IP
+// literal on the floor is denied regardless of any grant. This is defense in
+// depth — NewGrantSet rejects floor addresses, but a hand-built GrantSet must
+// not silently authorize metadata. A consuming scanner and dialer must apply
+// the same floor to resolved addresses before connecting; Evaluate does not
+// perform DNS resolution.
 //
 // If the floor does not apply, the set is checked for an exact match. Only an
 // exact network+host+port match produces EffectAllow; there is no fallback to
@@ -95,14 +106,12 @@ func (gs GrantSet) Contains(d Destination) bool {
 func (gs GrantSet) Evaluate(d Destination) Decision {
 	// Defense-in-depth floor check: even if a grant somehow exists for a
 	// floor address (construction should prevent this), deny unconditionally.
-	if ip := ParseIPLiteral(d.Host); ip != nil {
-		if IsNonOverridableSSRFTarget(ip) {
-			return Decision{
-				Effect: EffectDeny,
-				Scope:  ScopeExact,
-				Source: SourceImmutableFloor,
-				Rule:   "non-overridable SSRF target",
-			}
+	if isFloorHost(d.Host) {
+		return Decision{
+			Effect: EffectDeny,
+			Scope:  ScopeExact,
+			Source: SourceImmutableFloor,
+			Rule:   "non-overridable SSRF target",
 		}
 	}
 	if gs.byKey == nil {

@@ -82,7 +82,10 @@ func NewGrantSet(grants ...Grant) (GrantSet, error) {
 // Len returns the number of grants in the set.
 func (gs GrantSet) Len() int { return len(gs.byKey) }
 
-// Contains reports whether the set holds a grant for the exact destination.
+// Contains reports whether the exact destination is authorized: an exact
+// grant exists and the destination is not on the immutable SSRF floor. Like
+// Evaluate, it enforces the floor even if a hand-built GrantSet contains a
+// grant for a floor address.
 func (gs GrantSet) Contains(d Destination) bool {
 	return gs.Evaluate(d).Effect == EffectAllow
 }

@@ -360,3 +360,30 @@ func TestVerificationSummary_JSONFields(t *testing.T) {
 		t.Errorf("not_measured = %v, want 1", v)
 	}
 }
+
+// TestVerificationStatus_NegativeValueDoesNotPanic covers the lower bound.
+//
+// VerificationStatus is an int-based type reachable from JSON and from
+// arithmetic, so a negative value is not hypothetical. A one-sided bounds check
+// indexed out of range and panicked, which turns a bad status into a crash of
+// whatever was rendering the report.
+func TestVerificationStatus_NegativeValueDoesNotPanic(t *testing.T) {
+	for _, s := range []VerificationStatus{-1, -100, VerificationStatus(len(statusStrings)), 9999} {
+		got := s.String()
+		if got != "unknown" {
+			t.Errorf("VerificationStatus(%d).String() = %q, want %q", int(s), got, "unknown")
+		}
+		if s.IsTerminal() {
+			t.Errorf("VerificationStatus(%d) must not be terminal", int(s))
+		}
+		// It must also survive the JSON path, which is how an out-of-range
+		// value actually reaches String() in production.
+		b, err := s.MarshalJSON()
+		if err != nil {
+			t.Errorf("MarshalJSON(%d): %v", int(s), err)
+		}
+		if string(b) != `"unknown"` {
+			t.Errorf("MarshalJSON(%d) = %s, want \"unknown\"", int(s), b)
+		}
+	}
+}

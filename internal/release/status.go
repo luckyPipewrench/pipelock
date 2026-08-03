@@ -52,7 +52,11 @@ var statusStrings = [...]string{
 
 // String returns the stable wire representation.
 func (s VerificationStatus) String() string {
-	if int(s) < len(statusStrings) {
+	// Two-sided bound. VerificationStatus is an int-based type reachable from
+	// JSON and from arithmetic, so a negative value is not hypothetical, and a
+	// one-sided check indexes out of range and panics. A status this code
+	// cannot name renders as unknown, which is also the fail-closed reading.
+	if s >= 0 && int(s) < len(statusStrings) {
 		return statusStrings[s]
 	}
 	return "unknown"

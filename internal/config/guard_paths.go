@@ -106,20 +106,53 @@ var guardSecretShapes = []struct {
 	shape  string // path relative to a home root, POSIX separators
 	reason string
 }{
-	{".aws/credentials", "AWS credentials file"},
-	{".kube/config", "kubeconfig, which embeds client certificates and tokens"},
-	{".docker/config.json", "docker registry auth file"},
-	{".npmrc", "npm config, which holds registry auth tokens"},
-	{".pypirc", "PyPI config, which holds upload tokens"},
-	{".netrc", "netrc, which holds plaintext machine credentials"},
-	{".config/gh/hosts.yml", "GitHub CLI credential file"},
-	{".config/gcloud/credentials.db", "gcloud credential database"},
+	// Cloud provider credential state. The whole of .aws is listed rather than
+	// only the credentials file: .aws/config carries SSO settings and
+	// credential_process directives, and the sso and cli cache directories
+	// hold live session tokens, so the non-secret remainder is not worth
+	// carving out.
+	{".aws", "the AWS credential directory, including SSO and CLI session caches"},
+	{".azure", "the Azure credential directory"},
+	{".config/gcloud/credentials.db", "the gcloud credential database"},
+	{".config/gcloud/access_tokens.db", "the gcloud access token database"},
 	{".config/gcloud/application_default_credentials.json", "gcloud application default credentials"},
-	{".git-credentials", "git credential store"},
-	{".config/pip/pip.conf", "pip config, which may hold index credentials"},
-	{".claude.json", "Claude Code config, which holds MCP server credentials"},
-	{".codex/auth.json", "Codex CLI credential file"},
-	{".config/anthropic", "Anthropic tooling credential directory"},
+	{".config/gcloud/legacy_credentials", "legacy gcloud credentials"},
+
+	// Cluster and container registry auth.
+	{".kube/config", "the kubeconfig, which embeds client certificates and tokens"},
+	{".docker/config.json", "the docker registry auth file"},
+	{".config/containers/auth.json", "the containers registry auth file"},
+	{".config/helm/registry/config.json", "the helm registry auth file"},
+
+	// Package index and version control credentials.
+	{".npmrc", "the npm config, which holds registry auth tokens"},
+	{".pypirc", "the PyPI config, which holds upload tokens"},
+	{".config/pip/pip.conf", "the pip config, which may hold index credentials"},
+	{".config/pypoetry/auth.toml", "the poetry auth file"},
+	{".cargo/credentials", "the cargo registry credential file"},
+	{".cargo/credentials.toml", "the cargo registry credential file"},
+	{".netrc", "the netrc, which holds plaintext machine credentials"},
+	{".git-credentials", "the git credential store"},
+	{".config/gh/hosts.yml", "the GitHub CLI credential file"},
+
+	// Infrastructure-as-code tokens.
+	{".terraform.d/credentials.tfrc.json", "the Terraform credential file"},
+	{".pulumi/credentials.json", "the Pulumi credential file"},
+
+	// AI agent and MCP state. MCP configuration counts as credential-bearing
+	// whether or not a given file currently holds a secret: the format carries
+	// per-server env, headers and command arguments, which is where API keys
+	// for every downstream tool end up.
+	{".claude.json", "the Claude Code config, which carries MCP server credentials"},
+	{".claude/.credentials.json", "the Claude Code credential file"},
+	{".claude/settings.json", "the Claude Code settings file, which carries MCP server credentials"},
+	{".codex/auth.json", "the Codex CLI credential file"},
+	{".codex/config.toml", "the Codex CLI config, which carries MCP server credentials"},
+	{".gemini/oauth_creds.json", "the Gemini CLI credential file"},
+	{".cursor/mcp.json", "the Cursor MCP config, which carries server credentials"},
+	{".config/Claude/claude_desktop_config.json", "the Claude Desktop MCP config"},
+	{"Library/Application Support/Claude/claude_desktop_config.json", "the Claude Desktop MCP config"},
+	{".config/anthropic", "the Anthropic tooling credential directory"},
 }
 
 // guardSecretAbsolutePaths are absolute locations holding credential material
@@ -130,6 +163,24 @@ var guardSecretAbsolutePaths = []struct {
 }{
 	{"/etc/shadow", "the shadow password database"},
 	{"/etc/gshadow", "the shadow group database"},
+	// Per-user runtime state holds agent sockets and keyrings.
+	// guardDangerousRWRoots already refused these for WRITE as "socket path";
+	// the read side did not.
+	//
+	// This is defense in depth, NOT a solution to the SSH-agent problem, and
+	// the distinction matters because the stronger claim is tempting and
+	// false. Reaching an agent socket would be full use of every loaded key
+	// with no key file ever read -- but a path grant does not currently confer
+	// that: Landlock's RWDirs does not permit connect(2) on a pathname Unix
+	// socket without WithResolveUnix, and the sandbox adapter uses plain
+	// RWDirs (internal/sandbox/landlock_linux.go). A static path list also
+	// cannot enumerate agent sockets in general, since SSH_AUTH_SOCK is
+	// arbitrary. The real control is a runtime one -- refuse to grant a path
+	// whose object is a socket unless it is an explicit, typed capability --
+	// and it belongs with the evaluator, not here.
+	{"/run/user", "per-user runtime state, which holds agent sockets and keyrings"},
+	// Container secret mounts.
+	{"/run/secrets", "the container secret mount point"},
 }
 
 // guardHomeRootOf returns the user home directory that contains resolved, or

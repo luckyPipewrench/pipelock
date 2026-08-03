@@ -660,6 +660,19 @@ func TestValidateGuard_SecretMaterialRefusedBothDirections(t *testing.T) {
 	for _, path := range []string{
 		// The credential file itself.
 		"/home/someoperator/.aws/credentials",
+		// .aws is refused whole, not just its credentials file: config carries
+		// SSO settings and credential_process directives, and the sso/cli
+		// caches hold live session tokens.
+		"/home/someoperator/.aws/config",
+		"/home/someoperator/.aws/sso/cache/abc123.json",
+		"/home/someoperator/.azure/msal_token_cache.json",
+		"/home/someoperator/.cargo/credentials.toml",
+		"/home/someoperator/.terraform.d/credentials.tfrc.json",
+		"/home/someoperator/.pulumi/credentials.json",
+		"/home/someoperator/.config/containers/auth.json",
+		"/home/someoperator/.claude/.credentials.json",
+		"/home/someoperator/.cursor/mcp.json",
+		"/home/someoperator/.gemini/oauth_creds.json",
 		"/home/someoperator/.kube/config",
 		"/home/someoperator/.docker/config.json",
 		"/home/someoperator/.npmrc",
@@ -685,6 +698,16 @@ func TestValidateGuard_SecretMaterialRefusedBothDirections(t *testing.T) {
 		// Roots sitting above every user home at once.
 		"/home",
 		"/Users",
+		// Per-user runtime state. An SSH agent socket lives here, and reaching
+		// it is full use of every loaded key without any key file being read,
+		// so guarding ~/.ssh alone guards the copy and not the capability.
+		// These were already refused for write as "socket path"; the read
+		// direction is the one that matters for an agent socket.
+		"/run/user",
+		"/run/user/1000",
+		"/run/user/1000/keyring/ssh",
+		"/run/secrets/api-token",
+		"/run", // ancestor of /run/user
 	} {
 		for _, mode := range []string{"read_only", "read_write"} {
 			t.Run(mode+"_"+path, func(t *testing.T) {
@@ -725,7 +748,6 @@ func TestValidateGuard_NonSecretNeighboursStillAllowed(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
-		"/home/someoperator/.aws/config",                   // region/profile, not credentials
 		"/home/someoperator/.docker/buildx",                // builder state, not auth
 		"/home/someoperator/.config/myapp",                 // unrelated app config
 		"/home/someoperator/.config/gcloud/configurations", // named configs, not the credential db
@@ -791,6 +813,39 @@ func TestValidateGuard_WholeHomeReadRefused(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "entire home directory") {
 				t.Errorf("read on %q must be refused as a whole-home grant, not incidentally by a credential rule, got: %v", path, err)
+			}
+		})
+	}
+}
+
+// TestValidateGuard_RunSubtreesStillReadable is the availability half of the
+// agent-socket rule.
+//
+// Read is asserted alone on purpose. The whole of /run has been refused for
+// WRITE since the manifest rules landed, as a "socket path", so a both-modes
+// assertion here would fail on a pre-existing rule that has nothing to do with
+// credentials. Reading resolver config or an application's own runtime state
+// is ordinary, so the credential rule must reach only the credential-bearing
+// subtrees under /run rather than the whole directory.
+func TestValidateGuard_RunSubtreesStillReadable(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/run/systemd/resolve/stub-resolv.conf",
+		"/run/myapp/state",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Guard = Guard{
+				Manifests: []GuardManifest{{Name: "ok", ReadOnly: []string{path}}},
+			}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("guard is refused while unenforced; %q should still reach the gate", path)
+			}
+			if !errors.Is(err, errGuardNotEnforced) {
+				t.Errorf("non-credential runtime path %q must remain readable, got: %v", path, err)
 			}
 		})
 	}

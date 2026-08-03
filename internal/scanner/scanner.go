@@ -1283,50 +1283,27 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		}
 	}
 
-	// Parse each resolved IP once (zone-ID strip + IPv4-mapped normalization),
-	// then reuse the parsed set for both the non-overridable floor pass and the
-	// CIDR pass below so the two passes cannot drift. Unparseable entries are
-	// dropped (they cannot be dialed).
-	type resolvedIP struct {
-		ip        net.IP
-		displayIP string
-	}
-	parsed := make([]resolvedIP, 0, len(ips))
-	for _, ipStr := range ips {
-		// Strip IPv6 zone ID (e.g. "::1%eth0" → "::1"). Zone IDs cause
-		// net.ParseIP to return nil, silently skipping the CIDR check.
-		displayIP := ipStr
-		if idx := strings.Index(ipStr, "%"); idx != -1 {
-			ipStr = ipStr[:idx]
-		}
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
-		if v4 := ip.To4(); v4 != nil {
-			ip = v4
-		}
-		parsed = append(parsed, resolvedIP{ip: ip, displayIP: displayIP})
-	}
+	// Parse the resolved set once and reuse it for every pass, so the floor pass
+	// and the CIDR pass cannot disagree about what an address is. Zone-ID strip,
+	// IPv4-mapped normalization and dropping undialable entries all live in
+	// destination.ParseResolved.
+	parsed := destination.ParseResolved(ips)
 
 	// Non-overridable floor: cloud-metadata, link-local, multicast, and
 	// unspecified targets can never be exempted, so this pass runs BEFORE the
 	// trusted-domain allow below and wins over it.
-	for _, r := range parsed {
-		if IsNonOverridableSSRFTarget(r.ip) {
-			scannerLabel := ScannerSSRF
-			blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, r.displayIP)
-			if isCloudMetadataIP(r.ip) {
-				scannerLabel = ScannerSSRFMetadata
-				blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, r.displayIP)
-			}
-			return Result{
-				Allowed: false,
-				Reason:  blockReason,
-				Scanner: scannerLabel,
-				Score:   1.0,
-			}
+	if hit, found := destination.FirstFloorHit(parsed); found {
+		scannerLabel := ScannerSSRF
+		blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, hit.Display)
+		if isCloudMetadataIP(hit.IP) {
+			scannerLabel = ScannerSSRFMetadata
+			blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, hit.Display)
+		}
+		return Result{
+			Allowed: false,
+			Reason:  blockReason,
+			Scanner: scannerLabel,
+			Score:   1.0,
 		}
 	}
 
@@ -1337,35 +1314,27 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		return Result{Allowed: true}
 	}
 
-	for _, r := range parsed {
-		// Check against internal CIDRs (core + config). Cloud-metadata IPs never
-		// reach here: they are non-overridable and already returned above, so
-		// this pass only ever emits the generic internal-IP classification.
-		for _, cidr := range allCIDRs {
-			if cidr.Contains(r.ip) {
-				// IP allowlist exemption: operator explicitly trusts this range.
-				if s.IsIPAllowlisted(r.ip) {
-					continue
-				}
-				result := Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, r.displayIP),
-					Scanner: ScannerSSRF,
-					Score:   1.0,
-				}
-				// If the domain is in api_allowlist, this is a config
-				// mismatch (not a real attack): classify it so adaptive
-				// enforcement doesn't escalate. The agent-facing hint stays
-				// terse (no knob); the operator gets the exact allow-path
-				// (ssrf.ip_allowlist for an IP literal, trusted_domains for a
-				// hostname) from `pipelock explain` and the audit hint.
-				if s.IsInAPIAllowlist(hostname) {
-					result.Hint = HintForScanner(ScannerSSRF)
-					result.Class = ClassConfigMismatch
-				}
-				return result
-			}
+	// Internal CIDRs (core + config). Cloud-metadata addresses never reach here:
+	// they are non-overridable and already returned above, so this pass only
+	// ever emits the generic internal-IP classification.
+	if hit, found := destination.FirstInternalHit(parsed, allCIDRs, s.IsIPAllowlisted); found {
+		result := Result{
+			Allowed: false,
+			Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, hit.Display),
+			Scanner: ScannerSSRF,
+			Score:   1.0,
 		}
+		// If the domain is in api_allowlist, this is a config mismatch (not a
+		// real attack): classify it so adaptive enforcement doesn't escalate.
+		// The agent-facing hint stays terse (no knob); the operator gets the
+		// exact allow-path (ssrf.ip_allowlist for an IP literal,
+		// trusted_domains for a hostname) from `pipelock explain` and the
+		// audit hint.
+		if s.IsInAPIAllowlist(hostname) {
+			result.Hint = HintForScanner(ScannerSSRF)
+			result.Class = ClassConfigMismatch
+		}
+		return result
 	}
 
 	return Result{Allowed: true, SSRFResolvedIPs: append([]string(nil), ips...)}

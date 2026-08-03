@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
 
@@ -95,6 +96,12 @@ var (
 	ErrSignatureUnavailable = errors.New("publisher signature verification unavailable")
 	// ErrUnsupportedPlatform is returned for an OS/arch with no published asset.
 	ErrUnsupportedPlatform = errors.New("no release asset for this OS/architecture")
+	// ErrInvalidReleaseTag is returned when release metadata carries a tag that
+	// is not a valid Pipelock product release tag. Callers distinguish this from
+	// a transport or signature failure: it means the metadata itself is
+	// malformed or does not describe a product release, so no asset from it
+	// should be trusted.
+	ErrInvalidReleaseTag = errors.New("release metadata tag is not a valid product release tag")
 	// ErrAssetNotFound is returned when the release has no matching archive asset.
 	ErrAssetNotFound = errors.New("release asset not found")
 	// ErrNotWritable is returned when the target binary or its directory is not
@@ -284,6 +291,9 @@ func (o *Options) fetchRelease(ctx context.Context) (*release, error) {
 	}
 	if rel.TagName == "" {
 		return nil, errors.New("release metadata missing tag_name")
+	}
+	if !cliutil.IsProductReleaseTag(rel.TagName) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidReleaseTag, rel.TagName)
 	}
 	return &rel, nil
 }

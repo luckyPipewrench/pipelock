@@ -41,6 +41,29 @@ func TestFetchRelease_MissingTag(t *testing.T) {
 	}
 }
 
+func TestFetchRelease_InvalidProductTag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3+build.1","assets":[]}`))
+	}))
+	defer srv.Close()
+	opts := &Options{APIBase: srv.URL, HTTPClient: srv.Client(), TargetPath: writeTargetBinary(t, "x")}
+	_ = opts.fillDefaults()
+	// Assert the sentinel rather than the message text: callers distinguish a
+	// malformed-metadata failure from a transport or signature failure with
+	// errors.Is, and matching on wording would pass even if the error class
+	// were wrong.
+	_, err := opts.fetchRelease(context.Background())
+	if err == nil {
+		t.Fatal("expected an error for a tag that is not a product release tag")
+	}
+	if !errors.Is(err, ErrInvalidReleaseTag) {
+		t.Fatalf("expected ErrInvalidReleaseTag, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "v1.2.3+build.1") {
+		t.Errorf("error should name the offending tag so an operator can see it, got %v", err)
+	}
+}
+
 func TestFetchRelease_HTTPStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

@@ -33,6 +33,7 @@ fi
 # floating pointers like v2, but still admits v1.2.3.4 and v3.2.0+build.1), so a
 # malformed tag fails closed BEFORE anything is built or pushed.
 release_tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+max_product_release_version_length=128
 if ! printf '%s\n' "$VERSION" | grep -qE "$release_tag_re"; then
   echo "check-release-ready: tag '$VERSION' must be vMAJOR.MINOR.PATCH[-prerelease] with no build metadata" >&2
   exit 2
@@ -43,7 +44,7 @@ VER="${VERSION#v}" # strip leading v -> bare semver used in CHANGELOG/Chart and 
 # The v-stripped version is used verbatim as an OCI/Docker image tag, which is
 # capped at 128 characters; a longer tag passes the format check above yet fails
 # only once container publishing begins.
-if [ "${#VER}" -gt 128 ]; then
+if [ "${#VER}" -gt "$max_product_release_version_length" ]; then
   echo "check-release-ready: tag '$VERSION' exceeds the 128-character OCI image-tag limit" >&2
   exit 2
 fi

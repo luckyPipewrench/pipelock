@@ -234,6 +234,15 @@ func (c *Config) policySemanticView() Config {
 	view.Redaction.AllowlistUnparseableRoutes = canonicalUnparseableRoutes(view.Redaction.Enabled, view.Redaction.AllowlistUnparseableRoutes)
 	view.Redaction.Providers = canonicalRedactionProviders(view.Redaction.Enabled, view.Redaction.Providers)
 
+	// Guard is deliberately NOT canonicalized here. It carries json:"-" and is
+	// excluded from the canonical policy hash while it has no runtime consumer:
+	// a field enters the policy hash only once a production decision path
+	// consumes it, because that hash is stamped into receipts, learn-compile
+	// output, dashboard snapshots, replay packets, and conductor bundles. An
+	// inert field entering the hash would make byte-identical effective policy
+	// emit different evidence across a mixed-version fleet mid-upgrade.
+	// Canonicalize guard here when the runtime evaluator lands.
+
 	// Resolve omitted-or-zero learn-inference fields to their effective
 	// defaults so the policy hash reflects the runtime-effective policy,
 	// not the literal YAML representation. Without this, a YAML omitting

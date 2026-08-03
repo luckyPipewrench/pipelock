@@ -439,6 +439,7 @@ type Config struct {
 	MediationEnvelope        MediationEnvelope       `yaml:"mediation_envelope"`
 	Redaction                redact.Config           `yaml:"redaction"`
 	Learn                    Learn                   `yaml:"learn"`
+	Guard                    Guard                   `yaml:"guard" json:"-"`      // startup-only guard declaration with no runtime consumer yet, excluded from canonical policy hash
 	LearnLock                LearnLock               `yaml:"learn_lock" json:"-"` // operational lock-runtime config, excluded from canonical policy hash
 	Conductor                Conductor               `yaml:"conductor" json:"-"`  // follower control-plane config, excluded from canonical policy hash
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
@@ -2321,4 +2322,43 @@ func (l LearnLock) EffectiveMinimumSignatures() int {
 		return 1
 	}
 	return l.MinimumSignatures
+}
+
+// Guard is the startup-only guard configuration section. It declares the
+// network services a workload is granted access to, the named workload
+// profiles that select state manifests, and the state manifests themselves.
+// Guard is evaluated at startup; hot-reload changes to guard fields are
+// ignored (they require a restart).
+type Guard struct {
+	Services  []GuardService  `yaml:"services,omitempty"`
+	Profiles  []GuardProfile  `yaml:"profiles,omitempty"`
+	Manifests []GuardManifest `yaml:"manifests,omitempty"`
+}
+
+// GuardService is a protocol-aware network service grant. Each service
+// names an exact destination (protocol, host, port) that the workload is
+// permitted to reach. The Protocol field is typed as a string in config
+// and validated to be one of the recognized destination.Network values;
+// this keeps the config layer free of runtime package imports.
+type GuardService struct {
+	Name     string `yaml:"name"`
+	Protocol string `yaml:"protocol"` // "tcp" now; "udp" reserved
+	Host     string `yaml:"host"`
+	Port     uint16 `yaml:"port"`
+}
+
+// GuardProfile is a named workload profile. It selects one or more state
+// manifests by name, binding a workload identity to its filesystem grants.
+type GuardProfile struct {
+	Name      string   `yaml:"name"`
+	Manifests []string `yaml:"manifests"`
+}
+
+// GuardManifest declares the filesystem paths a workload may read or write.
+// ReadOnly paths are accessible but not writable; ReadWrite paths are both.
+// Every path is explicit and absolute; no wildcards, no inference.
+type GuardManifest struct {
+	Name      string   `yaml:"name"`
+	ReadOnly  []string `yaml:"read_only,omitempty"`
+	ReadWrite []string `yaml:"read_write,omitempty"`
 }

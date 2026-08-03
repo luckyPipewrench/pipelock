@@ -5,6 +5,7 @@ package cliutil
 
 import (
 	"fmt"
+	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -14,7 +15,27 @@ import (
 const (
 	defaultVersion       = "0.0.0-dev.unknown"
 	sourceRevisionLength = 12
+
+	// MaxProductReleaseVersionLength is the OCI/Docker tag limit after removing v.
+	MaxProductReleaseVersionLength = 128
 )
+
+// ProductReleaseTagPattern is the canonical regular expression for a valid
+// pipelock product release tag. It accepts v-prefixed SemVer with an optional
+// prerelease suffix and NO build metadata ('+' is invalid in an OCI/Docker tag).
+// The shell copy in check-release-ready.sh cannot import Go, so a parity test
+// (TestProductReleaseTag_ParityWithReleaseSurfaces) fails CI if it diverges.
+const ProductReleaseTagPattern = `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$`
+
+// productReleaseTagRE is the compiled form of [ProductReleaseTagPattern].
+var productReleaseTagRE = regexp.MustCompile(ProductReleaseTagPattern)
+
+// IsProductReleaseTag reports whether tag is a valid pipelock product release
+// tag: vMAJOR.MINOR.PATCH with an optional SemVer prerelease suffix and no
+// build metadata. The v-stripped value is capped at the OCI/Docker tag limit.
+func IsProductReleaseTag(tag string) bool {
+	return len(tag) <= MaxProductReleaseVersionLength+1 && productReleaseTagRE.MatchString(tag)
+}
 
 // Build metadata, set at build time via ldflags. Defaults are used when
 // building with plain "go build" (without the Makefile).

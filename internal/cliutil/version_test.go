@@ -4,8 +4,11 @@
 package cliutil
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -281,6 +284,139 @@ func TestResolveVersionFromBuildInfoKeepsLDFLagsVersion(t *testing.T) {
 	if got := DisplayVersion(); got != "v9.9.9" {
 		t.Fatalf("DisplayVersion() = %q, want v9.9.9", got)
 	}
+}
+
+func TestIsProductReleaseTag(t *testing.T) {
+	tests := []struct {
+		tag  string
+		want bool
+	}{
+		// Valid final releases
+		{"v0.0.0", true},
+		{"v1.2.3", true},
+		{"v10.20.30", true},
+		{"v3.2.0", true},
+
+		// Valid prereleases (the exact case that was broken: preflight passes, cosign must too)
+		{"v3.2.0-rc1", true},
+		{"v3.2.0-alpha.1", true},
+		{"v3.2.0-0.3.7", true},
+		{"v1.0.0-beta.11", true},
+		{"v1.0.0-x.7.z.92", true},
+		{"v1.2.3-" + strings.Repeat("a", 122), true}, // 128 chars after stripping v
+
+		// Invalid: build metadata (+ is invalid in OCI tags)
+		{"v1.2.3+build", false},
+		{"v1.2.3-rc1+meta", false},
+		{"v1.2.3-" + strings.Repeat("a", 123), false}, // exceeds OCI tag limit
+
+		// Invalid: missing v prefix
+		{"1.2.3", false},
+
+		// Invalid: leading zeros
+		{"v01.2.3", false},
+		{"v1.02.3", false},
+		{"v1.2.03", false},
+
+		// Invalid: too few/many segments
+		{"v1.2", false},
+		{"v1.2.3.4", false},
+
+		// Invalid: non-product prefixes
+		{"verifier-v0.2.0", false},
+
+		// Invalid: misc
+		{"", false},
+		{"v", false},
+		{"vx.y.z", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.tag, func(t *testing.T) {
+			if got := IsProductReleaseTag(tt.tag); got != tt.want {
+				t.Fatalf("IsProductReleaseTag(%q) = %v, want %v", tt.tag, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProductReleaseTag_PrereleaseAccepted guards the release-policy decision
+// that prerelease tags are valid product releases.
+func TestProductReleaseTag_PrereleaseAccepted(t *testing.T) {
+	prereleases := []string{"v3.2.0-rc1", "v1.0.0-alpha.1", "v2.0.0-beta.2"}
+
+	for _, tag := range prereleases {
+		t.Run(tag, func(t *testing.T) {
+			if !IsProductReleaseTag(tag) {
+				t.Fatalf("IsProductReleaseTag(%q) = false; prerelease must pass release policy", tag)
+			}
+		})
+	}
+}
+
+// TestProductReleaseTag_ParityWithReleaseSurfaces binds the shell format/length
+// guards to Go and requires the Action to verify the exact downloaded tag.
+func TestProductReleaseTag_ParityWithReleaseSurfaces(t *testing.T) {
+	// Locate repo root from the test file's package path.
+	// internal/cliutil -> ../../ is the repo root.
+	root := filepath.Join("..", "..")
+	findLines := func(content, prefix string) []string {
+		var matches []string
+		for _, line := range strings.Split(content, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, prefix) {
+				matches = append(matches, trimmed)
+			}
+		}
+		return matches
+	}
+
+	t.Run("check-release-ready.sh", func(t *testing.T) {
+		path := filepath.Join(root, "scripts", "check-release-ready.sh")
+		data, err := os.ReadFile(path) // #nosec G304 -- path is a compile-time constant relative to the repo root
+		if err != nil {
+			t.Fatalf("reading check-release-ready.sh: %v", err)
+		}
+		content := string(data)
+		const patternMarker = "release_tag_re='"
+		start := strings.Index(content, patternMarker)
+		if start < 0 {
+			t.Fatal("check-release-ready.sh does not assign release_tag_re")
+		}
+		rest := content[start+len(patternMarker):]
+		end := strings.IndexByte(rest, '\'')
+		if end < 0 {
+			t.Fatal("check-release-ready.sh has an unterminated release_tag_re")
+		}
+		if got := rest[:end]; got != ProductReleaseTagPattern {
+			t.Fatalf("check-release-ready.sh release_tag_re diverges from canonical.\n  got:  %s\n  want: %s", got, ProductReleaseTagPattern)
+		}
+
+		wantMax := "max_product_release_version_length=" + strconv.Itoa(MaxProductReleaseVersionLength)
+		if got := findLines(content, "max_product_release_version_length="); len(got) != 1 || got[0] != wantMax {
+			t.Fatalf("check-release-ready.sh OCI length assignment diverges: got %q, want [%q]", got, wantMax)
+		}
+		const lengthGuard = `if [ "${#VER}" -gt "$max_product_release_version_length" ]; then`
+		if got := findLines(content, `if [ "${#VER}" -gt `); len(got) != 1 || got[0] != lengthGuard {
+			t.Fatalf("check-release-ready.sh OCI length guard diverges: got %q, want [%q]", got, lengthGuard)
+		}
+	})
+
+	t.Run("action.yml exact cosign identity", func(t *testing.T) {
+		path := filepath.Join(root, "action.yml")
+		data, err := os.ReadFile(path) // #nosec G304 -- path is a compile-time constant relative to the repo root
+		if err != nil {
+			t.Fatalf("reading action.yml: %v", err)
+		}
+		content := string(data)
+		const want = `--certificate-identity "https://github.com/luckyPipewrench/pipelock/.github/workflows/release.yaml@refs/tags/v${VERSION}" \`
+		if got := findLines(content, `--certificate-identity `); len(got) != 1 || got[0] != want {
+			t.Fatalf("action.yml exact cosign identity diverges: got %q, want [%q]", got, want)
+		}
+		if strings.Contains(content, "--certificate-identity-regexp") {
+			t.Fatal("action.yml still uses a broad cosign certificate identity regexp")
+		}
+	})
 }
 
 func TestSourceVersionFromBuildSettingsArtifactSafety(t *testing.T) {

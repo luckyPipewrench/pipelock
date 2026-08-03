@@ -21,6 +21,7 @@ rules to force every agent process through the Pipelock proxy.
 
 Subcommands:
   install     Create users, systemd unit, nft rules, wrappers, sudoers.
+  upgrade     Download, verify, replace, re-pin, restart, verify (one command).
   run         Verify containment, then launch a registered agent tool.
   verify      Run read-only probes; report pass/fail/skip.
   doctor      Live self-test of the runtime contract; report remediation.
@@ -32,8 +33,8 @@ Subcommands:
               Revoke pipelock-agent ACL access from a project directory.
   ca-refresh  Rebuild the combined CA bundle after a CA rotation.
 
-All mutating subcommands accept --dry-run to print the planned actions
-without touching state.`,
+All mutating subcommands except 'upgrade' accept --dry-run to print the
+planned actions without touching state.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -49,6 +50,7 @@ without touching state.`,
 		grantWorkspaceCmd(),
 		revokeWorkspaceCmd(),
 		caRefreshCmd(),
+		upgradeCmd(),
 	)
 
 	return cmd

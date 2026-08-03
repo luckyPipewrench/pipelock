@@ -371,6 +371,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateLearnLock(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateGuard(); err != nil {
+		return warnings, err
+	}
 	return warnings, nil
 }
 
@@ -4234,5 +4237,207 @@ func validateEscalationMonotonic(levels *EscalationLevels) error {
 		(levels.Critical.BlockAll == nil || !*levels.Critical.BlockAll) {
 		return fmt.Errorf("adaptive_enforcement.levels: critical.block_all is weaker than high.block_all (monotonic violation)")
 	}
+	return nil
+}
+
+// guardAllowedProtocols is the closed set of protocols guard services accept.
+// UDP is documented as reserved in the schema; it will be added here when an
+// evaluator path grants it.
+var guardAllowedProtocols = map[string]bool{
+	"tcp": true,
+}
+
+// guardDangerousRWRoots are path prefixes that must never be writable.
+// Each entry has a human-readable reason for the rejection message.
+var guardDangerousRWRoots = []struct {
+	prefix string
+	reason string
+}{
+	{"/run/user/", "socket path"},
+	{"/var/run", "socket path"},
+	{"/run/", "socket path"},
+	{"/usr/bin", "PATH directory"},
+	{"/usr/local/bin", "PATH directory"},
+	{"/usr/sbin", "PATH directory"},
+	{"/usr/local/sbin", "PATH directory"},
+	{"/bin", "PATH directory"},
+	{"/sbin", "PATH directory"},
+	{"/etc/pipelock", "pipelock config root"},
+	{"/etc/systemd/system", "persistence path"},
+	{"/etc/init.d", "persistence path"},
+	{"/etc/cron.d", "persistence path"},
+	{"/etc/crontab", "persistence path"},
+	{"/etc/sudoers", "privilege path"},
+	{"/etc/sudoers.d", "privilege path"},
+	// Account databases: writing either is a direct route to a new root user,
+	// which defeats every other entry in this list.
+	{"/etc/passwd", "privilege path"},
+	{"/etc/shadow", "privilege path"},
+	{"/etc/group", "privilege path"},
+	{"/etc/gshadow", "privilege path"},
+	// Shared libraries and boot artifacts: a write here executes as whatever
+	// loads them, so they are code-execution paths even though no entry looks
+	// like a binary. /boot additionally survives a reboot.
+	{"/lib", "system library directory"},
+	{"/lib64", "system library directory"},
+	{"/usr/lib", "system library directory"},
+	{"/usr/lib64", "system library directory"},
+	{"/usr/local/lib", "system library directory"},
+	{"/boot", "boot directory"},
+}
+
+func (c *Config) validateGuard() error {
+	g := &c.Guard
+	if len(g.Services) == 0 && len(g.Profiles) == 0 && len(g.Manifests) == 0 {
+		return nil
+	}
+
+	// --- services ---
+	serviceNames := make(map[string]bool, len(g.Services))
+	serviceDests := make(map[string]bool, len(g.Services))
+	for i, svc := range g.Services {
+		label := fmt.Sprintf("guard.services[%d]", i)
+		if svc.Name == "" {
+			return fmt.Errorf("%s: name is required", label)
+		}
+		if serviceNames[svc.Name] {
+			return fmt.Errorf("%s: duplicate service name %q", label, svc.Name)
+		}
+		serviceNames[svc.Name] = true
+
+		if !guardAllowedProtocols[svc.Protocol] {
+			return fmt.Errorf("%s: unsupported protocol %q (allowed: tcp)", label, svc.Protocol)
+		}
+		if svc.Host == "" {
+			return fmt.Errorf("%s: host is required", label)
+		}
+		if strings.Contains(svc.Host, "*") {
+			return fmt.Errorf("%s: wildcard hosts are not allowed (got %q); use an exact hostname", label, svc.Host)
+		}
+		if strings.Contains(svc.Host, "/") {
+			return fmt.Errorf("%s: CIDR notation is not allowed (got %q); use an exact host", label, svc.Host)
+		}
+		if svc.Port == 0 {
+			return fmt.Errorf("%s: port must be non-zero", label)
+		}
+		normalizedHost := strings.ToLower(strings.TrimRight(svc.Host, "."))
+		dest := svc.Protocol + "://" + normalizedHost + ":" + strconv.FormatUint(uint64(svc.Port), 10)
+		if serviceDests[dest] {
+			return fmt.Errorf("%s: duplicate destination %s", label, dest)
+		}
+		serviceDests[dest] = true
+	}
+
+	// --- manifests ---
+	manifestNames := make(map[string]bool, len(g.Manifests))
+	for i, m := range g.Manifests {
+		label := fmt.Sprintf("guard.manifests[%d]", i)
+		if m.Name == "" {
+			return fmt.Errorf("%s: name is required", label)
+		}
+		if manifestNames[m.Name] {
+			return fmt.Errorf("%s: duplicate manifest name %q", label, m.Name)
+		}
+		manifestNames[m.Name] = true
+
+		for j, p := range m.ReadOnly {
+			if !filepath.IsAbs(p) {
+				return fmt.Errorf("%s.read_only[%d]: path must be absolute (got %q)", label, j, p)
+			}
+			if err := validateGuardROPath(label, j, p); err != nil {
+				return err
+			}
+		}
+		for j, p := range m.ReadWrite {
+			if !filepath.IsAbs(p) {
+				return fmt.Errorf("%s.read_write[%d]: path must be absolute (got %q)", label, j, p)
+			}
+			if err := validateGuardRWPath(label, j, p); err != nil {
+				return err
+			}
+		}
+	}
+
+	// --- profiles ---
+	profileNames := make(map[string]bool, len(g.Profiles))
+	for i, p := range g.Profiles {
+		label := fmt.Sprintf("guard.profiles[%d]", i)
+		if p.Name == "" {
+			return fmt.Errorf("%s: name is required", label)
+		}
+		if profileNames[p.Name] {
+			return fmt.Errorf("%s: duplicate profile name %q", label, p.Name)
+		}
+		profileNames[p.Name] = true
+
+		for _, ref := range p.Manifests {
+			if !manifestNames[ref] {
+				return fmt.Errorf("%s: references unknown manifest %q", label, ref)
+			}
+		}
+	}
+
+	// Everything above validated the declaration. This refuses to ACCEPT it.
+	//
+	// No runtime evaluator consumes guard yet, so a config that loads cleanly
+	// would tell an operator their workload is constrained when nothing
+	// constrains it. Silent acceptance of a security-boundary declaration that
+	// has no enforcement is worse than refusing it: the operator acts on the
+	// clean load. Fail closed instead, and say exactly why.
+	//
+	// Validation still runs first so the message names a genuinely broken
+	// declaration ahead of the unsupported gate; an operator writing this
+	// config today gets accurate feedback on it for when enforcement lands.
+	//
+	// REMOVE THIS GATE in the PR that wires the guard runtime evaluator, in
+	// the same change that starts enforcing these grants.
+	return errGuardNotEnforced
+}
+
+// errGuardNotEnforced is returned for any non-empty guard declaration while the
+// runtime evaluator does not exist.
+var errGuardNotEnforced = errors.New(
+	"guard: configuration is not enforced in this version and is therefore refused rather than silently accepted; " +
+		"declaring guard services, profiles, or state manifests would not constrain any workload. " +
+		"Remove the guard section until a release that implements guard enforcement",
+)
+
+// validateGuardRWPath checks that a read-write path does not grant write
+// access to dangerous or trust-bearing locations.
+func validateGuardRWPath(label string, idx int, rawPath string) error {
+	field := fmt.Sprintf("%s.read_write[%d]", label, idx)
+
+	resolved := resolveGuardPath(rawPath)
+
+	// Trust-bearing and dangerous locations are matched on path COMPONENTS,
+	// not on a prefix derived from this process's home directory. Pipelock
+	// commonly runs as a system service, so os.UserHomeDir() returns /root
+	// and a home-derived list would protect /root/.ssh while leaving every
+	// real operator's ~/.ssh unguarded. Writing into any .ssh, .gnupg or
+	// .gpg directory is unsafe regardless of which user owns it.
+	if comp := guardForbiddenComponent(resolved); comp != "" {
+		return fmt.Errorf("%s: read-write on trust-bearing path %q is not allowed (contains %q)", field, rawPath, comp)
+	}
+	if suffix := guardForbiddenSuffix(resolved); suffix != "" {
+		return fmt.Errorf("%s: read-write on %s %q is not allowed", field, suffix, rawPath)
+	}
+	if guardIsHomeRoot(resolved) {
+		return fmt.Errorf("%s: read-write on the entire home directory is not allowed", field)
+	}
+
+	// NOTE: an earlier draft repeated these checks against os.UserHomeDir().
+	// That block was removed: it was fully shadowed by the component, suffix
+	// and home-root helpers above, which cover EVERY user rather than only the
+	// account this process happens to run as. Dead code that reads as live
+	// protection is worse than no code, because the next reader trusts it.
+
+	// Static dangerous roots
+	for _, dr := range guardDangerousRWRoots {
+		clean := filepath.Clean(dr.prefix)
+		if resolved == clean || strings.HasPrefix(resolved, clean+string(filepath.Separator)) {
+			return fmt.Errorf("%s: read-write on %s %q is not allowed", field, dr.reason, rawPath)
+		}
+	}
+
 	return nil
 }

@@ -999,6 +999,78 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertNotIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
         self.assertNotIn("repos/owner/repo/pulls?state=open&head=owner:feature-base&per_page=100", calls)
 
+    def test_sibling_truncation_is_reported_not_silent(self) -> None:
+        """Exceeding the fetch cap must surface, not quietly shrink the scan.
+
+        A capped scan that found nothing is a different claim from a complete
+        scan that found nothing. If truncation were silent, a busy repo would
+        report READY on the strength of a scan that never looked at most of the
+        candidates.
+        """
+        cap = pr_convergence.MAX_SIBLING_FETCHES
+
+        class FakeClient:
+            def open_pulls_by_base_ref(self, repo: str, base_ref: str):
+                return [
+                    {
+                        "number": 1000 + i,
+                        "state": "open",
+                        "title": f"Sibling {i}",
+                        "html_url": f"https://example.invalid/{1000 + i}",
+                        "head": {"ref": f"branch-{i}"},
+                        "base": {"ref": "main"},
+                    }
+                    for i in range(cap + 3)
+                ]
+
+            def api(self, path: str, paginate: bool = False):
+                return [{"filename": "scripts/unrelated.py"}]
+
+        errors: list[dict[str, str]] = []
+        result = pr_convergence.gather_sibling_overlaps(
+            FakeClient(), "owner/repo", 7, "main", "feature-a",
+            ["scripts/shared.py"], errors,
+        )
+
+        self.assertEqual(result.get("siblings_truncated"), 3)
+        self.assertTrue(
+            any(e.get("source") == "sibling_prs" for e in errors),
+            "truncation must record an error so the status is not READY",
+        )
+
+    def test_siblings_not_excluded_by_matching_head_ref(self) -> None:
+        """Only this PR is excluded, and only by number.
+
+        Excluding by head ref too would drop a genuine sibling that shares a
+        branch name, which happens across forks. A sibling silently dropped
+        from the candidate set is indistinguishable from no overlap.
+        """
+
+        class FakeClient:
+            def open_pulls_by_base_ref(self, repo: str, base_ref: str):
+                return [
+                    {
+                        "number": 99,
+                        "state": "open",
+                        "title": "Fork sibling sharing a branch name",
+                        "html_url": "https://example.invalid/99",
+                        "head": {"ref": "feature-a"},
+                        "base": {"ref": "main"},
+                    },
+                ]
+
+            def api(self, path: str, paginate: bool = False):
+                return [{"filename": "scripts/shared.py"}]
+
+        errors: list[dict[str, str]] = []
+        result = pr_convergence.gather_sibling_overlaps(
+            FakeClient(), "owner/repo", 7, "main", "feature-a",
+            ["scripts/shared.py"], errors,
+        )
+
+        numbers = [s["number"] for s in result["overlapping_siblings"]]
+        self.assertIn(99, numbers, "a different PR sharing our head ref is still a sibling")
+
     def test_siblings_selected_by_base_ref_not_head_ref(self) -> None:
         """Siblings are PRs targeting the same base, not PRs headed by it.
 

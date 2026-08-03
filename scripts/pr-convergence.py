@@ -489,9 +489,12 @@ def gather_sibling_overlaps(
     for candidate in sibling_prs:
         candidate = as_dict(candidate)
         cand_number = candidate.get("number")
-        cand_head_ref = dotted_get(candidate, "head", "ref")
         cand_base_ref = dotted_get(candidate, "base", "ref")
-        if cand_number == pr_number or cand_head_ref == head_ref:
+        # Exclude only THIS pull request, by number. Excluding by head ref as
+        # well would drop a genuine sibling that happens to share the branch
+        # name, which is entirely possible across forks, and a sibling silently
+        # dropped from the candidate set reads as no overlap.
+        if cand_number == pr_number:
             continue
         if cand_base_ref != base_ref:
             continue
@@ -507,7 +510,7 @@ def gather_sibling_overlaps(
         errors.append({
             "source": "sibling_prs",
             "message": (
-                f"{len(siblings)} same-base siblings exceeds the {MAX_SIBLING_FETCHES} "
+                f"{len(siblings)} same-base siblings exceed the {MAX_SIBLING_FETCHES} "
                 "fetch cap; overlap detection is incomplete"
             ),
         })

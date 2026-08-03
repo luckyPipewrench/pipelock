@@ -1033,11 +1033,19 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 // that was never recorded. The enforced block remains independent of this
 // error.
 func (p *Proxy) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	e := p.receiptEmitterPtr.Load()
+	if e == nil && requestPolicyReceiptsConfigured(p.cfgPtr.Load()) {
+		return p.recordReceiptEmitterUnavailable(opts)
+	}
 	return emitRequestPolicyReceiptWithEmitter(
 		opts,
-		p.receiptEmitterPtr.Load(),
+		e,
 		p.emitReceiptWithEmitter,
 	)
+}
+
+func requestPolicyReceiptsConfigured(cfg *config.Config) bool {
+	return cfg != nil && cfg.FlightRecorder.Enabled && strings.TrimSpace(cfg.FlightRecorder.SigningKeyPath) != ""
 }
 
 var errReceiptEmitterUnavailable = errors.New("receipt emitter unavailable")

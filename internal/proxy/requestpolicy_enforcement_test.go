@@ -463,6 +463,9 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 		reverseEmit      bool
 		wantReceipt      bool
 		wantEmitErr      bool
+		configured       bool
+		wantUnavailable  bool
+		wantRecord       bool
 	}{
 		{
 			name:        "emitter absent blocks without receipt header",
@@ -478,6 +481,7 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			installEmitter: true,
 			closeBefore:    true,
 			wantEmitErr:    true,
+			wantRecord:     true,
 		},
 		{
 			name:           "reverse recorder success surfaces receipt header",
@@ -491,12 +495,15 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			closeBefore:    true,
 			reverseEmit:    true,
 			wantEmitErr:    true,
+			wantRecord:     true,
 		},
 		{
 			name:             "reload removes forward emitter before request-policy emission",
 			installEmitter:   true,
 			removeBeforeEmit: true,
 			wantEmitErr:      true,
+			configured:       true,
+			wantUnavailable:  true,
 		},
 		{
 			name:             "reload removes reverse emitter before request-policy emission",
@@ -504,16 +511,22 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			removeBeforeEmit: true,
 			reverseEmit:      true,
 			wantEmitErr:      true,
+			configured:       true,
+			wantUnavailable:  true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := reqPolicyConfig(blockRule(http.MethodDelete))
+			if tc.configured {
+				cfg.FlightRecorder.Enabled = true
+				cfg.FlightRecorder.SigningKeyPath = "/configured/test-receipt-key"
+			}
 			p := newTestProxyWithConfig(t, cfg)
 			var emitErr error
 			emitReceipt := p.emitRequestPolicyReceipt
 			if tc.installEmitter {
-				emitter := newRequestPolicyReceiptEmitter(t, cfg, tc.closeBefore)
+				emitter := newRequestPolicyReceiptEmitter(t, cfg, p.metrics, tc.closeBefore)
 				p.receiptEmitterPtr.Store(emitter)
 				if tc.reverseEmit {
 					rp := &ReverseProxyHandler{
@@ -548,6 +561,18 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			if gotReceipt != tc.wantReceipt {
 				t.Fatalf("receipt header present = %t, want %t", gotReceipt, tc.wantReceipt)
 			}
+			unavailableMetric := `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`
+			if tc.wantUnavailable {
+				assertMetricsContain(t, p.metrics, unavailableMetric)
+			} else {
+				assertMetricsNotContain(t, p.metrics, unavailableMetric)
+			}
+			recordMetric := `pipelock_receipt_emit_failures_total{reason="record"} 1`
+			if tc.wantRecord {
+				assertMetricsContain(t, p.metrics, recordMetric)
+			} else {
+				assertMetricsNotContain(t, p.metrics, recordMetric)
+			}
 		})
 	}
 }
@@ -556,7 +581,7 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 // its recorder before returning forces an actual persistence failure rather
 // than a synthetic callback error, which proves the request-policy header gate
 // follows recorder success while preserving the enforced block.
-func newRequestPolicyReceiptEmitter(t *testing.T, cfg *config.Config, closeBefore bool) *receipt.Emitter {
+func newRequestPolicyReceiptEmitter(t *testing.T, cfg *config.Config, m receipt.MetricsSink, closeBefore bool) *receipt.Emitter {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -577,6 +602,7 @@ func newRequestPolicyReceiptEmitter(t *testing.T, cfg *config.Config, closeBefor
 		ConfigHash: cfg.CanonicalPolicyHash(),
 		Principal:  "test-principal",
 		Actor:      "test-actor",
+		Metrics:    m,
 	})
 	if emitter == nil {
 		t.Fatal("receipt.NewEmitter returned nil")

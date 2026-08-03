@@ -35,11 +35,11 @@ func ParseResolved(ips []string) []ResolvedAddr {
 	out := make([]ResolvedAddr, 0, len(ips))
 	for _, raw := range ips {
 		display := raw
-		token := raw
-		if idx := strings.Index(token, "%"); idx != -1 {
-			token = token[:idx]
+		literal := raw
+		if idx := strings.Index(literal, "%"); idx != -1 {
+			literal = literal[:idx]
 		}
-		ip := net.ParseIP(token)
+		ip := net.ParseIP(literal)
 		if ip == nil {
 			continue
 		}

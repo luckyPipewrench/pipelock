@@ -93,8 +93,64 @@ func TestClassify_InactiveFollowerIsNotConverged(t *testing.T) {
 
 	fc := classifyFollower("inactive-1", intent, fleetStatus, batch, now, time.Minute)
 
-	if fc.State == StateFullyConverged {
-		t.Fatal("an inactive follower was reported as fully converged; the state means " +
-			"enrolled, active and healthy, so a deactivated follower hides lost capacity")
+	if fc.State != StateStale {
+		t.Fatalf("an inactive follower was reported as %q, want %q; converged means "+
+			"enrolled, active and healthy, so a deactivated follower hides lost capacity",
+			fc.State, StateStale)
+	}
+}
+
+// TestClassify_UnrecognizedHealthFailsClosed covers the denylist-to-allowlist
+// change in health handling.
+//
+// The classifier rejected four specific known-bad health values, so any other
+// value, including a FleetHealth constant added in a later release, fell
+// straight through to the converged path. A health value this code has never
+// heard of must fail closed rather than be read as fine.
+func TestClassify_UnrecognizedHealthFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	fleetStatus := &controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		// A value this code does not know about, standing in for a constant
+		// added by a future release.
+		Health:        controlplane.FleetHealth("some_future_health"),
+		RuntimeStatus: &controlplane.FollowerRuntimeStatus{ActiveBundleHash: "abc123"},
+	}
+	intent := &DeploymentIntent{DesiredReplicas: 1}
+	batch := &controlplane.AuditBatchSummary{ReceivedAt: now.Add(-time.Minute)}
+
+	fc := classifyFollower("future-1", intent, fleetStatus, batch, now, time.Minute)
+
+	if fc.State != StateUnknown {
+		t.Fatalf("a follower with unrecognized health was reported as %q, want %q; "+
+			"an unknown health value must fail closed, not reach converged", fc.State, StateUnknown)
+	}
+}
+
+// TestClassify_ScaledZeroButStillActiveIsNotAbsent covers the ordering of the
+// scaled-zero shortcut.
+//
+// Scaled-zero claims a follower is intentionally absent. Deciding it before any
+// runtime check meant a follower that was still enrolled and active got
+// reported as intentionally gone, which hides a live enforcement point that
+// nobody expects to exist.
+func TestClassify_ScaledZeroButStillActiveIsNotAbsent(t *testing.T) {
+	now := time.Now().UTC()
+	fleetStatus := &controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		Health:          controlplane.FleetHealthOK,
+		RuntimeStatus:   &controlplane.FollowerRuntimeStatus{ActiveBundleHash: "abc123"},
+	}
+	intent := &DeploymentIntent{DesiredReplicas: 0}
+
+	fc := classifyFollower("ghost-1", intent, fleetStatus, nil, now, time.Minute)
+
+	if fc.State == StateScaledZero {
+		t.Fatal("a follower that is still enrolled and active was reported as scaled " +
+			"to zero; a live enforcement point nobody expects must not read as " +
+			"intentionally absent")
+	}
+	if fc.State != StateUnknown {
+		t.Fatalf("scaled-zero-but-active reported as %q, want %q", fc.State, StateUnknown)
 	}
 }

@@ -24,7 +24,9 @@ import (
 func TestClassify_UndeclaredFollowerIsNotConverged(t *testing.T) {
 	now := time.Now()
 	fleetStatus := &controlplane.FollowerFleetStatus{
-		Health: controlplane.FleetHealthOK,
+		// Active, so the inactive guard is not what this test trips on.
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		Health:          controlplane.FleetHealthOK,
 		RuntimeStatus: &controlplane.FollowerRuntimeStatus{
 			ActiveBundleHash: "abc123",
 		},
@@ -33,10 +35,10 @@ func TestClassify_UndeclaredFollowerIsNotConverged(t *testing.T) {
 
 	fc := classifyFollower("rogue-1", nil, fleetStatus, batch, now, time.Minute)
 
-	if fc.State == StateFullyConverged {
-		t.Fatalf("an undeclared follower was reported as %q; a follower no deployment "+
-			"intent declares must never be counted as converged, or an unmanaged "+
-			"enforcement point reads as green", fc.State)
+	if fc.State != StateUndeclared {
+		t.Fatalf("an undeclared follower was reported as %q, want %q; a follower no "+
+			"deployment intent declares must never be counted as converged, or an "+
+			"unmanaged enforcement point reads as green", fc.State, StateUndeclared)
 	}
 }
 
@@ -51,7 +53,9 @@ func TestClassify_UndeclaredFollowerIsNotConverged(t *testing.T) {
 func TestClassify_SignedStateMustNotMaskDisagreeingRuntime(t *testing.T) {
 	now := time.Now()
 	fleetStatus := &controlplane.FollowerFleetStatus{
-		Health: controlplane.FleetHealthOK,
+		// Active, so the inactive guard is not what this test trips on.
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		Health:          controlplane.FleetHealthOK,
 		RuntimeStatus: &controlplane.FollowerRuntimeStatus{
 			// What the proxy says it is actually running right now.
 			ActiveBundleHash: "OLD-DOWNGRADED-BUNDLE",
@@ -69,9 +73,9 @@ func TestClassify_SignedStateMustNotMaskDisagreeingRuntime(t *testing.T) {
 
 	fc := classifyFollower("follower-1", intent, fleetStatus, batch, now, time.Minute)
 
-	if fc.State == StateFullyConverged {
+	if fc.State != StateUnknown {
 		t.Fatalf("a follower whose signed state and live runtime disagree was reported "+
-			"as %q; the stale signed record masked a runtime on %q", fc.State,
-			fleetStatus.RuntimeStatus.ActiveBundleHash)
+			"as %q, want %q; the stale signed record masked a runtime on %q", fc.State,
+			StateUnknown, fleetStatus.RuntimeStatus.ActiveBundleHash)
 	}
 }

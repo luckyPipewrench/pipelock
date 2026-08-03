@@ -12,6 +12,8 @@ package convergence
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
@@ -55,6 +57,16 @@ const (
 	// StateExcluded means the follower is explicitly marked as not an
 	// expected receipt producer (local-only proxy, test instance, etc.).
 	StateExcluded FollowerState = "excluded"
+
+	// evidenceStaleWindowMultiple is how many staleness windows a follower may
+	// go without delivering a batch before its evidence is treated as stale.
+	//
+	// It is deliberately looser than the runtime staleness window: runtime
+	// status is pushed continuously, while audit batches arrive in batches, so
+	// judging evidence on the runtime window would flag every follower in the
+	// ordinary gap between deliveries. Loose enough not to cry wolf, tight
+	// enough that a real delivery outage still surfaces.
+	evidenceStaleWindowMultiple = 6
 
 	// StateUndeclared means conductor knows about this follower but no
 	// deployment intent declares it. It is distinct from StateUnknown: the
@@ -273,6 +285,16 @@ func classifyFollower(
 
 	// Scaled to zero: intentionally absent.
 	if intent != nil && intent.DesiredReplicas == 0 {
+		// Scaled-zero means intentionally absent, so it can only be claimed
+		// when the follower is in fact absent. A follower that is still
+		// enrolled and active while intent says zero replicas is the opposite
+		// situation: a live enforcement point that nobody expects to exist.
+		// Reporting that as intentionally-absent hides it.
+		if fleetStatus != nil && fleetStatus.Active {
+			fc.State = StateUnknown
+			fc.Reason = "deployment intent declares zero desired replicas but the follower is still enrolled and active"
+			return fc
+		}
 		fc.State = StateScaledZero
 		fc.Reason = "deployment intent declares zero desired replicas"
 		return fc
@@ -332,6 +354,17 @@ func classifyFollower(
 		fc.Reason = "runtime version below minimum required by bundle"
 		return fc
 	}
+	// Everything above rejects specific known-bad health values, which is a
+	// denylist: a FleetHealth constant added later would fall straight through
+	// to the converged path. Only an explicitly OK health may continue, so a
+	// health value this code has never heard of fails closed. runtimeSummary
+	// already counts only FleetHealthOK as healthy; this keeps the two in
+	// agreement instead of letting them drift apart.
+	if fleetStatus.Health != controlplane.FleetHealthOK {
+		fc.State = StateUnknown
+		fc.Reason = fmt.Sprintf("unrecognized conductor health %q", string(fleetStatus.Health))
+		return fc
+	}
 
 	// Check digest match if we have deployment intent with a desired digest.
 	if intent != nil && intent.DesiredDigest != "" {
@@ -367,8 +400,7 @@ func classifyFollower(
 	if staleAfter <= 0 {
 		staleAfter = 5 * time.Minute
 	}
-	if now.Sub(latestBatch.ReceivedAt) > staleAfter*6 {
-		// Evidence older than 6x the staleness window is suspicious.
+	if now.Sub(latestBatch.ReceivedAt) > staleAfter*evidenceStaleWindowMultiple {
 		fc.State = StateStale
 		fc.Reason = fmt.Sprintf("latest audit batch received %s ago", now.Sub(latestBatch.ReceivedAt).Truncate(time.Second))
 		return fc
@@ -450,13 +482,13 @@ func latestBatchMap(batches []controlplane.AuditBatchSummary) map[string]*contro
 	return m
 }
 
+// sortFollowers orders the report by instance ID so output is deterministic.
+// The map iteration that builds it is not, and a report that reorders between
+// runs is unusable for diffing one fleet snapshot against another.
 func sortFollowers(followers []FollowerConvergence) {
-	// Stable sort by instance ID for deterministic output.
-	for i := 1; i < len(followers); i++ {
-		for j := i; j > 0 && followers[j].InstanceID < followers[j-1].InstanceID; j-- {
-			followers[j], followers[j-1] = followers[j-1], followers[j]
-		}
-	}
+	slices.SortFunc(followers, func(a, b FollowerConvergence) int {
+		return strings.Compare(a.InstanceID, b.InstanceID)
+	})
 }
 
 func deploymentSummary(followers []FollowerConvergence) DenominatorSummary {

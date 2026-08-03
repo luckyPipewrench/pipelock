@@ -192,3 +192,126 @@ func TestFindAssetBindsPlatformAndDigest(t *testing.T) {
 		t.Fatalf("FindAsset invalid digest error = %v, want ErrReleaseAsset", err)
 	}
 }
+
+func TestCheckKeyringPreflight(t *testing.T) {
+	validKeyA := hex.EncodeToString(testPubA)
+	validKeyB := hex.EncodeToString(testPubB)
+	twoKeyring := validKeyA + "," + validKeyB
+
+	tests := []struct {
+		name        string
+		candidate   string
+		expect      string
+		customBuild bool
+		wantErr     error
+		wantCount   int
+		wantCustom  bool
+	}{
+		{
+			name:      "empty keyring fails closed",
+			candidate: "",
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "whitespace-only keyring fails closed",
+			candidate: "   ",
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:        "empty keyring custom build succeeds",
+			candidate:   "",
+			customBuild: true,
+			wantCount:   0,
+			wantCustom:  true,
+		},
+		{
+			name:      "valid single key passes",
+			candidate: validKeyA,
+			wantCount: 1,
+		},
+		{
+			name:      "valid two-key keyring passes",
+			candidate: twoKeyring,
+			wantCount: 2,
+		},
+		{
+			name:      "malformed keyring fails closed",
+			candidate: "not-hex-at-all",
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "truncated key fails closed",
+			candidate: validKeyA[:32],
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:        "malformed keyring fails even with custom build",
+			candidate:   "zzzz",
+			customBuild: true,
+			wantErr:     ErrKeyringParity,
+		},
+		{
+			name:      "parity match succeeds",
+			candidate: validKeyA,
+			expect:    validKeyA,
+			wantCount: 1,
+		},
+		{
+			name:      "parity mismatch fails closed",
+			candidate: validKeyA,
+			expect:    validKeyB,
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "parity length mismatch fails closed",
+			candidate: twoKeyring,
+			expect:    validKeyA,
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "malformed expected keyring fails closed",
+			candidate: validKeyA,
+			expect:    "bad",
+			wantErr:   ErrKeyringParity,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := CheckKeyringPreflight(tt.candidate, tt.expect, tt.customBuild)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("got err=%v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.KeyCount != tt.wantCount {
+				t.Errorf("KeyCount=%d, want %d", result.KeyCount, tt.wantCount)
+			}
+			if result.CustomBuild != tt.wantCustom {
+				t.Errorf("CustomBuild=%v, want %v", result.CustomBuild, tt.wantCustom)
+			}
+		})
+	}
+}
+
+func TestEmbeddedKeyringPreflight(t *testing.T) {
+	// The test binary has no ldflags, so PublicKeyringHex is "".
+	// Without customBuild, it must fail closed.
+	_, err := EmbeddedKeyringPreflight("", false)
+	if !errors.Is(err, ErrKeyringParity) {
+		t.Fatalf("empty embedded keyring without customBuild: got err=%v, want ErrKeyringParity", err)
+	}
+
+	// With customBuild, empty embedded keyring is accepted.
+	result, err := EmbeddedKeyringPreflight("", true)
+	if err != nil {
+		t.Fatalf("empty embedded keyring with customBuild: unexpected error: %v", err)
+	}
+	if result.KeyCount != 0 || !result.CustomBuild {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}

@@ -89,6 +89,32 @@ else
   echo "  [ok]   Chart appVersion: $app"
 fi
 
+# 3. The release keyring must be present BEFORE anything is built.
+#
+# GoReleaser embeds the public release keyring via
+# -X ...release.PublicKeyringHex={{.Env.RELEASE_KEYRING_HEX}}. A binary built
+# with that env var unset carries an EMPTY keyring, so it cannot verify any
+# signed update. It then fails closed at exactly the moment someone is using it
+# to prove that self-update works, which is far too late and has already cost a
+# post-tag discovery once.
+#
+# Presence is checked here because this gate runs before the build. The
+# authoritative parse of the keyring's CONTENTS lives in Go
+# (release.CheckKeyringPreflight), which inspects a built binary; this check
+# deliberately does not re-implement that parsing, so the two cannot drift.
+#
+# Set PIPELOCK_ALLOW_EMPTY_KEYRING=1 ONLY for a deliberately unofficial build
+# that will be verified out of band. It is not a convenience switch: an official
+# release with an empty keyring is a release nobody can safely update from.
+if [ -n "${RELEASE_KEYRING_HEX:-}" ]; then
+  echo "  [ok]   release keyring: present"
+elif [ "${PIPELOCK_ALLOW_EMPTY_KEYRING:-}" = "1" ]; then
+  echo "  [warn] release keyring: EMPTY, explicitly allowed for an unofficial build." >&2
+  echo "         This binary cannot verify a signed update. Verify it out of band." >&2
+else
+  note "RELEASE_KEYRING_HEX is unset, so the built binary would embed an empty release keyring and could never verify a signed update. Set it, or set PIPELOCK_ALLOW_EMPTY_KEYRING=1 for a deliberately unofficial build."
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "release-ready gate: FAILED — fix the above before tagging $VERSION." >&2
   exit 1

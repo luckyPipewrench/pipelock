@@ -192,3 +192,171 @@ func TestFindAssetBindsPlatformAndDigest(t *testing.T) {
 		t.Fatalf("FindAsset invalid digest error = %v, want ErrReleaseAsset", err)
 	}
 }
+
+func TestCheckKeyringPreflight(t *testing.T) {
+	validKeyA := hex.EncodeToString(testPubA)
+	validKeyB := hex.EncodeToString(testPubB)
+	twoKeyring := validKeyA + "," + validKeyB
+
+	tests := []struct {
+		name        string
+		candidate   string
+		expect      string
+		customBuild bool
+		wantErr     error
+		wantCount   int
+		wantCustom  bool
+	}{
+		{
+			name:      "empty keyring fails closed",
+			candidate: "",
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "whitespace-only keyring fails closed",
+			candidate: "   ",
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:        "empty keyring custom build succeeds",
+			candidate:   "",
+			customBuild: true,
+			wantCount:   0,
+			wantCustom:  true,
+		},
+		{
+			name:      "valid single key passes",
+			candidate: validKeyA,
+			wantCount: 1,
+		},
+		{
+			name:      "valid two-key keyring passes",
+			candidate: twoKeyring,
+			wantCount: 2,
+		},
+		{
+			name:      "malformed keyring fails closed",
+			candidate: "not-hex-at-all",
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "truncated key fails closed",
+			candidate: validKeyA[:32],
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:        "malformed keyring fails even with custom build",
+			candidate:   "zzzz",
+			customBuild: true,
+			wantErr:     ErrKeyringParity,
+		},
+		{
+			name:      "parity match succeeds",
+			candidate: validKeyA,
+			expect:    validKeyA,
+			wantCount: 1,
+		},
+		{
+			name:      "parity mismatch fails closed",
+			candidate: validKeyA,
+			expect:    validKeyB,
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "parity length mismatch fails closed",
+			candidate: twoKeyring,
+			expect:    validKeyA,
+			wantErr:   ErrKeyringParity,
+		},
+		{
+			name:      "malformed expected keyring fails closed",
+			candidate: validKeyA,
+			expect:    "bad",
+			wantErr:   ErrKeyringParity,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := CheckKeyringPreflight(tt.candidate, tt.expect, tt.customBuild)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("got err=%v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.KeyCount != tt.wantCount {
+				t.Errorf("KeyCount=%d, want %d", result.KeyCount, tt.wantCount)
+			}
+			if result.CustomBuild != tt.wantCustom {
+				t.Errorf("CustomBuild=%v, want %v", result.CustomBuild, tt.wantCustom)
+			}
+		})
+	}
+}
+
+func TestEmbeddedKeyringPreflight(t *testing.T) {
+	// The test binary has no ldflags, so PublicKeyringHex is "".
+	// Without customBuild, it must fail closed.
+	_, err := EmbeddedKeyringPreflight("", false)
+	if !errors.Is(err, ErrKeyringParity) {
+		t.Fatalf("empty embedded keyring without customBuild: got err=%v, want ErrKeyringParity", err)
+	}
+
+	// With customBuild, empty embedded keyring is accepted.
+	result, err := EmbeddedKeyringPreflight("", true)
+	if err != nil {
+		t.Fatalf("empty embedded keyring with customBuild: unexpected error: %v", err)
+	}
+	if result.KeyCount != 0 || !result.CustomBuild {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+// TestCheckKeyringPreflight_CustomBuildDoesNotWaiveParity covers the
+// interaction between the custom-build acknowledgement and an explicitly
+// requested parity check.
+//
+// The acknowledgement waives the REQUIREMENT for a keyring, never a parity
+// check the caller asked for. An empty candidate cannot match a non-empty
+// expected keyring, so passing here would answer "yes, parity holds" to a
+// question whose answer is plainly no.
+func TestCheckKeyringPreflight_CustomBuildDoesNotWaiveParity(t *testing.T) {
+	validKeyring := strings.Repeat("ab", 32)
+
+	if _, err := CheckKeyringPreflight("", validKeyring, true); err == nil {
+		t.Fatal("an empty candidate passed a parity check against a real expected " +
+			"keyring because custom-build short-circuited first; custom-build admits " +
+			"there is no keyring, it does not claim the right one is present")
+	}
+
+	// With no parity requested, the acknowledgement still works as intended.
+	if _, err := CheckKeyringPreflight("", "", true); err != nil {
+		t.Fatalf("custom build with no expected keyring should pass: %v", err)
+	}
+
+	// And the acknowledgement never excuses a broken keyring.
+	if _, err := CheckKeyringPreflight("zzzz", "", true); err == nil {
+		t.Fatal("custom build must not excuse a malformed keyring")
+	}
+}
+
+// TestCheckKeyringPreflight_ReorderedKeysAreNotParity pins the order
+// sensitivity the doc comment claims. Two keyrings holding the same keys in a
+// different order are not the same keyring contract, and treating them as equal
+// would let an RC ship a keyring whose first key differs from the final binary's.
+func TestCheckKeyringPreflight_ReorderedKeysAreNotParity(t *testing.T) {
+	keyA := strings.Repeat("aa", 32)
+	keyB := strings.Repeat("bb", 32)
+
+	if _, err := CheckKeyringPreflight(keyA+","+keyB, keyB+","+keyA, false); err == nil {
+		t.Fatal("reordered keys were accepted as parity; the doc comment states the " +
+			"comparison is order-sensitive, so this must fail")
+	}
+	if _, err := CheckKeyringPreflight(keyA+","+keyB, keyA+","+keyB, false); err != nil {
+		t.Fatalf("identical keyrings must pass parity: %v", err)
+	}
+}

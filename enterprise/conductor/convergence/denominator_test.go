@@ -1,0 +1,100 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build enterprise
+
+package convergence
+
+import (
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+)
+
+// TestEvidenceSummary_StaleBatchIsNotHealthyEvidence covers the internal
+// consistency of the denominators.
+//
+// Evidence coverage counted any follower with a non-nil batch as healthy, even
+// one already classified stale. During an audit-delivery outage that reports a
+// green evidence denominator while the convergence denominator says stale, so
+// the two numbers contradict each other and the outage looks fine.
+func TestEvidenceSummary_StaleBatchIsNotHealthyEvidence(t *testing.T) {
+	followers := []FollowerConvergence{
+		{
+			InstanceID: "stale-1",
+			State:      StateStale,
+			LatestBatch: &AuditEvidence{
+				BatchID: "b1",
+			},
+		},
+	}
+
+	s := evidenceSummary(followers)
+
+	if s.Healthy != 0 {
+		t.Fatalf("evidence coverage counted a stale follower as healthy (healthy=%d); "+
+			"a stale follower's old batch is not healthy evidence delivery", s.Healthy)
+	}
+}
+
+// TestBuild_DuplicateInstanceIDFailsClosed covers ambiguous identity.
+//
+// Intent and fleet-status maps took the last slice entry for a repeated
+// instance ID, so a duplicate marked Excluded or DesiredReplicas:0 could
+// suppress a real unhealthy instance purely by input ordering. Ambiguous
+// identity across independent control-plane sources is a data-integrity
+// condition and must be visible, not resolved by whichever record sorted last.
+func TestBuild_DuplicateInstanceIDFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	report := Build(Inputs{
+		Now: now,
+		Intents: []DeploymentIntent{
+			{InstanceID: "dup-1", DesiredReplicas: 1},
+			// A second record for the same ID that would silently win and
+			// suppress the instance entirely.
+			{InstanceID: "dup-1", Excluded: true, ExcludedReason: "suppressed"},
+		},
+	})
+
+	var found *FollowerConvergence
+	for i := range report.Followers {
+		if report.Followers[i].InstanceID == "dup-1" {
+			found = &report.Followers[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("duplicate instance ID vanished from the report entirely")
+	}
+	if found.State == StateExcluded {
+		t.Fatal("a duplicate intent record marked excluded suppressed the instance; " +
+			"conflicting identity records must fail closed, not be resolved by ordering")
+	}
+	if found.State != StateUnknown {
+		t.Fatalf("duplicate instance ID reported as %q, want unknown with a conflict reason", found.State)
+	}
+}
+
+// TestClassify_InactiveFollowerIsNotConverged covers the state definition.
+//
+// StateFullyConverged is documented as "enrolled, active, healthy". A
+// deactivated follower carrying historical OK health and a recent batch was
+// still reported converged, which hides lost enforcement capacity after a
+// follower is deactivated or stops serving traffic.
+func TestClassify_InactiveFollowerIsNotConverged(t *testing.T) {
+	now := time.Now().UTC()
+	fleetStatus := &controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{Active: false},
+		Health:          controlplane.FleetHealthOK,
+		RuntimeStatus:   &controlplane.FollowerRuntimeStatus{ActiveBundleHash: "abc123"},
+	}
+	intent := &DeploymentIntent{DesiredReplicas: 1}
+	batch := &controlplane.AuditBatchSummary{ReceivedAt: now.Add(-time.Minute)}
+
+	fc := classifyFollower("inactive-1", intent, fleetStatus, batch, now, time.Minute)
+
+	if fc.State == StateFullyConverged {
+		t.Fatal("an inactive follower was reported as fully converged; the state means " +
+			"enrolled, active and healthy, so a deactivated follower hides lost capacity")
+	}
+}

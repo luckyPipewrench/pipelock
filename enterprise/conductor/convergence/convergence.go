@@ -156,9 +156,22 @@ func Build(in Inputs) Report {
 	}
 
 	// Index fleet status and audit batches by instance ID.
+	//
+	// Duplicate identity across these independent control-plane sources is a
+	// data-integrity condition, not something to resolve by taking whichever
+	// record happened to sort last. A duplicate intent marked Excluded or
+	// DesiredReplicas:0 would otherwise suppress a real unhealthy instance
+	// purely through input ordering, so conflicts are recorded and the
+	// affected instance is reported unknown.
+	conflictingIDs := make(map[string]string)
 	statusByID := make(map[string]*controlplane.FollowerFleetStatus, len(in.FleetStatus))
 	for i := range in.FleetStatus {
-		statusByID[in.FleetStatus[i].InstanceID] = &in.FleetStatus[i]
+		id := in.FleetStatus[i].InstanceID
+		if _, dup := statusByID[id]; dup {
+			conflictingIDs[id] = "multiple conductor fleet-status records for one instance ID"
+			continue
+		}
+		statusByID[id] = &in.FleetStatus[i]
 	}
 	latestBatchByID := latestBatchMap(in.AuditBatches)
 
@@ -176,7 +189,12 @@ func Build(in Inputs) Report {
 
 	intentByID := make(map[string]*DeploymentIntent, len(in.Intents))
 	for i := range in.Intents {
-		intentByID[in.Intents[i].InstanceID] = &in.Intents[i]
+		id := in.Intents[i].InstanceID
+		if _, dup := intentByID[id]; dup {
+			conflictingIDs[id] = "multiple deployment-intent records for one instance ID"
+			continue
+		}
+		intentByID[id] = &in.Intents[i]
 	}
 
 	report := Report{
@@ -186,6 +204,18 @@ func Build(in Inputs) Report {
 	}
 
 	for id := range seen {
+		// An instance whose identity is ambiguous is not classified at all.
+		// Running it through the normal path would let one of the conflicting
+		// records decide its verdict, which is the ordering dependence this
+		// guards against.
+		if reason, conflicted := conflictingIDs[id]; conflicted {
+			report.Followers = append(report.Followers, FollowerConvergence{
+				InstanceID: id,
+				State:      StateUnknown,
+				Reason:     reason,
+			})
+			continue
+		}
 		fc := classifyFollower(id, intentByID[id], statusByID[id], latestBatchByID[id], now, in.StaleAfter)
 		report.Followers = append(report.Followers, fc)
 	}
@@ -257,6 +287,16 @@ func classifyFollower(
 			fc.State = StateUnknown
 			fc.Reason = "no deployment intent and no conductor enrollment"
 		}
+		return fc
+	}
+
+	// Enrolled but deactivated. StateFullyConverged means enrolled, active and
+	// healthy, so a follower that is no longer active cannot satisfy it even
+	// with historical OK health and a recent batch. Reporting it converged
+	// hides enforcement capacity that has already gone away.
+	if !fleetStatus.Active {
+		fc.State = StateStale
+		fc.Reason = "enrolled with conductor but not active"
 		return fc
 	}
 
@@ -473,6 +513,19 @@ func conductorSummary(followers []FollowerConvergence) DenominatorSummary {
 	return s
 }
 
+// evidenceStateIsCredible reports whether a follower's own state permits its
+// latest batch to count as healthy evidence delivery. Only a follower that is
+// actually converged or merely awaiting its first batch qualifies; anything
+// stale, undeclared, or unprovable does not.
+func evidenceStateIsCredible(state FollowerState) bool {
+	switch state {
+	case StateFullyConverged, StateCurrentWithoutBatch:
+		return true
+	default:
+		return false
+	}
+}
+
 func evidenceSummary(followers []FollowerConvergence) DenominatorSummary {
 	var s DenominatorSummary
 	for _, f := range followers {
@@ -480,9 +533,16 @@ func evidenceSummary(followers []FollowerConvergence) DenominatorSummary {
 			continue
 		}
 		s.Total++
-		if f.LatestBatch != nil {
+		switch {
+		// Evidence is healthy only when the follower itself is in a state
+		// that makes its latest batch meaningful. A stale or unprovable
+		// follower's old batch is not healthy delivery, and counting it green
+		// makes this denominator contradict the convergence denominator during
+		// exactly the audit-delivery outage it should surface.
+		case f.LatestBatch != nil && evidenceStateIsCredible(f.State):
 			s.Healthy++
-		} else if f.State == StateUnknown || f.State == StateUnenrolled {
+		case f.State == StateUnknown || f.State == StateUnenrolled ||
+			f.State == StateUndeclared || f.State == StateStale:
 			s.Unknown++
 		}
 	}

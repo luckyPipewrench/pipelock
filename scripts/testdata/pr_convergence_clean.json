@@ -27,6 +27,12 @@
   },
   "errors": [],
   "issue_comments": [],
+  "pr_files": ["scripts/example.py"],
+  "sibling_overlaps": {
+    "own_files": ["scripts/example.py"],
+    "siblings_checked": 0,
+    "overlapping_siblings": []
+  },
   "pr_number": 7,
   "pull": {
     "base": {

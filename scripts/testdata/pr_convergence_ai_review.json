@@ -26,6 +26,12 @@
     "status": "ahead"
   },
   "errors": [],
+  "pr_files": ["scripts/example.py"],
+  "sibling_overlaps": {
+    "own_files": ["scripts/example.py"],
+    "siblings_checked": 0,
+    "overlapping_siblings": []
+  },
   "issue_comments": [
     {
       "body": "## AI Review\n\n1. medium: scripts/example.py - fix this finding.",

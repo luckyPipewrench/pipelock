@@ -999,6 +999,89 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertNotIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
         self.assertNotIn("repos/owner/repo/pulls?state=open&head=owner:feature-base&per_page=100", calls)
 
+    def test_sibling_path_overlap_blocks(self) -> None:
+        data = load_fixture()
+        data["sibling_overlaps"] = {
+            "own_files": ["scripts/example.py"],
+            "siblings_checked": 1,
+            "overlapping_siblings": [
+                {
+                    "number": 8,
+                    "title": "Sibling PR",
+                    "head_ref": "sibling-branch",
+                    "url": "https://github.com/owner/repo/pull/8",
+                    "overlapping_paths": ["scripts/example.py"],
+                }
+            ],
+        }
+        result = classify(data)
+        self.assertEqual(result["status"], "SIBLING_PATH_OVERLAP")
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stack"]["sibling_overlap_count"], 1)
+        self.assertEqual(result["stack"]["overlapping_siblings"][0]["number"], 8)
+
+    def test_no_sibling_overlap_is_ready(self) -> None:
+        data = load_fixture()
+        data["sibling_overlaps"] = {
+            "own_files": ["scripts/example.py"],
+            "siblings_checked": 1,
+            "overlapping_siblings": [],
+        }
+        result = classify(data)
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(result["stack"]["sibling_overlap_count"], 0)
+
+    def test_gate_name_appears_in_result(self) -> None:
+        data = load_fixture()
+        for gate in pr_convergence.VALID_GATES:
+            with self.subTest(gate=gate):
+                result = pr_convergence.classify_pr_state(data, gate=gate)
+                self.assertEqual(result["gate"], gate)
+
+    def test_gate_name_appears_in_compact_summary(self) -> None:
+        data = load_fixture()
+        result = pr_convergence.classify_pr_state(data, gate="pre-push")
+        summary = pr_convergence.compact_summary(result)
+        self.assertIn("gate=pre-push", summary)
+
+    def test_empty_gate_omitted_from_compact_summary(self) -> None:
+        data = load_fixture()
+        result = pr_convergence.classify_pr_state(data, gate="")
+        summary = pr_convergence.compact_summary(result)
+        self.assertNotIn("gate=", summary)
+
+    def test_empty_changed_paths_on_successful_read_fails_closed(self) -> None:
+        """A successful read yielding zero changed paths must not report READY.
+
+        An open PR always changes at least one file, so an empty successful
+        read means the changed-path source is broken or truncated. Reading it
+        as "no files" silently disables sibling-overlap detection while still
+        reporting READY, which is a fail-open in a release-safety gate.
+        """
+        data = load_fixture()
+        data["pr_files"] = []
+        data["changed_paths_unknown"] = True
+        result = classify(data)
+        self.assertEqual(result["status"], "CHANGED_PATHS_UNKNOWN")
+        self.assertFalse(result["ready"])
+
+    def test_normal_pr_with_changed_paths_still_ready(self) -> None:
+        """The empty-read guard must not deny a PR that really has files.
+
+        Availability is a failure direction too: an over-strict gate that
+        blocks healthy PRs gets the gate disabled by the operator.
+        """
+        result = classify(load_fixture())
+        self.assertFalse(result.get("changed_paths_unknown"))
+        self.assertEqual(result["status"], "READY")
+
+    def test_sibling_overlap_api_error_fails_closed(self) -> None:
+        data = load_fixture()
+        data["errors"] = [{"source": "sibling_prs", "message": "rate limited"}]
+        result = classify(data)
+        self.assertEqual(result["status"], "DATA_SOURCE_UNAVAILABLE")
+        self.assertFalse(result["ready"])
+
     def test_default_branch_base_skips_base_pull_candidate_read(self) -> None:
         fixture = load_fixture()
         fixture["pull"]["base"]["repo"]["default_branch"] = "main"

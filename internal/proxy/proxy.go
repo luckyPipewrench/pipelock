@@ -1045,7 +1045,9 @@ func (p *Proxy) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
 }
 
 func requestPolicyReceiptsConfigured(cfg *config.Config) bool {
-	return cfg != nil && cfg.FlightRecorder.Enabled && strings.TrimSpace(cfg.FlightRecorder.SigningKeyPath) != ""
+	return cfg != nil && cfg.FlightRecorder.Enabled &&
+		strings.TrimSpace(cfg.FlightRecorder.Dir) != "" &&
+		strings.TrimSpace(cfg.FlightRecorder.SigningKeyPath) != ""
 }
 
 var errReceiptEmitterUnavailable = errors.New("receipt emitter unavailable")

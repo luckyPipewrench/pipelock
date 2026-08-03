@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -464,12 +466,18 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 		wantReceipt      bool
 		wantEmitErr      bool
 		configured       bool
+		keyWithoutDir    bool
 		wantUnavailable  bool
 		wantRecord       bool
 	}{
 		{
 			name:        "emitter absent blocks without receipt header",
 			wantEmitErr: true,
+		},
+		{
+			name:          "key without recorder directory is intentionally inert",
+			keyWithoutDir: true,
+			wantEmitErr:   true,
 		},
 		{
 			name:           "forward recorder success surfaces receipt header",
@@ -498,7 +506,7 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			wantRecord:     true,
 		},
 		{
-			name:             "reload removes forward emitter before request-policy emission",
+			name:             "configured forward emitter disappears before request-policy emission",
 			installEmitter:   true,
 			removeBeforeEmit: true,
 			wantEmitErr:      true,
@@ -506,7 +514,7 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			wantUnavailable:  true,
 		},
 		{
-			name:             "reload removes reverse emitter before request-policy emission",
+			name:             "configured reverse emitter disappears before request-policy emission",
 			installEmitter:   true,
 			removeBeforeEmit: true,
 			reverseEmit:      true,
@@ -518,8 +526,11 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := reqPolicyConfig(blockRule(http.MethodDelete))
+			if tc.keyWithoutDir {
+				cfg.FlightRecorder.SigningKeyPath = "/configured/test-receipt-key"
+			}
 			if tc.configured {
-				cfg.FlightRecorder.Enabled = true
+				cfg.FlightRecorder.Dir = "/configured/test-recorder"
 				cfg.FlightRecorder.SigningKeyPath = "/configured/test-receipt-key"
 			}
 			p := newTestProxyWithConfig(t, cfg)
@@ -575,6 +586,89 @@ func TestApplyRequestPolicy_ReceiptHeaderRequiresRecordedReceipt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRequestPolicy_ReceiptBehaviorAcrossHotReload(t *testing.T) {
+	recDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "receipt.key")
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                recDir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	initialCfg := reqPolicyConfig(blockRule(http.MethodDelete))
+	initialCfg.FlightRecorder.Dir = recDir
+	m := metrics.New()
+	p, err := New(initialCfg, audit.NewNop(), scanner.MustNew(initialCfg), m, WithRecorder(rec))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	apply := func(requestID string) requestPolicyResult {
+		t.Helper()
+		return p.applyRequestPolicy(requestPolicyInput{
+			Host: rpTestHost, Method: http.MethodDelete, Path: "/v1/jobs/1",
+			Transport: TransportForward, Target: "https://" + rpTestHost + "/v1/jobs/1",
+			RequestID: requestID, AuditCtx: audit.NewRequestLogContext(requestID), Emit: p.emitRequestPolicyReceipt,
+		})
+	}
+	assertBlockReceipt := func(stage string, got requestPolicyResult, wantReceipt bool) {
+		t.Helper()
+		if !got.Block {
+			t.Fatalf("%s: request-policy block weakened across reload", stage)
+		}
+		if hasReceipt := got.Info.Receipt != ""; hasReceipt != wantReceipt {
+			t.Fatalf("%s: receipt reference present = %t, want %t", stage, hasReceipt, wantReceipt)
+		}
+	}
+
+	assertBlockReceipt("first load without signer", apply("reload-initial"), false)
+	assertMetricsNotContain(t, m, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+
+	enabledCfg := reqPolicyConfig(blockRule(http.MethodDelete))
+	enabledCfg.FlightRecorder.Dir = recDir
+	enabledCfg.FlightRecorder.SigningKeyPath = keyPath
+	if !p.Reload(enabledCfg, scanner.MustNew(enabledCfg)) {
+		t.Fatal("enabling receipt reload returned false")
+	}
+	assertBlockReceipt("first receipt-enabling reload", apply("reload-enabled"), true)
+
+	unrelatedCfg := reqPolicyConfig(blockRule(http.MethodDelete))
+	unrelatedCfg.FlightRecorder.Dir = recDir
+	unrelatedCfg.FlightRecorder.SigningKeyPath = keyPath
+	unrelatedCfg.Logging.IncludeAllowed = false
+	if !p.Reload(unrelatedCfg, scanner.MustNew(unrelatedCfg)) {
+		t.Fatal("unrelated reload returned false")
+	}
+	assertBlockReceipt("unrelated reload", apply("reload-unrelated"), true)
+
+	badCfg := reqPolicyConfig(blockRule(http.MethodDelete))
+	badCfg.FlightRecorder.Dir = recDir
+	badCfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "missing.key")
+	if p.Reload(badCfg, scanner.MustNew(badCfg)) {
+		t.Fatal("bad signing-key reload unexpectedly succeeded")
+	}
+	assertBlockReceipt("failed reload preserves live signer", apply("reload-failed"), true)
+
+	downgradeCfg := reqPolicyConfig(blockRule(http.MethodDelete))
+	downgradeCfg.FlightRecorder.Dir = recDir
+	if !p.Reload(downgradeCfg, scanner.MustNew(downgradeCfg)) {
+		t.Fatal("receipt-removal reload returned false")
+	}
+	assertBlockReceipt("intentional receipt downgrade", apply("reload-downgrade"), false)
+	assertMetricsNotContain(t, m, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
 }
 
 // newRequestPolicyReceiptEmitter returns a real signed receipt emitter. Closing

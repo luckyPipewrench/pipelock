@@ -683,18 +683,7 @@ func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
 // unique-local) ranges are deliberately NOT in this set — exempting a specific
 // loopback or internal service IP is the allowlist's intended use.
 func IsNonOverridableSSRFTarget(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	return IsCloudMetadataIP(ip) ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
+	return destination.IsNonOverridableSSRFTarget(ip)
 }
 
 // IsInAPIAllowlist checks if a hostname matches any entry in api_allowlist.
@@ -1160,57 +1149,26 @@ func parseInetAtonComponent(component string, bits int) (uint64, bool) {
 // canonical net.IP. It strips a single trailing DNS root dot and any trailing
 // zone ID, decodes alternative IPv4 forms, and normalizes IPv4-mapped IPv6 to
 // four-byte IPv4. It returns nil for an ordinary hostname.
+// The implementation lives in internal/destination, which owns destination
+// vocabulary. Delegating keeps a single parser rather than two copies that
+// must be held in sync: a spelling recognized by one and not the other is a
+// fail-open, because a host classified as a DNS name skips the literal floor.
 func ParseIPLiteral(hostname string) net.IP {
-	hostname = strings.TrimSpace(hostname)
-	if zone := strings.IndexByte(hostname, '%'); zone >= 0 {
-		hostname = hostname[:zone]
-	}
-	hostname = strings.TrimSuffix(hostname, ".")
-	ip := net.ParseIP(hostname)
-	if ip == nil {
-		ip = parseAlternativeIP(hostname)
-	}
-	if ip == nil {
-		return nil
-	}
-	if ipv4 := ip.To4(); ipv4 != nil {
-		return ipv4
-	}
-	return ip
+	return destination.ParseIPLiteral(hostname)
 }
 
-// metadataIPv4s lists the well-known cloud-provider instance-metadata IPv4
-// endpoints that are operationally distinct from generic private-network
-// blocks. AWS / Azure / GCP IMDS all share 169.254.169.254. Azure also exposes
-// the WireServer at 168.63.129.16, and Alibaba Cloud ECS serves metadata at
-// 100.100.100.200. Hits on these addresses are reported with
-// ScannerSSRFMetadata so the block-reason header carries the dedicated
-// `ssrf_metadata` code (vs. the generic `ssrf_private_ip`).
-var metadataIPv4s = map[string]struct{}{
-	"169.254.169.254": {}, // AWS / Azure / GCP IMDS
-	"168.63.129.16":   {}, // Azure WireServer
-	"100.100.100.200": {}, // Alibaba Cloud ECS metadata
-}
-
-// metadataIPv6 lists the canonical IPv6 instance-metadata endpoints.
-var metadataIPv6 = map[string]struct{}{
-	"fd00:ec2::254": {}, // AWS IMDSv6
-}
+// The cloud-metadata address tables moved to internal/destination alongside the
+// predicate that reads them. Keeping a second copy here would be a set of
+// addresses that must stay in sync with the enforcing one, and a provider
+// address present in one copy but not the other is a metadata endpoint that
+// reaches an agent.
 
 // IsCloudMetadataIP returns true when the resolved IP belongs to a recognised
 // cloud-provider metadata service. The caller uses this to upgrade a generic
 // SSRF block into the more specific metadata classification, matching the
 // dedicated blockreason.SSRFMetadata code.
 func IsCloudMetadataIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		_, ok := metadataIPv4s[v4.String()]
-		return ok
-	}
-	_, ok := metadataIPv6[ip.String()]
-	return ok
+	return destination.IsCloudMetadataIP(ip)
 }
 
 func isCloudMetadataIP(ip net.IP) bool {

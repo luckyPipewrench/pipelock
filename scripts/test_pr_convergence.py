@@ -999,6 +999,234 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertNotIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
         self.assertNotIn("repos/owner/repo/pulls?state=open&head=owner:feature-base&per_page=100", calls)
 
+    def test_sibling_truncation_is_reported_not_silent(self) -> None:
+        """Exceeding the fetch cap must surface, not quietly shrink the scan.
+
+        A capped scan that found nothing is a different claim from a complete
+        scan that found nothing. If truncation were silent, a busy repo would
+        report READY on the strength of a scan that never looked at most of the
+        candidates.
+        """
+        cap = pr_convergence.MAX_SIBLING_FETCHES
+
+        class FakeClient:
+            def open_pulls_by_base_ref(self, repo: str, base_ref: str):
+                return [
+                    {
+                        "number": 1000 + i,
+                        "state": "open",
+                        "title": f"Sibling {i}",
+                        "html_url": f"https://example.invalid/{1000 + i}",
+                        "head": {"ref": f"branch-{i}"},
+                        "base": {"ref": "main"},
+                    }
+                    for i in range(cap + 3)
+                ]
+
+            def api(self, path: str, paginate: bool = False):
+                return [{"filename": "scripts/unrelated.py"}]
+
+        errors: list[dict[str, str]] = []
+        result = pr_convergence.gather_sibling_overlaps(
+            FakeClient(), "owner/repo", 7, "main", "feature-a",
+            ["scripts/shared.py"], errors,
+        )
+
+        self.assertEqual(result.get("siblings_truncated"), 3)
+        self.assertTrue(
+            any(e.get("source") == "sibling_prs" for e in errors),
+            "truncation must record an error so the status is not READY",
+        )
+
+    def test_siblings_not_excluded_by_matching_head_ref(self) -> None:
+        """Only this PR is excluded, and only by number.
+
+        Excluding by head ref too would drop a genuine sibling that shares a
+        branch name, which happens across forks. A sibling silently dropped
+        from the candidate set is indistinguishable from no overlap.
+        """
+
+        class FakeClient:
+            def open_pulls_by_base_ref(self, repo: str, base_ref: str):
+                return [
+                    {
+                        "number": 99,
+                        "state": "open",
+                        "title": "Fork sibling sharing a branch name",
+                        "html_url": "https://example.invalid/99",
+                        "head": {"ref": "feature-a"},
+                        "base": {"ref": "main"},
+                    },
+                ]
+
+            def api(self, path: str, paginate: bool = False):
+                return [{"filename": "scripts/shared.py"}]
+
+        errors: list[dict[str, str]] = []
+        result = pr_convergence.gather_sibling_overlaps(
+            FakeClient(), "owner/repo", 7, "main", "feature-a",
+            ["scripts/shared.py"], errors,
+        )
+
+        numbers = [s["number"] for s in result["overlapping_siblings"]]
+        self.assertIn(99, numbers, "a different PR sharing our head ref is still a sibling")
+
+    def test_siblings_selected_by_base_ref_not_head_ref(self) -> None:
+        """Siblings are PRs targeting the same base, not PRs headed by it.
+
+        The first implementation passed base_ref to a headRefName filter, which
+        asks "which open PRs are headed by main". That is essentially always
+        none, so overlap detection silently found nothing and reported READY.
+        Verified live at the time: GitHub reported 2 open PRs with base=main
+        while the head-ref query returned 0.
+        """
+        captured: dict[str, str] = {}
+
+        class FakeClient:
+            def open_pulls_by_base_ref(self, repo: str, base_ref: str):
+                captured["repo"] = repo
+                captured["base_ref"] = base_ref
+                return [
+                    # A genuine sibling: different head, same base.
+                    {
+                        "number": 42,
+                        "state": "open",
+                        "title": "Genuine sibling",
+                        "html_url": "https://example.invalid/42",
+                        "head": {"ref": "feature-b"},
+                        "base": {"ref": "main"},
+                    },
+                    # A decoy whose HEAD is the base branch. The old query
+                    # would have returned this one and only this one.
+                    {
+                        "number": 43,
+                        "state": "open",
+                        "title": "Headed by main",
+                        "html_url": "https://example.invalid/43",
+                        "head": {"ref": "main"},
+                        "base": {"ref": "release"},
+                    },
+                ]
+
+            def graphql_open_pulls_by_head_ref(self, head_ref_name: str):
+                # Models the real GraphQL behavior: filtering by headRefName
+                # returns only PRs whose HEAD is that branch. Present so that
+                # neutralizing the fix produces a genuine assertion failure
+                # rather than an AttributeError, which would prove nothing.
+                return [
+                    {
+                        "number": 43,
+                        "state": "open",
+                        "title": "Headed by main",
+                        "html_url": "https://example.invalid/43",
+                        "head": {"ref": "main"},
+                        "base": {"ref": "release"},
+                    },
+                ]
+
+            def api(self, path: str, paginate: bool = False):
+                if "/pulls/42/files" in path:
+                    return [{"filename": "scripts/shared.py"}]
+                return [{"filename": "scripts/unrelated.py"}]
+
+        errors: list[dict[str, str]] = []
+        result = pr_convergence.gather_sibling_overlaps(
+            FakeClient(), "owner/repo", 7, "main", "feature-a",
+            ["scripts/shared.py"], errors,
+        )
+
+        # Behavior first, so a regression fails on the outcome rather than on
+        # the instrumentation. Selecting by head ref returns only the decoy,
+        # which shares no path, so the genuine sibling goes undetected.
+        numbers = [s["number"] for s in result["overlapping_siblings"]]
+        self.assertIn(42, numbers, "same-base sibling sharing a path must be detected")
+        self.assertNotIn(43, numbers, "a PR merely headed by the base branch is not a sibling")
+        self.assertEqual(result["siblings_checked"], 1, "only the same-base PR is a sibling")
+        self.assertEqual(captured.get("base_ref"), "main", "lookup must filter on the base ref")
+
+    def test_sibling_path_overlap_blocks(self) -> None:
+        data = load_fixture()
+        data["sibling_overlaps"] = {
+            "own_files": ["scripts/example.py"],
+            "siblings_checked": 1,
+            "overlapping_siblings": [
+                {
+                    "number": 8,
+                    "title": "Sibling PR",
+                    "head_ref": "sibling-branch",
+                    "url": "https://github.com/owner/repo/pull/8",
+                    "overlapping_paths": ["scripts/example.py"],
+                }
+            ],
+        }
+        result = classify(data)
+        self.assertEqual(result["status"], "SIBLING_PATH_OVERLAP")
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["stack"]["sibling_overlap_count"], 1)
+        self.assertEqual(result["stack"]["overlapping_siblings"][0]["number"], 8)
+
+    def test_no_sibling_overlap_is_ready(self) -> None:
+        data = load_fixture()
+        data["sibling_overlaps"] = {
+            "own_files": ["scripts/example.py"],
+            "siblings_checked": 1,
+            "overlapping_siblings": [],
+        }
+        result = classify(data)
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(result["stack"]["sibling_overlap_count"], 0)
+
+    def test_gate_name_appears_in_result(self) -> None:
+        data = load_fixture()
+        for gate in pr_convergence.VALID_GATES:
+            with self.subTest(gate=gate):
+                result = pr_convergence.classify_pr_state(data, gate=gate)
+                self.assertEqual(result["gate"], gate)
+
+    def test_gate_name_appears_in_compact_summary(self) -> None:
+        data = load_fixture()
+        result = pr_convergence.classify_pr_state(data, gate="pre-push")
+        summary = pr_convergence.compact_summary(result)
+        self.assertIn("gate=pre-push", summary)
+
+    def test_empty_gate_omitted_from_compact_summary(self) -> None:
+        data = load_fixture()
+        result = pr_convergence.classify_pr_state(data, gate="")
+        summary = pr_convergence.compact_summary(result)
+        self.assertNotIn("gate=", summary)
+
+    def test_empty_changed_paths_on_successful_read_fails_closed(self) -> None:
+        """A successful read yielding zero changed paths must not report READY.
+
+        An open PR always changes at least one file, so an empty successful
+        read means the changed-path source is broken or truncated. Reading it
+        as "no files" silently disables sibling-overlap detection while still
+        reporting READY, which is a fail-open in a release-safety gate.
+        """
+        data = load_fixture()
+        data["pr_files"] = []
+        data["changed_paths_unknown"] = True
+        result = classify(data)
+        self.assertEqual(result["status"], "CHANGED_PATHS_UNKNOWN")
+        self.assertFalse(result["ready"])
+
+    def test_normal_pr_with_changed_paths_still_ready(self) -> None:
+        """The empty-read guard must not deny a PR that really has files.
+
+        Availability is a failure direction too: an over-strict gate that
+        blocks healthy PRs gets the gate disabled by the operator.
+        """
+        result = classify(load_fixture())
+        self.assertFalse(result.get("changed_paths_unknown"))
+        self.assertEqual(result["status"], "READY")
+
+    def test_sibling_overlap_api_error_fails_closed(self) -> None:
+        data = load_fixture()
+        data["errors"] = [{"source": "sibling_prs", "message": "rate limited"}]
+        result = classify(data)
+        self.assertEqual(result["status"], "DATA_SOURCE_UNAVAILABLE")
+        self.assertFalse(result["ready"])
+
     def test_default_branch_base_skips_base_pull_candidate_read(self) -> None:
         fixture = load_fixture()
         fixture["pull"]["base"]["repo"]["default_branch"] = "main"

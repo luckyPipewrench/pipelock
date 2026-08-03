@@ -22,7 +22,17 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
+# Cap the per-sibling changed-file fetch. Each sibling costs one paginated REST
+# call, so an unbounded loop scales with the open-PR count and can approach the
+# rate limit on a busy repo. When the cap truncates the candidate set the
+# shortfall is reported rather than silently dropped, because a quietly
+# truncated scan reads as "no overlap found".
+MAX_SIBLING_FETCHES = 25
+
+
+VALID_GATES = ("task-start", "pre-edit", "pre-push", "post-push")
 
 STATUS_DOCS: dict[str, str] = {
     "READY": "Current head has no detected blockers after an unchanged snapshot window.",
@@ -38,6 +48,8 @@ STATUS_DOCS: dict[str, str] = {
     "MERGE_BLOCKED": "GitHub reports a blocked, draft, closed, or unknown merge state.",
     "CHANGED_DURING_WINDOW": "A comment, review, check, or commit changed since the prior snapshot.",
     "SNAPSHOT_MISSING": "A snapshot path was requested but no prior snapshot existed yet.",
+    "SIBLING_PATH_OVERLAP": "An independent sibling PR shares changed paths without git ancestry proving a stack.",
+    "CHANGED_PATHS_UNKNOWN": "The changed-path read returned no files, so sibling overlap could not be evaluated.",
     "DATA_SOURCE_UNAVAILABLE": "At least one required read source failed, so readiness is unknown.",
 }
 
@@ -382,6 +394,23 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
             node_mapper=as_dict,
         )
 
+    def open_pulls_by_base_ref(self, repo: str, base_ref: str) -> list[dict[str, Any]]:
+        """Return open PRs whose BASE branch is base_ref.
+
+        Sibling detection needs PRs that target the same base, which is not the
+        same question as graphql_open_pulls_by_head_ref answers. That method
+        filters on headRefName and is used for stack-child detection; passing a
+        base branch to it asks "which open PRs are headed by main", which is
+        essentially always none. This uses the REST base filter instead, and
+        returns each candidate's base ref so the caller can verify it.
+        """
+        return as_list(
+            self.api(
+                f"repos/{repo}/pulls?state=open&base={quote(base_ref, safe='')}&per_page=100",
+                paginate=True,
+            )
+        )
+
     def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, Any]]:
         query = """
 query($owner: String!, $name: String!, $headRefName: String!, $after: String) {
@@ -408,6 +437,112 @@ query($owner: String!, $name: String!, $headRefName: String!, $after: String) {
             nodes_name="pullRequests",
             node_mapper=map_open_pull_node,
         )
+
+
+def gather_sibling_overlaps(
+    client: GhClient,
+    repo: str,
+    pr_number: int,
+    base_ref: str,
+    head_ref: str,
+    own_files: list[str],
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Detect independent sibling PRs that share changed paths with this PR.
+
+    A sibling is another open PR targeting the SAME base ref.  If a sibling
+    shares a changed path, the overlap is reported.
+
+    Ancestry is NOT proven here, and the same-base filter is what stands in for
+    it.  A PR stacked on another PR takes its parent's branch as its base, so
+    it does not appear in this same-base set and is not flagged.  That is a
+    structural approximation, not a merge-base computation: a stacked pair that
+    both target the base branch directly would still be reported as an overlap
+    and would need a human to confirm the stack.  Do not describe this function
+    as ancestry-aware.
+
+    Fail-closed: any API error gathering siblings results in an error entry
+    (which triggers DATA_SOURCE_UNAVAILABLE), never a silent pass.  A read that
+    succeeds but returns no changed paths is handled by the caller as
+    CHANGED_PATHS_UNKNOWN, because this function cannot distinguish "no
+    overlap" from "nothing to compare".
+    """
+    result: dict[str, Any] = {
+        "own_files": sorted(own_files),
+        "siblings_checked": 0,
+        "overlapping_siblings": [],
+    }
+    if not own_files or not base_ref:
+        return result
+
+    try:
+        sibling_prs = client.open_pulls_by_base_ref(repo, base_ref)
+    except GhReadError as exc:
+        errors.append({"source": "sibling_prs", "message": str(exc)})
+        return result
+
+    # Keep only open PRs that genuinely target the same base and are neither
+    # this PR nor its own head. The base ref is re-verified from the returned
+    # payload rather than trusted from the request filter, so a server-side
+    # filter change cannot silently widen the candidate set.
+    siblings = []
+    for candidate in sibling_prs:
+        candidate = as_dict(candidate)
+        cand_number = candidate.get("number")
+        cand_base_ref = dotted_get(candidate, "base", "ref")
+        # Exclude only THIS pull request, by number. Excluding by head ref as
+        # well would drop a genuine sibling that happens to share the branch
+        # name, which is entirely possible across forks, and a sibling silently
+        # dropped from the candidate set reads as no overlap.
+        if cand_number == pr_number:
+            continue
+        if cand_base_ref != base_ref:
+            continue
+        if str(candidate.get("state", "")).lower() != "open":
+            continue
+        siblings.append(candidate)
+
+    result["siblings_checked"] = len(siblings)
+    # Truncation is reported, never silent. A capped scan that found nothing is
+    # not the same claim as a complete scan that found nothing.
+    if len(siblings) > MAX_SIBLING_FETCHES:
+        result["siblings_truncated"] = len(siblings) - MAX_SIBLING_FETCHES
+        errors.append({
+            "source": "sibling_prs",
+            "message": (
+                f"{len(siblings)} same-base siblings exceed the {MAX_SIBLING_FETCHES} "
+                "fetch cap; overlap detection is incomplete"
+            ),
+        })
+        siblings = siblings[:MAX_SIBLING_FETCHES]
+
+    for sibling in siblings:
+        sib_number = sibling.get("number")
+        try:
+            sib_files_raw = client.api(
+                f"repos/{repo}/pulls/{sib_number}/files?per_page=100",
+                paginate=True,
+            )
+        except GhReadError as exc:
+            errors.append({"source": f"sibling_files_{sib_number}", "message": str(exc)})
+            continue
+
+        sib_files = {
+            str(as_dict(f).get("filename") or "")
+            for f in as_list(sib_files_raw)
+            if as_dict(f).get("filename")
+        }
+        overlap = sorted(set(own_files) & sib_files)
+        if overlap:
+            result["overlapping_siblings"].append({
+                "number": sib_number,
+                "title": sibling.get("title"),
+                "head_ref": dotted_get(sibling, "head", "ref"),
+                "url": sibling.get("html_url"),
+                "overlapping_paths": overlap,
+            })
+
+    return result
 
 
 def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
@@ -490,6 +625,37 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
     else:
         data["errors"].append({"source": "compare", "message": "base or head SHA unavailable"})
         data["compare"] = {}
+
+    # Fetch this PR's changed files for sibling overlap detection.
+    # Keep the uncoalesced result: read_source returns None only on a failed
+    # read, and collapsing that to [] here would make a failed read
+    # indistinguishable from a successful empty one. They are different states
+    # and they get different statuses.
+    pr_files_raw = read_source(
+        "pr_files",
+        lambda: client.api(
+            f"repos/{repo}/pulls/{pr_number}/files?per_page=100",
+            paginate=True,
+        ),
+    )
+    own_files = [
+        str(as_dict(f).get("filename") or "")
+        for f in as_list(pr_files_raw or [])
+        if as_dict(f).get("filename")
+    ]
+    data["pr_files"] = own_files
+    # A successful read that yields zero changed paths is not a negative
+    # result, it is an impossible one: an open PR always changes at least one
+    # file. Treating it as "no files" would silently disable sibling-overlap
+    # detection while still reporting READY, so an empty successful read is
+    # recorded as its own unknown state. This is distinct from a failed read,
+    # which read_source already routes to DATA_SOURCE_UNAVAILABLE.
+    data["changed_paths_unknown"] = pr_files_raw is not None and not own_files
+
+    head_ref = str(dotted_get(pull_data, "head", "ref") or "")
+    data["sibling_overlaps"] = gather_sibling_overlaps(
+        client, repo, pr_number, base_ref, head_ref, own_files, data["errors"],
+    )
 
     return data
 
@@ -800,6 +966,8 @@ def normalize_stack(data: dict[str, Any], pr_number: int) -> dict[str, Any]:
             break
     compare = as_dict(data.get("compare"))
     behind_by = int(compare.get("behind_by") or 0)
+    sibling_overlaps = as_dict(data.get("sibling_overlaps"))
+    overlapping_siblings = as_list(sibling_overlaps.get("overlapping_siblings"))
     return {
         "base_ref": base_ref,
         "base_sha": base.get("sha"),
@@ -813,6 +981,9 @@ def normalize_stack(data: dict[str, Any], pr_number: int) -> dict[str, Any]:
         "compare_status": compare.get("status"),
         "behind_by": behind_by,
         "ahead_by": int(compare.get("ahead_by") or 0),
+        "sibling_overlap_count": len(overlapping_siblings),
+        "overlapping_siblings": overlapping_siblings,
+        "siblings_checked": int(sibling_overlaps.get("siblings_checked") or 0),
     }
 
 
@@ -933,6 +1104,8 @@ def choose_status(result: dict[str, Any], snapshot_missing: bool) -> str:
     merge_state = str(merge.get("merge_state_status") or "").upper()
     if result["errors"]:
         return "DATA_SOURCE_UNAVAILABLE"
+    if result.get("changed_paths_unknown"):
+        return "CHANGED_PATHS_UNKNOWN"
     if result["change_detection"]["changed"]:
         return "CHANGED_DURING_WINDOW"
     if merge.get("mergeable") is False or merge_state in CONFLICT_MERGE_STATES:
@@ -953,6 +1126,8 @@ def choose_status(result: dict[str, Any], snapshot_missing: bool) -> str:
         return "UNRESOLVED_THREADS"
     if result["top_level_comments"]["unreviewed_ai_finding_count"] > 0:
         return "UNREVIEWED_AI_FINDINGS"
+    if result["stack"].get("sibling_overlap_count", 0) > 0:
+        return "SIBLING_PATH_OVERLAP"
     if merge_state in BLOCKED_MERGE_STATES or merge.get("is_draft") or merge.get("state") != "open":
         return "MERGE_BLOCKED"
     if snapshot_missing:
@@ -965,6 +1140,7 @@ def classify_pr_state(
     *,
     previous_snapshot: dict[str, Any] | None = None,
     snapshot_requested: bool = False,
+    gate: str = "",
 ) -> dict[str, Any]:
     pull = as_dict(data.get("pull"))
     pr_number = int(data.get("pr_number") or pull.get("number") or 0)
@@ -999,6 +1175,7 @@ def classify_pr_state(
             "state": str(pull.get("state") or "").lower(),
         },
         "errors": data.get("errors") or [],
+        "changed_paths_unknown": bool(data.get("changed_paths_unknown")),
         "_raw_issue_comments": data.get("issue_comments") or [],
         "_raw_review_comments": data.get("review_comments") or [],
         "_raw_review_threads": data.get("review_threads") or [],
@@ -1009,6 +1186,7 @@ def classify_pr_state(
     result["change_detection"] = compare_snapshots(previous_snapshot, current_snapshot)
     result["snapshot"] = current_snapshot
     status = choose_status(result, snapshot_missing)
+    result["gate"] = gate
     result["status"] = status
     result["ready"] = status == "READY"
     result["status_reason"] = STATUS_DOCS[status]
@@ -1079,14 +1257,16 @@ def compact_summary(result: dict[str, Any]) -> str:
     reviews = result["review_summaries"]
     stack = result["stack"]
     change = result["change_detection"]
+    gate_label = f" gate={result['gate']}" if result.get("gate") else ""
     lines = [
         f"status: {result['status']} - {result['status_reason']}",
-        f"pr: #{result['pr']['number']} head={result['pr']['head_sha']} base={result['pr']['base_ref']}",
+        f"pr: #{result['pr']['number']} head={result['pr']['head_sha']} base={result['pr']['base_ref']}{gate_label}",
         (
             "stack: "
             f"base_is_open_pr={stack['base_is_open_pr']} "
             f"behind_base={stack['head_behind_base']} "
-            f"compare={stack['compare_status']}"
+            f"compare={stack['compare_status']} "
+            f"sibling_overlaps={stack.get('sibling_overlap_count', 0)}"
         ),
         (
             "reviews: "
@@ -1130,6 +1310,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--repo", default=os.environ.get("REPO", ""), help="owner/repo")
     parser.add_argument("--json", action="store_true", help="print a single JSON object")
     parser.add_argument(
+        "--gate",
+        choices=VALID_GATES,
+        default="",
+        help="lifecycle gate that this invocation represents",
+    )
+    parser.add_argument(
         "--snapshot",
         type=Path,
         help="read a previous snapshot if present, then write the current snapshot",
@@ -1161,6 +1347,7 @@ def main(argv: list[str]) -> int:
         data,
         previous_snapshot=previous_snapshot,
         snapshot_requested=args.snapshot is not None,
+        gate=args.gate or "",
     )
     if args.snapshot:
         write_snapshot(args.snapshot, result["snapshot"])

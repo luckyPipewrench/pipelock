@@ -312,6 +312,11 @@ func TestBuild_EvidenceFields(t *testing.T) {
 		},
 	})
 
+	// Guard the index: if Build ever stops emitting this follower, an unguarded
+	// report.Followers[0] panics instead of reporting which invariant broke.
+	if len(report.Followers) != 1 {
+		t.Fatalf("followers = %d, want 1", len(report.Followers))
+	}
 	fc := report.Followers[0]
 	if fc.LatestBatch == nil {
 		t.Fatal("expected latest_batch to be non-nil")

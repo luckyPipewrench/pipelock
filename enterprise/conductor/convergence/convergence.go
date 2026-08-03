@@ -281,7 +281,11 @@ func classifyFollower(
 		fc.ConductorDrift = fleetStatus.Drift
 	}
 	if latestBatch != nil {
-		fc.LatestBatch = batchToEvidence(latestBatch, instanceID)
+		runtimeBuild := ""
+		if fleetStatus != nil && fleetStatus.RuntimeStatus != nil {
+			runtimeBuild = fleetStatus.RuntimeStatus.PipelockVersion
+		}
+		fc.LatestBatch = batchToEvidence(latestBatch, instanceID, runtimeBuild)
 	}
 
 	// Classification logic. Order matters: earlier checks take priority.
@@ -460,7 +464,14 @@ func truncHash(h string) string {
 	return h
 }
 
-func batchToEvidence(b *controlplane.AuditBatchSummary, instanceID string) *AuditEvidence {
+// batchToEvidence renders one accepted batch as reportable evidence.
+//
+// runtimeBuild is supplied by the caller rather than read from the batch: the
+// audit batch summary does not carry the emitting follower's Pipelock version,
+// so it comes from the follower's runtime status. Leaving it unset would have
+// the report advertise a runtime_build field that is always empty, which is an
+// overclaim about what the evidence layer can actually tell an operator.
+func batchToEvidence(b *controlplane.AuditBatchSummary, instanceID, runtimeBuild string) *AuditEvidence {
 	lag := float64(0)
 	if !b.ReceivedAt.IsZero() && !b.EmittedAt.IsZero() {
 		lag = b.ReceivedAt.Sub(b.EmittedAt).Seconds()
@@ -480,6 +491,7 @@ func batchToEvidence(b *controlplane.AuditBatchSummary, instanceID string) *Audi
 		ReceivedAt:      b.ReceivedAt,
 		EmittedAt:       b.EmittedAt,
 		DeliveryLagSecs: lag,
+		RuntimeBuild:    runtimeBuild,
 	}
 }
 

@@ -196,3 +196,99 @@ func TestClassify_ScaledZeroButStillActiveIsNotAbsent(t *testing.T) {
 		t.Fatalf("scaled-zero-but-active reported as %q, want %q", fc.State, StateUnknown)
 	}
 }
+
+// TestClassify_UncoveredFailClosedBranches covers the four classifier branches
+// the state table did not reach.
+//
+// The last two are fail-closed paths, which are exactly the ones whose
+// regression would be silent: if either stopped firing, the follower would fall
+// through to StateFullyConverged and the report would call an unprovable
+// follower converged.
+func TestClassify_UncoveredFailClosedBranches(t *testing.T) {
+	now := time.Now().UTC()
+	activeOK := func(h controlplane.FleetHealth) *controlplane.FollowerFleetStatus {
+		return &controlplane.FollowerFleetStatus{
+			FollowerSummary: controlplane.FollowerSummary{Active: true},
+			Health:          h,
+		}
+	}
+
+	tests := []struct {
+		name      string
+		intent    *DeploymentIntent
+		status    *controlplane.FollowerFleetStatus
+		batch     *controlplane.AuditBatchSummary
+		wantState FollowerState
+	}{
+		{
+			name:      "apply failed is stale",
+			intent:    &DeploymentIntent{DesiredReplicas: 1},
+			status:    activeOK(controlplane.FleetHealthApplyFailed),
+			wantState: StateStale,
+		},
+		{
+			name:      "unsupported runtime version is wrong digest",
+			intent:    &DeploymentIntent{DesiredReplicas: 1},
+			status:    activeOK(controlplane.FleetHealthUnsupported),
+			wantState: StateWrongDigest,
+		},
+		{
+			name:   "desired digest with no active bundle hash is unknown",
+			intent: &DeploymentIntent{DesiredReplicas: 1, DesiredDigest: "aaaa"},
+			// Healthy, but nothing reports which bundle is actually running.
+			status:    activeOK(controlplane.FleetHealthOK),
+			wantState: StateUnknown,
+		},
+		{
+			name:   "batch older than the evidence window is stale",
+			intent: &DeploymentIntent{DesiredReplicas: 1},
+			status: activeOK(controlplane.FleetHealthOK),
+			batch: &controlplane.AuditBatchSummary{
+				ReceivedAt: now.Add(-(evidenceStaleWindowMultiple + 2) * time.Minute),
+			},
+			wantState: StateStale,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := classifyFollower("f-1", tc.intent, tc.status, tc.batch, now, time.Minute)
+			if fc.State != tc.wantState {
+				t.Fatalf("state = %q, want %q (reason: %s)", fc.State, tc.wantState, fc.Reason)
+			}
+			if fc.State == StateFullyConverged {
+				t.Fatal("a fail-closed branch fell through to converged")
+			}
+		})
+	}
+}
+
+// TestEvidence_RuntimeBuildIsPopulated pins the runtime_build field.
+//
+// The audit batch summary does not carry the emitting follower's Pipelock
+// version, so it has to come from the follower's runtime status. Without this
+// the report advertises a runtime_build field that is always empty, which
+// overclaims what the evidence layer can tell an operator.
+func TestEvidence_RuntimeBuildIsPopulated(t *testing.T) {
+	now := time.Now().UTC()
+	fleetStatus := &controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		Health:          controlplane.FleetHealthOK,
+		RuntimeStatus: &controlplane.FollowerRuntimeStatus{
+			PipelockVersion: "3.4.0",
+		},
+	}
+	intent := &DeploymentIntent{DesiredReplicas: 1}
+	batch := &controlplane.AuditBatchSummary{ReceivedAt: now.Add(-time.Minute)}
+
+	fc := classifyFollower("f-1", intent, fleetStatus, batch, now, time.Minute)
+
+	if fc.LatestBatch == nil {
+		t.Fatal("expected latest_batch to be present")
+	}
+	if fc.LatestBatch.RuntimeBuild != "3.4.0" {
+		t.Fatalf("runtime_build = %q, want %q; the report declares this field, so "+
+			"leaving it empty overclaims what the evidence layer reports",
+			fc.LatestBatch.RuntimeBuild, "3.4.0")
+	}
+}

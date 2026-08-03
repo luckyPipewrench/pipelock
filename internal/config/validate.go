@@ -4431,12 +4431,25 @@ func validateGuardRWPath(label string, idx int, rawPath string) error {
 	// account this process happens to run as. Dead code that reads as live
 	// protection is worse than no code, because the next reader trusts it.
 
-	// Static dangerous roots
+	// Static dangerous roots. These run BEFORE the credential-material check so
+	// that a path both rules cover (/etc/shadow is a privilege path AND a
+	// credential store) keeps its established, more specific message.
 	for _, dr := range guardDangerousRWRoots {
 		clean := filepath.Clean(dr.prefix)
 		if resolved == clean || strings.HasPrefix(resolved, clean+string(filepath.Separator)) {
 			return fmt.Errorf("%s: read-write on %s %q is not allowed", field, dr.reason, rawPath)
 		}
+	}
+
+	// Credential material is refused for WRITE as well as read, and not merely
+	// because writing usually implies reading. Write alone is its own attack:
+	// rewriting ~/.npmrc or ~/.pypirc redirects a build to an attacker's
+	// registry, and rewriting ~/.kube/config or ~/.aws/credentials repoints the
+	// workload's cluster and cloud identity. Both floors share this set; the
+	// write floor adds the write-sensitive locations above that a read grant
+	// may legitimately keep.
+	if reason := guardSecretMaterialReason(resolved); reason != "" {
+		return fmt.Errorf("%s: read-write on %q is not allowed (%s); writing a credential file redirects the workload's identity", field, rawPath, reason)
 	}
 
 	return nil

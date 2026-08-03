@@ -646,3 +646,152 @@ func TestCanonicalPolicyHash_GuardExcludedWhileInert(t *testing.T) {
 // guardIsHomeRoot recognises it without depending on the running user's
 // real $HOME. This keeps the tests hermetic on CI runners.
 const guardTestHome = "/home/testoperator"
+
+// TestValidateGuard_SecretMaterialRefusedBothDirections is the fail-closed half
+// of the credential floor.
+//
+// Every path here is refused for READ as well as write. Read-only is not a
+// safe posture for credential material under an agent threat model: a token
+// does not need to be modified to be lost, and the copy leaves through any
+// destination the workload is otherwise permitted to reach.
+func TestValidateGuard_SecretMaterialRefusedBothDirections(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		// The credential file itself.
+		"/home/someoperator/.aws/credentials",
+		"/home/someoperator/.kube/config",
+		"/home/someoperator/.docker/config.json",
+		"/home/someoperator/.npmrc",
+		"/home/someoperator/.pypirc",
+		"/home/someoperator/.netrc",
+		"/home/someoperator/.git-credentials",
+		"/home/someoperator/.config/gh/hosts.yml",
+		"/home/someoperator/.config/gcloud/credentials.db",
+		"/home/someoperator/.claude.json",
+		"/home/someoperator/.codex/auth.json",
+		"/Users/someoperator/.aws/credentials",
+		"/root/.kube/config",
+		// A directory that CONTAINS credential material. Under Landlock a
+		// directory grant reaches the whole subtree, so permitting the parent
+		// permits the secret; without this arm every entry above is decorative.
+		"/home/someoperator/.aws",
+		"/home/someoperator/.docker",
+		"/home/someoperator/.kube",
+		"/home/someoperator/.config/gh",
+		"/home/someoperator/.config/gcloud",
+		"/home/someoperator/.config",
+		"/home/someoperator/.codex",
+		// Roots sitting above every user home at once.
+		"/home",
+		"/Users",
+	} {
+		for _, mode := range []string{"read_only", "read_write"} {
+			t.Run(mode+"_"+path, func(t *testing.T) {
+				t.Parallel()
+				m := GuardManifest{Name: "bad"}
+				if mode == "read_only" {
+					m.ReadOnly = []string{path}
+				} else {
+					m.ReadWrite = []string{path}
+				}
+				cfg := Defaults()
+				cfg.Guard = Guard{Manifests: []GuardManifest{m}}
+
+				err := cfg.Validate()
+				if err == nil {
+					t.Fatalf("%s on credential path %q must be rejected", mode, path)
+				}
+				// The rejection must come from a PATH rule. A bare err != nil
+				// check passes with every rule in this file deleted, because
+				// errGuardNotEnforced refuses any non-empty guard declaration.
+				if errors.Is(err, errGuardNotEnforced) {
+					t.Errorf("%s on %q was refused only by the not-enforced gate, so no path rule rejected it: %v", mode, path, err)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateGuard_NonSecretNeighboursStillAllowed is the availability half of
+// the credential floor.
+//
+// The ancestor rule refuses ~/.aws and ~/.config as whole directories, which is
+// only tolerable because the specific non-secret paths beside the credential
+// remain grantable. If these regressed, an operator could not express a working
+// manifest for cargo, npm, docker or gh, and would switch guard off -- which on
+// a security product costs nearly as much as permitting too much.
+func TestValidateGuard_NonSecretNeighboursStillAllowed(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/home/someoperator/.aws/config",                   // region/profile, not credentials
+		"/home/someoperator/.docker/buildx",                // builder state, not auth
+		"/home/someoperator/.config/myapp",                 // unrelated app config
+		"/home/someoperator/.config/gcloud/configurations", // named configs, not the credential db
+		"/home/someoperator/.cache/some-tool",
+		"/home/someoperator/.cargo/registry",
+		"/home/someoperator/.npm/_cacache", // the npm CACHE; the token lives in ~/.npmrc
+		"/home/someoperator/projects/app",
+	} {
+		for _, mode := range []string{"read_only", "read_write"} {
+			t.Run(mode+"_"+path, func(t *testing.T) {
+				t.Parallel()
+				m := GuardManifest{Name: "ok"}
+				if mode == "read_only" {
+					m.ReadOnly = []string{path}
+				} else {
+					m.ReadWrite = []string{path}
+				}
+				cfg := Defaults()
+				cfg.Guard = Guard{Manifests: []GuardManifest{m}}
+
+				err := cfg.Validate()
+				if err == nil {
+					t.Fatalf("guard is refused while unenforced; %q should still reach the gate", path)
+				}
+				if !errors.Is(err, errGuardNotEnforced) {
+					t.Errorf("non-secret path %q must pass the %s path rules, got: %v", path, mode, err)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateGuard_WholeHomeReadRefused pins the specific bypass that made the
+// pre-existing .ssh refusal reachable-around: the write validator called
+// guardIsHomeRoot and the read validator did not, so `read_only: [/home/x]`
+// was accepted and carried ~/.ssh with it.
+//
+// This test asserts the MESSAGE, not merely that the path was refused, and the
+// distinction is the whole point. The credential-material ancestor rule also
+// refuses every path here (a home directory is an ancestor of ~/.aws/credentials),
+// so an outcome-only assertion passes with the home-root arm deleted -- it was
+// written that way first and proven vacuous by neutralizing the arm and watching
+// it still pass. The home-root arm survives because it runs first and says
+// "the entire home directory" instead of naming one incidental credential
+// beneath it, which is the difference between an operator fixing the manifest
+// and an operator adding an exception for AWS.
+func TestValidateGuard_WholeHomeReadRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"/home/someoperator", "/Users/someoperator", "/root", "/"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Guard = Guard{
+				Manifests: []GuardManifest{{Name: "bad", ReadOnly: []string{path}}},
+			}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("read access to whole home %q must be rejected", path)
+			}
+			if errors.Is(err, errGuardNotEnforced) {
+				t.Fatalf("read on %q was refused only by the not-enforced gate: %v", path, err)
+			}
+			if !strings.Contains(err.Error(), "entire home directory") {
+				t.Errorf("read on %q must be refused as a whole-home grant, not incidentally by a credential rule, got: %v", path, err)
+			}
+		})
+	}
+}

@@ -69,9 +69,23 @@ func CheckKeyringPreflight(candidateKeyringHex, expectKeyringHex string, customB
 	candidateKeyringHex = strings.TrimSpace(candidateKeyringHex)
 
 	// Empty keyring: fail unless explicitly custom-build-acknowledged.
+	//
+	// The acknowledgement waives the REQUIREMENT for a keyring, never a parity
+	// check that the caller explicitly asked for. When an expected keyring is
+	// supplied, an empty candidate cannot match it, so returning success here
+	// would answer "yes, parity holds" to a question whose answer is plainly
+	// no. Custom-build is an admission that this binary has no keyring, not a
+	// claim that it has the right one.
 	if candidateKeyringHex == "" {
-		if customBuild {
+		if customBuild && strings.TrimSpace(expectKeyringHex) == "" {
 			return KeyringPreflightResult{KeyCount: 0, CustomBuild: true}, nil
+		}
+		if customBuild {
+			return KeyringPreflightResult{}, fmt.Errorf(
+				"%w: candidate binary has no embedded release keyring, so it cannot "+
+					"match the expected keyring; a custom build waives the keyring "+
+					"requirement, not a parity check",
+				ErrKeyringParity)
 		}
 		return KeyringPreflightResult{}, fmt.Errorf(
 			"%w: candidate binary has no embedded release keyring; "+

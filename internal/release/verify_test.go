@@ -315,3 +315,48 @@ func TestEmbeddedKeyringPreflight(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+// TestCheckKeyringPreflight_CustomBuildDoesNotWaiveParity covers the
+// interaction between the custom-build acknowledgement and an explicitly
+// requested parity check.
+//
+// The acknowledgement waives the REQUIREMENT for a keyring, never a parity
+// check the caller asked for. An empty candidate cannot match a non-empty
+// expected keyring, so passing here would answer "yes, parity holds" to a
+// question whose answer is plainly no.
+func TestCheckKeyringPreflight_CustomBuildDoesNotWaiveParity(t *testing.T) {
+	validKeyring := strings.Repeat("ab", 32)
+
+	if _, err := CheckKeyringPreflight("", validKeyring, true); err == nil {
+		t.Fatal("an empty candidate passed a parity check against a real expected " +
+			"keyring because custom-build short-circuited first; custom-build admits " +
+			"there is no keyring, it does not claim the right one is present")
+	}
+
+	// With no parity requested, the acknowledgement still works as intended.
+	if _, err := CheckKeyringPreflight("", "", true); err != nil {
+		t.Fatalf("custom build with no expected keyring should pass: %v", err)
+	}
+
+	// And the acknowledgement never excuses a broken keyring.
+	if _, err := CheckKeyringPreflight("zzzz", "", true); err == nil {
+		t.Fatal("custom build must not excuse a malformed keyring")
+	}
+}
+
+// TestCheckKeyringPreflight_ReorderedKeysAreNotParity pins the order
+// sensitivity the doc comment claims. Two keyrings holding the same keys in a
+// different order are not the same keyring contract, and treating them as equal
+// would let an RC ship a keyring whose first key differs from the final binary's.
+func TestCheckKeyringPreflight_ReorderedKeysAreNotParity(t *testing.T) {
+	keyA := strings.Repeat("aa", 32)
+	keyB := strings.Repeat("bb", 32)
+
+	if _, err := CheckKeyringPreflight(keyA+","+keyB, keyB+","+keyA, false); err == nil {
+		t.Fatal("reordered keys were accepted as parity; the doc comment states the " +
+			"comparison is order-sensitive, so this must fail")
+	}
+	if _, err := CheckKeyringPreflight(keyA+","+keyB, keyA+","+keyB, false); err != nil {
+		t.Fatalf("identical keyrings must pass parity: %v", err)
+	}
+}

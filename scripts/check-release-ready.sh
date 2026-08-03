@@ -106,13 +106,18 @@ fi
 # Set PIPELOCK_ALLOW_EMPTY_KEYRING=1 ONLY for a deliberately unofficial build
 # that will be verified out of band. It is not a convenience switch: an official
 # release with an empty keyring is a release nobody can safely update from.
-if [ -n "${RELEASE_KEYRING_HEX:-}" ]; then
+# Trim before testing presence. The Go side trims before deciding a keyring is
+# empty, so a whitespace-only value must read as empty here too; otherwise this
+# gate passes a keyring the build then embeds as nothing, which is precisely the
+# drift the split between these two checks was meant to avoid.
+keyring_trimmed="$(printf '%s' "${RELEASE_KEYRING_HEX:-}" | tr -d '[:space:]')"
+if [ -n "$keyring_trimmed" ]; then
   echo "  [ok]   release keyring: present"
 elif [ "${PIPELOCK_ALLOW_EMPTY_KEYRING:-}" = "1" ]; then
   echo "  [warn] release keyring: EMPTY, explicitly allowed for an unofficial build." >&2
   echo "         This binary cannot verify a signed update. Verify it out of band." >&2
 else
-  note "RELEASE_KEYRING_HEX is unset, so the built binary would embed an empty release keyring and could never verify a signed update. Set it, or set PIPELOCK_ALLOW_EMPTY_KEYRING=1 for a deliberately unofficial build."
+  note "RELEASE_KEYRING_HEX is unset or whitespace-only, so the built binary would embed an empty release keyring and could never verify a signed update. Set it, or set PIPELOCK_ALLOW_EMPTY_KEYRING=1 for a deliberately unofficial build."
 fi
 
 if [ "$fail" -ne 0 ]; then

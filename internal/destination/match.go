@@ -86,6 +86,53 @@ type Decision struct {
 // Matched reports whether any rule applied at all.
 func (d Decision) Matched() bool { return d.Effect != EffectNoMatch }
 
+// String renders a scope for audit output. The zero value renders as "none"
+// rather than as an empty string, so a log line can never silently omit it.
+func (s Scope) String() string {
+	switch s {
+	case ScopeExact:
+		return "exact"
+	case ScopePortless:
+		return "portless"
+	default:
+		return "none"
+	}
+}
+
+// String renders an effect for audit output.
+func (e Effect) String() string {
+	switch e {
+	case EffectAllow:
+		return "allow"
+	case EffectDeny:
+		return "deny"
+	default:
+		return "no-match"
+	}
+}
+
+// String renders a decision source for audit output. An unrecognized source
+// renders as "unknown" rather than as a number, because an operator reading an
+// audit record needs to know which policy surface decided.
+func (s Source) String() string {
+	switch s {
+	case SourceImmutableFloor:
+		return "immutable-floor"
+	case SourceTrustedDomain:
+		return "trusted-domain"
+	case SourceIPAllowlist:
+		return "ip-allowlist"
+	case SourceBlocklist:
+		return "blocklist"
+	case SourceStrictAllowlist:
+		return "strict-allowlist"
+	case SourceGuardGrant:
+		return "guard-grant"
+	default:
+		return "unknown"
+	}
+}
+
 // NOTE ON THE PORTLESS/EXACT COLLISION.
 //
 // An earlier draft of this file carried a single boolean chokepoint deciding

@@ -23,6 +23,11 @@ import (
 // thirteen existing call sites across the scanner, proxy, CLI, session and
 // content-entropy packages keep working unchanged.
 //
+// It also deliberately does NOT use NormalizeHost. Pattern matching needs only
+// case folding and trailing-dot removal, which it does inline. Running the full
+// normalizer would additionally strip an IPv6 zone index, silently turning one
+// configured pattern into a broader one.
+//
 // NOTE: this deliberately uses net.ParseIP rather than this package's
 // ParseIPLiteral. Recognizing the alternative IPv4 spellings here would change
 // which patterns match an existing configuration, turning a token that is

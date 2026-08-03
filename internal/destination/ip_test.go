@@ -251,3 +251,105 @@ func TestMatchesDomainList(t *testing.T) {
 		}
 	}
 }
+
+// TestHandBuiltDestinationStillFailsClosed covers the second door into the
+// literal-floor fail-open.
+//
+// Destination has exported fields, so a caller can build one without New. If
+// the predicates used net.ParseIP, a hand-built Destination whose Host is an
+// alternative IPv4 spelling would report as a DNS name, the literal-IP floor
+// would never run, and the dial would still reach the address it encodes.
+func TestHandBuiltDestinationStillFailsClosed(t *testing.T) {
+	for _, host := range []string{"0x7f000001", "2130706433", "0177.0.0.1", "127.1"} {
+		t.Run(host, func(t *testing.T) {
+			d := Destination{Network: NetworkTCP, Host: host, Port: 443}
+			if !d.IsLiteralIP() {
+				t.Fatalf("hand-built Destination{Host: %q} reports as a DNS name; the "+
+					"literal-IP floor would be skipped for an address that reaches loopback", host)
+			}
+			ip, ok := d.IP()
+			if !ok || ip.String() != "127.0.0.1" {
+				t.Fatalf("IP() = %v, %v; want 127.0.0.1", ip, ok)
+			}
+		})
+	}
+}
+
+// TestNew_RejectsUnsafeHostCharacters covers log-record forgery.
+//
+// Destination.String() feeds audit output and the operator explain surface, so
+// a host containing a newline splits one record into two. Embedded whitespace
+// is never valid in a real host and means the token was never one destination.
+func TestNew_RejectsUnsafeHostCharacters(t *testing.T) {
+	bad := []string{
+		"good.example\nfake-audit-line",
+		"good.example\rfake",
+		"host name.example",
+		"host\texample",
+		"host\x00.example",
+		"host\x7f.example",
+	}
+	for _, host := range bad {
+		if _, err := New(NetworkTCP, host, 443); err == nil {
+			t.Errorf("New(%q) was accepted; an embedded control character or space "+
+				"reaches audit output through String() and can forge a log record", host)
+		}
+	}
+	// A legitimate host with surrounding whitespace is still fine: it is
+	// trimmed, not rejected. Over-strictness here would deny real destinations.
+	if _, err := New(NetworkTCP, "  api.vendor.example  ", 443); err != nil {
+		t.Errorf("New rejected a legitimate host with surrounding whitespace: %v", err)
+	}
+}
+
+// TestNew_ErrorPaths covers the remaining constructor refusals.
+func TestNew_ErrorPaths(t *testing.T) {
+	if _, err := New(Network("sctp"), "host.example", 443); err == nil {
+		t.Error("unrecognized network must be refused")
+	}
+	if _, err := New(NetworkTCP, "", 443); err == nil {
+		t.Error("empty host must be refused")
+	}
+	if _, err := New(NetworkTCP, "   ", 443); err == nil {
+		t.Error("whitespace-only host must be refused")
+	}
+	if _, err := New(NetworkTCP, "host.example", 0); err == nil {
+		t.Error("port 0 must be refused")
+	}
+}
+
+// TestMatchDomain_IPLiteralsDoNotWildcard covers the documented IP-literal rule.
+// The dots in an address are not domain separators, so a wildcard pattern must
+// never expand across them and authorize an unrelated address.
+func TestMatchDomain_IPLiteralsDoNotWildcard(t *testing.T) {
+	if MatchDomain("192.168.1.1", "*.168.1.1") {
+		t.Error("a wildcard pattern must not match an IP literal by suffix")
+	}
+	if !MatchDomain("192.168.1.1", "192.168.1.1") {
+		t.Error("an IP literal must match itself exactly")
+	}
+	if MatchDomain("192.168.1.1", "168.1.1") {
+		t.Error("an IP literal must not match a suffix of itself")
+	}
+}
+
+// TestDecisionStrings pins the audit renderings, including the zero values,
+// which must never render as an empty string in a log record.
+func TestDecisionStrings(t *testing.T) {
+	if ScopeNone.String() != "none" || ScopeExact.String() != "exact" || ScopePortless.String() != "portless" {
+		t.Error("Scope.String")
+	}
+	if EffectNoMatch.String() != "no-match" || EffectAllow.String() != "allow" || EffectDeny.String() != "deny" {
+		t.Error("Effect.String")
+	}
+	if SourceNone.String() != "unknown" || SourceGuardGrant.String() != "guard-grant" ||
+		SourceImmutableFloor.String() != "immutable-floor" {
+		t.Error("Source.String")
+	}
+	if (Decision{}).Matched() {
+		t.Error("a zero Decision must not report as matched")
+	}
+	if !(Decision{Effect: EffectDeny}).Matched() {
+		t.Error("a deny decision must report as matched")
+	}
+}

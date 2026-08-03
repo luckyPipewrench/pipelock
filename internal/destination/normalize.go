@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Errors returned by the parsing helpers. Callers match on these rather than on
@@ -23,7 +24,28 @@ var (
 	// ErrInvalidNetwork is returned for a transport this package does not
 	// recognize. An unnamed transport fails closed rather than defaulting.
 	ErrInvalidNetwork = errors.New("destination: invalid network")
+	// ErrInvalidHost is returned for a host carrying characters that cannot
+	// appear in a real destination: control characters, embedded whitespace,
+	// or a zone separator on something that is not an IPv6 literal.
+	ErrInvalidHost = errors.New("destination: invalid host")
 )
+
+// hasUnsafeHostChars reports whether a host token carries a character that
+// cannot legitimately appear in a hostname or address literal.
+//
+// This is not cosmetic. Destination.String() feeds audit output and the
+// operator explain surface, so a host containing a newline splits one record
+// into two and lets an attacker-influenced hostname forge a log line. Embedded
+// whitespace is rejected for the same reason: it is never valid in a real host
+// and its presence means the token was never a single destination.
+func hasUnsafeHostChars(host string) bool {
+	for _, r := range host {
+		if r < 0x20 || r == 0x7f || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
 
 // NormalizeHost canonicalizes a host token for comparison.
 //
@@ -97,6 +119,9 @@ func New(network Network, host string, port uint16) (Destination, error) {
 	host = NormalizeHost(host)
 	if host == "" {
 		return Destination{}, ErrEmptyHost
+	}
+	if hasUnsafeHostChars(host) {
+		return Destination{}, fmt.Errorf("%w: control or whitespace character in %q", ErrInvalidHost, host)
 	}
 	if port == 0 {
 		return Destination{}, fmt.Errorf("%w: 0", ErrInvalidPort)

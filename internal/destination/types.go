@@ -70,19 +70,25 @@ type Destination struct {
 // IsLiteralIP reports whether Host is an IP literal rather than a DNS name.
 // A literal target is enforced directly against the floor, the internal CIDRs
 // and the IP allowlist; DNS never influences a literal verdict.
+// It uses ParseIPLiteral rather than net.ParseIP because Destination has
+// exported fields, so a caller can build one without going through New. A
+// hand-built Destination{Host: "0x7f000001"} would otherwise report as a DNS
+// name, the literal-IP floor would never run, and the dial would still reach
+// 127.0.0.1. For values produced by New this changes nothing, since New already
+// stores the canonical form.
 func (d Destination) IsLiteralIP() bool {
-	return net.ParseIP(d.Host) != nil
+	return ParseIPLiteral(d.Host) != nil
 }
 
 // IP returns the parsed literal address and whether Host was a literal at all.
 // The returned address is 4-byte-normalized for IPv4 so that comparisons and
 // map keys agree regardless of which spelling produced it.
 func (d Destination) IP() (net.IP, bool) {
-	ip := net.ParseIP(d.Host)
+	ip := ParseIPLiteral(d.Host)
 	if ip == nil {
 		return nil, false
 	}
-	return NormalizeIP(ip), true
+	return ip, true
 }
 
 // String renders the destination in a stable, log-safe form. IPv6 hosts are

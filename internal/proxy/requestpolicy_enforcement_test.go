@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -598,6 +599,14 @@ func TestRequestPolicy_ReceiptBehaviorAcrossHotReload(t *testing.T) {
 	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
 		t.Fatalf("SavePrivateKey: %v", err)
 	}
+	rotatedKeyPath := filepath.Join(t.TempDir(), "receipt-rotated.key")
+	_, rotatedPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey rotated: %v", err)
+	}
+	if err := signing.SavePrivateKey(rotatedPriv, rotatedKeyPath); err != nil {
+		t.Fatalf("SavePrivateKey rotated: %v", err)
+	}
 	rec, err := recorder.New(recorder.Config{
 		Enabled:            true,
 		Dir:                recDir,
@@ -606,6 +615,7 @@ func TestRequestPolicy_ReceiptBehaviorAcrossHotReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	initialCfg := reqPolicyConfig(blockRule(http.MethodDelete))
 	initialCfg.FlightRecorder.Dir = recDir
@@ -653,6 +663,17 @@ func TestRequestPolicy_ReceiptBehaviorAcrossHotReload(t *testing.T) {
 		t.Fatal("unrelated reload returned false")
 	}
 	assertBlockReceipt("unrelated reload", apply("reload-unrelated"), true)
+
+	rotatedCfg := reqPolicyConfig(blockRule(http.MethodDelete))
+	rotatedCfg.FlightRecorder.Dir = recDir
+	rotatedCfg.FlightRecorder.SigningKeyPath = rotatedKeyPath
+	if !p.Reload(rotatedCfg, scanner.MustNew(rotatedCfg)) {
+		t.Fatal("signing-key rotation reload returned false")
+	}
+	if got, want := p.receiptEmitterPtr.Load().SignerKeyHex(), hex.EncodeToString(rotatedPriv.Public().(ed25519.PublicKey)); got != want {
+		t.Fatalf("rotated signer = %q, want %q", got, want)
+	}
+	assertBlockReceipt("signing-key rotation", apply("reload-rotated"), true)
 
 	badCfg := reqPolicyConfig(blockRule(http.MethodDelete))
 	badCfg.FlightRecorder.Dir = recDir

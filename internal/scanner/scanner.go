@@ -30,6 +30,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
@@ -682,18 +683,7 @@ func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
 // unique-local) ranges are deliberately NOT in this set — exempting a specific
 // loopback or internal service IP is the allowlist's intended use.
 func IsNonOverridableSSRFTarget(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	return IsCloudMetadataIP(ip) ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
+	return destination.IsNonOverridableSSRFTarget(ip)
 }
 
 // IsInAPIAllowlist checks if a hostname matches any entry in api_allowlist.
@@ -1159,57 +1149,26 @@ func parseInetAtonComponent(component string, bits int) (uint64, bool) {
 // canonical net.IP. It strips a single trailing DNS root dot and any trailing
 // zone ID, decodes alternative IPv4 forms, and normalizes IPv4-mapped IPv6 to
 // four-byte IPv4. It returns nil for an ordinary hostname.
+// The implementation lives in internal/destination, which owns destination
+// vocabulary. Delegating keeps a single parser rather than two copies that
+// must be held in sync: a spelling recognized by one and not the other is a
+// fail-open, because a host classified as a DNS name skips the literal floor.
 func ParseIPLiteral(hostname string) net.IP {
-	hostname = strings.TrimSpace(hostname)
-	if zone := strings.IndexByte(hostname, '%'); zone >= 0 {
-		hostname = hostname[:zone]
-	}
-	hostname = strings.TrimSuffix(hostname, ".")
-	ip := net.ParseIP(hostname)
-	if ip == nil {
-		ip = parseAlternativeIP(hostname)
-	}
-	if ip == nil {
-		return nil
-	}
-	if ipv4 := ip.To4(); ipv4 != nil {
-		return ipv4
-	}
-	return ip
+	return destination.ParseIPLiteral(hostname)
 }
 
-// metadataIPv4s lists the well-known cloud-provider instance-metadata IPv4
-// endpoints that are operationally distinct from generic private-network
-// blocks. AWS / Azure / GCP IMDS all share 169.254.169.254. Azure also exposes
-// the WireServer at 168.63.129.16, and Alibaba Cloud ECS serves metadata at
-// 100.100.100.200. Hits on these addresses are reported with
-// ScannerSSRFMetadata so the block-reason header carries the dedicated
-// `ssrf_metadata` code (vs. the generic `ssrf_private_ip`).
-var metadataIPv4s = map[string]struct{}{
-	"169.254.169.254": {}, // AWS / Azure / GCP IMDS
-	"168.63.129.16":   {}, // Azure WireServer
-	"100.100.100.200": {}, // Alibaba Cloud ECS metadata
-}
-
-// metadataIPv6 lists the canonical IPv6 instance-metadata endpoints.
-var metadataIPv6 = map[string]struct{}{
-	"fd00:ec2::254": {}, // AWS IMDSv6
-}
+// The cloud-metadata address tables moved to internal/destination alongside the
+// predicate that reads them. Keeping a second copy here would be a set of
+// addresses that must stay in sync with the enforcing one, and a provider
+// address present in one copy but not the other is a metadata endpoint that
+// reaches an agent.
 
 // IsCloudMetadataIP returns true when the resolved IP belongs to a recognised
 // cloud-provider metadata service. The caller uses this to upgrade a generic
 // SSRF block into the more specific metadata classification, matching the
 // dedicated blockreason.SSRFMetadata code.
 func IsCloudMetadataIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		_, ok := metadataIPv4s[v4.String()]
-		return ok
-	}
-	_, ok := metadataIPv6[ip.String()]
-	return ok
+	return destination.IsCloudMetadataIP(ip)
 }
 
 func isCloudMetadataIP(ip net.IP) bool {
@@ -1324,50 +1283,27 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		}
 	}
 
-	// Parse each resolved IP once (zone-ID strip + IPv4-mapped normalization),
-	// then reuse the parsed set for both the non-overridable floor pass and the
-	// CIDR pass below so the two passes cannot drift. Unparseable entries are
-	// dropped (they cannot be dialed).
-	type resolvedIP struct {
-		ip        net.IP
-		displayIP string
-	}
-	parsed := make([]resolvedIP, 0, len(ips))
-	for _, ipStr := range ips {
-		// Strip IPv6 zone ID (e.g. "::1%eth0" → "::1"). Zone IDs cause
-		// net.ParseIP to return nil, silently skipping the CIDR check.
-		displayIP := ipStr
-		if idx := strings.Index(ipStr, "%"); idx != -1 {
-			ipStr = ipStr[:idx]
-		}
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
-		if v4 := ip.To4(); v4 != nil {
-			ip = v4
-		}
-		parsed = append(parsed, resolvedIP{ip: ip, displayIP: displayIP})
-	}
+	// Parse the resolved set once and reuse it for every pass, so the floor pass
+	// and the CIDR pass cannot disagree about what an address is. Zone-ID strip,
+	// IPv4-mapped normalization and dropping undialable entries all live in
+	// destination.ParseResolved.
+	parsed := destination.ParseResolved(ips)
 
 	// Non-overridable floor: cloud-metadata, link-local, multicast, and
 	// unspecified targets can never be exempted, so this pass runs BEFORE the
 	// trusted-domain allow below and wins over it.
-	for _, r := range parsed {
-		if IsNonOverridableSSRFTarget(r.ip) {
-			scannerLabel := ScannerSSRF
-			blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, r.displayIP)
-			if isCloudMetadataIP(r.ip) {
-				scannerLabel = ScannerSSRFMetadata
-				blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, r.displayIP)
-			}
-			return Result{
-				Allowed: false,
-				Reason:  blockReason,
-				Scanner: scannerLabel,
-				Score:   1.0,
-			}
+	if hit, found := destination.FirstFloorHit(parsed); found {
+		scannerLabel := ScannerSSRF
+		blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, hit.Display)
+		if isCloudMetadataIP(hit.IP) {
+			scannerLabel = ScannerSSRFMetadata
+			blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, hit.Display)
+		}
+		return Result{
+			Allowed: false,
+			Reason:  blockReason,
+			Scanner: scannerLabel,
+			Score:   1.0,
 		}
 	}
 
@@ -1378,35 +1314,27 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		return Result{Allowed: true}
 	}
 
-	for _, r := range parsed {
-		// Check against internal CIDRs (core + config). Cloud-metadata IPs never
-		// reach here: they are non-overridable and already returned above, so
-		// this pass only ever emits the generic internal-IP classification.
-		for _, cidr := range allCIDRs {
-			if cidr.Contains(r.ip) {
-				// IP allowlist exemption: operator explicitly trusts this range.
-				if s.IsIPAllowlisted(r.ip) {
-					continue
-				}
-				result := Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, r.displayIP),
-					Scanner: ScannerSSRF,
-					Score:   1.0,
-				}
-				// If the domain is in api_allowlist, this is a config
-				// mismatch (not a real attack): classify it so adaptive
-				// enforcement doesn't escalate. The agent-facing hint stays
-				// terse (no knob); the operator gets the exact allow-path
-				// (ssrf.ip_allowlist for an IP literal, trusted_domains for a
-				// hostname) from `pipelock explain` and the audit hint.
-				if s.IsInAPIAllowlist(hostname) {
-					result.Hint = HintForScanner(ScannerSSRF)
-					result.Class = ClassConfigMismatch
-				}
-				return result
-			}
+	// Internal CIDRs (core + config). Cloud-metadata addresses never reach here:
+	// they are non-overridable and already returned above, so this pass only
+	// ever emits the generic internal-IP classification.
+	if hit, found := destination.FirstInternalHit(parsed, allCIDRs, s.IsIPAllowlisted); found {
+		result := Result{
+			Allowed: false,
+			Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, hit.Display),
+			Scanner: ScannerSSRF,
+			Score:   1.0,
 		}
+		// If the domain is in api_allowlist, this is a config mismatch (not a
+		// real attack): classify it so adaptive enforcement doesn't escalate.
+		// The agent-facing hint stays terse (no knob); the operator gets the
+		// exact allow-path (ssrf.ip_allowlist for an IP literal,
+		// trusted_domains for a hostname) from `pipelock explain` and the
+		// audit hint.
+		if s.IsInAPIAllowlist(hostname) {
+			result.Hint = HintForScanner(ScannerSSRF)
+			result.Class = ClassConfigMismatch
+		}
+		return result
 	}
 
 	return Result{Allowed: true, SSRFResolvedIPs: append([]string(nil), ips...)}
@@ -3573,20 +3501,9 @@ func baseDomain(hostname string) string {
 // "sub.example.com", "a.b.example.com", and "example.com" itself.
 // IP addresses only support exact match - wildcards are not applied to IPs
 // to prevent false matches like "*.168.1.1" matching "192.168.1.1".
+// The implementation now lives in internal/destination, which owns destination
+// vocabulary. This remains the name every existing call site uses, so moving it
+// does not touch the scanner, proxy, CLI, session or content-entropy consumers.
 func MatchDomain(hostname, pattern string) bool {
-	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
-	pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
-
-	// IP addresses: exact match only, no wildcard expansion.
-	// Dots in IPs are not domain separators - "192" is not a subdomain of "168.1.1".
-	if net.ParseIP(hostname) != nil {
-		return hostname == pattern
-	}
-
-	if strings.HasPrefix(pattern, "*.") {
-		suffix := pattern[1:] // ".example.com"
-		base := pattern[2:]   // "example.com"
-		return hostname == base || strings.HasSuffix(hostname, suffix)
-	}
-	return hostname == pattern
+	return destination.MatchDomain(hostname, pattern)
 }

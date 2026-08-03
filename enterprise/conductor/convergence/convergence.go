@@ -118,8 +118,21 @@ type FollowerConvergence struct {
 
 // DenominatorSummary reports a count for one denominator.
 type DenominatorSummary struct {
-	Total   int `json:"total"`
+	// Total is every follower this denominator applies to. Followers that are
+	// intentionally out of scope, meaning excluded or scaled to zero, are not
+	// counted at all rather than counted as failures.
+	Total int `json:"total"`
+
+	// Healthy is the followers this denominator can positively vouch for.
 	Healthy int `json:"healthy"`
+
+	// Unknown is the followers this denominator explicitly cannot vouch for.
+	//
+	// Total is deliberately NOT Healthy plus Unknown. A follower can be
+	// neither: definitively unhealthy in a way that is known rather than
+	// unknown, such as a wrong digest. Reading the remainder as "probably
+	// fine" is exactly the collapsed-percentage reasoning this report exists
+	// to prevent, so the two counts are reported and neither is inferred.
 	Unknown int `json:"unknown"`
 }
 

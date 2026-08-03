@@ -36,6 +36,48 @@ func TestEvidenceSummary_StaleBatchIsNotHealthyEvidence(t *testing.T) {
 		t.Fatalf("evidence coverage counted a stale follower as healthy (healthy=%d); "+
 			"a stale follower's old batch is not healthy evidence delivery", s.Healthy)
 	}
+	if s.Total != 1 {
+		t.Fatalf("evidence total = %d, want 1; a stale follower is still in scope", s.Total)
+	}
+	if s.Unknown != 1 {
+		t.Fatalf("evidence unknown = %d, want 1; a stale follower must be explicitly "+
+			"unvouchable rather than silently absent from both counts", s.Unknown)
+	}
+}
+
+// TestBuild_DuplicateFleetStatusFailsClosed covers the second duplicate source.
+//
+// Build detects duplicate identity separately for intents and for fleet-status
+// records. Covering only the intent path would leave the fleet-status path free
+// to regress, since the two are independent maps built in different loops.
+func TestBuild_DuplicateFleetStatusFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	report := Build(Inputs{
+		Now: now,
+		FleetStatus: []controlplane.FollowerFleetStatus{
+			{
+				FollowerSummary: controlplane.FollowerSummary{InstanceID: "dup-fs", Active: true},
+				Health:          controlplane.FleetHealthOK,
+			},
+			{
+				FollowerSummary: controlplane.FollowerSummary{InstanceID: "dup-fs", Active: true},
+				Health:          controlplane.FleetHealthOK,
+			},
+		},
+	})
+
+	var found *FollowerConvergence
+	for i := range report.Followers {
+		if report.Followers[i].InstanceID == "dup-fs" {
+			found = &report.Followers[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("duplicate fleet-status instance ID vanished from the report entirely")
+	}
+	if found.State != StateUnknown {
+		t.Fatalf("duplicate fleet-status record reported as %q, want %q", found.State, StateUnknown)
+	}
 }
 
 // TestBuild_DuplicateInstanceIDFailsClosed covers ambiguous identity.

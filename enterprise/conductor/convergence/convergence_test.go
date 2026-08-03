@@ -236,24 +236,22 @@ func TestBuild_FourDenominatorsNeverCollapsed(t *testing.T) {
 		t.Errorf("evidence healthy = %d, want 1", report.EvidenceCoverage.Healthy)
 	}
 
-	// The four denominators MUST be independently queryable, never one collapsed number.
-	// Verify they differ.
-	if report.DeploymentCoverage.Healthy == report.EvidenceCoverage.Healthy &&
-		report.DeploymentCoverage.Total == report.EvidenceCoverage.Total {
-		// This is actually fine in this case; the point is they CAN differ.
-		// Let's check the structural independence by ensuring the JSON has four keys.
-		data, err := json.Marshal(report)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err != nil {
-			t.Fatal(err)
-		}
-		for _, key := range []string{"deployment_coverage", "runtime_coverage", "conductor_coverage", "evidence_coverage"} {
-			if _, ok := raw[key]; !ok {
-				t.Errorf("missing top-level key %q in report JSON", key)
-			}
+	// The four denominators MUST be independently queryable, never one collapsed
+	// number. This assertion runs unconditionally: it was previously guarded by
+	// the deployment and evidence numbers happening to be equal, so a fixture
+	// change that made them differ would have skipped the check entirely while
+	// the test kept passing under a name claiming an unconditional invariant.
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"deployment_coverage", "runtime_coverage", "conductor_coverage", "evidence_coverage"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing top-level key %q in report JSON", key)
 		}
 	}
 }
@@ -341,12 +339,12 @@ func TestBuild_EvidenceFields(t *testing.T) {
 }
 
 func TestBuild_AllStatesDistinguishable(t *testing.T) {
-	// Verify all six required states plus excluded are distinguishable in a
-	// single report with mixed followers.
+	// Every distinguishable state must be reachable in one mixed report, so a
+	// state that silently stops being produced fails here rather than quietly
+	// disappearing from operator-visible output.
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	healthOK := controlplane.FleetHealthOK
 	healthStale := controlplane.FleetHealthStale
-	_ = healthOK
 
 	report := Build(Inputs{
 		OrgID: "org1", FleetID: "fleet1", Now: now,
@@ -358,12 +356,17 @@ func TestBuild_AllStatesDistinguishable(t *testing.T) {
 			{InstanceID: "e-nobatch", DesiredReplicas: 1},
 			{InstanceID: "f-converged", DesiredReplicas: 1},
 			{InstanceID: "g-excluded", DesiredReplicas: 1, Excluded: true, ExcludedReason: "test only"},
+			{InstanceID: "i-unknown", DesiredReplicas: 1},
 		},
 		FleetStatus: []controlplane.FollowerFleetStatus{
 			{FollowerSummary: controlplane.FollowerSummary{InstanceID: "c-stale", Active: true}, Health: healthStale, Drift: "status_stale"},
 			{FollowerSummary: controlplane.FollowerSummary{InstanceID: "d-wrong", Active: true}, Health: healthOK, RuntimeStatus: &controlplane.FollowerRuntimeStatus{ActiveBundleHash: "bbbb"}},
 			{FollowerSummary: controlplane.FollowerSummary{InstanceID: "e-nobatch", Active: true}, Health: healthOK},
 			{FollowerSummary: controlplane.FollowerSummary{InstanceID: "f-converged", Active: true}, Health: healthOK},
+			// Enrolled and healthy but declared by no deployment intent.
+			{FollowerSummary: controlplane.FollowerSummary{InstanceID: "h-undeclared", Active: true}, Health: healthOK},
+			// A health value this code does not recognize must fail closed.
+			{FollowerSummary: controlplane.FollowerSummary{InstanceID: "i-unknown", Active: true}, Health: controlplane.FleetHealth("some_future_health")},
 		},
 		AuditBatches: []controlplane.AuditBatchSummary{
 			{BatchID: "b-f", InstanceID: "f-converged", ReceivedAt: now.Add(-30 * time.Second), EmittedAt: now.Add(-35 * time.Second)},
@@ -381,7 +384,7 @@ func TestBuild_AllStatesDistinguishable(t *testing.T) {
 	required := []FollowerState{
 		StateScaledZero, StateUnenrolled, StateStale,
 		StateWrongDigest, StateCurrentWithoutBatch, StateFullyConverged,
-		StateExcluded,
+		StateExcluded, StateUndeclared, StateUnknown,
 	}
 	for _, s := range required {
 		if _, ok := stateMap[s]; !ok {

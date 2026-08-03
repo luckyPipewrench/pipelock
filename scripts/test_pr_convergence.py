@@ -999,6 +999,79 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertNotIn("repos/owner/repo/pulls?state=open&per_page=100", calls)
         self.assertNotIn("repos/owner/repo/pulls?state=open&head=owner:feature-base&per_page=100", calls)
 
+    def test_siblings_selected_by_base_ref_not_head_ref(self) -> None:
+        """Siblings are PRs targeting the same base, not PRs headed by it.
+
+        The first implementation passed base_ref to a headRefName filter, which
+        asks "which open PRs are headed by main". That is essentially always
+        none, so overlap detection silently found nothing and reported READY.
+        Verified live at the time: GitHub reported 2 open PRs with base=main
+        while the head-ref query returned 0.
+        """
+        captured: dict[str, str] = {}
+
+        class FakeClient:
+            def open_pulls_by_base_ref(self, repo: str, base_ref: str):
+                captured["repo"] = repo
+                captured["base_ref"] = base_ref
+                return [
+                    # A genuine sibling: different head, same base.
+                    {
+                        "number": 42,
+                        "state": "open",
+                        "title": "Genuine sibling",
+                        "html_url": "https://example.invalid/42",
+                        "head": {"ref": "feature-b"},
+                        "base": {"ref": "main"},
+                    },
+                    # A decoy whose HEAD is the base branch. The old query
+                    # would have returned this one and only this one.
+                    {
+                        "number": 43,
+                        "state": "open",
+                        "title": "Headed by main",
+                        "html_url": "https://example.invalid/43",
+                        "head": {"ref": "main"},
+                        "base": {"ref": "release"},
+                    },
+                ]
+
+            def graphql_open_pulls_by_head_ref(self, head_ref_name: str):
+                # Models the real GraphQL behavior: filtering by headRefName
+                # returns only PRs whose HEAD is that branch. Present so that
+                # neutralizing the fix produces a genuine assertion failure
+                # rather than an AttributeError, which would prove nothing.
+                return [
+                    {
+                        "number": 43,
+                        "state": "open",
+                        "title": "Headed by main",
+                        "html_url": "https://example.invalid/43",
+                        "head": {"ref": "main"},
+                        "base": {"ref": "release"},
+                    },
+                ]
+
+            def api(self, path: str, paginate: bool = False):
+                if "/pulls/42/files" in path:
+                    return [{"filename": "scripts/shared.py"}]
+                return [{"filename": "scripts/unrelated.py"}]
+
+        errors: list[dict[str, str]] = []
+        result = pr_convergence.gather_sibling_overlaps(
+            FakeClient(), "owner/repo", 7, "main", "feature-a",
+            ["scripts/shared.py"], errors,
+        )
+
+        # Behavior first, so a regression fails on the outcome rather than on
+        # the instrumentation. Selecting by head ref returns only the decoy,
+        # which shares no path, so the genuine sibling goes undetected.
+        numbers = [s["number"] for s in result["overlapping_siblings"]]
+        self.assertIn(42, numbers, "same-base sibling sharing a path must be detected")
+        self.assertNotIn(43, numbers, "a PR merely headed by the base branch is not a sibling")
+        self.assertEqual(result["siblings_checked"], 1, "only the same-base PR is a sibling")
+        self.assertEqual(captured.get("base_ref"), "main", "lookup must filter on the base ref")
+
     def test_sibling_path_overlap_blocks(self) -> None:
         data = load_fixture()
         data["sibling_overlaps"] = {

@@ -22,6 +22,14 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+# Cap the per-sibling changed-file fetch. Each sibling costs one paginated REST
+# call, so an unbounded loop scales with the open-PR count and can approach the
+# rate limit on a busy repo. When the cap truncates the candidate set the
+# shortfall is reported rather than silently dropped, because a quietly
+# truncated scan reads as "no overlap found".
+MAX_SIBLING_FETCHES = 25
 
 
 VALID_GATES = ("task-start", "pre-edit", "pre-push", "post-push")
@@ -386,6 +394,23 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
             node_mapper=as_dict,
         )
 
+    def open_pulls_by_base_ref(self, repo: str, base_ref: str) -> list[dict[str, Any]]:
+        """Return open PRs whose BASE branch is base_ref.
+
+        Sibling detection needs PRs that target the same base, which is not the
+        same question as graphql_open_pulls_by_head_ref answers. That method
+        filters on headRefName and is used for stack-child detection; passing a
+        base branch to it asks "which open PRs are headed by main", which is
+        essentially always none. This uses the REST base filter instead, and
+        returns each candidate's base ref so the caller can verify it.
+        """
+        return as_list(
+            self.api(
+                f"repos/{repo}/pulls?state=open&base={quote(base_ref, safe='')}&per_page=100",
+                paginate=True,
+            )
+        )
+
     def graphql_open_pulls_by_head_ref(self, head_ref_name: str) -> list[dict[str, Any]]:
         query = """
 query($owner: String!, $name: String!, $headRefName: String!, $after: String) {
@@ -451,25 +476,42 @@ def gather_sibling_overlaps(
         return result
 
     try:
-        sibling_prs = client.graphql_open_pulls_by_head_ref(base_ref)
+        sibling_prs = client.open_pulls_by_base_ref(repo, base_ref)
     except GhReadError as exc:
         errors.append({"source": "sibling_prs", "message": str(exc)})
         return result
 
-    # Filter: only PRs targeting the same base that are NOT this PR and NOT
-    # a stack parent/child (different head ref targeting the same base).
+    # Keep only open PRs that genuinely target the same base and are neither
+    # this PR nor its own head. The base ref is re-verified from the returned
+    # payload rather than trusted from the request filter, so a server-side
+    # filter change cannot silently widen the candidate set.
     siblings = []
     for candidate in sibling_prs:
         candidate = as_dict(candidate)
         cand_number = candidate.get("number")
         cand_head_ref = dotted_get(candidate, "head", "ref")
+        cand_base_ref = dotted_get(candidate, "base", "ref")
         if cand_number == pr_number or cand_head_ref == head_ref:
+            continue
+        if cand_base_ref != base_ref:
             continue
         if str(candidate.get("state", "")).lower() != "open":
             continue
         siblings.append(candidate)
 
     result["siblings_checked"] = len(siblings)
+    # Truncation is reported, never silent. A capped scan that found nothing is
+    # not the same claim as a complete scan that found nothing.
+    if len(siblings) > MAX_SIBLING_FETCHES:
+        result["siblings_truncated"] = len(siblings) - MAX_SIBLING_FETCHES
+        errors.append({
+            "source": "sibling_prs",
+            "message": (
+                f"{len(siblings)} same-base siblings exceeds the {MAX_SIBLING_FETCHES} "
+                "fetch cap; overlap detection is incomplete"
+            ),
+        })
+        siblings = siblings[:MAX_SIBLING_FETCHES]
 
     for sibling in siblings:
         sib_number = sibling.get("number")
@@ -582,16 +624,20 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
         data["compare"] = {}
 
     # Fetch this PR's changed files for sibling overlap detection.
+    # Keep the uncoalesced result: read_source returns None only on a failed
+    # read, and collapsing that to [] here would make a failed read
+    # indistinguishable from a successful empty one. They are different states
+    # and they get different statuses.
     pr_files_raw = read_source(
         "pr_files",
         lambda: client.api(
             f"repos/{repo}/pulls/{pr_number}/files?per_page=100",
             paginate=True,
         ),
-    ) or []
+    )
     own_files = [
         str(as_dict(f).get("filename") or "")
-        for f in as_list(pr_files_raw)
+        for f in as_list(pr_files_raw or [])
         if as_dict(f).get("filename")
     ]
     data["pr_files"] = own_files

@@ -55,6 +55,12 @@ const (
 	// StateExcluded means the follower is explicitly marked as not an
 	// expected receipt producer (local-only proxy, test instance, etc.).
 	StateExcluded FollowerState = "excluded"
+
+	// StateUndeclared means conductor knows about this follower but no
+	// deployment intent declares it. It is distinct from StateUnknown: the
+	// data is not missing, the authorization is. A rogue or forgotten
+	// enforcement point lands here, and it is never counted as converged.
+	StateUndeclared FollowerState = "undeclared"
 )
 
 // DeploymentIntent is the GitOps/desired declaration for one follower.
@@ -254,6 +260,17 @@ func classifyFollower(
 		return fc
 	}
 
+	// Enrolled but undeclared. The report answers "is this enforcement point
+	// supposed to be here", not merely "is it well", so a follower that no
+	// deployment intent declares can never be converged no matter how healthy
+	// it looks. Otherwise a rogue or forgotten follower reads as green and the
+	// desired-state boundary this report exists to establish is inverted.
+	if intent == nil {
+		fc.State = StateUndeclared
+		fc.Reason = "enrolled with conductor but absent from deployment intent"
+		return fc
+	}
+
 	// Conductor says unknown or stale.
 	if fleetStatus.Health == controlplane.FleetHealthUnknown {
 		fc.State = StateUnknown
@@ -278,7 +295,15 @@ func classifyFollower(
 
 	// Check digest match if we have deployment intent with a desired digest.
 	if intent != nil && intent.DesiredDigest != "" {
-		actualHash := actualBundleHash(fleetStatus)
+		actualHash, hashConflict := actualBundleHash(fleetStatus)
+		if hashConflict {
+			fc.State = StateUnknown
+			fc.Reason = fmt.Sprintf(
+				"signed applied state reports %s but live runtime reports %s; running bundle is not provable",
+				truncHash(actualHash), truncHash(fleetStatus.RuntimeStatus.ActiveBundleHash),
+			)
+			return fc
+		}
 		if actualHash == "" {
 			fc.State = StateUnknown
 			fc.Reason = "deployment intent specifies desired digest but no active bundle hash available"
@@ -313,14 +338,34 @@ func classifyFollower(
 	return fc
 }
 
-func actualBundleHash(fs *controlplane.FollowerFleetStatus) string {
-	if fs.SignedAppliedState != nil && fs.SignedAppliedState.AppliedState.ActiveBundleHash != "" {
-		return fs.SignedAppliedState.AppliedState.ActiveBundleHash
+// actualBundleHash reports which bundle a follower is running, and whether its
+// two sources of truth disagree.
+//
+// The signed applied state is a record of what the follower reported applying;
+// the runtime status is what it says it is running now. Preferring the signed
+// record and ignoring a contradicting runtime lets a stale signed record that
+// happens to match the desired digest mask a proxy that is actually enforcing
+// an old, downgraded, or tampered bundle. A disagreement is not something to
+// resolve by precedence, it is evidence that the follower's state is not
+// provable, so the caller must treat conflict as not-converged.
+func actualBundleHash(fs *controlplane.FollowerFleetStatus) (hash string, conflict bool) {
+	signed := ""
+	if fs.SignedAppliedState != nil {
+		signed = fs.SignedAppliedState.AppliedState.ActiveBundleHash
 	}
+	runtime := ""
 	if fs.RuntimeStatus != nil {
-		return fs.RuntimeStatus.ActiveBundleHash
+		runtime = fs.RuntimeStatus.ActiveBundleHash
 	}
-	return ""
+
+	// Both present and disagreeing: unprovable, never silently pick one.
+	if signed != "" && runtime != "" && signed != runtime {
+		return signed, true
+	}
+	if signed != "" {
+		return signed, false
+	}
+	return runtime, false
 }
 
 func truncHash(h string) string {

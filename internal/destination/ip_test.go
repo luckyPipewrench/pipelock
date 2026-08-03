@@ -4,6 +4,7 @@
 package destination
 
 import (
+	"fmt"
 	"net"
 	"testing"
 )
@@ -290,10 +291,12 @@ func TestNew_RejectsUnsafeHostCharacters(t *testing.T) {
 		"host\x7f.example",
 	}
 	for _, host := range bad {
-		if _, err := New(NetworkTCP, host, 443); err == nil {
-			t.Errorf("New(%q) was accepted; an embedded control character or space "+
-				"reaches audit output through String() and can forge a log record", host)
-		}
+		t.Run(fmt.Sprintf("%q", host), func(t *testing.T) {
+			if _, err := New(NetworkTCP, host, 443); err == nil {
+				t.Fatalf("New(%q) was accepted; an embedded control character or space "+
+					"reaches audit output through String() and can forge a log record", host)
+			}
+		})
 	}
 	// A legitimate host with surrounding whitespace is still fine: it is
 	// trimmed, not rejected. Over-strictness here would deny real destinations.

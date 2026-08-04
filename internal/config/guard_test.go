@@ -22,6 +22,130 @@ func TestValidateGuard_EmptyIsValid(t *testing.T) {
 	}
 }
 
+func TestExplainGuardPathFloor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		path        string
+		access      GuardAccess
+		wantRefused bool
+		wantRule    string
+		wantMatched string
+	}{
+		{name: "read_component_case_folded", path: "/workspace/.AWS/credentials", access: GuardAccessRead, wantRefused: true, wantRule: "forbidden_component", wantMatched: ".AWS"},
+		{name: "write_component_reasoned", path: "/srv/agent/.kube/config", access: GuardAccessWrite, wantRefused: true, wantRule: "forbidden_component", wantMatched: ".kube"},
+		{name: "read_whole_home_case_folded", path: "/users/someoperator", access: GuardAccessRead, wantRefused: true, wantRule: "whole_home", wantMatched: "/users/someoperator"},
+		{name: "write_multi_home_root", path: "/var/home", access: GuardAccessWrite, wantRefused: true, wantRule: "credential_path", wantMatched: "/var/home"},
+		{name: "read_home_credential_variant", path: "/home/someoperator/.npmrc.bak", access: GuardAccessRead, wantRefused: true, wantRule: "credential_path", wantMatched: ".npmrc"},
+		{name: "write_home_credential_shape", path: "/home/someoperator/.pypirc", access: GuardAccessWrite, wantRefused: true, wantRule: "credential_path", wantMatched: ".pypirc"},
+		{name: "read_absolute_credential", path: "/run/secrets/api-token", access: GuardAccessRead, wantRefused: true, wantRule: "credential_path", wantMatched: "/run/secrets"},
+		{name: "read_pipelock_state", path: "/home/someoperator/.local/share/pipelock/license.token", access: GuardAccessRead, wantRefused: true, wantRule: "forbidden_path_shape", wantMatched: filepath.Join(".local", "share", "pipelock")},
+		{name: "read_autostart_allowed", path: "/home/someoperator/.config/autostart/app.desktop", access: GuardAccessRead},
+		{name: "write_autostart_refused", path: "/home/someoperator/.config/autostart/app.desktop", access: GuardAccessWrite, wantRefused: true, wantRule: "forbidden_path_shape", wantMatched: filepath.Join(".config", "autostart")},
+		{name: "write_path_directory", path: "/usr/local/bin/helper", access: GuardAccessWrite, wantRefused: true, wantRule: "dangerous_write_root", wantMatched: "/usr/local/bin"},
+		{name: "ordinary_read", path: "/opt/app/config.yaml", access: GuardAccessRead},
+		{name: "ordinary_write", path: "/var/lib/app/state.db", access: GuardAccessWrite},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			decision, err := ExplainGuardPathFloor(tt.path, tt.access)
+			if err != nil {
+				t.Fatalf("ExplainGuardPathFloor: %v", err)
+			}
+			if decision.Refused != tt.wantRefused || decision.Rule != tt.wantRule || decision.Matched != tt.wantMatched {
+				t.Fatalf("decision = %+v, want refused=%t rule=%q matched=%q", decision, tt.wantRefused, tt.wantRule, tt.wantMatched)
+			}
+			if decision.ResolvedPath == "" {
+				t.Fatal("resolved path must always be reported")
+			}
+			if decision.Refused && decision.Reason == "" {
+				t.Fatal("refusal must include an operator-facing reason")
+			}
+		})
+	}
+}
+
+func TestExplainGuardPathFloorErrors(t *testing.T) {
+	t.Parallel()
+
+	if _, err := ExplainGuardPathFloor("relative/path", GuardAccessRead); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("relative path error = %v", err)
+	}
+	if _, err := ExplainGuardPathFloor("/opt/app/config.yaml", GuardAccess("execute")); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported access error = %v", err)
+	}
+}
+
+func TestExplainGuardPathFloorUsesResolvedSymlinkForBothAccesses(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	target := filepath.Join(root, ".ssh")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	alias := filepath.Join(root, "innocuous")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	for _, access := range []GuardAccess{GuardAccessRead, GuardAccessWrite} {
+		t.Run(string(access), func(t *testing.T) {
+			decision, err := ExplainGuardPathFloor(filepath.Join(alias, "id_ed25519"), access)
+			if err != nil {
+				t.Fatalf("ExplainGuardPathFloor: %v", err)
+			}
+			if !decision.Refused || decision.Rule != "forbidden_component" || decision.Matched != ".ssh" {
+				t.Fatalf("resolved symlink decision = %+v", decision)
+			}
+		})
+	}
+}
+
+func TestExplainGuardPathFloorValidatorAntiDrift(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		path     string
+		access   GuardAccess
+		wantRule string
+	}{
+		{name: "read_component", path: "/workspace/.docker/config.json", access: GuardAccessRead, wantRule: "forbidden_component"},
+		{name: "read_whole_home", path: "/home/someoperator", access: GuardAccessRead, wantRule: "whole_home"},
+		{name: "read_credential", path: "/home/someoperator/.netrc.old", access: GuardAccessRead, wantRule: "credential_path"},
+		{name: "read_pipelock", path: "/home/someoperator/.config/pipelock/config.yaml", access: GuardAccessRead, wantRule: "forbidden_path_shape"},
+		{name: "write_autostart", path: "/home/someoperator/.config/autostart/app.desktop", access: GuardAccessWrite, wantRule: "forbidden_path_shape"},
+		{name: "write_whole_home", path: "/app", access: GuardAccessWrite, wantRule: "whole_home"},
+		{name: "write_root", path: "/etc/systemd/system/app.service", access: GuardAccessWrite, wantRule: "dangerous_write_root"},
+		{name: "write_credential", path: "/home/someoperator/.claude.json~", access: GuardAccessWrite, wantRule: "credential_path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			decision, err := ExplainGuardPathFloor(tt.path, tt.access)
+			if err != nil {
+				t.Fatalf("ExplainGuardPathFloor: %v", err)
+			}
+			if !decision.Refused || decision.Rule != tt.wantRule {
+				t.Fatalf("explain decision = %+v, want rule %q", decision, tt.wantRule)
+			}
+
+			if tt.access == GuardAccessRead {
+				err = validateGuardROPath("guard.manifests[0]", "read_only", 0, tt.path)
+			} else {
+				err = validateGuardRWPath("guard.manifests[0]", "read_write", 0, tt.path)
+			}
+			if err == nil || !strings.Contains(err.Error(), decision.Reason) {
+				t.Fatalf("validator did not enforce explain rule %q with the same reason: decision=%+v err=%v", decision.Rule, decision, err)
+			}
+		})
+	}
+}
+
 func TestValidateGuard_ValidFull(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()

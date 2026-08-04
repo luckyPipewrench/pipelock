@@ -9,6 +9,28 @@ import (
 	"strings"
 )
 
+// GuardAccess identifies the filesystem operation evaluated against the
+// compiled guard floor.
+type GuardAccess string
+
+const (
+	GuardAccessRead  GuardAccess = "read"
+	GuardAccessWrite GuardAccess = "write"
+)
+
+// GuardFloorDecision explains whether the compiled guard floor refuses one
+// path. It is exported so read-only operator surfaces can report the exact same
+// decision as config validation instead of maintaining a second matcher.
+type GuardFloorDecision struct {
+	Access       GuardAccess
+	Path         string
+	ResolvedPath string
+	Refused      bool
+	Rule         string
+	Matched      string
+	Reason       string
+}
+
 // resolveGuardPath resolves symlinks in a guard path as far as the filesystem
 // allows.
 //
@@ -61,32 +83,99 @@ func resolveGuardPath(rawPath string) string {
 // individually; what is refused here is the directory that holds keys.
 func validateGuardROPath(label, fieldName string, idx int, rawPath string) error {
 	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
-	resolved := resolveGuardPath(rawPath)
-
-	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
-		return fmt.Errorf("%s: read access to secret-bearing path %q is not allowed (contains %q, which is %s); reading credential material is exfiltration, not merely inspection", field, rawPath, comp, reason)
+	decision, err := ExplainGuardPathFloor(rawPath, GuardAccessRead)
+	if err != nil {
+		return fmt.Errorf("%s: %w", field, err)
 	}
-	// A grant on an entire home reads through to every credential beneath it,
-	// which would defeat every rule in this file by granting the parent
-	// instead of the target. The write side has always refused this; the read
-	// side did not, so `read_only: [/home/someoperator]` was accepted and
-	// carried ~/.ssh with it.
-	if guardIsHomeRoot(resolved) {
-		return fmt.Errorf("%s: read access to the entire home directory %q is not allowed; it reads through to every credential beneath it", field, rawPath)
-	}
-	if reason := guardDeclaredPathSecretMaterialReason(rawPath, resolved); reason != "" {
-		return fmt.Errorf("%s: read access to %q is not allowed (%s); reading a credential is exfiltration, not merely inspection", field, rawPath, reason)
-	}
-	// Pipelock config and state directories contain credential material
-	// (license_key, kill_switch.api_token, secrets_file) that a read grant
-	// would expose. The suffix check covers every user's home, not just this
-	// process's, matching the write-side guard in validateGuardRWPath.
-	if suffix := guardForbiddenSuffix(resolved); suffix != "" {
-		if strings.Contains(suffix, "pipelock") {
-			return fmt.Errorf("%s: read access to %s %q is not allowed; it may contain credential material", field, suffix, rawPath)
-		}
+	if decision.Refused {
+		return fmt.Errorf("%s: %s", field, decision.Reason)
 	}
 	return nil
+}
+
+// ExplainGuardPathFloor evaluates one absolute path using the same compiled
+// floor consumed by guard config validation. Operator-declared grants are not
+// considered here because they can be narrowed while this floor cannot.
+func ExplainGuardPathFloor(rawPath string, access GuardAccess) (GuardFloorDecision, error) {
+	decision := GuardFloorDecision{Access: access, Path: rawPath}
+	if !filepath.IsAbs(rawPath) {
+		return decision, fmt.Errorf("path must be absolute (got %q)", rawPath)
+	}
+	if access != GuardAccessRead && access != GuardAccessWrite {
+		return decision, fmt.Errorf("unsupported guard access %q", access)
+	}
+
+	resolved := resolveGuardPath(rawPath)
+	decision.ResolvedPath = resolved
+	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
+		decision.Refused = true
+		decision.Rule = "forbidden_component"
+		decision.Matched = comp
+		if access == GuardAccessRead {
+			decision.Reason = fmt.Sprintf("read access to secret-bearing path %q is not allowed (contains %q, which is %s); reading credential material is exfiltration, not merely inspection", rawPath, comp, reason)
+		} else {
+			decision.Reason = fmt.Sprintf("read-write on trust-bearing path %q is not allowed (contains %q, which is %s)", rawPath, comp, reason)
+		}
+		return decision, nil
+	}
+
+	if access == GuardAccessRead {
+		if guardIsHomeRoot(resolved) {
+			decision.Refused = true
+			decision.Rule = "whole_home"
+			decision.Matched = resolved
+			decision.Reason = fmt.Sprintf("read access to the entire home directory %q is not allowed; it reads through to every credential beneath it", rawPath)
+			return decision, nil
+		}
+		if match := guardDeclaredPathSecretMaterialMatch(rawPath, resolved); match.reason != "" {
+			decision.Refused = true
+			decision.Rule = "credential_path"
+			decision.Matched = match.matched
+			decision.Reason = fmt.Sprintf("read access to %q is not allowed (%s); reading a credential is exfiltration, not merely inspection", rawPath, match.reason)
+			return decision, nil
+		}
+		if suffix, reason := guardForbiddenSuffix(resolved); suffix != "" && strings.Contains(reason, "pipelock") {
+			decision.Refused = true
+			decision.Rule = "forbidden_path_shape"
+			decision.Matched = suffix
+			decision.Reason = fmt.Sprintf("read access to %s %q is not allowed; it may contain credential material", reason, rawPath)
+			return decision, nil
+		}
+		return decision, nil
+	}
+
+	if suffix, reason := guardForbiddenSuffix(resolved); suffix != "" {
+		decision.Refused = true
+		decision.Rule = "forbidden_path_shape"
+		decision.Matched = suffix
+		decision.Reason = fmt.Sprintf("read-write on %s %q is not allowed", reason, rawPath)
+		return decision, nil
+	}
+	if guardIsHomeRoot(resolved) {
+		decision.Refused = true
+		decision.Rule = "whole_home"
+		decision.Matched = resolved
+		decision.Reason = "read-write on the entire home directory is not allowed"
+		return decision, nil
+	}
+	for _, root := range guardDangerousRWRoots {
+		clean := filepath.Clean(root.prefix)
+		if resolved == clean || strings.HasPrefix(resolved, clean+string(filepath.Separator)) {
+			decision.Refused = true
+			decision.Rule = "dangerous_write_root"
+			decision.Matched = clean
+			decision.Reason = fmt.Sprintf("read-write on %s %q is not allowed", root.reason, rawPath)
+			return decision, nil
+		}
+	}
+	if match := guardDeclaredPathSecretMaterialMatch(rawPath, resolved); match.reason != "" {
+		decision.Refused = true
+		decision.Rule = "credential_path"
+		decision.Matched = match.matched
+		decision.Reason = fmt.Sprintf("read-write on %q is not allowed (%s); writing a credential file redirects the workload's identity", rawPath, match.reason)
+		return decision, nil
+	}
+	return decision, nil
 }
 
 // guardDeclaredPathSecretMaterialReason evaluates both the declared spelling
@@ -96,12 +185,21 @@ func validateGuardROPath(label, fieldName string, idx int, rawPath string) error
 // Conversely, checking the resolved path preserves the existing protection
 // against an innocuous-looking alias that points into credential material.
 func guardDeclaredPathSecretMaterialReason(rawPath, resolved string) string {
+	return guardDeclaredPathSecretMaterialMatch(rawPath, resolved).reason
+}
+
+type guardSecretMatch struct {
+	matched string
+	reason  string
+}
+
+func guardDeclaredPathSecretMaterialMatch(rawPath, resolved string) guardSecretMatch {
 	for _, candidate := range []string{filepath.Clean(rawPath), resolved} {
-		if reason := guardSecretMaterialReason(candidate); reason != "" {
-			return reason
+		if match := guardSecretMaterialMatch(candidate); match.reason != "" {
+			return match
 		}
 	}
-	return ""
+	return guardSecretMatch{}
 }
 
 // guardSecretShapes are paths that hold credential material, expressed as
@@ -261,28 +359,32 @@ var guardMultiHomeRoots = []string{"/", "/home", "/var/home", "/Users"}
 // specific non-secret path instead (~/.aws/config, ~/.config/myapp), which is
 // the explicit, no-inference model GuardManifest already commits to.
 func guardSecretMaterialReason(resolved string) string {
+	return guardSecretMaterialMatch(resolved).reason
+}
+
+func guardSecretMaterialMatch(resolved string) guardSecretMatch {
 	lowerResolved := strings.ToLower(resolved)
 	for _, root := range guardMultiHomeRoots {
 		if lowerResolved == strings.ToLower(root) {
-			return "it sits above every user home and reads through to every credential beneath it"
+			return guardSecretMatch{matched: root, reason: "it sits above every user home and reads through to every credential beneath it"}
 		}
 	}
 	for _, entry := range guardSecretAbsolutePaths {
 		if r := guardSecretRelation(resolved, entry.path, entry.reason); r != "" {
-			return r
+			return guardSecretMatch{matched: entry.path, reason: r}
 		}
 	}
 	home := guardHomeRootOf(resolved)
 	if home == "" {
-		return ""
+		return guardSecretMatch{}
 	}
 	for _, entry := range guardSecretShapes {
 		secret := home + "/" + entry.shape
 		if r := guardSecretRelation(resolved, secret, entry.reason); r != "" {
-			return r
+			return guardSecretMatch{matched: entry.shape, reason: r}
 		}
 	}
-	return ""
+	return guardSecretMatch{}
 }
 
 // guardSecretRelation reports how resolved relates to a known secret path, or
@@ -405,14 +507,14 @@ var guardForbiddenSuffixes = []struct {
 
 // guardForbiddenSuffix reports why the resolved path is write-sensitive, or ""
 // when it is not. A match is the directory itself or anything beneath it.
-func guardForbiddenSuffix(resolved string) string {
+func guardForbiddenSuffix(resolved string) (string, string) {
 	for _, entry := range guardForbiddenSuffixes {
 		marker := string(filepath.Separator) + entry.suffix
 		if strings.HasSuffix(resolved, marker) || strings.Contains(resolved, marker+string(filepath.Separator)) {
-			return entry.reason
+			return entry.suffix, entry.reason
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // guardIsHomeRoot reports whether the resolved path is an entire user home

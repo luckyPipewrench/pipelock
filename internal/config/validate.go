@@ -4458,51 +4458,12 @@ var errGuardNotEnforced = errors.New(
 // access to dangerous or trust-bearing locations.
 func validateGuardRWPath(label, fieldName string, idx int, rawPath string) error {
 	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
-
-	resolved := resolveGuardPath(rawPath)
-
-	// Trust-bearing and dangerous locations are matched on path COMPONENTS,
-	// not on a prefix derived from this process's home directory. Pipelock
-	// commonly runs as a system service, so os.UserHomeDir() returns /root
-	// and a home-derived list would protect /root/.ssh while leaving every
-	// real operator's ~/.ssh unguarded. Writing into any .ssh, .gnupg or
-	// .gpg directory is unsafe regardless of which user owns it.
-	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
-		return fmt.Errorf("%s: read-write on trust-bearing path %q is not allowed (contains %q, which is %s)", field, rawPath, comp, reason)
+	decision, err := ExplainGuardPathFloor(rawPath, GuardAccessWrite)
+	if err != nil {
+		return fmt.Errorf("%s: %w", field, err)
 	}
-	if suffix := guardForbiddenSuffix(resolved); suffix != "" {
-		return fmt.Errorf("%s: read-write on %s %q is not allowed", field, suffix, rawPath)
+	if decision.Refused {
+		return fmt.Errorf("%s: %s", field, decision.Reason)
 	}
-	if guardIsHomeRoot(resolved) {
-		return fmt.Errorf("%s: read-write on the entire home directory is not allowed", field)
-	}
-
-	// NOTE: an earlier draft repeated these checks against os.UserHomeDir().
-	// That block was removed: it was fully shadowed by the component, suffix
-	// and home-root helpers above, which cover EVERY user rather than only the
-	// account this process happens to run as. Dead code that reads as live
-	// protection is worse than no code, because the next reader trusts it.
-
-	// Static dangerous roots. These run BEFORE the credential-material check so
-	// that a path both rules cover (/etc/shadow is a privilege path AND a
-	// credential store) keeps its established, more specific message.
-	for _, dr := range guardDangerousRWRoots {
-		clean := filepath.Clean(dr.prefix)
-		if resolved == clean || strings.HasPrefix(resolved, clean+string(filepath.Separator)) {
-			return fmt.Errorf("%s: read-write on %s %q is not allowed", field, dr.reason, rawPath)
-		}
-	}
-
-	// Credential material is refused for WRITE as well as read, and not merely
-	// because writing usually implies reading. Write alone is its own attack:
-	// rewriting ~/.npmrc or ~/.pypirc redirects a build to an attacker's
-	// registry, and rewriting ~/.kube/config or ~/.aws/credentials repoints the
-	// workload's cluster and cloud identity. Both floors share this set; the
-	// write floor adds the write-sensitive locations above that a read grant
-	// may legitimately keep.
-	if reason := guardDeclaredPathSecretMaterialReason(rawPath, resolved); reason != "" {
-		return fmt.Errorf("%s: read-write on %q is not allowed (%s); writing a credential file redirects the workload's identity", field, rawPath, reason)
-	}
-
 	return nil
 }

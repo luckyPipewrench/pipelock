@@ -66,7 +66,7 @@ func TestRecheckEvidenceReceiptSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recheckEvidenceReceiptSpan: %v", err)
 	}
-	if !result.Valid || result.View != contractreceipt.NormalizedViewSanitizedTarget {
+	if result.Location != recheckLocationExact || result.View != contractreceipt.NormalizedViewSanitizedTarget {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -272,5 +272,51 @@ func recheckReceiptFixture(t *testing.T, span contractreceipt.SourceSpan) contra
 	return contractreceipt.EvidenceReceipt{
 		PayloadKind: contractreceipt.PayloadProxyDecisionWithSpans,
 		Payload:     body,
+	}
+}
+
+// TestRecheckReport_UnauthenticatedNeverReadsAsVerified is the guard for the
+// staged recheck contract: a source recheck run WITHOUT a trusted key must
+// never surface a passing result, no matter how strong the positional match.
+//
+// The defect this replaces: the report carried a bare recheck_valid bool while
+// the "this receipt was never authenticated" caveat lived in a separate
+// unpinned field. A machine consumer reading recheck_valid alone got a truthy
+// source match for a receipt whose producer was never verified.
+//
+// Non-vacuity: neutralize by deleting the `case !signatureVerified` arm in
+// newRecheckReport (so an exact match reports verified regardless of
+// authentication). This test must then FAIL.
+func TestRecheckReport_UnauthenticatedNeverReadsAsVerified(t *testing.T) {
+	t.Parallel()
+	for _, loc := range []string{recheckLocationExact, recheckLocationOccurrence, recheckLocationFailed} {
+		got := newRecheckReport(recheckResult{Location: loc, View: "sanitized_target"}, false)
+		if got.Overall == recheckOverallVerified {
+			t.Fatalf("location=%q unauthenticated reported overall=%q; an unauthenticated recheck must never read as verified", loc, got.Overall)
+		}
+		if got.Signature != recheckSignatureNotChecked {
+			t.Fatalf("location=%q reported signature=%q, want %q", loc, got.Signature, recheckSignatureNotChecked)
+		}
+	}
+}
+
+// TestRecheckReport_StrengthIsDistinguishable guards the second half of the
+// contract: a match at the signed coordinates and a bare substring occurrence
+// are different facts and must not collapse into one verdict.
+//
+// Non-vacuity: neutralize by mapping recheckLocationOccurrence to
+// recheckOverallVerified in newRecheckReport. This test must then FAIL.
+func TestRecheckReport_StrengthIsDistinguishable(t *testing.T) {
+	t.Parallel()
+	exact := newRecheckReport(recheckResult{Location: recheckLocationExact}, true)
+	occurrence := newRecheckReport(recheckResult{Location: recheckLocationOccurrence}, true)
+	if exact.Overall != recheckOverallVerified {
+		t.Fatalf("authenticated exact match overall=%q, want %q", exact.Overall, recheckOverallVerified)
+	}
+	if occurrence.Overall == recheckOverallVerified {
+		t.Fatalf("occurrence-only match reported overall=%q; a substring hit is not a positional proof", occurrence.Overall)
+	}
+	if exact.Overall == occurrence.Overall {
+		t.Fatalf("exact and occurrence-only collapsed to the same verdict %q", exact.Overall)
 	}
 }

@@ -323,7 +323,8 @@ type MCPProxyOpts struct {
 	EnvelopeEmitterFn func() *envelope.Emitter
 
 	// Pre-spawn binary integrity verification (nil-safe).
-	IntegrityCfg *config.MCPBinaryIntegrity
+	IntegrityCfg                  *config.MCPBinaryIntegrity
+	afterIntegrityPreparedForTest func()
 
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage

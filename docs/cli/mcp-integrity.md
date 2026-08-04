@@ -121,9 +121,22 @@ TOCTOU window between trust check and parse.
   one of these pins only the runner itself, not the script it ultimately
   invokes. Where strict integrity matters, replace the runner with a direct
   interpreter + absolute script path.
-- **TOCTOU is partial, not full.** The manifest hashes the resolved binary
-  and any pinned script, then resolves symlinks again at exec time. Content
-  replacement of an already-opened path between hash and exec is not
-  detected (Go's `os/exec` cannot bind via `fexecve`). Pair the manifest
-  with deployment-layer controls such as read-only mounts, signed package
-  delivery, or container image immutability for the hash-to-exec window.
+- **Descriptor-bound launch is Linux-only.** On Linux, runtime verification
+  opens each pinned executable or interpreter script once, hashes through that
+  descriptor, and executes or reads through the same descriptor. Replacing a
+  symlink or directory entry after verification cannot redirect the launch.
+  `action: block` fails closed when descriptor launch is unavailable, including
+  when `/proc/self/exe` is unavailable. Other platforms reject enforcing
+  launches instead of silently returning to path-based execution. `action:
+  warn` remains intentionally non-enforcing and logs before using an unpinned
+  platform launch.
+- **Wrapper limits are explicit.** Direct binaries and direct interpreter
+  commands such as `python3 /opt/mcp/server.py` are descriptor-bound. Shebang
+  commands and `/usr/bin/env` wrappers require another kernel or wrapper path
+  resolution, so `action: block` rejects them. Invoke the interpreter directly
+  when enforcing integrity.
+- **An open descriptor pins identity, not mutable contents.** Atomic file or
+  symlink replacement cannot change the opened inode. A process that can write
+  in place to that same inode can still alter bytes after hashing; retain
+  read-only mounts, signed package delivery, or container image immutability to
+  prevent in-place mutation.

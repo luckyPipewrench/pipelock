@@ -1095,7 +1095,41 @@ type InputScanConfig struct {
 // starts and its PID is registered with the lineage tracker; callers use
 // this to start the file sentry event loop after attribution is ready.
 func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, opts MCPProxyOpts, extraEnv ...string) error {
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
+	var cmd *exec.Cmd
+	var prepared *integrity.PreparedCommand
+	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
+		var err error
+		prepared, err = prepareBinaryIntegrity(command, icfg, logW)
+		if err != nil {
+			if icfg.Action != config.ActionWarn || icfg.RequireSignature {
+				return err
+			}
+			_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v; using unpinned platform launch\n", err)
+			cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // explicit warn-only compatibility fallback
+		} else {
+			if opts.afterIntegrityPreparedForTest != nil {
+				opts.afterIntegrityPreparedForTest()
+			}
+			cmd, err = descriptorCommand(ctx, command, prepared)
+			if err != nil {
+				_ = prepared.Close()
+				prepared = nil
+				if icfg.Action != config.ActionWarn {
+					return fmt.Errorf("binary integrity: preparing descriptor launch: %w", err)
+				}
+				// Warn is explicitly non-enforcing. Unsupported descriptor exec is
+				// noisy here; block/default action denies above and never downgrades.
+				_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: descriptor launch unavailable: %v; using unpinned platform launch\n", err)
+				cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // explicit warn-only compatibility fallback
+			}
+		}
+	}
+	if cmd == nil {
+		cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // integrity disabled; command comes from user CLI args
+	}
+	if prepared != nil {
+		defer func() { _ = prepared.Close() }()
+	}
 
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
@@ -1184,18 +1218,15 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 
-	// Pre-spawn binary integrity verification: hash the binary (and script
-	// for interpreters) against the trusted manifest before executing it.
-	// Runs after command resolution but before Start() so a tampered binary
-	// is never spawned when action is "block".
-	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
-		if err := VerifyBinaryIntegrity(command, icfg, logW); err != nil {
-			return err
-		}
-	}
-
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
+	}
+	if prepared != nil {
+		startedPreparation := prepared
+		prepared = nil
+		if err := startedPreparation.Close(); err != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: warning: closing parent integrity descriptors: %v\n", err)
+		}
 	}
 
 	// Capture the child's process group ID immediately after Start,
@@ -1590,6 +1621,40 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 	}
 
 	return nil
+}
+
+func prepareBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer, workDir ...string) (*integrity.PreparedCommand, error) {
+	agentWorkDir := ""
+	if len(workDir) > 0 {
+		agentWorkDir = workDir[0]
+	}
+	manifest, loadErr := loadMCPIntegrityManifest(icfg)
+	if loadErr != nil {
+		return nil, fmt.Errorf("binary integrity: loading manifest: %w", loadErr)
+	}
+	prepared, err := integrity.Prepare(command, agentWorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("binary integrity: preparing verified descriptors: %w", err)
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = prepared.Close()
+		}
+	}()
+
+	intCfg := &integrity.Config{Enabled: true, ManifestPath: icfg.ManifestPath, Action: icfg.Action}
+	intCfg.Manifests = manifest.Entries
+	result := integrity.VerifyPrepared(prepared, intCfg)
+	if !result.Verified {
+		reasons := strings.Join(result.Reasons, "; ")
+		if icfg.Action != config.ActionWarn {
+			return nil, fmt.Errorf("binary integrity check failed: %s", reasons)
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %s\n", reasons)
+	}
+	success = true
+	return prepared, nil
 }
 
 // loadMCPIntegrityManifest reads the manifest, optionally verifying its

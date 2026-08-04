@@ -85,21 +85,21 @@ cleanup_process_group() {
     return 0
   fi
 
-  echo "PROCESS CLEANUP: ${pass_label} session ${process_group} still has live processes; sending TERM" >&2
+  echo "PROCESS CLEANUP: ${pass_label} process group ${process_group} still has live processes; sending TERM" >&2
   kill -TERM -- "-${process_group}" 2>/dev/null || true
   if wait_for_process_group_exit "$process_group" 3; then
-    echo "PROCESS CLEANUP: ${pass_label} session ${process_group} confirmed empty after TERM" >&2
+    echo "PROCESS CLEANUP: ${pass_label} process group ${process_group} confirmed empty after TERM" >&2
     return 0
   fi
 
-  echo "PROCESS CLEANUP: ${pass_label} session ${process_group} still has live processes after TERM grace period; sending KILL" >&2
+  echo "PROCESS CLEANUP: ${pass_label} process group ${process_group} still has live processes after TERM grace period; sending KILL" >&2
   kill -KILL -- "-${process_group}" 2>/dev/null || true
   if wait_for_process_group_exit "$process_group" 3; then
-    echo "PROCESS CLEANUP: ${pass_label} session ${process_group} confirmed empty after KILL" >&2
+    echo "PROCESS CLEANUP: ${pass_label} process group ${process_group} confirmed empty after KILL" >&2
     return 0
   fi
 
-  echo "ci-test-with-retry: refusing continuation because ${pass_label} session ${process_group} remained live after KILL" >&2
+  echo "ci-test-with-retry: refusing continuation because ${pass_label} process group ${process_group} remained live after KILL" >&2
   return 1
 }
 
@@ -145,7 +145,7 @@ run_and_tee() {
   local command_status=0
   wait "$command_pid" || command_status=$?
 
-  # Descendants can inherit the FIFO writers. Clean the whole session before
+  # Descendants can inherit the FIFO writers. Clean the process group before
   # waiting for tee, or an orphan could keep capture open indefinitely.
   if ! cleanup_process_group "$command_pid" "$pass_label"; then
     process_cleanup_failed=1
@@ -462,7 +462,7 @@ done
 failed_label="${failed_packages[*]:-${package_args[*]}}"
 if [ "$retry_kind" = "sigterm" ]; then
   incomplete_label="${incomplete_packages[*]}"
-  echo "PROCESS CLEANUP: first pass session ${first_process_group} confirmed empty before rerun; first-attempt stdout and stderr remain in the job log" >&2
+  echo "PROCESS CLEANUP: first pass process group ${first_process_group} confirmed empty before rerun; first-attempt stdout and stderr remain in the job log" >&2
   echo "SIGTERM RETRY RISK: GitHub Actions exposes no trusted in-step cause attribution; a passing rerun does not prove the first attempt had no unflushed failure. Repeated SIGTERM retries indicate unresolved runner-resource or test instability." >&2
   echo "INFRASTRUCTURE RETRY: first pass exited 143 during running test(s) before package(s) completed: ${incomplete_label}; rerunning ${retry_scope} once" >&2
 else

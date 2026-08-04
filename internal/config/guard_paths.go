@@ -74,7 +74,7 @@ func validateGuardROPath(label string, idx int, rawPath string) error {
 	if guardIsHomeRoot(resolved) {
 		return fmt.Errorf("%s: read access to the entire home directory %q is not allowed; it reads through to every credential beneath it", field, rawPath)
 	}
-	if reason := guardSecretMaterialReason(resolved); reason != "" {
+	if reason := guardDeclaredPathSecretMaterialReason(rawPath, resolved); reason != "" {
 		return fmt.Errorf("%s: read access to %q is not allowed (%s); reading a credential is exfiltration, not merely inspection", field, rawPath, reason)
 	}
 	// Pipelock config and state directories contain credential material
@@ -87,6 +87,21 @@ func validateGuardROPath(label string, idx int, rawPath string) error {
 		}
 	}
 	return nil
+}
+
+// guardDeclaredPathSecretMaterialReason evaluates both the declared spelling
+// and its current symlink-resolved target. The declared spelling is itself a
+// security boundary: a ~/.aws symlink may resolve outside a recognized home,
+// but granting it still grants the credential location the manifest named.
+// Conversely, checking the resolved path preserves the existing protection
+// against an innocuous-looking alias that points into credential material.
+func guardDeclaredPathSecretMaterialReason(rawPath, resolved string) string {
+	for _, candidate := range []string{filepath.Clean(rawPath), resolved} {
+		if reason := guardSecretMaterialReason(candidate); reason != "" {
+			return reason
+		}
+	}
+	return ""
 }
 
 // guardSecretShapes are paths that hold credential material, expressed as
@@ -191,13 +206,15 @@ var guardSecretAbsolutePaths = []struct {
 // "" when the path is not under a recognizable home.
 //
 // POSIX-only, matching guardIsHomeRoot: the function hardcodes "/" as the
-// separator and knows the /home, /Users and /root layouts. Windows path
+// separator and knows the /home, /var/home, /Users, /root, and /app layouts. Windows path
 // handling is an open product decision tracked in ops (AF-264).
 func guardHomeRootOf(resolved string) string {
-	if resolved == "/root" || strings.HasPrefix(resolved, "/root/") {
-		return "/root"
+	for _, root := range guardFixedHomeRoots {
+		if resolved == root || strings.HasPrefix(resolved, root+"/") {
+			return root
+		}
 	}
-	for _, root := range []string{"/home", "/Users"} {
+	for _, root := range []string{"/home", "/var/home", "/Users"} {
 		if !strings.HasPrefix(resolved, root+"/") {
 			continue
 		}
@@ -211,9 +228,14 @@ func guardHomeRootOf(resolved string) string {
 	return ""
 }
 
+// guardFixedHomeRoots are home layouts that are not a child directory of a
+// multi-user home root. /app is common in minimal container images that set
+// HOME=/app for a non-root workload.
+var guardFixedHomeRoots = []string{"/root", "/app"}
+
 // guardMultiHomeRoots are directories that sit ABOVE every user home, so a
 // grant on one reads through to every operator's credentials at once.
-var guardMultiHomeRoots = []string{"/", "/home", "/Users"}
+var guardMultiHomeRoots = []string{"/", "/home", "/var/home", "/Users"}
 
 // guardSecretMaterialReason reports why the resolved path exposes credential
 // material, or "" when it does not.
@@ -257,6 +279,17 @@ func guardSecretMaterialReason(resolved string) string {
 // guardSecretRelation reports how resolved relates to a known secret path, or
 // "" when the two are unrelated.
 func guardSecretRelation(resolved, secret, reason string) string {
+	// Compare case-folded. A case-insensitive volume reaches the same file
+	// under a different spelling, so a case-exact comparison is bypassable by
+	// writing .AWS instead of .aws. macOS is case-insensitive by default and
+	// Linux can mount case-insensitive filesystems; since the manifest is a
+	// lexical declaration that never stats the target, there is no reliable
+	// way to know which semantics apply. Folding both sides at the COMPARISON
+	// keeps home-root detection case-exact, which matters because lowering the
+	// whole path first stops /Users from being recognized as a home at all and
+	// silently disables every rule below it. Worst case this refuses a path a
+	// case-sensitive volume would treat as unrelated, which fails closed.
+	resolved, secret = strings.ToLower(resolved), strings.ToLower(secret)
 	switch {
 	case resolved == secret:
 		return "it is " + reason
@@ -308,10 +341,25 @@ func guardIsSecretVariantName(resolved, secret string) bool {
 
 // guardForbiddenComponents are directory names that must never appear anywhere
 // in a read-write grant, whichever user owns them.
+// Matched case-insensitively, and independently of any home root, because an
+// enumerated list of home layouts cannot be complete: HOME is arbitrary, and a
+// container that sets it to /workspace or /srv/agent would otherwise leave the
+// entire credential floor inert for that deployment. These directory names are
+// credential stores by convention wherever they appear, so a component match is
+// both sound and the idiom this file already used for .ssh.
+//
+// Only whole DIRECTORIES that are credential state through and through belong
+// here. Credential FILE names stay home-relative on purpose: a project-local
+// .npmrc is ordinary build configuration, and refusing every one of them would
+// break real workloads with no way to narrow the grant.
 var guardForbiddenComponents = map[string]struct{}{
-	".ssh":   {},
-	".gnupg": {},
-	".gpg":   {},
+	".ssh":    {},
+	".gnupg":  {},
+	".gpg":    {},
+	".aws":    {},
+	".azure":  {},
+	".kube":   {},
+	".docker": {},
 }
 
 // guardForbiddenComponent reports the first trust-bearing path component in the
@@ -323,7 +371,7 @@ var guardForbiddenComponents = map[string]struct{}{
 // while leaving every real operator's ~/.ssh unguarded.
 func guardForbiddenComponent(resolved string) string {
 	for _, part := range strings.Split(resolved, string(filepath.Separator)) {
-		if _, bad := guardForbiddenComponents[part]; bad {
+		if _, bad := guardForbiddenComponents[strings.ToLower(part)]; bad {
 			return part
 		}
 	}
@@ -362,32 +410,10 @@ func guardForbiddenSuffix(resolved string) string {
 // directory on a supported platform layout, without depending on which user
 // this process runs as.
 //
-// POSIX-only: the function hardcodes "/" as the separator and checks the
-// /home and /Users roots. On Windows, resolved paths use "\" and neither
+// POSIX-only: the function hardcodes "/" as the separator and delegates home
+// layouts to guardHomeRootOf. On Windows, resolved paths use "\" and neither
 // root applies, so the check silently passes. Windows path handling is an
 // open product decision tracked in ops (AF-264).
 func guardIsHomeRoot(resolved string) bool {
-	// Homes that are a fixed path rather than a directory under a parent.
-	// /root is the home of the account Pipelock most often runs as when it runs
-	// as a system service, and "/" is the effective home in many containers.
-	// Both were previously covered only by the os.UserHomeDir()-derived block
-	// that was deleted as "fully shadowed" by these helpers. That claim was
-	// wrong for exactly this case: when the process runs as root, the deleted
-	// block did catch /root and nothing here replaced it, so a whole-/root
-	// read-write grant was accepted. Handle them explicitly.
-	for _, fixed := range []string{"/root", "/"} {
-		if resolved == fixed {
-			return true
-		}
-	}
-	for _, root := range []string{"/home", "/Users"} {
-		if !strings.HasPrefix(resolved, root+"/") {
-			continue
-		}
-		rest := strings.TrimPrefix(resolved, root+"/")
-		if rest != "" && !strings.Contains(rest, "/") {
-			return true
-		}
-	}
-	return false
+	return resolved == "/" || guardHomeRootOf(resolved) == resolved
 }

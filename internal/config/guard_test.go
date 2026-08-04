@@ -870,3 +870,79 @@ func TestValidateGuard_RunSubtreesStillReadable(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateGuard_CredentialFloorIndependentOfHomeLayout closes the
+// enumerated-home class.
+//
+// A deployment sets HOME to whatever it likes. Recognizing only /home, /Users,
+// /root, /var/home and /app leaves the floor completely inert for a container
+// using /workspace or /srv/agent, which is a straightforward bypass: declare
+// /workspace/.aws and the credential is granted. Credential DIRECTORIES are
+// therefore matched as path components wherever they appear, which is the idiom
+// this file already used for .ssh, rather than by extending the layout list.
+func TestValidateGuard_CredentialFloorIndependentOfHomeLayout(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/workspace/.aws/credentials",
+		"/srv/agent/.kube/config",
+		"/opt/anything/.docker/config.json",
+		"/var/home/someoperator/.aws",
+		"/app/.azure",
+	} {
+		for _, mode := range []string{"read_only", "read_write"} {
+			t.Run(mode+"_"+path, func(t *testing.T) {
+				t.Parallel()
+				m := GuardManifest{Name: "bad"}
+				if mode == "read_only" {
+					m.ReadOnly = []string{path}
+				} else {
+					m.ReadWrite = []string{path}
+				}
+				cfg := Defaults()
+				cfg.Guard = Guard{Manifests: []GuardManifest{m}}
+
+				err := cfg.Validate()
+				if err == nil {
+					t.Fatalf("%s on %q must be rejected regardless of home layout", mode, path)
+				}
+				if errors.Is(err, errGuardNotEnforced) {
+					t.Errorf("%s on %q was refused only by the not-enforced gate, so no path rule rejected it: %v", mode, path, err)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateGuard_CredentialFloorIsCaseInsensitive covers case-insensitive
+// volumes, where a differently-spelled path reaches the very same file.
+//
+// The comparison is folded rather than the input path, which matters: lowering
+// the whole path first stops /Users from being recognized as a home root at
+// all, silently disabling every home-relative rule instead of strengthening it.
+func TestValidateGuard_CredentialFloorIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/Users/someoperator/.AWS/credentials",
+		"/Users/someoperator/Library/application support/Claude/claude_desktop_config.json",
+		"/home/someoperator/.NPMRC",
+		"/home/someoperator/.Npmrc.bak",
+		"/home/someoperator/.Kube/config",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Guard = Guard{
+				Manifests: []GuardManifest{{Name: "bad", ReadOnly: []string{path}}},
+			}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("read access to %q must be rejected on a case-insensitive volume", path)
+			}
+			if errors.Is(err, errGuardNotEnforced) {
+				t.Errorf("read on %q was refused only by the not-enforced gate: %v", path, err)
+			}
+		})
+	}
+}

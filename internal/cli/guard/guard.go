@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -414,12 +415,45 @@ func writeHuman(w io.Writer, body string) error {
 	return nil
 }
 
+// display renders an untrusted value for HUMAN output.
+//
+// Paths, manifest names and profile names come from an operator's config or
+// from a caller's argument, and this command's output is read as evidence. A
+// value carrying a newline can forge an extra report line, and one carrying a
+// terminal escape can move the cursor or recolour the screen, which is enough
+// to hide the "not enforced" warning that every one of these reports is
+// required to show. Quoting escapes both, and non-ASCII besides, so a
+// look-alike path cannot be passed off as a different one.
+//
+// JSON output does not need this; encoding/json already escapes controls.
+func display(value string) string {
+	return strconv.QuoteToASCII(value)
+}
+
+// displayText renders untrusted PROSE for human output.
+//
+// A reason embeds the operator's raw path, so it can carry a newline that
+// forges an extra report line or an escape sequence that repositions the
+// cursor. Quoting a whole sentence would be unreadable, so control characters
+// are replaced instead and the wording is left intact.
+func displayText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+}
+
 func renderExplain(report explainReport) string {
 	var out strings.Builder
 	_, _ = fmt.Fprintf(&out, "WARNING: %s\n\n", report.EnforcementNotice)
-	_, _ = fmt.Fprintf(&out, "Guard path explanation\nConfig: %s\nScope: all declared profiles\nPath: %s\n", report.ConfigFile, report.Path)
+	_, _ = fmt.Fprintf(&out, "Guard path explanation\nConfig: %s\nScope: all declared profiles\nPath: %s\n", display(report.ConfigFile), display(report.Path))
 	if report.ResolvedPath != report.Path {
-		_, _ = fmt.Fprintf(&out, "Resolved path: %s\n", report.ResolvedPath)
+		_, _ = fmt.Fprintf(&out, "Resolved path: %s\n", display(report.ResolvedPath))
 	}
 	renderAccess(&out, report.Read)
 	renderAccess(&out, report.Write)
@@ -430,20 +464,20 @@ func renderAccess(out *strings.Builder, decision accessDecision) {
 	_, _ = fmt.Fprintf(out, "\n%s: ", strings.ToUpper(decision.Operation))
 	switch decision.Source {
 	case "compiled_floor":
-		_, _ = fmt.Fprintf(out, "WOULD BE REFUSED BY COMPILED FLOOR (not currently enforced)\n  Rule: %s\n  Matched: %s\n  Reason: %s\n  This compiled-floor refusal cannot be configured away.\n", decision.Rule, decision.Matched, decision.Reason)
+		_, _ = fmt.Fprintf(out, "WOULD BE REFUSED BY COMPILED FLOOR (not currently enforced)\n  Rule: %s\n  Matched: %s\n  Reason: %s\n  This compiled-floor refusal cannot be configured away.\n", decision.Rule, display(decision.Matched), displayText(decision.Reason))
 	case "operator_declared":
 		_, _ = fmt.Fprintln(out, "DECLARED ALLOW (not currently enforced)")
 		for _, grant := range decision.Grants {
 			if grant.Effective {
-				_, _ = fmt.Fprintf(out, "  %s.%s %s %s (profiles: %s)\n", grant.Manifest, grant.GrantType, grantScopeLabel(grant.Scope), grant.Path, strings.Join(grant.Profiles, ", "))
+				_, _ = fmt.Fprintf(out, "  %s.%s %s %s (profiles: %s)\n", display(grant.Manifest), grant.GrantType, grantScopeLabel(grant.Scope), display(grant.Path), displayText(strings.Join(grant.Profiles, ", ")))
 			}
 		}
 	default:
-		_, _ = fmt.Fprintf(out, "NO DECLARED GRANT (not currently enforced)\n  Rule: %s\n  Reason: %s\n", decision.Rule, decision.Reason)
+		_, _ = fmt.Fprintf(out, "NO DECLARED GRANT (not currently enforced)\n  Rule: %s\n  Reason: %s\n", decision.Rule, displayText(decision.Reason))
 	}
 	for _, grant := range decision.Grants {
 		if !grant.Effective {
-			_, _ = fmt.Fprintf(out, "  Unselected declaration: %s.%s %s %s (no profile selects this manifest)\n", grant.Manifest, grant.GrantType, grantScopeLabel(grant.Scope), grant.Path)
+			_, _ = fmt.Fprintf(out, "  Unselected declaration: %s.%s %s %s (no profile selects this manifest)\n", display(grant.Manifest), grant.GrantType, grantScopeLabel(grant.Scope), display(grant.Path))
 		}
 	}
 }
@@ -458,28 +492,28 @@ func grantScopeLabel(scope string) string {
 func renderShow(report showReport) string {
 	var out strings.Builder
 	_, _ = fmt.Fprintf(&out, "WARNING: %s\n\n", report.EnforcementNotice)
-	_, _ = fmt.Fprintf(&out, "Guard profile: %s\nConfig: %s\n", report.Profile, report.ConfigFile)
+	_, _ = fmt.Fprintf(&out, "Guard profile: %s\nConfig: %s\n", display(report.Profile), display(report.ConfigFile))
 	if len(report.Manifests) == 0 {
 		_, _ = fmt.Fprintln(&out, "Manifests: none")
 		return out.String()
 	}
 	for _, manifest := range report.Manifests {
-		_, _ = fmt.Fprintf(&out, "\nManifest: %s\n", manifest.Name)
+		_, _ = fmt.Fprintf(&out, "\nManifest: %s\n", display(manifest.Name))
 		if len(manifest.Grants) == 0 {
 			_, _ = fmt.Fprintln(&out, "  Grants: none")
 			continue
 		}
 		for _, grant := range manifest.Grants {
-			_, _ = fmt.Fprintf(&out, "  - %s %s: %s\n", grant.GrantType, grant.Scope, grant.Path)
+			_, _ = fmt.Fprintf(&out, "  - %s %s: %s\n", grant.GrantType, grant.Scope, display(grant.Path))
 			if grant.ResolvedPath != grant.Path {
-				_, _ = fmt.Fprintf(&out, "    resolved: %s\n", grant.ResolvedPath)
+				_, _ = fmt.Fprintf(&out, "    resolved: %s\n", display(grant.ResolvedPath))
 			}
 			if len(grant.Refusals) == 0 {
 				_, _ = fmt.Fprintln(&out, "    compiled floor: no refusal")
 				continue
 			}
 			for _, refusal := range grant.Refusals {
-				_, _ = fmt.Fprintf(&out, "    %s COMPILED FLOOR REFUSAL: rule=%s matched=%s\n      %s\n      This refusal cannot be configured away.\n", strings.ToUpper(refusal.Operation), refusal.Rule, refusal.Matched, refusal.Reason)
+				_, _ = fmt.Fprintf(&out, "    %s COMPILED FLOOR REFUSAL: rule=%s matched=%s\n      %s\n      This refusal cannot be configured away.\n", strings.ToUpper(refusal.Operation), refusal.Rule, display(refusal.Matched), displayText(refusal.Reason))
 			}
 		}
 	}

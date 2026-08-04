@@ -84,7 +84,7 @@ func TestExplainHumanCompiledFloorHonesty(t *testing.T) {
 		"READ: WOULD BE REFUSED BY COMPILED FLOOR",
 		"WRITE: WOULD BE REFUSED BY COMPILED FLOOR",
 		"Rule: forbidden_component",
-		"Matched: .ssh",
+		"Matched: \".ssh\"",
 		"cannot be configured away",
 	} {
 		if !strings.Contains(out, want) {
@@ -174,7 +174,7 @@ func TestExplainUnselectedGrantHuman(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard explain: %v", err)
 	}
-	if !strings.Contains(out, "Unselected declaration: orphan.read_only") || !strings.Contains(out, "no profile selects this manifest") {
+	if !strings.Contains(out, "Unselected declaration: \"orphan\".read_only") || !strings.Contains(out, "no profile selects this manifest") {
 		t.Fatalf("unselected grant not explained:\n%s", out)
 	}
 }
@@ -186,7 +186,7 @@ func TestExplainDirectoryGrantHuman(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard explain: %v", err)
 	}
-	if !strings.Contains(out, "workspace.read_only_directories directory subtree /opt/app/assets") {
+	if !strings.Contains(out, "\"workspace\".read_only_directories directory subtree \"/opt/app/assets\"") {
 		t.Fatalf("directory type and subtree scope not explained:\n%s", out)
 	}
 }
@@ -237,7 +237,7 @@ func TestShowHumanEmptyAndRefusedGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard show worker: %v", err)
 	}
-	for _, want := range []string{"WARNING: Guard is not enforced", "Manifest: workspace", "compiled floor: no refusal", "COMPILED FLOOR REFUSAL", "cannot be configured away"} {
+	for _, want := range []string{"WARNING: Guard is not enforced", "Manifest: \"workspace\"", "compiled floor: no refusal", "COMPILED FLOOR REFUSAL", "cannot be configured away"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("worker output missing %q:\n%s", want, out)
 		}
@@ -427,5 +427,43 @@ func TestManifestProfilesPreservesSelectors(t *testing.T) {
 	}})
 	if got := strings.Join(profiles["state"], ","); got != "worker,reader" {
 		t.Fatalf("selectors = %q", got)
+	}
+}
+
+// TestExplainHumanOutputNeutralisesTerminalControls is the honesty guard for
+// the human report.
+//
+// Every report is required to carry the "not enforced" warning, because an
+// operator reading a clean explain must never conclude a workload is
+// constrained when nothing constrains it yet. Human output interpolates
+// operator-supplied paths, so a path carrying a newline can forge an extra
+// report line and one carrying an escape sequence can reposition or recolour
+// the terminal well enough to hide that warning in a transcript kept as
+// evidence. Neither may survive into the rendered output.
+func TestExplainHumanOutputNeutralisesTerminalControls(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, testGuardConfig)
+	hostile := "/opt/app/\x1b[2Jforged\nREAD: ALLOWED\x07"
+
+	out, err := runCommand(t, "explain", hostile, "--config", configPath)
+	if err != nil {
+		t.Fatalf("guard explain: %v", err)
+	}
+
+	for _, control := range []string{"\x1b", "\x07"} {
+		if strings.Contains(out, control) {
+			t.Errorf("rendered output still carries the control byte %q, so a crafted path can rewrite the terminal:\n%q", control, out)
+		}
+	}
+	// The forged line must not appear as its own line. It may appear inside a
+	// quoted value, which is the point of quoting.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "READ: ALLOWED" {
+			t.Errorf("a crafted path forged a standalone verdict line:\n%q", out)
+		}
+	}
+	if !strings.Contains(out, "WARNING:") {
+		t.Errorf("the not-enforced warning must survive a hostile path:\n%q", out)
 	}
 }

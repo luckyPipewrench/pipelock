@@ -216,6 +216,23 @@ exit 1
         self.assertNotIn("looked like a build/setup failure", result.stderr)
         self.assertNotIn("RETRY:", result.stderr)
 
+    def test_package_output_with_cannot_is_not_misclassified_as_build_failure(
+        self,
+    ) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Output":"dial tcp: cannot assign requested address\n"}'
+printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":1}'
+exit 1
+'''
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("was not a verified go test timeout", result.stderr)
+        self.assertNotIn("looked like a build/setup failure", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
     def test_structured_build_failure_is_still_refused(self) -> None:
         result = run_wrapper(
             r'''

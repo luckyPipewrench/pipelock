@@ -336,8 +336,17 @@ with open(sys.argv[1], encoding="utf-8") as stream:
         if event.get("Action") != "output" or event.get("Test"):
             continue
         output = event.get("Output")
-        if isinstance(output, str) and marker_re.search(output):
-            raise SystemExit(0)
+        if not isinstance(output, str):
+            continue
+        structured_build_context = False
+        for output_line in output.splitlines():
+            if output_line.startswith("# "):
+                structured_build_context = True
+            if (
+                (structured_build_context or raw_compiler_re.match(output_line))
+                and marker_re.search(output_line)
+            ):
+                raise SystemExit(0)
 
 raise SystemExit(1)
 PY

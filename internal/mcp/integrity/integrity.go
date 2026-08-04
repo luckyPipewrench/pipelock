@@ -373,7 +373,8 @@ func Prepare(command []string, workDir string) (*PreparedCommand, error) {
 	result.IsInterpreter = isInterpreterName(baseName) || isInterpreterName(cmdBase)
 	if packageRunners[baseName] || packageRunners[cmdBase] {
 		result.IsPackageRunner = true
-		result.IsInterpreter = false
+		return nil, fmt.Errorf("%w: package runner %q resolves another executable after launch",
+			ErrUnpinnableCommand, command[0])
 	}
 
 	if baseName == "env" {

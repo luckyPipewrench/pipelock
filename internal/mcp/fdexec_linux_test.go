@@ -247,6 +247,45 @@ func TestRunProxyIntegrityInterpreterScriptDirections(t *testing.T) {
 	}
 }
 
+func TestRunProxyIntegrityPackageRunnerDirections(t *testing.T) {
+	truePath, trueHash, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolve true: %v", err)
+	}
+	commandPath := filepath.Join(t.TempDir(), "npx")
+	if err := os.Symlink(truePath, commandPath); err != nil {
+		t.Fatalf("create package-runner fixture: %v", err)
+	}
+	manifestPath := writeFDExecManifest(t, map[string]string{truePath: trueHash})
+
+	tests := []struct {
+		name    string
+		action  string
+		wantErr bool
+	}{
+		{name: "block_denies_downstream_resolution", action: config.ActionBlock, wantErr: true},
+		{name: "warn_logs_and_runs_unpinned", action: config.ActionWarn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+			opts.IntegrityCfg = &config.MCPBinaryIntegrity{Enabled: true, ManifestPath: manifestPath, Action: tt.action}
+			var stdout bytes.Buffer
+			var stderr syncBuffer
+			err := RunProxy(context.Background(), strings.NewReader(""), &stdout, &stderr, []string{commandPath}, opts)
+			if tt.wantErr && (err == nil || !strings.Contains(err.Error(), "package runner")) {
+				t.Fatalf("package-runner enforcement error = %v", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("warn compatibility launch failed: %v", err)
+			}
+			if !tt.wantErr && !strings.Contains(stderr.String(), "using unpinned platform launch") {
+				t.Fatalf("warn fallback was silent: %q", stderr.String())
+			}
+		})
+	}
+}
+
 func writeFDExecManifest(t *testing.T, entries map[string]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "manifest.json")

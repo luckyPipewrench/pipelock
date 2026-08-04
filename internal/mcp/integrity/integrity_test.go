@@ -1771,7 +1771,7 @@ func TestPrepareDescriptorBoundCommandShapes(t *testing.T) {
 		{name: "interpreter_without_script", command: []string{"sh"}},
 		{name: "direct_interpreter_script_fails_closed", command: []string{"sh", plainScript}, wantErr: ErrUnpinnableCommand},
 		{name: "relative_interpreter_script_fails_closed", command: []string{"sh", filepath.Base(plainScript)}, workDir: dir, wantErr: ErrUnpinnableCommand},
-		{name: "package_runner", command: []string{filepath.Join(dir, "npx")}, check: func(p *PreparedCommand) bool { return p.Result.IsPackageRunner }},
+		{name: "package_runner_fails_closed", command: []string{filepath.Join(dir, "npx")}, wantErr: ErrUnpinnableCommand},
 		{name: "suspicious_workdir", command: []string{filepath.Join(dir, "local-server")}, workDir: dir, check: func(p *PreparedCommand) bool { return p.Result.Suspicious }},
 	}
 	if err := os.Symlink("/bin/true", filepath.Join(dir, "npx")); err != nil {

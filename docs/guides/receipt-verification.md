@@ -369,16 +369,19 @@ loop never submits an unchanged or empty receipt head.
 
 Rekor submission uses the v1 `hashedrekord` API. Only the checkpoint's SHA-512
 digest and signature leave the box; receipt content is never submitted. The
-separate `rekor_key_path` Ed25519 key signs the log entry and is reloaded for
+configured `rekor_key_path` Ed25519 key signs the log entry and is reloaded for
 each attempt so replacing the key file does not require restarting Pipelock.
+Pipelock does not currently verify that this key differs from the receipt
+signing key.
 
 Anchoring is fail-degraded, not a traffic gate. An unavailable log, unreadable
 entry key, invalid chain, or write failure increments
 `pipelock_evidence_auto_anchor_failures_total`, records the last error in the
 `/stats` evidence-health JSON, and prints a `CRITICAL` line to stderr. Proxy
 traffic and receipt emission continue without waiting for the retry, which runs
-on a later pass. Successful markers feed the existing `anchoring_fresh` evidence
-health grade and anchor-lag metrics.
+on a later pass. Successful markers feed the `anchoring_fresh` evidence-health
+diagnostic and anchor-lag metrics; they do not raise `current_ael` above the
+single-recorder ceiling.
 
 The log operator determines the ceiling of the proof. A self-hosted Rekor log
 adds tamper evidence and durability, but it is not independent from its

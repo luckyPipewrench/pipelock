@@ -2481,7 +2481,7 @@ dashboard_snapshot:
 | `completeness.heartbeat_interval` | `60s` | Restart-only interval for signed session heartbeat records. Must parse as a positive duration and be no more than 24h. |
 | `evidence_health.enabled` | `true` | Enable observability-only evidence health grading and `/stats` evidence-health output. This does not gate traffic. |
 | `evidence_health.self_audit_interval` | `30s` | Evidence self-audit interval. Must be between 5s and 10m. |
-| `evidence_health.max_anchor_lag` | `24h` | Maximum accepted age/lag window for anchor freshness reporting. A stale or missing anchor lowers the reported grade; it cannot fabricate health. |
+| `evidence_health.max_anchor_lag` | `24h` | Maximum accepted age/lag window for anchor freshness reporting. A stale or missing anchor lowers the `anchoring_fresh` health diagnostic; anchoring does not raise `current_ael` above the single-recorder ceiling. |
 | `anchor.rekor_url` | (empty) | Rekor v1 base URL. Setting it activates the Rekor auto-anchor backend. There is no public default. Mutually exclusive with `anchor.local_log`. |
 | `anchor.rekor_key_path` | (empty) | Ed25519 private key that signs Rekor entry submissions. Required with `anchor.rekor_url`; loaded again on every attempt so file replacement is picked up without restart. |
 | `anchor.local_log` | (empty) | Deterministic local anchor-log JSONL path. Setting it activates the local test/development backend. Mutually exclusive with `anchor.rekor_url`; not an operator-independent witness. |

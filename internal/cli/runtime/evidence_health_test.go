@@ -771,8 +771,8 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatal("valid fresh marker did not set anchoring_fresh")
 	}
-	if stats.CurrentAEL != 3 {
-		t.Fatalf("current AEL = %d, want 3 for accepted fresh marker", stats.CurrentAEL)
+	if stats.CurrentAEL != 1 {
+		t.Fatalf("current AEL = %d, want 1; a local anchor cannot supply AEL-2's second recorder", stats.CurrentAEL)
 	}
 
 	older := validEvidenceHealthAnchorState()
@@ -813,8 +813,39 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	if afterStale.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatal("valid stale marker set anchoring_fresh")
 	}
-	if afterStale.CurrentAEL != 2 {
-		t.Fatalf("current AEL = %d, want 2 for stale marker", afterStale.CurrentAEL)
+	if afterStale.CurrentAEL != 1 {
+		t.Fatalf("current AEL = %d, want 1 for stale marker; a single recorder cannot claim AEL-2", afterStale.CurrentAEL)
+	}
+}
+
+func TestEvidenceHealthRekorMarkerWithReceiptSignerKeyDoesNotRaiseAEL(t *testing.T) {
+	h, _, e, _ := newEvidenceHealthTestMonitor(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/current-head")
+	state := validEvidenceHealthAnchorState()
+	state.Backend = anchorpkg.RekorBackend
+	state.FinalSeq = 1
+	// The checkpoint records the same verified receipt signer. The health
+	// monitor has no separately verified log-key evidence, so Rekor freshness
+	// must not turn this one-recorder run into AEL-2 or AEL-3.
+	state.SignerKey = e.SignerKeyHex()
+	writeEvidenceHealthAnchorState(t, h.recorder.Dir(), state)
+
+	h.runPass()
+	stats, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable")
+	}
+	if stats.Anchor == nil || stats.Anchor.Backend != anchorpkg.RekorBackend {
+		t.Fatalf("anchor = %+v, want accepted Rekor marker", stats.Anchor)
+	}
+	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
+		t.Fatal("accepted Rekor marker did not set anchoring_fresh")
+	}
+	if stats.CurrentAEL != 1 {
+		t.Fatalf("current AEL = %d, want 1; a same-key Rekor checkpoint cannot satisfy AEL-2 or AEL-3", stats.CurrentAEL)
 	}
 }
 
@@ -983,10 +1014,11 @@ func writeEvidenceHealthAnchorBundle(t *testing.T, dir string, state anchorState
 	if state.SignerKey == "" {
 		checkpoint.SignerKeys[0] = strings.Repeat("c", 64)
 	}
-	data, err := anchorpkg.WriteBundleUnderDir(dir, state.BundlePath, anchorpkg.NewBundle(checkpoint, anchorpkg.Proof{
-		Backend:  state.Backend,
-		LogIndex: state.LogIndex,
-	}))
+	proof := anchorpkg.Proof{Backend: state.Backend, LogIndex: state.LogIndex}
+	if state.Backend == anchorpkg.RekorBackend {
+		proof.Rekor = &anchorpkg.RekorProof{}
+	}
+	data, err := anchorpkg.WriteBundleUnderDir(dir, state.BundlePath, anchorpkg.NewBundle(checkpoint, proof))
 	if err != nil {
 		t.Fatalf("WriteBundleUnderDir: %v", err)
 	}

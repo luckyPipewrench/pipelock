@@ -51,7 +51,6 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 			},
 		}
 		ceeFunc := m.CEEStatsFunc
-		evidenceFunc := m.evidenceHealthFunc
 		if total > 0 {
 			stats.Requests.BlockRate = float64(m.blockedCount) / float64(total)
 		}
@@ -71,10 +70,8 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 		if ceeFunc != nil {
 			stats.CEE = ceeFunc()
 		}
-		if evidenceFunc != nil {
-			if evidence, ok := evidenceFunc(); ok {
-				stats.EvidenceHealth = &evidence
-			}
+		if evidence, ok := m.EvidenceHealthStatsSnapshot(); ok {
+			stats.EvidenceHealth = &evidence
 		}
 
 		w.Header().Set("Content-Type", "application/json")

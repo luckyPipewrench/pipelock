@@ -127,8 +127,8 @@ health sampler is not measuring that fact in the current runtime.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_evidence_current_ael` | gauge | (none) | Current evidence assurance level, 0 through 4. The level is a minimum over enabled requirements and must not be read as a green completeness claim. |
-| `pipelock_evidence_ael_requirement_ok` | gauge | `requirement` | One when a bounded evidence requirement is currently satisfied. Requirement labels are `recorder_enabled`, `emitter_healthy`, `durability_gate`, `heartbeats`, `anchoring_fresh`, `cpc_active`, and `selfaudit_ok`. |
+| `pipelock_evidence_current_ael` | gauge | (none) | Current evidence assurance level, currently 0 through 1. Pipelock has one recorder, so no health or anchoring signal can establish AEL-2's separately keyed second recorder or any cumulative higher rung. The level is not a green completeness claim. |
+| `pipelock_evidence_ael_requirement_ok` | gauge | `requirement` | One when a bounded evidence-health signal is currently satisfied. Requirement labels are `recorder_enabled`, `emitter_healthy`, `durability_gate`, `heartbeats`, `anchoring_fresh`, `cpc_active`, and `selfaudit_ok`; these diagnostics do not independently award an AEL rung. |
 | `pipelock_evidence_chain_head_seq` | gauge | (none) | Last emitted in-memory receipt sequence, omitted when evidence health is not measured. |
 | `pipelock_evidence_chain_head_age_seconds` | gauge | (none) | Seconds since the last durable chain entry, omitted when evidence health is not measured. |
 | `pipelock_evidence_heartbeat_interval_seconds` | gauge | (none) | Configured receipt heartbeat interval in seconds; absent from JSON stats until heartbeats are enabled. |

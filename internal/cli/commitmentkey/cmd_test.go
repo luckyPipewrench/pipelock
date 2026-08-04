@@ -110,6 +110,15 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("test opening with typed recipe: %v", err)
 	}
 	assertAudit(t, stderr, "test", "succeeded")
+
+	stdout, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--accept-loss")
+	if err != nil {
+		t.Fatalf("retire with explicit loss acceptance: %v", err)
+	}
+	if got := decodeMetadata(t, stdout); len(got.Keys) != 1 || got.Epoch != 2 {
+		t.Fatalf("retired metadata = %+v, want only epoch 2", got)
+	}
+	assertAudit(t, stderr, "retire", "succeeded")
 }
 
 func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
@@ -158,6 +167,73 @@ func TestParseRecipeRejectsUnknownAndTrailingFields(t *testing.T) {
 	}
 }
 
+func TestCommandDenialBranches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keyring.json")
+	backup := filepath.Join(dir, "backup.json")
+	if _, _, err := execute(t, "initialize", "--keyring", path); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	metadata := mustLoadMetadata(t, path)
+
+	for _, test := range []struct {
+		name      string
+		operation string
+		args      []string
+		wantAudit bool
+	}{
+		{name: "initialize rerun", operation: "initialize", args: []string{"initialize", "--keyring", path}, wantAudit: true},
+		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
+		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
+		{name: "retire malformed reference", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--retained-reference", "malformed"}},
+		{name: "retire zero reference epoch", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--retained-reference", metadata.ActiveID + ":0"}},
+		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
+		{name: "missing path selector", args: []string{"inspect"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, stderr, err := execute(t, test.args...)
+			if err == nil {
+				t.Fatal("command succeeded")
+			}
+			if test.wantAudit {
+				assertAudit(t, stderr, test.operation, "denied")
+			}
+		})
+	}
+
+	if _, _, err := execute(t, "backup", "--keyring", path, "--out", backup); err != nil {
+		t.Fatalf("first backup: %v", err)
+	}
+	_, stderr, err := execute(t, "backup", "--keyring", path, "--out", backup)
+	if err == nil {
+		t.Fatal("duplicate backup succeeded")
+	}
+	assertAudit(t, stderr, "backup", "denied")
+	_, stderr, err = execute(t, "restore", "--keyring", path, "--from", backup)
+	if err == nil {
+		t.Fatal("restore over existing keyring succeeded")
+	}
+	assertAudit(t, stderr, "restore", "denied")
+}
+
+func TestConfigPathResolutionDenials(t *testing.T) {
+	dir := t.TempDir()
+	missingField := filepath.Join(dir, "missing-field.yaml")
+	if err := os.WriteFile(missingField, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	malformed := filepath.Join(dir, "malformed.yaml")
+	if err := os.WriteFile(malformed, []byte("mode: [\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for _, path := range []string{missingField, malformed} {
+		if _, _, err := execute(t, "inspect", "--config", path); err == nil {
+			t.Fatalf("inspect with config %s succeeded", path)
+		}
+	}
+}
+
 func execute(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	stdout := &bytes.Buffer{}
@@ -178,6 +254,15 @@ func decodeMetadata(t *testing.T, raw string) domkey.Metadata {
 		t.Fatalf("decode metadata %q: %v", raw, err)
 	}
 	return metadata
+}
+
+func mustLoadMetadata(t *testing.T, path string) domkey.Metadata {
+	t.Helper()
+	keyring, err := domkey.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return keyring.Metadata()
 }
 
 func assertAudit(t *testing.T, raw, operation, outcome string) {

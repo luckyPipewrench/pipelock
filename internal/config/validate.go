@@ -4415,8 +4415,8 @@ func validateGuardRWPath(label string, idx int, rawPath string) error {
 	// and a home-derived list would protect /root/.ssh while leaving every
 	// real operator's ~/.ssh unguarded. Writing into any .ssh, .gnupg or
 	// .gpg directory is unsafe regardless of which user owns it.
-	if comp := guardForbiddenComponent(resolved); comp != "" {
-		return fmt.Errorf("%s: read-write on trust-bearing path %q is not allowed (contains %q)", field, rawPath, comp)
+	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
+		return fmt.Errorf("%s: read-write on trust-bearing path %q is not allowed (contains %q, which is %s)", field, rawPath, comp, reason)
 	}
 	if suffix := guardForbiddenSuffix(resolved); suffix != "" {
 		return fmt.Errorf("%s: read-write on %s %q is not allowed", field, suffix, rawPath)

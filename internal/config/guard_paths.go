@@ -63,8 +63,8 @@ func validateGuardROPath(label string, idx int, rawPath string) error {
 	field := fmt.Sprintf("%s.read_only[%d]", label, idx)
 	resolved := resolveGuardPath(rawPath)
 
-	if comp := guardForbiddenComponent(resolved); comp != "" {
-		return fmt.Errorf("%s: read access to secret-bearing path %q is not allowed (contains %q); reading a private key is exfiltration, not merely inspection", field, rawPath, comp)
+	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
+		return fmt.Errorf("%s: read access to secret-bearing path %q is not allowed (contains %q, which is %s); reading credential material is exfiltration, not merely inspection", field, rawPath, comp, reason)
 	}
 	// A grant on an entire home reads through to every credential beneath it,
 	// which would defeat every rule in this file by granting the parent
@@ -352,14 +352,14 @@ func guardIsSecretVariantName(resolved, secret string) bool {
 // here. Credential FILE names stay home-relative on purpose: a project-local
 // .npmrc is ordinary build configuration, and refusing every one of them would
 // break real workloads with no way to narrow the grant.
-var guardForbiddenComponents = map[string]struct{}{
-	".ssh":    {},
-	".gnupg":  {},
-	".gpg":    {},
-	".aws":    {},
-	".azure":  {},
-	".kube":   {},
-	".docker": {},
+var guardForbiddenComponents = map[string]string{
+	".ssh":    "an SSH key directory",
+	".gnupg":  "a GnuPG secret keyring directory",
+	".gpg":    "a GPG secret keyring directory",
+	".aws":    "an AWS credential directory, including SSO and CLI session caches",
+	".azure":  "an Azure credential directory",
+	".kube":   "a kubeconfig directory, whose files embed client certificates and tokens",
+	".docker": "a docker credential directory",
 }
 
 // guardForbiddenComponent reports the first trust-bearing path component in the
@@ -369,13 +369,13 @@ var guardForbiddenComponents = map[string]struct{}{
 // home directory is deliberate. Pipelock commonly runs as a system service, so
 // os.UserHomeDir() returns /root; a home-derived list would protect /root/.ssh
 // while leaving every real operator's ~/.ssh unguarded.
-func guardForbiddenComponent(resolved string) string {
+func guardForbiddenComponent(resolved string) (component, reason string) {
 	for _, part := range strings.Split(resolved, string(filepath.Separator)) {
-		if _, bad := guardForbiddenComponents[strings.ToLower(part)]; bad {
-			return part
+		if r, bad := guardForbiddenComponents[strings.ToLower(part)]; bad {
+			return part, r
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // guardForbiddenSuffixes are trailing path shapes identifying Pipelock's own

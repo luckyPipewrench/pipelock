@@ -1641,11 +1641,16 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 	return nil
 }
 
-func prepareBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer, workDir ...string) (*integrity.PreparedCommand, error) {
-	agentWorkDir := ""
-	if len(workDir) > 0 {
-		agentWorkDir = workDir[0]
-	}
+// prepareBinaryIntegrity takes no working directory, unlike VerifyBinaryIntegrity.
+// Suspicious-path detection compares the resolved binary against the agent's
+// working directory, and RunProxy has no such directory to compare against: the
+// field does not exist on Opts, and the pre-descriptor call here never passed
+// one either. A variadic parameter no caller can fill would read as a supported
+// option that silently does nothing, so it is absent rather than ignored. The
+// CLI entry point still passes its workspace to VerifyBinaryIntegrity, where the
+// comparison is meaningful.
+func prepareBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer) (*integrity.PreparedCommand, error) {
+	const agentWorkDir = ""
 	manifest, loadErr := loadMCPIntegrityManifest(icfg)
 	if loadErr != nil {
 		return nil, fmt.Errorf("binary integrity: loading manifest: %w", loadErr)

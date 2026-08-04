@@ -7,8 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestValidateGuard_EmptyIsValid(t *testing.T) {
@@ -30,7 +33,18 @@ func TestValidateGuard_ValidFull(t *testing.T) {
 			{Name: "worker", Manifests: []string{"app-state"}},
 		},
 		Manifests: []GuardManifest{
-			{Name: "app-state", ReadOnly: []string{"/opt/app/config"}, ReadWrite: []string{"/var/lib/app/data"}},
+			// Exercises both shapes deliberately, because this is the example a
+			// reader copies. The plain lists are FILE grants, so a path that is
+			// really a directory belongs in a *_directories list; declaring
+			// /opt/app/config as a plain read_only would validate cleanly and
+			// then fail to reach anything inside it once enforcement lands.
+			{
+				Name:                 "app-state",
+				ReadOnly:             []string{"/opt/app/config/settings.yaml"},
+				ReadOnlyDirectories:  []string{"/opt/app/config"},
+				ReadWrite:            []string{"/var/lib/app/data/state.db"},
+				ReadWriteDirectories: []string{"/var/lib/app/data"},
+			},
 		},
 	}
 	// A structurally valid declaration passes every path and naming rule and is
@@ -44,6 +58,152 @@ func TestValidateGuard_ValidFull(t *testing.T) {
 	}
 	if !errors.Is(err, errGuardNotEnforced) {
 		t.Fatalf("valid guard config should fail only on the not-enforced gate, got: %v", err)
+	}
+}
+
+func TestValidateGuard_PathTypes(t *testing.T) {
+	t.Parallel()
+
+	missingFile := filepath.Join(t.TempDir(), "state-file")
+	missingDirectory := filepath.Join(t.TempDir(), "state-directory") + string(filepath.Separator)
+	for _, path := range []string{missingFile, strings.TrimSuffix(missingDirectory, string(filepath.Separator))} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("test precondition: %q must not exist, got: %v", path, err)
+		}
+	}
+
+	tests := []struct {
+		name      string
+		manifest  GuardManifest
+		wantErr   string
+		wantGate  bool
+		noPathErr bool
+	}{
+		{
+			name: "legacy_plain_paths_default_to_files",
+			manifest: GuardManifest{
+				Name:      "state",
+				ReadOnly:  []string{missingFile},
+				ReadWrite: []string{filepath.Join(t.TempDir(), "writable-state")},
+			},
+			wantGate:  true,
+			noPathErr: true,
+		},
+		{
+			name: "declared_directories_allow_trailing_separator",
+			manifest: GuardManifest{
+				Name:                 "state",
+				ReadOnlyDirectories:  []string{missingDirectory},
+				ReadWriteDirectories: []string{filepath.Join(t.TempDir(), "writable-state") + string(filepath.Separator)},
+			},
+			wantGate:  true,
+			noPathErr: true,
+		},
+		{
+			name: "file_with_trailing_separator_is_inconsistent",
+			manifest: GuardManifest{
+				Name:     "bad",
+				ReadOnly: []string{"/var/lib/app/config/"},
+			},
+			wantErr: "file path",
+		},
+		{
+			name: "directory_path_must_be_absolute",
+			manifest: GuardManifest{
+				Name:                "bad",
+				ReadOnlyDirectories: []string{"relative/directory"},
+			},
+			wantErr: "absolute",
+		},
+		{
+			name: "same_path_cannot_be_file_and_directory",
+			manifest: GuardManifest{
+				Name:                "bad",
+				ReadOnly:            []string{"/var/lib/app/config"},
+				ReadOnlyDirectories: []string{"/var/lib/app/config/"},
+			},
+			wantErr: "conflicts",
+		},
+		{
+			name: "read_only_directory_still_hits_credential_floor",
+			manifest: GuardManifest{
+				Name:                "bad",
+				ReadOnlyDirectories: []string{"/home/someoperator/.kube/"},
+			},
+			wantErr: "credential",
+		},
+		{
+			name: "read_write_directory_still_hits_credential_floor",
+			manifest: GuardManifest{
+				Name:                 "bad",
+				ReadWriteDirectories: []string{"/home/someoperator/.kube/"},
+			},
+			wantErr: "credential",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Guard = Guard{Manifests: []GuardManifest{tt.manifest}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("guard config must be rejected while the evaluator is absent")
+			}
+			if tt.wantGate && !errors.Is(err, errGuardNotEnforced) {
+				t.Fatalf("declared path type must pass path validation and reach the gate, got: %v", err)
+			}
+			if tt.noPathErr && !errors.Is(err, errGuardNotEnforced) {
+				t.Fatalf("path type validation must not depend on an absent path, got: %v", err)
+			}
+			if tt.wantErr != "" {
+				if errors.Is(err, errGuardNotEnforced) {
+					t.Fatalf("invalid declaration was refused only by the gate, not its path-type rule: %v", err)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantErr)) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestGuardManifest_PathTypeYAMLSurface(t *testing.T) {
+	t.Parallel()
+
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(`
+guard:
+  manifests:
+    - name: app-state
+      read_only:
+        - /etc/resolv.conf
+      read_only_directories:
+        - /var/lib/app/cache/
+      read_write:
+        - /var/lib/app/state.db
+      read_write_directories:
+        - /var/lib/app/data/
+`), &cfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(cfg.Guard.Manifests) != 1 {
+		t.Fatalf("manifests = %d, want 1", len(cfg.Guard.Manifests))
+	}
+	manifest := cfg.Guard.Manifests[0]
+	if got, want := manifest.ReadOnly, []string{"/etc/resolv.conf"}; !slices.Equal(got, want) {
+		t.Errorf("read_only = %q, want %q", got, want)
+	}
+	if got, want := manifest.ReadOnlyDirectories, []string{"/var/lib/app/cache/"}; !slices.Equal(got, want) {
+		t.Errorf("read_only_directories = %q, want %q", got, want)
+	}
+	if got, want := manifest.ReadWrite, []string{"/var/lib/app/state.db"}; !slices.Equal(got, want) {
+		t.Errorf("read_write = %q, want %q", got, want)
+	}
+	if got, want := manifest.ReadWriteDirectories, []string{"/var/lib/app/data/"}; !slices.Equal(got, want) {
+		t.Errorf("read_write_directories = %q, want %q", got, want)
 	}
 }
 
@@ -822,7 +982,7 @@ func TestValidateGuard_WholeHomeReadRefused(t *testing.T) {
 			t.Parallel()
 			cfg := Defaults()
 			cfg.Guard = Guard{
-				Manifests: []GuardManifest{{Name: "bad", ReadOnly: []string{path}}},
+				Manifests: []GuardManifest{{Name: "bad", ReadOnlyDirectories: []string{path}}},
 			}
 			err := cfg.Validate()
 			if err == nil {

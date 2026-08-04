@@ -2355,10 +2355,14 @@ type GuardProfile struct {
 }
 
 // GuardManifest declares the filesystem paths a workload may read or write.
-// ReadOnly paths are accessible but not writable; ReadWrite paths are both.
-// Every path is explicit and absolute; no wildcards, no inference.
+// ReadOnly and ReadWrite are file grants; their long-standing plain-string
+// shape therefore defaults to the narrower file type. ReadOnlyDirectories and
+// ReadWriteDirectories are explicit subtree grants. Every path is explicit and
+// absolute; no wildcards, no inference from the filesystem.
 type GuardManifest struct {
-	Name      string   `yaml:"name"`
-	ReadOnly  []string `yaml:"read_only,omitempty"`
-	ReadWrite []string `yaml:"read_write,omitempty"`
+	Name                 string   `yaml:"name"`
+	ReadOnly             []string `yaml:"read_only,omitempty"`
+	ReadOnlyDirectories  []string `yaml:"read_only_directories,omitempty"`
+	ReadWrite            []string `yaml:"read_write,omitempty"`
+	ReadWriteDirectories []string `yaml:"read_write_directories,omitempty"`
 }

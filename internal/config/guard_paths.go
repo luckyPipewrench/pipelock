@@ -59,8 +59,8 @@ func resolveGuardPath(rawPath string) string {
 //
 // Non-secret files that happen to live near this material can still be granted
 // individually; what is refused here is the directory that holds keys.
-func validateGuardROPath(label string, idx int, rawPath string) error {
-	field := fmt.Sprintf("%s.read_only[%d]", label, idx)
+func validateGuardROPath(label, fieldName string, idx int, rawPath string) error {
+	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
 	resolved := resolveGuardPath(rawPath)
 
 	if comp, reason := guardForbiddenComponent(resolved); comp != "" {

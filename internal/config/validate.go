@@ -4340,19 +4340,36 @@ func (c *Config) validateGuard() error {
 		}
 		manifestNames[m.Name] = true
 
+		pathTypes := make(map[string]guardPathType, len(m.ReadOnly)+len(m.ReadOnlyDirectories)+len(m.ReadWrite)+len(m.ReadWriteDirectories))
 		for j, p := range m.ReadOnly {
-			if !filepath.IsAbs(p) {
-				return fmt.Errorf("%s.read_only[%d]: path must be absolute (got %q)", label, j, p)
+			if err := validateGuardManifestPath(label, "read_only", j, p, guardPathFile, pathTypes); err != nil {
+				return err
 			}
-			if err := validateGuardROPath(label, j, p); err != nil {
+			if err := validateGuardROPath(label, "read_only", j, p); err != nil {
+				return err
+			}
+		}
+		for j, p := range m.ReadOnlyDirectories {
+			if err := validateGuardManifestPath(label, "read_only_directories", j, p, guardPathDirectory, pathTypes); err != nil {
+				return err
+			}
+			if err := validateGuardROPath(label, "read_only_directories", j, p); err != nil {
 				return err
 			}
 		}
 		for j, p := range m.ReadWrite {
-			if !filepath.IsAbs(p) {
-				return fmt.Errorf("%s.read_write[%d]: path must be absolute (got %q)", label, j, p)
+			if err := validateGuardManifestPath(label, "read_write", j, p, guardPathFile, pathTypes); err != nil {
+				return err
 			}
-			if err := validateGuardRWPath(label, j, p); err != nil {
+			if err := validateGuardRWPath(label, "read_write", j, p); err != nil {
+				return err
+			}
+		}
+		for j, p := range m.ReadWriteDirectories {
+			if err := validateGuardManifestPath(label, "read_write_directories", j, p, guardPathDirectory, pathTypes); err != nil {
+				return err
+			}
+			if err := validateGuardRWPath(label, "read_write_directories", j, p); err != nil {
 				return err
 			}
 		}
@@ -4394,6 +4411,33 @@ func (c *Config) validateGuard() error {
 	return errGuardNotEnforced
 }
 
+type guardPathType string
+
+const (
+	guardPathFile      guardPathType = "file"
+	guardPathDirectory guardPathType = "directory"
+)
+
+// validateGuardManifestPath validates the declared kind of one manifest path.
+// The declaration is intentionally lexical: it must produce the same verdict
+// whether or not the target exists on the host reading the configuration.
+func validateGuardManifestPath(label, fieldName string, idx int, rawPath string, pathType guardPathType, pathTypes map[string]guardPathType) error {
+	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
+	if !filepath.IsAbs(rawPath) {
+		return fmt.Errorf("%s: path must be absolute (got %q)", field, rawPath)
+	}
+	if pathType == guardPathFile && strings.HasSuffix(rawPath, string(filepath.Separator)) {
+		return fmt.Errorf("%s: file path %q must not end in a path separator; declare directories in %s_directories", field, rawPath, strings.TrimSuffix(fieldName, "_directories"))
+	}
+
+	cleaned := filepath.Clean(rawPath)
+	if declared, ok := pathTypes[cleaned]; ok && declared != pathType {
+		return fmt.Errorf("%s: path %q conflicts with an earlier %s declaration; a path must have exactly one declared type", field, rawPath, declared)
+	}
+	pathTypes[cleaned] = pathType
+	return nil
+}
+
 // errGuardNotEnforced is returned for any non-empty guard declaration while the
 // runtime evaluator does not exist.
 var errGuardNotEnforced = errors.New(
@@ -4404,8 +4448,8 @@ var errGuardNotEnforced = errors.New(
 
 // validateGuardRWPath checks that a read-write path does not grant write
 // access to dangerous or trust-bearing locations.
-func validateGuardRWPath(label string, idx int, rawPath string) error {
-	field := fmt.Sprintf("%s.read_write[%d]", label, idx)
+func validateGuardRWPath(label, fieldName string, idx int, rawPath string) error {
+	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
 
 	resolved := resolveGuardPath(rawPath)
 

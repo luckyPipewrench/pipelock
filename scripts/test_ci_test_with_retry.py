@@ -137,6 +137,150 @@ exit 0
         self.assertIn("was not a verified go test timeout", result.stderr)
         self.assertNotIn("FLAKE RETRY", result.stderr)
 
+    def test_assertion_message_with_cannot_is_not_misclassified_as_build_failure(
+        self,
+    ) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestPolicy","Output":"policy_test.go:42: cannot allow request\n"}'
+printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Test":"TestPolicy","Elapsed":1}'
+printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":1}'
+exit 1
+'''
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("was not a verified go test timeout", result.stderr)
+        self.assertNotIn("looked like a build/setup failure", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_structured_build_failure_is_still_refused(self) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Output":"pkg.go:42:2: undefined: missingSymbol\n"}'
+printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":1}'
+exit 1
+'''
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("looked like a build/setup failure", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_incomplete_sigterm_without_test_failure_retries_once(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"=== RUN   TestSlow\n"}'
+  kill -TERM "$$"
+fi
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("externally terminated by SIGTERM (exit 143)", result.stderr)
+        self.assertIn("externally terminated shard passed on rerun", result.stderr)
+
+    def test_sigterm_with_test_failure_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestPolicy","Output":"--- FAIL: TestPolicy (0.01s)\n"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Test":"TestPolicy","Elapsed":1}'
+  kill -TERM "$$"
+fi
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("SIGTERM output contained a failure", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_with_failing_package_line_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Output":"FAIL\texample.com/p/pkg\t1.00s\n"}'
+  kill -TERM "$$"
+fi
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("SIGTERM output contained a failure", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_after_normal_package_completion_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+  exit 143
+fi
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("no incomplete package", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_after_skipped_package_completion_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"skip","Package":"example.com/p/pkg","Elapsed":1}'
+  exit 143
+fi
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("no incomplete package", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_with_truncated_failure_event_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg"'
+  exit 143
+fi
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("SIGTERM output contained a failure", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
     def test_raw_timeout_lookalike_is_not_retried(self) -> None:
         result = run_wrapper(
             r'''

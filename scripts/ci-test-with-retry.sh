@@ -2,9 +2,10 @@
 # Copyright 2026 Josh Waldrep
 # SPDX-License-Identifier: Apache-2.0
 
-# Run one CI go-test shard once, then retry a starvation-looking failure once.
-# DATA RACE, build/setup errors, and non-timeout panics fail closed because
-# retrying those away would hide the bugs this CI job exists to catch.
+# Run one CI go-test shard once, then retry a starvation-looking failure or an
+# externally terminated incomplete run once. DATA RACE, test failures,
+# build/setup errors, and non-timeout panics fail closed because retrying those
+# away would hide the bugs this CI job exists to catch.
 set -euo pipefail
 
 usage() {
@@ -140,6 +141,101 @@ raise SystemExit(0 if verified else 1)
 PY
 }
 
+has_incomplete_sigterm() {
+  local command_status="$1"
+  local output_file="$2"
+
+  if [ "$command_status" -ne 143 ]; then
+    return 1
+  fi
+
+  python3 - "$output_file" <<'PY'
+import json
+import re
+import sys
+
+test_failure_re = re.compile(r"^\s*--- FAIL:")
+package_failure_re = re.compile(r"^FAIL(?:\s|$)")
+truncated_failure_re = re.compile(
+    r'(?:--- FAIL:|"Action"\s*:\s*"fail"|(?:^|\\n)FAIL(?:\\[tnr]|\s|$))'
+)
+started_packages = set()
+terminal_packages = set()
+saw_failure = False
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            if truncated_failure_re.search(line):
+                saw_failure = True
+            continue
+
+        package = event.get("Package")
+        action = event.get("Action")
+        if isinstance(package, str) and package:
+            if action == "start":
+                started_packages.add(package)
+            if action in {"pass", "fail", "skip"} and not event.get("Test"):
+                terminal_packages.add(package)
+        if action == "fail":
+            saw_failure = True
+
+        if action != "output":
+            continue
+        output = event.get("Output")
+        if not isinstance(output, str):
+            continue
+        for output_line in output.splitlines():
+            if test_failure_re.match(output_line) or package_failure_re.match(output_line):
+                saw_failure = True
+
+incomplete_packages = sorted(started_packages - terminal_packages)
+if saw_failure or not incomplete_packages:
+    raise SystemExit(1)
+
+for package in incomplete_packages:
+    print(package)
+PY
+}
+
+has_build_setup_failure() {
+  local output_file="$1"
+
+  python3 - "$output_file" <<'PY'
+import json
+import re
+import sys
+
+marker_re = re.compile(r"\b(?:build failed|cannot|undefined)\b", re.IGNORECASE)
+raw_compiler_re = re.compile(r"^(?:# \S+|\S+\.go:\d+(?::\d+)?:)")
+raw_build_context = False
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            if line.startswith("# "):
+                raw_build_context = True
+            if (
+                (raw_build_context or raw_compiler_re.match(line))
+                and marker_re.search(line)
+            ):
+                raise SystemExit(0)
+            continue
+        raw_build_context = False
+        if event.get("Action") != "output" or event.get("Test"):
+            continue
+        output = event.get("Output")
+        if isinstance(output, str) and marker_re.search(output):
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
 refuse_forbidden_output() {
   local output_file="$1"
   local pass_label="$2"
@@ -149,7 +245,7 @@ refuse_forbidden_output() {
     return 0
   fi
 
-  if grep -Eiq '\b(build failed|cannot|undefined)\b' "$output_file"; then
+  if has_build_setup_failure "$output_file"; then
     echo "ci-test-with-retry: refusing retry because ${pass_label} looked like a build/setup failure" >&2
     return 0
   fi
@@ -185,13 +281,14 @@ if refuse_forbidden_output "$combined_first" "first pass"; then
   exit "$first_status"
 fi
 
-if ! has_go_test_timeout "$first_stdout"; then
-  echo "ci-test-with-retry: refusing retry because first pass was not a verified go test timeout" >&2
-  exit "$first_status"
-fi
+retry_kind=""
+failed_packages=()
+incomplete_packages=()
 
-mapfile -t failed_packages < <(
-  python3 - "$first_stdout" <<'PY'
+if has_go_test_timeout "$first_stdout"; then
+  retry_kind="timeout"
+  mapfile -t failed_packages < <(
+    python3 - "$first_stdout" <<'PY'
 import json
 import sys
 
@@ -213,7 +310,22 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 for package in failed:
     print(package)
 PY
-)
+  )
+else
+  if [ "$first_status" -eq 143 ]; then
+    incomplete_file="$tmpdir/incomplete-packages"
+    if has_incomplete_sigterm "$first_status" "$combined_first" >"$incomplete_file"; then
+      retry_kind="sigterm"
+      mapfile -t incomplete_packages <"$incomplete_file"
+    else
+      echo "ci-test-with-retry: refusing retry because SIGTERM output contained a failure or no incomplete package" >&2
+      exit "$first_status"
+    fi
+  else
+    echo "ci-test-with-retry: refusing retry because first pass was not a verified go test timeout" >&2
+    exit "$first_status"
+  fi
+fi
 
 retry_packages=("${failed_packages[@]}")
 retry_scope="failed package(s)"
@@ -239,7 +351,12 @@ for ((i = 0; i < ${#cmd_args[@]}; i++)); do
 done
 
 failed_label="${failed_packages[*]:-${package_args[*]}}"
-echo "FLAKE RETRY: first pass failed for package(s): ${failed_label}; rerunning ${retry_scope} once" >&2
+if [ "$retry_kind" = "sigterm" ]; then
+  incomplete_label="${incomplete_packages[*]}"
+  echo "INFRASTRUCTURE RETRY: first pass was externally terminated by SIGTERM (exit 143) before package(s) completed: ${incomplete_label}; rerunning ${retry_scope} once" >&2
+else
+  echo "FLAKE RETRY: first pass failed for package(s): ${failed_label}; rerunning ${retry_scope} once" >&2
+fi
 
 retry_stdout="$tmpdir/retry.stdout"
 retry_stderr="$tmpdir/retry.stderr"
@@ -273,9 +390,17 @@ if [ "$retry_status" -eq 0 ]; then
     echo "ci-test-with-retry: refusing successful coverage retry because ${coverage_profile} was not recreated" >&2
     exit 1
   fi
-  echo "FLAKE RETRY: package(s) ${failed_label} failed then passed on rerun" >&2
+  if [ "$retry_kind" = "sigterm" ]; then
+    echo "INFRASTRUCTURE RETRY: externally terminated shard passed on rerun; original incomplete package(s): ${incomplete_label}" >&2
+  else
+    echo "FLAKE RETRY: package(s) ${failed_label} failed then passed on rerun" >&2
+  fi
   exit 0
 fi
 
-echo "FLAKE RETRY: package(s) ${failed_label} failed again on rerun" >&2
+if [ "$retry_kind" = "sigterm" ]; then
+  echo "INFRASTRUCTURE RETRY: externally terminated shard failed on rerun; original incomplete package(s): ${incomplete_label}" >&2
+else
+  echo "FLAKE RETRY: package(s) ${failed_label} failed again on rerun" >&2
+fi
 exit "$retry_status"

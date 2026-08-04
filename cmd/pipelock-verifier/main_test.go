@@ -1373,11 +1373,20 @@ func TestReceipt_EvidenceV2RecheckSourceSpan(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
 		t.Fatalf("parse json: %v", err)
 	}
-	if rpt.RecheckValid == nil || !*rpt.RecheckValid {
-		t.Fatalf("expected recheck_valid=true, got %+v", rpt)
+	if rpt.Recheck == nil {
+		t.Fatalf("expected staged recheck report, got %+v", rpt)
 	}
-	if rpt.RecheckView != contractreceipt.NormalizedViewSanitizedTarget {
-		t.Fatalf("recheck_view=%q", rpt.RecheckView)
+	if rpt.Recheck.Location != recheckLocationExact {
+		t.Fatalf("recheck.location=%q, want %q", rpt.Recheck.Location, recheckLocationExact)
+	}
+	if rpt.Recheck.Signature != recheckSignatureVerified {
+		t.Fatalf("recheck.signature=%q, want %q", rpt.Recheck.Signature, recheckSignatureVerified)
+	}
+	if rpt.Recheck.Overall != recheckOverallVerified {
+		t.Fatalf("recheck.overall=%q, want %q", rpt.Recheck.Overall, recheckOverallVerified)
+	}
+	if rpt.Recheck.View != contractreceipt.NormalizedViewSanitizedTarget {
+		t.Fatalf("recheck.view=%q", rpt.Recheck.View)
 	}
 }
 
@@ -1413,8 +1422,17 @@ func TestReceipt_EvidenceV2RecheckSourceSpanMismatchReportsInvalid(t *testing.T)
 	if rpt.Valid {
 		t.Fatalf("expected valid=false, got %+v", rpt)
 	}
-	if rpt.RecheckValid == nil || *rpt.RecheckValid {
-		t.Fatalf("expected recheck_valid=false, got %+v", rpt)
+	if rpt.Recheck == nil {
+		t.Fatalf("expected staged recheck report, got %+v", rpt)
+	}
+	if rpt.Recheck.Location != recheckLocationFailed {
+		t.Fatalf("recheck.location=%q, want %q", rpt.Recheck.Location, recheckLocationFailed)
+	}
+	if rpt.Recheck.Signature != recheckSignatureVerified {
+		t.Fatalf("recheck.signature=%q, want %q", rpt.Recheck.Signature, recheckSignatureVerified)
+	}
+	if rpt.Recheck.Overall != recheckOverallFailed {
+		t.Fatalf("recheck.overall=%q, want %q", rpt.Recheck.Overall, recheckOverallFailed)
 	}
 	if !strings.Contains(rpt.Error, "redacted_sample mismatch") {
 		t.Fatalf("error=%q", rpt.Error)

@@ -289,14 +289,61 @@ func recheckReceiptFixture(t *testing.T, span contractreceipt.SourceSpan) contra
 // authentication). This test must then FAIL.
 func TestRecheckReport_UnauthenticatedNeverReadsAsVerified(t *testing.T) {
 	t.Parallel()
-	for _, loc := range []string{recheckLocationExact, recheckLocationOccurrence, recheckLocationFailed} {
+	cases := []struct {
+		name        string
+		location    string
+		wantOverall string
+	}{
+		{name: "exact", location: recheckLocationExact, wantOverall: recheckOverallIncomplete},
+		{name: "occurrence", location: recheckLocationOccurrence, wantOverall: recheckOverallIncomplete},
+		{name: "failed", location: recheckLocationFailed, wantOverall: recheckOverallFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := newRecheckReport(recheckResult{Location: tc.location, View: "sanitized_target"}, false)
+			if got.Overall != tc.wantOverall {
+				t.Fatalf("overall=%q, want %q", got.Overall, tc.wantOverall)
+			}
+			if got.Signature != recheckSignatureNotChecked {
+				t.Fatalf("signature=%q, want %q", got.Signature, recheckSignatureNotChecked)
+			}
+		})
+	}
+}
+
+// TestRecheckReport_UnauthenticatedWithholdsAuthoritativeLocation is the guard
+// for the strongest form of the contract: for an unauthenticated receipt, the
+// positive positional result must not appear in ANY field an automated gate
+// would trust.
+//
+// The defect this closes: an earlier revision reported
+// location="exact_coordinates" alongside signature="not_checked". A consumer
+// keying off `location != "failed"` would accept an attacker-supplied unpinned
+// receipt paired with an attacker-chosen source file. Documenting "also read
+// signature" does not prevent that; withholding the field does.
+//
+// Non-vacuity: neutralize by deleting the `if !signatureVerified` early return
+// in newRecheckReport so Location is populated unconditionally. This test must
+// then FAIL.
+func TestRecheckReport_UnauthenticatedWithholdsAuthoritativeLocation(t *testing.T) {
+	t.Parallel()
+	for _, loc := range []string{recheckLocationExact, recheckLocationOccurrence} {
 		got := newRecheckReport(recheckResult{Location: loc, View: "sanitized_target"}, false)
-		if got.Overall == recheckOverallVerified {
-			t.Fatalf("location=%q unauthenticated reported overall=%q; an unauthenticated recheck must never read as verified", loc, got.Overall)
+		if got.Location != "" {
+			t.Fatalf("unauthenticated recheck exposed authoritative location=%q; a positive positional result must be withheld from the trusted field", got.Location)
 		}
-		if got.Signature != recheckSignatureNotChecked {
-			t.Fatalf("location=%q reported signature=%q, want %q", loc, got.Signature, recheckSignatureNotChecked)
+		if got.UnauthenticatedDiagnostic == nil || got.UnauthenticatedDiagnostic.Location != loc {
+			t.Fatalf("expected non-authoritative diagnostic carrying %q, got %+v", loc, got.UnauthenticatedDiagnostic)
 		}
+	}
+	// The authenticated path still reports the authoritative location.
+	authenticated := newRecheckReport(recheckResult{Location: recheckLocationExact}, true)
+	if authenticated.Location != recheckLocationExact {
+		t.Fatalf("authenticated location=%q, want %q", authenticated.Location, recheckLocationExact)
+	}
+	if authenticated.UnauthenticatedDiagnostic != nil {
+		t.Fatalf("authenticated report carried an unauthenticated diagnostic: %+v", authenticated.UnauthenticatedDiagnostic)
 	}
 }
 

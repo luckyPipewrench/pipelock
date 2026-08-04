@@ -28,8 +28,8 @@ const (
 
 // Recheck signature stages. A recheck says nothing about who produced the
 // receipt; that is the signature stage's job. Reported as a sibling of the
-// location result so no consumer can read a positive location without also
-// reading whether the producer was authenticated.
+// location result. A positive location is withheld entirely when the
+// producer is unauthenticated, so it cannot be read as a pass.
 const (
 	recheckSignatureVerified   = "verified"
 	recheckSignatureNotChecked = "not_checked"
@@ -96,15 +96,34 @@ func recheckEvidenceReceiptSpan(r contractreceipt.EvidenceReceipt, sourcePath st
 	return recheckResult{Location: recheckLocationOccurrence, View: span.NormalizedView}, nil
 }
 
-// recheckReport is the staged, machine-readable recheck outcome. There is
-// deliberately no bare boolean: an unqualified "valid" is unrepresentable, so a
-// consumer cannot read a positive source match without also reading whether the
-// producing signature was authenticated.
+// recheckReport is the staged, machine-readable recheck outcome.
+//
+// Only `overall` is authoritative for a gating decision. A positive positional
+// result is structurally UNAVAILABLE at the authoritative path unless the
+// producing signature was verified: when the receipt is unauthenticated the
+// location moves into UnauthenticatedDiagnostic and the top-level Location is
+// empty. Documenting "read signature too" is not enough, because an automation
+// consumer keying off `location != "failed"` would still accept an
+// attacker-supplied unpinned receipt paired with an attacker-chosen source
+// file. Removing the field is what actually prevents that.
 type recheckReport struct {
-	View      string `json:"view,omitempty"`
-	Location  string `json:"location"`
+	View string `json:"view,omitempty"`
+	// Location is populated ONLY when Signature is verified.
+	Location  string `json:"location,omitempty"`
 	Signature string `json:"signature"`
 	Overall   string `json:"overall"`
+	// UnauthenticatedDiagnostic carries the positional result for an
+	// unauthenticated receipt. It is explicitly non-authoritative and must
+	// never be used for a pass/fail decision.
+	UnauthenticatedDiagnostic *recheckDiagnostic `json:"unauthenticated_diagnostic,omitempty"`
+}
+
+// recheckDiagnostic is human-facing detail about an UNAUTHENTICATED recheck.
+// It exists so an operator running --allow-unpinned can still see what was
+// found, without exposing a positive result under a field name an automated
+// gate would trust.
+type recheckDiagnostic struct {
+	Location string `json:"location"`
 }
 
 // newRecheckReport stages a recheck outcome against whether the receipt's
@@ -133,6 +152,18 @@ func newRecheckReport(result recheckResult, signatureVerified bool) recheckRepor
 		// reproduced view but not provably at the signed position.
 		// Authenticated, but not a complete positional claim.
 		overall = recheckOverallIncomplete
+	}
+	if !signatureVerified {
+		// Withhold the positive location from the authoritative field. An
+		// unauthenticated recheck can still be inspected by a human via the
+		// diagnostic, but there is no field an automated gate would read as a
+		// pass.
+		return recheckReport{
+			View:                      result.View,
+			Signature:                 sig,
+			Overall:                   overall,
+			UnauthenticatedDiagnostic: &recheckDiagnostic{Location: result.Location},
+		}
 	}
 	return recheckReport{View: result.View, Location: result.Location, Signature: sig, Overall: overall}
 }

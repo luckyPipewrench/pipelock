@@ -1422,8 +1422,17 @@ func TestReceipt_EvidenceV2RecheckSourceSpanMismatchReportsInvalid(t *testing.T)
 	if rpt.Valid {
 		t.Fatalf("expected valid=false, got %+v", rpt)
 	}
-	if rpt.Recheck == nil || rpt.Recheck.Overall != recheckOverallFailed {
-		t.Fatalf("expected recheck.overall=failed, got %+v", rpt)
+	if rpt.Recheck == nil {
+		t.Fatalf("expected staged recheck report, got %+v", rpt)
+	}
+	if rpt.Recheck.Location != recheckLocationFailed {
+		t.Fatalf("recheck.location=%q, want %q", rpt.Recheck.Location, recheckLocationFailed)
+	}
+	if rpt.Recheck.Signature != recheckSignatureVerified {
+		t.Fatalf("recheck.signature=%q, want %q", rpt.Recheck.Signature, recheckSignatureVerified)
+	}
+	if rpt.Recheck.Overall != recheckOverallFailed {
+		t.Fatalf("recheck.overall=%q, want %q", rpt.Recheck.Overall, recheckOverallFailed)
 	}
 	if !strings.Contains(rpt.Error, "redacted_sample mismatch") {
 		t.Fatalf("error=%q", rpt.Error)

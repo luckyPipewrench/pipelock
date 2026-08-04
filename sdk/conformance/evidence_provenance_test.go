@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,8 +68,15 @@ func TestEvidenceProvenanceTransformCorpus(t *testing.T) {
 			}
 			output, err := recipe.Apply(string(input))
 			actualOperations := executedOperationKinds(recipe, string(input), err)
-			for kind := range actualOperations {
-				covered[kind] = true
+			// The coverage gate below must prove every operation has a WORKING
+			// vector. executedOperationKinds includes the operation that
+			// failed, which is right for the declared-metadata cross-check but
+			// wrong here: counting it would let an operation satisfy coverage
+			// with error vectors alone and never run successfully once.
+			if err == nil {
+				for kind := range actualOperations {
+					covered[kind] = true
+				}
 			}
 			if err := validateDeclaredOperations(vector, actualOperations); err != nil {
 				t.Fatal(err)
@@ -173,8 +181,20 @@ func TestExecutedOperationKindsStopsAtFailingOperation(t *testing.T) {
 
 func TestEvidenceProvenanceCorpusRejectsTrailingJSONValue(t *testing.T) {
 	_, err := decodeProvenanceCorpus([]byte(`{"format":"pipelock-evidence-transform-corpus/v1"} {}`))
+	if err == nil || !strings.Contains(err.Error(), "found a trailing value") {
+		t.Fatalf("error = %v, want a readable trailing-value rejection", err)
+	}
+	// Assert the message is READABLE, not merely present. The previous form
+	// formatted a nil error through %w and emitted "%!w(<nil>)", which the
+	// substring assertion happily accepted.
+	if strings.Contains(err.Error(), "%!w") {
+		t.Fatalf("error message contains a formatting artifact: %v", err)
+	}
+	// A genuinely malformed trailing token is a different failure and must
+	// still surface the decoder's own error.
+	_, err = decodeProvenanceCorpus([]byte(`{"format":"pipelock-evidence-transform-corpus/v1"} @`))
 	if err == nil || !strings.Contains(err.Error(), "exactly one JSON value") {
-		t.Fatalf("error = %v, want trailing-value rejection", err)
+		t.Fatalf("malformed trailing token error = %v", err)
 	}
 }
 
@@ -199,9 +219,15 @@ func decodeProvenanceCorpus(data []byte) (provenanceCorpus, error) {
 	if err := decoder.Decode(&corpus); err != nil {
 		return provenanceCorpus{}, err
 	}
+	// The two failure modes are distinct and must read differently. A trailing
+	// VALUE decodes successfully, so err is nil; formatting nil through %w
+	// produced "%!w(<nil>)" and buried the actual problem.
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return provenanceCorpus{}, fmt.Errorf("corpus must contain exactly one JSON value, trailing decode error = %w", err)
+	switch err := decoder.Decode(&trailing); {
+	case err == nil:
+		return provenanceCorpus{}, fmt.Errorf("corpus must contain exactly one JSON value, found a trailing value")
+	case !errors.Is(err, io.EOF):
+		return provenanceCorpus{}, fmt.Errorf("corpus must contain exactly one JSON value: %w", err)
 	}
 	return corpus, nil
 }

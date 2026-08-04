@@ -4,66 +4,81 @@
 package receipt
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
 )
 
-// TestReachability_IgnoresUncalledClosures guards the closure hole: a reference
-// to a payload constant inside a function literal that is never invoked is not
-// a production path, and must not satisfy the live-producer check.
+// TestReachability_ClosureHandling pins how the producer-reachability walk
+// treats function literals, in BOTH directions.
 //
-// Without the *ast.FuncLit skip in reachesPayloadKind, a producer could be
-// declared live on the strength of dead code such as
-// `var _ = func() { _ = PayloadKeyRotation }`.
+// An UNCALLED closure is not a production path. Without the function-literal
+// guards, a producer could be declared live on the strength of dead code such
+// as `var _ = func() { _ = PayloadKeyRotation }`, which is the false-positive
+// this whole check exists to prevent.
 //
-// Non-vacuity: delete the `if _, ok := node.(*ast.FuncLit); ok { return false }`
-// guard in reachesPayloadKind. This test must then FAIL.
-func TestReachability_IgnoresUncalledClosures(t *testing.T) {
+// An IMMEDIATELY INVOKED closure (`func(){ ... }()`) IS a real static call.
+// Pruning it would make a genuinely live producer read as dark, which is the
+// same defect in the opposite direction and would be worse: it turns the check
+// into a source of false alarms that operators learn to ignore.
+//
+// Non-vacuity, per case:
+//   - uncalled cases: delete the corresponding `invoked[lit]` guard (in
+//     reachesPayloadKind for the direct case, in calledProductionFunctions for
+//     the delegated case) so the walk descends unconditionally.
+//   - invoked cases: make either guard `return false` unconditionally.
+//
+// Each neutralization must fail its own cases and only its own.
+func TestReachability_ClosureHandling(t *testing.T) {
 	t.Parallel()
+	receiptPkg := receiptMaturityModulePath + "/internal/contract/receipt"
 	cases := []struct {
-		name string
-		src  string
+		name          string
+		body          string
+		extraDecls    string
+		wantReachable bool
 	}{
 		{
-			// Exercises the FuncLit skip in reachesPayloadKind: the constant is
-			// referenced DIRECTLY inside an uncalled closure.
-			name: "direct reference inside closure",
-			src: `package sample
-
-import contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
-
-func Producer() {
-	_ = func() { _ = contractreceipt.PayloadKeyRotation }
-}
-`,
+			// reachesPayloadKind: constant referenced DIRECTLY inside an
+			// uncalled closure.
+			name:          "uncalled closure, direct reference",
+			body:          "\t_ = func() { _ = contractreceipt.PayloadKeyRotation }\n",
+			wantReachable: false,
 		},
 		{
-			// Exercises the FuncLit skip in calledProductionFunctions: the
-			// closure does not name the constant at all, it CALLS a helper that
-			// does. Without that second guard the helper is collected as a
-			// called function and the delegated reference counts.
-			name: "delegated call inside closure",
-			src: `package sample
-
-import contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
-
-func helper() { _ = contractreceipt.PayloadKeyRotation }
-
-func Producer() {
-	_ = func() { helper() }
-}
-`,
+			// calledProductionFunctions: the closure never names the constant,
+			// it CALLS a helper that does.
+			name:          "uncalled closure, delegated call",
+			extraDecls:    "func helper() { _ = contractreceipt.PayloadKeyRotation }\n",
+			body:          "\t_ = func() { helper() }\n",
+			wantReachable: false,
+		},
+		{
+			// An IIFE is a real static call, so the direct reference inside it
+			// must be found.
+			name:          "invoked closure, direct reference",
+			body:          "\tfunc() { _ = contractreceipt.PayloadKeyRotation }()\n",
+			wantReachable: true,
+		},
+		{
+			// Same, one level of delegation deeper.
+			name:          "invoked closure, delegated call",
+			extraDecls:    "func helper() { _ = contractreceipt.PayloadKeyRotation }\n",
+			body:          "\tfunc() { helper() }()\n",
+			wantReachable: true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			src := fmt.Sprintf("package sample\n\nimport contractreceipt %q\n\n%sfunc Producer() {\n%s}\n",
+				receiptPkg, tc.extraDecls, tc.body)
 			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, "sample.go", tc.src, 0)
+			file, err := parser.ParseFile(fset, "sample.go", src, 0)
 			if err != nil {
-				t.Fatalf("parse fixture: %v", err)
+				t.Fatalf("parse fixture: %v\n%s", err, src)
 			}
 			pkg := receiptMaturityModulePath + "/sample"
 			imports := importPaths(file)
@@ -82,8 +97,9 @@ func Producer() {
 			if producer == nil {
 				t.Fatal("Producer not found in fixture")
 			}
-			if reachesPayloadKind(producer, PayloadKeyRotation, functions, map[string]bool{}) {
-				t.Fatal("a reference reached only through an uncalled closure was treated as a production path")
+			got := reachesPayloadKind(producer, PayloadKeyRotation, functions, map[string]bool{})
+			if got != tc.wantReachable {
+				t.Fatalf("reachesPayloadKind = %v, want %v\nfixture:\n%s", got, tc.wantReachable, src)
 			}
 		})
 	}

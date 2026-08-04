@@ -223,12 +223,15 @@ func reachesPayloadKind(fn *productionFunction, kind PayloadKind, functions map[
 	visited[key] = true
 	want := payloadKindConstantName(kind)
 	found := false
+	invoked := invokedFuncLits(fn.decl.Body)
 	ast.Inspect(fn.decl.Body, func(node ast.Node) bool {
-		// An uncalled closure is not a production path. Descending into a
-		// function literal would let `_ = func(){ _ = PayloadX }` satisfy the
-		// reachability check without anything ever emitting that kind.
-		if _, ok := node.(*ast.FuncLit); ok {
-			return false
+		// An UNCALLED closure is not a production path: descending into it
+		// would let `_ = func(){ _ = PayloadX }` satisfy the reachability
+		// check with dead code. An IMMEDIATELY INVOKED closure
+		// (`func(){ ... }()`) is a real static call, so it must still be
+		// traversed or a genuinely live producer would read as dark.
+		if lit, ok := node.(*ast.FuncLit); ok {
+			return invoked[lit]
 		}
 		selector, ok := node.(*ast.SelectorExpr)
 		if !ok || selector.Sel.Name != want {
@@ -254,11 +257,13 @@ func reachesPayloadKind(fn *productionFunction, kind PayloadKind, functions map[
 
 func calledProductionFunctions(fn *productionFunction, functions map[string]*productionFunction) []*productionFunction {
 	var called []*productionFunction
+	invoked := invokedFuncLits(fn.decl.Body)
 	ast.Inspect(fn.decl.Body, func(node ast.Node) bool {
-		// Same reason as reachesPayloadKind: a call sitting inside an uncalled
-		// closure is not on the production path.
-		if _, ok := node.(*ast.FuncLit); ok {
-			return false
+		// Same rule as reachesPayloadKind: a call inside an UNCALLED closure is
+		// not on the production path, but a call inside an immediately invoked
+		// one is.
+		if lit, ok := node.(*ast.FuncLit); ok {
+			return invoked[lit]
 		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
@@ -298,4 +303,23 @@ func payloadKindConstantName(kind PayloadKind) string {
 		}
 	}
 	return ""
+}
+
+// invokedFuncLits collects every function literal in body that is immediately
+// invoked, i.e. `func(){ ... }()`. Those ARE production paths and must be
+// traversed. A bare `_ = func(){ ... }` is not, and pruning it is what stops a
+// dead closure from satisfying the reachability check.
+func invokedFuncLits(body *ast.BlockStmt) map[*ast.FuncLit]bool {
+	invoked := make(map[*ast.FuncLit]bool)
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if lit, ok := call.Fun.(*ast.FuncLit); ok {
+			invoked[lit] = true
+		}
+		return true
+	})
+	return invoked
 }

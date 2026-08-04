@@ -51,7 +51,10 @@ The compiled floor wins over an operator declaration. For example, a selected
 because operator configuration cannot widen the compiled boundary.
 
 Path-floor evaluation uses the same helper as config validation, including its
-existing symlink-resolution behavior. Grant matching is lexical: file grants
+existing symlink-resolution behavior. The forbidden-component check applies to
+the declared spelling as well as the resolved target, so a path declared as a
+credential or key directory is refused even when the link resolves somewhere
+innocuous. Grant matching is lexical: file grants
 are exact and directory grants use path-component subtree boundaries. It never
 probes the filesystem to infer a type.
 

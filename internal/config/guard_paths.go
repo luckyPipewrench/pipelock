@@ -142,7 +142,7 @@ func ExplainGuardPathFloor(rawPath string, access GuardAccess) (GuardFloorDecisi
 			decision.Reason = fmt.Sprintf("read access to %q is not allowed (%s); reading a credential is exfiltration, not merely inspection", rawPath, match.reason)
 			return decision, nil
 		}
-		if suffix, reason := guardForbiddenSuffix(resolved); suffix != "" && strings.Contains(reason, "pipelock") {
+		if suffix, reason, secretBearing := guardForbiddenSuffix(resolved); suffix != "" && secretBearing {
 			decision.Refused = true
 			decision.Rule = "forbidden_path_shape"
 			decision.Matched = suffix
@@ -152,7 +152,7 @@ func ExplainGuardPathFloor(rawPath string, access GuardAccess) (GuardFloorDecisi
 		return decision, nil
 	}
 
-	if suffix, reason := guardForbiddenSuffix(resolved); suffix != "" {
+	if suffix, reason, _ := guardForbiddenSuffix(resolved); suffix != "" {
 		decision.Refused = true
 		decision.Rule = "forbidden_path_shape"
 		decision.Matched = suffix
@@ -497,26 +497,37 @@ func guardForbiddenComponent(resolved string) (component, reason string) {
 var guardForbiddenSuffixes = []struct {
 	suffix string
 	reason string
+	// secretBearing marks a suffix that may hold credential material, so READ
+	// is refused as well as write. Autostart locations are execution
+	// persistence only: writing one is refused, reading one is not.
+	//
+	// This is a table field rather than a test on the reason text. The read
+	// side previously decided by matching the word "pipelock" inside the
+	// operator-facing prose, which fails in the OPEN direction: adding a
+	// secret-bearing suffix whose wording happened not to contain that word
+	// would have silently allowed read access, with no code change and no test
+	// failing to say so.
+	secretBearing bool
 }{
-	{filepath.Join(".local", "share", "pipelock"), "pipelock state directory"},
-	{filepath.Join(".config", "pipelock"), "pipelock config directory"},
-	{".pipelock", "pipelock directory"},
-	{filepath.Join(".config", "autostart"), "autostart directory"},
-	{filepath.Join("Library", "LaunchAgents"), "autostart directory"},
-	{filepath.Join("Library", "LaunchDaemons"), "autostart directory"},
-	{filepath.Join("etc", "pipelock"), "pipelock config directory"},
+	{filepath.Join(".local", "share", "pipelock"), "pipelock state directory", true},
+	{filepath.Join(".config", "pipelock"), "pipelock config directory", true},
+	{".pipelock", "pipelock directory", true},
+	{filepath.Join(".config", "autostart"), "autostart directory", false},
+	{filepath.Join("Library", "LaunchAgents"), "autostart directory", false},
+	{filepath.Join("Library", "LaunchDaemons"), "autostart directory", false},
+	{filepath.Join("etc", "pipelock"), "pipelock config directory", true},
 }
 
 // guardForbiddenSuffix reports why the resolved path is write-sensitive, or ""
 // when it is not. A match is the directory itself or anything beneath it.
-func guardForbiddenSuffix(resolved string) (string, string) {
+func guardForbiddenSuffix(resolved string) (suffix, reason string, secretBearing bool) {
 	for _, entry := range guardForbiddenSuffixes {
 		marker := string(filepath.Separator) + entry.suffix
 		if strings.HasSuffix(resolved, marker) || strings.Contains(resolved, marker+string(filepath.Separator)) {
-			return entry.suffix, entry.reason
+			return entry.suffix, entry.reason, entry.secretBearing
 		}
 	}
-	return "", ""
+	return "", "", false
 }
 
 // guardIsHomeRoot reports whether the resolved path is an entire user home

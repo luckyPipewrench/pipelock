@@ -37,7 +37,9 @@ func TestNewServerFailsClosedOnConfiguredCommitmentKeyringErrors(t *testing.T) {
 	if _, err := commitmentkey.Initialize(path, time.Now()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
+	unsafeMode := os.FileMode(0o600)
+	unsafeMode |= 0o044
+	if err := os.Chmod(path, unsafeMode); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
 	cfgPath := writeCommitmentRuntimeConfig(t, dir, "commitment-keyring.json")

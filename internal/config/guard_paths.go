@@ -107,7 +107,15 @@ func ExplainGuardPathFloor(rawPath string, access GuardAccess) (GuardFloorDecisi
 
 	resolved := resolveGuardPath(rawPath)
 	decision.ResolvedPath = resolved
-	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
+	// The component check runs against the DECLARED spelling as well as the
+	// resolved target, matching what the credential-shape check already does.
+	// Resolving first and checking only the result is a fail-open: a path
+	// declared as a key directory that symlinks somewhere innocuous resolves to
+	// a name with no forbidden component, so the floor saw nothing and allowed
+	// it, for read and for write alike. Naming a key directory in a manifest is
+	// the thing being refused; where the link happens to point today does not
+	// make that declaration safe, and the link can be repointed afterwards.
+	if comp, reason := guardForbiddenComponentIn(rawPath, resolved); comp != "" {
 		decision.Refused = true
 		decision.Rule = "forbidden_component"
 		decision.Matched = comp
@@ -464,6 +472,16 @@ var guardForbiddenComponents = map[string]string{
 // home directory is deliberate. Pipelock commonly runs as a system service, so
 // os.UserHomeDir() returns /root; a home-derived list would protect /root/.ssh
 // while leaving every real operator's ~/.ssh unguarded.
+// guardForbiddenComponentIn reports the first forbidden component in either the
+// declared spelling or the resolved target, checking the declared form first so
+// the refusal names what the operator actually wrote.
+func guardForbiddenComponentIn(rawPath, resolved string) (component, reason string) {
+	if comp, r := guardForbiddenComponent(filepath.Clean(rawPath)); comp != "" {
+		return comp, r
+	}
+	return guardForbiddenComponent(resolved)
+}
+
 func guardForbiddenComponent(resolved string) (component, reason string) {
 	for _, part := range strings.Split(resolved, string(filepath.Separator)) {
 		if r, bad := guardForbiddenComponents[strings.ToLower(part)]; bad {

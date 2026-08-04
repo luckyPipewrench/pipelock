@@ -1371,3 +1371,53 @@ func TestValidateGuard_CaseEquivalentGrantsConflict(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateGuard_ForbiddenComponentSurvivesSymlink covers the declared
+// spelling half of the component floor.
+//
+// Resolving first and checking only the result is a fail-open. A path declared
+// as a key or credential directory that symlinks somewhere innocuous resolves
+// to a name carrying no forbidden component, so the floor saw nothing and
+// allowed it for read and for write alike. Naming such a directory in a
+// manifest is the thing being refused; where the link points today does not
+// make the declaration safe, and the link can be repointed afterwards.
+//
+// This one IS reproducible in a hermetic test, unlike the credential-shape
+// variant, because a forbidden component is matched anywhere in the path rather
+// than relative to a home root, so a temp directory is enough to build it.
+func TestValidateGuard_ForbiddenComponentSurvivesSymlink(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "innocuous")
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	for _, name := range []string{".ssh", ".gnupg", ".aws", ".kube"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			link := filepath.Join(t.TempDir(), name)
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			if err := validateGuardROPath("m", "read_only", 0, link); err == nil {
+				t.Errorf("read grant on a %s symlink must be refused on the declared name", name)
+			}
+			if err := validateGuardRWPath("m", "read_write", 0, link); err == nil {
+				t.Errorf("read-write grant on a %s symlink must be refused on the declared name", name)
+			}
+		})
+	}
+
+	// Availability control. An ordinary directory beside the symlinks must stay
+	// grantable, so the declared-name check cannot be passing for a blanket
+	// reason unrelated to the component.
+	ordinary := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ordinary, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := validateGuardROPath("m", "read_only", 0, ordinary); err != nil {
+		t.Errorf("ordinary workspace path must remain grantable, got: %v", err)
+	}
+}

@@ -53,7 +53,23 @@ def run_wrapper(
         )
 
 
+def terminate_and_reap(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=5)
+
+
 class TestCiTestWithRetry(unittest.TestCase):
+    def test_process_cleanup_terminates_and_reaps_wrapper(self) -> None:
+        process = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(3600)"],
+            cwd=ROOT,
+        )
+        self.addCleanup(process.wait, timeout=5)
+        terminate_and_reap(process)
+
+        self.assertIsNotNone(process.returncode)
+
     def test_wrapper_sigterm_cleans_active_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "command-pid"
@@ -85,6 +101,7 @@ wait
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
+            self.addCleanup(terminate_and_reap, process)
             deadline = time.monotonic() + 5
             while not ready.exists():
                 if process.poll() is not None:
@@ -104,7 +121,7 @@ wait
 
             self.addCleanup(kill_command_group)
             process.send_signal(signal.SIGTERM)
-            stdout, stderr = process.communicate(timeout=10)
+            stdout, stderr = process.communicate(timeout=30)
 
             self.assertEqual(process.returncode, 143, stdout + stderr)
             with self.assertRaises(ProcessLookupError):

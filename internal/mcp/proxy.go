@@ -1095,7 +1095,41 @@ type InputScanConfig struct {
 // starts and its PID is registered with the lineage tracker; callers use
 // this to start the file sentry event loop after attribution is ready.
 func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, opts MCPProxyOpts, extraEnv ...string) error {
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
+	var cmd *exec.Cmd
+	var prepared *integrity.PreparedCommand
+	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
+		var err error
+		prepared, err = prepareBinaryIntegrity(command, icfg, logW)
+		if err != nil {
+			if icfg.Action != config.ActionWarn || icfg.RequireSignature {
+				return err
+			}
+			_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v; using unpinned platform launch\n", err)
+			cmd = exec.CommandContext(ctx, command[0], command[1:]...)
+		} else {
+			if opts.afterIntegrityPreparedForTest != nil {
+				opts.afterIntegrityPreparedForTest()
+			}
+			cmd, err = descriptorCommand(ctx, command, prepared)
+			if err != nil {
+				_ = prepared.Close()
+				prepared = nil
+				if icfg.Action != config.ActionWarn {
+					return fmt.Errorf("binary integrity: preparing descriptor launch: %w", err)
+				}
+				// Warn is explicitly non-enforcing. Unsupported descriptor exec is
+				// noisy here; block/default action denies above and never downgrades.
+				_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: descriptor launch unavailable: %v; using unpinned platform launch\n", err)
+				cmd = exec.CommandContext(ctx, command[0], command[1:]...)
+			}
+		}
+	}
+	if cmd == nil {
+		cmd = exec.CommandContext(ctx, command[0], command[1:]...)
+	}
+	if prepared != nil {
+		defer func() { _ = prepared.Close() }()
+	}
 
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
@@ -1184,18 +1218,15 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 
-	// Pre-spawn binary integrity verification: hash the binary (and script
-	// for interpreters) against the trusted manifest before executing it.
-	// Runs after command resolution but before Start() so a tampered binary
-	// is never spawned when action is "block".
-	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
-		if err := VerifyBinaryIntegrity(command, icfg, logW); err != nil {
-			return err
-		}
-	}
-
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
+	}
+	if prepared != nil {
+		startedPreparation := prepared
+		prepared = nil
+		if err := startedPreparation.Close(); err != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: warning: closing parent integrity descriptors: %v\n", err)
+		}
 	}
 
 	// Capture the child's process group ID immediately after Start,
@@ -1472,8 +1503,14 @@ var dangerousEnvKeys = map[string]bool{
 	// Dynamic linker injection (Linux/macOS).
 	"LD_PRELOAD":            true,
 	"LD_LIBRARY_PATH":       true,
+	"LD_AUDIT":              true,
 	"DYLD_INSERT_LIBRARIES": true,
 	"DYLD_LIBRARY_PATH":     true,
+	"DYLD_FRAMEWORK_PATH":   true,
+	// The FALLBACK_ variants are consulted when the primary search fails, so
+	// blocking only the primaries leaves a second way to place a library.
+	"DYLD_FALLBACK_LIBRARY_PATH":   true,
+	"DYLD_FALLBACK_FRAMEWORK_PATH": true,
 	// Runtime code injection.
 	"NODE_OPTIONS":      true,
 	"PYTHONSTARTUP":     true,
@@ -1485,7 +1522,19 @@ var dangerousEnvKeys = map[string]bool{
 	"_JAVA_OPTIONS":     true,
 	"JDK_JAVA_OPTIONS":  true,
 	// Credential helper injection - causes git to execute arbitrary programs.
-	"GIT_ASKPASS": true,
+	// GIT_ASKPASS was blocked first, but it is one of several variables that
+	// hand git a command line to run, so the siblings belong with it.
+	"GIT_ASKPASS":                      true,
+	"GIT_SSH":                          true,
+	"GIT_SSH_COMMAND":                  true,
+	"GIT_EXTERNAL_DIFF":                true,
+	"GIT_PROXY_COMMAND":                true,
+	"GIT_EDITOR":                       true,
+	"GIT_PAGER":                        true,
+	"GIT_CONFIG_GLOBAL":                true,
+	"GIT_CONFIG_SYSTEM":                true,
+	"GIT_CONFIG_COUNT":                 true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
 	// Proxy redirection - the MCP proxy IS the controlled network path.
 	// Both cases listed because Go checks HTTP_PROXY/http_proxy, Node.js
 	// checks case-insensitively, etc. Mixed-case caught by IsDangerousEnvKey.
@@ -1590,6 +1639,45 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 	}
 
 	return nil
+}
+
+// prepareBinaryIntegrity takes no working directory, unlike VerifyBinaryIntegrity.
+// Suspicious-path detection compares the resolved binary against the agent's
+// working directory, and RunProxy has no such directory to compare against: the
+// field does not exist on Opts, and the pre-descriptor call here never passed
+// one either. A variadic parameter no caller can fill would read as a supported
+// option that silently does nothing, so it is absent rather than ignored. The
+// CLI entry point still passes its workspace to VerifyBinaryIntegrity, where the
+// comparison is meaningful.
+func prepareBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer) (*integrity.PreparedCommand, error) {
+	const agentWorkDir = ""
+	manifest, loadErr := loadMCPIntegrityManifest(icfg)
+	if loadErr != nil {
+		return nil, fmt.Errorf("binary integrity: loading manifest: %w", loadErr)
+	}
+	prepared, err := integrity.Prepare(command, agentWorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("binary integrity: preparing verified descriptors: %w", err)
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = prepared.Close()
+		}
+	}()
+
+	intCfg := &integrity.Config{Enabled: true, ManifestPath: icfg.ManifestPath, Action: icfg.Action}
+	intCfg.Manifests = manifest.Entries
+	result := integrity.VerifyPrepared(prepared, intCfg)
+	if !result.Verified {
+		reasons := strings.Join(result.Reasons, "; ")
+		if icfg.Action != config.ActionWarn {
+			return nil, fmt.Errorf("binary integrity check failed: %s", reasons)
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %s\n", reasons)
+	}
+	success = true
+	return prepared, nil
 }
 
 // loadMCPIntegrityManifest reads the manifest, optionally verifying its

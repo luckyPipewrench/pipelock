@@ -2714,6 +2714,8 @@ mcp_binary_integrity:
 Omitting `action` is fail-closed: a missing manifest, unreadable manifest, unknown binary, or hash mismatch blocks MCP subprocess spawn. Set `action: warn` only for a temporary rollout if you need the previous log-only behavior while completing the manifest.
 When `require_signature: true`, signer lookup and signature verification failures always block; `action: warn` only applies to non-signature manifest load and hash issues.
 
+Enforcing (`action: block`) runtime launch is descriptor-bound on Linux: Pipelock hashes and executes the same open native executable. It fails closed when descriptor execution or `/proc/self/exe` is unavailable. Non-Linux platforms, interpreter+script commands, shebang commands, package runners, and `/usr/bin/env` wrappers are rejected under enforcement instead of silently downgrading to a path-based launch or leaking a script descriptor into the server. `action: warn` logs an explicit warning before any unpinned compatibility fallback.
+
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing. Generate, preflight, and sign the manifest with `pipelock mcp integrity manifest`; see [MCP integrity manifest tooling](cli/mcp-integrity.md).
 
 ## MCP Tool Provenance

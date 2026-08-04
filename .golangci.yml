@@ -26,6 +26,31 @@ linters:
       - path: internal/proxy/proxy\.go
         linters: [gosec]
         text: "G704"
+      # Descriptor-bound exec. Integrity verification hashes an opened file
+      # descriptor and must then execute THAT descriptor, so the bytes hashed
+      # and the bytes run are one inode rather than two independent name
+      # resolutions. golang.org/x/sys/unix at the pinned version exposes no
+      # Execveat wrapper, so the syscall is issued directly, which requires
+      # unsafe.Pointer for argv and env (G103), and the helper execs a path
+      # held in a variable (G204). Both are inherent to the mechanism. Scoped
+      # to this one file, and recorded here rather than as inline directives so
+      # the exception is reviewable in one place.
+      - path: internal/mcp/fdexec_linux\.go
+        linters: [gosec]
+        text: "G103|G204"
+      # An executable test fixture has to be executable, so 0600 is not an
+      # option for it.
+      - path: internal/mcp/fdexec_linux_test\.go
+        linters: [gosec]
+        text: "G302|G306"
+      # The MCP server command is operator-supplied by construction: it is the
+      # server the operator asked Pipelock to wrap. G204 fires on every branch
+      # that launches it, and this file now has several (descriptor-bound,
+      # warn-only compatibility, and integrity-disabled). Recorded once here
+      # rather than as a directive on each call site.
+      - path: internal/mcp/proxy\.go
+        linters: [gosec]
+        text: "G204"
       # Config schema holds YAML-bound container fields for user-supplied
       # tokens (APIToken, AuthToken, BearerTokens). These are NOT hardcoded
       # credentials — gosec G117's "field name matches secret pattern"

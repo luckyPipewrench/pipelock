@@ -190,6 +190,13 @@ func TestCommandDenialBranches(t *testing.T) {
 		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
 		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
 		{name: "missing path selector", args: []string{"inspect"}},
+		{name: "initialize missing path selector", args: []string{"initialize"}},
+		{name: "rotate missing path selector", args: []string{"rotate"}},
+		{name: "retire missing path selector", args: []string{"retire", "--key-id", metadata.ActiveID, "--epoch", "1"}},
+		{name: "backup missing path selector", args: []string{"backup", "--out", filepath.Join(dir, "unused.json")}},
+		{name: "restore missing path selector", args: []string{"restore", "--from", path}},
+		{name: "test missing path selector", operation: "test", args: []string{"test", "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test invalid source utf8", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", string([]byte{0xff}), "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, stderr, err := execute(t, test.args...)
@@ -215,6 +222,20 @@ func TestCommandDenialBranches(t *testing.T) {
 		t.Fatal("restore over existing keyring succeeded")
 	}
 	assertAudit(t, stderr, "restore", "denied")
+}
+
+func TestWriteJSONReportsOutputFailure(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.SetOut(failingWriter{})
+	if err := writeJSON(cmd, map[string]bool{"ok": true}); err == nil {
+		t.Fatal("writeJSON succeeded with failing writer")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
 }
 
 func TestConfigPathResolutionDenials(t *testing.T) {

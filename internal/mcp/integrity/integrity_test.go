@@ -1742,6 +1742,140 @@ func TestVerifyResult_ExpectedScriptHash(t *testing.T) {
 	}
 }
 
+func TestPrepareDescriptorBoundCommandShapes(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix command fixtures")
+	}
+	dir := t.TempDir()
+	plainScript := filepath.Join(dir, "plain.sh")
+	if err := os.WriteFile(plainScript, []byte("printf ready\n"), 0o600); err != nil {
+		t.Fatalf("write plain script: %v", err)
+	}
+	shebangScript := filepath.Join(dir, "shebang-server")
+	if err := os.WriteFile(shebangScript, []byte("#!/bin/sh\nprintf ready\n"), 0o700); err != nil {
+		t.Fatalf("write shebang script: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		command    []string
+		workDir    string
+		wantErr    error
+		wantScript bool
+		check      func(*PreparedCommand) bool
+	}{
+		{name: "empty_command", command: nil, wantErr: errors.New("empty command")},
+		{name: "missing_binary", command: []string{"definitely-missing-pipelock-binary"}, wantErr: errors.New("resolving and opening binary")},
+		{name: "env_wrapper_fails_closed", command: []string{"env", "true"}, wantErr: ErrUnpinnableCommand},
+		{name: "shebang_fails_closed", command: []string{shebangScript}, wantErr: ErrUnpinnableCommand},
+		{name: "direct_binary", command: []string{"true"}},
+		{name: "interpreter_without_script", command: []string{"sh"}},
+		{name: "direct_interpreter_script", command: []string{"sh", plainScript}, wantScript: true},
+		{name: "relative_interpreter_script", command: []string{"sh", filepath.Base(plainScript)}, workDir: dir, wantScript: true},
+		{name: "missing_interpreter_script", command: []string{"sh", filepath.Join(dir, "missing.sh")}, wantErr: errors.New("opening script")},
+		{name: "package_runner", command: []string{filepath.Join(dir, "npx")}, check: func(p *PreparedCommand) bool { return p.Result.IsPackageRunner }},
+		{name: "suspicious_workdir", command: []string{filepath.Join(dir, "local-server")}, workDir: dir, check: func(p *PreparedCommand) bool { return p.Result.Suspicious }},
+	}
+	if err := os.Symlink("/bin/true", filepath.Join(dir, "npx")); err != nil {
+		t.Fatalf("create package runner symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "local-server"), []byte("plain executable bytes\n"), 0o700); err != nil {
+		t.Fatalf("write local server: %v", err)
+	}
+	overlongShebang := filepath.Join(dir, "overlong-shebang")
+	if err := os.WriteFile(overlongShebang, []byte("#!"+strings.Repeat("x", maxShebangLen)+"\n"), 0o700); err != nil {
+		t.Fatalf("write overlong shebang: %v", err)
+	}
+	tests = append(tests, struct {
+		name       string
+		command    []string
+		workDir    string
+		wantErr    error
+		wantScript bool
+		check      func(*PreparedCommand) bool
+	}{name: "overlong_shebang_is_not_dispatched", command: []string{overlongShebang}})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared, err := Prepare(tt.command, tt.workDir)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("Prepare() error = nil, want %v", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, ErrUnpinnableCommand) {
+					if !errors.Is(err, ErrUnpinnableCommand) {
+						t.Fatalf("Prepare() error = %v, want ErrUnpinnableCommand", err)
+					}
+				} else if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+					t.Fatalf("Prepare() error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Prepare() error: %v", err)
+			}
+			t.Cleanup(func() { _ = prepared.Close() })
+			if prepared.Executable == nil || prepared.Result == nil {
+				t.Fatal("Prepare() did not retain executable and result")
+			}
+			if got := prepared.Script != nil; got != tt.wantScript {
+				t.Fatalf("script descriptor present = %v, want %v", got, tt.wantScript)
+			}
+			if tt.check != nil && !tt.check(prepared) {
+				t.Fatal("prepared result did not satisfy case assertion")
+			}
+		})
+	}
+}
+
+func TestVerifyPreparedUsesRetainedHash(t *testing.T) {
+	prepared, err := Prepare([]string{"true"}, "")
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+
+	tests := []struct {
+		name     string
+		entries  map[string]string
+		verified bool
+	}{
+		{name: "matching", entries: map[string]string{prepared.Result.ResolvedPath: prepared.Result.ActualHash}, verified: true},
+		{name: "mismatch", entries: map[string]string{prepared.Result.ResolvedPath: "deadbeef"}},
+		{name: "missing_manifest", entries: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			copyResult := *prepared.Result
+			copyPrepared := *prepared
+			copyPrepared.Result = &copyResult
+			result := VerifyPrepared(&copyPrepared, &Config{Manifests: tt.entries})
+			if result.Verified != tt.verified {
+				t.Fatalf("Verified = %v, want %v (reasons: %v)", result.Verified, tt.verified, result.Reasons)
+			}
+		})
+	}
+}
+
+func TestPreparedCommandCloseAndHashErrors(t *testing.T) {
+	if err := (*PreparedCommand)(nil).Close(); err != nil {
+		t.Fatalf("nil Close() error: %v", err)
+	}
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error: %v", err)
+	}
+	if _, err := hashOpenFile(readEnd); err == nil || !strings.Contains(err.Error(), "seeking before hash") {
+		t.Fatalf("hashOpenFile(pipe) error = %v, want seek failure", err)
+	}
+	prepared := &PreparedCommand{Executable: readEnd, Script: writeEnd}
+	if err := prepared.Close(); err != nil {
+		t.Fatalf("first Close() error: %v", err)
+	}
+	if err := prepared.Close(); err == nil {
+		t.Fatal("second Close() should report closed descriptors")
+	}
+}
+
 // --- helpers ---
 
 func contains(s, substr string) bool {

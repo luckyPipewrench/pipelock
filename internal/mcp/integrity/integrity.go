@@ -612,6 +612,9 @@ func detectShebangFile(f *os.File) string {
 	if err != nil && err != io.EOF {
 		return ""
 	}
+	if err == io.EOF && len(line) == maxShebangLen {
+		return ""
+	}
 	if !strings.HasPrefix(line, "#!") {
 		return ""
 	}

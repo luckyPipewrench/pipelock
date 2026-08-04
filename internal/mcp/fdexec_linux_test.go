@@ -218,6 +218,9 @@ func TestRunProxyIntegrityUnpinnableWrapperDirections(t *testing.T) {
 			if tt.wantErr && err == nil {
 				t.Fatal("unpinnable shebang command allowed under enforcement")
 			}
+			if tt.wantErr && !strings.Contains(err.Error(), "shebang script") {
+				t.Fatalf("enforcement failed for the wrong reason: %v", err)
+			}
 			if !tt.wantErr && err != nil {
 				t.Fatalf("warn compatibility launch failed: %v", err)
 			}
@@ -238,4 +241,24 @@ func writeFDExecManifest(t *testing.T, entries map[string]string) string {
 		t.Fatalf("write manifest: %v", err)
 	}
 	return path
+}
+
+func TestExecveatRejectsInvalidInputs(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		env  []string
+	}{
+		{name: "empty_argv"},
+		{name: "invalid_argv", argv: []string{"bad\x00arg"}},
+		{name: "invalid_environment", argv: []string{"server"}, env: []string{"BAD=bad\x00value"}},
+		{name: "invalid_descriptor", argv: []string{"server"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := execveat(-1, tt.argv, tt.env); err == nil {
+				t.Fatal("execveat() error = nil")
+			}
+		})
+	}
 }

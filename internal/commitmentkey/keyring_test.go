@@ -66,6 +66,33 @@ func TestLifecycleRotationRestartOpensOldAndNew(t *testing.T) {
 	openTestReceipt(t, restarted, newReceipt)
 }
 
+func TestPersistenceRestartKeepsActiveMaterial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	receipt := commitTestReceipt(t, keyring, "persistence guard")
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	openTestReceipt(t, restarted, receipt)
+}
+
+func TestRetiredLookupOpensPriorEpoch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	receipt := commitTestReceipt(t, keyring, "retired lookup guard")
+	if _, err := keyring.Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	openTestReceipt(t, keyring, receipt)
+}
+
 func TestRetireRefusesRetainedReferenceAndCanExplicitlyAcceptLoss(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
 	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
@@ -128,25 +155,32 @@ func TestLoadFailsClosedOnPermissionsAndSymlink(t *testing.T) {
 	if _, err := Initialize(path, time.Now()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatalf("Chmod: %v", err)
-	}
-	if _, err := Load(path); !errors.Is(err, ErrUnsafePermission) {
-		t.Fatalf("Load mode 0644 error = %v, want ErrUnsafePermission", err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatalf("restore mode: %v", err)
-	}
 	link := filepath.Join(dir, "substituted.json")
 	if err := os.Symlink(path, link); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
-	if _, err := Load(link); !errors.Is(err, ErrSymlink) {
-		t.Fatalf("Load symlink error = %v, want ErrSymlink", err)
-	}
-	if err := keyringSaveThroughSymlink(path, link); !errors.Is(err, ErrSymlink) {
-		t.Fatalf("Save symlink error = %v, want ErrSymlink", err)
-	}
+	t.Run("wrong_permissions", func(t *testing.T) {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatalf("Chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		if _, err := Load(path); !errors.Is(err, ErrUnsafePermission) {
+			t.Fatalf("Load mode 0644 error = %v, want ErrUnsafePermission", err)
+		}
+	})
+	t.Run("symlink_load", func(t *testing.T) {
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatalf("restore mode: %v", err)
+		}
+		if _, err := Load(link); !errors.Is(err, ErrSymlink) {
+			t.Fatalf("Load symlink error = %v, want ErrSymlink", err)
+		}
+	})
+	t.Run("symlink_save", func(t *testing.T) {
+		if err := keyringSaveThroughSymlink(path, link); !errors.Is(err, ErrSymlink) {
+			t.Fatalf("Save symlink error = %v, want ErrSymlink", err)
+		}
+	})
 }
 
 func TestPurposeValidationRejectsReceiptSigning(t *testing.T) {

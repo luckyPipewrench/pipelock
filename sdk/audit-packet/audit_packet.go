@@ -294,7 +294,8 @@ type Receipt struct {
 // SourceSpan is the inline audit-packet mirror of EvidenceReceipt v2
 // source_spans. Producers still verify the signed EvidenceReceipt bytes; this
 // optional copy lets packet consumers display span metadata without parsing the
-// receipt payload first.
+// receipt payload first. It is currently fixture-only: no production Audit
+// Packet producer populates it.
 type SourceSpan struct {
 	SourceID             string `json:"source_id"`
 	SourceKind           string `json:"source_kind"`

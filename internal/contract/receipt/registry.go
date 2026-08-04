@@ -406,7 +406,8 @@ func validateNotImplemented(json.RawMessage) error {
 
 // SourceSpanMatchHash computes the signer-keyed match_hash for a span. eventID
 // MUST be the signed EvidenceReceipt.event_id for the receipt that will carry
-// the span; verifiers reconstruct the same input from that envelope field.
+// the span. Current verifiers validate match_hash structurally but do not
+// reconstruct or verify this HMAC preimage.
 // matchValue is the normalized/redacted evidence slice, or a class/placeholder
 // value for secret-bearing matches. The key is not serialized into the receipt,
 // which prevents offline confirmation of guessed low-entropy values.

@@ -60,24 +60,23 @@ required unless --allow-unpinned is used for structural checks only.`,
 }
 
 type receiptReport struct {
-	Path               string `json:"path"`
-	RecordType         string `json:"record_type,omitempty"`
-	Valid              bool   `json:"valid"`
-	SignaturesVerified bool   `json:"signatures_verified"`
-	Unpinned           bool   `json:"unpinned,omitempty"`
-	ActionID           string `json:"action_id,omitempty"`
-	Verdict            string `json:"verdict,omitempty"`
-	Transport          string `json:"transport,omitempty"`
-	SignerKey          string `json:"signer_key,omitempty"`
-	SignerKeyID        string `json:"signer_key_id,omitempty"`
-	PolicyHash         string `json:"policy_hash,omitempty"`
-	PayloadKind        string `json:"payload_kind,omitempty"`
-	ContractHash       string `json:"contract_hash,omitempty"`
-	ActiveManifestHash string `json:"active_manifest_hash,omitempty"`
-	ChainSeq           uint64 `json:"chain_seq,omitempty"`
-	RecheckValid       *bool  `json:"recheck_valid,omitempty"`
-	RecheckView        string `json:"recheck_view,omitempty"`
-	Error              string `json:"error,omitempty"`
+	Path               string         `json:"path"`
+	RecordType         string         `json:"record_type,omitempty"`
+	Valid              bool           `json:"valid"`
+	SignaturesVerified bool           `json:"signatures_verified"`
+	Unpinned           bool           `json:"unpinned,omitempty"`
+	ActionID           string         `json:"action_id,omitempty"`
+	Verdict            string         `json:"verdict,omitempty"`
+	Transport          string         `json:"transport,omitempty"`
+	SignerKey          string         `json:"signer_key,omitempty"`
+	SignerKeyID        string         `json:"signer_key_id,omitempty"`
+	PolicyHash         string         `json:"policy_hash,omitempty"`
+	PayloadKind        string         `json:"payload_kind,omitempty"`
+	ContractHash       string         `json:"contract_hash,omitempty"`
+	ActiveManifestHash string         `json:"active_manifest_hash,omitempty"`
+	ChainSeq           uint64         `json:"chain_seq,omitempty"`
+	Recheck            *recheckReport `json:"recheck,omitempty"`
+	Error              string         `json:"error,omitempty"`
 }
 
 func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) error {
@@ -192,8 +191,11 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		}
 		if opts.recheckSource != "" {
 			result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)
-			report.RecheckValid = &result.Valid
-			report.RecheckView = result.View
+			// No key was supplied on this path, so the producer is
+			// unauthenticated by construction: stage the recheck with
+			// signature=not_checked, which caps overall at "incomplete".
+			staged := newRecheckReport(result, false)
+			report.Recheck = &staged
 			if recheckErr != nil {
 				report.Valid = false
 				report.Error = recheckErr.Error()
@@ -219,9 +221,12 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 	}
 	report.SignaturesVerified = sigVerified
 	if opts.recheckSource != "" {
+		// Signature verification already ran above and gated this path, so the
+		// staged report carries the real authentication state rather than a
+		// bare positional boolean.
 		result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)
-		report.RecheckValid = &result.Valid
-		report.RecheckView = result.View
+		staged := newRecheckReport(result, sigVerified)
+		report.Recheck = &staged
 		if recheckErr != nil {
 			report.Valid = false
 			report.Error = recheckErr.Error()

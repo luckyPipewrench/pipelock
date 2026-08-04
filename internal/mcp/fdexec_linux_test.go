@@ -296,6 +296,14 @@ func writeFDExecManifest(t *testing.T, entries map[string]string) string {
 	return path
 }
 
+// TestExecveatRejectsInvalidInputs covers the failure branches of the raw
+// syscall wrapper. Calling execveat with a descriptor that cannot be executed
+// returns rather than replacing the process, so these are safe to exercise
+// in-process.
+//
+// Each one is a path where the helper must exit non-zero instead of
+// continuing: a silent failure here would leave the parent believing a
+// verified descriptor was executed when nothing was.
 func TestExecveatRejectsInvalidInputs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -319,51 +327,6 @@ func TestExecveatRejectsInvalidInputs(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestExecveat_ErrorPaths covers the failure branches of the raw syscall
-// wrapper. Calling execveat with a descriptor that cannot be executed returns
-// rather than replacing the process, so these are safe to exercise in-process.
-//
-// They matter because every one of them is a path where the helper must exit
-// non-zero instead of continuing: a silent failure here would leave the parent
-// believing a verified descriptor was executed when nothing was.
-func TestExecveat_ErrorPaths(t *testing.T) {
-	t.Parallel()
-
-	t.Run("empty_argv", func(t *testing.T) {
-		t.Parallel()
-		if err := execveat(0, nil, nil); err == nil {
-			t.Error("empty argv must be refused")
-		}
-	})
-
-	t.Run("argv_containing_nul", func(t *testing.T) {
-		t.Parallel()
-		if err := execveat(0, []string{"prog\x00hidden"}, nil); err == nil {
-			t.Error("an argv entry containing NUL must be refused rather than truncated")
-		}
-	})
-
-	t.Run("environment_containing_nul", func(t *testing.T) {
-		t.Parallel()
-		if err := execveat(0, []string{"prog"}, []string{"K=v\x00hidden"}); err == nil {
-			t.Error("an environment entry containing NUL must be refused rather than truncated")
-		}
-	})
-
-	t.Run("bad_descriptor_returns_errno", func(t *testing.T) {
-		t.Parallel()
-		// -1 is never a valid descriptor, so the syscall returns EBADF instead
-		// of executing anything.
-		err := execveat(-1, []string{"prog"}, []string{"K=v"})
-		if err == nil {
-			t.Fatal("executing an invalid descriptor must return an error")
-		}
-		if !strings.Contains(err.Error(), "execveat") {
-			t.Errorf("error should name the failing syscall, got: %v", err)
-		}
-	})
 }
 
 // TestPrepareBinaryIntegrity_ActionDirections covers the two directions of the

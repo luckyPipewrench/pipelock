@@ -323,7 +323,10 @@ type MCPProxyOpts struct {
 	EnvelopeEmitterFn func() *envelope.Emitter
 
 	// Pre-spawn binary integrity verification (nil-safe).
-	IntegrityCfg                  *config.MCPBinaryIntegrity
+	IntegrityCfg *config.MCPBinaryIntegrity
+	// afterIntegrityPreparedForTest runs between integrity preparation and the
+	// descriptor launch. Tests use it to mutate the command pathname so the
+	// swap-after-hash case can be reproduced; production wiring leaves it nil.
 	afterIntegrityPreparedForTest func()
 
 	// File sentry (stdio proxy only)

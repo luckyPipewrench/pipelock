@@ -22,37 +22,69 @@ import (
 // guard in reachesPayloadKind. This test must then FAIL.
 func TestReachability_IgnoresUncalledClosures(t *testing.T) {
 	t.Parallel()
-	const src = `package sample
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			// Exercises the FuncLit skip in reachesPayloadKind: the constant is
+			// referenced DIRECTLY inside an uncalled closure.
+			name: "direct reference inside closure",
+			src: `package sample
 
 import contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 
 func Producer() {
 	_ = func() { _ = contractreceipt.PayloadKeyRotation }
 }
-`
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	if err != nil {
-		t.Fatalf("parse fixture: %v", err)
+`,
+		},
+		{
+			// Exercises the FuncLit skip in calledProductionFunctions: the
+			// closure does not name the constant at all, it CALLS a helper that
+			// does. Without that second guard the helper is collected as a
+			// called function and the delegated reference counts.
+			name: "delegated call inside closure",
+			src: `package sample
+
+import contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+
+func helper() { _ = contractreceipt.PayloadKeyRotation }
+
+func Producer() {
+	_ = func() { helper() }
+}
+`,
+		},
 	}
-	var decl *ast.FuncDecl
-	for _, d := range file.Decls {
-		fn, ok := d.(*ast.FuncDecl)
-		if ok && fn.Name.Name == "Producer" {
-			decl = fn
-		}
-	}
-	if decl == nil {
-		t.Fatal("Producer not found in fixture")
-	}
-	fn := &productionFunction{
-		packagePath: receiptMaturityModulePath + "/sample",
-		name:        "Producer",
-		decl:        decl,
-		imports:     importPaths(file),
-	}
-	functions := map[string]*productionFunction{functionKey(fn.packagePath, fn.name): fn}
-	if reachesPayloadKind(fn, PayloadKeyRotation, functions, map[string]bool{}) {
-		t.Fatal("a reference inside an uncalled closure was treated as a production path")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "sample.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			pkg := receiptMaturityModulePath + "/sample"
+			imports := importPaths(file)
+			functions := make(map[string]*productionFunction)
+			for _, d := range file.Decls {
+				decl, ok := d.(*ast.FuncDecl)
+				if !ok || decl.Body == nil {
+					continue
+				}
+				name := productionFunctionName(decl)
+				functions[functionKey(pkg, name)] = &productionFunction{
+					packagePath: pkg, name: name, decl: decl, imports: imports,
+				}
+			}
+			producer := functions[functionKey(pkg, "Producer")]
+			if producer == nil {
+				t.Fatal("Producer not found in fixture")
+			}
+			if reachesPayloadKind(producer, PayloadKeyRotation, functions, map[string]bool{}) {
+				t.Fatal("a reference reached only through an uncalled closure was treated as a production path")
+			}
+		})
 	}
 }

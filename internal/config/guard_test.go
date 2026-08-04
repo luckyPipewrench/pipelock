@@ -146,6 +146,40 @@ func TestExplainGuardPathFloorValidatorAntiDrift(t *testing.T) {
 	}
 }
 
+func TestGuardInspectionValidationSeparatesStructureFloorAndRuntimeGate(t *testing.T) {
+	t.Parallel()
+
+	floorRefused := Defaults()
+	floorRefused.Guard.Manifests = []GuardManifest{{
+		Name:     "credentials",
+		ReadOnly: []string{"/home/someoperator/.netrc"},
+	}}
+	if err := floorRefused.ValidateGuardStructure(); err != nil {
+		t.Fatalf("structure-only validation must retain a floor-refused path for explanation: %v", err)
+	}
+	if err := floorRefused.ValidateGuardDeclaration(); err == nil || errors.Is(err, errGuardNotEnforced) || !strings.Contains(err.Error(), ".netrc") {
+		t.Fatalf("declaration validation must enforce the path floor before the runtime gate: %v", err)
+	}
+
+	invalidStructure := Defaults()
+	invalidStructure.Guard.Manifests = []GuardManifest{{
+		Name:                "bad",
+		ReadOnly:            []string{"/opt/app/Config"},
+		ReadOnlyDirectories: []string{"/opt/app/config/"},
+	}}
+	for name, validate := range map[string]func() error{
+		"structure":   invalidStructure.ValidateGuardStructure,
+		"declaration": invalidStructure.ValidateGuardDeclaration,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validate()
+			if err == nil || !strings.Contains(err.Error(), "conflicts") {
+				t.Fatalf("invalid typed declaration must fail %s validation: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestValidateGuard_ValidFull(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()

@@ -5,6 +5,7 @@ the full command tree and `pipelock <command> --help` for any command's flags.
 
 | Command | Purpose |
 |---|---|
+| [`pipelock guard`](guard.md) | Explain unenforced guard path declarations and immutable compiled-floor refusals. |
 | [`pipelock baseline`](baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the admin API. |
 | [`pipelock demo`](demo.md) | Run self-contained attack scenarios that show what Pipelock catches. |
 | [`pipelock status`](operator.md) | Read-only operator setup and local inspection commands. |

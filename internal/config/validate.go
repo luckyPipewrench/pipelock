@@ -4287,6 +4287,47 @@ var guardDangerousRWRoots = []struct {
 }
 
 func (c *Config) validateGuard() error {
+	if err := c.ValidateGuardDeclaration(); err != nil {
+		return err
+	}
+	g := &c.Guard
+	if len(g.Services) == 0 && len(g.Profiles) == 0 && len(g.Manifests) == 0 {
+		return nil
+	}
+
+	// Everything above validated the declaration. This refuses to ACCEPT it.
+	//
+	// No runtime evaluator consumes guard yet, so a config that loads cleanly
+	// would tell an operator their workload is constrained when nothing
+	// constrains it. Silent acceptance of a security-boundary declaration that
+	// has no enforcement is worse than refusing it: the operator acts on the
+	// clean load. Fail closed instead, and say exactly why.
+	//
+	// Validation still runs first so the message names a genuinely broken
+	// declaration ahead of the unsupported gate; an operator writing this
+	// config today gets accurate feedback on it for when enforcement lands.
+	//
+	// REMOVE THIS GATE in the PR that wires the guard runtime evaluator, in
+	// the same change that starts enforcing these grants.
+	return errGuardNotEnforced
+}
+
+// ValidateGuardDeclaration validates guard names, references, destinations,
+// path declarations, and compiled-floor constraints without treating the
+// not-yet-enforced runtime gate as a declaration error.
+func (c *Config) ValidateGuardDeclaration() error {
+	return c.validateGuardDeclaration(true)
+}
+
+// ValidateGuardStructure validates guard declarations except for compiled
+// path-floor refusals. Read-only explain commands use it so they can display a
+// refused grant and its exact floor rule instead of failing before diagnosis.
+// Runtime and normal config loading never use this path.
+func (c *Config) ValidateGuardStructure() error {
+	return c.validateGuardDeclaration(false)
+}
+
+func (c *Config) validateGuardDeclaration(checkPathFloor bool) error {
 	g := &c.Guard
 	if len(g.Services) == 0 && len(g.Profiles) == 0 && len(g.Manifests) == 0 {
 		return nil
@@ -4345,32 +4386,40 @@ func (c *Config) validateGuard() error {
 			if err := validateGuardManifestPath(label, "read_only", j, p, guardPathFile, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardROPath(label, "read_only", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardROPath(label, "read_only", j, p); err != nil {
+					return err
+				}
 			}
 		}
 		for j, p := range m.ReadOnlyDirectories {
 			if err := validateGuardManifestPath(label, "read_only_directories", j, p, guardPathDirectory, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardROPath(label, "read_only_directories", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardROPath(label, "read_only_directories", j, p); err != nil {
+					return err
+				}
 			}
 		}
 		for j, p := range m.ReadWrite {
 			if err := validateGuardManifestPath(label, "read_write", j, p, guardPathFile, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardRWPath(label, "read_write", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardRWPath(label, "read_write", j, p); err != nil {
+					return err
+				}
 			}
 		}
 		for j, p := range m.ReadWriteDirectories {
 			if err := validateGuardManifestPath(label, "read_write_directories", j, p, guardPathDirectory, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardRWPath(label, "read_write_directories", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardRWPath(label, "read_write_directories", j, p); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -4394,21 +4443,7 @@ func (c *Config) validateGuard() error {
 		}
 	}
 
-	// Everything above validated the declaration. This refuses to ACCEPT it.
-	//
-	// No runtime evaluator consumes guard yet, so a config that loads cleanly
-	// would tell an operator their workload is constrained when nothing
-	// constrains it. Silent acceptance of a security-boundary declaration that
-	// has no enforcement is worse than refusing it: the operator acts on the
-	// clean load. Fail closed instead, and say exactly why.
-	//
-	// Validation still runs first so the message names a genuinely broken
-	// declaration ahead of the unsupported gate; an operator writing this
-	// config today gets accurate feedback on it for when enforcement lands.
-	//
-	// REMOVE THIS GATE in the PR that wires the guard runtime evaluator, in
-	// the same change that starts enforcing these grants.
-	return errGuardNotEnforced
+	return nil
 }
 
 type guardPathType string

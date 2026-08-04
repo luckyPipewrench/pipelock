@@ -149,6 +149,9 @@ run_and_tee() {
   # waiting for tee, or an orphan could keep capture open indefinitely.
   if ! cleanup_process_group "$command_pid" "$pass_label"; then
     process_cleanup_failed=1
+    active_process_group=""
+    rm -f -- "$stdout_fifo" "$stderr_fifo"
+    return "$command_status"
   fi
   active_process_group=""
 

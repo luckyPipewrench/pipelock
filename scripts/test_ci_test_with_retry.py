@@ -388,6 +388,83 @@ exit 0
         self.assertNotIn("RETRY RAN", result.stdout)
         self.assertNotIn("rerunning", result.stderr)
 
+    def test_cleanup_failure_abandons_fifo_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bash_env = tmp_path / "bash-env"
+            descendant_file = tmp_path / "descendant"
+            ready_file = tmp_path / "ready"
+            stdout_file = tmp_path / "stdout"
+            stderr_file = tmp_path / "stderr"
+            bash_env.write_text(
+                r'''kill() {
+  if [ "$1" = "-0" ]; then
+    return 0
+  fi
+  if [ "$1" = "-KILL" ] && [ "${2:-}" = "--" ]; then
+    return 0
+  fi
+  builtin kill "$@" 2>/dev/null || true
+}
+''',
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["BASH_ENV"] = str(bash_env)
+            env["CI_RETRY_DESCENDANT"] = str(descendant_file)
+            env["CI_RETRY_READY"] = str(ready_file)
+            env["GITHUB_ACTIONS"] = "true"
+            cmd = [
+                "bash",
+                str(WRAPPER),
+                "--packages",
+                "example.com/p/pkg",
+                "--",
+                "bash",
+                "-c",
+                r'''
+python3 -c 'import os, signal, time; signal.signal(signal.SIGHUP, signal.SIG_IGN); signal.signal(signal.SIGTERM, signal.SIG_IGN); open(os.environ["CI_RETRY_READY"], "w").close(); time.sleep(3600)' &
+echo "$!" >"${CI_RETRY_DESCENDANT:?}"
+while [ ! -e "${CI_RETRY_READY:?}" ]; do sleep 0.01; done
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+kill -TERM "$$"
+''',
+                "fake-go",
+            ]
+
+            with stdout_file.open("w", encoding="utf-8") as stdout_stream, (
+                stderr_file.open("w", encoding="utf-8")
+            ) as stderr_stream:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                )
+
+                def cleanup_processes() -> None:
+                    if descendant_file.exists():
+                        descendant_pid = int(
+                            descendant_file.read_text(encoding="utf-8")
+                        )
+                        try:
+                            os.kill(descendant_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+
+                self.addCleanup(cleanup_processes)
+                returncode = process.wait(timeout=12)
+
+            stderr = stderr_file.read_text(encoding="utf-8")
+            self.assertNotEqual(returncode, 0, stderr)
+            self.assertIn("remained live after KILL", stderr)
+
     def test_sigterm_with_test_failure_is_not_retried(self) -> None:
         result = run_wrapper(
             r'''

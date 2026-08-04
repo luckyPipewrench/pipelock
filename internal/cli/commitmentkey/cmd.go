@@ -98,17 +98,16 @@ func rotateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			keyring, err := domkey.Load(path)
+			handle, err := domkey.Rotate(path, time.Now())
 			if err != nil {
 				emitAudit(cmd, "rotate", "denied", "", 0, err)
 				return err
 			}
-			handle, err := keyring.Rotate(path, time.Now())
+			emitAudit(cmd, "rotate", "succeeded", handle.KeyID, handle.Epoch, nil)
+			keyring, err := domkey.Load(path)
 			if err != nil {
-				emitAudit(cmd, "rotate", "denied", keyring.ActiveID, keyring.Epoch, err)
 				return err
 			}
-			emitAudit(cmd, "rotate", "succeeded", handle.KeyID, handle.Epoch, nil)
 			return writeJSON(cmd, keyring.Metadata())
 		},
 	}
@@ -135,16 +134,15 @@ func retireCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			keyring, err := domkey.Load(path)
-			if err != nil {
-				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
-				return err
-			}
-			if err := keyring.Retire(path, keyID, epoch, references, acceptLoss); err != nil {
+			if err := domkey.Retire(path, keyID, epoch, references, acceptLoss); err != nil {
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
 				return err
 			}
 			emitAudit(cmd, "retire", "succeeded", keyID, epoch, nil)
+			keyring, err := domkey.Load(path)
+			if err != nil {
+				return err
+			}
 			return writeJSON(cmd, keyring.Metadata())
 		},
 	}
@@ -286,14 +284,18 @@ func (f pathFlags) resolve() (string, error) {
 	if f.configFile == "" {
 		return "", errors.New("one of --keyring or --config is required")
 	}
-	cfg, err := config.Load(f.configFile)
+	cfg, err := config.LoadForInspection(f.configFile)
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
 	}
 	if cfg.EvidenceProvenance.CommitmentKeyringPath == "" {
 		return "", errors.New("config has no evidence_provenance.commitment_keyring_path")
 	}
-	return filepath.Clean(cfg.EvidenceProvenance.CommitmentKeyringPath), nil
+	path := cfg.EvidenceProvenance.CommitmentKeyringPath
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(filepath.Dir(filepath.Clean(f.configFile)), path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func (f pathFlags) load() (*domkey.Keyring, error) {

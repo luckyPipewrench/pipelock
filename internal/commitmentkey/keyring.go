@@ -210,7 +210,21 @@ func (k *Keyring) Open(keyID string, epoch uint64) (Handle, error) {
 	return Handle{}, fmt.Errorf("%w: key_id=%q epoch=%d", ErrKeyNotFound, keyID, epoch)
 }
 
-func (k *Keyring) Rotate(path string, now time.Time) (Handle, error) {
+// Rotate serializes the complete load-modify-save cycle across processes.
+func Rotate(path string, now time.Time) (Handle, error) {
+	var handle Handle
+	err := withLifecycleLock(path, func() error {
+		keyring, err := Load(path)
+		if err != nil {
+			return err
+		}
+		handle, err = keyring.rotate(path, now)
+		return err
+	})
+	return handle, err
+}
+
+func (k *Keyring) rotate(path string, now time.Time) (Handle, error) {
 	if err := k.Validate(); err != nil {
 		return Handle{}, err
 	}
@@ -234,7 +248,18 @@ func (k *Keyring) Rotate(path string, now time.Time) (Handle, error) {
 	return k.Active()
 }
 
-func (k *Keyring) Retire(path, keyID string, epoch uint64, references []Reference, acceptLoss bool) error {
+// Retire serializes the complete load-check-destroy-save cycle across processes.
+func Retire(path, keyID string, epoch uint64, references []Reference, acceptLoss bool) error {
+	return withLifecycleLock(path, func() error {
+		keyring, err := Load(path)
+		if err != nil {
+			return err
+		}
+		return keyring.retire(path, keyID, epoch, references, acceptLoss)
+	})
+}
+
+func (k *Keyring) retire(path, keyID string, epoch uint64, references []Reference, acceptLoss bool) error {
 	if keyID == k.ActiveID && epoch == k.Epoch {
 		return fmt.Errorf("cannot retire the active commitment key; rotate first")
 	}

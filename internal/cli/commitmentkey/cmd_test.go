@@ -117,6 +117,18 @@ func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
 	}
 }
 
+func TestCommandConfigResolutionIgnoresUnrelatedRuntimeFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	body := "mode: balanced\nlicense_file: missing-license.txt\nevidence_provenance:\n  commitment_keyring_path: state/keyring.json\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	if _, _, err := execute(t, "initialize", "--config", cfgPath); err != nil {
+		t.Fatalf("initialize should not read unrelated runtime files: %v", err)
+	}
+}
+
 func execute(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	stdout := &bytes.Buffer{}

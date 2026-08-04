@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,8 +51,12 @@ func TestLifecycleRotationRestartOpensOldAndNew(t *testing.T) {
 	}
 	oldReceipt := commitTestReceipt(t, keyring, "before rotation")
 	oldID := oldReceipt.KeyID
-	if _, err := keyring.Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+	if _, err := Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
 		t.Fatalf("Rotate: %v", err)
+	}
+	keyring, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load rotated keyring: %v", err)
 	}
 	newReceipt := commitTestReceipt(t, keyring, "after rotation")
 	if newReceipt.KeyID == oldID || newReceipt.Epoch != oldReceipt.Epoch+1 {
@@ -87,7 +92,7 @@ func TestRetiredLookupOpensPriorEpoch(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	receipt := commitTestReceipt(t, keyring, "retired lookup guard")
-	if _, err := keyring.Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+	if _, err := keyring.rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
 	openTestReceipt(t, keyring, receipt)
@@ -100,25 +105,65 @@ func TestRetireRefusesRetainedReferenceAndCanExplicitlyAcceptLoss(t *testing.T) 
 		t.Fatalf("Initialize: %v", err)
 	}
 	old := commitTestReceipt(t, keyring, "retained")
-	if _, err := keyring.Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+	if _, err := Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
+	keyring, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load rotated keyring: %v", err)
+	}
 	refs := []Reference{{KeyID: old.KeyID, Epoch: old.Epoch}}
-	if err := keyring.Retire(path, old.KeyID, old.Epoch, refs, false); !errors.Is(err, ErrRetainedKey) {
+	if err := Retire(path, old.KeyID, old.Epoch, refs, false); !errors.Is(err, ErrRetainedKey) {
 		t.Fatalf("Retire with retained reference error = %v, want ErrRetainedKey", err)
 	}
 	openTestReceipt(t, keyring, old)
-	if err := keyring.Retire(path, old.KeyID, old.Epoch, nil, false); !errors.Is(err, ErrRetainedKey) {
+	if err := Retire(path, old.KeyID, old.Epoch, nil, false); !errors.Is(err, ErrRetainedKey) {
 		t.Fatalf("Retire without reference inventory error = %v, want ErrRetainedKey", err)
 	}
-	if err := keyring.Retire(path, old.KeyID, old.Epoch, refs, true); err != nil {
+	if err := Retire(path, old.KeyID, old.Epoch, refs, true); err != nil {
 		t.Fatalf("Retire with accept loss: %v", err)
+	}
+	keyring, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load after retirement: %v", err)
 	}
 	if _, err := keyring.Open(old.KeyID, old.Epoch); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("Open destroyed retired key error = %v, want ErrKeyNotFound", err)
 	}
-	if err := keyring.Retire(path, keyring.ActiveID, keyring.Epoch, nil, true); err == nil {
+	if err := Retire(path, keyring.ActiveID, keyring.Epoch, nil, true); err == nil {
 		t.Fatal("Retire active key succeeded")
+	}
+}
+
+func TestConcurrentRotationsSerializeEpochs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	if _, err := Initialize(path, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	const rotations = 8
+	errs := make(chan error, rotations)
+	var wg sync.WaitGroup
+	for i := range rotations {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			_, err := Rotate(path, time.Unix(1_700_000_100+int64(offset), 0))
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Rotate: %v", err)
+		}
+	}
+	keyring, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if keyring.Epoch != rotations+1 || len(keyring.Keys) != rotations+1 {
+		t.Fatalf("concurrent rotations produced epoch=%d keys=%d, want %d", keyring.Epoch, len(keyring.Keys), rotations+1)
 	}
 }
 

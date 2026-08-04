@@ -4287,6 +4287,47 @@ var guardDangerousRWRoots = []struct {
 }
 
 func (c *Config) validateGuard() error {
+	if err := c.ValidateGuardDeclaration(); err != nil {
+		return err
+	}
+	g := &c.Guard
+	if len(g.Services) == 0 && len(g.Profiles) == 0 && len(g.Manifests) == 0 {
+		return nil
+	}
+
+	// Everything above validated the declaration. This refuses to ACCEPT it.
+	//
+	// No runtime evaluator consumes guard yet, so a config that loads cleanly
+	// would tell an operator their workload is constrained when nothing
+	// constrains it. Silent acceptance of a security-boundary declaration that
+	// has no enforcement is worse than refusing it: the operator acts on the
+	// clean load. Fail closed instead, and say exactly why.
+	//
+	// Validation still runs first so the message names a genuinely broken
+	// declaration ahead of the unsupported gate; an operator writing this
+	// config today gets accurate feedback on it for when enforcement lands.
+	//
+	// REMOVE THIS GATE in the PR that wires the guard runtime evaluator, in
+	// the same change that starts enforcing these grants.
+	return errGuardNotEnforced
+}
+
+// ValidateGuardDeclaration validates guard names, references, destinations,
+// path declarations, and compiled-floor constraints without treating the
+// not-yet-enforced runtime gate as a declaration error.
+func (c *Config) ValidateGuardDeclaration() error {
+	return c.validateGuardDeclaration(true)
+}
+
+// ValidateGuardStructure validates guard declarations except for compiled
+// path-floor refusals. Read-only explain commands use it so they can display a
+// refused grant and its exact floor rule instead of failing before diagnosis.
+// Runtime and normal config loading never use this path.
+func (c *Config) ValidateGuardStructure() error {
+	return c.validateGuardDeclaration(false)
+}
+
+func (c *Config) validateGuardDeclaration(checkPathFloor bool) error {
 	g := &c.Guard
 	if len(g.Services) == 0 && len(g.Profiles) == 0 && len(g.Manifests) == 0 {
 		return nil
@@ -4345,32 +4386,40 @@ func (c *Config) validateGuard() error {
 			if err := validateGuardManifestPath(label, "read_only", j, p, guardPathFile, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardROPath(label, "read_only", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardROPath(label, "read_only", j, p); err != nil {
+					return err
+				}
 			}
 		}
 		for j, p := range m.ReadOnlyDirectories {
 			if err := validateGuardManifestPath(label, "read_only_directories", j, p, guardPathDirectory, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardROPath(label, "read_only_directories", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardROPath(label, "read_only_directories", j, p); err != nil {
+					return err
+				}
 			}
 		}
 		for j, p := range m.ReadWrite {
 			if err := validateGuardManifestPath(label, "read_write", j, p, guardPathFile, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardRWPath(label, "read_write", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardRWPath(label, "read_write", j, p); err != nil {
+					return err
+				}
 			}
 		}
 		for j, p := range m.ReadWriteDirectories {
 			if err := validateGuardManifestPath(label, "read_write_directories", j, p, guardPathDirectory, pathFields); err != nil {
 				return err
 			}
-			if err := validateGuardRWPath(label, "read_write_directories", j, p); err != nil {
-				return err
+			if checkPathFloor {
+				if err := validateGuardRWPath(label, "read_write_directories", j, p); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -4394,21 +4443,7 @@ func (c *Config) validateGuard() error {
 		}
 	}
 
-	// Everything above validated the declaration. This refuses to ACCEPT it.
-	//
-	// No runtime evaluator consumes guard yet, so a config that loads cleanly
-	// would tell an operator their workload is constrained when nothing
-	// constrains it. Silent acceptance of a security-boundary declaration that
-	// has no enforcement is worse than refusing it: the operator acts on the
-	// clean load. Fail closed instead, and say exactly why.
-	//
-	// Validation still runs first so the message names a genuinely broken
-	// declaration ahead of the unsupported gate; an operator writing this
-	// config today gets accurate feedback on it for when enforcement lands.
-	//
-	// REMOVE THIS GATE in the PR that wires the guard runtime evaluator, in
-	// the same change that starts enforcing these grants.
-	return errGuardNotEnforced
+	return nil
 }
 
 type guardPathType string
@@ -4458,51 +4493,12 @@ var errGuardNotEnforced = errors.New(
 // access to dangerous or trust-bearing locations.
 func validateGuardRWPath(label, fieldName string, idx int, rawPath string) error {
 	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
-
-	resolved := resolveGuardPath(rawPath)
-
-	// Trust-bearing and dangerous locations are matched on path COMPONENTS,
-	// not on a prefix derived from this process's home directory. Pipelock
-	// commonly runs as a system service, so os.UserHomeDir() returns /root
-	// and a home-derived list would protect /root/.ssh while leaving every
-	// real operator's ~/.ssh unguarded. Writing into any .ssh, .gnupg or
-	// .gpg directory is unsafe regardless of which user owns it.
-	if comp, reason := guardForbiddenComponent(resolved); comp != "" {
-		return fmt.Errorf("%s: read-write on trust-bearing path %q is not allowed (contains %q, which is %s)", field, rawPath, comp, reason)
+	decision, err := ExplainGuardPathFloor(rawPath, GuardAccessWrite)
+	if err != nil {
+		return fmt.Errorf("%s: %w", field, err)
 	}
-	if suffix := guardForbiddenSuffix(resolved); suffix != "" {
-		return fmt.Errorf("%s: read-write on %s %q is not allowed", field, suffix, rawPath)
+	if decision.Refused {
+		return fmt.Errorf("%s: %s", field, decision.Reason)
 	}
-	if guardIsHomeRoot(resolved) {
-		return fmt.Errorf("%s: read-write on the entire home directory is not allowed", field)
-	}
-
-	// NOTE: an earlier draft repeated these checks against os.UserHomeDir().
-	// That block was removed: it was fully shadowed by the component, suffix
-	// and home-root helpers above, which cover EVERY user rather than only the
-	// account this process happens to run as. Dead code that reads as live
-	// protection is worse than no code, because the next reader trusts it.
-
-	// Static dangerous roots. These run BEFORE the credential-material check so
-	// that a path both rules cover (/etc/shadow is a privilege path AND a
-	// credential store) keeps its established, more specific message.
-	for _, dr := range guardDangerousRWRoots {
-		clean := filepath.Clean(dr.prefix)
-		if resolved == clean || strings.HasPrefix(resolved, clean+string(filepath.Separator)) {
-			return fmt.Errorf("%s: read-write on %s %q is not allowed", field, dr.reason, rawPath)
-		}
-	}
-
-	// Credential material is refused for WRITE as well as read, and not merely
-	// because writing usually implies reading. Write alone is its own attack:
-	// rewriting ~/.npmrc or ~/.pypirc redirects a build to an attacker's
-	// registry, and rewriting ~/.kube/config or ~/.aws/credentials repoints the
-	// workload's cluster and cloud identity. Both floors share this set; the
-	// write floor adds the write-sensitive locations above that a read grant
-	// may legitimately keep.
-	if reason := guardDeclaredPathSecretMaterialReason(rawPath, resolved); reason != "" {
-		return fmt.Errorf("%s: read-write on %q is not allowed (%s); writing a credential file redirects the workload's identity", field, rawPath, reason)
-	}
-
 	return nil
 }

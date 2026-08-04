@@ -352,3 +352,65 @@ func TestEvidenceHealthUnmeasuredStatsNullAndDynamicGaugesAbsent(t *testing.T) {
 		t.Fatalf("stats included current_ael while evidence health is unmeasured: %s", rec.Body.String())
 	}
 }
+
+func TestClampEvidenceCurrentAELBounds(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{in: -100, want: 0},
+		{in: -1, want: 0},
+		{in: 0, want: 0},
+		{in: 1, want: 1},
+		{in: 2, want: evidenceMaximumSupportedAEL},
+		{in: 4, want: evidenceMaximumSupportedAEL},
+	}
+	for _, c := range cases {
+		if got := clampEvidenceCurrentAEL(c.in); got != c.want {
+			t.Fatalf("clampEvidenceCurrentAEL(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestEvidenceCollectorExportsCappedCurrentAEL(t *testing.T) {
+	m := New()
+	m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {
+		return EvidenceHealthStats{CurrentAEL: 4, ChainHeadSeq: 9}, true
+	})
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(m.evidenceCollector); err != nil {
+		t.Fatalf("register evidence collector: %v", err)
+	}
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	found := false
+	for _, fam := range fams {
+		if fam.GetName() != "pipelock_evidence_current_ael" {
+			continue
+		}
+		found = true
+		if v := fam.GetMetric()[0].GetGauge().GetValue(); v != 1 {
+			t.Fatalf("exported pipelock_evidence_current_ael = %v, want capped 1", v)
+		}
+	}
+	if !found {
+		t.Fatal("pipelock_evidence_current_ael was not exported")
+	}
+}
+
+func TestStatsHandlerUnavailableEvidenceHealthIsNull(t *testing.T) {
+	m := New()
+	m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {
+		return EvidenceHealthStats{}, false
+	})
+	rec := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil))
+	var body struct {
+		EvidenceHealth *EvidenceHealthStats `json:"evidence_health"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal stats: %v", err)
+	}
+	if body.EvidenceHealth != nil {
+		t.Fatalf("evidence_health = %+v, want nil when the snapshot is unavailable", body.EvidenceHealth)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/assess"
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/canary"
+	commitmentkeycmd "github.com/luckyPipewrench/pipelock/internal/cli/commitmentkey"
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	clienvelope "github.com/luckyPipewrench/pipelock/internal/cli/envelope"
@@ -94,6 +95,8 @@ Quick start:
 		audit.SimulateCmd(),
 		// Containment (workstation-tier)
 		contain.Cmd(),
+		// Private evidence commitment key lifecycle
+		commitmentkeycmd.Cmd(),
 		// Mediation envelope trust management
 		clienvelope.Cmd(),
 		// Evidence viewer (Free, single-agent)

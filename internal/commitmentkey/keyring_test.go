@@ -12,6 +12,7 @@ import (
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type committedReceipt struct {
@@ -80,6 +81,9 @@ func TestRetireRefusesRetainedReferenceAndCanExplicitlyAcceptLoss(t *testing.T) 
 		t.Fatalf("Retire with retained reference error = %v, want ErrRetainedKey", err)
 	}
 	openTestReceipt(t, keyring, old)
+	if err := keyring.Retire(path, old.KeyID, old.Epoch, nil, false); !errors.Is(err, ErrRetainedKey) {
+		t.Fatalf("Retire without reference inventory error = %v, want ErrRetainedKey", err)
+	}
 	if err := keyring.Retire(path, old.KeyID, old.Epoch, refs, true); err != nil {
 		t.Fatalf("Retire with accept loss: %v", err)
 	}
@@ -161,6 +165,16 @@ func TestPurposeValidationRejectsReceiptSigning(t *testing.T) {
 	}
 	if _, err := Load(path); !errors.Is(err, ErrInvalidKeyring) {
 		t.Fatalf("Load receipt-signing keyring error = %v, want ErrInvalidKeyring", err)
+	}
+}
+
+func TestCommitmentKeyringCannotLoadAsReceiptSigningKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	if _, err := Initialize(path, time.Now()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := signing.LoadPrivateKeyFile(path); err == nil {
+		t.Fatal("receipt-signing loader accepted commitment keyring")
 	}
 }
 

@@ -121,6 +121,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogConfigReload("ignored", "conductor settings restart-only", attemptedHash)
 			newCfg.Conductor = oldCfg.Conductor
 		}
+		if oldCfg.EvidenceProvenance != newCfg.EvidenceProvenance {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: evidence_provenance.commitment_keyring_path changed — keyring is loaded at startup, ignoring (restart required)\n")
+			newCfg.EvidenceProvenance = oldCfg.EvidenceProvenance
+		}
 		// Block recorder-binding changes via reload. The recorder (and its
 		// receipt/audit chain) is built once at Start; reload swaps config and
 		// scanner but never rebuilds the recorder, so path/key/retention/etc.

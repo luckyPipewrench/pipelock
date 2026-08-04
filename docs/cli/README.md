@@ -17,6 +17,7 @@ the full command tree and `pipelock <command> --help` for any command's flags.
 | [`pipelock adaptive`](adaptive.md) | Operator CLI for adaptive-enforcement state and overrides. |
 | [`pipelock session`](session.md) | Operator CLI for airlock session recovery. |
 | [`pipelock keys status`](keys.md) | Unified view of every signing-key purpose: source, presence, readability, and validity. |
+| [`pipelock commitment-key`](commitment-key.md) | Initialize, inspect, rotate, retire, back up, restore, and test private evidence commitment keys. |
 | [`pipelock mcp integrity manifest`](mcp-integrity.md) | Generate and verify MCP server binary-integrity manifests. |
 | [`pipelock init sidecar`](init-sidecar.md) | Generate an enforced Pipelock companion proxy for a Kubernetes workload. |
 | [`pipelock license`](license.md) | Install, inspect, and check the license that unlocks paid features. |

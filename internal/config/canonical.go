@@ -147,6 +147,7 @@ func (c *Config) policySemanticView() Config {
 	view.Sentry = SentryConfig{}
 	view.Emit = EmitConfig{}
 	view.FlightRecorder = FlightRecorder{RequireReceipts: view.FlightRecorder.RequireReceipts}
+	view.EvidenceProvenance = EvidenceProvenance{}
 	view.Conductor = Conductor{}
 
 	// License metadata - determines whether a tier feature is available,

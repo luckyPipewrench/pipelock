@@ -427,7 +427,8 @@ type Config struct {
 	FileSentry               FileSentry              `yaml:"file_sentry"`
 	Sandbox                  Sandbox                 `yaml:"sandbox"`
 	FlightRecorder           FlightRecorder          `yaml:"flight_recorder"`
-	DashboardSnapshot        DashboardSnapshot       `yaml:"dashboard_snapshot" json:"-"` // operational dashboard read-model snapshot, excluded from canonical policy hash
+	EvidenceProvenance       EvidenceProvenance      `yaml:"evidence_provenance" json:"-"` // startup-only private commitment keyring; no producer consumes it yet
+	DashboardSnapshot        DashboardSnapshot       `yaml:"dashboard_snapshot" json:"-"`  // operational dashboard read-model snapshot, excluded from canonical policy hash
 	MCPBinaryIntegrity       MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
 	MCPToolProvenance        MCPToolProvenance       `yaml:"mcp_tool_provenance"`
 	BehavioralBaseline       BehavioralBaseline      `yaml:"behavioral_baseline"`
@@ -1517,6 +1518,14 @@ type FlightRecorder struct {
 	Completeness       FlightRecorderCompleteness   `yaml:"completeness" json:"-"`    // restart-only evidence completeness knobs
 	EvidenceHealth     FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"` // observability-only evidence health grading
 	Anchor             FlightRecorderAnchor         `yaml:"anchor" json:"-"`          // optional runtime receipt-chain anchoring
+}
+
+// EvidenceProvenance configures the private operator-owned material needed to
+// open evidence commitments. It is intentionally separate from receipt
+// signing configuration: this path names a symmetric HMAC keyring, never an
+// Ed25519 signing key.
+type EvidenceProvenance struct {
+	CommitmentKeyringPath string `yaml:"commitment_keyring_path"`
 }
 
 type FlightRecorderCompleteness struct {

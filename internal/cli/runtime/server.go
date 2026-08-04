@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/commitmentkey"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
@@ -119,6 +120,7 @@ type Server struct {
 	captureWriter          *capture.Writer
 	mcpListenerBearerToken string
 	recorder               *recorder.Recorder
+	commitmentKeyring      *commitmentkey.Keyring
 	// conductorApply holds *applycache.Cache in the enterprise build (nil
 	// in the core build). Stored as any so server.go has no compile-time
 	// dependency on the enterprise conductor packages; the build-tagged
@@ -322,6 +324,13 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		hasMCPListen: hasMCPListen,
 	}
 	s.mcpListenerBearerToken = mcpAuthToken
+	if cfg.EvidenceProvenance.CommitmentKeyringPath != "" {
+		keyring, loadErr := commitmentkey.Load(cfg.EvidenceProvenance.CommitmentKeyringPath)
+		if loadErr != nil {
+			return nil, fmt.Errorf("loading evidence_provenance.commitment_keyring_path: %w", loadErr)
+		}
+		s.commitmentKeyring = keyring
+	}
 
 	sentryClient, sentryErr := plsentry.Init(cfg, cliutil.Version)
 	if sentryErr != nil {

@@ -249,6 +249,9 @@ func (k *Keyring) Retire(path, keyID string, epoch uint64, references []Referenc
 		return fmt.Errorf("%w: key_id=%q epoch=%d", ErrKeyNotFound, keyID, epoch)
 	}
 	if !acceptLoss {
+		if len(references) == 0 {
+			return fmt.Errorf("%w: retained-reference inventory is absent; use explicit loss acceptance to destroy key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)
+		}
 		for _, ref := range references {
 			if ref.KeyID == keyID && ref.Epoch == epoch {
 				return fmt.Errorf("%w: key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)

@@ -172,6 +172,9 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 		if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
 			cfg.DLP.SecretsFile = filepath.Join(configDir, cfg.DLP.SecretsFile)
 		}
+		if cfg.EvidenceProvenance.CommitmentKeyringPath != "" && !filepath.IsAbs(cfg.EvidenceProvenance.CommitmentKeyringPath) {
+			cfg.EvidenceProvenance.CommitmentKeyringPath = filepath.Join(configDir, cfg.EvidenceProvenance.CommitmentKeyringPath)
+		}
 
 		// Resolve relative CA cert/key paths relative to config file directory.
 		// This ensures TLS interception works under systemd (CWD=/), containers,

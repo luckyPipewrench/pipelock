@@ -110,11 +110,18 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
+          package_parallelism=2
+          if [ "$TEST_SHARD" = "proxy" ]; then
+            # The proxy shard has two race-instrumented packages. Running them
+            # sequentially lowers peak memory without serializing t.Parallel
+            # tests inside either package.
+            package_parallelism=1
+          fi
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
           bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -race -p=2 -parallel=2 -timeout=15m -count=1 -json \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -159,11 +166,18 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          package_parallelism=2
+          if [ "$TEST_SHARD" = "proxy" ]; then
+            # The proxy shard has two race-instrumented packages. Running them
+            # sequentially lowers peak memory without serializing t.Parallel
+            # tests inside either package.
+            package_parallelism=1
+          fi
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
           bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -tags enterprise -race -p=2 -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -182,11 +196,18 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          package_parallelism=2
+          if [ "$TEST_SHARD" = "proxy" ]; then
+            # The proxy shard has two race-instrumented packages. Running them
+            # sequentially lowers peak memory without serializing t.Parallel
+            # tests inside either package.
+            package_parallelism=1
+          fi
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
           bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -tags enterprise -race -p=2 -parallel=2 -timeout=15m -count=1 -json \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json

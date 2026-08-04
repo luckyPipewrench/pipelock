@@ -61,44 +61,6 @@ func TestRunProxyIntegrityExecutesHashedDescriptorAfterSymlinkSwap(t *testing.T)
 	}
 }
 
-func TestRunProxyIntegrityExecutesHashedScriptDescriptorAfterRename(t *testing.T) {
-	shPath, shHash, err := integrity.ResolveAndHash("sh")
-	if err != nil {
-		t.Fatalf("resolve sh: %v", err)
-	}
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "server.sh")
-	replacementPath := filepath.Join(dir, "replacement.sh")
-	const allowedResponse = `printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"script":"hashed"}}'`
-	if err := os.WriteFile(scriptPath, []byte(allowedResponse+"\n"), 0o600); err != nil {
-		t.Fatalf("write hashed script: %v", err)
-	}
-	if err := os.WriteFile(replacementPath, []byte("exit 93\n"), 0o600); err != nil {
-		t.Fatalf("write replacement script: %v", err)
-	}
-	scriptResolved, scriptHash, err := integrity.ResolveAndHash(scriptPath)
-	if err != nil {
-		t.Fatalf("hash script: %v", err)
-	}
-	manifestPath := writeFDExecManifest(t, map[string]string{shPath: shHash, scriptResolved: scriptHash})
-	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
-	opts.IntegrityCfg = &config.MCPBinaryIntegrity{Enabled: true, ManifestPath: manifestPath, Action: config.ActionBlock}
-	opts.afterIntegrityPreparedForTest = func() {
-		if err := os.Rename(replacementPath, scriptPath); err != nil {
-			t.Fatalf("replace script pathname: %v", err)
-		}
-	}
-
-	var stdout bytes.Buffer
-	var stderr syncBuffer
-	if err := RunProxy(context.Background(), strings.NewReader(""), &stdout, &stderr, []string{"sh", scriptPath}, opts); err != nil {
-		t.Fatalf("descriptor-bound script returned error: %v (stderr: %s)", err, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `"script":"hashed"`) {
-		t.Fatalf("executed replacement rather than hashed script: %q", stdout.String())
-	}
-}
-
 func TestRunProxyIntegrityPreservesArgvZeroAndClosesExecutableFD(t *testing.T) {
 	if os.Getenv("PIPELOCK_FD_EXEC_CHILD") == "1" {
 		expected := os.Getenv("PIPELOCK_FD_EXEC_ARGV0")
@@ -190,8 +152,11 @@ func TestRunProxyIntegrityUnpinnableWrapperDirections(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "server")
 	const response = `{"jsonrpc":"2.0","id":1,"result":{"shebang":true}}`
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s\\n' '"+response+"'\n"), 0o700); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s\\n' '"+response+"'\n"), 0o600); err != nil {
 		t.Fatalf("write shebang server: %v", err)
+	}
+	if err := os.Chmod(scriptPath, 0o700); err != nil { //nolint:gosec // executable test fixture
+		t.Fatalf("make shebang server executable: %v", err)
 	}
 	resolved, hash, err := integrity.ResolveAndHash(scriptPath)
 	if err != nil {
@@ -234,6 +199,54 @@ func TestRunProxyIntegrityUnpinnableWrapperDirections(t *testing.T) {
 	}
 }
 
+func TestRunProxyIntegrityInterpreterScriptDirections(t *testing.T) {
+	shPath, shHash, err := integrity.ResolveAndHash("sh")
+	if err != nil {
+		t.Fatalf("resolve sh: %v", err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "server.sh")
+	const response = `{"jsonrpc":"2.0","id":1,"result":{"interpreter":true}}`
+	if err := os.WriteFile(scriptPath, []byte("printf '%s\\n' '"+response+"'\n"), 0o600); err != nil {
+		t.Fatalf("write interpreter script: %v", err)
+	}
+	scriptResolved, scriptHash, err := integrity.ResolveAndHash(scriptPath)
+	if err != nil {
+		t.Fatalf("hash interpreter script: %v", err)
+	}
+	manifestPath := writeFDExecManifest(t, map[string]string{shPath: shHash, scriptResolved: scriptHash})
+
+	tests := []struct {
+		name       string
+		action     string
+		wantErr    bool
+		wantOutput bool
+	}{
+		{name: "block_denies_without_fd_leak", action: config.ActionBlock, wantErr: true},
+		{name: "warn_logs_and_runs_unpinned", action: config.ActionWarn, wantOutput: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+			opts.IntegrityCfg = &config.MCPBinaryIntegrity{Enabled: true, ManifestPath: manifestPath, Action: tt.action}
+			var stdout bytes.Buffer
+			var stderr syncBuffer
+			err := RunProxy(context.Background(), strings.NewReader(""), &stdout, &stderr, []string{"sh", scriptPath}, opts)
+			if tt.wantErr && (err == nil || !strings.Contains(err.Error(), "interpreter command")) {
+				t.Fatalf("interpreter enforcement error = %v", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("warn compatibility launch failed: %v", err)
+			}
+			if tt.wantOutput && !strings.Contains(stdout.String(), `"interpreter":true`) {
+				t.Fatalf("missing interpreter response: %q (stderr: %s)", stdout.String(), stderr.String())
+			}
+			if !tt.wantErr && !strings.Contains(stderr.String(), "using unpinned platform launch") {
+				t.Fatalf("warn fallback was silent: %q", stderr.String())
+			}
+		})
+	}
+}
+
 func writeFDExecManifest(t *testing.T, entries map[string]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "manifest.json")
@@ -245,19 +258,24 @@ func writeFDExecManifest(t *testing.T, entries map[string]string) string {
 
 func TestExecveatRejectsInvalidInputs(t *testing.T) {
 	tests := []struct {
-		name string
-		argv []string
-		env  []string
+		name    string
+		argv    []string
+		env     []string
+		wantErr string
 	}{
-		{name: "empty_argv"},
-		{name: "invalid_argv", argv: []string{"bad\x00arg"}},
-		{name: "invalid_environment", argv: []string{"server"}, env: []string{"BAD=bad\x00value"}},
-		{name: "invalid_descriptor", argv: []string{"server"}},
+		{name: "empty_argv", wantErr: "empty argv"},
+		{name: "invalid_argv", argv: []string{"bad\x00arg"}, wantErr: "building argv"},
+		{name: "invalid_environment", argv: []string{"server"}, env: []string{"BAD=bad\x00value"}, wantErr: "building environment"},
+		{name: "invalid_descriptor", argv: []string{"server"}, wantErr: "execveat"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := execveat(-1, tt.argv, tt.env); err == nil {
+			err := execveat(-1, tt.argv, tt.env)
+			if err == nil {
 				t.Fatal("execveat() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("execveat() error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
 	}

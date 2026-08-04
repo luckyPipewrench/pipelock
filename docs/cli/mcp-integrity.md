@@ -119,22 +119,23 @@ TOCTOU window between trust check and parse.
 - **Package runners cannot be hashed.** Commands like `npx`, `bunx`, `uvx`,
   and `pipx` resolve executables dynamically at runtime. Generating against
   one of these pins only the runner itself, not the script it ultimately
-  invokes. Where strict integrity matters, replace the runner with a direct
-  interpreter + absolute script path.
+  invokes. Where strict runtime integrity matters, replace the runner with a
+  native executable that can be descriptor-bound directly.
 - **Descriptor-bound launch is Linux-only.** On Linux, runtime verification
-  opens each pinned executable or interpreter script once, hashes through that
-  descriptor, and executes or reads through the same descriptor. Replacing a
+  opens each pinned executable once, hashes through that descriptor, and
+  executes through the same descriptor. Replacing a
   symlink or directory entry after verification cannot redirect the launch.
   `action: block` fails closed when descriptor launch is unavailable, including
   when `/proc/self/exe` is unavailable. Other platforms reject enforcing
   launches instead of silently returning to path-based execution. `action:
   warn` remains intentionally non-enforcing and logs before using an unpinned
   platform launch.
-- **Wrapper limits are explicit.** Direct binaries and direct interpreter
-  commands such as `python3 /opt/mcp/server.py` are descriptor-bound. Shebang
-  commands and `/usr/bin/env` wrappers require another kernel or wrapper path
-  resolution, so `action: block` rejects them. Invoke the interpreter directly
-  when enforcing integrity.
+- **Interpreter and wrapper limits are explicit.** Interpreter+script commands,
+  shebang commands, and `/usr/bin/env` wrappers require a later pathname open or
+  an inherited script descriptor. Pipelock rejects all of them under `action:
+  block` rather than reintroducing a race or leaking a descriptor into the MCP
+  server. Enforcing integrity currently requires a native executable as the MCP
+  command.
 - **An open descriptor pins identity, not mutable contents.** Atomic file or
   symlink replacement cannot change the opened inode. A process that can write
   in place to that same inode can still alter bytes after hashing; retain

@@ -122,10 +122,8 @@ type VerifyResult struct {
 // result. Callers that execute these descriptors bind verification and use to
 // the same filesystem objects. Close must be called on every return path.
 type PreparedCommand struct {
-	Result         *VerifyResult
-	Executable     *os.File
-	Script         *os.File
-	ScriptArgIndex int
+	Result     *VerifyResult
+	Executable *os.File
 }
 
 // Close releases all descriptors held by a prepared command.
@@ -134,11 +132,6 @@ func (p *PreparedCommand) Close() error {
 		return nil
 	}
 	var errs []error
-	if p.Script != nil {
-		if err := p.Script.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("closing prepared script: %w", err))
-		}
-	}
 	if p.Executable != nil {
 		if err := p.Executable.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("closing prepared executable: %w", err))
@@ -344,10 +337,10 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 }
 
 // Prepare opens and hashes the executable exactly once, retaining that
-// descriptor for a descriptor-based launcher. Direct interpreter invocations
-// also retain the verified script descriptor. Wrappers and shebang dispatch
-// are rejected because another pathname resolution would occur after this
-// function returned; callers enforcing integrity must fail closed.
+// descriptor for a descriptor-based launcher. Interpreter scripts, wrappers,
+// and shebang dispatch are rejected because they require either another
+// pathname resolution or a descriptor inherited by the final server; callers
+// enforcing integrity must fail closed.
 func Prepare(command []string, workDir string) (*PreparedCommand, error) {
 	if len(command) == 0 {
 		return nil, fmt.Errorf("empty command")
@@ -357,7 +350,7 @@ func Prepare(command []string, workDir string) (*PreparedCommand, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving and opening binary %q: %w", command[0], err)
 	}
-	prepared := &PreparedCommand{Executable: executable, ScriptArgIndex: -1}
+	prepared := &PreparedCommand{Executable: executable}
 	success := false
 	defer func() {
 		if !success {
@@ -398,21 +391,8 @@ func Prepare(command []string, workDir string) (*PreparedCommand, error) {
 		success = true
 		return prepared, nil
 	}
-
-	scriptPath, script, err := openScript(command[1], workDir)
-	if err != nil {
-		return nil, fmt.Errorf("opening script %q: %w", command[1], err)
-	}
-	prepared.Script = script
-	prepared.ScriptArgIndex = 1
-	scriptHash, err := hashOpenFile(script)
-	if err != nil {
-		return nil, fmt.Errorf("hashing script %q: %w", scriptPath, err)
-	}
-	result.ScriptPath = scriptPath
-	result.ScriptHash = scriptHash
-	success = true
-	return prepared, nil
+	return nil, fmt.Errorf("%w: interpreter command %q reopens script %q after launch",
+		ErrUnpinnableCommand, command[0], command[1])
 }
 
 // VerifyPrepared checks a descriptor-backed preparation against cfg without
@@ -560,26 +540,6 @@ func openResolvedBinary(name string) (string, *os.File, error) {
 	resolved, err := resolveBinary(name)
 	if err != nil {
 		return "", nil, err
-	}
-	f, err := os.Open(filepath.Clean(resolved))
-	if err != nil {
-		return "", nil, fmt.Errorf("opening file: %w", err)
-	}
-	return resolved, f, nil
-}
-
-func openScript(scriptArg, workDir string) (string, *os.File, error) {
-	path := scriptArg
-	if !filepath.IsAbs(path) && workDir != "" {
-		path = filepath.Join(workDir, path)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", nil, fmt.Errorf("absolute path: %w", err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", nil, fmt.Errorf("EvalSymlinks: %w", err)
 	}
 	f, err := os.Open(filepath.Clean(resolved))
 	if err != nil {

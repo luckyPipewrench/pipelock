@@ -120,7 +120,7 @@ func Load(path string) (*Keyring, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&keyring); err != nil {
-		return nil, fmt.Errorf("%w: decode: %v", ErrInvalidKeyring, err)
+		return nil, fmt.Errorf("%w: decode: %w", ErrInvalidKeyring, err)
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
@@ -396,7 +396,12 @@ func readSecure(path string) ([]byte, error) {
 	if err := rejectSymlink(clean); err != nil {
 		return nil, err
 	}
-	f, err := os.Open(clean) //nolint:gosec // operator-selected path; descriptor is checked before bounded read
+	root, err := os.OpenRoot(filepath.Dir(clean))
+	if err != nil {
+		return nil, fmt.Errorf("open commitment keyring directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.Open(filepath.Base(clean))
 	if err != nil {
 		return nil, fmt.Errorf("open commitment keyring: %w", err)
 	}

@@ -205,7 +205,9 @@ func TestLoadFailsClosedOnPermissionsAndSymlink(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 	t.Run("wrong_permissions", func(t *testing.T) {
-		if err := os.Chmod(path, 0o644); err != nil {
+		unsafeMode := os.FileMode(0o600)
+		unsafeMode |= 0o044
+		if err := os.Chmod(path, unsafeMode); err != nil {
 			t.Fatalf("Chmod: %v", err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })

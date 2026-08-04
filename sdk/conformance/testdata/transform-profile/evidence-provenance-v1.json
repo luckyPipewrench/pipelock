@@ -1,0 +1,590 @@
+{
+  "format": "pipelock-evidence-transform-corpus/v1",
+  "profile_digest": "sha256:8bc27d5d89e4e5ba3e0d1e68a25a3f0170f9a5ea2f19edf81a9a90bf82e23b3e",
+  "operation_coverage": [
+    "identity",
+    "url_component",
+    "percent_decode",
+    "dlp_normalize",
+    "lowercase",
+    "invisible_strip",
+    "hex_decode",
+    "base32_decode",
+    "base64_decode",
+    "leetspeak",
+    "vowel_fold"
+  ],
+  "error_coverage": [
+    "invalid_utf8",
+    "missing_profile",
+    "invalid_url",
+    "missing_selector",
+    "missing_occurrence",
+    "invalid_percent",
+    "invalid_percent_utf8",
+    "invalid_percent_utf8_before_unicode",
+    "invalid_query_encoding",
+    "bad_pass_count",
+    "unknown_dlp_profile",
+    "invalid_hex",
+    "invalid_base32",
+    "invalid_base64",
+    "unknown_operation",
+    "control_selector",
+    "control_profile",
+    "noncanonical_hex"
+  ],
+  "error_definitions": {
+    "bad_pass_count": "passes must",
+    "control_profile": "profile for dlp_normalize contains control character",
+    "control_selector": "selector for url_component contains control character",
+    "invalid_base32": "base32 decode",
+    "invalid_base64": "base64 decode",
+    "invalid_hex": "hex decode",
+    "invalid_percent": "percent decode",
+    "invalid_percent_utf8": "output: invalid UTF-8",
+    "invalid_percent_utf8_before_unicode": "output: invalid UTF-8",
+    "invalid_query_encoding": "query parse",
+    "invalid_url": "invalid absolute URL",
+    "invalid_utf8": "invalid UTF-8",
+    "missing_occurrence": "occurrence 1 unavailable",
+    "missing_profile": "missing transform profile digest",
+    "missing_selector": "missing selector",
+    "noncanonical_hex": "hex decode: non-canonical encoding",
+    "unknown_dlp_profile": "unknown DLP profile",
+    "unknown_operation": "unknown operation"
+  },
+  "interval_vectors": [
+    {
+      "id": "interval-valid-nonbmp",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          1,
+          5
+        ],
+        [
+          5,
+          6
+        ]
+      ],
+      "want_error": ""
+    },
+    {
+      "id": "interval-inside-codepoint",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          2,
+          5
+        ]
+      ],
+      "want_error": "splits UTF-8"
+    },
+    {
+      "id": "interval-end-inside-codepoint",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          1,
+          4
+        ]
+      ],
+      "want_error": "splits UTF-8"
+    },
+    {
+      "id": "interval-out-of-bounds",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          1,
+          7
+        ]
+      ],
+      "want_error": "out of bounds"
+    },
+    {
+      "id": "interval-zero-length",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          1,
+          1
+        ]
+      ],
+      "want_error": "byte end must be greater"
+    },
+    {
+      "id": "interval-unsorted",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          5,
+          6
+        ],
+        [
+          1,
+          5
+        ]
+      ],
+      "want_error": "unsorted"
+    },
+    {
+      "id": "interval-duplicate",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          1,
+          5
+        ],
+        [
+          1,
+          5
+        ]
+      ],
+      "want_error": "duplicate"
+    },
+    {
+      "id": "interval-overlap",
+      "view_b64": "QfCfkqlC",
+      "matches": [
+        [
+          0,
+          5
+        ],
+        [
+          1,
+          6
+        ]
+      ],
+      "want_error": "overlap"
+    }
+  ],
+  "vectors": [
+    {
+      "id": "identity",
+      "operations": [
+        "identity"
+      ],
+      "input_b64": "SGVsbG8=",
+      "output_b64": "SGVsbG8=",
+      "recipe": [
+        {
+          "kind": "identity"
+        }
+      ]
+    },
+    {
+      "id": "url-query-repeated",
+      "operations": [
+        "url_component"
+      ],
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvcD9rPWZpcnN0Jms9c2Vjb25k",
+      "output_b64": "c2Vjb25k",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "k",
+          "occurrence": 1
+        }
+      ]
+    },
+    {
+      "id": "percent-two-pass",
+      "operations": [
+        "percent_decode"
+      ],
+      "input_b64": "JTQ4JTY5",
+      "output_b64": "SGk=",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ]
+    },
+    {
+      "id": "dlp-normalize",
+      "operations": [
+        "dlp_normalize"
+      ],
+      "input_b64": "QUtJQeKAiElPUw==",
+      "output_b64": "QUtJQUlPUw==",
+      "recipe": [
+        {
+          "kind": "dlp_normalize",
+          "profile": "pipelock-dlp-v1"
+        }
+      ]
+    },
+    {
+      "id": "lowercase-nonbmp",
+      "operations": [
+        "lowercase"
+      ],
+      "input_b64": "8JCQgA==",
+      "output_b64": "8JCQqA==",
+      "recipe": [
+        {
+          "kind": "lowercase"
+        }
+      ]
+    },
+    {
+      "id": "invisible-strip",
+      "operations": [
+        "invisible_strip"
+      ],
+      "input_b64": "YeKAjWI=",
+      "output_b64": "YWI=",
+      "recipe": [
+        {
+          "kind": "invisible_strip"
+        }
+      ]
+    },
+    {
+      "id": "hex",
+      "operations": [
+        "hex_decode"
+      ],
+      "input_b64": "NDg2OQ==",
+      "output_b64": "SGk=",
+      "recipe": [
+        {
+          "kind": "hex_decode"
+        }
+      ]
+    },
+    {
+      "id": "base32",
+      "operations": [
+        "base32_decode"
+      ],
+      "input_b64": "SkJVUT09PT0=",
+      "output_b64": "SGk=",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "decode_padding": true
+        }
+      ]
+    },
+    {
+      "id": "base64",
+      "operations": [
+        "base64_decode"
+      ],
+      "input_b64": "U0drPQ==",
+      "output_b64": "SGk=",
+      "recipe": [
+        {
+          "kind": "base64_decode",
+          "decode_padding": true
+        }
+      ]
+    },
+    {
+      "id": "leetspeak",
+      "operations": [
+        "leetspeak"
+      ],
+      "input_b64": "MWdub3Iz",
+      "output_b64": "aWdub3Jl",
+      "recipe": [
+        {
+          "kind": "leetspeak"
+        }
+      ]
+    },
+    {
+      "id": "vowel-fold",
+      "operations": [
+        "vowel_fold"
+      ],
+      "input_b64": "aWdub3Jl",
+      "output_b64": "YWduYXJh",
+      "recipe": [
+        {
+          "kind": "vowel_fold"
+        }
+      ]
+    },
+    {
+      "id": "invalid-utf8",
+      "errors": [
+        "invalid_utf8"
+      ],
+      "input_b64": "/w==",
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "missing-profile",
+      "errors": [
+        "missing_profile"
+      ],
+      "input_b64": "SGk=",
+      "want_error": "missing transform profile digest",
+      "transform_profile_digest": ""
+    },
+    {
+      "id": "invalid-url",
+      "operations": [
+        "url_component"
+      ],
+      "errors": [
+        "invalid_url"
+      ],
+      "input_b64": "bm90IGEgdXJs",
+      "want_error": "invalid absolute URL",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "path"
+        }
+      ]
+    },
+    {
+      "id": "missing-selector",
+      "errors": [
+        "missing_selector"
+      ],
+      "input_b64": "aHR0cHM6Ly9hLmV4YW1wbGUvP2s9dg==",
+      "want_error": "missing selector",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value"
+        }
+      ]
+    },
+    {
+      "id": "missing-occurrence",
+      "operations": [
+        "url_component"
+      ],
+      "errors": [
+        "missing_occurrence"
+      ],
+      "input_b64": "aHR0cHM6Ly9hLmV4YW1wbGUvP2s9dg==",
+      "want_error": "occurrence 1 unavailable",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "k",
+          "occurrence": 1
+        }
+      ]
+    },
+    {
+      "id": "invalid-percent",
+      "operations": [
+        "percent_decode"
+      ],
+      "errors": [
+        "invalid_percent"
+      ],
+      "input_b64": "JVo=",
+      "want_error": "percent decode",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 1
+        }
+      ]
+    },
+    {
+      "id": "percent-invalid-utf8",
+      "operations": [
+        "percent_decode"
+      ],
+      "errors": [
+        "invalid_percent_utf8"
+      ],
+      "input_b64": "JWZm",
+      "want_error": "output: invalid UTF-8",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 1
+        }
+      ]
+    },
+    {
+      "id": "percent-invalid-utf8-before-unicode",
+      "operations": [
+        "percent_decode"
+      ],
+      "errors": [
+        "invalid_percent_utf8_before_unicode"
+      ],
+      "input_b64": "JWZm",
+      "want_error": "output: invalid UTF-8",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 1
+        },
+        {
+          "kind": "lowercase"
+        }
+      ]
+    },
+    {
+      "id": "malformed-query-encoding",
+      "operations": [
+        "url_component"
+      ],
+      "errors": [
+        "invalid_query_encoding"
+      ],
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP21hcmtlcj1vayZicm9rZW49JXp6",
+      "want_error": "query parse",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "marker"
+        }
+      ]
+    },
+    {
+      "id": "bad-pass-count",
+      "errors": [
+        "bad_pass_count"
+      ],
+      "input_b64": "SGk=",
+      "want_error": "passes must",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 0
+        }
+      ]
+    },
+    {
+      "id": "unknown-dlp",
+      "errors": [
+        "unknown_dlp_profile"
+      ],
+      "input_b64": "SGk=",
+      "want_error": "unknown DLP profile",
+      "recipe": [
+        {
+          "kind": "dlp_normalize",
+          "profile": "nope"
+        }
+      ]
+    },
+    {
+      "id": "invalid-hex",
+      "operations": [
+        "hex_decode"
+      ],
+      "errors": [
+        "invalid_hex"
+      ],
+      "input_b64": "eg==",
+      "want_error": "hex decode",
+      "recipe": [
+        {
+          "kind": "hex_decode"
+        }
+      ]
+    },
+    {
+      "id": "invalid-base32",
+      "operations": [
+        "base32_decode"
+      ],
+      "errors": [
+        "invalid_base32"
+      ],
+      "input_b64": "Kg==",
+      "want_error": "base32 decode",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "decode_padding": true
+        }
+      ]
+    },
+    {
+      "id": "invalid-base64",
+      "operations": [
+        "base64_decode"
+      ],
+      "errors": [
+        "invalid_base64"
+      ],
+      "input_b64": "Kg==",
+      "want_error": "base64 decode",
+      "recipe": [
+        {
+          "kind": "base64_decode",
+          "decode_padding": true
+        }
+      ]
+    },
+    {
+      "id": "unknown-operation",
+      "errors": [
+        "unknown_operation"
+      ],
+      "input_b64": "SGk=",
+      "want_error": "unknown operation",
+      "recipe": [
+        {
+          "kind": "not_an_operation"
+        }
+      ]
+    },
+    {
+      "id": "control-selector",
+      "errors": [
+        "control_selector"
+      ],
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP21hcmtlcj1vaw==",
+      "want_error": "selector for url_component contains control character",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "marker\n"
+        }
+      ]
+    },
+    {
+      "id": "control-profile",
+      "errors": [
+        "control_profile"
+      ],
+      "input_b64": "SGk=",
+      "want_error": "profile for dlp_normalize contains control character",
+      "recipe": [
+        {
+          "kind": "dlp_normalize",
+          "profile": "pipelock-dlp-v1\t"
+        }
+      ]
+    },
+    {
+      "id": "noncanonical-hex",
+      "operations": [
+        "hex_decode"
+      ],
+      "errors": [
+        "noncanonical_hex"
+      ],
+      "input_b64": "NEE=",
+      "want_error": "hex decode: non-canonical encoding",
+      "recipe": [
+        {
+          "kind": "hex_decode"
+        }
+      ]
+    }
+  ]
+}

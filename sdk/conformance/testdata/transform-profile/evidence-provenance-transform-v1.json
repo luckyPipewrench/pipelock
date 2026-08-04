@@ -1,0 +1,95 @@
+{
+  "format": "pipelock-evidence-provenance-transform-profile/v1",
+  "profile": "pipelock-evidence-provenance-transform-v1",
+  "version": 1,
+  "normative": true,
+  "byte_interpretation": {
+    "input": "UTF-8 bytes",
+    "output": "UTF-8 bytes",
+    "validity": "MUST reject invalid UTF-8 before the first operation and after every operation; NEVER replace malformed bytes"
+  },
+  "limits": {
+    "max_decode_passes": 4,
+    "max_input_bytes": 2097152,
+    "max_output_bytes": 1048576,
+    "enforcement": "MUST reject an input exceeding max_input_bytes before applying a recipe and an intermediate or final output exceeding max_output_bytes after every operation"
+  },
+  "malformed_input_policy": "reject_never_substitute",
+  "control_character_policy": {
+    "fields": ["selector", "profile"],
+    "rule": "MUST reject a Unicode control character in either field before evaluating the operation"
+  },
+  "url_component_policy": {
+    "input": "MUST be an absolute URL with a non-empty scheme and host",
+    "url": "returns the input bytes unchanged",
+    "hostname": "returns the URL hostname without a port",
+    "path": "returns the escaped path",
+    "query_key_and_query_value": "parse the raw query with application/x-www-form-urlencoded semantics; malformed query escaping is an error; selector identifies a key; occurrence is zero-based among values for that key; a missing key or occurrence is an error"
+  },
+  "decoding": {
+    "percent_decode": {
+      "algorithm": "RFC 3986 percent decoding of path-escaped bytes; plus is not decoded as space",
+      "canonicality": "input need not be canonical, but malformed escapes are errors"
+    },
+    "hex_decode": {
+      "alphabet": "lowercase RFC 4648 base16",
+      "padding": "forbidden",
+      "canonicality": "decode then lowercase-hex re-encode; the result MUST equal the input exactly"
+    },
+    "base32_decode": {
+      "alphabet": "RFC 4648 standard base32 uppercase alphabet",
+      "padding_selector": "decode_padding",
+      "decode_padding_true": "use required RFC 4648 '=' padding",
+      "decode_padding_false": "use raw, unpadded RFC 4648 base32",
+      "canonicality": "decode then re-encode in the selected padding mode; the result MUST equal the input exactly"
+    },
+    "base64_decode": {
+      "alphabet": "RFC 4648 standard base64 alphabet; URL-safe alphabet is forbidden",
+      "padding_selector": "decode_padding",
+      "decode_padding_true": "use required RFC 4648 '=' padding",
+      "decode_padding_false": "use raw, unpadded RFC 4648 base64",
+      "canonicality": "decode then re-encode in the selected padding mode; the result MUST equal the input exactly"
+    }
+  },
+  "normalization": {
+    "lowercase": "Unicode simple lowercase mapping",
+    "invisible_strip": "remove C0 controls except TAB, LF, and CR; remove DEL, C1 controls, U+00AD, U+115F-U+1160, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+3164, U+FE00-U+FE0F, U+FEFF, U+FFF9-U+FFFB, U+E0000-U+E007F, and U+E0100-U+E01EF",
+    "leetspeak": {"0":"o","1":"i","3":"e","4":"a","5":"s","7":"t","@":"a","$":"s"},
+    "vowel_fold": {"a":"a","e":"a","i":"a","o":"a","u":"a","A":"A","E":"A","I":"A","O":"A","U":"A"},
+    "dlp_normalize": {
+      "profile": "pipelock-dlp-v1",
+      "unicode_version": "15.0.0",
+      "pipeline": ["remove C0, C1, DEL, and the invisible_strip Unicode ranges", "remove U+00A0, U+1680, U+180E, U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, and U+3000", "Unicode NFKC", "apply confusable_to_ascii", "Unicode NFD then remove all Mn code points"],
+      "confusable_to_ascii": {
+        "single_code_points": {
+          "U+0410":"A","U+0412":"B","U+0421":"C","U+0415":"E","U+041D":"H","U+0406":"I","U+0408":"J","U+041A":"K","U+041C":"M","U+041E":"O","U+0420":"P","U+0405":"S","U+0422":"T","U+0425":"X",
+          "U+0430":"a","U+0432":"v","U+0435":"e","U+043D":"h","U+0456":"i","U+043A":"k","U+043C":"m","U+043E":"o","U+0440":"p","U+0441":"c","U+0442":"t","U+0443":"y","U+0445":"x","U+0458":"j","U+0455":"s",
+          "U+0391":"A","U+0392":"B","U+0395":"E","U+0396":"Z","U+0397":"H","U+0399":"I","U+039A":"K","U+039C":"M","U+039D":"N","U+039F":"O","U+03A1":"P","U+03A4":"T","U+03A5":"Y","U+03A7":"X",
+          "U+03B1":"a","U+03B5":"e","U+03B9":"i","U+03BA":"k","U+03BD":"v","U+03BF":"o",
+          "U+0555":"O","U+0585":"o","U+054D":"S","U+057D":"s","U+054C":"L","U+0570":"h","U+0578":"n","U+057C":"n","U+0561":"a",
+          "U+13AA":"A","U+13A2":"I","U+13D2":"P","U+13DA":"S","U+13A1":"E","U+13B3":"W","U+13D4":"T",
+          "U+00D8":"O","U+00F8":"o","U+0110":"D","U+0111":"d","U+0141":"L","U+0142":"l","U+0126":"H","U+0127":"h","U+0166":"T","U+0167":"t",
+          "U+1D00":"A","U+0299":"B","U+1D04":"C","U+1D05":"D","U+1D07":"E","U+A730":"F","U+0262":"G","U+029C":"H","U+026A":"I","U+1D0A":"J","U+1D0B":"K","U+029F":"L","U+1D0D":"M","U+0274":"N","U+1D0F":"O","U+1D18":"P","U+0280":"R","U+A731":"S","U+1D1B":"T","U+1D1C":"U","U+1D20":"V","U+1D21":"W","U+028F":"Y","U+1D22":"Z"
+        },
+        "sequential_ranges": [
+          {"from":"U+1F170","to":"U+1F189","outputs":"ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+          {"from":"U+1F1E6","to":"U+1F1FF","outputs":"ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+        ]
+      }
+    }
+  },
+  "operation_vocabulary": [
+    {"kind":"identity","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding"],"semantics":"return input unchanged"},
+    {"kind":"url_component","required":["kind","component"],"optional":["selector","occurrence"],"forbidden":["passes","profile","decode_padding"],"component":{"type":"string","enum":["url","hostname","path","query_key","query_value"]},"selector":{"type":"string","required_for":["query_key","query_value"],"forbidden_for":["url","hostname","path"],"must_not_contain":"Unicode control character"},"occurrence":{"type":"uint32","minimum":0,"default":0,"forbidden_for":["url","hostname","path"]}},
+    {"kind":"percent_decode","required":["kind","passes"],"optional":[],"forbidden":["component","selector","occurrence","profile","decode_padding"],"passes":{"type":"uint8","minimum":1,"maximum":4}},
+    {"kind":"dlp_normalize","required":["kind","profile"],"optional":[],"forbidden":["component","selector","occurrence","passes","decode_padding"],"profile":{"type":"string","const":"pipelock-dlp-v1","must_not_contain":"Unicode control character"}},
+    {"kind":"lowercase","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding"],"semantics":"apply normalization.lowercase"},
+    {"kind":"invisible_strip","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding"],"semantics":"apply normalization.invisible_strip"},
+    {"kind":"hex_decode","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding"],"semantics":"apply decoding.hex_decode"},
+    {"kind":"base32_decode","required":["kind"],"optional":["decode_padding"],"forbidden":["component","selector","occurrence","passes","profile"],"decode_padding":{"type":"boolean","default":false},"semantics":"apply decoding.base32_decode"},
+    {"kind":"base64_decode","required":["kind"],"optional":["decode_padding"],"forbidden":["component","selector","occurrence","passes","profile"],"decode_padding":{"type":"boolean","default":false},"semantics":"apply decoding.base64_decode"},
+    {"kind":"leetspeak","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding"],"semantics":"apply normalization.leetspeak"},
+    {"kind":"vowel_fold","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding"],"semantics":"apply normalization.vowel_fold"}
+  ],
+  "recipe_execution": "Apply operation_vocabulary in listed order only as selected by the ordered recipe. An unknown operation, unknown field, forbidden field, missing required field, malformed input, or canonicality failure MUST reject the recipe; no operation may preserve, skip, or substitute undecodable input."
+}

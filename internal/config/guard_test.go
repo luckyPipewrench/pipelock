@@ -673,6 +673,22 @@ func TestValidateGuard_SecretMaterialRefusedBothDirections(t *testing.T) {
 		"/home/someoperator/.claude/.credentials.json",
 		"/home/someoperator/.cursor/mcp.json",
 		"/home/someoperator/.gemini/oauth_creds.json",
+		// Renamed copies. A credential file is routinely duplicated rather
+		// than moved, and each copy carries the full credential under a name
+		// no static list can predict. This case is drawn from a real
+		// kubeconfig backup found holding client-certificate-data and
+		// client-key-data beside a config the floor already refused.
+		"/home/someoperator/.kube/config.pre-fedora-removal-20260703T1539",
+		"/home/someoperator/.npmrc.bak",
+		"/home/someoperator/.netrc.old",
+		"/home/someoperator/.pypirc~",
+		"/home/someoperator/.claude.json.orig",
+		"/home/someoperator/.config/gh/hosts.yml.bak",
+		// Regenerable caches inside a credential directory. Refused with the
+		// directory rather than carved out, because the carve-out is what
+		// would let a renamed credential beside them through.
+		"/home/someoperator/.kube/cache",
+		"/home/someoperator/.docker/buildx",
 		"/home/someoperator/.kube/config",
 		"/home/someoperator/.docker/config.json",
 		"/home/someoperator/.npmrc",
@@ -748,13 +764,17 @@ func TestValidateGuard_NonSecretNeighboursStillAllowed(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
-		"/home/someoperator/.docker/buildx",                // builder state, not auth
 		"/home/someoperator/.config/myapp",                 // unrelated app config
 		"/home/someoperator/.config/gcloud/configurations", // named configs, not the credential db
 		"/home/someoperator/.cache/some-tool",
 		"/home/someoperator/.cargo/registry",
 		"/home/someoperator/.npm/_cacache", // the npm CACHE; the token lives in ~/.npmrc
 		"/home/someoperator/projects/app",
+		// A name that merely STARTS with a credential filename is not a
+		// variant of it. The variant rule requires a separator after the
+		// name, so these must stay grantable.
+		"/home/someoperator/.npmrcfoo",
+		"/home/someoperator/.netrcher",
 	} {
 		for _, mode := range []string{"read_only", "read_write"} {
 			t.Run(mode+"_"+path, func(t *testing.T) {

@@ -118,9 +118,13 @@ var guardSecretShapes = []struct {
 	{".config/gcloud/application_default_credentials.json", "gcloud application default credentials"},
 	{".config/gcloud/legacy_credentials", "legacy gcloud credentials"},
 
-	// Cluster and container registry auth.
-	{".kube/config", "the kubeconfig, which embeds client certificates and tokens"},
-	{".docker/config.json", "the docker registry auth file"},
+	// Cluster and container registry auth, refused whole rather than by
+	// filename. Carving out the non-secret siblings (a discovery cache, buildx
+	// builder state) is what lets a renamed credential through, and both
+	// siblings are regenerable caches rather than irreplaceable state, so the
+	// carve-out buys little and costs the variant case below.
+	{".kube", "the kubeconfig directory, whose files embed client certificates and tokens"},
+	{".docker", "the docker credential directory"},
 	{".config/containers/auth.json", "the containers registry auth file"},
 	{".config/helm/registry/config.json", "the helm registry auth file"},
 
@@ -262,8 +266,44 @@ func guardSecretRelation(resolved, secret, reason string) string {
 		// Strict ancestor: granting this directory grants everything under it,
 		// including the secret.
 		return "it contains " + reason + " (" + secret + "), and a directory grant reaches everything beneath it"
+	case guardIsSecretVariantName(resolved, secret):
+		return "it is a renamed copy of " + reason
 	}
 	return ""
+}
+
+// guardVariantSeparators are the characters a backup or variant filename uses
+// to extend the original name.
+var guardVariantSeparators = []string{".", "-", "_", "~"}
+
+// guardIsSecretVariantName reports whether resolved is a renamed copy of a
+// known credential file, such as config.bak beside config.
+//
+// Credential files are routinely duplicated rather than moved: an installer
+// writes config.pre-upgrade-<timestamp>, an operator keeps .npmrc.old, a
+// migration leaves config.orig. Each copy carries the full credential while
+// having a filename no static list can predict, so matching only the exact
+// name protects the original and nothing else. This was not hypothetical --
+// it was found as a real kubeconfig backup holding client-certificate-data and
+// client-key-data, sitting beside a config the floor already refused.
+//
+// The extension must begin with a separator so that an unrelated file whose
+// name merely starts with the same letters is not caught.
+func guardIsSecretVariantName(resolved, secret string) bool {
+	if filepath.Dir(resolved) != filepath.Dir(secret) {
+		return false
+	}
+	base, secretBase := filepath.Base(resolved), filepath.Base(secret)
+	if !strings.HasPrefix(base, secretBase) || base == secretBase {
+		return false
+	}
+	rest := strings.TrimPrefix(base, secretBase)
+	for _, sep := range guardVariantSeparators {
+		if strings.HasPrefix(rest, sep) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardForbiddenComponents are directory names that must never appear anywhere

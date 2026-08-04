@@ -4340,9 +4340,9 @@ func (c *Config) validateGuard() error {
 		}
 		manifestNames[m.Name] = true
 
-		pathTypes := make(map[string]guardPathType, len(m.ReadOnly)+len(m.ReadOnlyDirectories)+len(m.ReadWrite)+len(m.ReadWriteDirectories))
+		pathFields := make(map[string]string, len(m.ReadOnly)+len(m.ReadOnlyDirectories)+len(m.ReadWrite)+len(m.ReadWriteDirectories))
 		for j, p := range m.ReadOnly {
-			if err := validateGuardManifestPath(label, "read_only", j, p, guardPathFile, pathTypes); err != nil {
+			if err := validateGuardManifestPath(label, "read_only", j, p, guardPathFile, pathFields); err != nil {
 				return err
 			}
 			if err := validateGuardROPath(label, "read_only", j, p); err != nil {
@@ -4350,7 +4350,7 @@ func (c *Config) validateGuard() error {
 			}
 		}
 		for j, p := range m.ReadOnlyDirectories {
-			if err := validateGuardManifestPath(label, "read_only_directories", j, p, guardPathDirectory, pathTypes); err != nil {
+			if err := validateGuardManifestPath(label, "read_only_directories", j, p, guardPathDirectory, pathFields); err != nil {
 				return err
 			}
 			if err := validateGuardROPath(label, "read_only_directories", j, p); err != nil {
@@ -4358,7 +4358,7 @@ func (c *Config) validateGuard() error {
 			}
 		}
 		for j, p := range m.ReadWrite {
-			if err := validateGuardManifestPath(label, "read_write", j, p, guardPathFile, pathTypes); err != nil {
+			if err := validateGuardManifestPath(label, "read_write", j, p, guardPathFile, pathFields); err != nil {
 				return err
 			}
 			if err := validateGuardRWPath(label, "read_write", j, p); err != nil {
@@ -4366,7 +4366,7 @@ func (c *Config) validateGuard() error {
 			}
 		}
 		for j, p := range m.ReadWriteDirectories {
-			if err := validateGuardManifestPath(label, "read_write_directories", j, p, guardPathDirectory, pathTypes); err != nil {
+			if err := validateGuardManifestPath(label, "read_write_directories", j, p, guardPathDirectory, pathFields); err != nil {
 				return err
 			}
 			if err := validateGuardRWPath(label, "read_write_directories", j, p); err != nil {
@@ -4421,7 +4421,7 @@ const (
 // validateGuardManifestPath validates the declared kind of one manifest path.
 // The declaration is intentionally lexical: it must produce the same verdict
 // whether or not the target exists on the host reading the configuration.
-func validateGuardManifestPath(label, fieldName string, idx int, rawPath string, pathType guardPathType, pathTypes map[string]guardPathType) error {
+func validateGuardManifestPath(label, fieldName string, idx int, rawPath string, pathType guardPathType, pathFields map[string]string) error {
 	field := fmt.Sprintf("%s.%s[%d]", label, fieldName, idx)
 	if !filepath.IsAbs(rawPath) {
 		return fmt.Errorf("%s: path must be absolute (got %q)", field, rawPath)
@@ -4431,10 +4431,10 @@ func validateGuardManifestPath(label, fieldName string, idx int, rawPath string,
 	}
 
 	cleaned := filepath.Clean(rawPath)
-	if declared, ok := pathTypes[cleaned]; ok && declared != pathType {
-		return fmt.Errorf("%s: path %q conflicts with an earlier %s declaration; a path must have exactly one declared type", field, rawPath, declared)
+	if earlierField, ok := pathFields[cleaned]; ok {
+		return fmt.Errorf("%s: path %q conflicts with an earlier declaration in %s; a path may appear in only one grant list", field, rawPath, earlierField)
 	}
-	pathTypes[cleaned] = pathType
+	pathFields[cleaned] = field
 	return nil
 }
 

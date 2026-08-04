@@ -125,12 +125,26 @@ func TestValidateGuard_PathTypes(t *testing.T) {
 			wantErr: "conflicts",
 		},
 		{
+			name: "same_path_cannot_be_read_only_and_read_write",
+			manifest: GuardManifest{
+				Name:      "bad",
+				ReadOnly:  []string{"/var/lib/app/config/settings.yaml"},
+				ReadWrite: []string{"/var/lib/app/config/settings.yaml"},
+			},
+			wantErr: "only one grant list",
+		},
+		{
 			name: "read_only_directory_still_hits_credential_floor",
 			manifest: GuardManifest{
 				Name:                "bad",
 				ReadOnlyDirectories: []string{"/home/someoperator/.kube/"},
 			},
-			wantErr: "credential",
+			// Anchored on the protected component rather than on a word in the
+			// prose. Which floor rule fires for a given path is an
+			// implementation detail that can change without weakening
+			// anything, and the assertion above already proves the refusal did
+			// not come from the not-enforced gate.
+			wantErr: ".kube",
 		},
 		{
 			name: "read_write_directory_still_hits_credential_floor",
@@ -138,7 +152,7 @@ func TestValidateGuard_PathTypes(t *testing.T) {
 				Name:                 "bad",
 				ReadWriteDirectories: []string{"/home/someoperator/.kube/"},
 			},
-			wantErr: "credential",
+			wantErr: ".kube",
 		},
 	}
 

@@ -176,7 +176,7 @@ func TestLifecycleBackupDestroyRestoreAndOpen(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	receipt := commitTestReceipt(t, keyring, "backup")
-	if err := Backup(path, backup); err != nil {
+	if _, err := Backup(path, backup); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 	if err := os.Remove(path); err != nil {

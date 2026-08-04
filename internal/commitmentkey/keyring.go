@@ -313,22 +313,22 @@ func (k *Keyring) Metadata() Metadata {
 	return metadata
 }
 
-func Backup(source, destination string) error {
+func Backup(source, destination string) (*Keyring, error) {
 	keyring, err := Load(source)
 	if err != nil {
-		return fmt.Errorf("load backup source: %w", err)
+		return nil, fmt.Errorf("load backup source: %w", err)
 	}
 	if err := ensureParent(destination); err != nil {
-		return err
+		return nil, err
 	}
 	data, err := marshal(keyring)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := atomicfile.WriteNew(filepath.Clean(destination), data, 0o600); err != nil {
-		return fmt.Errorf("write commitment keyring backup: %w", err)
+		return nil, fmt.Errorf("write commitment keyring backup: %w", err)
 	}
-	return nil
+	return keyring, nil
 }
 
 func Restore(source, destination string) (*Keyring, error) {

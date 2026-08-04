@@ -59,5 +59,8 @@ pipelock commitment-key restore \
 ```
 
 `pipelock commitment-key test` recomputes the PR 3 `CommitView` contract for a
-named key ID and epoch. A mismatch fails closed. Every lifecycle attempt emits
-a structured `commitment_key_lifecycle` audit event to stderr.
+named key ID and epoch. Pass the receipt's typed recipe with `--recipe-json`;
+omitting it selects the empty v1 recipe. Unknown recipe fields, unsupported
+operations, trailing JSON, and commitment mismatches fail closed. Every
+lifecycle storage operation emits a structured `commitment_key_lifecycle`
+audit event to stderr.

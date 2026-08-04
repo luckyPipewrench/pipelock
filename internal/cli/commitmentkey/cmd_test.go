@@ -94,6 +94,22 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("test output = %q", stdout)
 	}
 	assertAudit(t, stderr, "test", "succeeded")
+
+	recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest, Operations: []normalize.Operation{{Kind: normalize.OperationLowercase}}}
+	source.Recipe = recipe
+	commitment, err = contractreceipt.CommitView(handle.Key, source, "opened after restore")
+	if err != nil {
+		t.Fatalf("CommitView with typed recipe: %v", err)
+	}
+	recipeBytes, err := json.Marshal(recipe)
+	if err != nil {
+		t.Fatalf("Marshal recipe: %v", err)
+	}
+	_, stderr, err = execute(t, "test", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--source-id", "source-1", "--source-ordinal", "1", "--view", "opened after restore", "--commitment", commitment, "--recipe-json", string(recipeBytes))
+	if err != nil {
+		t.Fatalf("test opening with typed recipe: %v", err)
+	}
+	assertAudit(t, stderr, "test", "succeeded")
 }
 
 func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
@@ -126,6 +142,19 @@ func TestCommandConfigResolutionIgnoresUnrelatedRuntimeFiles(t *testing.T) {
 	}
 	if _, _, err := execute(t, "initialize", "--config", cfgPath); err != nil {
 		t.Fatalf("initialize should not read unrelated runtime files: %v", err)
+	}
+}
+
+func TestParseRecipeRejectsUnknownAndTrailingFields(t *testing.T) {
+	for name, raw := range map[string]string{
+		"unknown":  `{"transform_profile_digest":"` + normalize.EvidenceProvenanceProfileV1Digest + `","operations":[],"extra":true}`,
+		"trailing": `{"transform_profile_digest":"` + normalize.EvidenceProvenanceProfileV1Digest + `","operations":[]} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseRecipe(raw); err == nil {
+				t.Fatalf("parseRecipe(%s) succeeded", raw)
+			}
+		})
 	}
 }
 

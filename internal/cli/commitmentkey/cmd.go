@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -168,12 +169,9 @@ func backupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := domkey.Backup(path, filepath.Clean(out)); err != nil {
-				emitAudit(cmd, "backup", "denied", "", 0, err)
-				return err
-			}
-			keyring, err := domkey.Load(path)
+			keyring, err := domkey.Backup(path, filepath.Clean(out))
 			if err != nil {
+				emitAudit(cmd, "backup", "denied", "", 0, err)
 				return err
 			}
 			emitAudit(cmd, "backup", "succeeded", keyring.ActiveID, keyring.Epoch, nil)
@@ -215,7 +213,7 @@ func restoreCmd() *cobra.Command {
 
 func testCmd() *cobra.Command {
 	var flags pathFlags
-	var keyID, sourceID, view, want string
+	var keyID, sourceID, view, want, recipeJSON string
 	var epoch, sourceOrdinal uint64
 	cmd := &cobra.Command{
 		Use:   "test",
@@ -232,10 +230,15 @@ func testCmd() *cobra.Command {
 				emitAudit(cmd, "test", "denied", keyID, epoch, err)
 				return err
 			}
+			recipe, err := parseRecipe(recipeJSON)
+			if err != nil {
+				emitAudit(cmd, "test", "denied", keyID, epoch, err)
+				return err
+			}
 			source := contractreceipt.ProvenanceSource{
 				SourceOrdinal: sourceOrdinal,
 				SourceID:      sourceID,
-				Recipe:        normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest},
+				Recipe:        recipe,
 			}
 			got, err := contractreceipt.CommitView(handle.Key, source, view)
 			if err != nil {
@@ -258,10 +261,31 @@ func testCmd() *cobra.Command {
 	cmd.Flags().Uint64Var(&sourceOrdinal, "source-ordinal", 0, "source ordinal bound into the commitment")
 	cmd.Flags().StringVar(&view, "view", "", "complete transformed view to open")
 	cmd.Flags().StringVar(&want, "commitment", "", "expected hmac-sha256 commitment")
+	cmd.Flags().StringVar(&recipeJSON, "recipe-json", "", "PR 3 typed recipe JSON; defaults to the empty v1 recipe")
 	for _, name := range []string{"key-id", "epoch", "source-id", "view", "commitment"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+func parseRecipe(raw string) (normalize.Recipe, error) {
+	if raw == "" {
+		return normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest}, nil
+	}
+	var recipe normalize.Recipe
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&recipe); err != nil {
+		return normalize.Recipe{}, fmt.Errorf("decode --recipe-json: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return normalize.Recipe{}, errors.New("decode --recipe-json: trailing JSON")
+	}
+	if err := recipe.Validate(); err != nil {
+		return normalize.Recipe{}, fmt.Errorf("validate --recipe-json: %w", err)
+	}
+	return recipe, nil
 }
 
 type pathFlags struct {

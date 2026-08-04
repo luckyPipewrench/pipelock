@@ -30,21 +30,21 @@ func TestEvidenceCurrentAELTable(t *testing.T) {
 		{name: "recorder_only", in: EvidenceAELInput{RecorderEnabled: true}, want: 0},
 		{name: "selfaudit_latched_bad", in: EvidenceAELInput{RecorderEnabled: true, EmitterHealthy: true}, want: 0},
 		{name: "best_effort", in: base, want: 1},
-		{name: "durable_heartbeat", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
+		{name: "durable_heartbeat_does_not_claim_second_recorder", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
 			in.DurabilityGate = true
 			in.Heartbeats = true
-		}), want: 2},
-		{name: "anchor_fresh", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
+		}), want: 1},
+		{name: "fresh_anchor_does_not_claim_external_grade", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
 			in.DurabilityGate = true
 			in.Heartbeats = true
 			in.AnchoringFresh = true
-		}), want: 3},
-		{name: "cpc_active", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
+		}), want: 1},
+		{name: "cpc_active_does_not_bypass_cumulative_requirements", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
 			in.DurabilityGate = true
 			in.Heartbeats = true
 			in.AnchoringFresh = true
 			in.CPCActive = true
-		}), want: 4},
+		}), want: 1},
 		{name: "ungated_fsync_failure_degrades_to_zero", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
 			in.UngatedFsyncFail = true
 		}), want: 0},
@@ -55,6 +55,40 @@ func TestEvidenceCurrentAELTable(t *testing.T) {
 				t.Fatalf("EvidenceCurrentAEL = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// This fixture contains every signal the pre-cap ladder mistook for AEL-4.
+// It must remain at the one-recorder ceiling until the runtime can verify the
+// separate recorders, external log, and counterparty evidence that AEL needs.
+// Temporarily raising evidenceMaximumSupportedAEL makes this test fail at 4,
+// proving the ceiling is load-bearing rather than a vacuous assertion.
+func TestEvidenceCurrentAELSingleRecorderCeilingRejectsLegacyOverclaim(t *testing.T) {
+	in := EvidenceAELInput{
+		RecorderEnabled: true,
+		EmitterHealthy:  true,
+		DurabilityGate:  true,
+		Heartbeats:      true,
+		AnchoringFresh:  true,
+		CPCActive:       true,
+		SelfAuditOK:     true,
+	}
+	if got := EvidenceCurrentAEL(in); got != 1 {
+		t.Fatalf("EvidenceCurrentAEL = %d, want one-recorder ceiling 1", got)
+	}
+}
+
+func TestEvidenceHealthStatsSnapshotClampsAlternateAELProducer(t *testing.T) {
+	m := New()
+	m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {
+		return EvidenceHealthStats{CurrentAEL: 4}, true
+	})
+	stats, ok := m.EvidenceHealthStatsSnapshot()
+	if !ok {
+		t.Fatal("EvidenceHealthStatsSnapshot unavailable")
+	}
+	if stats.CurrentAEL != 1 {
+		t.Fatalf("CurrentAEL = %d, want one-recorder ceiling 1", stats.CurrentAEL)
 	}
 }
 
@@ -214,7 +248,7 @@ func TestEvidenceMetricsSettersSnapshotsAndDynamicCollector(t *testing.T) {
 		return stats, true
 	})
 	gotStats, ok := m.EvidenceHealthStatsSnapshot()
-	if !ok || gotStats.CurrentAEL != 3 || gotStats.ChainHeadSeq != 9 {
+	if !ok || gotStats.CurrentAEL != 1 || gotStats.ChainHeadSeq != 9 {
 		t.Fatalf("EvidenceHealthStatsSnapshot = (%+v, %v), want stats ok", gotStats, ok)
 	}
 	if got := testutil.CollectAndCount(m.evidenceCollector); got != 4 {
@@ -229,8 +263,8 @@ func TestEvidenceMetricsSettersSnapshotsAndDynamicCollector(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal stats: %v", err)
 	}
-	if body.EvidenceHealth == nil || body.EvidenceHealth.CurrentAEL != 3 || body.EvidenceHealth.ChainHeadSeq != 9 {
-		t.Fatalf("stats evidence_health = %+v, want current_ael=3 chain_head_seq=9", body.EvidenceHealth)
+	if body.EvidenceHealth == nil || body.EvidenceHealth.CurrentAEL != 1 || body.EvidenceHealth.ChainHeadSeq != 9 {
+		t.Fatalf("stats evidence_health = %+v, want current_ael=1 chain_head_seq=9", body.EvidenceHealth)
 	}
 
 	m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {

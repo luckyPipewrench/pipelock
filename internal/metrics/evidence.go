@@ -18,6 +18,17 @@ const (
 	EvidenceRequirementAnchoringFresh  = "anchoring_fresh"
 	EvidenceRequirementCPCActive       = "cpc_active"
 	EvidenceRequirementSelfAuditOK     = "selfaudit_ok"
+
+	// evidenceMaximumSupportedAEL is deliberately a product-capability ceiling,
+	// not a statement about a particular anchor's current health. Pipelock has
+	// one receipt recorder today. It does not verify a separately keyed second
+	// recorder with declared custody separation (AEL-2), so it cannot honestly
+	// claim AEL-2 or any cumulative rung above it. A local anchor is a test
+	// backend, while the current Rekor path does not establish the required
+	// separate log key or per-payload inclusion proof; neither can raise this
+	// ceiling. Raise it only alongside an implementation that verifies every
+	// prerequisite of the next AEL rung.
+	evidenceMaximumSupportedAEL = 1
 )
 
 var evidenceSequenceGapSources = map[string]bool{
@@ -162,10 +173,23 @@ var evidenceAELRules = []evidenceAELRule{
 func EvidenceCurrentAEL(in EvidenceAELInput) int {
 	level := 0
 	for _, rule := range evidenceAELRules {
+		if rule.rung > evidenceMaximumSupportedAEL {
+			return level
+		}
 		if !rule.ok(in) {
 			return level
 		}
 		level = rule.rung
+	}
+	return level
+}
+
+func clampEvidenceCurrentAEL(level int) int {
+	if level < 0 {
+		return 0
+	}
+	if level > evidenceMaximumSupportedAEL {
+		return evidenceMaximumSupportedAEL
 	}
 	return level
 }
@@ -501,7 +525,15 @@ func (m *Metrics) EvidenceHealthStatsSnapshot() (EvidenceHealthStats, bool) {
 	if fn == nil {
 		return EvidenceHealthStats{}, false
 	}
-	return fn()
+	stats, ok := fn()
+	if !ok {
+		return stats, false
+	}
+	// The callback backs both /stats and the Prometheus collector. Clamp here
+	// as well as in EvidenceCurrentAEL so no alternate producer can publish an
+	// unsupported AEL rung.
+	stats.CurrentAEL = clampEvidenceCurrentAEL(stats.CurrentAEL)
+	return stats, true
 }
 
 func (m *Metrics) SetEvidenceHealthFunc(fn func() (EvidenceHealthStats, bool)) {
@@ -542,7 +574,7 @@ func newEvidenceCollector(m *Metrics) *evidenceCollector {
 		),
 		current: prometheus.NewDesc(
 			"pipelock_evidence_current_ael",
-			"Current evidence assurance level, 0 through 4.",
+			"Current evidence assurance level, capped at 1 until Pipelock verifies higher-rung evidence requirements.",
 			nil, labels,
 		),
 	}

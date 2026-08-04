@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
+	cliguard "github.com/luckyPipewrench/pipelock/internal/cli/guard"
 	"github.com/luckyPipewrench/pipelock/internal/cli/hermes"
 	"github.com/luckyPipewrench/pipelock/internal/cli/keys"
 	"github.com/luckyPipewrench/pipelock/internal/cli/learn"
@@ -114,6 +115,8 @@ Quick start:
 		presets.Cmd(),
 		// Git
 		git.Cmd(),
+		// Guard declaration and compiled-floor inspection
+		cliguard.Cmd(),
 		// Hermes Agent (Nous Research) integration
 		hermes.Cmd(),
 		// Signing-key inventory

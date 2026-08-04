@@ -39,12 +39,12 @@ func descriptorCommand(ctx context.Context, command []string, prepared *integrit
 	args := append([]string(nil), command...)
 	extraFiles := []*os.File{prepared.Executable}
 	helperArgs := append([]string{fdExecHelperArg}, args...)
-	cmd := exec.CommandContext(ctx, descriptorHelperPath, helperArgs...) //nolint:gosec // production path is fixed /proc/self/exe; tests override it to prove fail-closed handling
+	cmd := exec.CommandContext(ctx, descriptorHelperPath, helperArgs...)
 	cmd.ExtraFiles = extraFiles
 	return cmd, nil
 }
 
-func execveat(fd int, argv, envv []string) error { //nolint:gosec // audited raw syscall wrapper; Go validates NULs before unsafe pointer conversion
+func execveat(fd int, argv, envv []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("empty argv")
 	}
@@ -60,12 +60,12 @@ func execveat(fd int, argv, envv []string) error { //nolint:gosec // audited raw
 	if err != nil {
 		return fmt.Errorf("building empty path: %w", err)
 	}
-	_, _, errno := syscall.Syscall6( //nolint:gosec // audited execveat needs raw argv/env pointers; inputs came from Go's NUL-validating constructors
+	_, _, errno := syscall.Syscall6(
 		unix.SYS_EXECVEAT,
 		uintptr(fd),
-		uintptr(unsafe.Pointer(empty)),     //nolint:gosec // syscall requires a validated C string pointer
-		uintptr(unsafe.Pointer(&argvp[0])), //nolint:gosec // syscall requires validated argv pointers
-		uintptr(unsafe.Pointer(&envp[0])),  //nolint:gosec // syscall requires validated environment pointers
+		uintptr(unsafe.Pointer(empty)),
+		uintptr(unsafe.Pointer(&argvp[0])),
+		uintptr(unsafe.Pointer(&envp[0])),
 		unix.AT_EMPTY_PATH,
 		0,
 	)

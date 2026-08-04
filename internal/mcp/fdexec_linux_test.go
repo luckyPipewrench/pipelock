@@ -155,7 +155,7 @@ func TestRunProxyIntegrityUnpinnableWrapperDirections(t *testing.T) {
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s\\n' '"+response+"'\n"), 0o600); err != nil {
 		t.Fatalf("write shebang server: %v", err)
 	}
-	if err := os.Chmod(scriptPath, 0o700); err != nil { //nolint:gosec // executable test fixture
+	if err := os.Chmod(scriptPath, 0o700); err != nil {
 		t.Fatalf("make shebang server executable: %v", err)
 	}
 	resolved, hash, err := integrity.ResolveAndHash(scriptPath)

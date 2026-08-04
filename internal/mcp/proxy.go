@@ -1105,7 +1105,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				return err
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v; using unpinned platform launch\n", err)
-			cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // explicit warn-only compatibility fallback
+			cmd = exec.CommandContext(ctx, command[0], command[1:]...)
 		} else {
 			if opts.afterIntegrityPreparedForTest != nil {
 				opts.afterIntegrityPreparedForTest()
@@ -1120,12 +1120,12 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				// Warn is explicitly non-enforcing. Unsupported descriptor exec is
 				// noisy here; block/default action denies above and never downgrades.
 				_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: descriptor launch unavailable: %v; using unpinned platform launch\n", err)
-				cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // explicit warn-only compatibility fallback
+				cmd = exec.CommandContext(ctx, command[0], command[1:]...)
 			}
 		}
 	}
 	if cmd == nil {
-		cmd = exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // integrity disabled; command comes from user CLI args
+		cmd = exec.CommandContext(ctx, command[0], command[1:]...)
 	}
 	if prepared != nil {
 		defer func() { _ = prepared.Close() }()

@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -52,6 +54,64 @@ def run_wrapper(
 
 
 class TestCiTestWithRetry(unittest.TestCase):
+    def test_wrapper_sigterm_cleans_active_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "command-pid"
+            ready = Path(tmp) / "descendant-ready"
+            env = os.environ.copy()
+            env["CI_RETRY_STATE"] = str(state)
+            env["CI_RETRY_READY"] = str(ready)
+            env["GITHUB_ACTIONS"] = "true"
+            cmd = [
+                "bash",
+                str(WRAPPER),
+                "--packages",
+                "example.com/p/pkg",
+                "--",
+                "bash",
+                "-c",
+                r'''
+echo "$$" >"${CI_RETRY_STATE:?}"
+python3 -c 'import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(os.environ["CI_RETRY_READY"], "w").close(); time.sleep(3600)' &
+wait
+''',
+                "fake-go",
+            ]
+            process = subprocess.Popen(
+                cmd,
+                cwd=ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                if process.poll() is not None:
+                    self.fail("wrapper exited before the command process started")
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    self.fail("timed out waiting for the command process to start")
+                time.sleep(0.01)
+
+            command_pid = int(state.read_text(encoding="utf-8"))
+
+            def kill_command_group() -> None:
+                try:
+                    os.killpg(command_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+            self.addCleanup(kill_command_group)
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=10)
+
+            self.assertEqual(process.returncode, 143, stdout + stderr)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(command_pid, 0)
+            self.assertIn("interrupted pass", stderr)
+            self.assertIn("confirmed empty after KILL", stderr)
+
     def test_waits_for_capture_before_inspecting_race_output(self) -> None:
         real_tee = shutil.which("tee")
         self.assertIsNotNone(real_tee)

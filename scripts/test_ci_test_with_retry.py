@@ -189,6 +189,71 @@ exit 0
         self.assertIn("externally terminated by SIGTERM (exit 143)", result.stderr)
         self.assertIn("externally terminated shard passed on rerun", result.stderr)
 
+    def test_sigterm_descendant_is_killed_before_retry(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+descendant_file="${state}.descendant"
+ready_file="${state}.ready"
+if [ ! -e "$state" ]; then
+  : >"$state"
+  DESCENDANT_READY="$ready_file" python3 -c 'import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(os.environ["DESCENDANT_READY"], "w").close(); time.sleep(3600)' </dev/null >/dev/null 2>&1 &
+  echo "$!" >"$descendant_file"
+  while [ ! -e "$ready_file" ]; do :; done
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"=== RUN   TestSlow\n"}'
+  kill -TERM "$$"
+fi
+descendant=$(cat "$descendant_file")
+if kill -0 "$descendant" 2>/dev/null; then
+  kill -KILL "$descendant" 2>/dev/null || true
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Test":"TestOverlap","Elapsed":1}'
+  exit 97
+fi
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+exit 0
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("sending KILL", result.stderr)
+        self.assertIn("confirmed empty after KILL", result.stderr)
+        self.assertNotIn("TestOverlap", result.stdout)
+
+    def test_cleanup_failure_refuses_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bash_env = Path(tmp) / "bash-env"
+            bash_env.write_text(
+                r'''kill() {
+  if [ "$1" = "-0" ]; then
+    return 0
+  fi
+  builtin kill "$@" 2>/dev/null || true
+}
+''',
+                encoding="utf-8",
+            )
+            result = run_wrapper(
+                r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"=== RUN   TestSlow\n"}'
+  kill -TERM "$$"
+fi
+printf '%s\n' 'RETRY RAN'
+exit 0
+''',
+                env_overrides={"BASH_ENV": str(bash_env)},
+            )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("remained live after KILL", result.stderr)
+        self.assertNotIn("RETRY RAN", result.stdout)
+        self.assertNotIn("rerunning", result.stderr)
+
     def test_sigterm_with_test_failure_is_not_retried(self) -> None:
         result = run_wrapper(
             r'''

@@ -49,11 +49,61 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 capture_failed=0
+process_cleanup_failed=0
+
+process_group_is_alive() {
+  local process_group="$1"
+
+  kill -0 -- "-${process_group}" 2>/dev/null
+}
+
+wait_for_process_group_exit() {
+  local process_group="$1"
+  local checks="$2"
+  local check=0
+
+  while [ "$check" -lt "$checks" ]; do
+    if ! process_group_is_alive "$process_group"; then
+      return 0
+    fi
+    sleep 1
+    check=$((check + 1))
+  done
+
+  ! process_group_is_alive "$process_group"
+}
+
+cleanup_process_group() {
+  local process_group="$1"
+  local pass_label="$2"
+
+  if ! process_group_is_alive "$process_group"; then
+    return 0
+  fi
+
+  echo "PROCESS CLEANUP: ${pass_label} session ${process_group} still has live processes; sending TERM" >&2
+  kill -TERM -- "-${process_group}" 2>/dev/null || true
+  if wait_for_process_group_exit "$process_group" 3; then
+    echo "PROCESS CLEANUP: ${pass_label} session ${process_group} confirmed empty after TERM" >&2
+    return 0
+  fi
+
+  echo "PROCESS CLEANUP: ${pass_label} session ${process_group} still has live processes after TERM grace period; sending KILL" >&2
+  kill -KILL -- "-${process_group}" 2>/dev/null || true
+  if wait_for_process_group_exit "$process_group" 3; then
+    echo "PROCESS CLEANUP: ${pass_label} session ${process_group} confirmed empty after KILL" >&2
+    return 0
+  fi
+
+  echo "ci-test-with-retry: refusing retry because ${pass_label} session ${process_group} remained live after KILL" >&2
+  return 1
+}
 
 run_and_tee() {
-  local stdout_file="$1"
-  local stderr_file="$2"
-  shift 2
+  local pass_label="$1"
+  local stdout_file="$2"
+  local stderr_file="$3"
+  shift 3
 
   local stdout_fifo="${stdout_file}.fifo"
   local stderr_fifo="${stderr_file}.fifo"
@@ -64,8 +114,19 @@ run_and_tee() {
   tee "$stderr_file" <"$stderr_fifo" >&2 &
   local stderr_tee_pid=$!
 
-  "$@" >"$stdout_fifo" 2>"$stderr_fifo"
-  local command_status=$?
+  # Python creates a new session without relying on non-standard setsid(1)
+  # flags. execvp keeps its PID as the session and process-group ID.
+  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+  local command_pid=$!
+
+  local command_status=0
+  wait "$command_pid" || command_status=$?
+
+  # Descendants can inherit the FIFO writers. Clean the whole session before
+  # waiting for tee, or an orphan could keep capture open indefinitely.
+  if ! cleanup_process_group "$command_pid" "$pass_label"; then
+    process_cleanup_failed=1
+  fi
 
   local stdout_tee_status=0
   local stderr_tee_status=0
@@ -262,11 +323,11 @@ first_stdout="$tmpdir/first.stdout"
 first_stderr="$tmpdir/first.stderr"
 
 set +e
-run_and_tee "$first_stdout" "$first_stderr" "$@" "${package_args[@]}"
+run_and_tee "first pass" "$first_stdout" "$first_stderr" "$@" "${package_args[@]}"
 first_status=$?
 set -e
 
-if [ "$capture_failed" -ne 0 ]; then
+if [ "$capture_failed" -ne 0 ] || [ "$process_cleanup_failed" -ne 0 ]; then
   exit 1
 fi
 
@@ -367,11 +428,12 @@ fi
 
 set +e
 capture_failed=0
-run_and_tee "$retry_stdout" "$retry_stderr" "$@" "${retry_packages[@]}"
+process_cleanup_failed=0
+run_and_tee "retry pass" "$retry_stdout" "$retry_stderr" "$@" "${retry_packages[@]}"
 retry_status=$?
 set -e
 
-if [ "$capture_failed" -ne 0 ]; then
+if [ "$capture_failed" -ne 0 ] || [ "$process_cleanup_failed" -ne 0 ]; then
   exit 1
 fi
 

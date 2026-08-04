@@ -483,6 +483,7 @@ exit 0
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             bash_env = tmp_path / "bash-env"
+            command_pid_file = tmp_path / "command-pid"
             descendant_file = tmp_path / "descendant"
             ready_file = tmp_path / "ready"
             stdout_file = tmp_path / "stdout"
@@ -502,6 +503,7 @@ exit 0
             )
             env = os.environ.copy()
             env["BASH_ENV"] = str(bash_env)
+            env["CI_RETRY_COMMAND_PID"] = str(command_pid_file)
             env["CI_RETRY_DESCENDANT"] = str(descendant_file)
             env["CI_RETRY_READY"] = str(ready_file)
             env["GITHUB_ACTIONS"] = "true"
@@ -514,12 +516,10 @@ exit 0
                 "bash",
                 "-c",
                 r'''
+echo "$$" >"${CI_RETRY_COMMAND_PID:?}"
 python3 -c 'import os, signal, time; signal.signal(signal.SIGHUP, signal.SIG_IGN); signal.signal(signal.SIGTERM, signal.SIG_IGN); open(os.environ["CI_RETRY_READY"], "w").close(); time.sleep(3600)' &
 echo "$!" >"${CI_RETRY_DESCENDANT:?}"
-while [ ! -e "${CI_RETRY_READY:?}" ]; do sleep 0.01; done
-printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
-printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
-kill -TERM "$$"
+wait
 ''',
                 "fake-go",
             ]
@@ -550,6 +550,16 @@ kill -TERM "$$"
                     process.wait(timeout=5)
 
                 self.addCleanup(cleanup_processes)
+                deadline = time.monotonic() + 5
+                while not ready_file.exists():
+                    if process.poll() is not None:
+                        self.fail("wrapper exited before the descendant became ready")
+                    if time.monotonic() >= deadline:
+                        self.fail("timed out waiting for the descendant to become ready")
+                    time.sleep(0.01)
+
+                command_pid = int(command_pid_file.read_text(encoding="utf-8"))
+                os.kill(command_pid, signal.SIGTERM)
                 returncode = process.wait(timeout=12)
 
             stderr = stderr_file.read_text(encoding="utf-8")

@@ -354,18 +354,23 @@ func TestEvidenceHealthUnmeasuredStatsNullAndDynamicGaugesAbsent(t *testing.T) {
 }
 
 func TestClampEvidenceCurrentAELBounds(t *testing.T) {
-	cases := []struct{ in, want int }{
-		{in: -100, want: 0},
-		{in: -1, want: 0},
-		{in: 0, want: 0},
-		{in: 1, want: 1},
-		{in: 2, want: evidenceMaximumSupportedAEL},
-		{in: 4, want: evidenceMaximumSupportedAEL},
+	cases := []struct {
+		name     string
+		in, want int
+	}{
+		{name: "below minimum", in: -100, want: 0},
+		{name: "negative", in: -1, want: 0},
+		{name: "zero", in: 0, want: 0},
+		{name: "supported maximum", in: 1, want: 1},
+		{name: "above maximum", in: 2, want: evidenceMaximumSupportedAEL},
+		{name: "far above maximum", in: 4, want: evidenceMaximumSupportedAEL},
 	}
 	for _, c := range cases {
-		if got := clampEvidenceCurrentAEL(c.in); got != c.want {
-			t.Fatalf("clampEvidenceCurrentAEL(%d) = %d, want %d", c.in, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if got := clampEvidenceCurrentAEL(c.in); got != c.want {
+				t.Fatalf("clampEvidenceCurrentAEL(%d) = %d, want %d", c.in, got, c.want)
+			}
+		})
 	}
 }
 
@@ -405,12 +410,12 @@ func TestStatsHandlerUnavailableEvidenceHealthIsNull(t *testing.T) {
 	rec := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil))
 	var body struct {
-		EvidenceHealth *EvidenceHealthStats `json:"evidence_health"`
+		EvidenceHealth json.RawMessage `json:"evidence_health"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal stats: %v", err)
 	}
-	if body.EvidenceHealth != nil {
-		t.Fatalf("evidence_health = %+v, want nil when the snapshot is unavailable", body.EvidenceHealth)
+	if got := strings.TrimSpace(string(body.EvidenceHealth)); got != "null" {
+		t.Fatalf("evidence_health = %q, want JSON null when the snapshot is unavailable", got)
 	}
 }

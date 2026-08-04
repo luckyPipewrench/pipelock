@@ -4,6 +4,7 @@
 package commitmentkey
 
 import (
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -276,6 +277,150 @@ func TestInvalidKeyringShapesFailClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateRejectsMalformedLifecycleState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keyring.json")
+	base, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	retired := cloneKeyring(base)
+	if _, err := retired.rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+		t.Fatalf("rotate fixture: %v", err)
+	}
+	retiredAt := time.Unix(1_700_000_100, 0).UTC()
+	mutations := map[string]func(*Keyring){
+		"missing active metadata": func(k *Keyring) { k.Epoch = 0 },
+		"short key id":            func(k *Keyring) { k.Keys[0].KeyID = "ck_short" },
+		"nonhex key id":           func(k *Keyring) { k.Keys[0].KeyID = "ck_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" },
+		"zero entry epoch":        func(k *Keyring) { k.Keys[0].Epoch = 0 },
+		"zero created time":       func(k *Keyring) { k.Keys[0].CreatedAt = time.Time{} },
+		"duplicate key id": func(k *Keyring) {
+			duplicate := k.Keys[0]
+			duplicate.Epoch = 2
+			duplicate.State = StateRetired
+			duplicate.RetiredAt = &retiredAt
+			k.Keys = append(k.Keys, duplicate)
+		},
+		"duplicate epoch": func(k *Keyring) {
+			duplicate, entryErr := newEntry(1, time.Unix(1_700_000_001, 0))
+			if entryErr != nil {
+				t.Fatalf("newEntry: %v", entryErr)
+			}
+			duplicate.State = StateRetired
+			duplicate.RetiredAt = &retiredAt
+			k.Keys = append(k.Keys, duplicate)
+		},
+		"invalid base64 key":       func(k *Keyring) { k.Keys[0].Key = "%%%" },
+		"short decoded key":        func(k *Keyring) { k.Keys[0].Key = base64.StdEncoding.EncodeToString([]byte("short")) },
+		"active id mismatch":       func(k *Keyring) { k.ActiveID = "ck_00000000000000000000000000000000" },
+		"active retired timestamp": func(k *Keyring) { k.Keys[0].RetiredAt = &retiredAt },
+		"unknown state":            func(k *Keyring) { k.Keys[0].State = State("unknown") },
+		"no active key": func(k *Keyring) {
+			k.Epoch = 2
+			k.Keys[0].State = StateRetired
+			k.Keys[0].RetiredAt = &retiredAt
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			keyring := cloneKeyring(base)
+			mutate(keyring)
+			if err := keyring.Validate(); !errors.Is(err, ErrInvalidKeyring) {
+				t.Fatalf("Validate error = %v, want ErrInvalidKeyring", err)
+			}
+		})
+	}
+	for name, mutate := range map[string]func(*Keyring){
+		"retired timestamp absent": func(k *Keyring) { k.Keys[0].RetiredAt = nil },
+		"retired epoch not older":  func(k *Keyring) { k.Keys[0].Epoch = k.Epoch },
+	} {
+		t.Run(name, func(t *testing.T) {
+			keyring := cloneKeyring(retired)
+			mutate(keyring)
+			if err := keyring.Validate(); !errors.Is(err, ErrInvalidKeyring) {
+				t.Fatalf("Validate error = %v, want ErrInvalidKeyring", err)
+			}
+		})
+	}
+}
+
+func TestFilesystemErrorPathsFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	parentFile := filepath.Join(dir, "parent-file")
+	if err := os.WriteFile(parentFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile parent: %v", err)
+	}
+	if _, err := Initialize(filepath.Join(parentFile, "keyring.json"), time.Now()); err == nil {
+		t.Fatal("Initialize below file parent succeeded")
+	}
+
+	path := filepath.Join(dir, "keyring.json")
+	keyring, err := Initialize(path, time.Now())
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	invalid := cloneKeyring(keyring)
+	invalid.Purpose = "receipt-signing"
+	if err := invalid.Save(path); !errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("Save invalid keyring error = %v, want ErrInvalidKeyring", err)
+	}
+	if err := keyring.Save(dir); err == nil {
+		t.Fatal("Save over directory succeeded")
+	}
+	if _, err := keyring.Open(keyring.ActiveID, keyring.Epoch+1); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Open unknown epoch error = %v, want ErrKeyNotFound", err)
+	}
+	corrupt := cloneKeyring(keyring)
+	corrupt.Keys[0].Key = "invalid"
+	if _, err := corrupt.Open(corrupt.ActiveID, corrupt.Epoch); !errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("Open corrupt key error = %v, want ErrInvalidKeyring", err)
+	}
+
+	missing := filepath.Join(dir, "missing.json")
+	if _, err := Backup(missing, filepath.Join(dir, "unused-backup.json")); err == nil {
+		t.Fatal("Backup missing source succeeded")
+	}
+	if _, err := Restore(missing, filepath.Join(dir, "unused-restore.json")); err == nil {
+		t.Fatal("Restore missing source succeeded")
+	}
+	if _, err := Backup(path, filepath.Join(parentFile, "backup.json")); err == nil {
+		t.Fatal("Backup below file parent succeeded")
+	}
+	if _, err := Restore(path, filepath.Join(parentFile, "restore.json")); err == nil {
+		t.Fatal("Restore below file parent succeeded")
+	}
+	backup := filepath.Join(dir, "backup.json")
+	if _, err := Backup(path, backup); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if _, err := Backup(path, backup); err == nil {
+		t.Fatal("Backup over existing destination succeeded")
+	}
+	if _, err := Restore(backup, path); err == nil {
+		t.Fatal("Restore over existing destination succeeded")
+	}
+
+	if _, err := Load(filepath.Join(dir, "absent-parent", "keyring.json")); err == nil {
+		t.Fatal("Load below absent parent succeeded")
+	}
+	if _, err := Load(dir); !errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("Load directory error = %v, want ErrInvalidKeyring", err)
+	}
+	oversized := filepath.Join(dir, "oversized.json")
+	if err := os.WriteFile(oversized, make([]byte, maxBytes+1), 0o600); err != nil {
+		t.Fatalf("WriteFile oversized: %v", err)
+	}
+	if _, err := Load(oversized); !errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("Load oversized error = %v, want ErrInvalidKeyring", err)
+	}
+}
+
+func cloneKeyring(keyring *Keyring) *Keyring {
+	clone := *keyring
+	clone.Keys = append([]Entry(nil), keyring.Keys...)
+	return &clone
 }
 
 func commitTestReceipt(t *testing.T, keyring *Keyring, view string) committedReceipt {

@@ -27,6 +27,7 @@ def run_wrapper(
     with tempfile.TemporaryDirectory() as tmp:
         env = os.environ.copy()
         env["CI_RETRY_STATE"] = str(Path(tmp) / "state")
+        env["GITHUB_ACTIONS"] = "true"
         env.update(env_overrides or {})
         cmd = [
             "bash",
@@ -176,7 +177,7 @@ state=${CI_RETRY_STATE:?}
 if [ ! -e "$state" ]; then
   : >"$state"
   printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
-  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"=== RUN   TestSlow\n"}'
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
   kill -TERM "$$"
 fi
 printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
@@ -186,8 +187,10 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("externally terminated by SIGTERM (exit 143)", result.stderr)
-        self.assertIn("externally terminated shard passed on rerun", result.stderr)
+        self.assertIn("confirmed empty before rerun", result.stderr)
+        self.assertIn("first pass exited 143 during running test(s)", result.stderr)
+        self.assertIn("does not prove the first attempt", result.stderr)
+        self.assertIn("SIGTERM-interrupted shard passed on rerun", result.stderr)
 
     def test_sigterm_descendant_is_killed_before_retry(self) -> None:
         result = run_wrapper(
@@ -201,7 +204,7 @@ if [ ! -e "$state" ]; then
   echo "$!" >"$descendant_file"
   while [ ! -e "$ready_file" ]; do :; done
   printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
-  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"=== RUN   TestSlow\n"}'
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
   kill -TERM "$$"
 fi
 descendant=$(cat "$descendant_file")
@@ -220,6 +223,60 @@ exit 0
         self.assertIn("sending KILL", result.stderr)
         self.assertIn("confirmed empty after KILL", result.stderr)
         self.assertNotIn("TestOverlap", result.stdout)
+
+    def test_sigterm_outside_github_actions_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+exit 143
+''',
+            env_overrides={"GITHUB_ACTIONS": ""},
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_with_unstructured_output_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+printf '%s\n' 'unstructured output whose meaning is unknown'
+exit 143
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_with_stderr_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+printf '%s\n' 'unattributed termination diagnostic' >&2
+exit 143
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
+
+    def test_sigterm_before_any_test_runs_is_not_retried(self) -> None:
+        result = run_wrapper(
+            r'''
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+exit 143
+'''
+        )
+
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
+        self.assertNotIn("RETRY:", result.stderr)
 
     def test_cleanup_failure_refuses_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,7 +328,7 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
-        self.assertIn("SIGTERM output contained a failure", result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
         self.assertNotIn("RETRY:", result.stderr)
 
     def test_sigterm_with_failing_package_line_is_not_retried(self) -> None:
@@ -289,7 +346,7 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
-        self.assertIn("SIGTERM output contained a failure", result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
         self.assertNotIn("RETRY:", result.stderr)
 
     def test_sigterm_after_normal_package_completion_is_not_retried(self) -> None:
@@ -307,7 +364,7 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
-        self.assertIn("no incomplete package", result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
         self.assertNotIn("RETRY:", result.stderr)
 
     def test_sigterm_after_skipped_package_completion_is_not_retried(self) -> None:
@@ -325,7 +382,7 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
-        self.assertIn("no incomplete package", result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
         self.assertNotIn("RETRY:", result.stderr)
 
     def test_sigterm_with_truncated_failure_event_is_not_retried(self) -> None:
@@ -343,7 +400,7 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
-        self.assertIn("SIGTERM output contained a failure", result.stderr)
+        self.assertIn("evidence was not strict", result.stderr)
         self.assertNotIn("RETRY:", result.stderr)
 
     def test_raw_timeout_lookalike_is_not_retried(self) -> None:

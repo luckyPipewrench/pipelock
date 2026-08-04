@@ -560,6 +560,34 @@ exit 0
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("coverage retry", result.stderr)
 
+    def test_coverage_retry_preserves_first_attempt_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            coverage = Path(tmp) / "coverage.out"
+            first_coverage = Path(f"{coverage}.first-attempt")
+            result = run_wrapper(
+                rf'''
+state=${{CI_RETRY_STATE:?}}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf 'mode: first\n' >{str(coverage)!r}
+  printf '%s\n' '{{"Action":"output","Package":"example.com/p/pkg","Test":"TestHang","Output":"panic: test timed out after 15m0s\n"}}'
+  printf '%s\n' '{{"Action":"fail","Package":"example.com/p/pkg","Elapsed":1}}'
+  exit 1
+fi
+printf 'mode: retry\n' >{str(coverage)!r}
+printf '%s\n' '{{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}}'
+exit 0
+''',
+                args=[f"-coverprofile={coverage}"],
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(coverage.read_text(encoding="utf-8"), "mode: retry\n")
+            self.assertEqual(
+                first_coverage.read_text(encoding="utf-8"), "mode: first\n"
+            )
+            self.assertIn(str(first_coverage), result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

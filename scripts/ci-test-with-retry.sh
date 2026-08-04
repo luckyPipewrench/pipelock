@@ -99,7 +99,7 @@ cleanup_process_group() {
     return 0
   fi
 
-  echo "ci-test-with-retry: refusing retry because ${pass_label} session ${process_group} remained live after KILL" >&2
+  echo "ci-test-with-retry: refusing continuation because ${pass_label} session ${process_group} remained live after KILL" >&2
   return 1
 }
 
@@ -443,6 +443,7 @@ if [ "${#retry_packages[@]}" -eq 0 ]; then
 fi
 
 coverage_profile=""
+first_coverage_profile=""
 cmd_args=("$@")
 for ((i = 0; i < ${#cmd_args[@]}; i++)); do
   arg="${cmd_args[$i]}"
@@ -472,7 +473,11 @@ retry_stdout="$tmpdir/retry.stdout"
 retry_stderr="$tmpdir/retry.stderr"
 
 if [ -n "$coverage_profile" ]; then
-  rm -f -- "$coverage_profile"
+  first_coverage_profile="${coverage_profile}.first-attempt"
+  if [ -e "$coverage_profile" ]; then
+    mv -f -- "$coverage_profile" "$first_coverage_profile"
+    echo "RETRY ARTIFACT: preserved first-attempt coverage at ${first_coverage_profile}" >&2
+  fi
 fi
 
 set +e

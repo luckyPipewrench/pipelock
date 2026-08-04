@@ -1162,3 +1162,54 @@ func TestValidateGuard_DeclaredPathRefusedWhenItResolvesElsewhere(t *testing.T) 
 		t.Error("an innocuous-looking alias must be refused when it resolves into credential material")
 	}
 }
+
+// TestValidateGuard_CaseEquivalentGrantsConflict covers the conflict key.
+//
+// filepath.Clean does not normalize case, so on a case-insensitive volume two
+// spellings name one object. The dangerous pairing is read-only in one list and
+// read-write in another: once the evaluator consumes both, the object resolves
+// to the WIDER grant, so an intended read-only grant becomes writable without
+// anything in the manifest looking wrong.
+func TestValidateGuard_CaseEquivalentGrantsConflict(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		manifest GuardManifest
+	}{
+		{
+			name: "read_only_and_read_write_case_variants",
+			manifest: GuardManifest{
+				Name:      "bad",
+				ReadOnly:  []string{"/Users/someoperator/state"},
+				ReadWrite: []string{"/users/someoperator/STATE"},
+			},
+		},
+		{
+			name: "file_and_directory_case_variants",
+			manifest: GuardManifest{
+				Name:                "bad",
+				ReadOnly:            []string{"/var/lib/app/Config"},
+				ReadOnlyDirectories: []string{"/var/lib/app/config/"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.Guard = Guard{Manifests: []GuardManifest{tt.manifest}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("case-equivalent declarations of one object must be rejected")
+			}
+			if errors.Is(err, errGuardNotEnforced) {
+				t.Fatalf("case-equivalent declarations were refused only by the not-enforced gate, so no path rule caught the conflict: %v", err)
+			}
+			if !strings.Contains(err.Error(), "conflicts") {
+				t.Errorf("expected a conflict refusal, got: %v", err)
+			}
+		})
+	}
+}

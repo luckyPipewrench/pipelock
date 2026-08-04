@@ -4430,11 +4430,19 @@ func validateGuardManifestPath(label, fieldName string, idx int, rawPath string,
 		return fmt.Errorf("%s: file path %q must not end in a path separator; declare directories in %s_directories", field, rawPath, strings.TrimSuffix(fieldName, "_directories"))
 	}
 
-	cleaned := filepath.Clean(rawPath)
-	if earlierField, ok := pathFields[cleaned]; ok {
+	// The conflict key is case folded, matching the credential floor's
+	// comparison policy. filepath.Clean does not normalize case, so on a
+	// case-insensitive volume two spellings of one object would each be
+	// recorded as a distinct declaration and the conflict would go unnoticed.
+	// The failure direction is the bad one: the same object declared read-only
+	// in one list and read-write in another resolves, once the evaluator
+	// consumes both, to the WIDER grant, silently turning an intended
+	// read-only grant into a writable one.
+	conflictKey := strings.ToLower(filepath.Clean(rawPath))
+	if earlierField, ok := pathFields[conflictKey]; ok {
 		return fmt.Errorf("%s: path %q conflicts with an earlier declaration in %s; a path may appear in only one grant list", field, rawPath, earlierField)
 	}
-	pathFields[cleaned] = field
+	pathFields[conflictKey] = field
 	return nil
 }
 

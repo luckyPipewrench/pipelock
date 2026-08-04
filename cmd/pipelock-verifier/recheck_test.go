@@ -329,22 +329,27 @@ func TestRecheckReport_UnauthenticatedNeverReadsAsVerified(t *testing.T) {
 func TestRecheckReport_UnauthenticatedWithholdsAuthoritativeLocation(t *testing.T) {
 	t.Parallel()
 	for _, loc := range []string{recheckLocationExact, recheckLocationOccurrence} {
-		got := newRecheckReport(recheckResult{Location: loc, View: "sanitized_target"}, false)
-		if got.Location != "" {
-			t.Fatalf("unauthenticated recheck exposed authoritative location=%q; a positive positional result must be withheld from the trusted field", got.Location)
+		t.Run("unauthenticated/"+loc, func(t *testing.T) {
+			t.Parallel()
+			got := newRecheckReport(recheckResult{Location: loc, View: "sanitized_target"}, false)
+			if got.Location != "" {
+				t.Fatalf("unauthenticated recheck exposed authoritative location=%q; a positive positional result must be withheld from the trusted field", got.Location)
+			}
+			if got.UnauthenticatedDiagnostic == nil || got.UnauthenticatedDiagnostic.Location != loc {
+				t.Fatalf("expected non-authoritative diagnostic carrying %q, got %+v", loc, got.UnauthenticatedDiagnostic)
+			}
+		})
+	}
+	t.Run("authenticated/reports authoritative location", func(t *testing.T) {
+		t.Parallel()
+		authenticated := newRecheckReport(recheckResult{Location: recheckLocationExact}, true)
+		if authenticated.Location != recheckLocationExact {
+			t.Fatalf("authenticated location=%q, want %q", authenticated.Location, recheckLocationExact)
 		}
-		if got.UnauthenticatedDiagnostic == nil || got.UnauthenticatedDiagnostic.Location != loc {
-			t.Fatalf("expected non-authoritative diagnostic carrying %q, got %+v", loc, got.UnauthenticatedDiagnostic)
+		if authenticated.UnauthenticatedDiagnostic != nil {
+			t.Fatalf("authenticated report carried an unauthenticated diagnostic: %+v", authenticated.UnauthenticatedDiagnostic)
 		}
-	}
-	// The authenticated path still reports the authoritative location.
-	authenticated := newRecheckReport(recheckResult{Location: recheckLocationExact}, true)
-	if authenticated.Location != recheckLocationExact {
-		t.Fatalf("authenticated location=%q, want %q", authenticated.Location, recheckLocationExact)
-	}
-	if authenticated.UnauthenticatedDiagnostic != nil {
-		t.Fatalf("authenticated report carried an unauthenticated diagnostic: %+v", authenticated.UnauthenticatedDiagnostic)
-	}
+	})
 }
 
 // TestRecheckReport_StrengthIsDistinguishable guards the second half of the

@@ -208,22 +208,30 @@ var guardSecretAbsolutePaths = []struct {
 // POSIX-only, matching guardIsHomeRoot: the function hardcodes "/" as the
 // separator and knows the /home, /var/home, /Users, /root, and /app layouts. Windows path
 // handling is an open product decision tracked in ops (AF-264).
+// Home-root DETECTION is case-insensitive for the same reason the shape
+// comparison is: on a case-insensitive volume /users/operator reaches the very
+// same directory as /Users/operator. Detection has to fold too, not just the
+// comparison downstream of it, because an unrecognized root returns "" and
+// silently switches off every home-relative rule rather than loosening one.
+// The ORIGINAL spelling is returned so the caller composes secret paths from
+// the path as written and the reported reason quotes what the operator typed.
 func guardHomeRootOf(resolved string) string {
+	lower := strings.ToLower(resolved)
 	for _, root := range guardFixedHomeRoots {
-		if resolved == root || strings.HasPrefix(resolved, root+"/") {
-			return root
+		if lower == root || strings.HasPrefix(lower, root+"/") {
+			return resolved[:len(root)]
 		}
 	}
 	for _, root := range []string{"/home", "/var/home", "/Users"} {
-		if !strings.HasPrefix(resolved, root+"/") {
+		prefix := strings.ToLower(root) + "/"
+		if !strings.HasPrefix(lower, prefix) {
 			continue
 		}
-		rest := strings.TrimPrefix(resolved, root+"/")
-		user, _, _ := strings.Cut(rest, "/")
+		user, _, _ := strings.Cut(resolved[len(prefix):], "/")
 		if user == "" {
 			continue
 		}
-		return root + "/" + user
+		return resolved[:len(prefix)+len(user)]
 	}
 	return ""
 }
@@ -253,8 +261,9 @@ var guardMultiHomeRoots = []string{"/", "/home", "/var/home", "/Users"}
 // specific non-secret path instead (~/.aws/config, ~/.config/myapp), which is
 // the explicit, no-inference model GuardManifest already commits to.
 func guardSecretMaterialReason(resolved string) string {
+	lowerResolved := strings.ToLower(resolved)
 	for _, root := range guardMultiHomeRoots {
-		if resolved == root {
+		if lowerResolved == strings.ToLower(root) {
 			return "it sits above every user home and reads through to every credential beneath it"
 		}
 	}

@@ -4448,7 +4448,7 @@ func validateGuardRWPath(label string, idx int, rawPath string) error {
 	// workload's cluster and cloud identity. Both floors share this set; the
 	// write floor adds the write-sensitive locations above that a read grant
 	// may legitimately keep.
-	if reason := guardSecretMaterialReason(resolved); reason != "" {
+	if reason := guardDeclaredPathSecretMaterialReason(rawPath, resolved); reason != "" {
 		return fmt.Errorf("%s: read-write on %q is not allowed (%s); writing a credential file redirects the workload's identity", field, rawPath, reason)
 	}
 

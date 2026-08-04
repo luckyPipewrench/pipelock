@@ -929,20 +929,62 @@ func TestValidateGuard_CredentialFloorIsCaseInsensitive(t *testing.T) {
 		"/home/someoperator/.NPMRC",
 		"/home/someoperator/.Npmrc.bak",
 		"/home/someoperator/.Kube/config",
+		// The HOME ROOT itself, spelled differently. Detection has to fold as
+		// well as the comparison downstream of it: an unrecognized root
+		// returns no home at all, which switches every home-relative rule OFF
+		// rather than merely loosening one.
+		"/users/someoperator/.npmrc",
+		"/Home/someoperator/.npmrc",
+		"/users/someoperator",
+		"/HOME",
 	} {
-		t.Run(path, func(t *testing.T) {
-			t.Parallel()
-			cfg := Defaults()
-			cfg.Guard = Guard{
-				Manifests: []GuardManifest{{Name: "bad", ReadOnly: []string{path}}},
-			}
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatalf("read access to %q must be rejected on a case-insensitive volume", path)
-			}
-			if errors.Is(err, errGuardNotEnforced) {
-				t.Errorf("read on %q was refused only by the not-enforced gate: %v", path, err)
-			}
-		})
+		// Both grant modes. The two validators consult the credential floor
+		// through separate call sites, so a fix applied to one does not cover
+		// the other; asserting only the read side is what let the write side
+		// drift out of parity once already.
+		for _, mode := range []string{"read_only", "read_write"} {
+			t.Run(mode+"_"+path, func(t *testing.T) {
+				t.Parallel()
+				m := GuardManifest{Name: "bad"}
+				if mode == "read_only" {
+					m.ReadOnly = []string{path}
+				} else {
+					m.ReadWrite = []string{path}
+				}
+				cfg := Defaults()
+				cfg.Guard = Guard{Manifests: []GuardManifest{m}}
+
+				err := cfg.Validate()
+				if err == nil {
+					t.Fatalf("%s on %q must be rejected on a case-insensitive volume", mode, path)
+				}
+				if errors.Is(err, errGuardNotEnforced) {
+					t.Errorf("%s on %q was refused only by the not-enforced gate: %v", mode, path, err)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateGuard_DeclaredPathRefusedWhenItResolvesElsewhere covers the
+// declared-spelling half of the credential check.
+//
+// SCOPE, stated plainly: this proves the HELPER, not the call sites. Both
+// validators must route through it, and the write validator did not, which is
+// the regression this replaced. A test that drove the two validators instead
+// was written first and proven VACUOUS: reproducing the divergence needs a
+// symlink planted at a credential shape inside a real home directory, and for
+// any path a hermetic test can name, resolution equals the declared spelling,
+// so the buggy resolved-only form passes too. Call-site parity is therefore
+// verified by inspection, not by this test. If a future change makes symlink
+// resolution injectable, replace this with a real divergence test.
+func TestValidateGuard_DeclaredPathRefusedWhenItResolvesElsewhere(t *testing.T) {
+	t.Parallel()
+
+	if guardDeclaredPathSecretMaterialReason("/home/someoperator/.npmrc", "/tmp/innocuous") == "" {
+		t.Error("a declared credential path must be refused even when it resolves somewhere innocuous")
+	}
+	if guardDeclaredPathSecretMaterialReason("/tmp/innocuous", "/home/someoperator/.npmrc") == "" {
+		t.Error("an innocuous-looking alias must be refused when it resolves into credential material")
 	}
 }

@@ -17,6 +17,40 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "scripts" / "ci-test-with-retry.sh"
+SIGTERM_DESCENDANT_SCRIPT = r'''
+state=${CI_RETRY_STATE:?}
+descendant_file="${state}.descendant"
+ready_file="${state}.ready"
+if [ ! -e "$state" ]; then
+  : >"$state"
+  if [ -n "${CI_RETRY_COMMAND_PID:-}" ]; then
+    echo "$$" >"$CI_RETRY_COMMAND_PID"
+  fi
+  DESCENDANT_READY="$ready_file" python3 -c 'import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(os.environ["DESCENDANT_READY"], "w").close(); time.sleep(3600)' </dev/null >/dev/null 2>&1 &
+  echo "$!" >"$descendant_file"
+  waited=0
+  while [ ! -e "$ready_file" ]; do
+    if [ "$waited" -ge 5 ]; then
+      echo "descendant never became ready" >&2
+      exit 98
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+  kill -TERM "$$"
+fi
+descendant=$(cat "$descendant_file")
+if kill -0 "$descendant" 2>/dev/null; then
+  kill -KILL "$descendant" 2>/dev/null || true
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Test":"TestOverlap","Elapsed":1}'
+  exit 97
+fi
+printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+exit 0
+'''
 
 
 def run_wrapper(
@@ -287,36 +321,76 @@ exit 0
         self.assertIn("SIGTERM-interrupted shard passed on rerun", result.stderr)
 
     def test_sigterm_descendant_is_killed_before_retry(self) -> None:
-        result = run_wrapper(
-            r'''
-state=${CI_RETRY_STATE:?}
-descendant_file="${state}.descendant"
-ready_file="${state}.ready"
-if [ ! -e "$state" ]; then
-  : >"$state"
-  DESCENDANT_READY="$ready_file" python3 -c 'import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(os.environ["DESCENDANT_READY"], "w").close(); time.sleep(3600)' </dev/null >/dev/null 2>&1 &
-  echo "$!" >"$descendant_file"
-  while [ ! -e "$ready_file" ]; do :; done
-  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
-  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
-  kill -TERM "$$"
-fi
-descendant=$(cat "$descendant_file")
-if kill -0 "$descendant" 2>/dev/null; then
-  kill -KILL "$descendant" 2>/dev/null || true
-  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Test":"TestOverlap","Elapsed":1}'
-  exit 97
-fi
-printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
-printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
-exit 0
-'''
-        )
+        result = run_wrapper(SIGTERM_DESCENDANT_SCRIPT)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("sending KILL", result.stderr)
         self.assertIn("confirmed empty after KILL", result.stderr)
         self.assertNotIn("TestOverlap", result.stdout)
+
+    def test_sigterm_descendant_readiness_failure_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bash_env = tmp_path / "bash-env"
+            command_pid_file = tmp_path / "command-pid"
+            stdout_file = tmp_path / "stdout"
+            stderr_file = tmp_path / "stderr"
+            bash_env.write_text(
+                r'''python3() {
+  if [ -n "${DESCENDANT_READY:-}" ]; then
+    return 1
+  fi
+  command python3 "$@"
+}
+''',
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["BASH_ENV"] = str(bash_env)
+            env["CI_RETRY_STATE"] = str(tmp_path / "state")
+            env["CI_RETRY_COMMAND_PID"] = str(command_pid_file)
+            env["GITHUB_ACTIONS"] = "true"
+            cmd = [
+                "bash",
+                str(WRAPPER),
+                "--packages",
+                "example.com/p/pkg",
+                "--",
+                "bash",
+                "-c",
+                SIGTERM_DESCENDANT_SCRIPT,
+                "fake-go",
+            ]
+
+            with stdout_file.open("w", encoding="utf-8") as stdout_stream, (
+                stderr_file.open("w", encoding="utf-8")
+            ) as stderr_stream:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                )
+
+                def cleanup_processes() -> None:
+                    if command_pid_file.exists():
+                        command_pid = int(
+                            command_pid_file.read_text(encoding="utf-8")
+                        )
+                        try:
+                            os.killpg(command_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    terminate_and_reap(process)
+
+                self.addCleanup(cleanup_processes)
+                returncode = process.wait(timeout=12)
+
+            stderr = stderr_file.read_text(encoding="utf-8")
+            self.assertEqual(returncode, 98, stderr)
+            self.assertIn("descendant never became ready", stderr)
 
     def test_sigterm_outside_github_actions_is_not_retried(self) -> None:
         result = run_wrapper(

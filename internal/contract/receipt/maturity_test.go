@@ -33,37 +33,52 @@ func TestPayloadMaturityDeclarationIsExhaustive(t *testing.T) {
 		t.Fatalf("payload maturity declarations = %d, registered payload kinds = %d", len(payloadMaturity), len(payloadValidators))
 	}
 	for kind := range payloadValidators {
-		entry, ok := payloadMaturity[kind]
-		if !ok {
-			t.Fatalf("registered payload kind %q has no maturity declaration", kind)
-		}
-		switch entry.maturity {
-		case PayloadMaturityLive:
-			if entry.producer == nil {
-				t.Fatalf("live payload kind %q has no production producer reference", kind)
+		t.Run(string(kind), func(t *testing.T) {
+			entry, ok := payloadMaturity[kind]
+			if !ok {
+				t.Fatalf("registered payload kind %q has no maturity declaration", kind)
 			}
-		case PayloadMaturityFixtureOnly:
-			if entry.producer != nil {
-				t.Fatalf("non-live payload kind %q unexpectedly names producer %s.%s", kind, entry.producer.packagePath, entry.producer.function)
-			}
-			if err := payloadValidators[kind](json.RawMessage(`{}`)); errors.Is(err, ErrPayloadKindNotImplemented) {
-				t.Fatalf("fixture-only payload kind %q routes to ErrPayloadKindNotImplemented", kind)
-			}
-		case PayloadMaturityReserved:
-			if entry.producer != nil {
-				t.Fatalf("non-live payload kind %q unexpectedly names producer %s.%s", kind, entry.producer.packagePath, entry.producer.function)
-			}
-			if err := payloadValidators[kind](json.RawMessage(`{}`)); !errors.Is(err, ErrPayloadKindNotImplemented) {
-				t.Fatalf("reserved payload kind %q error = %v, want ErrPayloadKindNotImplemented", kind, err)
-			}
-		default:
-			t.Fatalf("payload kind %q has unknown maturity %q", kind, entry.maturity)
-		}
+			assertMaturityEntry(t, kind, entry)
+		})
 	}
 	for kind := range payloadMaturity {
 		if _, ok := payloadValidators[kind]; !ok {
 			t.Fatalf("maturity declaration exists for unregistered payload kind %q", kind)
 		}
+	}
+}
+
+// assertMaturityEntry checks one payload kind's declared state against the
+// behavior its registered validator actually exhibits.
+func assertMaturityEntry(t *testing.T, kind PayloadKind, entry payloadMaturityDeclaration) {
+	t.Helper()
+	switch entry.maturity {
+	case PayloadMaturityLive:
+		if entry.producer == nil {
+			t.Fatalf("live payload kind %q has no production producer reference", kind)
+		}
+		// A kind cannot be both emitted in production and routed to the
+		// not-implemented validator; that combination would reject every
+		// receipt the declared producer emits.
+		if err := payloadValidators[kind](json.RawMessage(`{}`)); errors.Is(err, ErrPayloadKindNotImplemented) {
+			t.Fatalf("live payload kind %q routes to ErrPayloadKindNotImplemented", kind)
+		}
+	case PayloadMaturityFixtureOnly:
+		if entry.producer != nil {
+			t.Fatalf("non-live payload kind %q unexpectedly names producer %s.%s", kind, entry.producer.packagePath, entry.producer.function)
+		}
+		if err := payloadValidators[kind](json.RawMessage(`{}`)); errors.Is(err, ErrPayloadKindNotImplemented) {
+			t.Fatalf("fixture-only payload kind %q routes to ErrPayloadKindNotImplemented", kind)
+		}
+	case PayloadMaturityReserved:
+		if entry.producer != nil {
+			t.Fatalf("non-live payload kind %q unexpectedly names producer %s.%s", kind, entry.producer.packagePath, entry.producer.function)
+		}
+		if err := payloadValidators[kind](json.RawMessage(`{}`)); !errors.Is(err, ErrPayloadKindNotImplemented) {
+			t.Fatalf("reserved payload kind %q error = %v, want ErrPayloadKindNotImplemented", kind, err)
+		}
+	default:
+		t.Fatalf("payload kind %q has unknown maturity %q", kind, entry.maturity)
 	}
 }
 
@@ -73,9 +88,24 @@ func TestPayloadMaturityDeclarationIsExhaustive(t *testing.T) {
 // without a declared non-test producer path; schemas, validators, and test
 // fixtures alone cannot satisfy it.
 //
-// This source-level check cannot prove a runtime configuration enables a
-// producer or see reflection and function-value calls; those are integration
-// test concerns.
+// KNOWN LIMITS — read these before trusting a `live` declaration:
+//
+//   - It is SYNTACTIC, not type-resolved. Selector resolution uses the file's
+//     import map rather than go/types, so a same-named symbol from a different
+//     package could in principle satisfy it.
+//   - It proves the producer REFERENCES the kind's constant on a reachable
+//     statement path, not that it constructs, signs, or emits a receipt with
+//     that kind. A reference inside a dead branch such as `if false { _ = X }`
+//     would still count.
+//   - It cannot see reflection or calls through function values, and it cannot
+//     prove a runtime configuration enables the producer at all.
+//
+// So this catches the failure it was built for -- a kind declared `live` with
+// no production producer whatsoever, which is how proxy_decision_with_spans sat
+// dark for two months -- and it does NOT certify that a live path executes.
+// Upgrading to go/packages type resolution plus an assertion on the emitted
+// kind is tracked as follow-up work; treat a `live` label as "a producer exists
+// and references this kind", not as proof of emission.
 func TestLivePayloadKindsHaveProductionProducers(t *testing.T) {
 	functions := loadProductionFunctions(t)
 	for kind, entry := range payloadMaturity {
@@ -194,6 +224,12 @@ func reachesPayloadKind(fn *productionFunction, kind PayloadKind, functions map[
 	want := payloadKindConstantName(kind)
 	found := false
 	ast.Inspect(fn.decl.Body, func(node ast.Node) bool {
+		// An uncalled closure is not a production path. Descending into a
+		// function literal would let `_ = func(){ _ = PayloadX }` satisfy the
+		// reachability check without anything ever emitting that kind.
+		if _, ok := node.(*ast.FuncLit); ok {
+			return false
+		}
 		selector, ok := node.(*ast.SelectorExpr)
 		if !ok || selector.Sel.Name != want {
 			return true
@@ -219,6 +255,11 @@ func reachesPayloadKind(fn *productionFunction, kind PayloadKind, functions map[
 func calledProductionFunctions(fn *productionFunction, functions map[string]*productionFunction) []*productionFunction {
 	var called []*productionFunction
 	ast.Inspect(fn.decl.Body, func(node ast.Node) bool {
+		// Same reason as reachesPayloadKind: a call sitting inside an uncalled
+		// closure is not on the production path.
+		if _, ok := node.(*ast.FuncLit); ok {
+			return false
+		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true

@@ -1503,8 +1503,14 @@ var dangerousEnvKeys = map[string]bool{
 	// Dynamic linker injection (Linux/macOS).
 	"LD_PRELOAD":            true,
 	"LD_LIBRARY_PATH":       true,
+	"LD_AUDIT":              true,
 	"DYLD_INSERT_LIBRARIES": true,
 	"DYLD_LIBRARY_PATH":     true,
+	"DYLD_FRAMEWORK_PATH":   true,
+	// The FALLBACK_ variants are consulted when the primary search fails, so
+	// blocking only the primaries leaves a second way to place a library.
+	"DYLD_FALLBACK_LIBRARY_PATH":   true,
+	"DYLD_FALLBACK_FRAMEWORK_PATH": true,
 	// Runtime code injection.
 	"NODE_OPTIONS":      true,
 	"PYTHONSTARTUP":     true,
@@ -1516,7 +1522,19 @@ var dangerousEnvKeys = map[string]bool{
 	"_JAVA_OPTIONS":     true,
 	"JDK_JAVA_OPTIONS":  true,
 	// Credential helper injection - causes git to execute arbitrary programs.
-	"GIT_ASKPASS": true,
+	// GIT_ASKPASS was blocked first, but it is one of several variables that
+	// hand git a command line to run, so the siblings belong with it.
+	"GIT_ASKPASS":                      true,
+	"GIT_SSH":                          true,
+	"GIT_SSH_COMMAND":                  true,
+	"GIT_EXTERNAL_DIFF":                true,
+	"GIT_PROXY_COMMAND":                true,
+	"GIT_EDITOR":                       true,
+	"GIT_PAGER":                        true,
+	"GIT_CONFIG_GLOBAL":                true,
+	"GIT_CONFIG_SYSTEM":                true,
+	"GIT_CONFIG_COUNT":                 true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
 	// Proxy redirection - the MCP proxy IS the controlled network path.
 	// Both cases listed because Go checks HTTP_PROXY/http_proxy, Node.js
 	// checks case-insensitively, etc. Mixed-case caught by IsDangerousEnvKey.

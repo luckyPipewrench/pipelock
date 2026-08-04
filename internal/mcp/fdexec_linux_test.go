@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -318,4 +319,124 @@ func TestExecveatRejectsInvalidInputs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExecveat_ErrorPaths covers the failure branches of the raw syscall
+// wrapper. Calling execveat with a descriptor that cannot be executed returns
+// rather than replacing the process, so these are safe to exercise in-process.
+//
+// They matter because every one of them is a path where the helper must exit
+// non-zero instead of continuing: a silent failure here would leave the parent
+// believing a verified descriptor was executed when nothing was.
+func TestExecveat_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_argv", func(t *testing.T) {
+		t.Parallel()
+		if err := execveat(0, nil, nil); err == nil {
+			t.Error("empty argv must be refused")
+		}
+	})
+
+	t.Run("argv_containing_nul", func(t *testing.T) {
+		t.Parallel()
+		if err := execveat(0, []string{"prog\x00hidden"}, nil); err == nil {
+			t.Error("an argv entry containing NUL must be refused rather than truncated")
+		}
+	})
+
+	t.Run("environment_containing_nul", func(t *testing.T) {
+		t.Parallel()
+		if err := execveat(0, []string{"prog"}, []string{"K=v\x00hidden"}); err == nil {
+			t.Error("an environment entry containing NUL must be refused rather than truncated")
+		}
+	})
+
+	t.Run("bad_descriptor_returns_errno", func(t *testing.T) {
+		t.Parallel()
+		// -1 is never a valid descriptor, so the syscall returns EBADF instead
+		// of executing anything.
+		err := execveat(-1, []string{"prog"}, []string{"K=v"})
+		if err == nil {
+			t.Fatal("executing an invalid descriptor must return an error")
+		}
+		if !strings.Contains(err.Error(), "execveat") {
+			t.Errorf("error should name the failing syscall, got: %v", err)
+		}
+	})
+}
+
+// TestPrepareBinaryIntegrity_ActionDirections covers the two directions of the
+// prepare path: a binary whose hash does not match the manifest must block
+// under the default action, and must warn-and-continue only when warn was
+// asked for explicitly.
+//
+// The direction is the whole point. If the blocking branch were skipped rather
+// than taken, a server that failed verification would launch anyway, and the
+// only visible difference would be a line in a log nobody reads.
+//
+// The manifest is keyed by RESOLVED PATH, so the test copies a real executable
+// to a known absolute path rather than naming a command. An earlier draft used
+// a bare command name with a hand-written manifest body; it "passed" because
+// the manifest was malformed, not because a hash mismatch was refused, which
+// is exactly the kind of green that proves nothing.
+func TestPrepareBinaryIntegrity_ActionDirections(t *testing.T) {
+	t.Parallel()
+
+	// A hash that cannot match whatever the copied binary really is.
+	const wrongHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+	setup := func(t *testing.T) (binPath, manifestPath string) {
+		t.Helper()
+		src, err := exec.LookPath("true")
+		if err != nil {
+			t.Skipf("no 'true' binary available: %v", err)
+		}
+		payload, err := os.ReadFile(filepath.Clean(src))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		dir := t.TempDir()
+		binPath = filepath.Join(dir, "server")
+		if err := os.WriteFile(binPath, payload, 0o700); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		manifestPath = filepath.Join(dir, "manifest.json")
+		body := `{"version":1,"entries":{"` + binPath + `":"` + wrongHash + `"}}`
+		if err := os.WriteFile(manifestPath, []byte(body), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return binPath, manifestPath
+	}
+
+	t.Run("block_refuses", func(t *testing.T) {
+		t.Parallel()
+		binPath, manifestPath := setup(t)
+		var logs bytes.Buffer
+		icfg := &config.MCPBinaryIntegrity{
+			Enabled:      true,
+			Action:       config.ActionBlock,
+			ManifestPath: manifestPath,
+		}
+		if _, err := prepareBinaryIntegrity([]string{binPath}, icfg, &logs); err == nil {
+			t.Error("a binary whose hash does not match the manifest must not be prepared for launch")
+		}
+	})
+
+	t.Run("warn_allows_and_says_so", func(t *testing.T) {
+		t.Parallel()
+		binPath, manifestPath := setup(t)
+		var logs bytes.Buffer
+		icfg := &config.MCPBinaryIntegrity{
+			Enabled:      true,
+			Action:       config.ActionWarn,
+			ManifestPath: manifestPath,
+		}
+		if _, err := prepareBinaryIntegrity([]string{binPath}, icfg, &logs); err != nil {
+			t.Errorf("warn must not block the launch, got: %v", err)
+		}
+		if !strings.Contains(logs.String(), "integrity") {
+			t.Errorf("warn must record why it allowed the launch, got: %q", logs.String())
+		}
+	})
 }

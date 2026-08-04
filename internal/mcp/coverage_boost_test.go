@@ -531,3 +531,55 @@ func TestWriteTextVerdict_InjectionLine(t *testing.T) {
 		t.Errorf("expected pattern name in output, got: %q", buf.String())
 	}
 }
+
+// TestDangerousEnvKeys_InjectionSiblings covers the same-class siblings of
+// variables that were already blocked.
+//
+// The list is only as good as its completeness, and a partial list reads as
+// protection while leaving an equivalent route open. LD_PRELOAD was blocked but
+// LD_AUDIT was not, though both make the loader run attacker-chosen code. The
+// primary DYLD search paths were blocked but their FALLBACK_ variants were not,
+// though those are consulted when the primary search fails. GIT_ASKPASS was
+// blocked but the other variables that hand git a command line to run were not.
+func TestDangerousEnvKeys_InjectionSiblings(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{
+		// Loader-driven code execution.
+		"LD_AUDIT",
+		"DYLD_FRAMEWORK_PATH",
+		"DYLD_FALLBACK_LIBRARY_PATH",
+		"DYLD_FALLBACK_FRAMEWORK_PATH",
+		// Variables that make git execute a program of the caller's choosing.
+		"GIT_SSH",
+		"GIT_SSH_COMMAND",
+		"GIT_EXTERNAL_DIFF",
+		"GIT_PROXY_COMMAND",
+		"GIT_EDITOR",
+		"GIT_PAGER",
+		// Config redirection that can introduce any of the above indirectly.
+		"GIT_CONFIG_GLOBAL",
+		"GIT_CONFIG_SYSTEM",
+		"GIT_CONFIG_COUNT",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			if !IsDangerousEnvKey(key) {
+				t.Errorf("%s must be refused even when requested explicitly; it is the same class as a variable already blocked", key)
+			}
+		})
+	}
+
+	// Availability control. Ordinary variables an MCP server legitimately needs
+	// must stay passable, so the additions above cannot be passing for a
+	// blanket reason.
+	for _, key := range []string{"PATH", "HOME", "TZ", "MY_APP_TOKEN", "GIT_COMMITTER_NAME"} {
+		t.Run("allowed_"+key, func(t *testing.T) {
+			t.Parallel()
+			if IsDangerousEnvKey(key) {
+				t.Errorf("%s is ordinary and must remain passable", key)
+			}
+		})
+	}
+}

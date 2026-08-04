@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1895,4 +1896,124 @@ func readFileContent(t *testing.T, path string) string {
 		t.Fatalf("reading %q: %v", path, err)
 	}
 	return string(data)
+}
+
+// TestHashOpenFile_ErrorPaths covers the failure branches of descriptor
+// hashing. These are the paths that decide whether a verification failure is
+// reported or silently skipped, so leaving them untested would mean the
+// fail-closed behaviour rests on branches nothing ever executed.
+func TestHashOpenFile_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("seek_fails_on_closed_file", func(t *testing.T) {
+		t.Parallel()
+		f, err := os.CreateTemp(t.TempDir(), "hash")
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := hashOpenFile(f); err == nil {
+			t.Error("hashing a closed descriptor must fail rather than return a digest of nothing")
+		}
+	})
+
+	t.Run("copy_fails_on_write_only_file", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "wo")
+		if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := hashOpenFile(f); err == nil {
+			t.Error("hashing a write-only descriptor must fail rather than produce a digest")
+		}
+	})
+
+	t.Run("succeeds_and_rewinds", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "ok")
+		if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		sum, err := hashOpenFile(f)
+		if err != nil {
+			t.Fatalf("hashOpenFile: %v", err)
+		}
+		if sum == "" {
+			t.Error("expected a digest")
+		}
+		// The descriptor must be rewound, or the exec that follows reads from
+		// the wrong offset.
+		at, err := f.Seek(0, io.SeekCurrent)
+		if err != nil {
+			t.Fatalf("Seek: %v", err)
+		}
+		if at != 0 {
+			t.Errorf("descriptor left at offset %d, want 0", at)
+		}
+	})
+}
+
+// TestDetectShebangFile_ErrorPaths covers the branches that decide a file is
+// not a script. Returning empty for the wrong reason would let a script through
+// a path meant to reject it.
+func TestDetectShebangFile_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closed_descriptor", func(t *testing.T) {
+		t.Parallel()
+		f, err := os.CreateTemp(t.TempDir(), "shebang")
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if got := detectShebangFile(f); got != "" {
+			t.Errorf("closed descriptor returned %q, want empty", got)
+		}
+	})
+
+	t.Run("no_shebang", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "plain")
+		if err := os.WriteFile(path, []byte("plain text\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if got := detectShebangFile(f); got != "" {
+			t.Errorf("plain file returned %q, want empty", got)
+		}
+	})
+
+	t.Run("shebang_with_no_interpreter", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "empty-shebang")
+		if err := os.WriteFile(path, []byte("#!\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if got := detectShebangFile(f); got != "" {
+			t.Errorf("interpreterless shebang returned %q, want empty", got)
+		}
+	})
 }

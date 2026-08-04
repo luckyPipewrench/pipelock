@@ -42,7 +42,7 @@ linters:
       # option for it.
       - path: internal/mcp/fdexec_linux_test\.go
         linters: [gosec]
-        text: "G302"
+        text: "G302|G306"
       # The MCP server command is operator-supplied by construction: it is the
       # server the operator asked Pipelock to wrap. G204 fires on every branch
       # that launches it, and this file now has several (descriptor-bound,

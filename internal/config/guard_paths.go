@@ -343,25 +343,9 @@ var guardFixedHomeRoots = []string{"/root", "/app"}
 // grant on one reads through to every operator's credentials at once.
 var guardMultiHomeRoots = []string{"/", "/home", "/var/home", "/Users"}
 
-// guardSecretMaterialReason reports why the resolved path exposes credential
-// material, or "" when it does not.
-//
-// A path is refused when it IS a secret path, is BENEATH one, or is a strict
-// ANCESTOR of one. The ancestor case is the load-bearing one and is easy to
-// leave out: Landlock grants an access right to an entire directory SUBTREE,
-// so a rule permitting ~/.aws permits ~/.aws/credentials with it. Without the
-// ancestor arm, every entry in guardSecretShapes is decorative -- an operator
-// (or an attacker editing a manifest) reaches the credential by naming the
-// parent instead of the file.
-//
-// The cost is deliberate and falls on availability: ~/.aws, ~/.docker, ~/.kube
-// and ~/.config cannot be granted as whole directories. The operator names the
-// specific non-secret path instead (~/.aws/config, ~/.config/myapp), which is
-// the explicit, no-inference model GuardManifest already commits to.
-func guardSecretMaterialReason(resolved string) string {
-	return guardSecretMaterialMatch(resolved).reason
-}
-
+// guardSecretMaterialMatch reports which credential shape a path exposes and
+// why. A path is refused when it is the shape, is beneath it, or is a strict
+// ancestor whose directory grant would reach it.
 func guardSecretMaterialMatch(resolved string) guardSecretMatch {
 	lowerResolved := strings.ToLower(resolved)
 	for _, root := range guardMultiHomeRoots {

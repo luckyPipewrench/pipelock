@@ -320,7 +320,7 @@ func TestCommandsDoNotModifyConfigOrDirectory(t *testing.T) {
 	t.Parallel()
 
 	configPath := writeConfig(t, testGuardConfig)
-	before, err := os.ReadFile(configPath)
+	before, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatalf("read config before commands: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestCommandsDoNotModifyConfigOrDirectory(t *testing.T) {
 		}
 	}
 
-	after, err := os.ReadFile(configPath)
+	after, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatalf("read config after commands: %v", err)
 	}

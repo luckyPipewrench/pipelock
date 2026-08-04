@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1742,6 +1743,137 @@ func TestVerifyResult_ExpectedScriptHash(t *testing.T) {
 	}
 }
 
+func TestPrepareDescriptorBoundCommandShapes(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix command fixtures")
+	}
+	dir := t.TempDir()
+	plainScript := filepath.Join(dir, "plain.sh")
+	if err := os.WriteFile(plainScript, []byte("printf ready\n"), 0o600); err != nil {
+		t.Fatalf("write plain script: %v", err)
+	}
+	shebangScript := filepath.Join(dir, "shebang-server")
+	if err := os.WriteFile(shebangScript, []byte("#!/bin/sh\nprintf ready\n"), 0o600); err != nil {
+		t.Fatalf("write shebang script: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		command []string
+		workDir string
+		wantErr error
+		check   func(*PreparedCommand) bool
+	}{
+		{name: "empty_command", command: nil, wantErr: errors.New("empty command")},
+		{name: "missing_binary", command: []string{"definitely-missing-pipelock-binary"}, wantErr: errors.New("resolving and opening binary")},
+		{name: "env_wrapper_fails_closed", command: []string{"env", "true"}, wantErr: ErrUnpinnableCommand},
+		{name: "shebang_fails_closed", command: []string{shebangScript}, wantErr: ErrUnpinnableCommand},
+		{name: "direct_binary", command: []string{"true"}},
+		{name: "interpreter_without_script", command: []string{"sh"}},
+		{name: "direct_interpreter_script_fails_closed", command: []string{"sh", plainScript}, wantErr: ErrUnpinnableCommand},
+		{name: "relative_interpreter_script_fails_closed", command: []string{"sh", filepath.Base(plainScript)}, workDir: dir, wantErr: ErrUnpinnableCommand},
+		{name: "package_runner_fails_closed", command: []string{filepath.Join(dir, "npx")}, wantErr: ErrUnpinnableCommand},
+		{name: "suspicious_workdir", command: []string{filepath.Join(dir, "local-server")}, workDir: dir, check: func(p *PreparedCommand) bool { return p.Result.Suspicious }},
+	}
+	if err := os.Symlink("/bin/true", filepath.Join(dir, "npx")); err != nil {
+		t.Fatalf("create package runner symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "local-server"), []byte("plain executable bytes\n"), 0o600); err != nil {
+		t.Fatalf("write local server: %v", err)
+	}
+	overlongShebang := filepath.Join(dir, "overlong-shebang")
+	if err := os.WriteFile(overlongShebang, []byte("#!"+strings.Repeat("x", maxShebangLen)+"\n"), 0o600); err != nil {
+		t.Fatalf("write overlong shebang: %v", err)
+	}
+	tests = append(tests, struct {
+		name    string
+		command []string
+		workDir string
+		wantErr error
+		check   func(*PreparedCommand) bool
+	}{name: "overlong_shebang_is_not_dispatched", command: []string{overlongShebang}})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared, err := Prepare(tt.command, tt.workDir)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("Prepare() error = nil, want %v", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, ErrUnpinnableCommand) {
+					if !errors.Is(err, ErrUnpinnableCommand) {
+						t.Fatalf("Prepare() error = %v, want ErrUnpinnableCommand", err)
+					}
+				} else if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+					t.Fatalf("Prepare() error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Prepare() error: %v", err)
+			}
+			t.Cleanup(func() { _ = prepared.Close() })
+			if prepared.Executable == nil || prepared.Result == nil {
+				t.Fatal("Prepare() did not retain executable and result")
+			}
+			if tt.check != nil && !tt.check(prepared) {
+				t.Fatal("prepared result did not satisfy case assertion")
+			}
+		})
+	}
+}
+
+func TestVerifyPreparedUsesRetainedHash(t *testing.T) {
+	prepared, err := Prepare([]string{"true"}, "")
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+
+	tests := []struct {
+		name     string
+		entries  map[string]string
+		verified bool
+	}{
+		{name: "matching", entries: map[string]string{prepared.Result.ResolvedPath: prepared.Result.ActualHash}, verified: true},
+		{name: "mismatch", entries: map[string]string{prepared.Result.ResolvedPath: "deadbeef"}},
+		{name: "missing_manifest", entries: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			copyResult := *prepared.Result
+			copyPrepared := *prepared
+			copyPrepared.Result = &copyResult
+			result := VerifyPrepared(&copyPrepared, &Config{Manifests: tt.entries})
+			if result.Verified != tt.verified {
+				t.Fatalf("Verified = %v, want %v (reasons: %v)", result.Verified, tt.verified, result.Reasons)
+			}
+		})
+	}
+}
+
+func TestPreparedCommandCloseAndHashErrors(t *testing.T) {
+	if err := (*PreparedCommand)(nil).Close(); err != nil {
+		t.Fatalf("nil Close() error: %v", err)
+	}
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error: %v", err)
+	}
+	if _, err := hashOpenFile(readEnd); err == nil || !strings.Contains(err.Error(), "seeking before hash") {
+		t.Fatalf("hashOpenFile(pipe) error = %v, want seek failure", err)
+	}
+	prepared := &PreparedCommand{Executable: readEnd}
+	if err := writeEnd.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	if err := prepared.Close(); err != nil {
+		t.Fatalf("first Close() error: %v", err)
+	}
+	if err := prepared.Close(); err == nil {
+		t.Fatal("second Close() should report closed descriptors")
+	}
+}
+
 // --- helpers ---
 
 func contains(s, substr string) bool {
@@ -1764,4 +1896,124 @@ func readFileContent(t *testing.T, path string) string {
 		t.Fatalf("reading %q: %v", path, err)
 	}
 	return string(data)
+}
+
+// TestHashOpenFile_ErrorPaths covers the failure branches of descriptor
+// hashing. These are the paths that decide whether a verification failure is
+// reported or silently skipped, so leaving them untested would mean the
+// fail-closed behaviour rests on branches nothing ever executed.
+func TestHashOpenFile_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("seek_fails_on_closed_file", func(t *testing.T) {
+		t.Parallel()
+		f, err := os.CreateTemp(t.TempDir(), "hash")
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := hashOpenFile(f); err == nil {
+			t.Error("hashing a closed descriptor must fail rather than return a digest of nothing")
+		}
+	})
+
+	t.Run("copy_fails_on_write_only_file", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "wo")
+		if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := hashOpenFile(f); err == nil {
+			t.Error("hashing a write-only descriptor must fail rather than produce a digest")
+		}
+	})
+
+	t.Run("succeeds_and_rewinds", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "ok")
+		if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		sum, err := hashOpenFile(f)
+		if err != nil {
+			t.Fatalf("hashOpenFile: %v", err)
+		}
+		if sum == "" {
+			t.Error("expected a digest")
+		}
+		// The descriptor must be rewound, or the exec that follows reads from
+		// the wrong offset.
+		at, err := f.Seek(0, io.SeekCurrent)
+		if err != nil {
+			t.Fatalf("Seek: %v", err)
+		}
+		if at != 0 {
+			t.Errorf("descriptor left at offset %d, want 0", at)
+		}
+	})
+}
+
+// TestDetectShebangFile_ErrorPaths covers the branches that decide a file is
+// not a script. Returning empty for the wrong reason would let a script through
+// a path meant to reject it.
+func TestDetectShebangFile_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closed_descriptor", func(t *testing.T) {
+		t.Parallel()
+		f, err := os.CreateTemp(t.TempDir(), "shebang")
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if got := detectShebangFile(f); got != "" {
+			t.Errorf("closed descriptor returned %q, want empty", got)
+		}
+	})
+
+	t.Run("no_shebang", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "plain")
+		if err := os.WriteFile(path, []byte("plain text\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if got := detectShebangFile(f); got != "" {
+			t.Errorf("plain file returned %q, want empty", got)
+		}
+	})
+
+	t.Run("shebang_with_no_interpreter", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "empty-shebang")
+		if err := os.WriteFile(path, []byte("#!\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		f, err := os.Open(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if got := detectShebangFile(f); got != "" {
+			t.Errorf("interpreterless shebang returned %q, want empty", got)
+		}
+	})
 }

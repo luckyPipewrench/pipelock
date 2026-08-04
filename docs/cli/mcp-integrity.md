@@ -116,14 +116,28 @@ TOCTOU window between trust check and parse.
   by coincidence (vanishingly unlikely). For routine maintenance, prefer
   regenerating from scratch (omit `--merge`) when the set of MCP servers
   changes.
-- **Package runners cannot be hashed.** Commands like `npx`, `bunx`, `uvx`,
-  and `pipx` resolve executables dynamically at runtime. Generating against
-  one of these pins only the runner itself, not the script it ultimately
-  invokes. Where strict integrity matters, replace the runner with a direct
-  interpreter + absolute script path.
-- **TOCTOU is partial, not full.** The manifest hashes the resolved binary
-  and any pinned script, then resolves symlinks again at exec time. Content
-  replacement of an already-opened path between hash and exec is not
-  detected (Go's `os/exec` cannot bind via `fexecve`). Pair the manifest
-  with deployment-layer controls such as read-only mounts, signed package
-  delivery, or container image immutability for the hash-to-exec window.
+- **Package runners are rejected under enforcement.** Commands like `npx`,
+  `bunx`, `uvx`, and `pipx` resolve another executable dynamically at runtime.
+  A manifest can describe the runner itself, but `action: block` rejects the
+  launch because the downstream server cannot be descriptor-bound. Use the
+  final native server executable directly.
+- **Descriptor-bound launch is Linux-only.** On Linux, runtime verification
+  opens each pinned executable once, hashes through that descriptor, and
+  executes through the same descriptor. Replacing a
+  symlink or directory entry after verification cannot redirect the launch.
+  `action: block` fails closed when descriptor launch is unavailable, including
+  when `/proc/self/exe` is unavailable. Other platforms reject enforcing
+  launches instead of silently returning to path-based execution. `action:
+  warn` remains intentionally non-enforcing and logs before using an unpinned
+  platform launch.
+- **Interpreter and wrapper limits are explicit.** Interpreter+script commands,
+  shebang commands, package runners, and `/usr/bin/env` wrappers require a later
+  pathname open or an inherited script descriptor. Pipelock rejects all of them
+  under `action: block` rather than reintroducing a race or leaking a descriptor
+  into the MCP server. Enforcing integrity currently requires the final native
+  server executable as the MCP command.
+- **An open descriptor pins identity, not mutable contents.** Atomic file or
+  symlink replacement cannot change the opened inode. A process that can write
+  in place to that same inode can still alter bytes after hashing; retain
+  read-only mounts, signed package delivery, or container image immutability to
+  prevent in-place mutation.

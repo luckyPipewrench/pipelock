@@ -7,20 +7,17 @@
 // compares against a trusted manifest.
 //
 // The manifest records the resolved path and hash observed at check time.
-// It does not guarantee the identical artifact is the one eventually
-// spawned, because the MCP launcher later executes by pathname.
-// CheckSymlinkRace can detect symlink target changes (path identity)
-// between hash-time and exec-time, but it currently has no production
-// callers — it is tested and available, not wired into the launch path.
-// In-place content replacement after hashing is not detected by any
-// current mechanism; full TOCTOU prevention would require fexecve-style
-// fd binding, which Go's os/exec does not expose.
+// Prepare retains the exact descriptors used for hashing so the Linux MCP
+// launcher can execute those same filesystem objects. An open descriptor pins
+// inode identity, not mutable contents; deployment controls must still prevent
+// in-place writes after hashing.
 package integrity
 
 import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +28,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
+
+// ErrUnpinnableCommand means integrity can inspect a command shape but
+// cannot safely bind every verified artifact to descriptor-based exec.
+var ErrUnpinnableCommand = errors.New("command cannot be safely descriptor-pinned")
 
 // ManifestVersion is the schema version for MCP binary integrity manifests.
 const ManifestVersion = 1
@@ -115,6 +116,28 @@ type VerifyResult struct {
 	Suspicious         bool     // true if binary is inside agent working directory
 	Reason             string   // last/primary reason when Verified is false (backward compat)
 	Reasons            []string // all accumulated failure reasons for audit evidence
+}
+
+// PreparedCommand holds the exact open files used to compute an integrity
+// result. Callers that execute these descriptors bind verification and use to
+// the same filesystem objects. Close must be called on every return path.
+type PreparedCommand struct {
+	Result     *VerifyResult
+	Executable *os.File
+}
+
+// Close releases all descriptors held by a prepared command.
+func (p *PreparedCommand) Close() error {
+	if p == nil {
+		return nil
+	}
+	var errs []error
+	if p.Executable != nil {
+		if err := p.Executable.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing prepared executable: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // LoadManifest reads a binary integrity manifest from disk.
@@ -313,6 +336,74 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 	return result, nil
 }
 
+// Prepare opens and hashes the executable exactly once, retaining that
+// descriptor for a descriptor-based launcher. Interpreter scripts, wrappers,
+// and shebang dispatch are rejected because they require either another
+// pathname resolution or a descriptor inherited by the final server; callers
+// enforcing integrity must fail closed.
+func Prepare(command []string, workDir string) (*PreparedCommand, error) {
+	if len(command) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+
+	resolved, executable, err := openResolvedBinary(command[0])
+	if err != nil {
+		return nil, fmt.Errorf("resolving and opening binary %q: %w", command[0], err)
+	}
+	prepared := &PreparedCommand{Executable: executable}
+	success := false
+	defer func() {
+		if !success {
+			_ = prepared.Close()
+		}
+	}()
+
+	actualHash, err := hashOpenFile(executable)
+	if err != nil {
+		return nil, fmt.Errorf("hashing binary %q: %w", resolved, err)
+	}
+	result := &VerifyResult{ResolvedPath: resolved, ActualHash: actualHash}
+	prepared.Result = result
+	if workDir != "" {
+		result.Suspicious = isInsideDir(resolved, workDir)
+	}
+
+	baseName := filepath.Base(resolved)
+	cmdBase := filepath.Base(command[0])
+	result.IsInterpreter = isInterpreterName(baseName) || isInterpreterName(cmdBase)
+	if packageRunners[baseName] || packageRunners[cmdBase] {
+		result.IsPackageRunner = true
+		return nil, fmt.Errorf("%w: package runner %q resolves another executable after launch",
+			ErrUnpinnableCommand, command[0])
+	}
+
+	if baseName == "env" {
+		return nil, fmt.Errorf("%w: /usr/bin/env resolves another executable after launch", ErrUnpinnableCommand)
+	}
+	if !result.IsInterpreter {
+		if sheInterp := detectShebangFile(executable); sheInterp != "" {
+			return nil, fmt.Errorf("%w: shebang script %q delegates to %q after launch",
+				ErrUnpinnableCommand, resolved, sheInterp)
+		}
+		success = true
+		return prepared, nil
+	}
+	if len(command) < 2 {
+		success = true
+		return prepared, nil
+	}
+	return nil, fmt.Errorf("%w: interpreter command %q reopens script %q after launch",
+		ErrUnpinnableCommand, command[0], command[1])
+}
+
+// VerifyPrepared checks a descriptor-backed preparation against cfg without
+// resolving or reopening any verified artifact.
+func VerifyPrepared(prepared *PreparedCommand, cfg *Config) *VerifyResult {
+	result := prepared.Result
+	verifyResult(result, cfg)
+	return result
+}
+
 // Verify resolves the command binary path, hashes the file, and checks
 // against the manifest. For interpreters it hashes both the interpreter
 // and the script. Returns a VerifyResult describing the outcome.
@@ -324,13 +415,17 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 	if err != nil {
 		return nil, err
 	}
+	verifyResult(result, cfg)
+	return result, nil
+}
 
+func verifyResult(result *VerifyResult, cfg *Config) {
 	// Verify against manifest. Fail-closed: no manifest = not verified.
 	if cfg == nil || cfg.Manifests == nil {
 		result.Verified = false
 		result.Reason = "no manifest loaded"
 		result.Reasons = append(result.Reasons, "no manifest loaded")
-		return result, nil
+		return
 	}
 
 	result.Verified = true
@@ -373,8 +468,6 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 			}
 		}
 	}
-
-	return result, nil
 }
 
 // ResolveAndHash resolves a binary path and returns its resolved path and
@@ -397,15 +490,13 @@ func ResolveAndHash(binary string) (resolvedPath, hash string, err error) {
 // path resolved at hash time. Returns an error if they differ, indicating
 // a symlink swap between hash-time and exec-time.
 //
-// NOTE: This function currently has no production callers — it is tested
-// and available but not wired into the MCP launch path. Wiring it in is
-// tracked separately.
+// NOTE: This function has no production callers. Comparing resolutions cannot
+// close a race because the pathname can change again immediately afterward;
+// the MCP launch path instead retains and executes the verified descriptor.
 //
 // This checks path identity (symlink target stability), not content
 // identity. A file whose contents are replaced in-place after hashing
-// will not be detected by this check. Full TOCTOU prevention would
-// require opening the file by fd and using fexecve, which Go's os/exec
-// does not expose.
+// will not be detected by this check.
 func CheckSymlinkRace(originalCommand string, expectedResolved string) error {
 	current, err := resolveBinary(originalCommand)
 	if err != nil {
@@ -446,6 +537,55 @@ func resolveBinary(name string) (string, error) {
 	return resolved, nil
 }
 
+func openResolvedBinary(name string) (string, *os.File, error) {
+	resolved, err := resolveBinary(name)
+	if err != nil {
+		return "", nil, err
+	}
+	f, err := os.Open(filepath.Clean(resolved))
+	if err != nil {
+		return "", nil, fmt.Errorf("opening file: %w", err)
+	}
+	return resolved, f, nil
+}
+
+func hashOpenFile(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seeking before hash: %w", err)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hashing: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seeking after hash: %w", err)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func detectShebangFile(f *os.File) string {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	defer func() { _, _ = f.Seek(0, io.SeekStart) }()
+	reader := bufio.NewReader(io.LimitReader(f, maxShebangLen))
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return ""
+	}
+	if err == io.EOF && len(line) == maxShebangLen {
+		return ""
+	}
+	if !strings.HasPrefix(line, "#!") {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, "#!")))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
 // hashFileByFD opens the file and hashes the fd contents, returning the
 // hex-encoded SHA-256 digest. Hashing via the open fd avoids re-reading
 // after resolution, but does not prevent in-place replacement after the
@@ -457,12 +597,7 @@ func hashFileByFD(path string) (string, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("hashing: %w", err)
-	}
-
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return hashOpenFile(f)
 }
 
 // hashScript resolves and hashes a script file. Returns the resolved path

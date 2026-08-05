@@ -511,7 +511,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	// (e.g. "sk-ant-api03.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03AABBCCDDEEFFGGHH...").
 	// Only applied when text contains dots that could be subdomain separators.
 	if strings.Contains(cleaned, ".") {
-		dotless := strings.ReplaceAll(cleaned, ".", "")
+		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
 			matches = append(matches, s.matchDLPPatterns(dotless, "subdomain")...)
 		}
@@ -653,6 +653,7 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	return matches
 }
 
+//pipelock:provenance-transform whitespace_compact
 func compactTextDLPWhitespace(text string) string {
 	if !strings.ContainsFunc(text, unicode.IsSpace) {
 		return text
@@ -751,6 +752,7 @@ func appendUniqueTextDLPViews(views []spanTextView, candidates ...spanTextView) 
 	return views
 }
 
+//pipelock:provenance-transform html_entity_decode
 func decodeHTMLEntities(text string) string {
 	decoded, _ := decodeHTMLEntitiesWithPassCount(text)
 	return decoded
@@ -856,6 +858,7 @@ func (s *Scanner) decodeTextSegments(text string) []TextDLPMatch {
 	return matches
 }
 
+//pipelock:provenance-transform text_segment
 func isTextDLPEncodingDelimiter(r rune) bool {
 	switch r {
 	case '/', '?', '&', '=', ' ', '\n', '\r', '\t',

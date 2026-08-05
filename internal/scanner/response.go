@@ -738,6 +738,8 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 // part of the alphabet. After each run is collected, up to 2 trailing '='
 // characters are re-attached as base64 padding. This prevents "key=payload"
 // from collapsing into one segment that decoders reject.
+//
+//pipelock:provenance-transform encoded_run
 func extractEncodedRuns(content string, minLen int) []string {
 	var runs []string
 	start := -1

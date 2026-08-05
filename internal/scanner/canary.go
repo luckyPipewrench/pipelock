@@ -57,7 +57,7 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, spanViewLabel("url_decoded", ViewDLPNormalized))...)
 	}
 	if strings.Contains(cleaned, ".") {
-		dotless := strings.ReplaceAll(cleaned, ".", "")
+		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
 			matches = append(matches, s.matchCanaryTokens(dotless, "subdomain", false, spanViewLabel("dotless_hostname", ViewDLPNormalized))...)
 		}
@@ -132,6 +132,8 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, input
 
 // canonicalizeCanaryText collapses separators commonly used to split tokens
 // across URL/path/query boundaries.
+//
+//pipelock:provenance-transform canary_canonicalize
 func canonicalizeCanaryText(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {

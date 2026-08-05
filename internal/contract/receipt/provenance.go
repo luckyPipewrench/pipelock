@@ -311,6 +311,17 @@ func operationBytes(operation normalize.Operation) ([]byte, error) {
 	} else {
 		result = appendFrame(result, []byte{0})
 	}
+	// Operations 1..11 predate the extensible parameter tail. Never append
+	// empty frames to those kinds: doing so would rewrite historical commitment
+	// preimages. Every appended kind includes all tail frames, including empty
+	// ones, so its encoding remains unambiguous as the vocabulary grows.
+	if kind >= 12 {
+		result = appendFrame(result, []byte(operation.Alphabet))
+		result = appendFrame(result, operation.Indices)
+		var minimumLength [4]byte
+		binary.BigEndian.PutUint32(minimumLength[:], operation.MinimumLength)
+		result = appendFrame(result, minimumLength[:])
+	}
 	return result, nil
 }
 
@@ -345,6 +356,38 @@ func operationKindByte(kind normalize.OperationKind) (byte, error) {
 		return 10, nil
 	case normalize.OperationVowelFold:
 		return 11, nil
+	case normalize.OperationQueryUnescape:
+		return 12, nil
+	case normalize.OperationInvisibleSpace:
+		return 13, nil
+	case normalize.OperationMatchingNormalize:
+		return 14, nil
+	case normalize.OperationHexDecodeLiberal:
+		return 15, nil
+	case normalize.OperationBase32DecodeLiberal:
+		return 16, nil
+	case normalize.OperationBase64DecodeLiberal:
+		return 17, nil
+	case normalize.OperationEncodedTokenNormalize:
+		return 18, nil
+	case normalize.OperationTextSegment:
+		return 19, nil
+	case normalize.OperationHTMLEntityDecode:
+		return 20, nil
+	case normalize.OperationWhitespaceCompact:
+		return 21, nil
+	case normalize.OperationURLNoiseStrip:
+		return 22, nil
+	case normalize.OperationOrderedQueryConcat:
+		return 23, nil
+	case normalize.OperationQuerySubsequence:
+		return 24, nil
+	case normalize.OperationHostnameDotRemove:
+		return 25, nil
+	case normalize.OperationEncodedRun:
+		return 26, nil
+	case normalize.OperationCanaryCanonicalize:
+		return 27, nil
 	default:
 		return 0, fmt.Errorf("unknown operation %q", kind)
 	}
@@ -364,6 +407,8 @@ func componentByte(component normalize.Component) (byte, error) {
 		return 4, nil
 	case normalize.ComponentQueryVal:
 		return 5, nil
+	case normalize.ComponentRawQuery:
+		return 6, nil
 	default:
 		return 0, fmt.Errorf("unknown URL component %q", component)
 	}

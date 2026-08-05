@@ -1524,6 +1524,8 @@ const maxDecodeRounds = 500
 // IterativeDecode applies URL decoding until the string stops changing
 // or the safety ceiling is reached. Catches multi-layer encoding (e.g., %252D → %2D → -).
 // Exported for use by the fetch proxy to normalize display URLs.
+//
+//pipelock:provenance-transform query_unescape
 func IterativeDecode(s string) string {
 	for range maxDecodeRounds {
 		decoded, err := url.QueryUnescape(s)
@@ -1539,6 +1541,8 @@ func IterativeDecode(s string) string {
 // when secrets are fragmented across path/query boundaries. Strips characters that
 // are valid in URLs but not in API key character classes [a-zA-Z0-9\-_]. Attackers
 // insert dots, slashes, spaces, and other noise to split key patterns.
+//
+//pipelock:provenance-transform url_noise_strip
 func stripURLNoise(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -1549,10 +1553,17 @@ func stripURLNoise(s string) string {
 	}, s)
 }
 
+//pipelock:provenance-transform hostname_dot_remove
+func removeHostnameDots(value string) string {
+	return strings.ReplaceAll(value, ".", "")
+}
+
 // orderedQueryConcat concatenates all query parameter values in their original URL
 // order and returns the result. Catches secrets split across multiple query params
 // (e.g., "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
 // Uses RawQuery instead of url.Values to preserve parameter order.
+//
+//pipelock:provenance-transform ordered_query_concat
 func orderedQueryConcat(rawQuery string) string {
 	var b strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
@@ -1607,6 +1618,8 @@ var hexPrefixReplacer = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", 
 //   - Comma-separated:         73,6b     → 736b
 //
 // Returns "" if the result is not valid hex (odd length or non-hex chars).
+//
+//pipelock:provenance-transform encoded_token_normalize
 func normalizeHex(s string) string {
 	if len(s) < 4 {
 		return ""
@@ -1705,6 +1718,8 @@ func isEncodedTokenSeparator(c byte, kind encodedTokenKind) bool {
 // encoding. It preserves URL-safe base64 '-' and '_' for URL-safe decode and
 // preserves standard base64 '/' for standard decode, so data bytes are not
 // treated as delimiters.
+//
+//pipelock:provenance-transform encoded_token_normalize
 func normalizeEncodedToken(s string, kind encodedTokenKind) string {
 	if len(s) < 4 {
 		return ""
@@ -1772,6 +1787,10 @@ func hexBytePrefix(hexStr, prefix string) string {
 // any successfully decoded variants with encoding labels. Used by checkDLP to
 // catch encoded secrets in query parameters (e.g. ?key=736b2d616e742d... is
 // hex-encoded sk-ant-...). Mirrors the encoding checks in ScanTextForDLP.
+//
+//pipelock:provenance-transform hex_decode_liberal
+//pipelock:provenance-transform base32_decode_liberal
+//pipelock:provenance-transform base64_decode_liberal
 func decodeEncodings(s string) []decodedResult {
 	var out []decodedResult
 	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
@@ -1947,7 +1966,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// (e.g. "sk-ant-api03-.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03-AABBCCDDEEFFGGHHevilcom").
 	// Dots break regex character classes, so individual labels pass DLP checks.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, dlpTarget{strings.ReplaceAll(hostname, ".", ""), dlpViewLabel("subdomain")})
+		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain")})
 	}
 
 	// Strip URL noise from path to catch secrets split by dots, slashes, and
@@ -2117,6 +2136,8 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 // multiple parameters with arbitrary junk values interleaved between fragments.
 // Tries subsequences of size 2-4 for URLs with 3-20 query params.
 // Cost: O(n^4) worst case, bounded at ~6k combinations for n=20.
+//
+//pipelock:provenance-transform query_subsequence
 func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []WarnMatch) {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}, nil

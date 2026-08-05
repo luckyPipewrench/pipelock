@@ -302,6 +302,12 @@ func TestCommitmentEnumBytesAreStable(t *testing.T) {
 		normalize.OperationDLPNormalize: 4, normalize.OperationLowercase: 5, normalize.OperationInvisibleStrip: 6,
 		normalize.OperationHexDecode: 7, normalize.OperationBase32Decode: 8, normalize.OperationBase64Decode: 9,
 		normalize.OperationLeetspeak: 10, normalize.OperationVowelFold: 11,
+		normalize.OperationQueryUnescape: 12, normalize.OperationInvisibleSpace: 13, normalize.OperationMatchingNormalize: 14,
+		normalize.OperationHexDecodeLiberal: 15, normalize.OperationBase32DecodeLiberal: 16, normalize.OperationBase64DecodeLiberal: 17,
+		normalize.OperationEncodedTokenNormalize: 18, normalize.OperationTextSegment: 19, normalize.OperationHTMLEntityDecode: 20,
+		normalize.OperationWhitespaceCompact: 21, normalize.OperationURLNoiseStrip: 22, normalize.OperationOrderedQueryConcat: 23,
+		normalize.OperationQuerySubsequence: 24, normalize.OperationHostnameDotRemove: 25, normalize.OperationEncodedRun: 26,
+		normalize.OperationCanaryCanonicalize: 27,
 	}
 	for kind, want := range kinds {
 		t.Run("kind/"+string(kind), func(t *testing.T) {
@@ -326,6 +332,7 @@ func TestCommitmentEnumBytesAreStable(t *testing.T) {
 	components := map[normalize.Component]byte{
 		"": 0, normalize.ComponentURL: 1, normalize.ComponentHostname: 2,
 		normalize.ComponentPath: 3, normalize.ComponentQueryKey: 4, normalize.ComponentQueryVal: 5,
+		normalize.ComponentRawQuery: 6,
 	}
 	for component, want := range components {
 		t.Run("component/"+string(component), func(t *testing.T) {

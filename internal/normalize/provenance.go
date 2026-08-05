@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"html"
 	"net/url"
 	"strings"
 	"unicode"
@@ -32,28 +33,57 @@ type Operation struct {
 	Passes        uint8         `json:"passes,omitempty"`
 	Profile       string        `json:"profile,omitempty"`
 	DecodePadding bool          `json:"decode_padding,omitempty"`
+	Alphabet      string        `json:"alphabet,omitempty"`
+	Indices       []uint8       `json:"indices,omitempty"`
+	MinimumLength uint32        `json:"minimum_length,omitempty"`
 }
 
 type OperationKind string
 
 const (
-	OperationIdentity       OperationKind = "identity"
-	OperationURLComponent   OperationKind = "url_component"
-	OperationPercentDecode  OperationKind = "percent_decode"
-	OperationDLPNormalize   OperationKind = "dlp_normalize"
-	OperationLowercase      OperationKind = "lowercase"
-	OperationInvisibleStrip OperationKind = "invisible_strip"
-	OperationHexDecode      OperationKind = "hex_decode"
-	OperationBase32Decode   OperationKind = "base32_decode"
-	OperationBase64Decode   OperationKind = "base64_decode"
-	OperationLeetspeak      OperationKind = "leetspeak"
-	OperationVowelFold      OperationKind = "vowel_fold"
+	OperationIdentity              OperationKind = "identity"
+	OperationURLComponent          OperationKind = "url_component"
+	OperationPercentDecode         OperationKind = "percent_decode"
+	OperationDLPNormalize          OperationKind = "dlp_normalize"
+	OperationLowercase             OperationKind = "lowercase"
+	OperationInvisibleStrip        OperationKind = "invisible_strip"
+	OperationHexDecode             OperationKind = "hex_decode"
+	OperationBase32Decode          OperationKind = "base32_decode"
+	OperationBase64Decode          OperationKind = "base64_decode"
+	OperationLeetspeak             OperationKind = "leetspeak"
+	OperationVowelFold             OperationKind = "vowel_fold"
+	OperationQueryUnescape         OperationKind = "query_unescape"
+	OperationInvisibleSpace        OperationKind = "invisible_space"
+	OperationMatchingNormalize     OperationKind = "matching_normalize"
+	OperationHexDecodeLiberal      OperationKind = "hex_decode_liberal"
+	OperationBase32DecodeLiberal   OperationKind = "base32_decode_liberal"
+	OperationBase64DecodeLiberal   OperationKind = "base64_decode_liberal"
+	OperationEncodedTokenNormalize OperationKind = "encoded_token_normalize"
+	OperationTextSegment           OperationKind = "text_segment"
+	OperationHTMLEntityDecode      OperationKind = "html_entity_decode"
+	OperationWhitespaceCompact     OperationKind = "whitespace_compact"
+	OperationURLNoiseStrip         OperationKind = "url_noise_strip"
+	OperationOrderedQueryConcat    OperationKind = "ordered_query_concat"
+	OperationQuerySubsequence      OperationKind = "query_subsequence"
+	OperationHostnameDotRemove     OperationKind = "hostname_dot_remove"
+	OperationEncodedRun            OperationKind = "encoded_run"
+	OperationCanaryCanonicalize    OperationKind = "canary_canonicalize"
 )
 
 // SupportedOperationKinds is the complete, versioned recipe vocabulary. Corpus
 // tests require one vector for every returned operation.
 func SupportedOperationKinds() []OperationKind {
-	return []OperationKind{OperationIdentity, OperationURLComponent, OperationPercentDecode, OperationDLPNormalize, OperationLowercase, OperationInvisibleStrip, OperationHexDecode, OperationBase32Decode, OperationBase64Decode, OperationLeetspeak, OperationVowelFold}
+	return []OperationKind{
+		OperationIdentity, OperationURLComponent, OperationPercentDecode, OperationDLPNormalize,
+		OperationLowercase, OperationInvisibleStrip, OperationHexDecode, OperationBase32Decode,
+		OperationBase64Decode, OperationLeetspeak, OperationVowelFold,
+		OperationQueryUnescape, OperationInvisibleSpace, OperationMatchingNormalize,
+		OperationHexDecodeLiberal, OperationBase32DecodeLiberal, OperationBase64DecodeLiberal,
+		OperationEncodedTokenNormalize, OperationTextSegment, OperationHTMLEntityDecode,
+		OperationWhitespaceCompact, OperationURLNoiseStrip, OperationOrderedQueryConcat,
+		OperationQuerySubsequence, OperationHostnameDotRemove, OperationEncodedRun,
+		OperationCanaryCanonicalize,
+	}
 }
 
 type Component string
@@ -64,14 +94,20 @@ const (
 	ComponentPath     Component = "path"
 	ComponentQueryKey Component = "query_key"
 	ComponentQueryVal Component = "query_value"
+	ComponentRawQuery Component = "raw_query"
 )
 
 const evidenceProvenanceProfileMaxDecodePasses = 4
 
 const (
+	evidenceProvenanceScannerMaxDecodeRounds = 500
+	evidenceProvenanceHTMLMaxDecodePasses    = 16
+)
+
+const (
 	// EvidenceProvenanceProfileV1Digest identifies the fixture-only evidence
 	// provenance transform profile, not the source-span transform profile.
-	EvidenceProvenanceProfileV1Digest       = "sha256:8bc27d5d89e4e5ba3e0d1e68a25a3f0170f9a5ea2f19edf81a9a90bf82e23b3e"
+	EvidenceProvenanceProfileV1Digest       = "sha256:42b4d92c0d5a0f5a349ac782f6212340bdaf5ed2d2eccdcc6cb178e8453c6865"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -239,6 +275,58 @@ func (op Operation) apply(value string) (string, error) {
 		return Leetspeak(value), nil
 	case OperationVowelFold:
 		return FoldVowels(value), nil
+	case OperationQueryUnescape:
+		return scannerQueryUnescape(value), nil
+	case OperationInvisibleSpace:
+		return ReplaceInvisibleWithSpace(value), nil
+	case OperationMatchingNormalize:
+		return ForMatching(value), nil
+	case OperationHexDecodeLiberal:
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			return "", fmt.Errorf("liberal hex decode: %w", err)
+		}
+		return string(decoded), nil
+	case OperationBase32DecodeLiberal:
+		encoding := base32.StdEncoding
+		if !op.DecodePadding {
+			encoding = encoding.WithPadding(base32.NoPadding)
+		}
+		decoded, err := encoding.DecodeString(value)
+		if err != nil {
+			return "", fmt.Errorf("liberal base32 decode: %w", err)
+		}
+		return string(decoded), nil
+	case OperationBase64DecodeLiberal:
+		encoding, err := scannerBase64Encoding(op.Alphabet, op.DecodePadding)
+		if err != nil {
+			return "", err
+		}
+		decoded, err := encoding.DecodeString(value)
+		if err != nil {
+			return "", fmt.Errorf("liberal base64 decode: %w", err)
+		}
+		return string(decoded), nil
+	case OperationEncodedTokenNormalize:
+		return scannerEncodedTokenNormalize(value, op.Alphabet), nil
+	case OperationTextSegment:
+		return selectScannerTextSegment(value, op.Occurrence)
+	case OperationHTMLEntityDecode:
+		return scannerHTMLEntityDecode(value), nil
+	case OperationWhitespaceCompact:
+		return scannerWhitespaceCompact(value), nil
+	case OperationURLNoiseStrip:
+		return scannerURLNoiseStrip(value), nil
+	case OperationOrderedQueryConcat:
+		return scannerOrderedQueryConcat(value), nil
+	case OperationQuerySubsequence:
+		return scannerQuerySubsequence(value, op.Indices)
+	case OperationHostnameDotRemove:
+		return strings.ReplaceAll(value, ".", ""), nil
+	case OperationEncodedRun:
+		return selectScannerEncodedRun(value, op.Occurrence, op.MinimumLength)
+	case OperationCanaryCanonicalize:
+		return scannerCanaryCanonicalize(value), nil
 	default:
 		return "", fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -275,12 +363,21 @@ func (op Operation) validate() error {
 			return reject("profile")
 		case op.DecodePadding:
 			return reject("decode_padding")
+		case op.Alphabet != "":
+			return reject("alphabet")
+		case len(op.Indices) != 0:
+			return reject("indices")
+		case op.MinimumLength != 0:
+			return reject("minimum_length")
 		default:
 			return nil
 		}
 	}
 	switch op.Kind {
-	case OperationIdentity, OperationLowercase, OperationInvisibleStrip, OperationLeetspeak, OperationVowelFold:
+	case OperationIdentity, OperationLowercase, OperationInvisibleStrip, OperationLeetspeak, OperationVowelFold,
+		OperationQueryUnescape, OperationInvisibleSpace, OperationWhitespaceCompact,
+		OperationURLNoiseStrip, OperationOrderedQueryConcat, OperationHostnameDotRemove,
+		OperationCanaryCanonicalize, OperationHTMLEntityDecode, OperationHexDecodeLiberal:
 		return noParameters()
 	case OperationURLComponent:
 		if op.Passes != 0 {
@@ -292,8 +389,17 @@ func (op Operation) validate() error {
 		if op.DecodePadding {
 			return reject("decode_padding")
 		}
+		if op.Alphabet != "" {
+			return reject("alphabet")
+		}
+		if len(op.Indices) != 0 {
+			return reject("indices")
+		}
+		if op.MinimumLength != 0 {
+			return reject("minimum_length")
+		}
 		switch op.Component {
-		case ComponentURL, ComponentHostname, ComponentPath:
+		case ComponentURL, ComponentHostname, ComponentPath, ComponentRawQuery:
 			if op.Selector != "" {
 				return reject("selector")
 			}
@@ -327,6 +433,15 @@ func (op Operation) validate() error {
 		if op.DecodePadding {
 			return reject("decode_padding")
 		}
+		if op.Alphabet != "" {
+			return reject("alphabet")
+		}
+		if len(op.Indices) != 0 {
+			return reject("indices")
+		}
+		if op.MinimumLength != 0 {
+			return reject("minimum_length")
+		}
 		return nil
 	case OperationDLPNormalize:
 		if op.Profile != "pipelock-dlp-v1" {
@@ -347,6 +462,15 @@ func (op Operation) validate() error {
 		if op.DecodePadding {
 			return reject("decode_padding")
 		}
+		if op.Alphabet != "" {
+			return reject("alphabet")
+		}
+		if len(op.Indices) != 0 {
+			return reject("indices")
+		}
+		if op.MinimumLength != 0 {
+			return reject("minimum_length")
+		}
 		return nil
 	case OperationHexDecode:
 		return noParameters()
@@ -366,9 +490,98 @@ func (op Operation) validate() error {
 		if op.Profile != "" {
 			return reject("profile")
 		}
+		if op.Alphabet != "" {
+			return reject("alphabet")
+		}
+		if len(op.Indices) != 0 {
+			return reject("indices")
+		}
+		if op.MinimumLength != 0 {
+			return reject("minimum_length")
+		}
 		return nil
+	case OperationMatchingNormalize:
+		if op.Profile != "pipelock-matching-v1" {
+			return fmt.Errorf("unknown matching profile %q", op.Profile)
+		}
+		copy := op
+		copy.Profile = ""
+		return copy.noParametersForValidation(reject)
+	case OperationBase32DecodeLiberal:
+		copy := op
+		copy.DecodePadding = false
+		return copy.noParametersForValidation(reject)
+	case OperationBase64DecodeLiberal:
+		if op.Alphabet != "standard" && op.Alphabet != "url" {
+			return fmt.Errorf("unknown base64 alphabet %q", op.Alphabet)
+		}
+		copy := op
+		copy.Alphabet = ""
+		copy.DecodePadding = false
+		return copy.noParametersForValidation(reject)
+	case OperationEncodedTokenNormalize:
+		switch op.Alphabet {
+		case "hex", "base32", "base64_standard", "base64_url":
+		default:
+			return fmt.Errorf("unknown encoded-token alphabet %q", op.Alphabet)
+		}
+		copy := op
+		copy.Alphabet = ""
+		return copy.noParametersForValidation(reject)
+	case OperationTextSegment:
+		copy := op
+		copy.Occurrence = 0
+		return copy.noParametersForValidation(reject)
+	case OperationQuerySubsequence:
+		if len(op.Indices) < 2 || len(op.Indices) > 4 {
+			return fmt.Errorf("query subsequence indices must contain 2..4 entries")
+		}
+		for index, value := range op.Indices {
+			if value >= 20 {
+				return fmt.Errorf("query subsequence index %d exceeds scanner limit", value)
+			}
+			if index > 0 && value <= op.Indices[index-1] {
+				return fmt.Errorf("query subsequence indices must be strictly increasing")
+			}
+		}
+		copy := op
+		copy.Indices = nil
+		return copy.noParametersForValidation(reject)
+	case OperationEncodedRun:
+		if op.MinimumLength == 0 {
+			return fmt.Errorf("encoded run minimum_length must be positive")
+		}
+		copy := op
+		copy.Occurrence = 0
+		copy.MinimumLength = 0
+		return copy.noParametersForValidation(reject)
 	default:
 		return fmt.Errorf("unknown operation %q", op.Kind)
+	}
+}
+
+func (op Operation) noParametersForValidation(reject func(string) error) error {
+	switch {
+	case op.Component != "":
+		return reject("component")
+	case op.Selector != "":
+		return reject("selector")
+	case op.Occurrence != 0:
+		return reject("occurrence")
+	case op.Passes != 0:
+		return reject("passes")
+	case op.Profile != "":
+		return reject("profile")
+	case op.DecodePadding:
+		return reject("decode_padding")
+	case op.Alphabet != "":
+		return reject("alphabet")
+	case len(op.Indices) != 0:
+		return reject("indices")
+	case op.MinimumLength != 0:
+		return reject("minimum_length")
+	default:
+		return nil
 	}
 }
 
@@ -384,6 +597,8 @@ func (op Operation) selectURLComponent(value string) (string, error) {
 		return parsed.Hostname(), nil
 	case ComponentPath:
 		return parsed.EscapedPath(), nil
+	case ComponentRawQuery:
+		return parsed.RawQuery, nil
 	case ComponentQueryKey, ComponentQueryVal:
 		if op.Selector == "" {
 			return "", fmt.Errorf("query component: missing selector")
@@ -403,4 +618,234 @@ func (op Operation) selectURLComponent(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown URL component %q", op.Component)
 	}
+}
+
+func scannerQueryUnescape(value string) string {
+	for range evidenceProvenanceScannerMaxDecodeRounds {
+		decoded, err := url.QueryUnescape(value)
+		if err != nil || decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
+}
+
+func scannerBase64Encoding(alphabet string, padded bool) (*base64.Encoding, error) {
+	var encoding *base64.Encoding
+	switch alphabet {
+	case "standard":
+		encoding = base64.StdEncoding
+	case "url":
+		encoding = base64.URLEncoding
+	default:
+		return nil, fmt.Errorf("unknown base64 alphabet %q", alphabet)
+	}
+	if !padded {
+		encoding = encoding.WithPadding(base64.NoPadding)
+	}
+	return encoding, nil
+}
+
+func scannerEncodedTokenNormalize(value, alphabet string) string {
+	if len(value) < 4 {
+		return ""
+	}
+	if alphabet == "hex" {
+		value = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", "").Replace(value)
+		value = strings.Map(func(r rune) rune {
+			switch r {
+			case ':', ' ', '-', ',':
+				return -1
+			default:
+				return r
+			}
+		}, value)
+		if len(value) == 0 || len(value)%2 != 0 {
+			return ""
+		}
+		for _, char := range value {
+			if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
+				return ""
+			}
+		}
+		return value
+	}
+
+	isData := func(char byte) bool {
+		switch {
+		case char >= 'A' && char <= 'Z':
+			return true
+		case char >= 'a' && char <= 'z':
+			return alphabet != "base32"
+		case char >= '0' && char <= '9':
+			return alphabet != "base32" || char >= '2' && char <= '7'
+		case char == '=':
+			return true
+		case char == '+' || char == '/':
+			return alphabet == "base64_standard"
+		case char == '-' || char == '_':
+			return alphabet == "base64_url"
+		default:
+			return false
+		}
+	}
+	isSeparator := func(char byte) bool {
+		if char == ' ' || char == '\t' || char == '\n' || char == '\r' || char == '\f' || char == '\v' || char == '.' {
+			return true
+		}
+		switch alphabet {
+		case "base64_standard":
+			return char == '-' || char == '_'
+		case "base64_url":
+			return char == '/' || char == '+'
+		case "base32":
+			return char == '-' || char == '_' || char == '/'
+		default:
+			return false
+		}
+	}
+	var result strings.Builder
+	result.Grow(len(value))
+	changed := false
+	for index := range len(value) {
+		char := value[index]
+		switch {
+		case isData(char):
+			result.WriteByte(char)
+		case isSeparator(char):
+			changed = true
+		default:
+			return ""
+		}
+	}
+	if !changed || result.Len() < 4 {
+		return ""
+	}
+	return result.String()
+}
+
+func selectScannerTextSegment(value string, occurrence uint32) (string, error) {
+	segments := strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case '/', '?', '&', '=', ' ', '\n', '\r', '\t', '"', '\'', '`', '{', '}', '[', ']', '(', ')', '<', '>', ':', ',', ';':
+			return true
+		default:
+			return false
+		}
+	})
+	if int(occurrence) >= len(segments) {
+		return "", fmt.Errorf("text segment: occurrence %d unavailable", occurrence)
+	}
+	return segments[occurrence], nil
+}
+
+func scannerHTMLEntityDecode(value string) string {
+	if !strings.Contains(value, "&") {
+		return value
+	}
+	for range evidenceProvenanceHTMLMaxDecodePasses {
+		decoded := html.UnescapeString(value)
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
+}
+
+func scannerWhitespaceCompact(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+func scannerURLNoiseStrip(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '.', '/', ' ', '\t', '\n', '\r', '+', ',', ';', '|':
+			return -1
+		default:
+			return r
+		}
+	}, value)
+}
+
+func scannerOrderedQueryConcat(rawQuery string) string {
+	var result strings.Builder
+	for _, pair := range strings.Split(rawQuery, "&") {
+		_, value, _ := strings.Cut(pair, "=")
+		if value != "" {
+			result.WriteString(scannerQueryUnescape(value))
+		}
+	}
+	return result.String()
+}
+
+func scannerQuerySubsequence(rawQuery string, indices []uint8) (string, error) {
+	values := make([]string, 0, 20)
+	for _, pair := range strings.Split(rawQuery, "&") {
+		_, value, _ := strings.Cut(pair, "=")
+		if value != "" {
+			values = append(values, scannerQueryUnescape(value))
+			if len(values) == 20 {
+				break
+			}
+		}
+	}
+	var result strings.Builder
+	for _, index := range indices {
+		if int(index) >= len(values) {
+			return "", fmt.Errorf("query subsequence: index %d unavailable", index)
+		}
+		result.WriteString(values[index])
+	}
+	return result.String(), nil
+}
+
+func selectScannerEncodedRun(value string, occurrence, minimumLength uint32) (string, error) {
+	runs := make([]string, 0)
+	start := -1
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		inAlphabet := (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') ||
+			(char >= '0' && char <= '9') || char == '+' || char == '/' || char == '-' || char == '_'
+		if inAlphabet {
+			if start < 0 {
+				start = index
+			}
+			continue
+		}
+		if start >= 0 {
+			end := index
+			for pad := 0; pad < 2 && end < len(value) && value[end] == '='; pad++ {
+				end++
+			}
+			if uint32(end-start) >= minimumLength {
+				runs = append(runs, value[start:end])
+			}
+		}
+		start = -1
+	}
+	if start >= 0 && uint32(len(value)-start) >= minimumLength {
+		runs = append(runs, value[start:])
+	}
+	if int(occurrence) >= len(runs) {
+		return "", fmt.Errorf("encoded run: occurrence %d unavailable", occurrence)
+	}
+	return runs[occurrence], nil
+}
+
+func scannerCanaryCanonicalize(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '.', '/', '\\', '?', '&', '=', ' ', '\t', '\n', '\r', ':', ';', ',', '-', '_', '@', '%', '+', '#':
+			return -1
+		default:
+			return r
+		}
+	}, value)
 }

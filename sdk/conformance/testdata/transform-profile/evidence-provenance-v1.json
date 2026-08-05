@@ -1,6 +1,6 @@
 {
   "format": "pipelock-evidence-transform-corpus/v1",
-  "profile_digest": "sha256:8bc27d5d89e4e5ba3e0d1e68a25a3f0170f9a5ea2f19edf81a9a90bf82e23b3e",
+  "profile_digest": "sha256:42b4d92c0d5a0f5a349ac782f6212340bdaf5ed2d2eccdcc6cb178e8453c6865",
   "operation_coverage": [
     "identity",
     "url_component",
@@ -12,7 +12,23 @@
     "base32_decode",
     "base64_decode",
     "leetspeak",
-    "vowel_fold"
+    "vowel_fold",
+    "query_unescape",
+    "invisible_space",
+    "matching_normalize",
+    "hex_decode_liberal",
+    "base32_decode_liberal",
+    "base64_decode_liberal",
+    "encoded_token_normalize",
+    "text_segment",
+    "html_entity_decode",
+    "whitespace_compact",
+    "url_noise_strip",
+    "ordered_query_concat",
+    "query_subsequence",
+    "hostname_dot_remove",
+    "encoded_run",
+    "canary_canonicalize"
   ],
   "error_coverage": [
     "invalid_utf8",
@@ -310,6 +326,118 @@
           "kind": "vowel_fold"
         }
       ]
+    },
+    {
+      "id": "scanner-query-unescape",
+      "operations": ["query_unescape"],
+      "input_b64": "YStiJTI1MjUyNTI1MjE=",
+      "output_b64": "YSBiIQ==",
+      "recipe": [{"kind":"query_unescape"}]
+    },
+    {
+      "id": "scanner-invisible-space",
+      "operations": ["invisible_space"],
+      "input_b64": "YWxwaGHigItiZXRh",
+      "output_b64": "YWxwaGEgYmV0YQ==",
+      "recipe": [{"kind":"invisible_space"}]
+    },
+    {
+      "id": "scanner-matching-normalize",
+      "operations": ["matching_normalize"],
+      "input_b64": "77yh4oCLQsKgQw==",
+      "output_b64": "QUIgQw==",
+      "recipe": [{"kind":"matching_normalize","profile":"pipelock-matching-v1"}]
+    },
+    {
+      "id": "scanner-liberal-hex",
+      "operations": ["hex_decode_liberal"],
+      "input_b64": "NEE=",
+      "output_b64": "Sg==",
+      "recipe": [{"kind":"hex_decode_liberal"}]
+    },
+    {
+      "id": "scanner-liberal-base32",
+      "operations": ["base32_decode_liberal"],
+      "input_b64": "TVo9PT09PT0=",
+      "output_b64": "Zg==",
+      "recipe": [{"kind":"base32_decode_liberal","decode_padding":true}]
+    },
+    {
+      "id": "scanner-liberal-base64-url",
+      "operations": ["base64_decode_liberal"],
+      "input_b64": "NEtDLQ==",
+      "output_b64": "4KC+",
+      "recipe": [{"kind":"base64_decode_liberal","alphabet":"url"}]
+    },
+    {
+      "id": "scanner-encoded-token-normalize",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "XHg0OCBceDY5",
+      "output_b64": "NDg2OQ==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"hex"}]
+    },
+    {
+      "id": "scanner-text-segment",
+      "operations": ["text_segment"],
+      "input_b64": "cHJlIGh0dHBzOi8vaG9zdC9wYXRoLHRhaWw=",
+      "output_b64": "cGF0aA==",
+      "recipe": [{"kind":"text_segment","occurrence":3}]
+    },
+    {
+      "id": "scanner-html-entity",
+      "operations": ["html_entity_decode"],
+      "input_b64": "JmFtcDthbXA7",
+      "output_b64": "Jg==",
+      "recipe": [{"kind":"html_entity_decode"}]
+    },
+    {
+      "id": "scanner-whitespace-compact",
+      "operations": ["whitespace_compact"],
+      "input_b64": "YeKAgyBiCg==",
+      "output_b64": "YWI=",
+      "recipe": [{"kind":"whitespace_compact"}]
+    },
+    {
+      "id": "scanner-url-noise",
+      "operations": ["url_noise_strip"],
+      "input_b64": "YS4vICssO3wJYg==",
+      "output_b64": "YWI=",
+      "recipe": [{"kind":"url_noise_strip"}]
+    },
+    {
+      "id": "scanner-ordered-query",
+      "operations": ["ordered_query_concat"],
+      "input_b64": "YT14JTI1MjEmZW1wdHk9JmI9eSt6",
+      "output_b64": "eCF5IHo=",
+      "recipe": [{"kind":"ordered_query_concat"}]
+    },
+    {
+      "id": "scanner-query-subsequence",
+      "operations": ["query_subsequence"],
+      "input_b64": "YT1vbmUmYj1qdW5rJmM9dHdvJmQ9dGhyZWU=",
+      "output_b64": "b25ldHdvdGhyZWU=",
+      "recipe": [{"kind":"query_subsequence","indices":[0,2,3]}]
+    },
+    {
+      "id": "scanner-hostname-dot-remove",
+      "operations": ["hostname_dot_remove"],
+      "input_b64": "YXBpLnZlbmRvci5leGFtcGxl",
+      "output_b64": "YXBpdmVuZG9yZXhhbXBsZQ==",
+      "recipe": [{"kind":"hostname_dot_remove"}]
+    },
+    {
+      "id": "scanner-encoded-run",
+      "operations": ["encoded_run"],
+      "input_b64": "cHJlZml4OlFVSkRSQT09IHN1ZmZpeA==",
+      "output_b64": "UVVKRFJBPT0=",
+      "recipe": [{"kind":"encoded_run","occurrence":1,"minimum_length":6}]
+    },
+    {
+      "id": "scanner-canary-canonicalize",
+      "operations": ["canary_canonicalize"],
+      "input_b64": "QWItY19kL2U/Zg==",
+      "output_b64": "QWJjZGVm",
+      "recipe": [{"kind":"canary_canonicalize"}]
     },
     {
       "id": "invalid-utf8",

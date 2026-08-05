@@ -350,6 +350,8 @@ func ZalgoSuspicious(s string) bool {
 
 // Leetspeak maps common digit-for-letter substitutions used in L1B3RT4S-style
 // injection evasion.
+//
+//pipelock:provenance-transform leetspeak
 func Leetspeak(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -399,6 +401,8 @@ func mapInvisible(s string, replacement rune) string {
 // Unicode zero-width/invisible characters. Preserves whitespace control chars
 // because injection patterns use \s+ to match them.
 // Used in response/injection scanning paths.
+//
+//pipelock:provenance-transform invisible_strip
 func StripZeroWidth(s string) string {
 	return mapInvisible(s, -1)
 }
@@ -407,6 +411,8 @@ func StripZeroWidth(s string) string {
 // instead of dropping them. Preserves word boundaries at invisible character
 // positions: "ignore\u200ball" becomes "ignore all" (detectable) instead of
 // "ignoreall" (bypass). Used in policy matching where word boundaries matter.
+//
+//pipelock:provenance-transform invisible_space
 func ReplaceInvisibleWithSpace(s string) string {
 	return mapInvisible(s, ' ')
 }
@@ -462,6 +468,8 @@ func StripControlChars(s string) string {
 // wide/NBSP space variants to ASCII space. If stripping happened after NFKC,
 // those evasion characters would leave behind a literal ASCII space in the
 // middle of what would otherwise be a matchable secret, breaking the regex.
+//
+//pipelock:provenance-transform dlp_normalize
 func ForDLP(s string) string {
 	s = StripControlChars(s)
 	s = StripExoticWhitespace(s)
@@ -474,6 +482,8 @@ func ForDLP(s string) string {
 // ForMatching applies the standard normalization pipeline for response/injection
 // scanning: strip invisible chars (preserve whitespace), NFKC, confusable mapping,
 // combining mark removal, whitespace normalization.
+//
+//pipelock:provenance-transform matching_normalize
 func ForMatching(s string) string {
 	s = StripZeroWidth(s)
 	s = norm.NFKC.String(s)
@@ -502,6 +512,8 @@ func ForPolicy(s string) string {
 // matching fails because "instroctions" != "instructions". Vowel-folding makes
 // both become "anstractaans", enabling pattern comparison on the folded forms.
 // Callers use (?i) regex flags so the case distinction does not affect matching.
+//
+//pipelock:provenance-transform vowel_fold
 func FoldVowels(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {

@@ -536,7 +536,7 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 
 	// Subdomain dot-collapse.
 	if strings.Contains(cleaned, ".") {
-		dotless := strings.ReplaceAll(cleaned, ".", "")
+		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
 			matches = append(matches, s.matchCoreDLPPatterns(dotless, "subdomain")...)
 		}
@@ -752,7 +752,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 
 	// Dot-collapse hostname.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, dlpTarget{strings.ReplaceAll(hostname, ".", ""), dlpViewLabel("subdomain")})
+		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain")})
 	}
 
 	// Noise-stripped path.
@@ -827,6 +827,8 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 
 // querySubsequenceCoreDLP checks ordered combinations of query values against
 // core DLP patterns. Mirrors the main scanner's querySubsequenceDLP.
+//
+//pipelock:provenance-transform query_subsequence
 func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}

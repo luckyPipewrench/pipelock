@@ -136,7 +136,7 @@ func TestReadPrivateViewRequiresSecureOpenedFile(t *testing.T) {
 	if got, err := ReadPrivateView(path); err != nil || string(got) != "private" {
 		t.Fatalf("ReadPrivateView = %q, %v", got, err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := unix.Chmod(path, 0o644); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
 	if _, err := ReadPrivateView(path); !errors.Is(err, ErrUnsafePermission) {
@@ -222,7 +222,7 @@ func TestSecureIOReachableErrorPaths(t *testing.T) {
 	if err := os.Mkdir(unsafeParent, 0o750); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if err := os.Chmod(unsafeParent, 0o770); err != nil {
+	if err := unix.Chmod(unsafeParent, 0o770); err != nil {
 		t.Fatalf("Chmod unsafe: %v", err)
 	}
 	if err := writeSecureNew(filepath.Join(unsafeParent, "new.json"), []byte("x")); !errors.Is(err, ErrUnsafePermission) {
@@ -231,7 +231,7 @@ func TestSecureIOReachableErrorPaths(t *testing.T) {
 	if err := writeSecureReplace(filepath.Join(unsafeParent, "replace.json"), []byte("x")); !errors.Is(err, ErrUnsafePermission) {
 		t.Fatalf("writeSecureReplace unsafe parent = %v", err)
 	}
-	if err := os.Chmod(unsafeParent, 0o750); err != nil {
+	if err := unix.Chmod(unsafeParent, 0o750); err != nil {
 		t.Fatalf("restore parent mode: %v", err)
 	}
 	if err := writeSecureReplace(filepath.Join(unsafeParent, "missing.json"), []byte("x")); err == nil {
@@ -320,10 +320,10 @@ func TestSecureIOReachableErrorPaths(t *testing.T) {
 		if err := os.Mkdir(readOnlyParent, 0o750); err != nil {
 			t.Fatalf("Mkdir read-only: %v", err)
 		}
-		if err := os.Chmod(readOnlyParent, 0o500); err != nil {
+		if err := unix.Chmod(readOnlyParent, 0o500); err != nil {
 			t.Fatalf("Chmod read-only: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Chmod(readOnlyParent, 0o750) })
+		t.Cleanup(func() { _ = unix.Chmod(readOnlyParent, 0o750) })
 		if _, _, err := openSecureParent(filepath.Join(readOnlyParent, "missing", "keyring.json"), true); err == nil {
 			t.Fatal("openSecureParent created below read-only parent")
 		}
@@ -337,7 +337,7 @@ func TestReadPrivateViewRejectsFIFOWithoutConsumingIt(t *testing.T) {
 	}
 	writerDone := make(chan error, 1)
 	go func() {
-		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY, 0)
 		if err != nil {
 			writerDone <- err
 			return

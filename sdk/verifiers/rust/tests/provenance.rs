@@ -62,3 +62,78 @@ fn html_entity_decode_supports_full_html5_table_and_repeated_passes() {
         "∳"
     );
 }
+
+#[test]
+fn recipe_validation_rejects_malformed_operation_shapes() {
+    for (operations, want) in [
+        (serde_json::json!(null), "operations must be an array"),
+        (serde_json::json!([null]), "operation must be an object"),
+        (
+            serde_json::json!([{"kind": "identity", "extra": 1}]),
+            "unsupported extra",
+        ),
+        (
+            serde_json::json!([{"kind": "url_component", "component": "port"}]),
+            "unknown URL component",
+        ),
+        (
+            serde_json::json!([{"kind": "url_component", "component": "path", "selector": "x"}]),
+            "unsupported selector",
+        ),
+        (
+            serde_json::json!([{"kind": "base64_decode_liberal", "alphabet": "other"}]),
+            "unknown base64 alphabet",
+        ),
+        (
+            serde_json::json!([{"kind": "encoded_token_normalize", "alphabet": "other"}]),
+            "unknown encoded-token alphabet",
+        ),
+        (
+            serde_json::json!([{"kind": "query_subsequence", "indices": [1, 1]}]),
+            "strictly increasing",
+        ),
+        (
+            serde_json::json!([{"kind": "encoded_run", "minimum_length": 0}]),
+            "must be positive",
+        ),
+        (
+            serde_json::json!([{"kind": "text_segment", "occurrence": -1}]),
+            "must be a uint32",
+        ),
+        (
+            serde_json::json!([{"kind": "base64_decode", "decode_padding": 1}]),
+            "must be a boolean",
+        ),
+    ] {
+        let error = Recipe::from_json(PROFILE_DIGEST, &operations).unwrap_err();
+        assert!(error.contains(want), "{error:?} does not contain {want:?}");
+    }
+}
+
+#[test]
+fn url_component_surfaces_are_distinct() {
+    let input = "https://api.vendor.example/a/b?x=y";
+    for (component, want) in [
+        ("url", input),
+        ("hostname", "api.vendor.example"),
+        ("path", "/a/b"),
+        ("raw_query", "x=y"),
+    ] {
+        let recipe = Recipe::from_json(
+            PROFILE_DIGEST,
+            &serde_json::json!([{"kind": "url_component", "component": component}]),
+        )
+        .expect("recipe");
+        assert_eq!(recipe.apply(input).expect("apply"), want);
+    }
+}
+
+#[test]
+fn liberal_hex_rejects_non_utf8_output() {
+    let recipe = Recipe::from_json(
+        PROFILE_DIGEST,
+        &serde_json::json!([{"kind": "hex_decode_liberal"}]),
+    )
+    .expect("recipe");
+    assert!(recipe.apply("ff").unwrap_err().contains("invalid UTF-8"));
+}

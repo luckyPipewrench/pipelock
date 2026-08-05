@@ -8,7 +8,7 @@ Evidence commitments use a dedicated symmetric keyring. They do not use
 `flight_recorder.signing_key_path`, and the keyring cannot be loaded as a
 receipt-signing key. Configure its operator-owned location separately:
 
-```yaml pipelock-fragment
+```yaml
 evidence_provenance:
   commitment_keyring_path: /var/lib/pipelock/evidence/commitment-keyring.json
 ```

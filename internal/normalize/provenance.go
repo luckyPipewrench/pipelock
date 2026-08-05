@@ -100,6 +100,20 @@ const (
 const evidenceProvenanceProfileMaxDecodePasses = 4
 
 const (
+	// evidenceProvenanceMaxOperations bounds recipe length. Per-operation input
+	// and output caps do not bound verifier work when the attacker controls how
+	// MANY operations run: a long sequence of individually legal transforms each
+	// stays under the intermediate limit while the total cost grows without
+	// bound. Provenance verification runs against externally supplied receipts
+	// during incident review, so an unbounded recipe is an availability attack
+	// on the audit path.
+	evidenceProvenanceMaxOperations = 32
+	// evidenceProvenanceMaxTotalBytes bounds CUMULATIVE bytes processed across
+	// every operation and every internal pass. Round caps alone are insufficient
+	// because a single operation may legally repeat near the maximum size, so
+	// the budget is charged in aggregate and exhaustion is a rejection.
+	evidenceProvenanceMaxTotalBytes = 16 << 20
+
 	evidenceProvenanceScannerMaxDecodeRounds = 500
 	evidenceProvenanceHTMLMaxDecodePasses    = 16
 	evidenceProvenanceQueryMaxValues         = 20
@@ -170,8 +184,19 @@ func (r Recipe) Apply(input string) (string, error) {
 	if len(input) > profile.maxInputBytes {
 		return "", fmt.Errorf("recipe input: exceeds profile byte limit")
 	}
+	if len(r.Operations) > evidenceProvenanceMaxOperations {
+		return "", fmt.Errorf("recipe: exceeds %d operations", evidenceProvenanceMaxOperations)
+	}
 	value := input
+	budget := evidenceProvenanceMaxTotalBytes
 	for index, op := range r.Operations {
+		// Charge the operation's input against the cumulative budget BEFORE
+		// running it, so an expensive operation cannot spend work it has not
+		// been granted.
+		if len(value) > budget {
+			return "", fmt.Errorf("recipe: exceeds cumulative processing budget")
+		}
+		budget -= len(value)
 		value, err = op.apply(value)
 		if err != nil {
 			return "", fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)

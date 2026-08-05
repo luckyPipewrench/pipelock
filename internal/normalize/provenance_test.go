@@ -425,3 +425,54 @@ func TestSupportedOperationKinds(t *testing.T) {
 		t.Fatalf("SupportedOperationKinds() = %v, want %v", got, want)
 	}
 }
+
+// TestRecipeExecutionBudgetsRejectUnboundedWork pins the two limits that bound
+// verifier cost for an externally supplied receipt. Per-operation input and
+// output caps do not constrain total work when the attacker chooses how many
+// operations run, and provenance verification is performed against untrusted
+// receipts during incident review, so an unbounded recipe is an availability
+// attack on the audit path rather than a theoretical concern.
+func TestRecipeExecutionBudgetsRejectUnboundedWork(t *testing.T) {
+	t.Parallel()
+
+	identity := Operation{Kind: OperationIdentity}
+
+	t.Run("operation count is capped", func(t *testing.T) {
+		t.Parallel()
+		operations := make([]Operation, evidenceProvenanceMaxOperations+1)
+		for i := range operations {
+			operations[i] = identity
+		}
+		recipe := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: operations}
+		if _, err := recipe.Apply("value"); err == nil {
+			t.Fatal("recipe exceeding the operation cap was accepted")
+		}
+	})
+
+	t.Run("cap boundary is inclusive", func(t *testing.T) {
+		t.Parallel()
+		operations := make([]Operation, evidenceProvenanceMaxOperations)
+		for i := range operations {
+			operations[i] = identity
+		}
+		recipe := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: operations}
+		if _, err := recipe.Apply("value"); err != nil {
+			t.Fatalf("recipe at exactly the operation cap was rejected: %v", err)
+		}
+	})
+
+	t.Run("cumulative budget is charged across operations", func(t *testing.T) {
+		t.Parallel()
+		// Each pass re-reads a large intermediate value. No single operation
+		// exceeds the per-output cap, but together they must exhaust the budget.
+		operations := make([]Operation, evidenceProvenanceMaxOperations)
+		for i := range operations {
+			operations[i] = identity
+		}
+		recipe := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: operations}
+		large := strings.Repeat("a", 1<<20)
+		if _, err := recipe.Apply(large); err == nil {
+			t.Fatal("recipe exhausting the cumulative budget was accepted")
+		}
+	})
+}

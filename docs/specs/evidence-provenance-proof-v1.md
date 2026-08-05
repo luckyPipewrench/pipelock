@@ -2,6 +2,16 @@
 
 Status: experimental and fixture-only. This document specifies no registered receipt payload, production emitter, verifier command, or capability claim.
 
+## Profile lifecycle and the freeze boundary
+
+While this profile is experimental, `v1` names a schema-major profile FAMILY and the exact revision in force is its digest, not its filename. Revising the vocabulary therefore changes the digest in place, and that is deliberate: no production emitter, published verifier, or released artifact consumes this profile, so no issued proof is invalidated by doing so. Implementations pin one exact digest and reject every other value, which means an unknown digest fails closed rather than degrading to a weaker interpretation.
+
+That permission ends at a hard boundary. On the FIRST of either a production emission or a published verifier that implements this profile, the profile bytes and digest become immutable permanently. After that point a vocabulary change MUST be published as a new profile, every frozen profile MUST be retained by digest for the full receipt-retention period, and dispatch MUST be exact allowlisted digest matching.
+
+Dispatch must never be ordered fallback. Trying one profile and then another on failure lets an attacker choose the weaker interpretation of the same bytes, which converts a verification control into a downgrade oracle. An unknown digest is a rejection, not a prompt to try again.
+
+The reason to state this now rather than at the freeze is cost. Today the migration is a digest change. After one real receipt exists it requires archival profile support, mixed-version verification tests, downgrade controls, and a documented retention period, and it must be designed under the pressure of already having something to preserve.
+
 ## Scope and terms
 
 A source is named input bytes. A view is UTF-8 bytes produced from exactly one source by an ordered typed recipe. A match is a half-open byte interval `[byte_start, byte_end)` in that view. All offsets are unsigned UTF-8 **byte** offsets. Rune/character conversion is forbidden.

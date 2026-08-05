@@ -136,7 +136,7 @@ brew install luckyPipewrench/tap/pipelock
 
 ```bash
 gh attestation verify pipelock_3.3.0_linux_amd64.tar.gz --owner luckyPipewrench
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:v3.3.0 --owner luckyPipewrench
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.3.0 --owner luckyPipewrench
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images. Source builds with `go install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.

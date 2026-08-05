@@ -3,9 +3,11 @@ name: Publish Helm chart
 # Publishes the chart on demand, without cutting a release.
 #
 # The release workflow already publishes the chart on every tag. This exists for
-# the bootstrap case and for republishing after a registry-side accident: the
-# chart's first publication creates a new GHCR package, and waiting for the next
-# release to create it would tie an unrelated decision to a release schedule.
+# the bootstrap case: the chart's first publication creates a new GHCR package,
+# and waiting for the next release to create it would tie an unrelated decision
+# to a release schedule. It runs only from the default branch and only for a
+# chart version that has already been released, so it cannot publish an
+# unreviewed chart or one that deploys an image that does not exist.
 #
 # It refuses to overwrite an existing tag. The release gate keeps the chart
 # version equal to the released Pipelock version, so a collision here means the
@@ -48,8 +50,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+
+          # Run only from the default branch. Restricting to a tag ref instead
+          # would be stricter but useless: a dispatch runs the workflow file as
+          # it exists at the selected ref, and no released tag contains this
+          # file, so the bootstrap case this workflow exists for could never
+          # run. The default branch is protected and reviewed, which is the
+          # property that actually matters here, and it is where the chart that
+          # will be published lives.
+          test "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" || {
+            echo "::error::run this from ${DEFAULT_BRANCH}; refusing to publish a chart from an unreviewed ref"
+            exit 1
+          }
 
           chart_version="$(helm show chart charts/pipelock | awk '$1 == "version:" { print $2 }')"
           app_version="$(helm show chart charts/pipelock | awk '$1 == "appVersion:" { gsub(/"/, "", $2); print $2 }')"
@@ -62,21 +77,33 @@ jobs:
             exit 1
           }
 
+          # The chart deploys an image tagged with its own version, so publishing
+          # a version that was never released would produce a chart that cannot
+          # pull. Requiring a matching release also stops this from publishing a
+          # chart mid-way through a pre-tag bump, when the default branch names a
+          # version that does not exist yet.
+          if ! gh release view "v${chart_version}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::no released v${chart_version}; the chart deploys pipelock:${chart_version}, which must exist first"
+            exit 1
+          fi
+
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
           # Refuse to overwrite. An OCI registry accepts a re-push to an existing
           # tag silently, which would change what an already-published version
           # means for anyone who pinned it.
-          if helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" >/dev/null 2>&1; then
-            helm registry logout ghcr.io
+          if chart_lookup_output="$(helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" 2>&1)"; then
             echo "::error::chart ${chart_version} is already published; bump the chart and app version rather than overwriting a published tag"
+            exit 1
+          elif ! printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
+            echo "::error::could not determine whether chart ${chart_version} already exists; refusing to publish"
             exit 1
           fi
 
           helm package charts/pipelock --destination dist-chart
 
           if [ "$DRY_RUN" = "true" ]; then
-            helm registry logout ghcr.io
             echo "Dry run: packaged pipelock-${chart_version}.tgz and confirmed the tag is free. Nothing pushed."
             {
               echo "### Helm chart dry run"
@@ -88,7 +115,6 @@ jobs:
           fi
 
           helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
-          helm registry logout ghcr.io
 
           {
             echo "### Helm chart published"

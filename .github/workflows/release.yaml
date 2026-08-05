@@ -422,10 +422,9 @@ jobs:
       # ghcr.io/luckypipewrench/charts/pipelock:<v>, which is the reference
       # Artifact Hub indexes.
       #
-      # appVersion is forced to the tag being released rather than trusting the
-      # committed value. The chart's own version stays hand-managed in
-      # Chart.yaml: it tracks changes to the templates, not to Pipelock, and the
-      # two move independently.
+      # Both appVersion and the chart version are release-gated to the tag being
+      # published. OCI charts are addressed by chart version, so this prevents
+      # a later release from replacing an already-published chart tag.
       #
       # The first run creates a new GHCR package, and new packages are private
       # by default, so the chart is not installable until that package is made
@@ -450,6 +449,7 @@ jobs:
           }
           helm package charts/pipelock --app-version "$app_version" --destination dist-chart
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
           # Refuse to overwrite a published tag. The release gate keeps the chart
           # version equal to the release version, so this can only trigger when
@@ -457,14 +457,15 @@ jobs:
           # An OCI registry accepts a re-push silently, so without this the
           # second run would change what an already-published version means for
           # anyone who pinned it.
-          if helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" >/dev/null 2>&1; then
-            helm registry logout ghcr.io
+          if chart_lookup_output="$(helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" 2>&1)"; then
             echo "::error::chart ${chart_version} is already published; refusing to overwrite a published tag"
+            exit 1
+          elif ! printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
+            echo "::error::could not determine whether chart ${chart_version} already exists; refusing to publish"
             exit 1
           fi
 
           helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
-          helm registry logout ghcr.io
 
           # A brand-new GHCR package is private, and the install command in the
           # READMEs fails with an authorization error until it is made public.

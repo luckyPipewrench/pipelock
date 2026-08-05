@@ -8,13 +8,13 @@ Pipelock is an agent firewall: a network proxy that sits between AI agents and t
 helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock
 ```
 
-The chart is published as an OCI artifact to the same registry as the images it deploys, so there is no repository to add. Installing a specific revision takes `--version`, which selects the chart version rather than the Pipelock version. To install from a checkout instead, point Helm at the directory: `helm install pipelock ./charts/pipelock`.
+The chart is published as an OCI artifact to the same registry as the images it deploys, so there is no repository to add. Installing a specific revision takes `--version`, which selects the chart version; Pipelock intentionally keeps that version equal to its release version. To install from a checkout instead, point Helm at the directory: `helm install pipelock ./charts/pipelock`.
 
 Pipelock runs as a non-root container with a read-only root filesystem, drops all Linux capabilities, and binds the standard Pipelock proxy on port 8888.
 
 ### Chart version and Pipelock version
 
-`version` is the chart's own version and tracks changes to these templates. `appVersion` is the Pipelock release the chart deploys, and the release workflow sets it from the tag being published, so a chart pulled from the registry always names the Pipelock version it shipped with.
+`version` and `appVersion` both equal the Pipelock release. The release gate enforces the invariant because OCI registries address a chart by `version`; allowing it to lag would replace an existing version with a chart that deploys a different Pipelock release.
 
 Enterprise examples:
 

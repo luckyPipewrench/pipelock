@@ -22,9 +22,10 @@ classifiers = [
   # makes an accidental `twine upload` of this reference impl fail.
   "Private :: Do Not Upload",
 ]
-# The only runtime dependency is `cryptography` (Ed25519 verification). CI installs
-# the hash-pinned transitive tree from requirements.txt with --require-hashes.
-dependencies = ["cryptography>=50.0.0"]
+# Runtime dependencies: `cryptography` verifies Ed25519; `unicodedata2` pins
+# evidence-provenance normalization to the profile's Unicode 15.0.0 semantics.
+# CI installs the hash-pinned tree from requirements.txt with --require-hashes.
+dependencies = ["cryptography>=50.0.0", "unicodedata2==15.0.0"]
 
 # No [project.scripts] console entry on purpose: this reference verifier is
 # invoked as `python -m pipelock_aarp_verify aarp` by the conformance gate and

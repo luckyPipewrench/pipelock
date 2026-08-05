@@ -192,6 +192,16 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=pipelock"
+      - "--label=org.opencontainers.image.description=Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement."
+      - "--label=org.opencontainers.image.url=https://pipelab.org"
+      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
+      - "--label=org.opencontainers.image.vendor=luckyPipewrench"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0 AND Elastic-2.0"
     dockerfile: Dockerfile.goreleaser
 
   - image_templates:
@@ -200,6 +210,16 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=pipelock"
+      - "--label=org.opencontainers.image.description=Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement."
+      - "--label=org.opencontainers.image.url=https://pipelab.org"
+      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
+      - "--label=org.opencontainers.image.vendor=luckyPipewrench"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0 AND Elastic-2.0"
     goarch: arm64
     dockerfile: Dockerfile.goreleaser
 
@@ -211,6 +231,16 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=pipelock-init"
+      - "--label=org.opencontainers.image.description=Init container that installs the Pipelock binary into a shared volume for sidecar deployments."
+      - "--label=org.opencontainers.image.url=https://pipelab.org"
+      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
+      - "--label=org.opencontainers.image.vendor=luckyPipewrench"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0 AND Elastic-2.0"
     dockerfile: Dockerfile.init
 
   - image_templates:
@@ -219,6 +249,16 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=pipelock-init"
+      - "--label=org.opencontainers.image.description=Init container that installs the Pipelock binary into a shared volume for sidecar deployments."
+      - "--label=org.opencontainers.image.url=https://pipelab.org"
+      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
+      - "--label=org.opencontainers.image.vendor=luckyPipewrench"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0 AND Elastic-2.0"
     goarch: arm64
     dockerfile: Dockerfile.init
 
@@ -230,6 +270,16 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=pipelock-license-service"
+      - "--label=org.opencontainers.image.description=Pipelock license service. Webhook handler for subscription events and license issuance."
+      - "--label=org.opencontainers.image.url=https://pipelab.org"
+      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
+      - "--label=org.opencontainers.image.vendor=luckyPipewrench"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0 AND Elastic-2.0"
     dockerfile: Dockerfile.license-service
 
   - image_templates:
@@ -238,6 +288,16 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=pipelock-license-service"
+      - "--label=org.opencontainers.image.description=Pipelock license service. Webhook handler for subscription events and license issuance."
+      - "--label=org.opencontainers.image.url=https://pipelab.org"
+      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
+      - "--label=org.opencontainers.image.vendor=luckyPipewrench"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .CommitDate }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0 AND Elastic-2.0"
     goarch: arm64
     dockerfile: Dockerfile.license-service
 

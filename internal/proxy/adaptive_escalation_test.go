@@ -1139,7 +1139,9 @@ func TestConnect_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p, err := New(cfg, logger, sc, m)
+	receiptDir := t.TempDir()
+	emitter, receiptRecorder, _ := newCoverageEmitter(t, receiptDir)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(emitter))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -1187,6 +1189,19 @@ func TestConnect_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Errorf("expected 403 for CONNECT warn->block escalation, got %d: %s", resp.StatusCode, body)
+	}
+	waitForReceiptOrTimeout(t, receiptDir)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("close receipt recorder: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, receiptDir)
+	if len(receipts) != 1 {
+		t.Fatalf("CONNECT adaptive-upgrade receipts = %+v, want exactly one", receipts)
+	}
+	ar := receipts[0].ActionRecord
+	wantTarget := "https://" + dlpHost + "/"
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportConnect || ar.Method != http.MethodConnect || ar.Target != wantTarget {
+		t.Fatalf("CONNECT adaptive-upgrade action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportConnect, wantTarget)
 	}
 }
 

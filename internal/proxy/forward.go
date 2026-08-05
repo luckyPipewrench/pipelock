@@ -350,6 +350,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			sessionKey := sessionKeyFor(agent, clientIP)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
+			emitConnectSessionDenyReceipt()
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			writeBlockedError(w, blockInfo(result.Scanner),
 				"CONNECT "+adaptiveBlockedReason, status)

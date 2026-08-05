@@ -113,7 +113,9 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p, err := New(cfg, logger, sc, m)
+	receiptDir := t.TempDir()
+	emitter, receiptRecorder, _ := newCoverageEmitter(t, receiptDir)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(emitter))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -146,6 +148,14 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
 		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
+	}
+	waitForReceiptOrTimeout(t, receiptDir)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("close receipt recorder: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, receiptDir)
+	if len(receipts) != 1 || receipts[0].ActionRecord.Layer != "session_deny" {
+		t.Fatalf("session deny receipts = %+v, want one session_deny receipt", receipts)
 	}
 }
 
@@ -1310,7 +1320,9 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p, err := New(cfg, logger, sc, m)
+	receiptDir := t.TempDir()
+	emitter, receiptRecorder, _ := newCoverageEmitter(t, receiptDir)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(emitter))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -1337,6 +1349,14 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Logf("body: %s", w.Body.String())
 		t.Errorf("expected 403 after forward header DLP near-miss escalation + block_all recheck, got %d", w.Code)
+	}
+	waitForReceiptOrTimeout(t, receiptDir)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("close receipt recorder: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, receiptDir)
+	if len(receipts) != 1 || receipts[0].ActionRecord.Layer != "session_deny" {
+		t.Fatalf("session deny receipts = %+v, want one session_deny receipt", receipts)
 	}
 }
 
@@ -2189,7 +2209,9 @@ func TestForwardHTTP_CEE_BlockAllRecheck(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p, err := New(cfg, logger, sc, m)
+	receiptDir := t.TempDir()
+	emitter, receiptRecorder, _ := newCoverageEmitter(t, receiptDir)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(emitter))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -2223,6 +2245,14 @@ func TestForwardHTTP_CEE_BlockAllRecheck(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), adaptiveBlockedReason) {
 		t.Errorf("expected generic adaptive block message, got %q", w.Body.String())
+	}
+	waitForReceiptOrTimeout(t, receiptDir)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("close receipt recorder: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, receiptDir)
+	if len(receipts) != 1 || receipts[0].ActionRecord.Layer != "session_deny" {
+		t.Fatalf("session deny receipts = %+v, want one session_deny receipt", receipts)
 	}
 }
 

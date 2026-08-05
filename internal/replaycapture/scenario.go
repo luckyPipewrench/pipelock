@@ -141,6 +141,9 @@ type Scenario struct {
 	// ExpectedVerdict is the decisive receipt verdict (verdictAllow/Block/Warn).
 	// For multi-receipt scenarios it is the verdict of the headline decision.
 	ExpectedVerdict string
+	// ExpectedSequence, when non-empty, is the exact ordered sequence of
+	// non-session decisions the published receipt chain must contain.
+	ExpectedSequence []ExpectedDecision
 	// DestinationClass is a redacted, human-readable destination label for the
 	// UI. Never an ephemeral port, internal host, or raw target.
 	DestinationClass string
@@ -154,6 +157,12 @@ type Scenario struct {
 	// (e.g. "AKIA••••••••••••EXAMPLE → exfiltrated"). Optional. Must never be a
 	// raw secret value, even synthetic.
 	RedactedShape string
+}
+
+// ExpectedDecision declares one required non-session receipt in a replay chain.
+type ExpectedDecision struct {
+	Verdict string
+	Layer   string
 }
 
 // redactedAWSShape is the inert display form for the AWS example key. It keeps
@@ -315,13 +324,18 @@ func DefaultScenarios() []Scenario {
 			With:             "Pipelock scans the tools/list response, detects instruction-tag poisoning, replaces the inventory with a JSON-RPC error, and signs the block.",
 		},
 		{
-			ID:               "multi-step-policy-chain",
-			Title:            "Chain: two safe actions, then a blocked write",
-			BenchCaseID:      "local-lab-multi-step-policy-chain-001",
-			Transport:        TransportForward,
-			Category:         "Multi-step evidence",
-			ExpectedLayer:    "body_dlp",
-			ExpectedVerdict:  verdictBlock,
+			ID:              "multi-step-policy-chain",
+			Title:           "Chain: two safe actions, then a blocked write",
+			BenchCaseID:     "local-lab-multi-step-policy-chain-001",
+			Transport:       TransportForward,
+			Category:        "Multi-step evidence",
+			ExpectedLayer:   "body_dlp",
+			ExpectedVerdict: verdictBlock,
+			ExpectedSequence: []ExpectedDecision{
+				{Verdict: verdictAllow},
+				{Verdict: verdictAllow},
+				{Verdict: verdictBlock, Layer: "body_dlp"},
+			},
 			DestinationClass: "local synthetic workflow endpoints",
 			Without:          "A bare agent reads context, prepares a change, and sends the final credential-bearing write with no linked record of the sequence.",
 			With:             "Pipelock signs the two allowed local actions and the final body-DLP block into one ordered receipt chain.",

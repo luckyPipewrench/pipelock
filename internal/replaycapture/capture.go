@@ -309,7 +309,8 @@ func driveScenario(ctx context.Context, s Scenario, h http.Handler, sc *scanner.
 	case "hostile-page-session-keys":
 		return forwardBodyDLPBlocked(ctx, h, syntheticHTTPSURL(synthSessionSinkHost, synthSessionKeysPath), hostilePageSessionKeysBody(), s.ID)
 	case "amber-warning-observed":
-		backend := newJSONEchoBackend()
+		received := make(chan struct{}, 1)
+		backend := newRecordingJSONEchoBackend(received)
 		defer backend.Close()
 		target, err := labBackendURL(backend.URL, labIntakeHost, "/observe")
 		if err != nil {
@@ -319,7 +320,12 @@ func driveScenario(ctx context.Context, s Scenario, h http.Handler, sc *scanner.
 		if resp.Code != http.StatusOK {
 			return fmt.Errorf("amber warning status = %d, want %d", resp.Code, http.StatusOK)
 		}
-		return nil
+		select {
+		case <-received:
+			return nil
+		default:
+			return fmt.Errorf("amber warning request did not reach the intake backend")
+		}
 	case "websocket-fragmented-secret":
 		return driveFragmentedWebSocket(ctx, h)
 	case "mcp-poisoned-tool-description":
@@ -524,6 +530,17 @@ func newGraphQLBackend() *httptest.Server {
 
 func newJSONEchoBackend() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+}
+
+func newRecordingJSONEchoBackend(received chan<- struct{}) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))

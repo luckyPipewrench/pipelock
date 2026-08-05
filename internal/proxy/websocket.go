@@ -386,12 +386,12 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		sessionKey := sessionKeyFor(agent, clientIP)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		p.metrics.RecordWSBlocked()
 		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
-			Layer:     "session_deny",
+			Layer:     adaptiveSessionDeny,
 			Pattern:   "session escalation level " + session.EscalationLabel(sr.Level),
 			Transport: TransportWS,
 			Method:    "WS",
@@ -539,12 +539,12 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if cfg.AdaptiveEnforcement.Enabled && headerSR.Level > 0 &&
 			decide.UpgradeAction("", headerSR.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP)
-			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
-				Layer:     "session_deny",
+				Layer:     adaptiveSessionDeny,
 				Pattern:   "session escalation level " + session.EscalationLabel(headerSR.Level),
 				Transport: TransportWS,
 				Method:    "WS",
@@ -1882,12 +1882,12 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// clean frames from flowing after escalation during long-lived connections.
 		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
 			sessionKey := sessionKeyFor(r.agent, r.clientIP)
-			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
+			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
 				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
-					Layer:     "session_deny",
+					Layer:     adaptiveSessionDeny,
 					Pattern:   "session escalation",
 					Transport: TransportWS,
 					Method:    "WS",
@@ -2163,12 +2163,12 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			// recorder and may not receive CEE signals for self-declared names.
 			if ceeBlockAll {
 				level := recEscalationLevel(ceeRec)
-				recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
+				recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 				r.terminalOnce.Do(func() {
 					_ = r.emitReceipt(receipt.EmitOpts{
 						ActionID:  receipt.NewActionID(),
 						Verdict:   config.ActionBlock,
-						Layer:     "session_deny",
+						Layer:     adaptiveSessionDeny,
 						Pattern:   "session escalation",
 						Transport: TransportWS,
 						Method:    "WS",
@@ -2253,12 +2253,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// block_all=true, close the WebSocket immediately.
 		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
 			sessionKey := sessionKeyFor(r.agent, r.clientIP)
-			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
+			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
 				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
-					Layer:     "session_deny",
+					Layer:     adaptiveSessionDeny,
 					Pattern:   "session escalation",
 					Transport: TransportWS,
 					Method:    "WS",

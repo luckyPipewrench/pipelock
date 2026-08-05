@@ -1418,12 +1418,12 @@ func newInterceptHandler(
 			// necessarily receive CEE signals for self-declared agent names.
 			if ceeBlockAll {
 				level := recEscalationLevel(ceeRec)
-				recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
-				ic.Metrics.RecordTLSRequestBlocked("session_deny")
+				recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+				ic.Metrics.RecordTLSRequestBlocked(adaptiveSessionDeny)
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
-					Layer:     "session_deny",
+					Layer:     adaptiveSessionDeny,
 					Pattern:   "session escalation level " + session.EscalationLabel(level),
 					Transport: "intercept",
 					Method:    r.Method,
@@ -1432,7 +1432,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 					adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
@@ -1461,12 +1461,12 @@ func newInterceptHandler(
 			if ic.Proxy != nil {
 				m = ic.Proxy.metrics
 			}
-			recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
-			ic.Metrics.RecordTLSRequestBlocked("session_deny")
+			recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+			ic.Metrics.RecordTLSRequestBlocked(adaptiveSessionDeny)
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
-				Layer:     "session_deny",
+				Layer:     adaptiveSessionDeny,
 				Pattern:   "session escalation level " + session.EscalationLabel(level),
 				Transport: "intercept",
 				Method:    r.Method,
@@ -1475,7 +1475,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			}))
 			writeBlockedError(w,
-				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 				adaptiveBlockedReason,
 				http.StatusForbidden)
 			return

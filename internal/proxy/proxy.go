@@ -59,6 +59,8 @@ import (
 // contextKey is used for storing per-request values in context.
 type contextKey int
 
+const adaptiveSessionDeny = "session_deny"
+
 const (
 	ctxKeyClientIP contextKey = iota
 	ctxKeyRequestID
@@ -3997,7 +3999,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// with an empty base action returns "block" only when block_all is set.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		sessionKey := sessionKeyFor(agent, clientIP)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		adaptiveDetail := fmt.Sprintf("session escalation level %s; auto_recover_at=%s; hint=%s", session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
 		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail)
 		emitFetchReceipt(receipt.EmitOpts{
@@ -4122,11 +4124,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled &&
 		decide.UpgradeAction("", fetchLevel, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		headerSessionKey := CeeSessionKey(agent, clientIP)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: headerSessionKey, Level: session.EscalationLabel(fetchLevel), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: headerSessionKey, Level: session.EscalationLabel(fetchLevel), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,
-			Layer:               "session_deny",
+			Layer:               adaptiveSessionDeny,
 			Pattern:             "session escalation level " + session.EscalationLabel(fetchLevel),
 			Transport:           "fetch",
 			Method:              http.MethodGet,
@@ -4282,11 +4284,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// rotated self-declared agent names cannot dodge adaptive session deny.
 		if ceeBlockAll {
 			level := recEscalationLevel(ceeRec)
-			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			emitFetchReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),
 				Verdict:             config.ActionBlock,
-				Layer:               "session_deny",
+				Layer:               adaptiveSessionDeny,
 				Pattern:             "session escalation level " + session.EscalationLabel(level),
 				Transport:           "fetch",
 				Method:              http.MethodGet,

@@ -357,10 +357,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		sessionKey := sessionKeyFor(agent, clientIP)
-		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
-			blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+			blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 			"CONNECT "+adaptiveBlockedReason,
 			http.StatusForbidden)
 		return
@@ -425,10 +425,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if connectRec != nil {
 			level := connectRec.EscalationLevel()
 			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: connectSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: connectSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 				p.metrics.RecordTunnelBlocked(agentLabel)
 				writeBlockedError(w,
-					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 					"CONNECT "+adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
@@ -866,6 +866,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetURL := r.URL.String()
+	emitSessionDenyReceipt := func() {
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     adaptiveSessionDeny,
+			Pattern:   adaptiveBlockedReason,
+			Transport: TransportForward,
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
+	}
 	actx := newHTTPAuditContext(p.logger, r.Method, targetURL, clientIP, requestID, agent)
 
 	// Scan through all layers (URL pipeline)
@@ -1036,10 +1049,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		sessionKey := sessionKeyFor(agent, clientIP)
-		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
-		p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
+		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
+		emitSessionDenyReceipt()
+		p.metrics.RecordBlocked(r.URL.Hostname(), adaptiveSessionDeny, time.Since(start), agentLabel)
 		writeBlockedError(w,
-			blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+			blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 			adaptiveBlockedReason, http.StatusForbidden)
 		return
 	}
@@ -1607,20 +1621,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				level = forwardSess.EffectiveEscalationLevel(adaptiveScopeForHost(r.URL.Hostname()))
 			}
 			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: forwardSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
-				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-					ActionID:  actionID,
-					Verdict:   config.ActionBlock,
-					Layer:     "session_deny",
-					Pattern:   adaptiveBlockedReason,
-					Transport: TransportForward,
-					Method:    r.Method,
-					Target:    targetURL,
-					RequestID: requestID,
-					Agent:     agent,
-				}))
+				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: forwardSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
+				emitSessionDenyReceipt()
 				writeBlockedError(w,
-					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 					adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
@@ -1689,10 +1693,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if ceeBlockAll {
 			level := recEscalationLevel(ceeRec)
-			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
-			p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
+			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
+			emitSessionDenyReceipt()
+			p.metrics.RecordBlocked(r.URL.Hostname(), adaptiveSessionDeny, time.Since(start), agentLabel)
 			writeBlockedError(w,
-				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
 				adaptiveBlockedReason, http.StatusForbidden)
 			return
 		}

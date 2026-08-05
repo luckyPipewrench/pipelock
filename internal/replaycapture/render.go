@@ -93,11 +93,36 @@ func validateExpectedDecision(cs *CapturedScenario) error {
 	if cs == nil {
 		return fmt.Errorf("missing captured scenario")
 	}
+	if len(cs.Scenario.ExpectedSequence) > 0 {
+		actual := make([]receipt.ActionRecord, 0, len(cs.Receipts))
+		for i := range cs.Receipts {
+			if cs.Receipts[i].ActionRecord.SessionControl == nil {
+				actual = append(actual, cs.Receipts[i].ActionRecord)
+			}
+		}
+		if len(actual) != len(cs.Scenario.ExpectedSequence) {
+			return fmt.Errorf("expected %d mediated decisions, got %d", len(cs.Scenario.ExpectedSequence), len(actual))
+		}
+		for i, expected := range cs.Scenario.ExpectedSequence {
+			if actual[i].Verdict != expected.Verdict {
+				return fmt.Errorf("decision %d verdict = %q, want %q", i+1, actual[i].Verdict, expected.Verdict)
+			}
+			if expected.Layer != "" && actual[i].Layer != expected.Layer {
+				return fmt.Errorf("decision %d layer = %q, want %q", i+1, actual[i].Layer, expected.Layer)
+			}
+			if actual[i].Transport != cs.Scenario.Transport {
+				return fmt.Errorf("decision %d transport = %q, want %q", i+1, actual[i].Transport, cs.Scenario.Transport)
+			}
+		}
+	}
 	ar := decisiveReceiptAR(cs.Receipts, cs.Scenario.ExpectedVerdict)
 	if ar == nil {
 		return fmt.Errorf("missing expected %s mediated decision", cs.Scenario.ExpectedVerdict)
 	}
-	if ar.Layer != cs.Scenario.ExpectedLayer {
+	if ar.Transport != cs.Scenario.Transport {
+		return fmt.Errorf("expected %s transport %q, got %q", cs.Scenario.ExpectedVerdict, cs.Scenario.Transport, ar.Transport)
+	}
+	if cs.Scenario.ExpectedLayer != "" && ar.Layer != cs.Scenario.ExpectedLayer {
 		return fmt.Errorf("expected %s layer %q, got %q", cs.Scenario.ExpectedVerdict, cs.Scenario.ExpectedLayer, ar.Layer)
 	}
 	return nil

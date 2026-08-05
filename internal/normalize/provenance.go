@@ -507,34 +507,34 @@ func (op Operation) validate() error {
 		if op.Profile != "pipelock-matching-v1" {
 			return fmt.Errorf("unknown matching profile %q", op.Profile)
 		}
-		copy := op
-		copy.Profile = ""
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.Profile = ""
+		return parameterless.noParametersForValidation(reject)
 	case OperationBase32DecodeLiberal:
-		copy := op
-		copy.DecodePadding = false
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.DecodePadding = false
+		return parameterless.noParametersForValidation(reject)
 	case OperationBase64DecodeLiberal:
 		if op.Alphabet != "standard" && op.Alphabet != "url" {
 			return fmt.Errorf("unknown base64 alphabet %q", op.Alphabet)
 		}
-		copy := op
-		copy.Alphabet = ""
-		copy.DecodePadding = false
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.Alphabet = ""
+		parameterless.DecodePadding = false
+		return parameterless.noParametersForValidation(reject)
 	case OperationEncodedTokenNormalize:
 		switch op.Alphabet {
 		case "hex", "base32", "base64_standard", "base64_url":
 		default:
 			return fmt.Errorf("unknown encoded-token alphabet %q", op.Alphabet)
 		}
-		copy := op
-		copy.Alphabet = ""
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.Alphabet = ""
+		return parameterless.noParametersForValidation(reject)
 	case OperationTextSegment:
-		copy := op
-		copy.Occurrence = 0
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.Occurrence = 0
+		return parameterless.noParametersForValidation(reject)
 	case OperationQuerySubsequence:
 		if len(op.Indices) < evidenceProvenanceQueryMinIndices || len(op.Indices) > evidenceProvenanceQueryMaxIndices {
 			return fmt.Errorf("query subsequence indices must contain 2..4 entries")
@@ -547,17 +547,17 @@ func (op Operation) validate() error {
 				return fmt.Errorf("query subsequence indices must be strictly increasing")
 			}
 		}
-		copy := op
-		copy.Indices = nil
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.Indices = nil
+		return parameterless.noParametersForValidation(reject)
 	case OperationEncodedRun:
 		if op.MinimumLength == 0 {
 			return fmt.Errorf("encoded run minimum_length must be positive")
 		}
-		copy := op
-		copy.Occurrence = 0
-		copy.MinimumLength = 0
-		return copy.noParametersForValidation(reject)
+		parameterless := op
+		parameterless.Occurrence = 0
+		parameterless.MinimumLength = 0
+		return parameterless.noParametersForValidation(reject)
 	default:
 		return fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -827,13 +827,13 @@ func selectScannerEncodedRun(value string, occurrence, minimumLength uint32) (st
 			for pad := 0; pad < 2 && end < len(value) && value[end] == '='; pad++ {
 				end++
 			}
-			if uint32(end-start) >= minimumLength {
+			if int64(end-start) >= int64(minimumLength) {
 				runs = append(runs, value[start:end])
 			}
 		}
 		start = -1
 	}
-	if start >= 0 && uint32(len(value)-start) >= minimumLength {
+	if start >= 0 && int64(len(value)-start) >= int64(minimumLength) {
 		runs = append(runs, value[start:])
 	}
 	if int(occurrence) >= len(runs) {

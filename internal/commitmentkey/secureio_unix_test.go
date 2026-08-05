@@ -357,3 +357,46 @@ func TestReadPrivateViewRejectsFIFOWithoutConsumingIt(t *testing.T) {
 		t.Fatalf("FIFO writer: %v", err)
 	}
 }
+
+// TestParentStickyBitDistinguishesSharedFromUnsafe pins the exact semantics of
+// the writable-parent check. A group- or world-writable parent lets another
+// user rename or replace the keyring between validation and use, which is the
+// substitution attack the check exists to stop. The sticky bit removes that
+// ability, so a shared temporary directory such as /tmp mode 1777 is safe while
+// the same mode without the sticky bit is not. Without this test the
+// distinction is only implicitly covered, and dropping either half would go
+// unnoticed until CI fails everywhere or the check silently stops protecting.
+func TestParentStickyBitDistinguishesSharedFromUnsafe(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    uint32
+		wantErr bool
+	}{
+		{"world_writable_with_sticky_is_allowed", 0o1777, false},
+		{"world_writable_without_sticky_is_refused", 0o0777, true},
+		{"group_writable_without_sticky_is_refused", 0o0770, true},
+		{"owner_only_is_allowed", 0o0700, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := filepath.Join(t.TempDir(), "parent")
+			if err := os.Mkdir(parent, 0o700); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			if err := unix.Chmod(parent, tc.mode); err != nil {
+				t.Fatalf("Chmod: %v", err)
+			}
+			t.Cleanup(func() { _ = unix.Chmod(parent, 0o700) })
+
+			_, err := Initialize(filepath.Join(parent, "keyring.json"), time.Now())
+			if tc.wantErr {
+				if !errors.Is(err, ErrUnsafePermission) {
+					t.Fatalf("mode %04o: error = %v, want ErrUnsafePermission", tc.mode, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("mode %04o: Initialize returned %v, want success", tc.mode, err)
+			}
+		})
+	}
+}

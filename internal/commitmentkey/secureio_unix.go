@@ -254,8 +254,17 @@ func validateOpenedDirectory(fd int, path string) error {
 	if stat.Uid != 0 && int64(stat.Uid) != effectiveUID {
 		return fmt.Errorf("%w: parent directory %s owner uid %d is neither root nor effective uid %d", ErrUnsafePermission, path, stat.Uid, os.Geteuid())
 	}
-	if stat.Mode&0o022 != 0 {
-		return fmt.Errorf("%w: parent directory %s mode %04o is group/world-writable", ErrUnsafePermission, path, stat.Mode&0o7777)
+	// A group- or world-writable parent normally lets another user rename or
+	// replace the keyring between validation and use, which is the substitution
+	// attack this check exists to stop. The sticky bit removes that ability:
+	// with S_ISVTX set, only the entry's owner (or root) may rename or delete
+	// it, so a shared directory such as /tmp mode 1777 cannot be used to swap
+	// our directory or file for someone else's. Rejecting sticky directories
+	// outright would refuse the standard temporary-directory layout on every
+	// Unix system without closing any real attack, which is an availability
+	// failure rather than hardening.
+	if stat.Mode&0o022 != 0 && stat.Mode&unix.S_ISVTX == 0 {
+		return fmt.Errorf("%w: parent directory %s mode %04o is group/world-writable without the sticky bit", ErrUnsafePermission, path, stat.Mode&0o7777)
 	}
 	return nil
 }

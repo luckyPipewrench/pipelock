@@ -25,10 +25,10 @@ func ensureParent(path string) error {
 }
 
 func readSecure(path string) ([]byte, error) {
-	return readSecureLimited(path, maxBytes, "commitment keyring")
+	return readSecureLimited(path, maxBytes, "commitment keyring", ErrInvalidKeyring)
 }
 
-func readSecureLimited(path string, limit int64, label string) ([]byte, error) {
+func readSecureLimited(path string, limit int64, label string, invalidErr error) ([]byte, error) {
 	clean := filepath.Clean(path)
 	if err := validateWindowsDirectory(filepath.Dir(clean)); err != nil {
 		return nil, err
@@ -55,26 +55,17 @@ func readSecureLimited(path string, limit int64, label string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", ErrSymlink, clean)
 	}
 	if !info.Mode().IsRegular() {
-		if label == "commitment keyring" {
-			return nil, fmt.Errorf("%w: not a regular file", ErrInvalidKeyring)
-		}
-		return nil, fmt.Errorf("invalid %s: not a regular file", label)
+		return nil, invalidReadError(invalidErr, label, "not a regular file")
 	}
 	if info.Size() > limit {
-		if label == "commitment keyring" {
-			return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidKeyring, limit)
-		}
-		return nil, fmt.Errorf("invalid %s: file exceeds %d bytes", label, limit)
+		return nil, invalidReadError(invalidErr, label, "file exceeds %d bytes", limit)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", label, err)
 	}
 	if int64(len(raw)) > limit {
-		if label == "commitment keyring" {
-			return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidKeyring, limit)
-		}
-		return nil, fmt.Errorf("invalid %s: file exceeds %d bytes", label, limit)
+		return nil, invalidReadError(invalidErr, label, "file exceeds %d bytes", limit)
 	}
 	return raw, nil
 }

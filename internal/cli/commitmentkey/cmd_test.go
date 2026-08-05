@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -40,6 +42,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("inspect metadata = %+v, want active %q epoch 1", got, first.ActiveID)
 	}
 	assertAudit(t, stderr, "inspect", "succeeded")
+	assertNoKeyMaterial(t, stdout, stderr)
 
 	stdout, stderr, err = execute(t, "rotate", "--keyring", path)
 	if err != nil {
@@ -50,6 +53,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("rotated metadata = %+v", rotated)
 	}
 	assertAudit(t, stderr, "rotate", "succeeded")
+	assertNoKeyMaterial(t, stdout, stderr)
 
 	_, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1")
 	if !errors.Is(err, domkey.ErrRetainedKey) {
@@ -57,19 +61,21 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	}
 	assertAudit(t, stderr, "retire", "denied")
 
-	_, stderr, err = execute(t, "backup", "--keyring", path, "--out", backup)
+	stdout, stderr, err = execute(t, "backup", "--keyring", path, "--out", backup)
 	if err != nil {
 		t.Fatalf("backup: %v", err)
 	}
 	assertAudit(t, stderr, "backup", "succeeded")
+	assertNoKeyMaterial(t, stdout, stderr)
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("destroy keyring: %v", err)
 	}
-	_, stderr, err = execute(t, "restore", "--keyring", path, "--from", backup)
+	stdout, stderr, err = execute(t, "restore", "--keyring", path, "--from", backup)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	assertAudit(t, stderr, "restore", "succeeded")
+	assertNoKeyMaterial(t, stdout, stderr)
 
 	keyring, err := domkey.Load(path)
 	if err != nil {
@@ -92,6 +98,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("test output = %q", stdout)
 	}
 	assertAudit(t, stderr, "test", "succeeded")
+	assertNoKeyMaterial(t, stdout, stderr)
 
 	recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest, Operations: []normalize.Operation{{Kind: normalize.OperationLowercase}}}
 	source.Recipe = recipe
@@ -118,6 +125,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	}
 	assertAudit(t, stderr, "retire", "succeeded")
 	assertAuditAuthorization(t, stderr, "operator_accept_loss")
+	assertNoKeyMaterial(t, stdout, stderr)
 }
 
 func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
@@ -132,7 +140,7 @@ func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
 	}
 	metadata := decodeMetadata(t, stdout)
 	_, stderr, err := executeInput(t, "value", "test", "--config", cfgPath, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:"+strings.Repeat("0", 64))
-	if err == nil || err.Error() != "commitment mismatch" {
+	if !errors.Is(err, ErrCommitmentMismatch) {
 		t.Fatalf("test mismatch error = %v", err)
 	}
 	assertAudit(t, stderr, "test", "denied")
@@ -266,13 +274,56 @@ func TestCommandReadsPrivateViewFromStdinOrSecureFile(t *testing.T) {
 	if _, _, err := execute(t, append(args, "--view", privateView)...); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 		t.Fatalf("argv private view error = %v, want unknown --view flag", err)
 	}
+}
+
+func TestCommandRejectsSymlinkPrivateView(t *testing.T) {
+	if !supportsUnixSymlinkTest(runtime.GOOS) {
+		t.Skip("Windows uses reparse-point checks and may not permit symlink creation")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keyring.json")
+	if _, _, err := execute(t, "initialize", "--keyring", path); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	keyring, err := domkey.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	handle, err := keyring.Active()
+	if err != nil {
+		t.Fatalf("Active: %v", err)
+	}
+	const privateView = "private transformed evidence"
+	source := contractreceipt.ProvenanceSource{SourceID: "source-1", Recipe: normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest}}
+	commitment, err := contractreceipt.CommitView(handle.Key, source, privateView)
+	if err != nil {
+		t.Fatalf("CommitView: %v", err)
+	}
+	viewPath := filepath.Join(dir, "view.txt")
+	if err := os.WriteFile(viewPath, []byte(privateView), 0o600); err != nil {
+		t.Fatalf("WriteFile view: %v", err)
+	}
 	link := filepath.Join(dir, "view-link.txt")
 	if err := os.Symlink(viewPath, link); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
-	if _, stderr, err := execute(t, append(args, "--view-file", link)...); !errors.Is(err, domkey.ErrSymlink) {
+	args := []string{"test", "--keyring", path, "--key-id", handle.KeyID, "--epoch", "1", "--source-id", "source-1", "--commitment", commitment, "--view-file", link}
+	if _, stderr, err := execute(t, args...); !errors.Is(err, domkey.ErrSymlink) {
 		t.Fatalf("symlink view error = %v stderr=%q, want ErrSymlink", err, stderr)
 	}
+}
+
+func TestSymlinkTestPlatformGuard(t *testing.T) {
+	if supportsUnixSymlinkTest("windows") {
+		t.Fatal("Windows selected for Unix symlink test")
+	}
+	if !supportsUnixSymlinkTest("linux") {
+		t.Fatal("Linux excluded from Unix symlink test")
+	}
+}
+
+func supportsUnixSymlinkTest(goos string) bool {
+	return goos != "windows"
 }
 
 func TestLifecycleCommandsSurfaceInertCapabilityNotice(t *testing.T) {
@@ -295,7 +346,7 @@ func TestReadViewRejectsStdinReadFailureAndOversize(t *testing.T) {
 	if _, err := readView(cmd, "-"); err == nil || !strings.Contains(err.Error(), "read private evidence view") {
 		t.Fatalf("readView failing stdin error = %v", err)
 	}
-	cmd.SetIn(strings.NewReader(strings.Repeat("x", privateViewMaxSize+1)))
+	cmd.SetIn(io.LimitReader(repeatingReader{}, privateViewMaxSize+1))
 	if _, err := readView(cmd, "-"); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("readView oversized stdin error = %v", err)
 	}
@@ -311,6 +362,15 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {
 	return 0, errors.New("read failed")
+}
+
+type repeatingReader struct{}
+
+func (repeatingReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
 }
 
 func TestConfigPathResolutionDenials(t *testing.T) {

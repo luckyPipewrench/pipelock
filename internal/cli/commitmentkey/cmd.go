@@ -36,6 +36,10 @@ const (
 	privateViewMaxSize = 64 << 20
 )
 
+// ErrCommitmentMismatch reports that a recomputed commitment differs from the
+// expected value supplied by the operator.
+var ErrCommitmentMismatch = errors.New("commitment mismatch")
+
 // Cmd returns the commitment-key lifecycle command tree.
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -112,17 +116,13 @@ func rotateCmd() *cobra.Command {
 				emitAudit(cmd, "rotate", "denied", "", 0, err)
 				return err
 			}
-			handle, err := domkey.Rotate(path, time.Now())
+			handle, metadata, err := domkey.Rotate(path, time.Now())
 			if err != nil {
 				emitAudit(cmd, "rotate", "denied", "", 0, err)
 				return err
 			}
 			emitAudit(cmd, "rotate", "succeeded", handle.KeyID, handle.Epoch, nil)
-			keyring, err := domkey.Load(path)
-			if err != nil {
-				return err
-			}
-			return writeJSON(cmd, keyring.Metadata())
+			return writeJSON(cmd, metadata)
 		},
 	}
 	flags.bind(cmd)
@@ -145,16 +145,13 @@ func retireCmd() *cobra.Command {
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
 				return err
 			}
-			if err := domkey.Retire(path, keyID, epoch, acceptLoss); err != nil {
+			metadata, err := domkey.Retire(path, keyID, epoch, acceptLoss)
+			if err != nil {
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
 				return err
 			}
 			emitAudit(cmd, "retire", "succeeded", keyID, epoch, nil, "operator_accept_loss")
-			keyring, err := domkey.Load(path)
-			if err != nil {
-				return err
-			}
-			return writeJSON(cmd, keyring.Metadata())
+			return writeJSON(cmd, metadata)
 		},
 	}
 	flags.bind(cmd)
@@ -265,7 +262,7 @@ func testCmd() *cobra.Command {
 				return err
 			}
 			if got != want {
-				err := errors.New("commitment mismatch")
+				err := ErrCommitmentMismatch
 				emitAudit(cmd, "test", "denied", keyID, epoch, err)
 				return err
 			}

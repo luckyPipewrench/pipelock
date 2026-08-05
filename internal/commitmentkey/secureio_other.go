@@ -14,10 +14,12 @@ var errSecureIOUnsupported = errors.New("secure commitment keyring storage is un
 func ensureParent(string) error { return errSecureIOUnsupported }
 
 func readSecure(path string) ([]byte, error) {
-	return readSecureLimited(path, maxBytes, "commitment keyring")
+	return readSecureLimited(path, maxBytes, "commitment keyring", ErrInvalidKeyring)
 }
 
-func readSecureLimited(string, int64, string) ([]byte, error) { return nil, errSecureIOUnsupported }
+func readSecureLimited(string, int64, string, error) ([]byte, error) {
+	return nil, errSecureIOUnsupported
+}
 
 func writeSecureNew(string, []byte) error { return errSecureIOUnsupported }
 

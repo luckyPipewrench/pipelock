@@ -201,18 +201,23 @@ func (k *Keyring) Open(keyID string, epoch uint64) (Handle, error) {
 	return Handle{}, fmt.Errorf("%w: key_id=%q epoch=%d", ErrKeyNotFound, keyID, epoch)
 }
 
-// Rotate serializes the complete load-modify-save cycle across processes.
-func Rotate(path string, now time.Time) (Handle, error) {
+// Rotate serializes the complete load-modify-save cycle across processes and
+// returns metadata from the same in-memory state that was durably committed.
+func Rotate(path string, now time.Time) (Handle, Metadata, error) {
 	var handle Handle
+	var metadata Metadata
 	err := withLifecycleLock(path, func() error {
 		keyring, err := Load(path)
 		if err != nil {
 			return err
 		}
 		handle, err = keyring.rotate(path, now)
+		if err == nil {
+			metadata = keyring.Metadata()
+		}
 		return err
 	})
-	return handle, err
+	return handle, metadata, err
 }
 
 func (k *Keyring) rotate(path string, now time.Time) (Handle, error) {
@@ -233,21 +238,31 @@ func (k *Keyring) rotate(path string, now time.Time) (Handle, error) {
 	k.Keys = append(k.Keys, entry)
 	k.Epoch = entry.Epoch
 	k.ActiveID = entry.KeyID
-	if err := k.Save(path); err != nil {
+	handle, err := k.Active()
+	if err != nil {
 		return Handle{}, err
 	}
-	return k.Active()
+	if err := k.saveLocked(path); err != nil {
+		return Handle{}, err
+	}
+	return handle, nil
 }
 
 // Retire serializes the complete load-check-destroy-save cycle across processes.
-func Retire(path, keyID string, epoch uint64, acceptLoss bool) error {
-	return withLifecycleLock(path, func() error {
+func Retire(path, keyID string, epoch uint64, acceptLoss bool) (Metadata, error) {
+	var metadata Metadata
+	err := withLifecycleLock(path, func() error {
 		keyring, err := Load(path)
 		if err != nil {
 			return err
 		}
-		return keyring.retire(path, keyID, epoch, acceptLoss)
+		if err := keyring.retire(path, keyID, epoch, acceptLoss); err != nil {
+			return err
+		}
+		metadata = keyring.Metadata()
+		return nil
 	})
+	return metadata, err
 }
 
 func (k *Keyring) retire(path, keyID string, epoch uint64, acceptLoss bool) error {
@@ -268,10 +283,12 @@ func (k *Keyring) retire(path, keyID string, epoch uint64, acceptLoss bool) erro
 		return fmt.Errorf("%w: no authoritative retained-evidence inventory exists; --accept-loss is required to destroy key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)
 	}
 	k.Keys = append(k.Keys[:index], k.Keys[index+1:]...)
-	return k.Save(path)
+	return k.saveLocked(path)
 }
 
-func (k *Keyring) Save(path string) error {
+// saveLocked persists a validated lifecycle mutation. Callers must hold the
+// cross-process lifecycle lock for path.
+func (k *Keyring) saveLocked(path string) error {
 	if err := k.Validate(); err != nil {
 		return err
 	}

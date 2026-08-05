@@ -217,106 +217,121 @@ func TestLoadRejectsNonRegularOpenedObjectBeforeReading(t *testing.T) {
 }
 
 func TestSecureIOReachableErrorPaths(t *testing.T) {
-	dir := t.TempDir()
-	unsafeParent := filepath.Join(dir, "unsafe")
-	if err := os.Mkdir(unsafeParent, 0o750); err != nil {
-		t.Fatalf("Mkdir: %v", err)
-	}
-	if err := unix.Chmod(unsafeParent, 0o770); err != nil {
-		t.Fatalf("Chmod unsafe: %v", err)
-	}
-	if err := writeSecureNew(filepath.Join(unsafeParent, "new.json"), []byte("x")); !errors.Is(err, ErrUnsafePermission) {
-		t.Fatalf("writeSecureNew unsafe parent = %v", err)
-	}
-	if err := writeSecureReplace(filepath.Join(unsafeParent, "replace.json"), []byte("x")); !errors.Is(err, ErrUnsafePermission) {
-		t.Fatalf("writeSecureReplace unsafe parent = %v", err)
-	}
-	if err := unix.Chmod(unsafeParent, 0o750); err != nil {
-		t.Fatalf("restore parent mode: %v", err)
-	}
-	if err := writeSecureReplace(filepath.Join(unsafeParent, "missing.json"), []byte("x")); err == nil {
-		t.Fatal("writeSecureReplace created missing target")
-	}
+	t.Run("unsafe parent writes", func(t *testing.T) {
+		unsafeParent := filepath.Join(t.TempDir(), "unsafe")
+		if err := os.Mkdir(unsafeParent, 0o750); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		if err := unix.Chmod(unsafeParent, 0o770); err != nil {
+			t.Fatalf("Chmod unsafe: %v", err)
+		}
+		if err := writeSecureNew(filepath.Join(unsafeParent, "new.json"), []byte("x")); !errors.Is(err, ErrUnsafePermission) {
+			t.Fatalf("writeSecureNew unsafe parent = %v", err)
+		}
+		if err := writeSecureReplace(filepath.Join(unsafeParent, "replace.json"), []byte("x")); !errors.Is(err, ErrUnsafePermission) {
+			t.Fatalf("writeSecureReplace unsafe parent = %v", err)
+		}
+		if err := unix.Chmod(unsafeParent, 0o750); err != nil {
+			t.Fatalf("restore parent mode: %v", err)
+		}
+		if err := writeSecureReplace(filepath.Join(unsafeParent, "missing.json"), []byte("x")); err == nil {
+			t.Fatal("writeSecureReplace created missing target")
+		}
+	})
 
-	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY, 0)
-	if err != nil {
-		t.Fatalf("Open directory: %v", err)
-	}
-	defer func() { _ = unix.Close(fd) }()
-	if err := writeSecureAt(fd, "missing/child.json", []byte("x"), false); err == nil {
-		t.Fatal("writeSecureAt with invalid destination succeeded")
-	}
-	if err := writeSecureAt(-1, "child.json", []byte("x"), false); err == nil {
-		t.Fatal("writeSecureAt with invalid parent descriptor succeeded")
-	}
-	if _, _, err := createSecureTemp(-1); err == nil {
-		t.Fatal("createSecureTemp with invalid descriptor succeeded")
-	}
-	if err := chmodSecure(-1, "test file"); err == nil {
-		t.Fatal("chmodSecure accepted invalid descriptor")
-	}
-	closed, err := os.CreateTemp(dir, "closed-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	if err := closed.Close(); err != nil {
-		t.Fatalf("Close temp: %v", err)
-	}
-	if err := writeAndSync(closed, []byte("x")); err == nil {
-		t.Fatal("writeAndSync accepted closed file")
-	}
-	devNull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("OpenFile /dev/null: %v", err)
-	}
-	if err := writeAndSync(devNull, []byte("x")); err == nil {
-		_ = devNull.Close()
-		t.Fatal("writeAndSync unexpectedly synced /dev/null")
-	}
-	_ = devNull.Close()
-	if err := syncDescriptor(-1, "invalid descriptor"); err == nil {
-		t.Fatal("syncDescriptor accepted invalid descriptor")
-	}
-	if _, _, err := openSecureParent(string(filepath.Separator), false); err == nil {
-		t.Fatal("openSecureParent accepted a path without a file component")
-	}
-	if err := validateOpenedDirectory(-1, "invalid"); err == nil {
-		t.Fatal("validateOpenedDirectory accepted invalid descriptor")
-	}
-	filePath := filepath.Join(dir, "regular")
-	if err := os.WriteFile(filePath, nil, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	fileFD, err := unix.Open(filePath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("Open file: %v", err)
-	}
-	defer func() { _ = unix.Close(fileFD) }()
-	if err := validateOpenedDirectory(fileFD, filePath); err == nil {
-		t.Fatal("validateOpenedDirectory accepted regular file")
-	}
-	if _, err := validateOpenedFile(-1, "commitment keyring"); err == nil {
-		t.Fatal("validateOpenedFile accepted invalid descriptor")
-	}
+	t.Run("invalid write descriptors", func(t *testing.T) {
+		dir := t.TempDir()
+		fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY, 0)
+		if err != nil {
+			t.Fatalf("Open directory: %v", err)
+		}
+		defer func() { _ = unix.Close(fd) }()
+		if err := writeSecureAt(fd, "missing/child.json", []byte("x"), false); err == nil {
+			t.Fatal("writeSecureAt with invalid destination succeeded")
+		}
+		if err := writeSecureAt(-1, "child.json", []byte("x"), false); err == nil {
+			t.Fatal("writeSecureAt with invalid parent descriptor succeeded")
+		}
+		if _, _, err := createSecureTemp(-1); err == nil {
+			t.Fatal("createSecureTemp with invalid descriptor succeeded")
+		}
+		if err := chmodSecure(-1, "test file"); err == nil {
+			t.Fatal("chmodSecure accepted invalid descriptor")
+		}
+	})
 
-	oversizedView := filepath.Join(dir, "oversized-view")
-	view, err := os.OpenFile(filepath.Clean(oversizedView), os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("OpenFile oversized view: %v", err)
-	}
-	if err := view.Truncate(maxPrivateViewBytes + 1); err != nil {
-		_ = view.Close()
-		t.Fatalf("Truncate: %v", err)
-	}
-	if err := view.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if _, err := ReadPrivateView(oversizedView); err == nil {
-		t.Fatal("ReadPrivateView accepted oversized file")
-	}
+	t.Run("write and sync failures", func(t *testing.T) {
+		closed, err := os.CreateTemp(t.TempDir(), "closed-*")
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		if err := closed.Close(); err != nil {
+			t.Fatalf("Close temp: %v", err)
+		}
+		if err := writeAndSync(closed, []byte("x")); err == nil {
+			t.Fatal("writeAndSync accepted closed file")
+		}
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("Pipe: %v", err)
+		}
+		defer func() { _ = reader.Close() }()
+		defer func() { _ = writer.Close() }()
+		if err := writeAndSync(writer, []byte("x")); err == nil || !strings.Contains(err.Error(), "sync") {
+			t.Fatalf("writeAndSync pipe error = %v, want sync refusal", err)
+		}
+		if err := syncDescriptor(-1, "invalid descriptor"); err == nil {
+			t.Fatal("syncDescriptor accepted invalid descriptor")
+		}
+	})
 
-	if os.Geteuid() != 0 {
-		readOnlyParent := filepath.Join(dir, "read-only")
+	t.Run("invalid paths and opened descriptors", func(t *testing.T) {
+		if _, _, err := openSecureParent(string(filepath.Separator), false); err == nil {
+			t.Fatal("openSecureParent accepted a path without a file component")
+		}
+		if err := validateOpenedDirectory(-1, "invalid"); err == nil {
+			t.Fatal("validateOpenedDirectory accepted invalid descriptor")
+		}
+		filePath := filepath.Join(t.TempDir(), "regular")
+		if err := os.WriteFile(filePath, nil, 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		fileFD, err := unix.Open(filePath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatalf("Open file: %v", err)
+		}
+		defer func() { _ = unix.Close(fileFD) }()
+		if err := validateOpenedDirectory(fileFD, filePath); err == nil {
+			t.Fatal("validateOpenedDirectory accepted regular file")
+		}
+		if _, err := validateOpenedFile(-1, "commitment keyring", ErrInvalidKeyring); err == nil {
+			t.Fatal("validateOpenedFile accepted invalid descriptor")
+		}
+	})
+
+	t.Run("oversized private view", func(t *testing.T) {
+		oversizedView := filepath.Join(t.TempDir(), "oversized-view")
+		view, err := os.OpenFile(filepath.Clean(oversizedView), os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("OpenFile oversized view: %v", err)
+		}
+		if err := view.Truncate(maxPrivateViewBytes + 1); err != nil {
+			_ = view.Close()
+			t.Fatalf("Truncate: %v", err)
+		}
+		if err := view.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := ReadPrivateView(oversizedView); err == nil {
+			t.Fatal("ReadPrivateView accepted oversized file")
+		}
+	})
+
+	t.Run("read-only parent", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root can create below mode-0500 directories")
+		}
+		readOnlyParent := filepath.Join(t.TempDir(), "read-only")
 		if err := os.Mkdir(readOnlyParent, 0o750); err != nil {
 			t.Fatalf("Mkdir read-only: %v", err)
 		}
@@ -327,6 +342,46 @@ func TestSecureIOReachableErrorPaths(t *testing.T) {
 		if _, _, err := openSecureParent(filepath.Join(readOnlyParent, "missing", "keyring.json"), true); err == nil {
 			t.Fatal("openSecureParent created below read-only parent")
 		}
+	})
+}
+
+func TestMapOpenError(t *testing.T) {
+	path := filepath.Join("tmp", "keyring.json")
+	if err := mapOpenError("commitment keyring", path, unix.ELOOP); !errors.Is(err, ErrSymlink) || !strings.Contains(err.Error(), filepath.Clean(path)) {
+		t.Fatalf("ELOOP error = %v, want cleaned ErrSymlink", err)
+	}
+	if err := mapOpenError("commitment keyring", path, unix.EACCES); !errors.Is(err, ErrUnsafePermission) || !errors.Is(err, unix.EACCES) {
+		t.Fatalf("EACCES error = %v, want ErrUnsafePermission wrapping EACCES", err)
+	}
+	if err := mapOpenError("commitment keyring", path, unix.ENOENT); errors.Is(err, ErrSymlink) || !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("ENOENT error = %v, want ordinary wrapped error", err)
+	}
+}
+
+func TestNoFollowSymlinkErrnoSelection(t *testing.T) {
+	loop := errors.New("synthetic ELOOP")
+	link := errors.New("synthetic EMLINK")
+	syntheticEFTYPE := errors.New("synthetic EFTYPE")
+	errnos := noFollowErrnos{loop: loop, link: link, fileType: syntheticEFTYPE}
+	for _, test := range []struct {
+		goos string
+		want []error
+	}{
+		{goos: "linux", want: []error{loop}},
+		{goos: "freebsd", want: []error{loop, link}},
+		{goos: "netbsd", want: []error{loop, syntheticEFTYPE}},
+	} {
+		t.Run(test.goos, func(t *testing.T) {
+			selected := noFollowSymlinkErrorsFor(test.goos, errnos)
+			for _, err := range test.want {
+				if !isNoFollowSymlinkError(err, selected) {
+					t.Fatalf("%s symlink errno %v was not selected", test.goos, err)
+				}
+			}
+			if isNoFollowSymlinkError(unix.ENOENT, selected) {
+				t.Fatalf("%s selected ordinary ENOENT as a symlink refusal", test.goos)
+			}
+		})
 	}
 }
 

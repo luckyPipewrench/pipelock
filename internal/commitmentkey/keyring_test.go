@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -53,7 +54,7 @@ func TestLifecycleRotationRestartOpensOldAndNew(t *testing.T) {
 	}
 	oldReceipt := commitTestReceipt(t, keyring, "before rotation")
 	oldID := oldReceipt.KeyID
-	if _, err := Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+	if _, _, err := Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
 	keyring, err = Load(path)
@@ -87,6 +88,45 @@ func TestPersistenceRestartKeepsActiveMaterial(t *testing.T) {
 	openTestReceipt(t, restarted, receipt)
 }
 
+func TestLifecycleMutationsReturnCommittedMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keyring.json")
+	initialized, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	handle, rotated, err := Rotate(path, time.Unix(1_700_000_100, 0))
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if rotated.ActiveID != handle.KeyID || rotated.Epoch != handle.Epoch || len(rotated.Keys) != 2 {
+		t.Fatalf("Rotate metadata = %+v, handle = %+v", rotated, handle)
+	}
+	retired, err := Retire(path, initialized.ActiveID, initialized.Epoch, true)
+	if err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if retired.ActiveID != handle.KeyID || retired.Epoch != handle.Epoch || len(retired.Keys) != 1 {
+		t.Fatalf("Retire metadata = %+v, active handle = %+v", retired, handle)
+	}
+}
+
+func TestKeyringDoesNotExportUnlockedSave(t *testing.T) {
+	if _, exists := reflect.TypeFor[*Keyring]().MethodByName("Save"); exists {
+		t.Fatal("Keyring exports Save without enforcing the lifecycle lock")
+	}
+}
+
+func TestInvalidReadErrorClassificationDoesNotDependOnLabel(t *testing.T) {
+	err := invalidReadError(ErrInvalidKeyring, "renamed keyring label", "not a regular file")
+	if !errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("explicit keyring sentinel error = %v, want ErrInvalidKeyring", err)
+	}
+	err = invalidReadError(nil, "commitment keyring", "not a regular file")
+	if errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("nil sentinel error = %v, classification leaked from label", err)
+	}
+}
+
 func TestRetiredLookupOpensPriorEpoch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
 	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
@@ -107,18 +147,18 @@ func TestRetireRequiresExplicitLossAcceptance(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	old := commitTestReceipt(t, keyring, "retained")
-	if _, err := Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+	if _, _, err := Rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
 	keyring, err = Load(path)
 	if err != nil {
 		t.Fatalf("Load rotated keyring: %v", err)
 	}
-	if err := Retire(path, old.KeyID, old.Epoch, false); !errors.Is(err, ErrRetainedKey) {
+	if _, err := Retire(path, old.KeyID, old.Epoch, false); !errors.Is(err, ErrRetainedKey) {
 		t.Fatalf("Retire without loss acceptance error = %v, want ErrRetainedKey", err)
 	}
 	openTestReceipt(t, keyring, old)
-	if err := Retire(path, old.KeyID, old.Epoch, true); err != nil {
+	if _, err := Retire(path, old.KeyID, old.Epoch, true); err != nil {
 		t.Fatalf("Retire with accept loss: %v", err)
 	}
 	keyring, err = Load(path)
@@ -128,7 +168,7 @@ func TestRetireRequiresExplicitLossAcceptance(t *testing.T) {
 	if _, err := keyring.Open(old.KeyID, old.Epoch); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("Open destroyed retired key error = %v, want ErrKeyNotFound", err)
 	}
-	if err := Retire(path, keyring.ActiveID, keyring.Epoch, true); err == nil {
+	if _, err := Retire(path, keyring.ActiveID, keyring.Epoch, true); err == nil {
 		t.Fatal("Retire active key succeeded")
 	}
 }
@@ -145,7 +185,7 @@ func TestConcurrentRotationsSerializeEpochs(t *testing.T) {
 		wg.Add(1)
 		go func(offset int) {
 			defer wg.Done()
-			_, err := Rotate(path, time.Unix(1_700_000_100+int64(offset), 0))
+			_, _, err := Rotate(path, time.Unix(1_700_000_100+int64(offset), 0))
 			errs <- err
 		}(i)
 	}
@@ -358,74 +398,110 @@ func TestValidateRejectsMalformedLifecycleState(t *testing.T) {
 }
 
 func TestFilesystemErrorPathsFailClosed(t *testing.T) {
-	dir := t.TempDir()
-	parentFile := filepath.Join(dir, "parent-file")
-	if err := os.WriteFile(parentFile, []byte("not a directory"), 0o600); err != nil {
-		t.Fatalf("WriteFile parent: %v", err)
-	}
-	if _, err := Initialize(filepath.Join(parentFile, "keyring.json"), time.Now()); err == nil {
-		t.Fatal("Initialize below file parent succeeded")
-	}
+	t.Run("initialize below file parent", func(t *testing.T) {
+		parentFile := filepath.Join(t.TempDir(), "parent-file")
+		if err := os.WriteFile(parentFile, []byte("not a directory"), 0o600); err != nil {
+			t.Fatalf("WriteFile parent: %v", err)
+		}
+		if _, err := Initialize(filepath.Join(parentFile, "keyring.json"), time.Now()); err == nil {
+			t.Fatal("Initialize below file parent succeeded")
+		}
+	})
 
-	path := filepath.Join(dir, "keyring.json")
-	keyring, err := Initialize(path, time.Now())
-	if err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	invalid := cloneKeyring(keyring)
-	invalid.Purpose = "receipt-signing"
-	if err := invalid.Save(path); !errors.Is(err, ErrInvalidKeyring) {
-		t.Fatalf("Save invalid keyring error = %v, want ErrInvalidKeyring", err)
-	}
-	if err := keyring.Save(dir); err == nil {
-		t.Fatal("Save over directory succeeded")
-	}
-	if _, err := keyring.Open(keyring.ActiveID, keyring.Epoch+1); !errors.Is(err, ErrKeyNotFound) {
-		t.Fatalf("Open unknown epoch error = %v, want ErrKeyNotFound", err)
-	}
-	corrupt := cloneKeyring(keyring)
-	corrupt.Keys[0].Key = "invalid"
-	if _, err := corrupt.Open(corrupt.ActiveID, corrupt.Epoch); !errors.Is(err, ErrInvalidKeyring) {
-		t.Fatalf("Open corrupt key error = %v, want ErrInvalidKeyring", err)
-	}
+	t.Run("invalid saves", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "keyring.json")
+		keyring, err := Initialize(path, time.Now())
+		if err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		invalid := cloneKeyring(keyring)
+		invalid.Purpose = "receipt-signing"
+		if err := invalid.saveLocked(path); !errors.Is(err, ErrInvalidKeyring) {
+			t.Fatalf("saveLocked invalid keyring error = %v, want ErrInvalidKeyring", err)
+		}
+		if err := keyring.saveLocked(dir); err == nil {
+			t.Fatal("saveLocked over directory succeeded")
+		}
+	})
 
-	missing := filepath.Join(dir, "missing.json")
-	if _, err := Backup(missing, filepath.Join(dir, "unused-backup.json")); err == nil {
-		t.Fatal("Backup missing source succeeded")
-	}
-	if _, err := Restore(missing, filepath.Join(dir, "unused-restore.json")); err == nil {
-		t.Fatal("Restore missing source succeeded")
-	}
-	if _, err := Backup(path, filepath.Join(parentFile, "backup.json")); err == nil {
-		t.Fatal("Backup below file parent succeeded")
-	}
-	if _, err := Restore(path, filepath.Join(parentFile, "restore.json")); err == nil {
-		t.Fatal("Restore below file parent succeeded")
-	}
-	backup := filepath.Join(dir, "backup.json")
-	if _, err := Backup(path, backup); err != nil {
-		t.Fatalf("Backup: %v", err)
-	}
-	if _, err := Backup(path, backup); err == nil {
-		t.Fatal("Backup over existing destination succeeded")
-	}
-	if _, err := Restore(backup, path); err == nil {
-		t.Fatal("Restore over existing destination succeeded")
-	}
+	t.Run("unknown and corrupt key material", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "keyring.json")
+		keyring, err := Initialize(path, time.Now())
+		if err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		if _, err := keyring.Open(keyring.ActiveID, keyring.Epoch+1); !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("Open unknown epoch error = %v, want ErrKeyNotFound", err)
+		}
+		corrupt := cloneKeyring(keyring)
+		corrupt.Keys[0].Key = "invalid"
+		if _, err := corrupt.Open(corrupt.ActiveID, corrupt.Epoch); !errors.Is(err, ErrInvalidKeyring) {
+			t.Fatalf("Open corrupt key error = %v, want ErrInvalidKeyring", err)
+		}
+	})
 
-	if _, err := Load(filepath.Join(dir, "absent-parent", "keyring.json")); err == nil {
-		t.Fatal("Load below absent parent succeeded")
-	}
-	if _, err := Load(dir); !errors.Is(err, ErrInvalidKeyring) {
-		t.Fatalf("Load directory error = %v, want ErrInvalidKeyring", err)
-	}
-	oversized := filepath.Join(dir, "oversized.json")
-	if err := os.WriteFile(oversized, make([]byte, maxBytes+1), 0o600); err != nil {
-		t.Fatalf("WriteFile oversized: %v", err)
-	}
-	if _, err := Load(oversized); !errors.Is(err, ErrInvalidKeyring) {
-		t.Fatalf("Load oversized error = %v, want ErrInvalidKeyring", err)
-	}
+	t.Run("backup and restore refusals", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "keyring.json")
+		if _, err := Initialize(path, time.Now()); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		parentFile := filepath.Join(dir, "parent-file")
+		if err := os.WriteFile(parentFile, []byte("not a directory"), 0o600); err != nil {
+			t.Fatalf("WriteFile parent: %v", err)
+		}
+		missing := filepath.Join(dir, "missing.json")
+		if _, err := Backup(missing, filepath.Join(dir, "unused-backup.json")); err == nil {
+			t.Fatal("Backup missing source succeeded")
+		}
+		if _, err := Restore(missing, filepath.Join(dir, "unused-restore.json")); err == nil {
+			t.Fatal("Restore missing source succeeded")
+		}
+		if _, err := Backup(path, filepath.Join(parentFile, "backup.json")); err == nil {
+			t.Fatal("Backup below file parent succeeded")
+		}
+		if _, err := Restore(path, filepath.Join(parentFile, "restore.json")); err == nil {
+			t.Fatal("Restore below file parent succeeded")
+		}
+		backup := filepath.Join(dir, "backup.json")
+		if _, err := Backup(path, backup); err != nil {
+			t.Fatalf("Backup: %v", err)
+		}
+		if _, err := Backup(path, backup); err == nil {
+			t.Fatal("Backup over existing destination succeeded")
+		}
+		if _, err := Restore(backup, path); err == nil {
+			t.Fatal("Restore over existing destination succeeded")
+		}
+	})
+
+	t.Run("load refusals", func(t *testing.T) {
+		dir := t.TempDir()
+		if _, err := Load(filepath.Join(dir, "absent-parent", "keyring.json")); err == nil {
+			t.Fatal("Load below absent parent succeeded")
+		}
+		if supportsUnixModeAssertions(runtime.GOOS) {
+			if _, err := Load(dir); !errors.Is(err, ErrInvalidKeyring) {
+				t.Fatalf("Load directory error = %v, want ErrInvalidKeyring", err)
+			}
+		}
+		oversized := filepath.Join(dir, "oversized.json")
+		file, err := os.OpenFile(filepath.Clean(oversized), os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("OpenFile oversized: %v", err)
+		}
+		if err := file.Truncate(maxBytes + 1); err != nil {
+			_ = file.Close()
+			t.Fatalf("Truncate oversized: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("Close oversized: %v", err)
+		}
+		if _, err := Load(oversized); !errors.Is(err, ErrInvalidKeyring) {
+			t.Fatalf("Load oversized error = %v, want ErrInvalidKeyring", err)
+		}
+	})
 }
 
 func cloneKeyring(keyring *Keyring) *Keyring {
@@ -471,6 +547,10 @@ func openTestReceipt(t *testing.T, keyring *Keyring, receipt committedReceipt) {
 
 func assertMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if !supportsUnixModeAssertions(runtime.GOOS) {
+		t.Log("skipping Unix mode assertion: Windows represents access through ACLs")
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", path, err)
@@ -480,10 +560,25 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
+func TestModeAssertionPlatformGuard(t *testing.T) {
+	if supportsUnixModeAssertions("windows") {
+		t.Fatal("Windows selected for Unix mode assertion")
+	}
+	if !supportsUnixModeAssertions("linux") {
+		t.Fatal("Linux excluded from Unix mode assertion")
+	}
+}
+
+func supportsUnixModeAssertions(goos string) bool {
+	return goos != "windows"
+}
+
 func keyringSaveThroughSymlink(realPath, link string) error {
 	keyring, err := Load(realPath)
 	if err != nil {
 		return err
 	}
-	return keyring.Save(link)
+	return withLifecycleLock(link, func() error {
+		return keyring.saveLocked(link)
+	})
 }

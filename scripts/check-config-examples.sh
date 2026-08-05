@@ -253,8 +253,11 @@ probe() {
         sed -E "s@^([[:space:]]*commitment_keyring_path:[[:space:]])(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#]([^#]*[^[:space:]#])?)([[:space:]]*#.*)?\$@\1\"$commitment_path\"\4@" \
             "$run_cfg" >"$commitment_cfg"
         mv "$commitment_cfg" "$run_cfg"
-        if ! HOME="$PROBE_HOME" "$BIN" commitment-key initialize --keyring "$commitment_path" >/dev/null 2>&1; then
-            echo "config-examples: could not fixture a commitment keyring" >&2
+        local commitment_out="$WORK/commitment-init-$total.txt"
+        if ! HOME="$PROBE_HOME" "$BIN" commitment-key initialize \
+            --keyring "$commitment_path" >"$commitment_out" 2>&1; then
+            echo "config-examples: could not fixture a commitment keyring for $label" >&2
+            grep -vE '^[[:space:]]*$' "$commitment_out" | tail -3 >&2
             exit 1
         fi
     fi

@@ -28,10 +28,10 @@ func ensureParent(path string) error {
 }
 
 func readSecure(path string) ([]byte, error) {
-	return readSecureLimited(path, maxBytes, "commitment keyring")
+	return readSecureLimited(path, maxBytes, "commitment keyring", ErrInvalidKeyring)
 }
 
-func readSecureLimited(path string, limit int64, label string) ([]byte, error) {
+func readSecureLimited(path string, limit int64, label string, invalidErr error) ([]byte, error) {
 	parentFD, base, err := openSecureParent(path, false)
 	if err != nil {
 		return nil, fmt.Errorf("open %s directory: %w", label, err)
@@ -43,25 +43,19 @@ func readSecureLimited(path string, limit int64, label string) ([]byte, error) {
 	}
 	f := os.NewFile(uintptr(fd), filepath.Clean(path))
 	defer func() { _ = f.Close() }()
-	stat, err := validateOpenedFile(fd, label)
+	stat, err := validateOpenedFile(fd, label, invalidErr)
 	if err != nil {
 		return nil, err
 	}
 	if stat.Size > limit {
-		if label == "commitment keyring" {
-			return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidKeyring, limit)
-		}
-		return nil, fmt.Errorf("invalid %s: file exceeds %d bytes", label, limit)
+		return nil, invalidReadError(invalidErr, label, "file exceeds %d bytes", limit)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", label, err)
 	}
 	if int64(len(raw)) > limit {
-		if label == "commitment keyring" {
-			return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidKeyring, limit)
-		}
-		return nil, fmt.Errorf("invalid %s: file exceeds %d bytes", label, limit)
+		return nil, invalidReadError(invalidErr, label, "file exceeds %d bytes", limit)
 	}
 	return raw, nil
 }
@@ -85,7 +79,7 @@ func writeSecureReplace(path string, data []byte) error {
 	if err != nil {
 		return mapOpenError("commitment keyring", path, err)
 	}
-	if _, err := validateOpenedFile(fd, "commitment keyring"); err != nil {
+	if _, err := validateOpenedFile(fd, "commitment keyring", ErrInvalidKeyring); err != nil {
 		_ = unix.Close(fd)
 		return err
 	}
@@ -113,7 +107,7 @@ func openSecureLock(path string) (*os.File, error) {
 			return nil, err
 		}
 	}
-	if _, err := validateOpenedFile(fd, "commitment keyring lock"); err != nil {
+	if _, err := validateOpenedFile(fd, "commitment keyring lock", nil); err != nil {
 		_ = unix.Close(fd)
 		return nil, err
 	}
@@ -269,16 +263,13 @@ func validateOpenedDirectory(fd int, path string) error {
 	return nil
 }
 
-func validateOpenedFile(fd int, label string) (unix.Stat_t, error) {
+func validateOpenedFile(fd int, label string, invalidErr error) (unix.Stat_t, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return unix.Stat_t{}, fmt.Errorf("stat %s: %w", label, err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		if label == "commitment keyring" {
-			return unix.Stat_t{}, fmt.Errorf("%w: not a regular file", ErrInvalidKeyring)
-		}
-		return unix.Stat_t{}, fmt.Errorf("invalid %s: not a regular file", label)
+		return unix.Stat_t{}, invalidReadError(invalidErr, label, "not a regular file")
 	}
 	if int64(stat.Uid) != int64(os.Geteuid()) {
 		return unix.Stat_t{}, fmt.Errorf("%w: %s owner uid %d, want effective uid %d", ErrUnsafePermission, label, stat.Uid, os.Geteuid())
@@ -290,11 +281,35 @@ func validateOpenedFile(fd int, label string) (unix.Stat_t, error) {
 }
 
 func mapOpenError(label, path string, err error) error {
-	if errors.Is(err, unix.ELOOP) {
+	if isNoFollowSymlinkError(err, noFollowSymlinkErrors) {
 		return fmt.Errorf("%w: %s", ErrSymlink, filepath.Clean(path))
 	}
 	if errors.Is(err, unix.EACCES) {
 		return fmt.Errorf("%w: cannot open %s: %w", ErrUnsafePermission, label, err)
 	}
 	return fmt.Errorf("open %s: %w", label, err)
+}
+
+func isNoFollowSymlinkError(err error, symlinkErrors []error) bool {
+	for _, symlinkErr := range symlinkErrors {
+		if errors.Is(err, symlinkErr) {
+			return true
+		}
+	}
+	return false
+}
+
+type noFollowErrnos struct {
+	loop, link, fileType error
+}
+
+func noFollowSymlinkErrorsFor(goos string, errnos noFollowErrnos) []error {
+	switch goos {
+	case "freebsd":
+		return []error{errnos.loop, errnos.link}
+	case "netbsd":
+		return []error{errnos.loop, errnos.fileType}
+	default:
+		return []error{errnos.loop}
+	}
 }

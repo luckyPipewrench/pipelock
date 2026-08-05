@@ -34,6 +34,7 @@ func TestRecipeApplyOperations(t *testing.T) {
 		{"path", "https://api.vendor.example/a%20b", Operation{Kind: OperationURLComponent, Component: ComponentPath}, "/a%20b"},
 		{"query key", "https://api.vendor.example/a?marker=first", Operation{Kind: OperationURLComponent, Component: ComponentQueryKey, Selector: "marker"}, "marker"},
 		{"query value occurrence", "https://api.vendor.example/a?marker=first&marker=second", Operation{Kind: OperationURLComponent, Component: ComponentQueryVal, Selector: "marker", Occurrence: 1}, "second"},
+		{"raw query", "https://api.vendor.example/a?first=x%2521&second=y+z", Operation{Kind: OperationURLComponent, Component: ComponentRawQuery}, "first=x%2521&second=y+z"},
 		{"percent decode", "%2520", Operation{Kind: OperationPercentDecode, Passes: 2}, " "},
 		{"DLP normalize", "s\u200becret", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1"}, ForDLP("s\u200becret")},
 		{"lowercase", "MiXeD", Operation{Kind: OperationLowercase}, "mixed"},
@@ -46,12 +47,20 @@ func TestRecipeApplyOperations(t *testing.T) {
 		{"leetspeak", "s3cr3t", Operation{Kind: OperationLeetspeak}, Leetspeak("s3cr3t")},
 		{"vowel fold", "sëcrêt", Operation{Kind: OperationVowelFold}, FoldVowels("sëcrêt")},
 		{"query unescape", "a+b%2521", Operation{Kind: OperationQueryUnescape}, "a b!"},
+		{"query unescape preserves last good value", "%25zz", Operation{Kind: OperationQueryUnescape}, "%zz"},
 		{"invisible space", "a\u200bb", Operation{Kind: OperationInvisibleSpace}, "a b"},
 		{"matching normalize", "Ａ\u200bB\u00a0C", Operation{Kind: OperationMatchingNormalize, Profile: "pipelock-matching-v1"}, "AB C"},
 		{"liberal hex", "4A", Operation{Kind: OperationHexDecodeLiberal}, "J"},
 		{"liberal base32", "MZ======", Operation{Kind: OperationBase32DecodeLiberal, DecodePadding: true}, "f"},
+		{"liberal raw base32", "MY", Operation{Kind: OperationBase32DecodeLiberal}, "f"},
 		{"liberal base64", "Zh==", Operation{Kind: OperationBase64DecodeLiberal, Alphabet: "standard", DecodePadding: true}, "f"},
+		{"liberal raw base64", "Zg", Operation{Kind: OperationBase64DecodeLiberal, Alphabet: "standard"}, "f"},
+		{"liberal URL base64", "4KC-", Operation{Kind: OperationBase64DecodeLiberal, Alphabet: "url"}, "࠾"},
 		{"encoded hex token normalize", `\x48 \x69`, Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, "4869"},
+		{"encoded standard base64 token normalize", "S G.k=", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base64_standard"}, "SGk="},
+		{"encoded URL base64 token normalize", "4K/C-", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base64_url"}, "4KC-"},
+		{"encoded base32 token normalize", "J B/UQ====", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base32"}, "JBUQ===="},
+		{"ineligible encoded token", "abc", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base32"}, ""},
 		{"text segment", "pre https://host/path,tail", Operation{Kind: OperationTextSegment, Occurrence: 3}, "path"},
 		{"HTML entity decode", "&amp;amp;", Operation{Kind: OperationHTMLEntityDecode}, "&"},
 		{"whitespace compact", "a\u2003 b\n", Operation{Kind: OperationWhitespaceCompact}, "ab"},
@@ -107,6 +116,13 @@ func TestRecipeApplyRejectsInvalidInputs(t *testing.T) {
 		{"non-UTF-8 base64", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase64Decode, DecodePadding: true}}}, base64.StdEncoding.EncodeToString([]byte{0xff}), "base64 decode output: invalid UTF-8"},
 		{"non-canonical padded base64", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase64Decode, DecodePadding: true}}}, "Zh==", "base64 decode: non-canonical encoding"},
 		{"non-canonical raw base64", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase64Decode}}}, "Zh", "base64 decode: non-canonical encoding"},
+		{"malformed liberal hex", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationHexDecodeLiberal}}}, "z", "liberal hex decode"},
+		{"liberal hex invalid UTF-8", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationHexDecodeLiberal}}}, "ff", "output: invalid UTF-8"},
+		{"malformed liberal base32", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase32DecodeLiberal, DecodePadding: true}}}, "!", "liberal base32 decode"},
+		{"malformed liberal base64", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase64DecodeLiberal, Alphabet: "standard", DecodePadding: true}}}, "!", "liberal base64 decode"},
+		{"missing text segment", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationTextSegment, Occurrence: 2}}}, "one/two", "occurrence 2 unavailable"},
+		{"missing query subsequence value", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationQuerySubsequence, Indices: []uint8{0, 2}}}}, "a=one&b=two", "index 2 unavailable"},
+		{"missing encoded run", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationEncodedRun, MinimumLength: 8}}}, "short", "occurrence 0 unavailable"},
 		{"identity rejects component", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationIdentity, Component: ComponentPath}}}, "value", "unsupported component"},
 		{"lowercase rejects selector", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationLowercase, Selector: "ignored"}}}, "value", "unsupported selector"},
 		{"URL rejects passes", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationURLComponent, Component: ComponentURL, Passes: 1}}}, "https://api.vendor.example", "unsupported passes"},
@@ -183,9 +199,14 @@ func TestTransformProfileV1DigestMatchesCanonicalDocument(t *testing.T) {
 			Kind string `json:"kind"`
 		} `json:"operation_vocabulary"`
 		Limits struct {
-			MaxDecodePasses int `json:"max_decode_passes"`
-			MaxInputBytes   int `json:"max_input_bytes"`
-			MaxOutputBytes  int `json:"max_output_bytes"`
+			MaxDecodePasses               int `json:"max_decode_passes"`
+			ScannerQueryUnescapeMaxRounds int `json:"scanner_query_unescape_max_rounds"`
+			HTMLEntityDecodeMaxPasses     int `json:"html_entity_decode_max_passes"`
+			QuerySubsequenceMaxValues     int `json:"query_subsequence_max_values"`
+			QuerySubsequenceMinSize       int `json:"query_subsequence_min_size"`
+			QuerySubsequenceMaxSize       int `json:"query_subsequence_max_size"`
+			MaxInputBytes                 int `json:"max_input_bytes"`
+			MaxOutputBytes                int `json:"max_output_bytes"`
 		} `json:"limits"`
 		Normalization struct {
 			DLPNormalize struct {
@@ -208,6 +229,12 @@ func TestTransformProfileV1DigestMatchesCanonicalDocument(t *testing.T) {
 	}
 	if profile.Limits.MaxDecodePasses != evidenceProvenanceProfileMaxDecodePasses || profile.Limits.MaxInputBytes != evidenceProvenanceProfileMaxInputBytes || profile.Limits.MaxOutputBytes != evidenceProvenanceProfileMaxOutputBytes {
 		t.Fatalf("profile limits = decode passes %d, input %d, output %d; Go = decode passes %d, input %d, output %d", profile.Limits.MaxDecodePasses, profile.Limits.MaxInputBytes, profile.Limits.MaxOutputBytes, evidenceProvenanceProfileMaxDecodePasses, evidenceProvenanceProfileMaxInputBytes, evidenceProvenanceProfileMaxOutputBytes)
+	}
+	if profile.Limits.ScannerQueryUnescapeMaxRounds != evidenceProvenanceScannerMaxDecodeRounds || profile.Limits.HTMLEntityDecodeMaxPasses != evidenceProvenanceHTMLMaxDecodePasses {
+		t.Fatalf("scanner decode limits = query %d HTML %d; Go = query %d HTML %d", profile.Limits.ScannerQueryUnescapeMaxRounds, profile.Limits.HTMLEntityDecodeMaxPasses, evidenceProvenanceScannerMaxDecodeRounds, evidenceProvenanceHTMLMaxDecodePasses)
+	}
+	if profile.Limits.QuerySubsequenceMaxValues != evidenceProvenanceQueryMaxValues || profile.Limits.QuerySubsequenceMinSize != evidenceProvenanceQueryMinIndices || profile.Limits.QuerySubsequenceMaxSize != evidenceProvenanceQueryMaxIndices {
+		t.Fatalf("query subsequence limits = values %d size %d..%d; Go = values %d size %d..%d", profile.Limits.QuerySubsequenceMaxValues, profile.Limits.QuerySubsequenceMinSize, profile.Limits.QuerySubsequenceMaxSize, evidenceProvenanceQueryMaxValues, evidenceProvenanceQueryMinIndices, evidenceProvenanceQueryMaxIndices)
 	}
 	gotKinds := make([]OperationKind, 0, len(profile.OperationVocabulary))
 	for _, operation := range profile.OperationVocabulary {
@@ -319,6 +346,16 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"decoder occurrence", Operation{Kind: OperationHexDecode, Occurrence: 1}, "unsupported occurrence"},
 		{"decoder passes", Operation{Kind: OperationHexDecode, Passes: 1}, "unsupported passes"},
 		{"decoder profile", Operation{Kind: OperationHexDecode, Profile: "x"}, "unsupported profile"},
+		{"identity alphabet", Operation{Kind: OperationIdentity, Alphabet: "url"}, "unsupported alphabet"},
+		{"identity indices", Operation{Kind: OperationIdentity, Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"identity minimum length", Operation{Kind: OperationIdentity, MinimumLength: 8}, "unsupported minimum_length"},
+		{"matching profile", Operation{Kind: OperationMatchingNormalize, Profile: "unknown"}, "unknown matching profile"},
+		{"liberal base64 alphabet", Operation{Kind: OperationBase64DecodeLiberal, Alphabet: "unknown"}, "unknown base64 alphabet"},
+		{"encoded token alphabet", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "unknown"}, "unknown encoded-token alphabet"},
+		{"query subsequence too short", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{0}}, "2..4"},
+		{"query subsequence unordered", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{1, 1}}, "strictly increasing"},
+		{"query subsequence out of range", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{0, 20}}, "exceeds scanner limit"},
+		{"encoded run missing minimum", Operation{Kind: OperationEncodedRun}, "minimum_length must be positive"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.op.validate()

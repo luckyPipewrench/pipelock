@@ -102,6 +102,9 @@ const evidenceProvenanceProfileMaxDecodePasses = 4
 const (
 	evidenceProvenanceScannerMaxDecodeRounds = 500
 	evidenceProvenanceHTMLMaxDecodePasses    = 16
+	evidenceProvenanceQueryMaxValues         = 20
+	evidenceProvenanceQueryMinIndices        = 2
+	evidenceProvenanceQueryMaxIndices        = 4
 )
 
 const (
@@ -533,11 +536,11 @@ func (op Operation) validate() error {
 		copy.Occurrence = 0
 		return copy.noParametersForValidation(reject)
 	case OperationQuerySubsequence:
-		if len(op.Indices) < 2 || len(op.Indices) > 4 {
+		if len(op.Indices) < evidenceProvenanceQueryMinIndices || len(op.Indices) > evidenceProvenanceQueryMaxIndices {
 			return fmt.Errorf("query subsequence indices must contain 2..4 entries")
 		}
 		for index, value := range op.Indices {
-			if value >= 20 {
+			if value >= evidenceProvenanceQueryMaxValues {
 				return fmt.Errorf("query subsequence index %d exceeds scanner limit", value)
 			}
 			if index > 0 && value <= op.Indices[index-1] {
@@ -786,12 +789,12 @@ func scannerOrderedQueryConcat(rawQuery string) string {
 }
 
 func scannerQuerySubsequence(rawQuery string, indices []uint8) (string, error) {
-	values := make([]string, 0, 20)
+	values := make([]string, 0, evidenceProvenanceQueryMaxValues)
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value != "" {
 			values = append(values, scannerQueryUnescape(value))
-			if len(values) == 20 {
+			if len(values) == evidenceProvenanceQueryMaxValues {
 				break
 			}
 		}

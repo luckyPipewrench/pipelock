@@ -373,7 +373,7 @@ func TestConnect_Adaptive_BlockAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read CONNECT response: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
@@ -1323,7 +1323,7 @@ func TestConnect_Adaptive_PostCEEBlockAllReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read CONNECT response: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("CONNECT returned %d, want CEE-triggered 403: %s", resp.StatusCode, body)

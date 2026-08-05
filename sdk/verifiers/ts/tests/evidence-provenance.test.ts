@@ -81,3 +81,54 @@ test("evidence provenance: Unicode 15 tables pin newer code points as opaque", (
   });
   assert.equal(Buffer.from(result).toString("utf8"), "\u{1C89}");
 });
+
+// Unicode marks U+001C..U+001F as White_Space=Yes, but Go's unicode.IsSpace
+// excludes them and this profile follows Go. A verifier that strips them
+// produces a different view than the Go reference for byte-identical input, and
+// therefore a different commitment. This case is pinned because the whole suite
+// passed while the divergence was live: nothing exercised these four code
+// points, so the bug was invisible to 310 green tests.
+test("whitespace_compact keeps the information separators Go retains", () => {
+  const separators = "\u001c\u001d\u001e\u001f";
+  const input = "abc" + separators + "de f";
+  const recipe = {
+    transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+    operations: [{ kind: "whitespace_compact" }],
+  };
+
+  const out = applyEvidenceProvenanceRecipe(Buffer.from(input, "utf8"), recipe);
+  const text = Buffer.from(out).toString("utf8");
+
+  // The ASCII space is compacted away; the four separators survive, matching
+  // Go codepoints [97 98 99 28 29 30 31 100 101 102].
+  assert.equal(text, "abc" + separators + "def");
+  for (let cp = 0x1c; cp <= 0x1f; cp += 1) {
+    assert.ok(
+      text.includes(String.fromCodePoint(cp)),
+      `U+${cp.toString(16).toUpperCase().padStart(4, "0")} must be retained to match Go`,
+    );
+  }
+});
+
+// A malformed absolute URL carries a scheme but no literal "://" authority.
+// indexOf then returns -1 and the slice started at index 2, so this verifier
+// returned a fabricated hostname ("tps") while Go rejected the same input and
+// Rust fabricated something else ("https"). A proof built on it would commit to
+// a source view that never existed. Pinned so the rejection cannot regress.
+test("url_component hostname rejects a malformed authority like Go", () => {
+  const recipe = {
+    transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+    operations: [{ kind: "url_component", component: "hostname" }],
+  };
+
+  assert.throws(
+    () => applyEvidenceProvenanceRecipe(Buffer.from("https:api.vendor.example", "utf8"), recipe),
+    /invalid absolute URL/,
+  );
+
+  const ok = applyEvidenceProvenanceRecipe(
+    Buffer.from("https://api.vendor.example/x", "utf8"),
+    recipe,
+  );
+  assert.equal(Buffer.from(ok).toString("utf8"), "api.vendor.example");
+});

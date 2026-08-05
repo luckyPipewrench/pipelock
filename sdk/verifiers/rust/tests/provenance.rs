@@ -137,3 +137,33 @@ fn liberal_hex_rejects_non_utf8_output() {
     .expect("recipe");
     assert!(recipe.apply("ff").unwrap_err().contains("invalid UTF-8"));
 }
+
+/// A malformed absolute URL carries a scheme but no literal "://" authority.
+/// Before this guard, raw_hostname fell back to the whole value and produced a
+/// fabricated hostname ("https"), while the Go reference rejected the input and
+/// TypeScript produced a different fabrication ("tps"). Three verifiers, three
+/// answers, for a value a proof would then commit to as its source view.
+/// Pinned so the rejection cannot regress silently.
+#[test]
+fn malformed_authority_is_rejected_like_go() {
+    let recipe = Recipe::from_json(
+        PROFILE_DIGEST,
+        &serde_json::json!([{"kind": "url_component", "component": "hostname"}]),
+    )
+    .expect("recipe");
+
+    let err = recipe
+        .apply("https:api.vendor.example")
+        .expect_err("malformed authority must be rejected");
+    assert!(
+        err.contains("invalid absolute URL"),
+        "error = {err}, want an invalid absolute URL rejection"
+    );
+
+    assert_eq!(
+        recipe
+            .apply("https://api.vendor.example/x")
+            .expect("well formed absolute URL must still parse"),
+        "api.vendor.example"
+    );
+}

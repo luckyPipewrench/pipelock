@@ -87,8 +87,15 @@ function removeUnicode15NonspacingMarks(value: string): string {
   return [...value].filter((char) => !isUnicode15NonspacingMark(char)).join("");
 }
 function compactUnicode15Whitespace(value: string): string {
+  // Deliberately the plain White_Space property test. Unicode does NOT mark
+  // U+001C..U+001F as White_Space, so this already matches Go's unicode.IsSpace,
+  // which also excludes them. A review suggested excluding them explicitly;
+  // measured against @unicode/unicode-15.0.0 the property is already false for
+  // all four, so such a guard would be dead code. See the retention test in
+  // tests/evidence-provenance.test.ts, which pins the agreement.
   return [...value].filter((char) => !isUnicode15Whitespace(char)).join("");
 }
+
 function mapUnicode15ExoticWhitespace(value: string): string {
   return [...value]
     .map((char) =>
@@ -540,8 +547,15 @@ function parseQuery(value: string): [string, string][] {
   });
 }
 function rawHostname(value: string): string {
+  // A malformed absolute URL such as "https:api.vendor.example" has a scheme
+  // but no literal "://" authority. indexOf then returns -1 and the slice below
+  // starts at index 2, producing a fabricated hostname ("tps") rather than a
+  // rejection. Go rejects this input with "URL parse: invalid absolute URL", so
+  // a proof built from it would commit to a hostname that does not exist.
+  const authorityStart = value.indexOf("://");
+  if (authorityStart < 0) fail("URL parse: invalid absolute URL");
   const authority = value
-    .slice(value.indexOf("://") + 3)
+    .slice(authorityStart + 3)
     .split(/[/?#]/u, 1)[0]!
     .split("@")
     .at(-1)!;

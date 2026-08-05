@@ -449,6 +449,14 @@ fn url_component(
     if u.scheme().is_empty() || u.host_str().is_none() {
         return Err("URL parse: invalid absolute URL".to_string());
     }
+    // A malformed absolute URL such as "https:api.vendor.example" carries a
+    // scheme but no literal "://" authority. raw_hostname falls back to the
+    // whole value in that case and yields a fabricated hostname, so a proof
+    // would commit to a source view that does not exist. Go rejects this input;
+    // match it before any component dispatch.
+    if !value.contains("://") {
+        return Err("URL parse: invalid absolute URL".to_string());
+    }
     match component {
         "url" => Ok(value.to_string()),
         "hostname" => Ok(raw_hostname(value)),

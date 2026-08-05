@@ -1,0 +1,101 @@
+name: Publish Helm chart
+
+# Publishes the chart on demand, without cutting a release.
+#
+# The release workflow already publishes the chart on every tag. This exists for
+# the bootstrap case and for republishing after a registry-side accident: the
+# chart's first publication creates a new GHCR package, and waiting for the next
+# release to create it would tie an unrelated decision to a release schedule.
+#
+# It refuses to overwrite an existing tag. The release gate keeps the chart
+# version equal to the released Pipelock version, so a collision here means the
+# chart for that version is already published and the run has nothing to do.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Package and check for a collision, but do not push.'
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: publish-chart-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish-chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Verify the chart is releasable
+        run: bash scripts/check-helm-chart.sh
+
+      - name: Package and publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          chart_version="$(helm show chart charts/pipelock | awk '$1 == "version:" { print $2 }')"
+          app_version="$(helm show chart charts/pipelock | awk '$1 == "appVersion:" { gsub(/"/, "", $2); print $2 }')"
+          test -n "$chart_version" || {
+            echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
+            exit 1
+          }
+          test "$chart_version" = "$app_version" || {
+            echo "::error::chart version ${chart_version} != appVersion ${app_version}; the release gate requires these to match"
+            exit 1
+          }
+
+          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+
+          # Refuse to overwrite. An OCI registry accepts a re-push to an existing
+          # tag silently, which would change what an already-published version
+          # means for anyone who pinned it.
+          if helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" >/dev/null 2>&1; then
+            helm registry logout ghcr.io
+            echo "::error::chart ${chart_version} is already published; bump the chart and app version rather than overwriting a published tag"
+            exit 1
+          fi
+
+          helm package charts/pipelock --destination dist-chart
+
+          if [ "$DRY_RUN" = "true" ]; then
+            helm registry logout ghcr.io
+            echo "Dry run: packaged pipelock-${chart_version}.tgz and confirmed the tag is free. Nothing pushed."
+            {
+              echo "### Helm chart dry run"
+              echo
+              echo "Would publish \`ghcr.io/luckypipewrench/charts/pipelock:${chart_version}\`."
+              echo "The tag is currently free. Re-run with dry_run disabled to publish."
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
+          helm registry logout ghcr.io
+
+          {
+            echo "### Helm chart published"
+            echo
+            echo "\`ghcr.io/luckypipewrench/charts/pipelock:${chart_version}\`."
+            echo
+            echo "If this is the first published chart, the package is PRIVATE and"
+            echo "\`helm install oci://ghcr.io/luckypipewrench/charts/pipelock\` fails for"
+            echo "everyone until it is made public once under Package settings."
+          } >>"$GITHUB_STEP_SUMMARY"

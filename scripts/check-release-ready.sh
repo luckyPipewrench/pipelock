@@ -90,6 +90,28 @@ else
   echo "  [ok]   Chart appVersion: $app"
 fi
 
+# 2b. Chart version must ALSO equal the release version, because the chart is
+# published to an OCI registry under its own version as the tag.
+#
+# appVersion is required to change every release by the check above, so the
+# packaged chart differs every release. If the chart version did not change with
+# it, the second release would push a different artifact to the SAME tag and the
+# registry would accept it silently. Reproduced against a local registry: chart
+# 0.10.0 pushed with appVersion 3.3.0, then again with appVersion 3.4.0; the tag
+# resolved to 3.4.0 afterwards, so anyone pinning --version 0.10.0 would get a
+# different Pipelock depending on when they installed.
+#
+# Tying the two together removes that class rather than guarding one instance of
+# it. Independent chart versioning would buy something if the chart could ship
+# between releases, but publication is tag-triggered, so it cannot. One number
+# also means there is no separate bump to forget.
+chart_version="$(grep -E '^version:' "$CHART" | head -n 1 | sed -E 's/^version:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/' || true)"
+if [ "$chart_version" != "$VER" ]; then
+  note "charts/pipelock/Chart.yaml version is '$chart_version', expected '$VER'. The chart publishes to an OCI registry under its own version as the tag, so a version that does not move every release overwrites the previously published chart."
+else
+  echo "  [ok]   Chart version: $chart_version"
+fi
+
 # 3. The release keyring must be present BEFORE anything is built.
 #
 # GoReleaser embeds the public release keyring via

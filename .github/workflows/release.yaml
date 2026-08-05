@@ -450,6 +450,19 @@ jobs:
           }
           helm package charts/pipelock --app-version "$app_version" --destination dist-chart
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+
+          # Refuse to overwrite a published tag. The release gate keeps the chart
+          # version equal to the release version, so this can only trigger when
+          # the same version is released twice, which a re-pushed tag allows.
+          # An OCI registry accepts a re-push silently, so without this the
+          # second run would change what an already-published version means for
+          # anyone who pinned it.
+          if helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" >/dev/null 2>&1; then
+            helm registry logout ghcr.io
+            echo "::error::chart ${chart_version} is already published; refusing to overwrite a published tag"
+            exit 1
+          fi
+
           helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
           helm registry logout ghcr.io
 

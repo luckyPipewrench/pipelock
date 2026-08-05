@@ -9,9 +9,11 @@ import base64
 import json
 from pathlib import Path
 
+import pytest
 import unicodedata2
 
 from pipelock_aarp_verify.provenance import (
+    PROFILE_DIGEST,
     UNICODE_VERSION,
     ProvenanceError,
     Recipe,
@@ -73,3 +75,92 @@ def test_evidence_provenance_transform_corpus() -> None:
         covered == set(supported_operation_kinds()) == set(corpus["operation_coverage"])
     )
     assert errors == set(corpus["error_coverage"])
+
+
+@pytest.mark.parametrize(
+    ("digest", "operations", "error"),
+    [
+        (None, [], "missing transform profile digest"),
+        ("bad", [], "invalid SHA-256 digest"),
+        ("sha256:" + "0" * 64, [], "unknown profile"),
+        (PROFILE_DIGEST, None, "operations must be an array"),
+        (PROFILE_DIGEST, [{"kind": "identity", "extra": 1}], "unknown operation field"),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "url_component", "component": "port"}],
+            "unknown URL component",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "url_component", "component": "path", "selector": "x"}],
+            "unsupported selector",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "base64_decode_liberal", "alphabet": "other"}],
+            "unknown base64 alphabet",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "encoded_token_normalize", "alphabet": "other"}],
+            "unknown encoded-token alphabet",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "query_subsequence", "indices": [1, 1]}],
+            "strictly increasing",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "encoded_run", "minimum_length": 0}],
+            "must be positive",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "percent_decode"}],
+            "percent decode passes must be 1..4",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "identity", "occurrence": 0}],
+            "unsupported occurrence",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "text_segment", "occurrence": -1}],
+            "unsigned integer",
+        ),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "base64_decode", "decode_padding": 1}],
+            "must be boolean",
+        ),
+    ],
+)
+def test_recipe_validation_boundaries(
+    digest: object, operations: object, error: str
+) -> None:
+    with pytest.raises(ProvenanceError, match=error):
+        Recipe.from_json(digest, operations).validate()
+
+
+@pytest.mark.parametrize(
+    ("component", "expected"),
+    [
+        ("url", "https://api.vendor.example/a/b?x=y"),
+        ("hostname", "api.vendor.example"),
+        ("path", "/a/b"),
+        ("raw_query", "x=y"),
+    ],
+)
+def test_url_component_surfaces(component: str, expected: str) -> None:
+    recipe = Recipe.from_json(
+        PROFILE_DIGEST, [{"kind": "url_component", "component": component}]
+    )
+    assert recipe.apply("https://api.vendor.example/a/b?x=y") == expected
+
+
+def test_liberal_hex_rejects_non_utf8_output() -> None:
+    recipe = Recipe.from_json(PROFILE_DIGEST, [{"kind": "hex_decode_liberal"}])
+    with pytest.raises(ProvenanceError, match="invalid UTF-8"):
+        recipe.apply("ff")

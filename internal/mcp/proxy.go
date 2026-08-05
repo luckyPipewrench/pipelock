@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -518,6 +519,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 
 				if toolAction == config.ActionBlock {
+					_ = emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionBlock)
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
 						decide.RecordSignal(rec, session.SignalBlock, decide.EscalationParams{
@@ -531,6 +533,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
 					emitTrackedOutcome("error", "tool_poisoning", resp)
+					continue
+				}
+				if emitErr := emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionWarn); emitErr != nil && opts.requireReceipts() {
+					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
+					if err := writer.WriteMessage(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
+					}
 					continue
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
@@ -782,6 +791,54 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	}
 
 	return foundInjection, nil
+}
+
+func emitMCPToolScanReceipt(
+	emitter *receipt.Emitter,
+	v2Emitter *proxydecision.Emitter,
+	logW io.Writer,
+	opts MCPProxyOpts,
+	result tools.ToolScanResult,
+	verdict string,
+) error {
+	serverName := strings.TrimSpace(opts.ServerName)
+	if serverName == "" {
+		serverName = "unknown.invalid"
+	}
+	requestID := canonicalID(result.RPCID)
+	pattern := "tool_poisoning"
+	for _, match := range result.Matches {
+		if len(match.ToolPoison) > 0 {
+			pattern = match.ToolPoison[0]
+			break
+		}
+		if match.DriftDetected {
+			pattern = "tool_definition_drift"
+			break
+		}
+		if len(match.Injection) > 0 {
+			pattern = match.Injection[0].PatternName
+			break
+		}
+	}
+	_, err := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
+		Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   verdict,
+			Transport: opts.Transport,
+			Target:    "mcp://" + serverName + "/tools/list",
+			RequestID: requestID,
+			MCPMethod: "tools/list",
+			Layer:     "mcp_tool_scan",
+			Pattern:   pattern,
+			Severity:  config.SeverityHigh,
+		}),
+		RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
+	})
+	if err != nil {
+		logReceiptEmitFailure(logW, err, opts.requireReceipts(), verdict)
+	}
+	return err
 }
 
 // stripOrBlock tries to strip injection from the response. If stripping fails,

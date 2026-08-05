@@ -8,6 +8,7 @@ package replaycapture
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 )
@@ -68,6 +69,9 @@ func (e *Engine) Generate(scenarios []Scenario, outDir, pipelockVersion string, 
 		if err != nil {
 			return nil, err
 		}
+		if err := validateExpectedDecision(cs); err != nil {
+			return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
+		}
 		res, err := AssemblePacket(cs, outDir, generatedAt)
 		if err != nil {
 			return nil, err
@@ -97,7 +101,7 @@ func (e *Engine) Generate(scenarios []Scenario, outDir, pipelockVersion string, 
 			DecisiveVerdict: decisiveVerdict(cs),
 			ReceiptCount:    cs.ReceiptCount,
 			PacketDir:       s.ID,
-			ManifestPath:    filepath.Join(s.ID, artifactManifestName),
+			ManifestPath:    path.Join(s.ID, artifactManifestName),
 		})
 	}
 

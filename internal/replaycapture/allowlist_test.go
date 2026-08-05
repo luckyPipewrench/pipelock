@@ -34,6 +34,22 @@ func TestValidateReceiptPublicSafe_AcceptsLabRecord(t *testing.T) {
 	}
 }
 
+func TestValidateReceiptPublicSafe_MCPRequestIDIsTransportScoped(t *testing.T) {
+	t.Parallel()
+	ar := safeBaseRecord()
+	ar.Transport = TransportMCPStdio
+	ar.Target = "mcp://tools.fixture.test/tools/list"
+	ar.RequestID = "1"
+	if err := ValidateReceiptPublicSafe(ar); err != nil {
+		t.Fatalf("synthetic MCP request id rejected: %v", err)
+	}
+
+	ar.Transport = TransportForward
+	if err := ValidateReceiptPublicSafe(ar); err == nil {
+		t.Fatal("numeric MCP request id was accepted on the forward transport")
+	}
+}
+
 func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 	t.Parallel()
 

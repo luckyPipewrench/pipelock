@@ -63,18 +63,32 @@ func TestNewEngineWithKey(t *testing.T) {
 	}
 }
 
-func TestDecisiveVerdict_Fallback(t *testing.T) {
+func TestDecisiveVerdict_RequiresMediatedDecision(t *testing.T) {
 	t.Parallel()
 
 	cs := &CapturedScenario{
-		Scenario: Scenario{ExpectedVerdict: verdictBlock},
+		Scenario: Scenario{ExpectedVerdict: verdictBlock, ExpectedLayer: "body_dlp"},
 		Receipts: []receipt.Receipt{
-			{ActionRecord: receipt.ActionRecord{Verdict: verdictWarn}},
+			{ActionRecord: receipt.ActionRecord{Verdict: verdictAllow, SessionControl: &receipt.SessionControl{Kind: receipt.SessionControlOpen}}},
 		},
 	}
-	// No receipt matches the expected verdict, so the last receipt's verdict wins.
-	if got := decisiveVerdict(cs); got != verdictWarn {
-		t.Errorf("fallback verdict=%q want warn", got)
+	if got := decisiveVerdict(cs); got != "unknown" {
+		t.Errorf("control-only verdict=%q want unknown", got)
+	}
+	if err := validateExpectedDecision(cs); err == nil {
+		t.Fatal("control-only chain passed the expected-decision gate")
+	}
+
+	cs.Receipts = append(cs.Receipts, receipt.Receipt{ActionRecord: receipt.ActionRecord{
+		Verdict: verdictBlock,
+		Layer:   "response_scan",
+	}})
+	if err := validateExpectedDecision(cs); err == nil || !strings.Contains(err.Error(), "layer") {
+		t.Fatalf("wrong-layer decision error = %v", err)
+	}
+	cs.Receipts[1].ActionRecord.Layer = "body_dlp"
+	if err := validateExpectedDecision(cs); err != nil {
+		t.Fatalf("expected mediated decision rejected: %v", err)
 	}
 
 	empty := &CapturedScenario{Scenario: Scenario{ExpectedVerdict: verdictBlock}}

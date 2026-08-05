@@ -853,6 +853,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var forwardRedactionReport *redact.Report
 	var forwardGate ContractGateOutput
+	forwardReceiptVerdict := config.ActionAllow
+	forwardReceiptLayer := ""
+	forwardReceiptPattern := ""
 	withForwardRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
 		opts.RedactionProfile = cfg.Redaction.DefaultProfile
 		opts.RedactionReport = forwardRedactionReport
@@ -1493,6 +1496,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					"blocked: "+reason+" (escalated)", http.StatusForbidden)
 				return
 			}
+			if action == config.ActionWarn {
+				forwardReceiptVerdict = config.ActionWarn
+				forwardReceiptLayer = scannerLabel
+				forwardReceiptPattern = reason
+			}
 		}
 
 		// A2A request body scanning: field-aware classification of JSON leaves.
@@ -1549,6 +1557,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if forwardHeaderHadFinding {
 		hasFinding = true
+		if !forwardHeaderBlocked {
+			forwardReceiptVerdict = config.ActionWarn
+			forwardReceiptLayer = "dlp_header"
+			forwardReceiptPattern = "request_header_secret"
+		}
 	}
 	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
 		// Record adaptive signal for header DLP findings.
@@ -1569,6 +1582,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if forwardHeaderBlocked {
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     "dlp_header",
+			Pattern:   "request_header_secret",
+			Transport: TransportForward,
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
 		writeBlockedError(w,
 			blockInfoFor(blockreason.DLPMatch, "header_dlp"),
 			"blocked: request header contains secret", http.StatusForbidden)
@@ -1584,6 +1608,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: forwardSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     "session_deny",
+					Pattern:   adaptiveBlockedReason,
+					Transport: TransportForward,
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				}))
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
 					adaptiveBlockedReason, http.StatusForbidden)
@@ -1827,7 +1862,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	forwardAllowReceipt := withForwardRedaction(receipt.EmitOpts{
 		ActionID:            actionID,
-		Verdict:             config.ActionAllow,
+		Verdict:             forwardReceiptVerdict,
+		Layer:               forwardReceiptLayer,
+		Pattern:             forwardReceiptPattern,
 		Transport:           "forward",
 		Method:              r.Method,
 		Target:              targetURL,

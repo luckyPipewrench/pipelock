@@ -1119,6 +1119,63 @@ func setupFetchProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod f
 	return p.buildHandler(p.buildMux())
 }
 
+func TestReceiptCoverage_ForwardBodyWarnEmitsWarnReceipt(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	rph := newReceiptProxyHelper(t)
+	h := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.ForwardProxy.Enabled = true
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:  "lab-warn-marker",
+			Regex: `LABWARN[0-9A-Z]{16}`,
+		})
+		cfg.RequestBodyScanning.PatternActions = map[string]string{"lab-warn-marker": config.ActionWarn}
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, backend.URL+"/observe", strings.NewReader(`{"token":"LABWARN0123456789ABCDEF"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	r := rph.requireReceipt(t, "body_dlp")
+	if r.ActionRecord.Verdict != config.ActionWarn {
+		t.Fatalf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionWarn)
+	}
+}
+
+func TestReceiptCoverage_ForwardHeaderDLPEmitsReceipt(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	h := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.ForwardProxy.Enabled = true
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:  "forward-header-test-key",
+			Regex: `FORWARDKEY[0-9A-Z]{16}`,
+		})
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://docs.fixture.test/read", nil)
+	req.Header.Set("Authorization", "Bearer FORWARDKEY0123456789ABCDEF")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	r := rph.requireReceipt(t, "dlp_header")
+	if r.ActionRecord.Verdict != config.ActionBlock || r.ActionRecord.Transport != TransportForward {
+		t.Fatalf("receipt verdict/transport = %q/%q", r.ActionRecord.Verdict, r.ActionRecord.Transport)
+	}
+}
+
 // setupWSProxyWithReceipts boots a real WS proxy with receipt emission.
 func setupWSProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod func(*config.Config)) (string, func()) {
 	t.Helper()

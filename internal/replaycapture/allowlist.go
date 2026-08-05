@@ -60,6 +60,11 @@ var safeEnumRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 // provider request id) is rejected.
 var safeRequestIDRE = regexp.MustCompile(`^req-[0-9]+$`)
 
+// safeMCPRequestIDRE permits the bounded synthetic JSON-RPC ids used by the
+// replay lab. It is consulted only for MCP transports; HTTP receipt request ids
+// remain constrained to Pipelock's req-N counter.
+var safeMCPRequestIDRE = regexp.MustCompile(`^(?:[0-9]{1,9}|"[a-z0-9_-]{1,32}")$`)
+
 // safeRunNonceRE matches the per-process receipt nonce emitted as 16 random
 // bytes encoded lowercase hex. It carries no private context, but the public
 // packet gate still constrains the shape so arbitrary strings cannot publish.
@@ -107,7 +112,11 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	}
 
 	// request_id, when present, must be pipelock's own internal counter shape.
-	if ar.RequestID != "" && !safeRequestIDRE.MatchString(ar.RequestID) {
+	requestIDSafe := safeRequestIDRE.MatchString(ar.RequestID)
+	if strings.HasPrefix(ar.Transport, "mcp_") {
+		requestIDSafe = requestIDSafe || safeMCPRequestIDRE.MatchString(ar.RequestID)
+	}
+	if ar.RequestID != "" && !requestIDSafe {
 		return fmt.Errorf("%w: request_id %q is not the internal counter shape", errAllowlist, ar.RequestID)
 	}
 	if ar.RunNonce != "" && !safeRunNonceRE.MatchString(ar.RunNonce) {
@@ -179,7 +188,7 @@ func validatePublicSessionOpen(ar receipt.ActionRecord) error {
 // validateSafeTarget parses a receipt target and confirms its host is synthetic
 // or documentation-space (reserved hostname, the exact cloud metadata address,
 // or RFC 5737 literal). Loopback literals are intentionally rejected so local
-// fixture details cannot land in signed public artifacts.
+// interface addresses cannot land in signed public artifacts.
 func validateSafeTarget(target string) error {
 	if target == "" {
 		return fmt.Errorf("%w: empty target", errAllowlist)

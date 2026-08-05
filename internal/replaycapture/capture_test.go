@@ -47,6 +47,10 @@ func TestDefaultScenarios_PublicContract(t *testing.T) {
 		{"poisoned-ticket-webhook-exfil", TransportForward, verdictBlock, "body_dlp"},
 		{"poisoned-readme-key-paste", TransportForward, verdictBlock, "body_dlp"},
 		{"hostile-page-session-keys", TransportForward, verdictBlock, "body_dlp"},
+		{"amber-warning-observed", TransportForward, verdictWarn, "body_dlp"},
+		{"websocket-fragmented-secret", TransportWebSocket, verdictBlock, "dlp"},
+		{"mcp-poisoned-tool-description", TransportMCPStdio, verdictBlock, "mcp_tool_scan"},
+		{"multi-step-policy-chain", TransportForward, verdictBlock, "body_dlp"},
 	}
 
 	got := DefaultScenarios()

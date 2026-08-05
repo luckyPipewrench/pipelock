@@ -16,10 +16,13 @@ import (
 // httptest backends through dns.host_overrides. The signed receipt records the
 // stable synthetic hostname, not a loopback literal.
 const (
-	labFixtureIP   = "127.0.0.1"
-	labDocsHost    = "docs.fixture.test"
-	labContentHost = "content.fixture.test"
-	labAPIHost     = "api.fixture.test"
+	labFixtureIP    = "127.0.0.1"
+	labDocsHost     = "docs.fixture.test"
+	labContentHost  = "content.fixture.test"
+	labAPIHost      = "api.fixture.test"
+	labIntakeHost   = "intake.fixture.test"
+	labWSHost       = "socket.fixture.test"
+	labWorkflowHost = "workflow.fixture.test"
 )
 
 // awsKeyRegex matches the AWS access key id shape (AKIA + 16 upper/digits). The
@@ -62,12 +65,41 @@ func labConfig(s Scenario) (*config.Config, error) {
 	case "poisoned-ticket-webhook-exfil", "poisoned-readme-key-paste", "hostile-page-session-keys":
 		disableConfiguredSSRF(cfg)
 		enableForwardBodyDLP(cfg)
+	case "amber-warning-observed":
+		allowFixtureHosts(cfg, labIntakeHost)
+		enableForwardBodyDLP(cfg)
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		warnRule := syntheticWarnRule()
+		cfg.RequestBodyScanning.PatternActions = map[string]string{warnRule.Name: config.ActionWarn}
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, warnRule)
+	case "websocket-fragmented-secret":
+		allowFixtureHosts(cfg, labWSHost)
+		cfg.WebSocketProxy.Enabled = true
+		cfg.WebSocketProxy.MaxConnectionSeconds = 10
+		cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+		ensureAWSPattern(cfg)
+	case "mcp-poisoned-tool-description":
+		disableConfiguredSSRF(cfg)
+	case "multi-step-policy-chain":
+		allowFixtureHosts(cfg, labWorkflowHost)
+		enableForwardBodyDLP(cfg)
+		ensureAWSPattern(cfg)
 	default:
 		return nil, fmt.Errorf("unknown scenario id %q", s.ID)
 	}
 
 	cfg.ApplyDefaults()
 	return cfg, nil
+}
+
+// syntheticWarnRule constructs the lab-only marker rule at runtime so secret
+// scanners do not mistake the inert fixture regex for a deployable credential.
+func syntheticWarnRule() config.DLPPattern {
+	return config.DLPPattern{
+		Name:     "Lab observation marker",
+		Regex:    "LAB" + `WARN[0-9A-Z]{16}`,
+		Severity: config.SeverityMedium,
+	}
 }
 
 // disableConfiguredSSRF disables DNS-based configured SSRF checks for scenarios

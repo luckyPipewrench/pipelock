@@ -82,17 +82,32 @@ func decisiveVerdict(cs *CapturedScenario) string {
 	if decisiveReceiptAR(cs.Receipts, cs.Scenario.ExpectedVerdict) != nil {
 		return cs.Scenario.ExpectedVerdict
 	}
-	if len(cs.Receipts) > 0 {
-		return cs.Receipts[len(cs.Receipts)-1].ActionRecord.Verdict
-	}
 	return "unknown"
+}
+
+// validateExpectedDecision is the publish-time semantic gate behind the replay
+// claim. Cryptographic chain verification alone can succeed for a chain that
+// contains only its session-open anchor; publication additionally requires a
+// mediated action with the scenario's declared verdict and layer.
+func validateExpectedDecision(cs *CapturedScenario) error {
+	if cs == nil {
+		return fmt.Errorf("missing captured scenario")
+	}
+	ar := decisiveReceiptAR(cs.Receipts, cs.Scenario.ExpectedVerdict)
+	if ar == nil {
+		return fmt.Errorf("missing expected %s mediated decision", cs.Scenario.ExpectedVerdict)
+	}
+	if ar.Layer != cs.Scenario.ExpectedLayer {
+		return fmt.Errorf("expected %s layer %q, got %q", cs.Scenario.ExpectedVerdict, cs.Scenario.ExpectedLayer, ar.Layer)
+	}
+	return nil
 }
 
 // decisiveReceiptAR returns the first receipt action record matching verdict, or
 // nil. Production sibling of the test-only helper.
 func decisiveReceiptAR(receipts []receipt.Receipt, verdict string) *receipt.ActionRecord {
 	for i := range receipts {
-		if receipts[i].ActionRecord.Verdict == verdict {
+		if receipts[i].ActionRecord.SessionControl == nil && receipts[i].ActionRecord.Verdict == verdict {
 			return &receipts[i].ActionRecord
 		}
 	}

@@ -361,27 +361,70 @@ func TestMapOpenError(t *testing.T) {
 func TestNoFollowSymlinkErrnoSelection(t *testing.T) {
 	loop := errors.New("synthetic ELOOP")
 	link := errors.New("synthetic EMLINK")
-	syntheticEFTYPE := errors.New("synthetic EFTYPE")
-	errnos := noFollowErrnos{loop: loop, link: link, fileType: syntheticEFTYPE}
+	fileType := errors.New("synthetic EFTYPE")
+
+	// Each case is a platform's DECLARED errno set, mirroring what the
+	// nofollow_errno_*.go files construct. The selector must surface every
+	// errno the set declares and nothing else. Asserting on the declared set
+	// rather than on a platform NAME is what keeps this test from going
+	// vacuous: a previous version switched on a label string, so renaming that
+	// label silently dropped EMLINK from the selection while this test kept
+	// passing against its own hardcoded label.
 	for _, test := range []struct {
-		goos string
-		want []error
+		name   string
+		errnos noFollowErrnos
+		want   []error
+		absent []error
 	}{
-		{goos: "linux", want: []error{loop}},
-		{goos: "freebsd", want: []error{loop, link}},
-		{goos: "netbsd", want: []error{loop, syntheticEFTYPE}},
+		{
+			name:   "loop_only",
+			errnos: noFollowErrnos{loop: loop},
+			want:   []error{loop},
+			absent: []error{link, fileType},
+		},
+		{
+			name:   "loop_and_link",
+			errnos: noFollowErrnos{loop: loop, link: link},
+			want:   []error{loop, link},
+			absent: []error{fileType},
+		},
+		{
+			name:   "loop_and_file_type",
+			errnos: noFollowErrnos{loop: loop, fileType: fileType},
+			want:   []error{loop, fileType},
+			absent: []error{link},
+		},
 	} {
-		t.Run(test.goos, func(t *testing.T) {
-			selected := noFollowSymlinkErrorsFor(test.goos, errnos)
+		t.Run(test.name, func(t *testing.T) {
+			selected := noFollowSymlinkErrorsFor(test.errnos)
 			for _, err := range test.want {
 				if !isNoFollowSymlinkError(err, selected) {
-					t.Fatalf("%s symlink errno %v was not selected", test.goos, err)
+					t.Fatalf("declared errno %v was not selected", err)
+				}
+			}
+			for _, err := range test.absent {
+				if isNoFollowSymlinkError(err, selected) {
+					t.Fatalf("undeclared errno %v was selected", err)
 				}
 			}
 			if isNoFollowSymlinkError(unix.ENOENT, selected) {
-				t.Fatalf("%s selected ordinary ENOENT as a symlink refusal", test.goos)
+				t.Fatal("selected ordinary ENOENT as a symlink refusal")
 			}
 		})
+	}
+}
+
+// TestPlatformDeclaresItsSymlinkErrnos pins that the platform file compiled into
+// THIS build actually declares a usable errno set, so a platform file that
+// forgets or mis-declares its errnos cannot ship a guard that recognizes
+// nothing. The selector test above uses synthetic errnos and therefore cannot
+// see a real platform file going empty.
+func TestPlatformDeclaresItsSymlinkErrnos(t *testing.T) {
+	if len(noFollowSymlinkErrors) == 0 {
+		t.Fatal("platform declared no O_NOFOLLOW symlink errnos")
+	}
+	if !isNoFollowSymlinkError(unix.ELOOP, noFollowSymlinkErrors) {
+		t.Fatal("platform does not recognize ELOOP as a symlink refusal")
 	}
 }
 

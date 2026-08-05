@@ -7,4 +7,4 @@ package commitmentkey
 
 import "golang.org/x/sys/unix"
 
-var noFollowSymlinkErrors = noFollowSymlinkErrorsFor("other", noFollowErrnos{loop: unix.ELOOP})
+var noFollowSymlinkErrors = noFollowSymlinkErrorsFor(noFollowErrnos{loop: unix.ELOOP})

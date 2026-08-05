@@ -8,4 +8,4 @@ package commitmentkey
 import "golang.org/x/sys/unix"
 
 // FreeBSD reports EMLINK when O_NOFOLLOW refuses a final-component symlink.
-var noFollowSymlinkErrors = noFollowSymlinkErrorsFor("freebsd-family", noFollowErrnos{loop: unix.ELOOP, link: unix.EMLINK})
+var noFollowSymlinkErrors = noFollowSymlinkErrorsFor(noFollowErrnos{loop: unix.ELOOP, link: unix.EMLINK})

@@ -303,13 +303,23 @@ type noFollowErrnos struct {
 	loop, link, fileType error
 }
 
-func noFollowSymlinkErrorsFor(goos string, errnos noFollowErrnos) []error {
-	switch goos {
-	case "freebsd":
-		return []error{errnos.loop, errnos.link}
-	case "netbsd":
-		return []error{errnos.loop, errnos.fileType}
-	default:
-		return []error{errnos.loop}
+// noFollowSymlinkErrorsFor returns every errno this platform may use to report
+// that O_NOFOLLOW refused a final-component symlink.
+//
+// The set is derived from the errnos the platform file actually declares rather
+// than from a platform NAME. A name-keyed switch silently degrades the control:
+// renaming a label to something the switch does not recognize drops the platform
+// to the ELOOP-only default, so EMLINK or EFTYPE stops being recognized as a
+// symlink refusal and the guard quietly stops guarding. That regression compiles
+// and cross-compiles cleanly on every target, because the label is a runtime
+// string rather than a build constraint, and it is invisible to a test that
+// passes its own label. Deriving from the declared errnos removes the class.
+func noFollowSymlinkErrorsFor(errnos noFollowErrnos) []error {
+	selected := make([]error, 0, 3)
+	for _, candidate := range []error{errnos.loop, errnos.link, errnos.fileType} {
+		if candidate != nil {
+			selected = append(selected, candidate)
+		}
 	}
+	return selected
 }

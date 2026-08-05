@@ -513,6 +513,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "html-escape"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46c1ff2d1cbf39efe5af0900ced8a069b5e61557a17544eb0c4a50239937389e"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -899,16 +905,20 @@ name = "pipelock-verifier-rs"
 version = "0.2.0"
 dependencies = [
  "base64",
+ "data-encoding",
  "ed25519-dalek",
  "hex",
+ "html-escape",
  "jsonschema",
  "libc",
  "p256",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
  "unicode-normalization",
+ "url",
  "x509-parser",
 ]
 
@@ -1298,9 +1308,9 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "unicode-normalization"
-version = "0.1.25"
+version = "0.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+checksum = "5c5713f0fc4b5db668a2ac63cdb7bb4469d8c9fed047b1d0292cc7b0ce2ba921"
 dependencies = [
  "tinyvec",
 ]

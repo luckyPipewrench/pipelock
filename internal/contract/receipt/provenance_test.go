@@ -350,6 +350,32 @@ func TestCommitmentEnumBytesAreStable(t *testing.T) {
 	}
 }
 
+func TestAppendedOperationCommitmentTailBindsParameters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		left  normalize.Operation
+		right normalize.Operation
+	}{
+		{"alphabet", normalize.Operation{Kind: normalize.OperationBase64DecodeLiberal, Alphabet: "standard"}, normalize.Operation{Kind: normalize.OperationBase64DecodeLiberal, Alphabet: "url"}},
+		{"indices", normalize.Operation{Kind: normalize.OperationQuerySubsequence, Indices: []uint8{0, 1}}, normalize.Operation{Kind: normalize.OperationQuerySubsequence, Indices: []uint8{0, 2}}},
+		{"minimum length", normalize.Operation{Kind: normalize.OperationEncodedRun, MinimumLength: 6}, normalize.Operation{Kind: normalize.OperationEncodedRun, MinimumLength: 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left, err := operationBytes(tc.left)
+			if err != nil {
+				t.Fatal(err)
+			}
+			right, err := operationBytes(tc.right)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(left) == string(right) {
+				t.Fatal("operation commitment did not bind appended parameter")
+			}
+		})
+	}
+}
+
 func TestProvenanceValidationFormatErrors(t *testing.T) {
 	for _, value := range []string{"hmac-sha256:bad", "hmac-sha256:" + strings.Repeat("A", 64), "sha256:" + strings.Repeat("0", 64)} {
 		if err := validateCommitment(value); err == nil {

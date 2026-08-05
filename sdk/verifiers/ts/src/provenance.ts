@@ -45,6 +45,10 @@ const kinds = new Set([
   "canary_canonicalize",
 ]);
 
+export function supportedOperationKinds(): string[] {
+  return [...kinds];
+}
+
 /** Unicode 15.0.0's Simple_Lowercase_Mapping table, pinned by dependency. */
 const unicode15SimpleLowercase = unicode15LowercaseMap as Map<number, number>;
 
@@ -168,6 +172,11 @@ export function validateEvidenceProvenanceRecipe(
   const r = recipe as Record<string, unknown>;
   if (r.transform_profile_digest === undefined || r.transform_profile_digest === "")
     fail("recipe: missing transform profile digest");
+  if (
+    typeof r.transform_profile_digest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(r.transform_profile_digest)
+  )
+    fail("recipe: transform profile digest: invalid SHA-256 digest");
   if (r.transform_profile_digest !== EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST)
     fail("recipe: transform profile digest: unknown profile");
   if (!Array.isArray(r.operations)) fail("recipe: operations must be an array");
@@ -301,13 +310,14 @@ export function applyEvidenceProvenanceRecipe(input: Uint8Array, recipe: unknown
 
 function percentDecode(value: string): string {
   const bytes: number[] = [];
-  for (let i = 0; i < value.length; i++) {
-    if (value[i] === "%") {
-      const h = value.slice(i + 1, i + 3);
+  const chars = [...value];
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === "%") {
+      const h = chars.slice(i + 1, i + 3).join("");
       if (!/^[0-9a-f]{2}$/iu.test(h)) fail("percent decode: malformed escape");
       bytes.push(Number.parseInt(h, 16));
       i += 2;
-    } else bytes.push(...encoder.encode(value[i]!));
+    } else bytes.push(...encoder.encode(chars[i]!));
   }
   return text(Uint8Array.from(bytes), "output");
 }
@@ -529,6 +539,16 @@ function parseQuery(value: string): [string, string][] {
     }
   });
 }
+function rawHostname(value: string): string {
+  const authority = value
+    .slice(value.indexOf("://") + 3)
+    .split(/[/?#]/u, 1)[0]!
+    .split("@")
+    .at(-1)!;
+  if (authority.startsWith("[")) return authority.slice(1, authority.indexOf("]"));
+  const colon = authority.lastIndexOf(":");
+  return colon < 0 ? authority : authority.slice(0, colon);
+}
 function apply(value: string, op: Record<string, unknown>): string {
   const kind = op.kind as string;
   switch (kind) {
@@ -544,13 +564,13 @@ function apply(value: string, op: Record<string, unknown>): string {
       if (!url.protocol || !url.host) fail("URL parse: invalid absolute URL");
       const c = op.component as string;
       if (c === "url") return value;
-      if (c === "hostname") return url.hostname;
+      if (c === "hostname") return rawHostname(value);
       if (c === "path") return url.pathname;
-      if (c === "raw_query") return value.slice(value.indexOf("?") + 1).split("#", 1)[0]!;
+      const queryStart = value.indexOf("?");
+      const rawQuery = queryStart < 0 ? "" : value.slice(queryStart + 1).split("#", 1)[0]!;
+      if (c === "raw_query") return rawQuery;
       const selector = op.selector as string,
-        matches = parseQuery(value.slice(value.indexOf("?") + 1).split("#", 1)[0]!).filter(
-          ([key]) => key === selector,
-        );
+        matches = parseQuery(rawQuery).filter(([key]) => key === selector);
       const occurrence = (op.occurrence as number | undefined) ?? 0;
       if (!matches[occurrence]) fail(`query component: occurrence ${occurrence} unavailable`);
       return c === "query_key" ? selector : matches[occurrence]![1];

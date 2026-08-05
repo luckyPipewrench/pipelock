@@ -369,6 +369,15 @@ fn validate_digest(digest: &str) -> Result<(), String> {
     if digest.is_empty() {
         return Err("recipe: missing transform profile digest".to_string());
     }
+    let valid_shape = digest.strip_prefix("sha256:").is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    });
+    if !valid_shape {
+        return Err("recipe: transform profile digest: invalid SHA-256 digest".to_string());
+    }
     if digest != PROFILE_DIGEST {
         return Err("recipe: transform profile digest: unknown profile".to_string());
     }
@@ -442,7 +451,7 @@ fn url_component(
     }
     match component {
         "url" => Ok(value.to_string()),
-        "hostname" => Ok(u.host_str().unwrap().to_string()),
+        "hostname" => Ok(raw_hostname(value)),
         "path" => Ok(u.path().to_string()),
         "raw_query" => Ok(u.query().unwrap_or("").to_string()),
         "query_key" | "query_value" => {
@@ -465,6 +474,25 @@ fn url_component(
         _ => unreachable!(),
     }
 }
+fn raw_hostname(value: &str) -> String {
+    let rest = value
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(value);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    if let Some(bracketed) = host_port.strip_prefix('[') {
+        return bracketed.split(']').next().unwrap_or("").to_string();
+    }
+    host_port
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(host_port)
+        .to_string()
+}
 fn strict_query(q: &str) -> Result<Vec<(String, String)>, String> {
     q.split('&')
         .filter(|p| !p.is_empty())
@@ -485,10 +513,17 @@ fn strict_hex(s: &str, canonical: bool, label: &str) -> Result<String, String> {
     String::from_utf8(b).map_err(|_| format!("{label} output: invalid UTF-8"))
 }
 fn base32_decode(s: &str, padded: bool, canonical: bool, label: &str) -> Result<String, String> {
-    if padded && !s.contains('=') {
-        return Err(format!("{label}: invalid padding"));
-    }
-    if !padded && s.contains('=') {
+    let data_len = s.trim_end_matches('=').len();
+    let padding = s.len() - data_len;
+    let expected_padding = match data_len % 8 {
+        0 => 0,
+        2 => 6,
+        4 => 4,
+        5 => 3,
+        7 => 1,
+        _ => return Err(format!("{label}: invalid padding")),
+    };
+    if (padded && padding != expected_padding) || (!padded && padding != 0) {
         return Err(format!("{label}: invalid padding"));
     }
     let b = liberal_base32_bytes(s).map_err(|e| format!("{label}: {e}"))?;
@@ -747,7 +782,7 @@ fn encoded_token_normalize(s: &str, a: &str) -> String {
         let data = b.is_ascii_uppercase()
             || (a != "base32" && b.is_ascii_lowercase())
             || (b.is_ascii_digit() && (a != "base32" || (b'2'..=b'7').contains(&b)))
-            || b == '=' as u8
+            || b == b'='
             || (a == "base64_standard" && matches!(b, b'+' | b'/'))
             || (a == "base64_url" && matches!(b, b'-' | b'_'));
         let sep = matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b | b'.')

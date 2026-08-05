@@ -353,28 +353,7 @@ func (op Operation) validate() error {
 		}
 	}
 	noParameters := func() error {
-		switch {
-		case op.Component != "":
-			return reject("component")
-		case op.Selector != "":
-			return reject("selector")
-		case op.Occurrence != 0:
-			return reject("occurrence")
-		case op.Passes != 0:
-			return reject("passes")
-		case op.Profile != "":
-			return reject("profile")
-		case op.DecodePadding:
-			return reject("decode_padding")
-		case op.Alphabet != "":
-			return reject("alphabet")
-		case len(op.Indices) != 0:
-			return reject("indices")
-		case op.MinimumLength != 0:
-			return reject("minimum_length")
-		default:
-			return nil
-		}
+		return op.noParametersForValidation(reject)
 	}
 	switch op.Kind {
 	case OperationIdentity, OperationLowercase, OperationInvisibleStrip, OperationLeetspeak, OperationVowelFold,

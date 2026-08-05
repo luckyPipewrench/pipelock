@@ -164,3 +164,31 @@ def test_liberal_hex_rejects_non_utf8_output() -> None:
     recipe = Recipe.from_json(PROFILE_DIGEST, [{"kind": "hex_decode_liberal"}])
     with pytest.raises(ProvenanceError, match="invalid UTF-8"):
         recipe.apply("ff")
+
+
+@pytest.mark.parametrize(
+    ("operation", "value", "label"),
+    [
+        ({"kind": "hex_decode_liberal"}, "gg", "liberal hex decode"),
+        (
+            {"kind": "base32_decode_liberal", "decode_padding": False},
+            "!",
+            "liberal base32 decode",
+        ),
+        (
+            {
+                "kind": "base64_decode_liberal",
+                "alphabet": "standard",
+                "decode_padding": False,
+            },
+            "!",
+            "liberal base64 decode",
+        ),
+    ],
+)
+def test_liberal_decode_errors_name_the_operation(
+    operation: dict[str, object], value: str, label: str
+) -> None:
+    recipe = Recipe.from_json(PROFILE_DIGEST, [operation])
+    with pytest.raises(ProvenanceError, match=label):
+        recipe.apply(value)

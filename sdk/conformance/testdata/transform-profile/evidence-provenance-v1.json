@@ -48,7 +48,12 @@
     "unknown_operation",
     "control_selector",
     "control_profile",
-    "noncanonical_hex"
+    "noncanonical_hex",
+    "invalid_profile_digest",
+    "unknown_profile",
+    "invalid_liberal_hex",
+    "invalid_liberal_base32",
+    "invalid_liberal_base64"
   ],
   "error_definitions": {
     "bad_pass_count": "passes must",
@@ -57,10 +62,14 @@
     "invalid_base32": "base32 decode",
     "invalid_base64": "base64 decode",
     "invalid_hex": "hex decode",
+    "invalid_liberal_base32": "liberal base32 decode",
+    "invalid_liberal_base64": "liberal base64 decode",
+    "invalid_liberal_hex": "liberal hex decode",
     "invalid_percent": "percent decode",
     "invalid_percent_utf8": "output: invalid UTF-8",
     "invalid_percent_utf8_before_unicode": "output: invalid UTF-8",
     "invalid_query_encoding": "query parse",
+    "invalid_profile_digest": "invalid SHA-256 digest",
     "invalid_url": "invalid absolute URL",
     "invalid_utf8": "invalid UTF-8",
     "missing_occurrence": "occurrence 1 unavailable",
@@ -68,7 +77,8 @@
     "missing_selector": "missing selector",
     "noncanonical_hex": "hex decode: non-canonical encoding",
     "unknown_dlp_profile": "unknown DLP profile",
-    "unknown_operation": "unknown operation"
+    "unknown_operation": "unknown operation",
+    "unknown_profile": "unknown profile"
   },
   "interval_vectors": [
     {
@@ -207,6 +217,34 @@
       ]
     },
     {
+      "id": "url-raw-query-absent",
+      "operations": ["url_component"],
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvYQ==",
+      "output_b64": "",
+      "recipe": [{"kind":"url_component","component":"raw_query"}]
+    },
+    {
+      "id": "url-hostname-preserves-case",
+      "operations": ["url_component"],
+      "input_b64": "aHR0cHM6Ly9FeGFtcGxlLkNPTS9h",
+      "output_b64": "RXhhbXBsZS5DT00=",
+      "recipe": [{"kind":"url_component","component":"hostname"}]
+    },
+    {
+      "id": "url-hostname-preserves-case-with-userinfo-port",
+      "operations": ["url_component"],
+      "input_b64": "aHR0cHM6Ly91c2VyOnB3QEV4YW1wbGUuQ09NOjg0NDMvYQ==",
+      "output_b64": "RXhhbXBsZS5DT00=",
+      "recipe": [{"kind":"url_component","component":"hostname"}]
+    },
+    {
+      "id": "url-hostname-preserves-ipv6-case",
+      "operations": ["url_component"],
+      "input_b64": "aHR0cHM6Ly9bMjAwMTpEQjg6OjFdOjg0NDMvYQ==",
+      "output_b64": "MjAwMTpEQjg6OjE=",
+      "recipe": [{"kind":"url_component","component":"hostname"}]
+    },
+    {
       "id": "percent-two-pass",
       "operations": [
         "percent_decode"
@@ -219,6 +257,13 @@
           "passes": 2
         }
       ]
+    },
+    {
+      "id": "percent-preserves-astral-codepoint",
+      "operations": ["percent_decode"],
+      "input_b64": "JTQx8J+YgA==",
+      "output_b64": "QfCfmIA=",
+      "recipe": [{"kind":"percent_decode","passes":1}]
     },
     {
       "id": "dlp-normalize",
@@ -314,6 +359,13 @@
           "decode_padding": true
         }
       ]
+    },
+    {
+      "id": "base32-padded-full-block",
+      "operations": ["base32_decode"],
+      "input_b64": "TkJTV1kzRFA=",
+      "output_b64": "aGVsbG8=",
+      "recipe": [{"kind":"base32_decode","decode_padding":true}]
     },
     {
       "id": "base64",
@@ -426,6 +478,13 @@
       "recipe": [{"kind":"text_segment","occurrence":3}]
     },
     {
+      "id": "scanner-text-segment-closing-bracket",
+      "operations": ["text_segment"],
+      "input_b64": "bGVmdF1yaWdodA==",
+      "output_b64": "cmlnaHQ=",
+      "recipe": [{"kind":"text_segment","occurrence":1}]
+    },
+    {
       "id": "scanner-html-entity",
       "operations": ["html_entity_decode"],
       "input_b64": "JmFtcDthbXA7",
@@ -499,6 +558,22 @@
       "transform_profile_digest": ""
     },
     {
+      "id": "invalid-profile-digest",
+      "errors": ["invalid_profile_digest"],
+      "input_b64": "eA==",
+      "want_error": "invalid SHA-256 digest",
+      "transform_profile_digest": "sha256:bad",
+      "recipe": []
+    },
+    {
+      "id": "unknown-profile",
+      "errors": ["unknown_profile"],
+      "input_b64": "eA==",
+      "want_error": "unknown profile",
+      "transform_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "recipe": []
+    },
+    {
       "id": "invalid-url",
       "operations": [
         "url_component"
@@ -557,7 +632,7 @@
         "invalid_percent"
       ],
       "input_b64": "JVo=",
-      "want_error": "percent decode",
+      "want_error": "recipe operation 0 (percent_decode):",
       "recipe": [
         {
           "kind": "percent_decode",
@@ -759,14 +834,30 @@
     {
       "id": "liberal-hex-rejects-whitespace",
       "operations": ["hex_decode_liberal"],
-      "errors": ["invalid_hex"],
+      "errors": ["invalid_liberal_hex"],
       "input_b64": "NCAx",
-      "want_error": "hex decode",
+      "want_error": "liberal hex decode",
       "recipe": [
         {
           "kind": "hex_decode_liberal"
         }
       ]
+    },
+    {
+      "id": "liberal-base32-rejects-malformed-input",
+      "operations": ["base32_decode_liberal"],
+      "errors": ["invalid_liberal_base32"],
+      "input_b64": "IQ==",
+      "want_error": "liberal base32 decode",
+      "recipe": [{"kind":"base32_decode_liberal","decode_padding":false}]
+    },
+    {
+      "id": "liberal-base64-rejects-malformed-input",
+      "operations": ["base64_decode_liberal"],
+      "errors": ["invalid_liberal_base64"],
+      "input_b64": "IQ==",
+      "want_error": "liberal base64 decode",
+      "recipe": [{"kind":"base64_decode_liberal","alphabet":"standard","decode_padding":false}]
     }
   ]
 }

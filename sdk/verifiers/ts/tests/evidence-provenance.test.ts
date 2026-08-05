@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applyEvidenceProvenanceRecipe,
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+  supportedOperationKinds,
 } from "../src/provenance.js";
 
 type Vector = {
@@ -23,13 +24,13 @@ const corpus = JSON.parse(
 
 test("evidence provenance: pinned corpus profile and every operation are exercised", () => {
   assert.equal(corpus.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST);
-  const expected = new Set(corpus.operation_coverage);
   const seen = new Set(
     corpus.vectors
-      .flatMap((v) => (v.recipe ?? []).map((op) => (op as { kind: string }).kind))
-      .filter((kind) => expected.has(kind)),
+      .filter((v) => !v.want_error)
+      .flatMap((v) => (v.recipe ?? []).map((op) => (op as { kind: string }).kind)),
   );
   assert.deepEqual([...seen].sort(), [...corpus.operation_coverage].sort());
+  assert.deepEqual([...supportedOperationKinds()].sort(), [...corpus.operation_coverage].sort());
 });
 
 for (const vector of corpus.vectors)
@@ -41,7 +42,8 @@ for (const vector of corpus.vectors)
     if (vector.want_error) {
       assert.throws(
         () => applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
-        new RegExp(vector.want_error, "u"),
+        (error: unknown) => error instanceof Error && error.message.includes(vector.want_error!),
+        vector.id,
       );
       return;
     }

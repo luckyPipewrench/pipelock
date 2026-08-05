@@ -288,7 +288,14 @@ def _query_unescape(value: str) -> str:
     return value
 
 
-def _decode(value: str, kind: str, padded: bool, alphabet: str = "standard") -> str:
+def _decode(
+    value: str,
+    kind: str,
+    padded: bool,
+    alphabet: str = "standard",
+    label: str = "",
+) -> str:
+    label = label or f"{kind} decode"
     try:
         if kind == "hex":
             if not re.fullmatch(r"(?:[0-9A-Fa-f]{2})*", value):
@@ -305,13 +312,11 @@ def _decode(value: str, kind: str, padded: bool, alphabet: str = "standard") -> 
                 else base64.b64decode(source, validate=True)
             )
     except (ValueError, binascii.Error) as exc:
-        raise ProvenanceError(
-            f"{kind if kind != 'base64' else 'base64'} decode: {exc}"
-        ) from exc
+        raise ProvenanceError(f"{label}: {exc}") from exc
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ProvenanceError(f"{kind} decode output: invalid UTF-8") from exc
+        raise ProvenanceError(f"{label} output: invalid UTF-8") from exc
 
 
 @dataclass(frozen=True)
@@ -526,12 +531,17 @@ class Recipe:
         if k.endswith("_liberal"):
             base = k.removesuffix("_decode_liberal")
             return _decode(
-                v, base, op.get("decode_padding", False), op.get("alphabet", "standard")
+                v,
+                base,
+                op.get("decode_padding", False),
+                op.get("alphabet", "standard"),
+                f"liberal {base} decode",
             )
         if k == "encoded_token_normalize":
             return _encoded_token(v, op["alphabet"])
         if k == "text_segment":
-            parts = [x for x in re.split("[/?&= \\n\\r\\t\"'`{}\\[\\()<>:,;]+", v) if x]
+            pattern = "[" + re.escape("".join(sorted(_TEXT_DELIMS))) + "]+"
+            parts = [x for x in re.split(pattern, v) if x]
             return _at(parts, op.get("occurrence", 0), "text segment")
         if k == "html_entity_decode":
             for _ in range(16):
@@ -648,7 +658,10 @@ def _url_component(value: str, op: dict[str, Any]) -> str:
     if component == "url":
         return value
     if component == "hostname":
-        return parsed.hostname or ""
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        if authority.startswith("["):
+            return authority[1 : authority.index("]")]
+        return authority.rsplit(":", 1)[0] if ":" in authority else authority
     if component == "path":
         return parsed.path
     if component == "raw_query":

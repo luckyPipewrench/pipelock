@@ -5,8 +5,10 @@ package scanner
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +19,12 @@ import (
 )
 
 const provenanceTransformDirective = "pipelock:provenance-transform "
+
+type transformSymbol struct {
+	packagePath string
+	name        string
+	receiver    string
+}
 
 // TestScannerTransformProfileCompleteness derives the required operation set
 // from directives attached to production transform declarations. A directive
@@ -31,22 +39,31 @@ func TestScannerTransformProfileCompleteness(t *testing.T) {
 		supported[string(kind)] = true
 	}
 	for function, operations := range directives {
-		if references[function] < 2 {
-			t.Errorf("production transform %s is declared but has no scanner call site", function)
+		if references[function] == 0 {
+			t.Errorf("production transform %s.%s is declared but has no scanner call site", function.packagePath, function.name)
 		}
 		for _, operation := range operations {
 			if !supported[operation] {
-				t.Errorf("production transform %s requires missing typed operation %q", function, operation)
+				t.Errorf("production transform %s.%s requires missing typed operation %q", function.packagePath, function.name, operation)
 			}
 		}
 	}
 }
 
-func productionTransformDirectives(t *testing.T) (map[string][]string, map[string]int) {
+func productionTransformDirectives(t *testing.T) (map[transformSymbol][]string, map[transformSymbol]int) {
 	t.Helper()
-	files := []string{}
-	for _, directory := range []string{".", "../normalize"} {
-		entries, err := os.ReadDir(directory)
+	directories := []struct {
+		path        string
+		packagePath string
+	}{
+		{".", "github.com/luckyPipewrench/pipelock/internal/scanner"},
+		{"../normalize", "github.com/luckyPipewrench/pipelock/internal/normalize"},
+	}
+	directives := make(map[transformSymbol][]string)
+	references := make(map[transformSymbol]int)
+	for _, directory := range directories {
+		files := []string{}
+		entries, err := os.ReadDir(directory.path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,39 +71,49 @@ func productionTransformDirectives(t *testing.T) (map[string][]string, map[strin
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 				continue
 			}
-			files = append(files, filepath.Join(directory, entry.Name()))
+			files = append(files, filepath.Join(directory.path, entry.Name()))
 		}
-	}
-	slices.Sort(files)
-	set := token.NewFileSet()
-	directives := make(map[string][]string)
-	references := make(map[string]int)
-	for _, path := range files {
-		parsed, err := parser.ParseFile(set, path, nil, parser.ParseComments)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
+		slices.Sort(files)
+		set := token.NewFileSet()
+		parsedFiles := make([]*ast.File, 0, len(files))
+		for _, path := range files {
+			parsed, err := parser.ParseFile(set, path, nil, parser.ParseComments)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			parsedFiles = append(parsedFiles, parsed)
 		}
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			if identifier, ok := node.(*ast.Ident); ok {
-				references[identifier.Name]++
-			}
-			return true
-		})
-		for _, declaration := range parsed.Decls {
-			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Doc == nil {
-				continue
-			}
-			for _, comment := range function.Doc.List {
-				text := strings.TrimSpace(strings.TrimPrefix(comment.Text, "//"))
-				if !strings.HasPrefix(text, provenanceTransformDirective) {
+		info := &types.Info{
+			Defs: make(map[*ast.Ident]types.Object),
+			Uses: make(map[*ast.Ident]types.Object),
+		}
+		config := types.Config{Importer: importer.ForCompiler(set, "source", nil)}
+		if _, err := config.Check(directory.packagePath, set, parsedFiles, info); err != nil {
+			t.Fatalf("type-check %s: %v", directory.packagePath, err)
+		}
+		for _, parsed := range parsedFiles {
+			countResolvedTransformReferences(parsed, info, references)
+			for _, declaration := range parsed.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if !ok || function.Doc == nil {
 					continue
 				}
-				operation := strings.TrimSpace(strings.TrimPrefix(text, provenanceTransformDirective))
-				if operation == "" || strings.ContainsAny(operation, " \t") {
-					t.Fatalf("%s has malformed provenance transform directive %q", function.Name.Name, comment.Text)
+				object, ok := info.Defs[function.Name].(*types.Func)
+				if !ok || object.Pkg() == nil {
+					t.Fatalf("resolve declaration %s", function.Name.Name)
 				}
-				directives[function.Name.Name] = append(directives[function.Name.Name], operation)
+				symbol := resolvedTransformSymbol(object)
+				for _, comment := range function.Doc.List {
+					text := strings.TrimSpace(strings.TrimPrefix(comment.Text, "//"))
+					if !strings.HasPrefix(text, provenanceTransformDirective) {
+						continue
+					}
+					operation := strings.TrimSpace(strings.TrimPrefix(text, provenanceTransformDirective))
+					if operation == "" || strings.ContainsAny(operation, " \t") {
+						t.Fatalf("%s has malformed provenance transform directive %q", function.Name.Name, comment.Text)
+					}
+					directives[symbol] = append(directives[symbol], operation)
+				}
 			}
 		}
 	}
@@ -94,6 +121,65 @@ func productionTransformDirectives(t *testing.T) (map[string][]string, map[strin
 		t.Fatal("no production provenance transform directives found")
 	}
 	return directives, references
+}
+
+func countResolvedTransformReferences(file *ast.File, info *types.Info, references map[transformSymbol]int) {
+	ast.Inspect(file, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		function, ok := info.Uses[identifier].(*types.Func)
+		if !ok || function.Pkg() == nil {
+			return true
+		}
+		references[resolvedTransformSymbol(function)]++
+		return true
+	})
+}
+
+func resolvedTransformSymbol(function *types.Func) transformSymbol {
+	receiver := ""
+	if signature, ok := function.Type().(*types.Signature); ok && signature.Recv() != nil {
+		receiver = types.TypeString(signature.Recv().Type(), func(pkg *types.Package) string { return pkg.Path() })
+	}
+	return transformSymbol{packagePath: function.Pkg().Path(), name: function.Name(), receiver: receiver}
+}
+
+func encodedRunAt(runs []string, index int) (string, bool) {
+	if index >= len(runs) {
+		return "", false
+	}
+	return runs[index], true
+}
+
+func TestEncodedRunAtRejectsMissingOccurrence(t *testing.T) {
+	if _, ok := encodedRunAt([]string{"only"}, 1); ok {
+		t.Fatal("missing encoded run occurrence unexpectedly succeeded")
+	}
+}
+
+func TestResolvedTransformReferencesUseSymbols(t *testing.T) {
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, "fixture.go", `package fixture
+func transform() {}
+type record struct { transform int }
+type worker struct{}
+func (worker) transform() {}
+func use(value record, work worker) { _ = value.transform; work.transform(); transform() }
+`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := &types.Info{Uses: make(map[*ast.Ident]types.Object)}
+	if _, err := (&types.Config{}).Check("fixture", set, []*ast.File{file}, info); err != nil {
+		t.Fatal(err)
+	}
+	references := make(map[transformSymbol]int)
+	countResolvedTransformReferences(file, info, references)
+	if got := references[transformSymbol{packagePath: "fixture", name: "transform"}]; got != 1 {
+		t.Fatalf("resolved transform references = %d, want 1 real call and no same-named field", got)
+	}
 }
 
 func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
@@ -164,7 +250,14 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 			return productionSubsequence(t, "a=one&b=junk&c=two&d=three", []uint8{0, 2, 3})
 		}},
 		{"dot removal", "api.vendor.example", normalize.Operation{Kind: normalize.OperationHostnameDotRemove}, func(*testing.T) string { return removeHostnameDots("api.vendor.example") }},
-		{"encoded run", "prefix:QUJDRA== suffix", normalize.Operation{Kind: normalize.OperationEncodedRun, Occurrence: 1, MinimumLength: 6}, func(*testing.T) string { return extractEncodedRuns("prefix:QUJDRA== suffix", 6)[1] }},
+		{"encoded run", "prefix:QUJDRA== suffix", normalize.Operation{Kind: normalize.OperationEncodedRun, Occurrence: 1, MinimumLength: 6}, func(t *testing.T) string {
+			runs := extractEncodedRuns("prefix:QUJDRA== suffix", 6)
+			run, ok := encodedRunAt(runs, 1)
+			if !ok {
+				t.Fatalf("production extracted %d encoded runs, want at least 2", len(runs))
+			}
+			return run
+		}},
 		{"canary canonicalization", "Ab-c_d/e?f", normalize.Operation{Kind: normalize.OperationCanaryCanonicalize}, func(*testing.T) string { return canonicalizeCanaryText("Ab-c_d/e?f") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {

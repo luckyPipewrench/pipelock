@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -371,6 +372,35 @@ func TestAppendedOperationCommitmentTailBindsParameters(t *testing.T) {
 			}
 			if string(left) == string(right) {
 				t.Fatal("operation commitment did not bind appended parameter")
+			}
+		})
+	}
+}
+
+func TestLegacyOperationCommitmentOmitsAppendedTail(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   normalize.Operation
+		want string
+	}{
+		{
+			name: "identity",
+			op:   normalize.Operation{Kind: normalize.OperationIdentity},
+			want: "00000000000000010100000000000000010000000000000000000000000000000004000000000000000000000001000000000000000000000000000000000100",
+		},
+		{
+			name: "vowel fold",
+			op:   normalize.Operation{Kind: normalize.OperationVowelFold},
+			want: "00000000000000010b00000000000000010000000000000000000000000000000004000000000000000000000001000000000000000000000000000000000100",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := operationBytes(tc.op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hex.EncodeToString(encoded); got != tc.want {
+				t.Fatalf("legacy operation preimage = %s, want %s", got, tc.want)
 			}
 		})
 	}

@@ -10,7 +10,7 @@ Implementations MUST reject invalid UTF-8 source or view bytes; starts or ends i
 
 ## Typed recipe language
 
-`transform_profile_digest` is a `sha256:<lowercase hex>` digest of the profile document. A verifier MUST possess the exact digest-matched profile before reconstructing a view. The canonical evidence-provenance v1 profile document is `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v1.json`; its exact committed bytes have digest `sha256:42b4d92c0d5a0f5a349ac782f6212340bdaf5ed2d2eccdcc6cb178e8453c6865`.
+`transform_profile_digest` is a `sha256:<lowercase hex>` digest of the profile document. A verifier MUST possess the exact digest-matched profile before reconstructing a view. The canonical evidence-provenance v1 profile document is `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v1.json`; its exact committed bytes have digest `sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316`.
 
 That profile document—not a Pipelock implementation—is the normative source of truth for the ordered vocabulary, operation parameter shapes, Unicode/control-character and malformed-input policy, decoding and padding selection, canonical encodings, UTF-8 checks, and byte/decode-pass limits. It declares a 2 MiB input limit, a 1 MiB post-operation output limit, and at most four percent-decode passes. The Go implementation deliberately does not load a conformance document at runtime; its digest test parses the document and fails if those implementation constants or the operation order diverge. This keeps receipt validation hermetic while preventing a second source of truth. It is a distinct document from `pipelock-transform-v1.json`, which remains the source-span transform profile.
 

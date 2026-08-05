@@ -110,7 +110,7 @@ const (
 const (
 	// EvidenceProvenanceProfileV1Digest identifies the fixture-only evidence
 	// provenance transform profile, not the source-span transform profile.
-	EvidenceProvenanceProfileV1Digest       = "sha256:42b4d92c0d5a0f5a349ac782f6212340bdaf5ed2d2eccdcc6cb178e8453c6865"
+	EvidenceProvenanceProfileV1Digest       = "sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )

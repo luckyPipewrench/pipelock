@@ -380,6 +380,14 @@ class Recipe:
                 raise ProvenanceError(f"unknown URL component {component!r}")
             if component in {"query_key", "query_value"}:
                 required.add("selector")
+                # Requiring the KEY is not the same as requiring a value. An
+                # empty selector satisfied this check here while the Rust and
+                # TypeScript verifiers rejected it, so the same recipe was valid
+                # in one implementation and invalid in two.
+                if op.get("selector", "") == "":
+                    raise ProvenanceError(
+                        "query component is missing selector"
+                    )
             elif "selector" in op or "occurrence" in op:
                 raise ProvenanceError(f"unsupported selector for {kind}")
         elif kind == "percent_decode":

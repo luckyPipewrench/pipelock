@@ -547,13 +547,10 @@ function parseQuery(value: string): [string, string][] {
   });
 }
 function rawHostname(value: string): string {
-  // A malformed absolute URL such as "https:api.vendor.example" has a scheme
-  // but no literal "://" authority. indexOf then returns -1 and the slice below
-  // starts at index 2, producing a fabricated hostname ("tps") rather than a
-  // rejection. Go rejects this input with "URL parse: invalid absolute URL", so
-  // a proof built from it would commit to a hostname that does not exist.
+  // Callers reject a missing "://" before dispatch, so indexOf cannot return
+  // -1 here. Kept as a named constant rather than an inline expression so the
+  // dependency on that precondition is visible.
   const authorityStart = value.indexOf("://");
-  if (authorityStart < 0) fail("URL parse: invalid absolute URL");
   const authority = value
     .slice(authorityStart + 3)
     .split(/[/?#]/u, 1)[0]!
@@ -576,6 +573,12 @@ function apply(value: string, op: Record<string, unknown>): string {
         fail("URL parse: invalid absolute URL");
       }
       if (!url.protocol || !url.host) fail("URL parse: invalid absolute URL");
+      // A value such as "https:api.vendor.example" has a scheme but no literal
+      // "://" authority. Go rejects it outright. Guarding only the hostname
+      // branch left path, raw_query and the query components deriving views
+      // from a URL the reference implementation refuses, so the rejection
+      // belongs here, before any component dispatch.
+      if (!value.includes("://")) fail("URL parse: invalid absolute URL");
       const c = op.component as string;
       if (c === "url") return value;
       if (c === "hostname") return rawHostname(value);

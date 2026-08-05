@@ -38,15 +38,49 @@ func TestScannerTransformProfileCompleteness(t *testing.T) {
 	for _, kind := range normalize.SupportedOperationKinds() {
 		supported[string(kind)] = true
 	}
+	claimed := make(map[string]bool)
 	for function, operations := range directives {
 		if references[function] == 0 {
 			t.Errorf("production transform %s.%s is declared but has no scanner call site", function.packagePath, function.name)
 		}
 		for _, operation := range operations {
+			claimed[operation] = true
 			if !supported[operation] {
 				t.Errorf("production transform %s.%s requires missing typed operation %q", function.packagePath, function.name, operation)
 			}
 		}
+	}
+
+	// The forward check above only proves that whatever a directive CLAIMS is a
+	// real operation. On its own it is satisfied by deleting the directive, so
+	// a production transform could quietly lose its typed operation and the
+	// gate would stay green while the profile silently stopped describing the
+	// scanner. That is the exact recurrence this gate exists to prevent, so the
+	// reverse direction has to be asserted too: every scanner-backed operation
+	// must be claimed by some live transform declaration.
+	//
+	// Vocabulary-only operations are excluded deliberately. They are building
+	// blocks the profile offers rather than transforms the scanner performs, so
+	// requiring a production claim for them would force a fake directive.
+	vocabularyOnly := map[string]bool{
+		"identity":        true,
+		"url_component":   true,
+		"percent_decode":  true,
+		"hex_decode":      true,
+		"base32_decode":   true,
+		"base64_decode":   true,
+		"lowercase":       true,
+		"leetspeak":       true,
+		"vowel_fold":      true,
+		"invisible_strip": true,
+		"dlp_normalize":   true,
+	}
+	for _, kind := range normalize.SupportedOperationKinds() {
+		operation := string(kind)
+		if vocabularyOnly[operation] || claimed[operation] {
+			continue
+		}
+		t.Errorf("typed operation %q is not claimed by any production transform directive; either a directive was deleted or the operation describes nothing the scanner does", operation)
 	}
 }
 

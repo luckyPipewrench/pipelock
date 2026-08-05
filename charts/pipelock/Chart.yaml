@@ -19,11 +19,13 @@ keywords:
   - egress-control
 icon: https://raw.githubusercontent.com/luckyPipewrench/pipelock/main/assets/pipelock-logo.svg
 annotations:
-  # Describes the application this chart deploys, not the chart source. The
-  # default image ships enterprise-tagged code, which NOTICE licenses under the
-  # Elastic License 2.0, so Apache-2.0 alone would overstate the permissions a
-  # reader gets. Matches the Homebrew formula and the image labels.
-  artifacthub.io/license: Apache-2.0 AND Elastic-2.0
+  # This is the license of THE CHART, not of the application it deploys, and
+  # Artifact Hub requires a single SPDX identifier here rather than an
+  # expression. These templates live outside enterprise/, so NOTICE puts them
+  # under Apache-2.0. The deployed image is dual-licensed and says so where a
+  # consumer of the image will actually look: the org.opencontainers.image
+  # labels on the image itself, and the Homebrew formula for the binary.
+  artifacthub.io/license: Apache-2.0
   artifacthub.io/containsSecurityUpdates: "true"
   artifacthub.io/changesURL: https://github.com/luckyPipewrench/pipelock/releases
   artifacthub.io/links: |

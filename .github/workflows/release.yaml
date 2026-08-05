@@ -434,7 +434,7 @@ jobs:
       - name: Set up Helm
         uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: v3.20.0
+          version: v3.20.2
 
       - name: Package and publish Helm chart
         env:
@@ -452,6 +452,23 @@ jobs:
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
           helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
           helm registry logout ghcr.io
+
+          # A brand-new GHCR package is private, and the install command in the
+          # READMEs fails with an authorization error until it is made public.
+          # The reminder belongs here, in front of whoever ran the release, at
+          # the moment it becomes actionable. It deliberately does not go in the
+          # install docs: the condition is true once, during bootstrap, and a
+          # caveat left in user-facing docs would be permanently wrong
+          # afterwards.
+          {
+            echo "### Helm chart published"
+            echo
+            echo "\`ghcr.io/luckypipewrench/charts/pipelock:${chart_version}\` (appVersion ${app_version})."
+            echo
+            echo "If this is the first published chart, the package is PRIVATE and"
+            echo "\`helm install oci://ghcr.io/luckypipewrench/charts/pipelock\` fails for"
+            echo "everyone until it is made public once under Package settings."
+          } >>"$GITHUB_STEP_SUMMARY"
 
       # Move the v2 floating tag so `uses: luckyPipewrench/pipelock@v2`
       # always resolves to the latest release. Safe because the trigger requires

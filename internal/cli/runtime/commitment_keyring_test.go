@@ -6,6 +6,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ func TestNewServerLoadsConfiguredCommitmentKeyring(t *testing.T) {
 }
 
 func TestNewServerFailsClosedOnConfiguredCommitmentKeyringErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ACLs do not use Unix permission bits")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "commitment-keyring.json")
 	if _, err := commitmentkey.Initialize(path, time.Now()); err != nil {

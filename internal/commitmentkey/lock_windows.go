@@ -23,14 +23,17 @@ var (
 
 func withLifecycleLock(keyringPath string, fn func() error) error {
 	lockPath := filepath.Clean(keyringPath) + ".lock"
-	if err := rejectSymlink(lockPath); err != nil {
+	if err := ensureParent(lockPath); err != nil {
+		return fmt.Errorf("commitment keyring lock: %w", err)
+	}
+	if err := validateWindowsFinal(lockPath); err != nil {
 		return fmt.Errorf("commitment keyring lock: %w", err)
 	}
 	pathPointer, err := syscall.UTF16PtrFromString(lockPath)
 	if err != nil {
 		return fmt.Errorf("encode commitment keyring lock path: %w", err)
 	}
-	handle, err := syscall.CreateFile(pathPointer, syscall.GENERIC_READ|syscall.GENERIC_WRITE, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	handle, err := syscall.CreateFile(pathPointer, syscall.GENERIC_READ|syscall.GENERIC_WRITE, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return fmt.Errorf("open commitment keyring lock: %w", err)
 	}
@@ -40,6 +43,13 @@ func withLifecycleLock(keyringPath string, fn func() error) error {
 		return fmt.Errorf("create commitment keyring lock handle: %s", lockPath)
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat commitment keyring lock: %w", err)
+	}
+	if isWindowsReparse(info) || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: commitment keyring lock is a reparse point or not a regular file", ErrSymlink)
+	}
 	if err := f.Chmod(0o600); err != nil {
 		return fmt.Errorf("secure commitment keyring lock: %w", err)
 	}

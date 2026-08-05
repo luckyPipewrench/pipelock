@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,8 +51,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	}
 	assertAudit(t, stderr, "rotate", "succeeded")
 
-	ref := fmt.Sprintf("%s:%d", first.ActiveID, first.Epoch)
-	_, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--retained-reference", ref)
+	_, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1")
 	if !errors.Is(err, domkey.ErrRetainedKey) {
 		t.Fatalf("retire retained error = %v, want ErrRetainedKey", err)
 	}
@@ -86,7 +84,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitView: %v", err)
 	}
-	stdout, stderr, err = execute(t, "test", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--source-id", "source-1", "--source-ordinal", "1", "--view", "opened after restore", "--commitment", commitment)
+	stdout, stderr, err = executeInput(t, "opened after restore", "test", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--source-id", "source-1", "--source-ordinal", "1", "--commitment", commitment)
 	if err != nil {
 		t.Fatalf("test opening: %v", err)
 	}
@@ -105,7 +103,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal recipe: %v", err)
 	}
-	_, stderr, err = execute(t, "test", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--source-id", "source-1", "--source-ordinal", "1", "--view", "opened after restore", "--commitment", commitment, "--recipe-json", string(recipeBytes))
+	_, stderr, err = executeInput(t, "opened after restore", "test", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--source-id", "source-1", "--source-ordinal", "1", "--commitment", commitment, "--recipe-json", string(recipeBytes))
 	if err != nil {
 		t.Fatalf("test opening with typed recipe: %v", err)
 	}
@@ -119,6 +117,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("retired metadata = %+v, want only epoch 2", got)
 	}
 	assertAudit(t, stderr, "retire", "succeeded")
+	assertAuditAuthorization(t, stderr, "operator_accept_loss")
 }
 
 func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
@@ -132,7 +131,7 @@ func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
 		t.Fatalf("initialize via config: %v", err)
 	}
 	metadata := decodeMetadata(t, stdout)
-	_, stderr, err := execute(t, "test", "--config", cfgPath, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:"+strings.Repeat("0", 64))
+	_, stderr, err := executeInput(t, "value", "test", "--config", cfgPath, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:"+strings.Repeat("0", 64))
 	if err == nil || err.Error() != "commitment mismatch" {
 		t.Fatalf("test mismatch error = %v", err)
 	}
@@ -185,18 +184,17 @@ func TestCommandDenialBranches(t *testing.T) {
 		{name: "initialize rerun", operation: "initialize", args: []string{"initialize", "--keyring", path}, wantAudit: true},
 		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
 		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
-		{name: "retire malformed reference", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--retained-reference", "malformed"}},
-		{name: "retire zero reference epoch", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--retained-reference", metadata.ActiveID + ":0"}},
-		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
-		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
-		{name: "missing path selector", args: []string{"inspect"}},
-		{name: "initialize missing path selector", args: []string{"initialize"}},
-		{name: "rotate missing path selector", args: []string{"rotate"}},
-		{name: "retire missing path selector", args: []string{"retire", "--key-id", metadata.ActiveID, "--epoch", "1"}},
-		{name: "backup missing path selector", args: []string{"backup", "--out", filepath.Join(dir, "unused.json")}},
-		{name: "restore missing path selector", args: []string{"restore", "--from", path}},
-		{name: "test missing path selector", operation: "test", args: []string{"test", "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
-		{name: "test invalid source utf8", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", string([]byte{0xff}), "--view", "value", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1"}, wantAudit: true},
+		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
+		{name: "missing path selector", operation: "inspect", args: []string{"inspect"}, wantAudit: true},
+		{name: "initialize missing path selector", operation: "initialize", args: []string{"initialize"}, wantAudit: true},
+		{name: "rotate missing path selector", operation: "rotate", args: []string{"rotate"}, wantAudit: true},
+		{name: "retire missing path selector", operation: "retire", args: []string{"retire", "--key-id", metadata.ActiveID, "--epoch", "1"}, wantAudit: true},
+		{name: "backup missing path selector", operation: "backup", args: []string{"backup", "--out", filepath.Join(dir, "unused.json")}, wantAudit: true},
+		{name: "restore missing path selector", operation: "restore", args: []string{"restore", "--from", path}, wantAudit: true},
+		{name: "test missing path selector", operation: "test", args: []string{"test", "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test invalid source utf8", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", string([]byte{0xff}), "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, stderr, err := execute(t, test.args...)
@@ -232,10 +230,87 @@ func TestWriteJSONReportsOutputFailure(t *testing.T) {
 	}
 }
 
+func TestCommandReadsPrivateViewFromStdinOrSecureFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keyring.json")
+	if _, _, err := execute(t, "initialize", "--keyring", path); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	keyring, err := domkey.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	handle, err := keyring.Active()
+	if err != nil {
+		t.Fatalf("Active: %v", err)
+	}
+	source := contractreceipt.ProvenanceSource{SourceID: "source-1", Recipe: normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest}}
+	const privateView = "private transformed evidence"
+	commitment, err := contractreceipt.CommitView(handle.Key, source, privateView)
+	if err != nil {
+		t.Fatalf("CommitView: %v", err)
+	}
+	args := []string{"test", "--keyring", path, "--key-id", handle.KeyID, "--epoch", "1", "--source-id", "source-1", "--commitment", commitment}
+	if _, stderr, err := executeInput(t, privateView, args...); err != nil {
+		t.Fatalf("test from stdin: %v", err)
+	} else if strings.Contains(stderr, privateView) {
+		t.Fatal("private view appeared in audit/operator output")
+	}
+	viewPath := filepath.Join(dir, "view.txt")
+	if err := os.WriteFile(viewPath, []byte(privateView), 0o600); err != nil {
+		t.Fatalf("WriteFile view: %v", err)
+	}
+	if _, _, err := execute(t, append(args, "--view-file", viewPath)...); err != nil {
+		t.Fatalf("test from file: %v", err)
+	}
+	if _, _, err := execute(t, append(args, "--view", privateView)...); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("argv private view error = %v, want unknown --view flag", err)
+	}
+	link := filepath.Join(dir, "view-link.txt")
+	if err := os.Symlink(viewPath, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, stderr, err := execute(t, append(args, "--view-file", link)...); !errors.Is(err, domkey.ErrSymlink) {
+		t.Fatalf("symlink view error = %v stderr=%q, want ErrSymlink", err, stderr)
+	}
+}
+
+func TestLifecycleCommandsSurfaceInertCapabilityNotice(t *testing.T) {
+	_, stderr, err := execute(t, "initialize")
+	if err == nil {
+		t.Fatal("initialize without path succeeded")
+	}
+	if !strings.Contains(stderr, "nothing is currently being committed") {
+		t.Fatalf("stderr = %q, want inert-capability notice", stderr)
+	}
+	cmd := Cmd()
+	if !strings.Contains(cmd.Long, "Nothing is currently being") {
+		t.Fatalf("commitment-key help omits inert-capability notice: %q", cmd.Long)
+	}
+}
+
+func TestReadViewRejectsStdinReadFailureAndOversize(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.SetIn(failingReader{})
+	if _, err := readView(cmd, "-"); err == nil || !strings.Contains(err.Error(), "read private evidence view") {
+		t.Fatalf("readView failing stdin error = %v", err)
+	}
+	cmd.SetIn(strings.NewReader(strings.Repeat("x", privateViewMaxSize+1)))
+	if _, err := readView(cmd, "-"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("readView oversized stdin error = %v", err)
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("write failed")
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("read failed")
 }
 
 func TestConfigPathResolutionDenials(t *testing.T) {
@@ -248,20 +323,27 @@ func TestConfigPathResolutionDenials(t *testing.T) {
 	if err := os.WriteFile(malformed, []byte("mode: [\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	for _, path := range []string{missingField, malformed} {
-		if _, _, err := execute(t, "inspect", "--config", path); err == nil {
-			t.Fatalf("inspect with config %s succeeded", path)
-		}
+	for name, path := range map[string]string{"missing_field": missingField, "malformed": malformed} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := execute(t, "inspect", "--config", path); err == nil {
+				t.Fatalf("inspect with config %s succeeded", path)
+			}
+		})
 	}
 }
 
 func execute(t *testing.T, args ...string) (string, string, error) {
+	return executeInput(t, "", args...)
+}
+
+func executeInput(t *testing.T, input string, args ...string) (string, string, error) {
 	t.Helper()
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	root := &cobra.Command{Use: "pipelock", SilenceUsage: true, SilenceErrors: true}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	root.SetIn(strings.NewReader(input))
 	root.AddCommand(Cmd())
 	root.SetArgs(append([]string{"commitment-key"}, args...))
 	err := root.Execute()
@@ -288,13 +370,28 @@ func mustLoadMetadata(t *testing.T, path string) domkey.Metadata {
 
 func assertAudit(t *testing.T, raw, operation, outcome string) {
 	t.Helper()
-	var event auditEvent
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &event); err != nil {
-		t.Fatalf("decode audit %q: %v", raw, err)
-	}
+	event := decodeAudit(t, raw)
 	if event.EventType != "commitment_key_lifecycle" || event.Operation != operation || event.Outcome != outcome || event.Timestamp == "" {
 		t.Fatalf("audit event = %+v", event)
 	}
+}
+
+func assertAuditAuthorization(t *testing.T, raw, authorization string) {
+	t.Helper()
+	event := decodeAudit(t, raw)
+	if event.Authorization != authorization {
+		t.Fatalf("audit authorization = %q, want %q", event.Authorization, authorization)
+	}
+}
+
+func decodeAudit(t *testing.T, raw string) auditEvent {
+	t.Helper()
+	var event auditEvent
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatalf("decode audit %q: %v", raw, err)
+	}
+	return event
 }
 
 func assertNoKeyMaterial(t *testing.T, outputs ...string) {

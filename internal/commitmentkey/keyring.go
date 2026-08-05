@@ -14,12 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 )
 
 const (
@@ -78,11 +74,6 @@ type EntryMetadata struct {
 	RetiredAt *time.Time `json:"retired_at,omitempty"`
 }
 
-type Reference struct {
-	KeyID string `json:"key_id"`
-	Epoch uint64 `json:"epoch"`
-}
-
 type Handle struct {
 	KeyID string
 	Epoch uint64
@@ -102,8 +93,8 @@ func Initialize(path string, now time.Time) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := atomicfile.WriteNew(filepath.Clean(path), data, 0o600); err != nil {
-		if errors.Is(err, os.ErrExist) {
+	if err := writeSecureNew(path, data); err != nil {
+		if errors.Is(err, ErrAlreadyExists) {
 			return nil, ErrAlreadyExists
 		}
 		return nil, fmt.Errorf("initialize commitment keyring: %w", err)
@@ -249,17 +240,17 @@ func (k *Keyring) rotate(path string, now time.Time) (Handle, error) {
 }
 
 // Retire serializes the complete load-check-destroy-save cycle across processes.
-func Retire(path, keyID string, epoch uint64, references []Reference, acceptLoss bool) error {
+func Retire(path, keyID string, epoch uint64, acceptLoss bool) error {
 	return withLifecycleLock(path, func() error {
 		keyring, err := Load(path)
 		if err != nil {
 			return err
 		}
-		return keyring.retire(path, keyID, epoch, references, acceptLoss)
+		return keyring.retire(path, keyID, epoch, acceptLoss)
 	})
 }
 
-func (k *Keyring) retire(path, keyID string, epoch uint64, references []Reference, acceptLoss bool) error {
+func (k *Keyring) retire(path, keyID string, epoch uint64, acceptLoss bool) error {
 	if keyID == k.ActiveID && epoch == k.Epoch {
 		return fmt.Errorf("cannot retire the active commitment key; rotate first")
 	}
@@ -274,14 +265,7 @@ func (k *Keyring) retire(path, keyID string, epoch uint64, references []Referenc
 		return fmt.Errorf("%w: key_id=%q epoch=%d", ErrKeyNotFound, keyID, epoch)
 	}
 	if !acceptLoss {
-		if len(references) == 0 {
-			return fmt.Errorf("%w: retained-reference inventory is absent; use explicit loss acceptance to destroy key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)
-		}
-		for _, ref := range references {
-			if ref.KeyID == keyID && ref.Epoch == epoch {
-				return fmt.Errorf("%w: key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)
-			}
-		}
+		return fmt.Errorf("%w: no authoritative retained-evidence inventory exists; --accept-loss is required to destroy key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)
 	}
 	k.Keys = append(k.Keys[:index], k.Keys[index+1:]...)
 	return k.Save(path)
@@ -295,10 +279,7 @@ func (k *Keyring) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := rejectSymlink(path); err != nil {
-		return err
-	}
-	if err := atomicfile.Write(filepath.Clean(path), data, 0o600); err != nil {
+	if err := writeSecureReplace(path, data); err != nil {
 		return fmt.Errorf("write commitment keyring: %w", err)
 	}
 	return nil
@@ -314,27 +295,17 @@ func (k *Keyring) Metadata() Metadata {
 }
 
 func Backup(source, destination string) (*Keyring, error) {
-	keyring, err := Load(source)
-	if err != nil {
-		return nil, fmt.Errorf("load backup source: %w", err)
-	}
-	if err := ensureParent(destination); err != nil {
-		return nil, err
-	}
-	data, err := marshal(keyring)
-	if err != nil {
-		return nil, err
-	}
-	if err := atomicfile.WriteNew(filepath.Clean(destination), data, 0o600); err != nil {
-		return nil, fmt.Errorf("write commitment keyring backup: %w", err)
-	}
-	return keyring, nil
+	return copyValidated(source, destination, "load backup source", "write commitment keyring backup")
 }
 
 func Restore(source, destination string) (*Keyring, error) {
+	return copyValidated(source, destination, "load commitment keyring backup", "restore commitment keyring")
+}
+
+func copyValidated(source, destination, loadContext, writeContext string) (*Keyring, error) {
 	keyring, err := Load(source)
 	if err != nil {
-		return nil, fmt.Errorf("load commitment keyring backup: %w", err)
+		return nil, fmt.Errorf("%s: %w", loadContext, err)
 	}
 	if err := ensureParent(destination); err != nil {
 		return nil, err
@@ -343,8 +314,8 @@ func Restore(source, destination string) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := atomicfile.WriteNew(filepath.Clean(destination), data, 0o600); err != nil {
-		return nil, fmt.Errorf("restore commitment keyring: %w", err)
+	if err := writeSecureNew(destination, data); err != nil {
+		return nil, fmt.Errorf("%s: %w", writeContext, err)
 	}
 	return keyring, nil
 }
@@ -367,64 +338,4 @@ func marshal(keyring *Keyring) ([]byte, error) {
 		return nil, fmt.Errorf("marshal commitment keyring: %w", err)
 	}
 	return append(data, '\n'), nil
-}
-
-func ensureParent(path string) error {
-	parent := filepath.Dir(filepath.Clean(path))
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		return fmt.Errorf("create commitment keyring directory: %w", err)
-	}
-	return nil
-}
-
-func rejectSymlink(path string) error {
-	info, err := os.Lstat(filepath.Clean(path))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect commitment keyring: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: %s", ErrSymlink, filepath.Clean(path))
-	}
-	return nil
-}
-
-func readSecure(path string) ([]byte, error) {
-	clean := filepath.Clean(path)
-	if err := rejectSymlink(clean); err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(filepath.Dir(clean))
-	if err != nil {
-		return nil, fmt.Errorf("open commitment keyring directory: %w", err)
-	}
-	defer func() { _ = root.Close() }()
-	f, err := root.Open(filepath.Base(clean))
-	if err != nil {
-		return nil, fmt.Errorf("open commitment keyring: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat commitment keyring: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: not a regular file", ErrInvalidKeyring)
-	}
-	if info.Mode().Perm() != 0o600 {
-		return nil, fmt.Errorf("%w: got %04o, want 0600", ErrUnsafePermission, info.Mode().Perm())
-	}
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidKeyring, maxBytes)
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read commitment keyring: %w", err)
-	}
-	if len(raw) > maxBytes {
-		return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidKeyring, maxBytes)
-	}
-	return raw, nil
 }

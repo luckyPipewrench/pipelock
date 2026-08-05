@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,23 +21,32 @@ import (
 )
 
 type auditEvent struct {
-	EventType string `json:"event_type"`
-	Operation string `json:"operation"`
-	Outcome   string `json:"outcome"`
-	KeyID     string `json:"key_id,omitempty"`
-	Epoch     uint64 `json:"epoch,omitempty"`
-	Timestamp string `json:"timestamp"`
-	Reason    string `json:"reason,omitempty"`
+	EventType     string `json:"event_type"`
+	Operation     string `json:"operation"`
+	Outcome       string `json:"outcome"`
+	KeyID         string `json:"key_id,omitempty"`
+	Epoch         uint64 `json:"epoch,omitempty"`
+	Timestamp     string `json:"timestamp"`
+	Reason        string `json:"reason,omitempty"`
+	Authorization string `json:"authorization,omitempty"`
 }
+
+const (
+	capabilityNotice   = "WARNING: commitment keys are not consumed by an evidence producer yet; nothing is currently being committed with this keyring."
+	privateViewMaxSize = 64 << 20
+)
 
 // Cmd returns the commitment-key lifecycle command tree.
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "commitment-key",
 		Short: "Manage private evidence commitment keys",
-		Long: `Manage the operator-owned symmetric keyring used to open private
+		Long: `Manage the operator-owned symmetric keyring intended to open private
 evidence commitments. Commitment keys are not receipt-signing keys and cannot
-be used with signing commands.`,
+be used with signing commands.
+
+No evidence producer consumes these keys yet. Nothing is currently being
+committed with this keyring.`,
 	}
 	cmd.AddCommand(initializeCmd(), inspectCmd(), rotateCmd(), retireCmd(), backupCmd(), restoreCmd(), testCmd())
 	return cmd
@@ -51,8 +59,10 @@ func initializeCmd() *cobra.Command {
 		Short: "Initialize a new commitment keyring",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			path, err := flags.resolve()
 			if err != nil {
+				emitAudit(cmd, "initialize", "denied", "", 0, err)
 				return err
 			}
 			keyring, err := domkey.Initialize(path, time.Now())
@@ -75,6 +85,7 @@ func inspectCmd() *cobra.Command {
 		Short: "Inspect commitment key metadata without revealing key material",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			keyring, err := flags.load()
 			if err != nil {
 				emitAudit(cmd, "inspect", "denied", "", 0, err)
@@ -95,8 +106,10 @@ func rotateCmd() *cobra.Command {
 		Short: "Create a new active epoch and retain the prior key for opening",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			path, err := flags.resolve()
 			if err != nil {
+				emitAudit(cmd, "rotate", "denied", "", 0, err)
 				return err
 			}
 			handle, err := domkey.Rotate(path, time.Now())
@@ -120,26 +133,23 @@ func retireCmd() *cobra.Command {
 	var flags pathFlags
 	var keyID string
 	var epoch uint64
-	var retained []string
 	var acceptLoss bool
 	cmd := &cobra.Command{
 		Use:   "retire",
-		Short: "Destroy a verify-only key after retained-reference checks",
+		Short: "Destroy a verify-only key with explicit loss acceptance",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			path, err := flags.resolve()
 			if err != nil {
-				return err
-			}
-			references, err := parseReferences(retained)
-			if err != nil {
-				return err
-			}
-			if err := domkey.Retire(path, keyID, epoch, references, acceptLoss); err != nil {
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
 				return err
 			}
-			emitAudit(cmd, "retire", "succeeded", keyID, epoch, nil)
+			if err := domkey.Retire(path, keyID, epoch, acceptLoss); err != nil {
+				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return err
+			}
+			emitAudit(cmd, "retire", "succeeded", keyID, epoch, nil, "operator_accept_loss")
 			keyring, err := domkey.Load(path)
 			if err != nil {
 				return err
@@ -150,8 +160,7 @@ func retireCmd() *cobra.Command {
 	flags.bind(cmd)
 	cmd.Flags().StringVar(&keyID, "key-id", "", "opaque key ID to destroy")
 	cmd.Flags().Uint64Var(&epoch, "epoch", 0, "key epoch to destroy")
-	cmd.Flags().StringArrayVar(&retained, "retained-reference", nil, "retained receipt reference as KEY_ID:EPOCH; repeat as needed")
-	cmd.Flags().BoolVar(&acceptLoss, "accept-loss", false, "destroy the key even when a retained receipt still references it")
+	cmd.Flags().BoolVar(&acceptLoss, "accept-loss", false, "acknowledge permanent loss of access to retained evidence and destroy the key")
 	_ = cmd.MarkFlagRequired("key-id")
 	_ = cmd.MarkFlagRequired("epoch")
 	return cmd
@@ -165,8 +174,10 @@ func backupCmd() *cobra.Command {
 		Short: "Create a validated 0600 keyring backup",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			path, err := flags.resolve()
 			if err != nil {
+				emitAudit(cmd, "backup", "denied", "", 0, err)
 				return err
 			}
 			keyring, err := domkey.Backup(path, filepath.Clean(out))
@@ -192,8 +203,10 @@ func restoreCmd() *cobra.Command {
 		Short: "Restore a validated backup into an absent keyring path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			path, err := flags.resolve()
 			if err != nil {
+				emitAudit(cmd, "restore", "denied", "", 0, err)
 				return err
 			}
 			keyring, err := domkey.Restore(filepath.Clean(from), path)
@@ -213,13 +226,14 @@ func restoreCmd() *cobra.Command {
 
 func testCmd() *cobra.Command {
 	var flags pathFlags
-	var keyID, sourceID, view, want, recipeJSON string
+	var keyID, sourceID, viewFile, want, recipeJSON string
 	var epoch, sourceOrdinal uint64
 	cmd := &cobra.Command{
 		Use:   "test",
 		Short: "Test opening a PR 3 evidence view commitment",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			emitCapabilityNotice(cmd)
 			keyring, err := flags.load()
 			if err != nil {
 				emitAudit(cmd, "test", "denied", keyID, epoch, err)
@@ -240,6 +254,11 @@ func testCmd() *cobra.Command {
 				SourceID:      sourceID,
 				Recipe:        recipe,
 			}
+			view, err := readView(cmd, viewFile)
+			if err != nil {
+				emitAudit(cmd, "test", "denied", keyID, epoch, err)
+				return err
+			}
 			got, err := contractreceipt.CommitView(handle.Key, source, view)
 			if err != nil {
 				emitAudit(cmd, "test", "denied", keyID, epoch, err)
@@ -259,10 +278,10 @@ func testCmd() *cobra.Command {
 	cmd.Flags().Uint64Var(&epoch, "epoch", 0, "key epoch named by the receipt")
 	cmd.Flags().StringVar(&sourceID, "source-id", "", "source ID bound into the commitment")
 	cmd.Flags().Uint64Var(&sourceOrdinal, "source-ordinal", 0, "source ordinal bound into the commitment")
-	cmd.Flags().StringVar(&view, "view", "", "complete transformed view to open")
+	cmd.Flags().StringVar(&viewFile, "view-file", "-", "read the complete transformed view from this 0600 file, or - for stdin")
 	cmd.Flags().StringVar(&want, "commitment", "", "expected hmac-sha256 commitment")
 	cmd.Flags().StringVar(&recipeJSON, "recipe-json", "", "PR 3 typed recipe JSON; defaults to the empty v1 recipe")
-	for _, name := range []string{"key-id", "epoch", "source-id", "view", "commitment"} {
+	for _, name := range []string{"key-id", "epoch", "source-id", "commitment"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
@@ -330,24 +349,33 @@ func (f pathFlags) load() (*domkey.Keyring, error) {
 	return domkey.Load(path)
 }
 
-func parseReferences(values []string) ([]domkey.Reference, error) {
-	refs := make([]domkey.Reference, 0, len(values))
-	for _, value := range values {
-		keyID, rawEpoch, ok := strings.Cut(value, ":")
-		if !ok || keyID == "" {
-			return nil, fmt.Errorf("invalid retained reference %q; want KEY_ID:EPOCH", value)
+func readView(cmd *cobra.Command, path string) (string, error) {
+	if path == "-" {
+		raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), privateViewMaxSize+1))
+		if err != nil {
+			return "", fmt.Errorf("read private evidence view from stdin: %w", err)
 		}
-		epoch, err := strconv.ParseUint(rawEpoch, 10, 64)
-		if err != nil || epoch == 0 {
-			return nil, fmt.Errorf("invalid retained reference %q; epoch must be positive", value)
+		if len(raw) > privateViewMaxSize {
+			return "", errors.New("private evidence view exceeds 67108864 bytes")
 		}
-		refs = append(refs, domkey.Reference{KeyID: keyID, Epoch: epoch})
+		return string(raw), nil
 	}
-	return refs, nil
+	raw, err := domkey.ReadPrivateView(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("read --view-file: %w", err)
+	}
+	return string(raw), nil
 }
 
-func emitAudit(cmd *cobra.Command, operation, outcome, keyID string, epoch uint64, operationErr error) {
+func emitCapabilityNotice(cmd *cobra.Command) {
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), capabilityNotice)
+}
+
+func emitAudit(cmd *cobra.Command, operation, outcome, keyID string, epoch uint64, operationErr error, authorization ...string) {
 	event := auditEvent{EventType: "commitment_key_lifecycle", Operation: operation, Outcome: outcome, KeyID: keyID, Epoch: epoch, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+	if len(authorization) != 0 {
+		event.Authorization = authorization[0]
+	}
 	if operationErr != nil {
 		event.Reason = operationErr.Error()
 	}

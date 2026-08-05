@@ -329,6 +329,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateFlightRecorder(&warnings); err != nil {
 		return warnings, err
 	}
+	c.validateEvidenceProvenanceWarnings(&warnings)
 	if err := c.validateDashboardSnapshot(); err != nil {
 		return warnings, err
 	}
@@ -375,6 +376,16 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	return warnings, nil
+}
+
+func (c *Config) validateEvidenceProvenanceWarnings(warnings *[]Warning) {
+	if c.EvidenceProvenance.CommitmentKeyringPath == "" {
+		return
+	}
+	*warnings = append(*warnings, Warning{
+		Field:   "evidence_provenance.commitment_keyring_path",
+		Message: "commitment keys are not consumed by an evidence producer yet; nothing is currently being committed with this keyring",
+	})
 }
 
 func (c *Config) validateAPIAllowlistWarnings(warnings *[]Warning) {

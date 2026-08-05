@@ -7,6 +7,8 @@ package commitmentkey
 
 import "sync"
 
+// lifecycleLock serializes lifecycle operations only within this process.
+// Targets outside the Unix and Windows build tags have no cross-process lock.
 var lifecycleLock sync.Mutex
 
 func withLifecycleLock(_ string, fn func() error) error {

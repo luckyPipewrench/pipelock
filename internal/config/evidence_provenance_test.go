@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,4 +37,19 @@ func TestEvidenceProvenancePathExcludedFromCanonicalPolicyHash(t *testing.T) {
 	if a.CanonicalPolicyHash() != b.CanonicalPolicyHash() {
 		t.Fatal("operator keyring path changed scanner policy hash")
 	}
+}
+
+func TestEvidenceProvenanceConfiguredPathWarnsThatCapabilityIsInert(t *testing.T) {
+	cfg := Defaults()
+	cfg.EvidenceProvenance.CommitmentKeyringPath = "/var/lib/pipelock/evidence/commitment-keyring.json"
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings: %v", err)
+	}
+	for _, warning := range warnings {
+		if warning.Field == "evidence_provenance.commitment_keyring_path" && strings.Contains(warning.Message, "nothing is currently being committed") {
+			return
+		}
+	}
+	t.Fatalf("warnings = %+v, want inert-capability warning", warnings)
 }

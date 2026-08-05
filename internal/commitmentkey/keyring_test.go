@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ func TestRetiredLookupOpensPriorEpoch(t *testing.T) {
 	openTestReceipt(t, keyring, receipt)
 }
 
-func TestRetireRefusesRetainedReferenceAndCanExplicitlyAcceptLoss(t *testing.T) {
+func TestRetireRequiresExplicitLossAcceptance(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
 	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
 	if err != nil {
@@ -113,15 +114,11 @@ func TestRetireRefusesRetainedReferenceAndCanExplicitlyAcceptLoss(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Load rotated keyring: %v", err)
 	}
-	refs := []Reference{{KeyID: old.KeyID, Epoch: old.Epoch}}
-	if err := Retire(path, old.KeyID, old.Epoch, refs, false); !errors.Is(err, ErrRetainedKey) {
-		t.Fatalf("Retire with retained reference error = %v, want ErrRetainedKey", err)
+	if err := Retire(path, old.KeyID, old.Epoch, false); !errors.Is(err, ErrRetainedKey) {
+		t.Fatalf("Retire without loss acceptance error = %v, want ErrRetainedKey", err)
 	}
 	openTestReceipt(t, keyring, old)
-	if err := Retire(path, old.KeyID, old.Epoch, nil, false); !errors.Is(err, ErrRetainedKey) {
-		t.Fatalf("Retire without reference inventory error = %v, want ErrRetainedKey", err)
-	}
-	if err := Retire(path, old.KeyID, old.Epoch, refs, true); err != nil {
+	if err := Retire(path, old.KeyID, old.Epoch, true); err != nil {
 		t.Fatalf("Retire with accept loss: %v", err)
 	}
 	keyring, err = Load(path)
@@ -131,7 +128,7 @@ func TestRetireRefusesRetainedReferenceAndCanExplicitlyAcceptLoss(t *testing.T) 
 	if _, err := keyring.Open(old.KeyID, old.Epoch); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("Open destroyed retired key error = %v, want ErrKeyNotFound", err)
 	}
-	if err := Retire(path, keyring.ActiveID, keyring.Epoch, nil, true); err == nil {
+	if err := Retire(path, keyring.ActiveID, keyring.Epoch, true); err == nil {
 		t.Fatal("Retire active key succeeded")
 	}
 }
@@ -196,6 +193,9 @@ func TestLifecycleBackupDestroyRestoreAndOpen(t *testing.T) {
 }
 
 func TestLoadFailsClosedOnPermissionsAndSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ACL and symlink behavior differs from Unix mode semantics")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "commitment-keyring.json")
 	if _, err := Initialize(path, time.Now()); err != nil {
@@ -225,8 +225,19 @@ func TestLoadFailsClosedOnPermissionsAndSymlink(t *testing.T) {
 		}
 	})
 	t.Run("symlink_save", func(t *testing.T) {
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile before: %v", err)
+		}
 		if err := keyringSaveThroughSymlink(path, link); !errors.Is(err, ErrSymlink) {
 			t.Fatalf("Save symlink error = %v, want ErrSymlink", err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile after: %v", err)
+		}
+		if string(after) != string(before) {
+			t.Fatal("refused symlink save modified the target")
 		}
 	})
 }

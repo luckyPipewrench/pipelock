@@ -225,14 +225,14 @@ func TestLoadFailsClosedOnPermissionsAndSymlink(t *testing.T) {
 		}
 	})
 	t.Run("symlink_save", func(t *testing.T) {
-		before, err := os.ReadFile(path)
+		before, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			t.Fatalf("ReadFile before: %v", err)
 		}
 		if err := keyringSaveThroughSymlink(path, link); !errors.Is(err, ErrSymlink) {
 			t.Fatalf("Save symlink error = %v, want ErrSymlink", err)
 		}
-		after, err := os.ReadFile(path)
+		after, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			t.Fatalf("ReadFile after: %v", err)
 		}

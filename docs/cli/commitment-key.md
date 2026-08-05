@@ -80,3 +80,6 @@ reparse-point checks cover existing parents and opened final files, but Unix
 owner/mode rules have no direct ACL equivalent and parent replacement cannot be
 pinned across the complete operation. Use an ACL-restricted directory owned by
 the Pipelock service account.
+
+Other operating-system targets fail closed because they do not provide the
+filesystem primitives required for these storage guarantees.

@@ -22,10 +22,10 @@ func TestSecurePathsRejectUnsafeOrSymlinkedParents(t *testing.T) {
 		if err := os.Mkdir(parent, 0o750); err != nil {
 			t.Fatalf("Mkdir: %v", err)
 		}
-		if err := os.Chmod(parent, 0o770); err != nil {
+		if err := unix.Chmod(parent, 0o770); err != nil {
 			t.Fatalf("Chmod: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Chmod(parent, 0o750) })
+		t.Cleanup(func() { _ = unix.Chmod(parent, 0o750) })
 		path := filepath.Join(parent, "keyring.json")
 		if _, err := Initialize(path, time.Now()); !errors.Is(err, ErrUnsafePermission) {
 			t.Fatalf("Initialize error = %v, want ErrUnsafePermission", err)
@@ -65,10 +65,10 @@ func TestSecureParentRulesCoverBackupRestoreAndLock(t *testing.T) {
 	if err := os.Mkdir(unsafeParent, 0o750); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if err := os.Chmod(unsafeParent, 0o770); err != nil {
+	if err := unix.Chmod(unsafeParent, 0o770); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(unsafeParent, 0o750) })
+	t.Cleanup(func() { _ = unix.Chmod(unsafeParent, 0o750) })
 
 	t.Run("backup_destination", func(t *testing.T) {
 		destination := filepath.Join(unsafeParent, "backup.json")
@@ -111,7 +111,7 @@ func TestSecureLockRejectsUnsafeOpenedFile(t *testing.T) {
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if err := os.Chmod(lockPath, 0o644); err != nil {
+	if err := unix.Chmod(lockPath, 0o644); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
 	called := false
@@ -185,7 +185,7 @@ func TestLoadRejectsNonRegularOpenedObjectBeforeReading(t *testing.T) {
 	if _, err := Initialize(fixturePath, time.Now()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	fixture, err := os.ReadFile(fixturePath)
+	fixture, err := os.ReadFile(filepath.Clean(fixturePath))
 	if err != nil {
 		t.Fatalf("ReadFile fixture: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestLoadRejectsNonRegularOpenedObjectBeforeReading(t *testing.T) {
 	}
 	writerDone := make(chan error, 1)
 	go func() {
-		f, openErr := os.OpenFile(fifoPath, os.O_WRONLY, 0)
+		f, openErr := os.OpenFile(filepath.Clean(fifoPath), os.O_WRONLY, 0)
 		if openErr != nil {
 			writerDone <- openErr
 			return
@@ -300,7 +300,7 @@ func TestSecureIOReachableErrorPaths(t *testing.T) {
 	}
 
 	oversizedView := filepath.Join(dir, "oversized-view")
-	view, err := os.OpenFile(oversizedView, os.O_CREATE|os.O_WRONLY, 0o600)
+	view, err := os.OpenFile(filepath.Clean(oversizedView), os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatalf("OpenFile oversized view: %v", err)
 	}

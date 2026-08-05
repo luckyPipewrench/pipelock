@@ -250,7 +250,8 @@ func validateOpenedDirectory(fd int, path string) error {
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return fmt.Errorf("parent path is not a directory: %s", path)
 	}
-	if stat.Uid != 0 && stat.Uid != uint32(os.Geteuid()) {
+	effectiveUID := int64(os.Geteuid())
+	if stat.Uid != 0 && int64(stat.Uid) != effectiveUID {
 		return fmt.Errorf("%w: parent directory %s owner uid %d is neither root nor effective uid %d", ErrUnsafePermission, path, stat.Uid, os.Geteuid())
 	}
 	if stat.Mode&0o022 != 0 {
@@ -270,7 +271,7 @@ func validateOpenedFile(fd int, label string) (unix.Stat_t, error) {
 		}
 		return unix.Stat_t{}, fmt.Errorf("invalid %s: not a regular file", label)
 	}
-	if stat.Uid != uint32(os.Geteuid()) {
+	if int64(stat.Uid) != int64(os.Geteuid()) {
 		return unix.Stat_t{}, fmt.Errorf("%w: %s owner uid %d, want effective uid %d", ErrUnsafePermission, label, stat.Uid, os.Geteuid())
 	}
 	if stat.Mode&0o777 != secureFileMode {

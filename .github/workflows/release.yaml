@@ -278,6 +278,44 @@ jobs:
           RULES_KEYRING_HEX: ${{ secrets.RULES_KEYRING_HEX }}
           RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
 
+      # The chart is published to the same registry as the images it deploys, as
+      # an OCI artifact, so there is no chart index to host and no gh-pages
+      # branch to keep in sync. `helm push` of pipelock-<v>.tgz to
+      # oci://ghcr.io/luckypipewrench/charts yields
+      # ghcr.io/luckypipewrench/charts/pipelock:<v>, which is the reference
+      # Artifact Hub indexes.
+      #
+      # appVersion is forced to the tag being released rather than trusting the
+      # committed value. The chart's own version stays hand-managed in
+      # Chart.yaml: it tracks changes to the templates, not to Pipelock, and the
+      # two move independently.
+      #
+      # The first run creates a new GHCR package, and new packages are private
+      # by default, so the chart is not installable until that package is made
+      # public once in the GitHub UI. There is no REST endpoint for that, and it
+      # is irreversible, so it stays a deliberate human step.
+      - name: Set up Helm
+        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.0
+
+      - name: Package and publish Helm chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          app_version="${TAG_NAME#v}"
+          chart_version="$(helm show chart charts/pipelock | awk '$1 == "version:" { print $2 }')"
+          test -n "$chart_version" || {
+            echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
+            exit 1
+          }
+          helm package charts/pipelock --app-version "$app_version" --destination dist-chart
+          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
+          helm registry logout ghcr.io
+
       - name: Generate and upload self-update release manifest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

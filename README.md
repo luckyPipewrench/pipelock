@@ -556,8 +556,8 @@ docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
-# Kubernetes with Helm
-helm install pipelock charts/pipelock/
+# Kubernetes with Helm (published chart, Helm 3.8+)
+helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**

@@ -408,6 +408,68 @@ jobs:
           echo "::error::Attestation failed — release provenance is incomplete"
           exit 1
 
+      # Deliberately placed after the attestation gate. The chart is the least
+      # critical artifact in the release, and an earlier position would let a
+      # registry hiccup on the chart abort the job with binaries and images
+      # already published but their provenance never attested. Publishing
+      # unattested images because a chart push failed is the wrong failure
+      # direction for this project, so provenance completes first.
+      #
+      # The chart is published to the same registry as the images it deploys, as
+      # an OCI artifact, so there is no chart index to host and no gh-pages
+      # branch to keep in sync. `helm push` of pipelock-<v>.tgz to
+      # oci://ghcr.io/luckypipewrench/charts yields
+      # ghcr.io/luckypipewrench/charts/pipelock:<v>, which is the reference
+      # Artifact Hub indexes.
+      #
+      # appVersion is forced to the tag being released rather than trusting the
+      # committed value. The chart's own version stays hand-managed in
+      # Chart.yaml: it tracks changes to the templates, not to Pipelock, and the
+      # two move independently.
+      #
+      # The first run creates a new GHCR package, and new packages are private
+      # by default, so the chart is not installable until that package is made
+      # public once in the GitHub UI. There is no REST endpoint for that, and it
+      # is irreversible, so it stays a deliberate human step.
+      - name: Set up Helm
+        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Package and publish Helm chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          app_version="${TAG_NAME#v}"
+          chart_version="$(helm show chart charts/pipelock | awk '$1 == "version:" { print $2 }')"
+          test -n "$chart_version" || {
+            echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
+            exit 1
+          }
+          helm package charts/pipelock --app-version "$app_version" --destination dist-chart
+          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
+          helm registry logout ghcr.io
+
+          # A brand-new GHCR package is private, and the install command in the
+          # READMEs fails with an authorization error until it is made public.
+          # The reminder belongs here, in front of whoever ran the release, at
+          # the moment it becomes actionable. It deliberately does not go in the
+          # install docs: the condition is true once, during bootstrap, and a
+          # caveat left in user-facing docs would be permanently wrong
+          # afterwards.
+          {
+            echo "### Helm chart published"
+            echo
+            echo "\`ghcr.io/luckypipewrench/charts/pipelock:${chart_version}\` (appVersion ${app_version})."
+            echo
+            echo "If this is the first published chart, the package is PRIVATE and"
+            echo "\`helm install oci://ghcr.io/luckypipewrench/charts/pipelock\` fails for"
+            echo "everyone until it is made public once under Package settings."
+          } >>"$GITHUB_STEP_SUMMARY"
+
       # Move the v2 floating tag so `uses: luckyPipewrench/pipelock@v2`
       # always resolves to the latest release. Safe because the trigger requires
       # two dotted components, so a bare `v2` push cannot re-fire this workflow.

@@ -450,7 +450,7 @@ jobs:
       - name: Set up Helm
         uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: v3.20.0
+          version: v3.20.2
 
       - name: Verify Helm chart
         run: bash scripts/check-helm-chart.sh

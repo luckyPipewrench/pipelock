@@ -33,10 +33,13 @@
   },
   "dependencies": {
     "@noble/ed25519": "3.1.0",
+    "@unicode/unicode-15.0.0": "1.6.17",
     "ajv": "8.20.0",
-    "ajv-formats": "3.0.1"
+    "ajv-formats": "3.0.1",
+    "he": "1.2.0"
   },
   "devDependencies": {
+    "@types/he": "1.2.3",
     "@types/node": "24.13.1",
     "prettier": "3.8.3",
     "typescript": "5.9.3"

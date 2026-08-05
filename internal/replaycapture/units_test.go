@@ -136,6 +136,11 @@ func TestValidateExpectedDecision_ExactSequence(t *testing.T) {
 	if err := validateExpectedDecision(&CapturedScenario{Scenario: scenario, Receipts: reordered}); err == nil || !strings.Contains(err.Error(), "verdict") {
 		t.Fatalf("reordered sequence error = %v", err)
 	}
+	wrongTransport := append([]receipt.Receipt(nil), receipts...)
+	wrongTransport[0].ActionRecord.Transport = TransportWebSocket
+	if err := validateExpectedDecision(&CapturedScenario{Scenario: scenario, Receipts: wrongTransport}); err == nil || !strings.Contains(err.Error(), "transport") {
+		t.Fatalf("sequence transport error = %v", err)
+	}
 }
 
 func TestFindingsError(t *testing.T) {

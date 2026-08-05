@@ -176,6 +176,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// finding, not decided here.
 	syntheticURL := "https://" + syntheticHost + "/"
 	connectReceiptTarget := "https://" + net.JoinHostPort(host, targetPort) + "/"
+	emitConnectSessionDenyReceipt := func() {
+		emitConnectReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     adaptiveSessionDeny,
+			Pattern:   adaptiveBlockedReason,
+			Transport: TransportConnect,
+			Method:    http.MethodConnect,
+			Target:    connectReceiptTarget,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+	}
 	targetCtx := newConnectAuditContext(p.logger, target, clientIP, requestID, agent)
 	headerCtx := targetCtx
 
@@ -358,6 +371,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		sessionKey := sessionKeyFor(agent, clientIP)
 		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
+		emitConnectSessionDenyReceipt()
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
@@ -426,6 +440,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			level := connectRec.EscalationLevel()
 			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: connectSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
+				emitConnectSessionDenyReceipt()
 				p.metrics.RecordTunnelBlocked(agentLabel)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),

@@ -154,8 +154,12 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 		t.Fatalf("close receipt recorder: %v", err)
 	}
 	receipts := extractReceiptsFromDir(t, receiptDir)
-	if len(receipts) != 1 || receipts[0].ActionRecord.Layer != "session_deny" {
-		t.Fatalf("session deny receipts = %+v, want one session_deny receipt", receipts)
+	if len(receipts) != 1 {
+		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
+	}
+	ar := receipts[0].ActionRecord
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
+		t.Fatalf("session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportForward, upstream.URL+"/ok")
 	}
 }
 
@@ -319,7 +323,9 @@ func TestConnect_Adaptive_BlockAll(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p, err := New(cfg, logger, sc, m)
+	receiptDir := t.TempDir()
+	emitter, receiptRecorder, _ := newCoverageEmitter(t, receiptDir)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(emitter))
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -372,6 +378,19 @@ func TestConnect_Adaptive_BlockAll(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Errorf("expected 403 for CONNECT block_all, got %d: %s", resp.StatusCode, body)
+	}
+	waitForReceiptOrTimeout(t, receiptDir)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("close receipt recorder: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, receiptDir)
+	if len(receipts) != 1 {
+		t.Fatalf("CONNECT session deny receipts = %+v, want exactly one", receipts)
+	}
+	ar := receipts[0].ActionRecord
+	wantTarget := "https://" + targetLn.Addr().String() + "/"
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportConnect || ar.Method != http.MethodConnect || ar.Target != wantTarget {
+		t.Fatalf("CONNECT session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportConnect, wantTarget)
 	}
 }
 
@@ -1246,6 +1265,85 @@ func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 	}
 }
 
+// TestConnect_Adaptive_PostCEEBlockAllReceipt proves that a CEE finding carried
+// into CONNECT can escalate a near-threshold session and that the terminal
+// session denial is represented by a signed CONNECT receipt.
+func TestConnect_Adaptive_PostCEEBlockAllReceipt(t *testing.T) {
+	targetLn := listenEcho(t)
+	defer func() { _ = targetLn.Close() }()
+
+	cfg := adaptiveConfigBlockAll()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	receiptDir := t.TempDir()
+	emitter, receiptRecorder, _ := newCoverageEmitter(t, receiptDir)
+	p, err := New(cfg, logger, sc, metrics.New(), WithReceiptEmitter(emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	proxyAddr := ln.Addr().String()
+	srv := &http.Server{Handler: p.buildHandler(http.NewServeMux()), ReadHeaderTimeout: 5 * time.Second}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+
+	rec := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyLoopback)
+	for range 4 {
+		rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	}
+	if rec.EscalationLevel() != 0 {
+		t.Fatalf("precondition: escalation level = %d, want 0", rec.EscalationLevel())
+	}
+	et := p.entropyTrackerPtr.Load()
+	if et == nil {
+		t.Fatal("entropy tracker not initialized")
+	}
+	et.Record(CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback), []byte("abc123"))
+	if !et.BudgetExceeded(CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)) {
+		t.Fatal("precondition: CEE entropy budget not exceeded")
+	}
+
+	target := targetLn.Addr().String()
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("CONNECT returned %d, want CEE-triggered 403: %s", resp.StatusCode, body)
+	}
+
+	waitForReceiptOrTimeout(t, receiptDir)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("close receipt recorder: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, receiptDir)
+	if len(receipts) != 1 {
+		t.Fatalf("CONNECT CEE session deny receipts = %+v, want exactly one", receipts)
+	}
+	ar := receipts[0].ActionRecord
+	wantTarget := "https://" + target + "/"
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportConnect || ar.Method != http.MethodConnect || ar.Target != wantTarget {
+		t.Fatalf("CONNECT CEE session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportConnect, wantTarget)
+	}
+}
+
 // --- handleForwardHTTP body DLP adaptive upgrade tests ---
 
 // TestForwardHTTP_Adaptive_BodyDLPWarnUpgradeToBlock verifies that a request
@@ -1355,8 +1453,12 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 		t.Fatalf("close receipt recorder: %v", err)
 	}
 	receipts := extractReceiptsFromDir(t, receiptDir)
-	if len(receipts) != 1 || receipts[0].ActionRecord.Layer != "session_deny" {
-		t.Fatalf("session deny receipts = %+v, want one session_deny receipt", receipts)
+	if len(receipts) != 1 {
+		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
+	}
+	ar := receipts[0].ActionRecord
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
+		t.Fatalf("session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportForward, upstream.URL+"/ok")
 	}
 }
 
@@ -2251,8 +2353,12 @@ func TestForwardHTTP_CEE_BlockAllRecheck(t *testing.T) {
 		t.Fatalf("close receipt recorder: %v", err)
 	}
 	receipts := extractReceiptsFromDir(t, receiptDir)
-	if len(receipts) != 1 || receipts[0].ActionRecord.Layer != "session_deny" {
-		t.Fatalf("session deny receipts = %+v, want one session_deny receipt", receipts)
+	if len(receipts) != 1 {
+		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
+	}
+	ar := receipts[0].ActionRecord
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok?x=abc123" {
+		t.Fatalf("session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportForward, upstream.URL+"/ok?x=abc123")
 	}
 }
 

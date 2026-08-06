@@ -312,6 +312,9 @@ func TestKeystoreGenerateAgentRejectsTransactionSymlinkEscape(t *testing.T) {
 			if string(got) != "unchanged" {
 				t.Fatalf("outside sentinel changed: %q", got)
 			}
+			if err := os.Remove(transactionPath); err != nil {
+				t.Fatalf("remove transaction symlink: %v", err)
+			}
 			assertStoredAgentPairCoherent(t, ks)
 		})
 	}

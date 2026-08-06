@@ -275,13 +275,13 @@ func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
 		}
 		path := filepath.Join(k.agentDir(name), privateKeyFile)
 		if err := k.validateContainment(path); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
 				continue
 			}
 			return nil, fmt.Errorf("private key containment check: %w", err)
 		}
 		priv, err := LoadPrivateKeyFile(path)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
 			continue
 		}
 		return priv, err
@@ -300,18 +300,23 @@ func (k *Keystore) LoadPublicKey(name string) (ed25519.PublicKey, error) {
 		}
 		path := filepath.Join(k.agentDir(name), publicKeyFile)
 		if err := k.validateContainment(path); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
 				continue
 			}
 			return nil, fmt.Errorf("public key containment check: %w", err)
 		}
 		pub, err := LoadPublicKeyFile(path)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
 			continue
 		}
 		return pub, err
 	}
 	return nil, fmt.Errorf("public key unavailable during concurrent key publication: %w", os.ErrNotExist)
+}
+
+func (k *Keystore) agentBackupPending(name string) bool {
+	_, err := os.Lstat(k.agentBackupDir(name))
+	return err == nil
 }
 
 // TrustKey copies a public key file into trusted_keys/<name>.pub.

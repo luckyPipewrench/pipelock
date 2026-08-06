@@ -208,6 +208,41 @@ func TestKeystoreGenerateAgentRecoversInterruptedForcePublish(t *testing.T) {
 	assertStoredAgentPairCoherent(t, ks, "shared")
 }
 
+func TestInstallStagedAgentDirectoryReplacesConcurrentEmptyPreflight(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "active")
+	stage := filepath.Join(parent, "stage")
+	if err := os.Mkdir(target, dirPermission); err != nil {
+		t.Fatalf("create concurrent empty target: %v", err)
+	}
+	if err := os.Mkdir(stage, dirPermission); err != nil {
+		t.Fatalf("create stage: %v", err)
+	}
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(): %v", err)
+	}
+	if err := writeAgentKeyPair(stage, pub, priv); err != nil {
+		t.Fatalf("writeAgentKeyPair(): %v", err)
+	}
+
+	if err := installStagedAgentDirectory(target, stage); err != nil {
+		t.Fatalf("installStagedAgentDirectory(): %v", err)
+	}
+	loadedPriv, err := LoadPrivateKeyFile(filepath.Join(target, privateKeyFile))
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile(): %v", err)
+	}
+	loadedPub, err := LoadPublicKeyFile(filepath.Join(target, publicKeyFile))
+	if err != nil {
+		t.Fatalf("LoadPublicKeyFile(): %v", err)
+	}
+	message := []byte("portable publish")
+	if !ed25519.Verify(loadedPub, message, ed25519.Sign(loadedPriv, message)) {
+		t.Fatal("installed portable key pair is incoherent")
+	}
+}
+
 func TestKeystoreGenerateAgentRejectsTransactionSymlinkEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege")

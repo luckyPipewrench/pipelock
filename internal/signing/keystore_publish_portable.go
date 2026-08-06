@@ -15,7 +15,10 @@ func publishAgentDirectoryPortable(targetDir, stageDir, backupDir string) error 
 	if err := os.Rename(targetDir, backupDir); err != nil {
 		return fmt.Errorf("backing up active agent directory: %w", err)
 	}
-	if err := os.Rename(stageDir, targetDir); err != nil {
+	if err := installStagedAgentDirectory(targetDir, stageDir); err != nil {
+		if removeErr := removeEmptyDirectory(targetDir); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("installing staged agent directory: %w (clearing active path for rollback: %v)", err, removeErr)
+		}
 		if restoreErr := os.Rename(backupDir, targetDir); restoreErr != nil {
 			return fmt.Errorf("installing staged agent directory: %w (restoring prior key pair: %v)", err, restoreErr)
 		}
@@ -26,4 +29,31 @@ func publishAgentDirectoryPortable(targetDir, stageDir, backupDir string) error 
 	// The next generation recovers by keeping the coherent active pair.
 	_ = os.RemoveAll(backupDir)
 	return nil
+}
+
+func installStagedAgentDirectory(targetDir, stageDir string) error {
+	const maxConcurrentPreflightRetries = 64
+	var lastErr error
+	for range maxConcurrentPreflightRetries {
+		if err := os.Rename(stageDir, targetDir); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if err := removeEmptyDirectory(targetDir); err != nil {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+func removeEmptyDirectory(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("active agent directory is not empty")
+	}
+	return os.Remove(path)
 }

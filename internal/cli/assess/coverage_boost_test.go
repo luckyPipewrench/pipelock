@@ -430,14 +430,14 @@ func TestProjectToSummary_RedactsDiscoverTitles(t *testing.T) {
 	}
 }
 
-func TestProjectToSummary_AlwaysUnsigned(t *testing.T) {
+func TestProjectToSummary_PreservesSignedState(t *testing.T) {
 	a := *minimalAssessment(assessGradeA, 95)
-	a.Signed = true // even if assessment claims signed
+	a.Signed = true
 
 	summary := projectToSummary(a)
 
-	if summary.Signed {
-		t.Error("summary Signed should always be false")
+	if !summary.Signed {
+		t.Error("summary Signed should preserve the finalized assessment state")
 	}
 }
 
@@ -502,14 +502,14 @@ func TestProjectToSummary_ServerCounts(t *testing.T) {
 	}
 }
 
-func TestProjectToSummary_Compliance(t *testing.T) {
+func TestProjectToSummary_OmitsPaidComplianceMappings(t *testing.T) {
 	a := *minimalAssessment(assessGradeA, 95)
 	a.Compliance = compliance.Catalog()
 
 	summary := projectToSummary(a)
 
-	if len(summary.Compliance) != len(a.Compliance) {
-		t.Errorf("Compliance count = %d, want %d", len(summary.Compliance), len(a.Compliance))
+	if len(summary.Compliance) != 0 {
+		t.Errorf("Compliance count = %d, want 0 on free summary", len(summary.Compliance))
 	}
 }
 

@@ -5,11 +5,13 @@ package assess
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +29,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+const assessDefaultSigningAgent = "pipelock-assess"
 
 // checkAssessLicense reads the manifest to find the config, loads it,
 // resolves the license public key, verifies the token, and returns true
@@ -100,12 +104,13 @@ func assessFinalizeCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "finalize <run-dir>",
-		Short: "Synthesize assessment, produce report, and optionally sign",
+		Short: "Synthesize assessment, produce report, and sign by default",
 		Long: `Read completed evidence from the run directory, synthesize a scored
-assessment, produce JSON and HTML output, and optionally sign the manifest.
+assessment, produce JSON and HTML output, and sign the manifest by default.
 
-Licensed users (assess feature) get the full assessment with signature.
-Unlicensed users get a summary projection without signature.
+Licensed users (assess feature) get the full assessment content.
+Unlicensed users get a signed summary projection. Use --unsigned to opt out
+of signing for either tier.
 
 Examples:
   pipelock assess finalize assessment-a1b2c3d4/
@@ -146,7 +151,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().BoolVar(&unsigned, "unsigned", false, "skip signing even with license")
+	cmd.Flags().BoolVar(&unsigned, "unsigned", false, "skip manifest signing")
 	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false, "allow finalization with skipped primitives")
 	cmd.Flags().BoolVar(&archive, "archive", false, "produce .tar.gz bundle")
 	cmd.Flags().BoolVar(&attestationFlag, "attestation", false, "write attestation.json and detached signature")
@@ -248,16 +253,17 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	artifacts := make(map[string]string)
 	shouldEmitAttestation := opts.HasAssess && !opts.Unsigned && (opts.Attestation || opts.Badge)
 
-	// Set signed flag before rendering so the template can display the correct badge.
-	// This reflects intent (will sign), not state (has been signed) - signing happens after render.
-	assessment.Signed = opts.HasAssess && !opts.Unsigned
+	// Set signed before rendering because the rendered artifact is hashed into
+	// the manifest that is signed later. Every downstream failure after render
+	// rolls the claim back to false before returning.
+	assessment.Signed = !opts.Unsigned
 
 	// Load signing identity once when ANY downstream step needs it.
 	// Without this, an attestation+manifest-signed run would load the
 	// private key off disk twice with two distinct error sites for the
 	// same underlying failure. nil when no signing happens.
 	var signID *signingIdentity
-	if opts.HasAssess && !opts.Unsigned {
+	if !opts.Unsigned {
 		var err error
 		signID, err = loadSigningIdentity(opts)
 		if err != nil {
@@ -265,11 +271,32 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		}
 	}
 
+	// Once a report carrying Signed=true reaches disk, every error before the
+	// manifest signature is durably saved must rewrite it as unsigned. This
+	// covers both the free summary and paid assessment, including failures in
+	// the optional paid attestation path.
+	reportRendered := false
+	manifestSigned := false
+	defer func() {
+		if signID == nil || !reportRendered || manifestSigned {
+			return
+		}
+		_ = os.Remove(filepath.Clean(manifestPath + signing.SigExtension))
+		if shouldEmitAttestation {
+			purgeAttestationArtifacts(cleanDir, artifacts)
+		}
+		assessment.Signed = false
+		rewriteFinalizedArtifacts(cleanDir, &assessment, opts.HasAssess, artifacts)
+		manifest.Artifacts = artifacts
+		_ = writeManifest(manifestPath, &manifest)
+	}()
+
 	if opts.HasAssess {
 		// Paid path: full assessment.
 		if err := writeAssessmentJSON(filepath.Join(cleanDir, "assessment.json"), &assessment); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
+		reportRendered = true
 		if err := writeAssessmentHTML(filepath.Join(cleanDir, "assessment.html"), &assessment); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
@@ -352,6 +379,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		if err := writeSummaryJSON(filepath.Join(cleanDir, "summary.json"), &summary); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
+		reportRendered = true
 		if err := writeSummaryHTML(filepath.Join(cleanDir, "summary.html"), &summary); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
@@ -373,7 +401,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	// Step 6: update manifest with artifact hashes.
 	manifest.Artifacts = artifacts
 
-	// Step 7: sign (if licensed and not --unsigned). signID was loaded
+	// Step 7: sign unless --unsigned. signID was loaded
 	// once near the top of the function and reused here - both this
 	// and the attestation path share the same key material.
 	if signID != nil {
@@ -384,29 +412,29 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 		sig, err := signing.SignFile(manifestPath, signID.PrivKey)
 		if err != nil {
-			assessment.Signed = false
-			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
-			_ = writeManifest(manifestPath, &manifest) // update hashes after rewrite
 			return cliutil.ExitCodeError(1, fmt.Errorf("signing manifest: %w", err))
 		}
 		sigPath := manifestPath + signing.SigExtension
 		if err := signing.SaveSignature(sig, sigPath); err != nil {
-			assessment.Signed = false
-			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
-			_ = writeManifest(manifestPath, &manifest) // update hashes after rewrite
 			return cliutil.ExitCodeError(1, fmt.Errorf("saving signature: %w", err))
 		}
+		manifestSigned = true
 	} else {
-		// Unsigned or free: just write manifest.
+		// --unsigned is an explicit opt-out. Remove any stale detached
+		// signature before publishing the new unsigned manifest so file
+		// presence cannot misrepresent the operator's choice.
+		if err := removeStaleSignature(manifestPath + signing.SigExtension); err != nil {
+			return cliutil.ExitCodeError(1, err)
+		}
 		if err := writeManifest(manifestPath, &manifest); err != nil {
 			return err
 		}
 	}
 
 	// Step 8: write verify.txt.
-	agentHint := opts.Agent
-	if agentHint == "" {
-		agentHint = "<agent-name>"
+	agentHint := ""
+	if signID != nil {
+		agentHint = signID.AgentName
 	}
 	htmlFilename := "summary.html"
 	if opts.HasAssess {
@@ -419,21 +447,30 @@ To verify attestation:
   pipelock assess verify-attestation %s --agent %s
 `, runDir, agentHint)
 	}
-	verifyText := fmt.Sprintf(`Pipelock Assessment Verification
-================================
-Run ID: %s
-Generated: %s
+	verificationCommands := fmt.Sprintf(`To verify artifact integrity:
+  pipelock assess verify %s
 
-To verify this assessment:
+This assessment was finalized with --unsigned; no detached manifest signature is present.
+`, runDir)
+	if signID != nil {
+		verificationCommands = fmt.Sprintf(`To verify this assessment:
   pipelock assess verify %s --agent %s
 
 Manual verification:
   1. Check artifact hashes match manifest.json
   2. Verify manifest signature: pipelock verify manifest.json --agent %s
+`, runDir, agentHint, agentHint)
+	}
+	verifyText := fmt.Sprintf(`Pipelock Assessment Verification
+================================
+Run ID: %s
+Generated: %s
+
+%s
 %s
 To export as PDF:
   Open %s in a browser and print to PDF (Ctrl+P / Cmd+P).
-`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint, attestationText, htmlFilename)
+`, manifest.RunID, now.Format(time.RFC3339), verificationCommands, attestationText, htmlFilename)
 
 	if err := os.WriteFile(filepath.Join(cleanDir, "verify.txt"), []byte(verifyText), 0o600); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("writing verify.txt: %w", err))
@@ -498,6 +535,64 @@ func rewriteAssessmentArtifacts(cleanDir string, a *Assessment, artifacts map[st
 	} else {
 		delete(artifacts, "assessment.html")
 	}
+}
+
+// rewriteSummaryArtifacts is the free-tier counterpart to
+// rewriteAssessmentArtifacts. It keeps a failed signing attempt honest by
+// replacing Signed=true in both summary formats and refreshing their hashes.
+func rewriteSummaryArtifacts(cleanDir string, a *Assessment, artifacts map[string]string) {
+	summary := projectToSummary(*a)
+	jsonPath := filepath.Join(cleanDir, "summary.json")
+	htmlPath := filepath.Join(cleanDir, "summary.html")
+
+	purge := func() {
+		_ = os.Remove(filepath.Clean(jsonPath))
+		_ = os.Remove(filepath.Clean(htmlPath))
+		delete(artifacts, "summary.json")
+		delete(artifacts, "summary.html")
+	}
+
+	if err := writeSummaryJSON(jsonPath, &summary); err != nil {
+		purge()
+		return
+	}
+	if err := writeSummaryHTML(htmlPath, &summary); err != nil {
+		purge()
+		return
+	}
+	if h, err := hashFile(jsonPath); err == nil {
+		artifacts["summary.json"] = h
+	} else {
+		delete(artifacts, "summary.json")
+	}
+	if h, err := hashFile(htmlPath); err == nil {
+		artifacts["summary.html"] = h
+	} else {
+		delete(artifacts, "summary.html")
+	}
+}
+
+func rewriteFinalizedArtifacts(cleanDir string, a *Assessment, hasAssess bool, artifacts map[string]string) {
+	if hasAssess {
+		rewriteAssessmentArtifacts(cleanDir, a, artifacts)
+		return
+	}
+	rewriteSummaryArtifacts(cleanDir, a, artifacts)
+}
+
+func purgeAttestationArtifacts(cleanDir string, artifacts map[string]string) {
+	for _, name := range []string{"attestation.json", "attestation.json" + signing.SigExtension, "badge.svg"} {
+		_ = os.Remove(filepath.Clean(filepath.Join(cleanDir, name)))
+		delete(artifacts, name)
+	}
+}
+
+func removeStaleSignature(path string) error {
+	err := os.Remove(filepath.Clean(path))
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("removing stale manifest signature: %w", err)
 }
 
 // readEvidenceSources reads JSONL evidence files from the run directory
@@ -688,8 +783,10 @@ func projectToSummary(a Assessment) Summary {
 		TopFindings:   topFindings,
 		ServerCounts:  serverCounts,
 		DetectionPct:  detectionPct,
-		Signed:        false,
-		Compliance:    compliance.CoverageSummaries(a.Compliance),
+		Signed:        a.Signed,
+		// Compliance mappings are paid assessment content. The free summary
+		// retains its scored metric vector but does not project the catalog.
+		Compliance: nil,
 	}
 }
 
@@ -789,11 +886,12 @@ type signingIdentity struct {
 	PubKey    ed25519.PublicKey
 }
 
-// loadSigningIdentity resolves the operator-selected agent name and
-// keystore directory, then loads the corresponding ed25519 key pair.
-// Returns a wrapped error explaining which step failed.
+// loadSigningIdentity resolves the signer and keystore, creates the default
+// assessment identity on a genuinely empty first-run keystore, then loads and
+// cross-checks the key pair. Partial, corrupt, or mismatched identities fail
+// closed rather than being silently replaced.
 func loadSigningIdentity(opts assessFinalizeOpts) (*signingIdentity, error) {
-	agentName, err := cliutil.ResolveAgentName(opts.Agent)
+	agentName, err := resolveAssessSigningAgent(opts.Agent)
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent for signing: %w", err)
 	}
@@ -802,15 +900,49 @@ func loadSigningIdentity(opts assessFinalizeOpts) (*signingIdentity, error) {
 		return nil, fmt.Errorf("resolving keystore for signing: %w", err)
 	}
 	ks := signing.NewKeystore(dir)
-	privKey, err := ks.LoadPrivateKey(agentName)
-	if err != nil {
-		return nil, fmt.Errorf("loading key for agent %q: %w", agentName, err)
+	privKey, privErr := ks.LoadPrivateKey(agentName)
+	pubKey, pubErr := ks.LoadPublicKey(agentName)
+
+	if errors.Is(privErr, os.ErrNotExist) && errors.Is(pubErr, os.ErrNotExist) {
+		if _, generateErr := ks.GenerateAgent(agentName); generateErr != nil {
+			// A concurrent first finalize may have created the identity after
+			// both missing-key reads. Reload once and accept only a complete,
+			// internally consistent pair.
+			privKey, privErr = ks.LoadPrivateKey(agentName)
+			pubKey, pubErr = ks.LoadPublicKey(agentName)
+			if privErr != nil || pubErr != nil {
+				return nil, fmt.Errorf("generating key for agent %q: %w", agentName, generateErr)
+			}
+		} else {
+			privKey, privErr = ks.LoadPrivateKey(agentName)
+			pubKey, pubErr = ks.LoadPublicKey(agentName)
+		}
 	}
-	pubKey, err := ks.LoadPublicKey(agentName)
-	if err != nil {
-		return nil, fmt.Errorf("loading public key for agent %q: %w", agentName, err)
+	if privErr != nil {
+		return nil, fmt.Errorf("loading key for agent %q: %w", agentName, privErr)
+	}
+	if pubErr != nil {
+		return nil, fmt.Errorf("loading public key for agent %q: %w", agentName, pubErr)
+	}
+	derivedPub, ok := privKey.Public().(ed25519.PublicKey)
+	if !ok || !bytes.Equal(derivedPub, pubKey) {
+		return nil, fmt.Errorf("loading key pair for agent %q: private and public keys do not match", agentName)
 	}
 	return &signingIdentity{AgentName: agentName, PrivKey: privKey, PubKey: pubKey}, nil
+}
+
+func resolveAssessSigningAgent(explicit string) (string, error) {
+	name := explicit
+	if name == "" {
+		name = os.Getenv("PIPELOCK_AGENT")
+	}
+	if name == "" {
+		name = assessDefaultSigningAgent
+	}
+	if err := signing.ValidateAgentName(name); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 // verifyEvidenceIntegrity enforces that the evidence directory contains

@@ -85,7 +85,6 @@ func minimalSummary(grade string, score int) *Summary {
 		},
 		DetectionPct: 85,
 		Signed:       false,
-		Compliance:   []compliance.CoverageSummary{compliance.OWASPMCPTop10().CoverageSummary()},
 	}
 }
 
@@ -179,16 +178,16 @@ func TestRenderSummaryHTML(t *testing.T) {
 		t.Error("summary should contain 'Not audit-grade'")
 	}
 
-	if !strings.Contains(html, "Compliance Coverage") {
-		t.Error("summary should contain compliance coverage section")
+	if strings.Contains(html, "Compliance Coverage") {
+		t.Error("summary should omit paid compliance mappings")
 	}
 
-	// Must NOT contain remediation or evidence columns.
-	if strings.Contains(html, "remediation") {
-		t.Error("summary should not contain remediation field")
+	// The summary names its non-claims, but must not leak the paid values.
+	if strings.Contains(html, "Enable DLP pattern matching") {
+		t.Error("summary should not contain remediation value")
 	}
-	if strings.Contains(html, "evidence") {
-		t.Error("summary should not contain evidence field")
+	if strings.Contains(html, "AWS key transmitted in plain text") {
+		t.Error("summary should not contain evidence/detail value")
 	}
 
 	// Must contain finding title.

@@ -159,7 +159,7 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 	}
 
 	// Step 5: load public key and verify signature.
-	agentName, err := cliutil.ResolveAgentName(agent)
+	agentName, err := resolveAssessSigningAgent(agent)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("resolving agent: %w", err)
 	}

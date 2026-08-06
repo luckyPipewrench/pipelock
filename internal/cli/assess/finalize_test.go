@@ -5,12 +5,14 @@ package assess
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -154,6 +156,150 @@ func TestCheckAssessLicenseFeatureGate(t *testing.T) {
 				t.Fatalf("checkAssessLicense() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAssessFinalize_LicenseControlsContentNotSigning(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		configure     func(*testing.T, string)
+		wantPaidFiles bool
+	}{
+		{
+			name: "no license",
+		},
+		{
+			name: "license without assess feature",
+			configure: func(t *testing.T, cfgFile string) {
+				token, _ := issueAssessGateToken(t, priv, []string{license.FeatureAgents}, time.Now().Add(time.Hour), false)
+				writeAssessLicenseConfig(t, cfgFile, token, hex.EncodeToString(pub), "")
+			},
+		},
+		{
+			name: "license with assess feature",
+			configure: func(t *testing.T, cfgFile string) {
+				token, _ := issueAssessGateToken(t, priv, []string{license.FeatureAssess}, time.Now().Add(time.Hour), false)
+				writeAssessLicenseConfig(t, cfgFile, token, hex.EncodeToString(pub), "")
+			},
+			wantPaidFiles: true,
+		},
+		{
+			name: "expired assess token",
+			configure: func(t *testing.T, cfgFile string) {
+				token, _ := issueAssessGateToken(t, priv, []string{license.FeatureAssess}, time.Now().Add(-time.Hour), false)
+				writeAssessLicenseConfig(t, cfgFile, token, hex.EncodeToString(pub), "")
+			},
+		},
+		{
+			name: "malformed token",
+			configure: func(t *testing.T, cfgFile string) {
+				writeAssessLicenseConfig(t, cfgFile, "not-a-license-token", hex.EncodeToString(pub), "")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, unsigned := range []bool{false, true} {
+			name := "signed"
+			if unsigned {
+				name = "unsigned"
+			}
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				t.Setenv("PIPELOCK_AGENT", "")
+				runDir, cfgFile := initTestRun(t)
+				if tt.configure != nil {
+					tt.configure(t, cfgFile)
+				}
+				if err := runAssessRun(runDir, tt.configure != nil, nil); err != nil {
+					t.Fatalf("runAssessRun: %v", err)
+				}
+
+				keystoreDir := filepath.Join(t.TempDir(), "keystore")
+				args := []string{runDir, "--keystore", keystoreDir, "--attestation", "--badge"}
+				if unsigned {
+					args = append(args, "--unsigned")
+				}
+				cmd := assessFinalizeCmd()
+				cmd.SetOut(io.Discard)
+				cmd.SetArgs(args)
+				if err := cmd.Execute(); err != nil {
+					t.Fatalf("assess finalize: %v", err)
+				}
+
+				assertFileExists := func(name string, want bool) {
+					t.Helper()
+					_, statErr := os.Stat(filepath.Join(runDir, name))
+					if want && statErr != nil {
+						t.Errorf("%s missing: %v", name, statErr)
+					}
+					if !want && !errors.Is(statErr, os.ErrNotExist) {
+						t.Errorf("%s exists but should be gated", name)
+					}
+				}
+				assertFileExists("assessment.json", tt.wantPaidFiles)
+				assertFileExists("assessment.html", tt.wantPaidFiles)
+				assertFileExists("summary.json", !tt.wantPaidFiles)
+				assertFileExists("summary.html", !tt.wantPaidFiles)
+				assertFileExists("attestation.json", tt.wantPaidFiles && !unsigned)
+				assertFileExists("attestation.json.sig", tt.wantPaidFiles && !unsigned)
+				assertFileExists("badge.svg", tt.wantPaidFiles && !unsigned)
+				assertFileExists("manifest.json.sig", !unsigned)
+
+				ks := signing.NewKeystore(keystoreDir)
+				if unsigned {
+					if ks.AgentExists(assessDefaultSigningAgent) {
+						t.Error("--unsigned must not generate signing keys")
+					}
+					exitCode, verifyErr := runAssessVerify(runDir, "", keystoreDir)
+					if verifyErr != nil || exitCode != verifyExitUnsigned {
+						t.Errorf("unsigned verification = (%d, %v), want (%d, nil)", exitCode, verifyErr, verifyExitUnsigned)
+					}
+				} else {
+					if !ks.AgentExists(assessDefaultSigningAgent) {
+						t.Error("default signing identity was not generated")
+					}
+					exitCode, verifyErr := runAssessVerify(runDir, "", keystoreDir)
+					if verifyErr != nil || exitCode != 0 {
+						t.Errorf("signed verification = (%d, %v), want (0, nil)", exitCode, verifyErr)
+					}
+				}
+
+				outputPath := "summary.json"
+				var signed bool
+				if tt.wantPaidFiles {
+					outputPath = "assessment.json"
+					var assessment Assessment
+					readJSONFile(t, filepath.Join(runDir, outputPath), &assessment)
+					signed = assessment.Signed
+				} else {
+					var summary Summary
+					readJSONFile(t, filepath.Join(runDir, outputPath), &summary)
+					signed = summary.Signed
+					if len(summary.Compliance) != 0 {
+						t.Error("free summary leaked paid compliance mappings")
+					}
+				}
+				if signed == unsigned {
+					t.Errorf("%s signed=%v, want %v", outputPath, signed, !unsigned)
+				}
+			})
+		}
+	}
+}
+
+func readJSONFile(t *testing.T, path string, dst interface{}) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("reading %s: %v", filepath.Base(path), err)
+	}
+	if err := json.Unmarshal(data, dst); err != nil {
+		t.Fatalf("parsing %s: %v", filepath.Base(path), err)
 	}
 }
 
@@ -367,11 +513,13 @@ func TestAssessFinalize_Licensed_Unsigned(t *testing.T) {
 	}
 }
 
-func TestAssessFinalize_Unlicensed_Summary(t *testing.T) {
+func TestAssessFinalize_FreeSummaryAutoSigns(t *testing.T) {
 	runDir := setupCompletedRun(t)
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
 
 	opts := assessFinalizeOpts{
-		HasAssess: false,
+		HasAssess:   false,
+		KeystoreDir: keystoreDir,
 	}
 
 	if err := runAssessFinalize(runDir, opts); err != nil {
@@ -393,9 +541,27 @@ func TestAssessFinalize_Unlicensed_Summary(t *testing.T) {
 		t.Error("assessment.json should not exist on unlicensed finalize")
 	}
 
-	// Assert: NO signature.
-	if _, err := os.Stat(filepath.Join(runDir, "manifest.json.sig")); err == nil {
-		t.Error("manifest.json.sig should not exist on unlicensed finalize")
+	// Free content is signed with a first-run identity by default.
+	if _, err := os.Stat(filepath.Join(runDir, "manifest.json.sig")); err != nil {
+		t.Error("manifest.json.sig not found on free finalize")
+	}
+	if !signing.NewKeystore(keystoreDir).AgentExists(assessDefaultSigningAgent) {
+		t.Error("default assessment signing identity was not generated")
+	}
+	exitCode, err := runAssessVerify(runDir, "", keystoreDir)
+	if err != nil || exitCode != 0 {
+		t.Errorf("free manifest verification = (%d, %v), want (0, nil)", exitCode, err)
+	}
+	var summary Summary
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "summary.json")))
+	if err != nil {
+		t.Fatalf("reading summary.json: %v", err)
+	}
+	if err := json.Unmarshal(data, &summary); err != nil {
+		t.Fatalf("parsing summary.json: %v", err)
+	}
+	if !summary.Signed {
+		t.Error("free summary must report signed=true after successful signing")
 	}
 
 	m := readTestManifest(t, runDir)
@@ -1029,8 +1195,8 @@ func TestAssessFinalize_HTMLFilesCreated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading summary.html: %v", err)
 		}
-		if !strings.Contains(string(data), "Unsigned") {
-			t.Error("summary.html should mention unsigned")
+		if !strings.Contains(string(data), "Signed summary") {
+			t.Error("summary.html should report its signed state")
 		}
 	})
 }
@@ -1285,21 +1451,72 @@ func TestRewriteAssessmentArtifacts_DeletesOnFailure(t *testing.T) {
 	}
 }
 
-func TestAssessFinalize_SigningFailure_ClearsSignedFlag(t *testing.T) {
-	runDir := setupCompletedRun(t)
+func TestRewriteSummaryArtifacts_ErrorPathsPurgeSignedOutputs(t *testing.T) {
+	tests := []struct {
+		name       string
+		blockedOut string
+	}{
+		{name: "json rewrite fails", blockedOut: "summary.json"},
+		{name: "html rewrite fails", blockedOut: "summary.html"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			blockedPath := filepath.Join(dir, tt.blockedOut)
+			if err := os.Mkdir(blockedPath, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(blockedPath, "keep"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			other := "summary.html"
+			if tt.blockedOut == other {
+				other = "summary.json"
+			}
+			if err := os.WriteFile(filepath.Join(dir, other), []byte("stale signed output"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	// Use a nonexistent keystore so signing fails at key load.
+			a := minimalAssessment(assessGradeB, 85)
+			a.Signed = false
+			artifacts := map[string]string{"summary.json": "stale", "summary.html": "stale"}
+			rewriteSummaryArtifacts(dir, a, artifacts)
+
+			if _, ok := artifacts["summary.json"]; ok {
+				t.Error("summary.json hash retained after rollback rewrite failure")
+			}
+			if _, ok := artifacts["summary.html"]; ok {
+				t.Error("summary.html hash retained after rollback rewrite failure")
+			}
+			if _, err := os.Stat(filepath.Join(dir, other)); !errors.Is(err, os.ErrNotExist) {
+				t.Error("stale counterpart was not purged")
+			}
+		})
+	}
+}
+
+func TestAssessFinalize_PartialSigningIdentityFailsClosed(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
+	ks := signing.NewKeystore(keystoreDir)
+	if _, err := ks.GenerateAgent("partial-agent"); err != nil {
+		t.Fatalf("generating test identity: %v", err)
+	}
+	if err := os.Remove(ks.PublicKeyPath("partial-agent")); err != nil {
+		t.Fatalf("removing public half: %v", err)
+	}
+
 	opts := assessFinalizeOpts{
 		HasAssess:   true,
-		Agent:       "nonexistent-agent",
-		KeystoreDir: filepath.Join(t.TempDir(), "no-such-keystore"),
+		Agent:       "partial-agent",
+		KeystoreDir: keystoreDir,
 	}
 
 	err := runAssessFinalize(runDir, opts)
 	if err == nil {
 		t.Fatal("expected signing failure")
 	}
-	if !strings.Contains(err.Error(), "loading key") {
+	if !strings.Contains(err.Error(), "loading public key") {
 		t.Errorf("expected key loading error, got: %v", err)
 	}
 
@@ -1311,6 +1528,162 @@ func TestAssessFinalize_SigningFailure_ClearsSignedFlag(t *testing.T) {
 		}
 	}
 	// (If the file was deleted by fail-closed, that's also acceptable.)
+}
+
+func TestAssessFinalize_FreeSignatureSaveFailureClearsSignedClaim(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	keystoreDir, agentName := generateTestKeys(t)
+	sigPath := filepath.Join(runDir, "manifest.json.sig")
+	if err := os.Mkdir(sigPath, 0o750); err != nil {
+		t.Fatalf("creating signature-path directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sigPath, "block-rename"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("making signature-path directory non-empty: %v", err)
+	}
+
+	err := runAssessFinalize(runDir, assessFinalizeOpts{
+		Agent:       agentName,
+		KeystoreDir: keystoreDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "saving signature") {
+		t.Fatalf("runAssessFinalize error = %v, want signature-save failure", err)
+	}
+
+	var summary Summary
+	readJSONFile(t, filepath.Join(runDir, "summary.json"), &summary)
+	if summary.Signed {
+		t.Error("summary retained signed=true after detached signature save failed")
+	}
+	html, readErr := os.ReadFile(filepath.Clean(filepath.Join(runDir, "summary.html")))
+	if readErr != nil {
+		t.Fatalf("reading summary.html: %v", readErr)
+	}
+	if strings.Contains(string(html), "Signed summary") {
+		t.Error("summary.html retained a signed claim after signature save failed")
+	}
+
+	manifest := readTestManifest(t, runDir)
+	wantHash, hashErr := hashFile(filepath.Join(runDir, "summary.json"))
+	if hashErr != nil {
+		t.Fatalf("hashing summary.json: %v", hashErr)
+	}
+	if got := manifest.Artifacts["summary.json"]; got != wantHash {
+		t.Errorf("summary hash after rollback = %q, want %q", got, wantHash)
+	}
+	exitCode, verifyErr := runAssessVerify(runDir, agentName, keystoreDir)
+	if verifyErr == nil || exitCode == 0 {
+		t.Errorf("failed signature publication verified as authentic: (%d, %v)", exitCode, verifyErr)
+	}
+}
+
+func TestAssessFinalize_AttestationSignatureFailureClearsSignedClaim(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	keystoreDir, agentName := generateTestKeys(t)
+	attSigPath := filepath.Join(runDir, "attestation.json.sig")
+	if err := os.Mkdir(attSigPath, 0o750); err != nil {
+		t.Fatalf("creating attestation signature-path directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(attSigPath, "block-rename"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("making attestation signature-path directory non-empty: %v", err)
+	}
+
+	err := runAssessFinalize(runDir, assessFinalizeOpts{
+		HasAssess:   true,
+		Attestation: true,
+		Agent:       agentName,
+		KeystoreDir: keystoreDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "saving attestation signature") {
+		t.Fatalf("runAssessFinalize error = %v, want attestation signature-save failure", err)
+	}
+
+	var assessment Assessment
+	readJSONFile(t, filepath.Join(runDir, "assessment.json"), &assessment)
+	if assessment.Signed {
+		t.Error("assessment retained signed=true after attestation signature save failed")
+	}
+	manifest := readTestManifest(t, runDir)
+	if _, ok := manifest.Artifacts["attestation.json"]; ok {
+		t.Error("rolled-back manifest retained a torn attestation artifact")
+	}
+	if _, statErr := os.Stat(filepath.Join(runDir, "manifest.json.sig")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("manifest signature exists after attestation signing failed")
+	}
+}
+
+func TestAssessFinalize_SignedFreeRerunPreservesIdentityAndBundle(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
+	opts := assessFinalizeOpts{KeystoreDir: keystoreDir}
+	if err := runAssessFinalize(runDir, opts); err != nil {
+		t.Fatalf("first finalize: %v", err)
+	}
+
+	ks := signing.NewKeystore(keystoreDir)
+	pubBefore, err := ks.LoadPublicKey(assessDefaultSigningAgent)
+	if err != nil {
+		t.Fatalf("loading generated public key: %v", err)
+	}
+	manifestBefore, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "manifest.json")))
+	if err != nil {
+		t.Fatalf("reading manifest before rerun: %v", err)
+	}
+	sigBefore, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "manifest.json.sig")))
+	if err != nil {
+		t.Fatalf("reading signature before rerun: %v", err)
+	}
+
+	err = runAssessFinalize(runDir, opts)
+	if err == nil || !strings.Contains(err.Error(), "already finalized") {
+		t.Fatalf("second finalize error = %v, want already finalized", err)
+	}
+	pubAfter, err := ks.LoadPublicKey(assessDefaultSigningAgent)
+	if err != nil {
+		t.Fatalf("loading public key after rerun: %v", err)
+	}
+	manifestAfter, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "manifest.json")))
+	if err != nil {
+		t.Fatalf("reading manifest after rerun: %v", err)
+	}
+	sigAfter, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "manifest.json.sig")))
+	if err != nil {
+		t.Fatalf("reading signature after rerun: %v", err)
+	}
+	if !bytes.Equal(pubBefore, pubAfter) || !bytes.Equal(manifestBefore, manifestAfter) || !bytes.Equal(sigBefore, sigAfter) {
+		t.Error("rerun changed an existing finalized identity or signed bundle")
+	}
+}
+
+func TestAssessFinalize_SignedPartialSummaryIsSelfDescribing(t *testing.T) {
+	runDir := setupCompletedRunWithSkip(t)
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
+	if err := runAssessFinalize(runDir, assessFinalizeOpts{
+		AllowPartial: true,
+		KeystoreDir:  keystoreDir,
+	}); err != nil {
+		t.Fatalf("runAssessFinalize: %v", err)
+	}
+
+	var summary Summary
+	readJSONFile(t, filepath.Join(runDir, "summary.json"), &summary)
+	if !summary.Signed || summary.Manifest.Version == "" || summary.Manifest.ConfigFile == "" || summary.Manifest.ConfigHash == "" {
+		t.Errorf("summary identity incomplete: signed=%v version=%q config=%q hash=%q", summary.Signed, summary.Manifest.Version, summary.Manifest.ConfigFile, summary.Manifest.ConfigHash)
+	}
+	if summary.Manifest.ScoringVersion == "" || summary.Manifest.RendererVersion == "" || summary.Manifest.Platform == "" {
+		t.Errorf("summary method identity incomplete: scoring=%q renderer=%q platform=%q", summary.Manifest.ScoringVersion, summary.Manifest.RendererVersion, summary.Manifest.Platform)
+	}
+	if !summary.Manifest.AllowPartial || len(summary.Manifest.SkippedPrimitives) != 1 || summary.Manifest.SkippedPrimitives[0] != primitiveVerifyInstall {
+		t.Errorf("summary scope = allow_partial:%v skipped:%v", summary.Manifest.AllowPartial, summary.Manifest.SkippedPrimitives)
+	}
+	if summary.Manifest.ComplianceOmittedReason == "" {
+		t.Error("summary omitted the reason for a non-assessed compliance claim")
+	}
+	if len(summary.Manifest.EvidenceHashes) == 0 || len(summary.Sections) != 4 {
+		t.Errorf("summary validation/metric vector incomplete: evidence=%d sections=%d", len(summary.Manifest.EvidenceHashes), len(summary.Sections))
+	}
+	if exitCode, verifyErr := runAssessVerify(runDir, "", keystoreDir); verifyErr != nil || exitCode != 0 {
+		t.Errorf("signed partial summary verification = (%d, %v), want (0, nil)", exitCode, verifyErr)
+	}
 }
 
 func TestProjectToSummary_CapReason(t *testing.T) {

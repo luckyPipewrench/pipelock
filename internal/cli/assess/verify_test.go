@@ -41,6 +41,7 @@ func setupFinalizedRunUnsigned(t *testing.T) string {
 
 	opts := assessFinalizeOpts{
 		HasAssess: false,
+		Unsigned:  true,
 	}
 	if err := runAssessFinalize(runDir, opts); err != nil {
 		t.Fatalf("runAssessFinalize (unsigned): %v", err)

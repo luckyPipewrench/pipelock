@@ -161,7 +161,7 @@ func TestAssess_EndToEnd_Licensed(t *testing.T) {
 }
 
 // TestAssess_EndToEnd_Unlicensed validates the full init -> run -> finalize ->
-// verify pipeline for an unlicensed (HasAssess=false) user with summary output.
+// verify pipeline for an unlicensed user with signed summary output.
 func TestAssess_EndToEnd_Unlicensed(t *testing.T) {
 	// 1. Create temp dir and minimal config.
 	tmp := t.TempDir()
@@ -183,22 +183,24 @@ func TestAssess_EndToEnd_Unlicensed(t *testing.T) {
 		t.Fatalf("runAssessRun: %v", err)
 	}
 
-	// 4. Finalize (unlicensed, unsigned).
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
+
+	// 4. Finalize (unlicensed content, signed by default).
 	opts := assessFinalizeOpts{
-		HasAssess: false,
+		HasAssess:   false,
+		KeystoreDir: keystoreDir,
 	}
 	if err := runAssessFinalize(runDir, opts); err != nil {
 		t.Fatalf("runAssessFinalize: %v", err)
 	}
 
-	// 5. Verify - exit code 3 (integrity verified, unsigned).
-	exitCode, err := runAssessVerify(runDir, "", "")
-	// runAssessVerify returns (3, nil) for unsigned-but-integrity-OK.
+	// 5. Verify integrity and authenticity with the generated default key.
+	exitCode, err := runAssessVerify(runDir, "", keystoreDir)
 	if err != nil {
 		t.Fatalf("runAssessVerify: unexpected error: %v", err)
 	}
-	if exitCode != verifyExitUnsigned {
-		t.Errorf("verify exit code = %d, want %d (unsigned)", exitCode, verifyExitUnsigned)
+	if exitCode != 0 {
+		t.Errorf("verify exit code = %d, want 0", exitCode)
 	}
 
 	// Assert: summary.json exists.
@@ -212,9 +214,8 @@ func TestAssess_EndToEnd_Unlicensed(t *testing.T) {
 		t.Error("summary.html not found")
 	}
 
-	// Assert: NO manifest.json.sig.
-	if _, err := os.Stat(filepath.Join(runDir, "manifest.json.sig")); err == nil {
-		t.Error("manifest.json.sig must not exist on unlicensed path")
+	if _, err := os.Stat(filepath.Join(runDir, "manifest.json.sig")); err != nil {
+		t.Error("manifest.json.sig not found on unlicensed path")
 	}
 
 	// Read and parse summary.json.
@@ -228,9 +229,8 @@ func TestAssess_EndToEnd_Unlicensed(t *testing.T) {
 		t.Fatalf("parsing summary.json: %v", err)
 	}
 
-	// Assert: Signed = false.
-	if summary.Signed {
-		t.Error("Summary.Signed must be false on unlicensed path")
+	if !summary.Signed {
+		t.Error("Summary.Signed must be true after successful free signing")
 	}
 
 	// Assert: TopFindings has at most 3 items.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,45 @@ func TestQuerySession_NoFilter(t *testing.T) {
 	}
 	if result.FilesRead != 1 {
 		t.Errorf("FilesRead = %d, want 1", result.FilesRead)
+	}
+}
+
+// TestQuerySession_LegacyAndSingleRunLayoutMatch is the migration safety
+// property: moving the same legacy shard set beneath one run directory does
+// not change the reader's result.
+func TestQuerySession_LegacyAndSingleRunLayoutMatch(t *testing.T) {
+	t.Parallel()
+	legacyRoot := t.TempDir()
+	runRoot := t.TempDir()
+	writeTestEntries(t, legacyRoot, "proxy", 3)
+	runDir := filepath.Join(runRoot, "recorder-a", "run-a")
+	if err := os.MkdirAll(runDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll run directory: %v", err)
+	}
+	entries, err := os.ReadDir(legacyRoot)
+	if err != nil {
+		t.Fatalf("ReadDir legacy root: %v", err)
+	}
+	for _, entry := range entries {
+		data, readErr := os.ReadFile(filepath.Join(legacyRoot, entry.Name()))
+		if readErr != nil {
+			t.Fatalf("ReadFile legacy shard: %v", readErr)
+		}
+		if writeErr := os.WriteFile(filepath.Join(runDir, entry.Name()), data, 0o600); writeErr != nil {
+			t.Fatalf("WriteFile run shard: %v", writeErr)
+		}
+	}
+
+	legacy, err := recorder.QuerySession(legacyRoot, "proxy", nil)
+	if err != nil {
+		t.Fatalf("QuerySession legacy: %v", err)
+	}
+	migrated, err := recorder.QuerySession(runRoot, "proxy", nil)
+	if err != nil {
+		t.Fatalf("QuerySession single run: %v", err)
+	}
+	if !reflect.DeepEqual(legacy, migrated) {
+		t.Fatalf("single-run result differs from legacy:\nlegacy=%+v\nmigrated=%+v", legacy, migrated)
 	}
 }
 

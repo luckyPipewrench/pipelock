@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/report/attestation"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -1386,7 +1387,7 @@ func TestRewriteAssessmentArtifacts_Success(t *testing.T) {
 	// Rewrite with Signed=false.
 	a.Signed = false
 	artifacts := make(map[string]string)
-	rewriteAssessmentArtifacts(dir, a, artifacts)
+	rewriteFinalizedArtifacts(dir, a, true, artifacts)
 
 	// Verify JSON has Signed=false.
 	data, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "assessment.json")))
@@ -1437,7 +1438,7 @@ func TestRewriteAssessmentArtifacts_DeletesOnFailure(t *testing.T) {
 
 	a.Signed = false
 	artifacts := make(map[string]string)
-	rewriteAssessmentArtifacts(dir, a, artifacts)
+	rewriteFinalizedArtifacts(dir, a, true, artifacts)
 
 	// Stale artifacts should be deleted since rewrite failed.
 	if _, err := os.Stat(jsonPath); !os.IsNotExist(err) {
@@ -1477,7 +1478,7 @@ func TestRewriteSummaryArtifacts_ErrorPathsPurgeSignedOutputs(t *testing.T) {
 			a := minimalAssessment(assessGradeB, 85)
 			a.Signed = false
 			artifacts := map[string]string{"summary.json": "stale", "summary.html": "stale"}
-			rewriteSummaryArtifacts(dir, a, artifacts)
+			rewriteFinalizedArtifacts(dir, a, false, artifacts)
 
 			if _, ok := artifacts["summary.json"]; ok {
 				t.Error("summary.json hash retained after rollback rewrite failure")
@@ -1566,14 +1567,14 @@ func TestAssessFinalize_PartialSigningIdentityFailsClosed(t *testing.T) {
 		t.Errorf("expected key loading error, got: %v", err)
 	}
 
-	// If assessment.json exists, it should have signed=false.
+	// The identity is resolved before anything is rendered, so a failure here
+	// must leave no report at all. Accepting "either absent, or present and
+	// unsigned" would let a regression that renders a signed report slip
+	// through on the second branch.
 	jsonPath := filepath.Join(runDir, "assessment.json")
-	if data, readErr := os.ReadFile(filepath.Clean(jsonPath)); readErr == nil {
-		if strings.Contains(string(data), `"signed": true`) {
-			t.Error("assessment.json should have signed=false after signing failure")
-		}
+	if _, statErr := os.Stat(jsonPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("assessment.json exists after a signing-identity failure (stat err = %v), want no report written", statErr)
 	}
-	// (If the file was deleted by fail-closed, that's also acceptable.)
 }
 
 func TestAssessFinalize_FreeSignatureSaveFailureClearsSignedClaim(t *testing.T) {
@@ -1751,5 +1752,83 @@ func TestProjectToSummary_NoCapReason(t *testing.T) {
 	summary := projectToSummary(*a)
 	if summary.CapReason != "" {
 		t.Errorf("summary.CapReason should be empty when no cap, got %q", summary.CapReason)
+	}
+}
+
+// TestAssessFinalize_RecordsSignerIdentity asserts the signed manifest names
+// the key that signed it. Without this, verification only establishes that the
+// bundle matches whatever key the verifier happens to hold under the agent
+// name, which on a copied bundle is a different key or no key at all.
+func TestAssessFinalize_RecordsSignerIdentity(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
+
+	if err := runAssessFinalize(runDir, assessFinalizeOpts{KeystoreDir: keystoreDir}); err != nil {
+		t.Fatalf("runAssessFinalize: %v", err)
+	}
+
+	var manifest AssessManifest
+	readJSONFile(t, filepath.Join(runDir, "manifest.json"), &manifest)
+
+	if manifest.SignerAgent != assessDefaultSigningAgent {
+		t.Errorf("SignerAgent = %q, want %q", manifest.SignerAgent, assessDefaultSigningAgent)
+	}
+	pub, err := signing.NewKeystore(keystoreDir).ResolvePublicKey(assessDefaultSigningAgent)
+	if err != nil {
+		t.Fatalf("resolving generated public key: %v", err)
+	}
+	if want := attestation.KeyFingerprint(pub); manifest.SignerKeyFingerprint != want {
+		t.Errorf("SignerKeyFingerprint = %q, want %q", manifest.SignerKeyFingerprint, want)
+	}
+}
+
+// TestAssessFinalize_UnsignedRecordsNoSigner keeps the negative honest: an
+// --unsigned bundle must not name a signer it does not have.
+func TestAssessFinalize_UnsignedRecordsNoSigner(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	keystoreDir := filepath.Join(t.TempDir(), "keystore")
+
+	opts := assessFinalizeOpts{Unsigned: true, KeystoreDir: keystoreDir}
+	if err := runAssessFinalize(runDir, opts); err != nil {
+		t.Fatalf("runAssessFinalize: %v", err)
+	}
+
+	var manifest AssessManifest
+	readJSONFile(t, filepath.Join(runDir, "manifest.json"), &manifest)
+
+	if manifest.SignerAgent != "" || manifest.SignerKeyFingerprint != "" {
+		t.Errorf("unsigned manifest named a signer: agent=%q fingerprint=%q",
+			manifest.SignerAgent, manifest.SignerKeyFingerprint)
+	}
+}
+
+// TestAssessVerify_RejectsSubstitutedSignerKey is the reason the fingerprint is
+// recorded. A bundle is copied to a machine that already holds a DIFFERENT key
+// under the same agent name. Verification must refuse and say so, rather than
+// failing with an opaque signature error or, worse, succeeding if the attacker
+// also re-signs under the substituted key.
+func TestAssessVerify_RejectsSubstitutedSignerKey(t *testing.T) {
+	runDir := setupCompletedRun(t)
+	originalKeystore := filepath.Join(t.TempDir(), "keystore")
+
+	if err := runAssessFinalize(runDir, assessFinalizeOpts{KeystoreDir: originalKeystore}); err != nil {
+		t.Fatalf("runAssessFinalize: %v", err)
+	}
+
+	// A different machine: same agent name, different key material.
+	otherKeystore := filepath.Join(t.TempDir(), "other-keystore")
+	if _, err := signing.NewKeystore(otherKeystore).GenerateAgent(assessDefaultSigningAgent); err != nil {
+		t.Fatalf("generating substitute identity: %v", err)
+	}
+
+	exitCode, err := runAssessVerify(runDir, "", otherKeystore)
+	if err == nil {
+		t.Fatal("verification succeeded against a substituted signer key")
+	}
+	if exitCode != verifyExitBadSignature {
+		t.Errorf("exit code = %d, want %d", exitCode, verifyExitBadSignature)
+	}
+	if !strings.Contains(err.Error(), "signer key mismatch") {
+		t.Errorf("error = %q, want it to name the signer key mismatch", err)
 	}
 }

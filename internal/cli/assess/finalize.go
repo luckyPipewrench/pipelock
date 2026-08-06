@@ -271,10 +271,25 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		}
 	}
 
+	// Seed the evidence bindings before anything is rendered. The rollback
+	// below republishes manifest.Artifacts wholesale, so an entry added after
+	// rendering would be lost on any failure between here and the signature,
+	// leaving a finalized manifest that no longer binds the evidence directory
+	// its own EvidenceHashes already recorded. verifyEvidenceIntegrity has
+	// already validated these values, so they are authoritative.
+	for name, h := range manifest.EvidenceHashes {
+		artifacts[filepath.Join("evidence", name)] = h
+	}
+
 	// Once a report carrying Signed=true reaches disk, every error before the
 	// manifest signature is durably saved must rewrite it as unsigned. This
 	// covers both the free summary and paid assessment, including failures in
 	// the optional paid attestation path.
+	//
+	// reportRendered is armed BEFORE each write rather than after it. A write
+	// that fails partway can still have created the file, so a post-write flag
+	// would skip rollback on exactly the case that leaves a partial report
+	// claiming Signed=true on disk.
 	reportRendered := false
 	manifestSigned := false
 	defer func() {
@@ -293,10 +308,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 	if opts.HasAssess {
 		// Paid path: full assessment.
+		reportRendered = true
 		if err := writeAssessmentJSON(filepath.Join(cleanDir, "assessment.json"), &assessment); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
-		reportRendered = true
 		if err := writeAssessmentHTML(filepath.Join(cleanDir, "assessment.html"), &assessment); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
@@ -376,10 +391,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	} else {
 		// Free path: summary projection.
 		summary := projectToSummary(assessment)
+		reportRendered = true
 		if err := writeSummaryJSON(filepath.Join(cleanDir, "summary.json"), &summary); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
-		reportRendered = true
 		if err := writeSummaryHTML(filepath.Join(cleanDir, "summary.html"), &summary); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
@@ -391,15 +406,19 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		}
 	}
 
-	// Copy already-verified evidence hashes into the artifact map.
-	// These were validated up front by verifyEvidenceIntegrity, so the
-	// recorded values are authoritative.
-	for name, h := range manifest.EvidenceHashes {
-		artifacts[filepath.Join("evidence", name)] = h
-	}
-
-	// Step 6: update manifest with artifact hashes.
+	// Step 6: update manifest with artifact hashes. Evidence bindings were
+	// seeded before rendering so the rollback path cannot drop them.
 	manifest.Artifacts = artifacts
+
+	// Bind the signer into the bytes being signed, so the signature says who
+	// made it rather than only that some locally named key made it.
+	if signID != nil {
+		manifest.SignerAgent = signID.AgentName
+		manifest.SignerKeyFingerprint = attestation.KeyFingerprint(signID.PubKey)
+	} else {
+		manifest.SignerAgent = ""
+		manifest.SignerKeyFingerprint = ""
+	}
 
 	// Step 7: sign unless --unsigned. signID was loaded
 	// once near the top of the function and reused here - both this
@@ -497,87 +516,56 @@ To export as PDF:
 	return nil
 }
 
-// rewriteAssessmentArtifacts re-renders assessment JSON and HTML after a
-// signing failure so the on-disk artifacts do not claim to be signed.
-// If re-render fails, the stale artifacts AND their hashes in the
-// artifacts map are dropped - leaving a hash that points at a file
-// that no longer exists (or worse, at a file claiming Signed=true)
-// would let verify-attestation succeed against a torn bundle.
-func rewriteAssessmentArtifacts(cleanDir string, a *Assessment, artifacts map[string]string) {
-	jsonPath := filepath.Join(cleanDir, "assessment.json")
-	htmlPath := filepath.Join(cleanDir, "assessment.html")
-
-	purge := func() {
-		_ = os.Remove(filepath.Clean(jsonPath))
-		_ = os.Remove(filepath.Clean(htmlPath))
-		delete(artifacts, "assessment.json")
-		delete(artifacts, "assessment.html")
-	}
-
-	if err := writeAssessmentJSON(jsonPath, a); err != nil {
-		purge()
-		return
-	}
-	if err := writeAssessmentHTML(htmlPath, a); err != nil {
-		purge()
-		return
-	}
-	if h, err := hashFile(jsonPath); err == nil {
-		artifacts["assessment.json"] = h
-	} else {
-		// Re-render succeeded but hash failed (disk swapped out under us
-		// or perms changed). Drop the entry so the manifest is honest
-		// about what it can prove.
-		delete(artifacts, "assessment.json")
-	}
-	if h, err := hashFile(htmlPath); err == nil {
-		artifacts["assessment.html"] = h
-	} else {
-		delete(artifacts, "assessment.html")
-	}
-}
-
-// rewriteSummaryArtifacts is the free-tier counterpart to
-// rewriteAssessmentArtifacts. It keeps a failed signing attempt honest by
-// replacing Signed=true in both summary formats and refreshing their hashes.
-func rewriteSummaryArtifacts(cleanDir string, a *Assessment, artifacts map[string]string) {
-	summary := projectToSummary(*a)
-	jsonPath := filepath.Join(cleanDir, "summary.json")
-	htmlPath := filepath.Join(cleanDir, "summary.html")
-
-	purge := func() {
-		_ = os.Remove(filepath.Clean(jsonPath))
-		_ = os.Remove(filepath.Clean(htmlPath))
-		delete(artifacts, "summary.json")
-		delete(artifacts, "summary.html")
-	}
-
-	if err := writeSummaryJSON(jsonPath, &summary); err != nil {
-		purge()
-		return
-	}
-	if err := writeSummaryHTML(htmlPath, &summary); err != nil {
-		purge()
-		return
-	}
-	if h, err := hashFile(jsonPath); err == nil {
-		artifacts["summary.json"] = h
-	} else {
-		delete(artifacts, "summary.json")
-	}
-	if h, err := hashFile(htmlPath); err == nil {
-		artifacts["summary.html"] = h
-	} else {
-		delete(artifacts, "summary.html")
-	}
-}
-
+// rewriteFinalizedArtifacts re-renders the finalized report after a signing
+// failure so the on-disk artifacts do not claim to be signed. Both tiers share
+// this path because they share the hazard: a stale artifact, or a hash pointing
+// at a file that no longer matches it, would let verification succeed against a
+// torn bundle. If the re-render fails, the artifacts AND their hashes are
+// dropped so the manifest stays honest about what it can prove.
 func rewriteFinalizedArtifacts(cleanDir string, a *Assessment, hasAssess bool, artifacts map[string]string) {
+	jsonName, htmlName := "summary.json", "summary.html"
+	writeJSON := func(path string) error {
+		summary := projectToSummary(*a)
+		return writeSummaryJSON(path, &summary)
+	}
+	writeHTML := func(path string) error {
+		summary := projectToSummary(*a)
+		return writeSummaryHTML(path, &summary)
+	}
 	if hasAssess {
-		rewriteAssessmentArtifacts(cleanDir, a, artifacts)
+		jsonName, htmlName = "assessment.json", "assessment.html"
+		writeJSON = func(path string) error { return writeAssessmentJSON(path, a) }
+		writeHTML = func(path string) error { return writeAssessmentHTML(path, a) }
+	}
+
+	jsonPath := filepath.Join(cleanDir, jsonName)
+	htmlPath := filepath.Join(cleanDir, htmlName)
+
+	purge := func() {
+		_ = os.Remove(filepath.Clean(jsonPath))
+		_ = os.Remove(filepath.Clean(htmlPath))
+		delete(artifacts, jsonName)
+		delete(artifacts, htmlName)
+	}
+
+	if err := writeJSON(jsonPath); err != nil {
+		purge()
 		return
 	}
-	rewriteSummaryArtifacts(cleanDir, a, artifacts)
+	if err := writeHTML(htmlPath); err != nil {
+		purge()
+		return
+	}
+	for name, path := range map[string]string{jsonName: jsonPath, htmlName: htmlPath} {
+		if h, err := hashFile(path); err == nil {
+			artifacts[name] = h
+		} else {
+			// Re-render succeeded but hash failed (disk swapped out under us
+			// or perms changed). Drop the entry rather than keep one that
+			// cannot be reproduced from the file now on disk.
+			delete(artifacts, name)
+		}
+	}
 }
 
 func purgeAttestationArtifacts(cleanDir string, artifacts map[string]string) {
@@ -901,7 +889,7 @@ type signingIdentity struct {
 // cross-checks the key pair. Partial, corrupt, or mismatched identities fail
 // closed rather than being silently replaced.
 func loadSigningIdentity(opts assessFinalizeOpts) (*signingIdentity, error) {
-	agentName, err := resolveAssessSigningAgent(opts.Agent)
+	agentName, err := resolveAssessSigningAgent(opts.Agent, "")
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent for signing: %w", err)
 	}
@@ -941,10 +929,18 @@ func loadSigningIdentity(opts assessFinalizeOpts) (*signingIdentity, error) {
 	return &signingIdentity{AgentName: agentName, PrivKey: privKey, PubKey: pubKey}, nil
 }
 
-func resolveAssessSigningAgent(explicit string) (string, error) {
+// resolveAssessSigningAgent picks the signing identity. An explicit --agent
+// wins, then PIPELOCK_AGENT, then any name recorded in the signed manifest,
+// then the built-in default. The recorded name is consulted only by verify,
+// which passes it; finalize passes an empty string because it is choosing a
+// name rather than recovering one.
+func resolveAssessSigningAgent(explicit, recorded string) (string, error) {
 	name := explicit
 	if name == "" {
 		name = os.Getenv("PIPELOCK_AGENT")
+	}
+	if name == "" {
+		name = recorded
 	}
 	if name == "" {
 		name = assessDefaultSigningAgent

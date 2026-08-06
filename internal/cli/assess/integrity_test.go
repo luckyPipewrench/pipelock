@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -431,6 +432,15 @@ func TestLoadSigningIdentity_ReusesExistingKeyPair(t *testing.T) {
 }
 
 func TestLoadSigningIdentity_KeyGenerationFailure(t *testing.T) {
+	// The failure is induced by removing write permission, which Windows does
+	// not enforce this way and which root ignores outright. In both cases the
+	// generation would succeed and the test would assert nothing.
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based generation failure is not reproducible on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses the directory permission this test relies on")
+	}
 	parent := t.TempDir()
 	if err := os.Chmod(parent, 0o500); err != nil { // #nosec G302 -- directory must be read-only to exercise generation failure
 		t.Fatal(err)

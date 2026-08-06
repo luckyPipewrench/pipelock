@@ -83,6 +83,12 @@ func minimalSummary(grade string, score int) *Summary {
 		TopFindings: []SummaryFinding{
 			{ID: "find-001", Severity: assessSevHigh, Category: "DLP", Source: "simulate", Title: "Missed exfiltration"},
 		},
+		// Present on purpose. The free summary renders per-framework coverage
+		// counts, and the paid-leak assertions below are vacuous unless the
+		// fixture actually carries something that could leak.
+		Compliance: []compliance.CoverageSummary{
+			{FrameworkID: "owasp-mcp-top10", FrameworkName: "OWASP MCP Top 10", MappingVersion: 1, Total: 10, Covered: 7, Partial: 2, NotCovered: 1},
+		},
 		DetectionPct: 85,
 		Signed:       false,
 	}
@@ -178,8 +184,13 @@ func TestRenderSummaryHTML(t *testing.T) {
 		t.Error("summary should contain 'Not audit-grade'")
 	}
 
-	if strings.Contains(html, "Compliance Coverage") {
-		t.Error("summary should omit paid compliance mappings")
+	// Per-framework coverage counts are free. The per-control mapping detail
+	// is what the paid report adds.
+	if !strings.Contains(html, "Compliance Coverage") {
+		t.Error("summary should render the per-framework coverage rollup")
+	}
+	if !strings.Contains(html, "OWASP MCP Top 10") {
+		t.Error("summary should name the covered framework")
 	}
 
 	// The summary names its non-claims, but must not leak the paid values.

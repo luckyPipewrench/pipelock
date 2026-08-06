@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/report/attestation"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -158,8 +159,11 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 		return verifyExitTamperedArtifact, fmt.Errorf("stat signature: %w", err)
 	}
 
-	// Step 5: load public key and verify signature.
-	agentName, err := resolveAssessSigningAgent(agent)
+	// Step 5: load public key and verify signature. When no agent is named,
+	// prefer the one recorded inside the signed manifest over the default,
+	// so a bundle signed under a different identity resolves the key it was
+	// actually signed with instead of failing against an unrelated default.
+	agentName, err := resolveAssessSigningAgent(agent, manifest.SignerAgent)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("resolving agent: %w", err)
 	}
@@ -173,6 +177,19 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 	pubKey, err := ks.ResolvePublicKey(agentName)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("loading public key for agent %q: %w", agentName, err)
+	}
+
+	// The manifest records the fingerprint of the key that signed it. If the
+	// local keystore holds a different key under that agent name, the
+	// signature check below would fail with an opaque error; worse, a bundle
+	// resigned under a substituted key of the same name would otherwise look
+	// indistinguishable. Compare first and say plainly which key was expected.
+	if want := manifest.SignerKeyFingerprint; want != "" {
+		if got := attestation.KeyFingerprint(pubKey); got != want {
+			return verifyExitBadSignature, fmt.Errorf(
+				"signer key mismatch for agent %q: manifest was signed by key %s but the local keystore holds %s",
+				agentName, want, got)
+		}
 	}
 
 	sig, err := signing.LoadSignature(sigPath)

@@ -114,6 +114,16 @@ type AssessManifest struct {
 	ScoringVersion    string            `json:"scoring_version"`
 	Artifacts         map[string]string `json:"artifacts,omitempty"`
 
+	// Signer records who signed this manifest. A detached signature alone
+	// only proves the bundle matches whichever key the verifier happens to
+	// hold under the named agent, which on a copied bundle is either absent
+	// or a different key entirely. Recording the name and the public-key
+	// fingerprint inside the signed bytes lets a reader pin the expected
+	// signer and notice a substitution instead of silently verifying against
+	// the wrong key. Absent on an --unsigned run.
+	SignerAgent          string `json:"signer_agent,omitempty"`
+	SignerKeyFingerprint string `json:"signer_key_fingerprint,omitempty"`
+
 	// EvidenceHashes maps each written evidence file's name (e.g.
 	// "simulate.jsonl") to its SHA-256 hex digest at the moment `assess run`
 	// produced it. Populated by run; verified by finalize. A v2 manifest

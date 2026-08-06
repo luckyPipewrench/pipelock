@@ -156,7 +156,7 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 		return verifyExitTamperedArtifact, fmt.Errorf("stat attestation signature: %w", err)
 	}
 
-	agentName, err := resolveAssessSigningAgent(agent)
+	agentName, err := resolveAssessSigningAgent(agent, "")
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("resolving agent: %w", err)
 	}

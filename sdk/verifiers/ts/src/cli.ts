@@ -12,6 +12,7 @@ import { extractReceipts, extractReceiptsFromSessionDir } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
 import { loadRotationEndorsementFile, verifyChainWithEndorsements } from "./rotation.js";
 import { runAARPCommand } from "./aarp/cli.js";
+import { comparableProvenance, runProvenanceFixture } from "./provenance-proof.js";
 import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util.js";
 
 export interface ChainCommandReport {
@@ -38,7 +39,10 @@ function usage(command?: string): string {
   if (command === "aarp") {
     return "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--chain] [--json]";
   }
-  return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt|aarp} PATH [flags]";
+  if (command === "provenance") {
+    return "Usage: pipelock-verifier-ts provenance PATH";
+  }
+  return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt|aarp|provenance} PATH [flags]";
 }
 
 function requireOneArg(positionals: string[], command: string): string {
@@ -169,6 +173,13 @@ async function runReceiptCommand(args: string[]): Promise<number> {
   return report.valid ? 0 : 1;
 }
 
+async function runProvenanceCommand(args: string[]): Promise<number> {
+  const target = requireOneArg(args, "provenance");
+  const report = await runProvenanceFixture(target);
+  process.stdout.write(`${comparableProvenance(report)}\n`);
+  return report.overall === "invalid" ? 1 : 0;
+}
+
 async function main(): Promise<number> {
   const [command, ...args] = process.argv.slice(2);
   if (!command) throw new UsageError(usage());
@@ -181,6 +192,8 @@ async function main(): Promise<number> {
       return runReceiptCommand(args);
     case "aarp":
       return runAARPCommand(args);
+    case "provenance":
+      return runProvenanceCommand(args);
     default:
       throw new UsageError(`unknown command ${command}\n${usage()}`);
   }

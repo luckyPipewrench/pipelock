@@ -71,6 +71,7 @@ CI runner, an auditor's laptop, or an isolated environment.`,
 	root.AddCommand(newChainCmd())
 	root.AddCommand(newCompletenessCmd())
 	root.AddCommand(newIndependentCmd())
+	root.AddCommand(newProvenanceCmd())
 	root.AddCommand(newReceiptCmd())
 	root.AddCommand(newReplayCmd())
 	root.AddCommand(newAARPCmd())

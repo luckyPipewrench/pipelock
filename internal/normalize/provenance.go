@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/url"
@@ -34,8 +35,38 @@ type Operation struct {
 	Profile       string        `json:"profile,omitempty"`
 	DecodePadding bool          `json:"decode_padding,omitempty"`
 	Alphabet      string        `json:"alphabet,omitempty"`
-	Indices       []uint8       `json:"indices,omitempty"`
+	Indices       QueryIndices  `json:"indices,omitempty"`
 	MinimumLength uint32        `json:"minimum_length,omitempty"`
+}
+
+// QueryIndices is encoded as a JSON array of uint8 values. encoding/json treats
+// a bare []uint8 as binary data and emits a base64 string, which would violate
+// the profile's normative array<uint8> wire shape and make Go-issued recipes
+// invalid in the other reference verifiers.
+type QueryIndices []uint8
+
+func (indices QueryIndices) MarshalJSON() ([]byte, error) {
+	values := make([]uint16, len(indices))
+	for index, value := range indices {
+		values[index] = uint16(value)
+	}
+	return json.Marshal(values)
+}
+
+func (indices *QueryIndices) UnmarshalJSON(data []byte) error {
+	var values []uint16
+	if err := json.Unmarshal(data, &values); err != nil {
+		return fmt.Errorf("query indices must be an array of uint8 values: %w", err)
+	}
+	result := make(QueryIndices, len(values))
+	for index, value := range values {
+		if value > 255 {
+			return fmt.Errorf("query index %d exceeds uint8", value)
+		}
+		result[index] = uint8(value)
+	}
+	*indices = result
+	return nil
 }
 
 type OperationKind string
@@ -124,7 +155,7 @@ const (
 const (
 	// EvidenceProvenanceProfileV1Digest identifies the fixture-only evidence
 	// provenance transform profile, not the source-span transform profile.
-	EvidenceProvenanceProfileV1Digest       = "sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316"
+	EvidenceProvenanceProfileV1Digest       = "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -158,6 +189,9 @@ func (r Recipe) Validate() error {
 	if _, err := resolveTransformProfile(r.TransformProfileDigest); err != nil {
 		return fmt.Errorf("recipe: %w", err)
 	}
+	if len(r.Operations) > evidenceProvenanceMaxOperations {
+		return fmt.Errorf("recipe: exceeds %d operations", evidenceProvenanceMaxOperations)
+	}
 	for index, op := range r.Operations {
 		if err := op.validate(); err != nil {
 			return fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
@@ -184,20 +218,16 @@ func (r Recipe) Apply(input string) (string, error) {
 	if len(input) > profile.maxInputBytes {
 		return "", fmt.Errorf("recipe input: exceeds profile byte limit")
 	}
-	if len(r.Operations) > evidenceProvenanceMaxOperations {
-		return "", fmt.Errorf("recipe: exceeds %d operations", evidenceProvenanceMaxOperations)
-	}
 	value := input
-	budget := evidenceProvenanceMaxTotalBytes
+	budget := processingBudget(evidenceProvenanceMaxTotalBytes)
 	for index, op := range r.Operations {
 		// Charge the operation's input against the cumulative budget BEFORE
 		// running it, so an expensive operation cannot spend work it has not
 		// been granted.
-		if len(value) > budget {
-			return "", fmt.Errorf("recipe: exceeds cumulative processing budget")
+		if err := budget.charge(value); err != nil {
+			return "", err
 		}
-		budget -= len(value)
-		value, err = op.apply(value)
+		value, err = op.apply(value, &budget)
 		if err != nil {
 			return "", fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
 		}
@@ -212,6 +242,16 @@ func (r Recipe) Apply(input string) (string, error) {
 		return "", fmt.Errorf("recipe output exceeds profile byte limit")
 	}
 	return value, nil
+}
+
+type processingBudget int
+
+func (budget *processingBudget) charge(value string) error {
+	if len(value) > int(*budget) {
+		return fmt.Errorf("recipe: exceeds cumulative processing budget")
+	}
+	*budget -= processingBudget(len(value))
+	return nil
 }
 
 // ValidateOutput checks that value is valid UTF-8 and fits the recipe's
@@ -234,7 +274,7 @@ func (r Recipe) ValidateOutput(value string) error {
 	return nil
 }
 
-func (op Operation) apply(value string) (string, error) {
+func (op Operation) apply(value string, budget *processingBudget) (string, error) {
 	switch op.Kind {
 	case OperationIdentity:
 		return value, nil
@@ -242,6 +282,9 @@ func (op Operation) apply(value string) (string, error) {
 		return op.selectURLComponent(value)
 	case OperationPercentDecode:
 		for range op.Passes {
+			if err := budget.charge(value); err != nil {
+				return "", err
+			}
 			decoded, err := url.PathUnescape(value)
 			if err != nil {
 				return "", fmt.Errorf("percent decode: %w", err)
@@ -304,7 +347,7 @@ func (op Operation) apply(value string) (string, error) {
 	case OperationVowelFold:
 		return FoldVowels(value), nil
 	case OperationQueryUnescape:
-		return scannerQueryUnescape(value), nil
+		return scannerQueryUnescape(value, budget)
 	case OperationInvisibleSpace:
 		return ReplaceInvisibleWithSpace(value), nil
 	case OperationMatchingNormalize:
@@ -340,15 +383,15 @@ func (op Operation) apply(value string) (string, error) {
 	case OperationTextSegment:
 		return selectScannerTextSegment(value, op.Occurrence)
 	case OperationHTMLEntityDecode:
-		return scannerHTMLEntityDecode(value), nil
+		return scannerHTMLEntityDecode(value, budget)
 	case OperationWhitespaceCompact:
 		return scannerWhitespaceCompact(value), nil
 	case OperationURLNoiseStrip:
 		return scannerURLNoiseStrip(value), nil
 	case OperationOrderedQueryConcat:
-		return scannerOrderedQueryConcat(value), nil
+		return scannerOrderedQueryConcat(value, budget)
 	case OperationQuerySubsequence:
-		return scannerQuerySubsequence(value, op.Indices)
+		return scannerQuerySubsequence(value, op.Indices, budget)
 	case OperationHostnameDotRemove:
 		return strings.ReplaceAll(value, ".", ""), nil
 	case OperationEncodedRun:
@@ -627,15 +670,18 @@ func (op Operation) selectURLComponent(value string) (string, error) {
 	}
 }
 
-func scannerQueryUnescape(value string) string {
+func scannerQueryUnescape(value string, budget *processingBudget) (string, error) {
 	for range evidenceProvenanceScannerMaxDecodeRounds {
+		if err := budget.charge(value); err != nil {
+			return "", err
+		}
 		decoded, err := url.QueryUnescape(value)
 		if err != nil || decoded == value {
 			break
 		}
 		value = decoded
 	}
-	return value
+	return value, nil
 }
 
 func scannerBase64Encoding(alphabet string, padded bool) (*base64.Encoding, error) {
@@ -747,18 +793,21 @@ func selectScannerTextSegment(value string, occurrence uint32) (string, error) {
 	return segments[occurrence], nil
 }
 
-func scannerHTMLEntityDecode(value string) string {
+func scannerHTMLEntityDecode(value string, budget *processingBudget) (string, error) {
 	if !strings.Contains(value, "&") {
-		return value
+		return value, nil
 	}
 	for range evidenceProvenanceHTMLMaxDecodePasses {
+		if err := budget.charge(value); err != nil {
+			return "", err
+		}
 		decoded := html.UnescapeString(value)
 		if decoded == value {
 			break
 		}
 		value = decoded
 	}
-	return value
+	return value, nil
 }
 
 func scannerWhitespaceCompact(value string) string {
@@ -781,23 +830,31 @@ func scannerURLNoiseStrip(value string) string {
 	}, value)
 }
 
-func scannerOrderedQueryConcat(rawQuery string) string {
+func scannerOrderedQueryConcat(rawQuery string, budget *processingBudget) (string, error) {
 	var result strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value != "" {
-			result.WriteString(scannerQueryUnescape(value))
+			decoded, err := scannerQueryUnescape(value, budget)
+			if err != nil {
+				return "", err
+			}
+			result.WriteString(decoded)
 		}
 	}
-	return result.String()
+	return result.String(), nil
 }
 
-func scannerQuerySubsequence(rawQuery string, indices []uint8) (string, error) {
+func scannerQuerySubsequence(rawQuery string, indices []uint8, budget *processingBudget) (string, error) {
 	values := make([]string, 0, evidenceProvenanceQueryMaxValues)
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value != "" {
-			values = append(values, scannerQueryUnescape(value))
+			decoded, err := scannerQueryUnescape(value, budget)
+			if err != nil {
+				return "", err
+			}
+			values = append(values, decoded)
 			if len(values) == evidenceProvenanceQueryMaxValues {
 				break
 			}

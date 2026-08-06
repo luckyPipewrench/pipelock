@@ -1,0 +1,1 @@
+{"trust_roots":"fixture supplied; self-attested; not authenticated","authenticated_provenance":false,"signature":"verified","chain":"verified","artifacts":"attested_unchecked","source_commitment":"not_checked","view_reproduction":"not_checked","location":"not_checked","match_commitment":"not_checked","overall":"invalid","failure_stage":"critical_features"}

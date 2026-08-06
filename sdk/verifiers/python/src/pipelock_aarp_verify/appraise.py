@@ -77,9 +77,7 @@ DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY = (
 )
 
 # Overclaim-risk codes: the active "you might be about to over-read X" warnings.
-RISK_SIGNATURE_VALID_NOT_TRANSPARENCY = (
-    "signature_valid_is_not_transparency_inclusion"
-)
+RISK_SIGNATURE_VALID_NOT_TRANSPARENCY = "signature_valid_is_not_transparency_inclusion"
 RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS = (
     "svid_identity_is_not_deployment_non_bypass"
 )
@@ -208,14 +206,12 @@ class Appraisal:
         """
         verified = set(self.verified_claims)
         risks: set[str] = set()
-        if (
-            CLAIM_RECEIPT_SIGNATURE_VALID in verified
-            and not self.axes.get(AXIS_TRANSPARENCY)
+        if CLAIM_RECEIPT_SIGNATURE_VALID in verified and not self.axes.get(
+            AXIS_TRANSPARENCY
         ):
             risks.add(RISK_SIGNATURE_VALID_NOT_TRANSPARENCY)
-        if (
-            CLAIM_SIGNING_WORKLOAD_SVID_BOUND in verified
-            and not self.axes.get(AXIS_DEPLOYMENT)
+        if CLAIM_SIGNING_WORKLOAD_SVID_BOUND in verified and not self.axes.get(
+            AXIS_DEPLOYMENT
         ):
             risks.add(RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS)
         if (

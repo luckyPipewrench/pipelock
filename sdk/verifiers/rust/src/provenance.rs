@@ -3,7 +3,7 @@
 
 //! The pinned, fixture-only evidence provenance transform interpreter.
 
-use base64::{engine::general_purpose, Engine};
+use base64::{alphabet, engine::general_purpose, Engine};
 use data_encoding::BASE32;
 use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value};
@@ -12,9 +12,11 @@ use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 use url::Url;
 
 pub const PROFILE_DIGEST: &str =
-    "sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316";
+    "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 const MAX_INPUT: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT: usize = 1024 * 1024;
+const MAX_OPERATIONS: usize = 32;
+const MAX_CUMULATIVE_PROCESSED_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Recipe {
@@ -36,7 +38,11 @@ impl Recipe {
         validate_digest(digest)?;
         let operations = operations
             .as_array()
-            .ok_or_else(|| "recipe operations must be an array".to_string())?
+            .ok_or_else(|| "recipe operations must be an array".to_string())?;
+        if operations.len() > MAX_OPERATIONS {
+            return Err(format!("recipe: exceeds {MAX_OPERATIONS} operations"));
+        }
+        let operations = operations
             .iter()
             .enumerate()
             .map(|(i, v)| Operation::from_json(v).map_err(|e| format!("recipe operation {i}: {e}")))
@@ -55,9 +61,11 @@ impl Recipe {
             return Err("recipe input: exceeds profile byte limit".to_string());
         }
         validate_digest(&self.digest)?;
+        let mut budget = ProcessingBudget(MAX_CUMULATIVE_PROCESSED_BYTES);
         for (i, operation) in self.operations.iter().enumerate() {
+            budget.charge(&value)?;
             value = operation
-                .apply(&value)
+                .apply(&value, &mut budget)
                 .map_err(|e| format!("recipe operation {i} ({}): {e}", operation.kind))?;
             if value.len() > MAX_OUTPUT {
                 return Err(format!(
@@ -72,6 +80,18 @@ impl Recipe {
     pub fn apply(&self, input: &str) -> Result<String, String> {
         String::from_utf8(self.apply_bytes(input.as_bytes())?)
             .map_err(|_| "recipe output: invalid UTF-8".to_string())
+    }
+}
+
+struct ProcessingBudget(usize);
+
+impl ProcessingBudget {
+    fn charge(&mut self, value: &str) -> Result<(), String> {
+        self.0 = self
+            .0
+            .checked_sub(value.len())
+            .ok_or_else(|| "recipe: exceeds cumulative processing budget".to_string())?;
+        Ok(())
     }
 }
 
@@ -245,7 +265,7 @@ impl Operation {
         Ok(())
     }
 
-    fn apply(&self, value: &str) -> Result<String, String> {
+    fn apply(&self, value: &str, budget: &mut ProcessingBudget) -> Result<String, String> {
         match self.kind.as_str() {
             "identity" => Ok(value.to_string()),
             "url_component" => url_component(
@@ -257,6 +277,7 @@ impl Operation {
             "percent_decode" => {
                 let mut v = value.to_string();
                 for _ in 0..required_u32(&self.fields, "passes")? {
+                    budget.charge(&v)?;
                     v = strict_percent_decode(&v, false)
                         .map_err(|e| format!("percent decode: {e}"))?;
                 }
@@ -306,7 +327,7 @@ impl Operation {
                     x => x,
                 })
                 .collect()),
-            "query_unescape" => Ok(query_unescape(value)),
+            "query_unescape" => query_unescape(value, budget),
             "invisible_space" => Ok(map_invisible(value, Some(' '))),
             "matching_normalize" => Ok(matching_normalize(value)),
             "hex_decode_liberal" => strict_hex(value, false, "liberal hex decode"),
@@ -331,15 +352,19 @@ impl Operation {
                 value,
                 optional_u32(&self.fields, "occurrence")?.unwrap_or(0),
             ),
-            "html_entity_decode" => Ok(html_decode(value)),
+            "html_entity_decode" => html_decode(value, budget),
             "whitespace_compact" => Ok(value.chars().filter(|c| !c.is_whitespace()).collect()),
             "url_noise_strip" => Ok(strip_chars(value, "./ \t\n\r+,;|")),
-            "ordered_query_concat" => Ok(query_values(value)
+            "ordered_query_concat" => query_values(value)
                 .into_iter()
-                .map(|v| query_unescape(&v))
-                .collect()),
+                .map(|v| query_unescape(&v, budget))
+                .collect(),
             "query_subsequence" => {
-                let values = query_values(value);
+                let values = query_values(value)
+                    .into_iter()
+                    .take(20)
+                    .map(|v| query_unescape(&v, budget))
+                    .collect::<Result<Vec<_>, _>>()?;
                 self.fields["indices"]
                     .as_array()
                     .unwrap()
@@ -348,7 +373,7 @@ impl Operation {
                         let i = v.as_u64().unwrap() as usize;
                         values
                             .get(i)
-                            .map(|x| query_unescape(x))
+                            .cloned()
                             .ok_or_else(|| format!("query subsequence: index {i} unavailable"))
                     })
                     .collect()
@@ -429,15 +454,16 @@ fn strict_percent_decode(s: &str, plus: bool) -> Result<String, String> {
     String::from_utf8(percent_decode_str(&bytes).collect())
         .map_err(|_| "output: invalid UTF-8".to_string())
 }
-fn query_unescape(s: &str) -> String {
+fn query_unescape(s: &str, budget: &mut ProcessingBudget) -> Result<String, String> {
     let mut v = s.to_string();
     for _ in 0..500 {
+        budget.charge(&v)?;
         match strict_percent_decode(&v, true) {
             Ok(next) if next != v => v = next,
             _ => break,
         }
     }
-    v
+    Ok(v)
 }
 fn url_component(
     value: &str,
@@ -581,12 +607,20 @@ fn base64_decode(
     canonical: bool,
     label: &str,
 ) -> Result<String, String> {
-    let e = match (url, padded) {
-        (false, true) => &general_purpose::STANDARD,
-        (false, false) => &general_purpose::STANDARD_NO_PAD,
-        (true, true) => &general_purpose::URL_SAFE,
-        (true, false) => &general_purpose::URL_SAFE_NO_PAD,
-    };
+    let config = (if padded {
+        general_purpose::PAD
+    } else {
+        general_purpose::NO_PAD
+    })
+    .with_decode_allow_trailing_bits(!canonical);
+    let e = general_purpose::GeneralPurpose::new(
+        if url {
+            &alphabet::URL_SAFE
+        } else {
+            &alphabet::STANDARD
+        },
+        config,
+    );
     let b = e.decode(s).map_err(|x| format!("{label}: {x}"))?;
     if canonical && e.encode(&b) != s {
         return Err(format!("{label}: non-canonical encoding"));
@@ -844,16 +878,17 @@ fn text_segment(s: &str, n: u32) -> Result<String, String> {
         .map(ToString::to_string)
         .ok_or_else(|| format!("text segment: occurrence {n} unavailable"))
 }
-fn html_decode(s: &str) -> String {
+fn html_decode(s: &str, budget: &mut ProcessingBudget) -> Result<String, String> {
     let mut v = s.to_string();
     for _ in 0..16 {
+        budget.charge(&v)?;
         let n = html_escape::decode_html_entities(&v).into_owned();
         if n == v {
             break;
         }
         v = n
     }
-    v
+    Ok(v)
 }
 fn strip_chars(s: &str, chars: &str) -> String {
     s.chars().filter(|c| !chars.contains(*c)).collect()
@@ -862,7 +897,6 @@ fn query_values(q: &str) -> Vec<String> {
     q.split('&')
         .filter_map(|p| p.split_once('=').map(|(_, v)| v.to_string()))
         .filter(|v| !v.is_empty())
-        .take(20)
         .collect()
 }
 fn encoded_run(s: &str, n: u32, min: u32) -> Result<String, String> {
@@ -890,4 +924,50 @@ fn encoded_run(s: &str, n: u32, min: u32) -> Result<String, String> {
     runs.get(n as usize)
         .cloned()
         .ok_or_else(|| format!("encoded run: occurrence {n} unavailable"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn recipe_limits_reject_unbounded_verifier_work() {
+        // Keep the normative boundary independent of MAX_OPERATIONS so
+        // neutralizing the guard makes this test fail rather than move with it.
+        let operations = Value::Array(vec![json!({"kind": "identity"}); 33]);
+        let error = Recipe::from_json(PROFILE_DIGEST, &operations).unwrap_err();
+        assert!(error.contains("exceeds 32 operations"), "{error}");
+
+        let token = format!("%{}", "25".repeat(500));
+        let recipe =
+            Recipe::from_json(PROFILE_DIGEST, &json!([{"kind": "query_unescape"}])).unwrap();
+        let error = recipe.apply(&token.repeat(1500)).unwrap_err();
+        assert!(error.contains("cumulative processing budget"), "{error}");
+    }
+
+    #[test]
+    fn liberal_base64_accepts_nonzero_trailing_bits() {
+        let recipe = Recipe::from_json(
+            PROFILE_DIGEST,
+            &json!([{
+                "kind": "base64_decode_liberal",
+                "alphabet": "standard",
+                "decode_padding": true
+            }]),
+        )
+        .unwrap();
+        assert_eq!(recipe.apply("Zh==").unwrap(), "f");
+    }
+
+    #[test]
+    fn ordered_query_concat_is_not_truncated_to_subsequence_limit() {
+        let input = (0..21)
+            .map(|index| format!("k{index}=x"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let recipe =
+            Recipe::from_json(PROFILE_DIGEST, &json!([{"kind": "ordered_query_concat"}])).unwrap();
+        assert_eq!(recipe.apply(&input).unwrap(), "x".repeat(21));
+    }
 }

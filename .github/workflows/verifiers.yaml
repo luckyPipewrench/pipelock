@@ -17,9 +17,15 @@ on:
       - 'cmd/pipelock-verifier/**'
       - 'internal/aarp/**'
       - 'internal/cli/contain/**'
+      - 'internal/contract/**'
       - 'internal/jsonscan/**'
+      - 'internal/mcp/**'
+      - 'internal/normalize/**'
+      - 'internal/proxy/**'
       - 'internal/receipt/**'
       - 'internal/recorder/**'
+      - 'internal/scanner/**'
+      - 'docs/specs/**'
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
       - 'sdk/conformance/**'
@@ -30,9 +36,15 @@ on:
       - 'cmd/pipelock-verifier/**'
       - 'internal/aarp/**'
       - 'internal/cli/contain/**'
+      - 'internal/contract/**'
       - 'internal/jsonscan/**'
+      - 'internal/mcp/**'
+      - 'internal/normalize/**'
+      - 'internal/proxy/**'
       - 'internal/receipt/**'
       - 'internal/recorder/**'
+      - 'internal/scanner/**'
+      - 'docs/specs/**'
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
       - 'sdk/conformance/**'
@@ -215,6 +227,9 @@ jobs:
       - name: Build Go verifier
         run: go build -o "$RUNNER_TEMP/pipelock" ./cmd/pipelock
 
+      - name: Build Go provenance verifier
+        run: go build -o "$RUNNER_TEMP/pipelock-verifier" ./cmd/pipelock-verifier
+
       - name: Build TypeScript verifier
         working-directory: sdk/verifiers/ts
         run: |
@@ -242,7 +257,11 @@ jobs:
           # -P keeps the repo root off sys.path so only the pinned checkout is used.
           PY_VERIFY: python -P -m pipelock_verify
           # Run the verifier from its pinned checkout without installing it.
-          PYTHONPATH: ${{ github.workspace }}/_pyverify
+          PYTHONPATH: ${{ github.workspace }}/_pyverify:${{ github.workspace }}/sdk/verifiers/python/src
+          GO_PROVENANCE: ${{ runner.temp }}/pipelock-verifier provenance
+          TS_PROVENANCE: node ${{ github.workspace }}/sdk/verifiers/ts/dist/src/cli.js provenance
+          RUST_PROVENANCE: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs provenance
+          PY_PROVENANCE: python -P -m pipelock_aarp_verify provenance
         run: bash sdk/conformance/corpus-gate.sh
 
   # Cross-language AARP gate: builds all four AARP reference verifiers (Go,

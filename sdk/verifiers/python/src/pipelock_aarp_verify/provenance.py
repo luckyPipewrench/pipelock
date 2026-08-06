@@ -13,18 +13,20 @@ import base64
 import binascii
 import html
 import re
+import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote_to_bytes, urlsplit
 
-import unicodedata2
-
 PROFILE_DIGEST = (
-    "sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316"
+    "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
 )
 UNICODE_VERSION = "15.0.0"
 MAX_INPUT_BYTES = 2 << 20
 MAX_OUTPUT_BYTES = 1 << 20
+MAX_OPERATIONS = 32
+MAX_CUMULATIVE_PROCESSED_BYTES = 16 << 20
 _KINDS = (
     "identity",
     "url_component",
@@ -180,13 +182,13 @@ def supported_operation_kinds() -> tuple[str, ...]:
 
 
 def _unicode() -> Any:
-    """Return the profile-pinned Unicode database, never the host database."""
-    if unicodedata2.unidata_version != UNICODE_VERSION:
+    """Return Python 3.12's profile-pinned Unicode 15.0 database."""
+    if unicodedata.unidata_version != UNICODE_VERSION:
         raise ProvenanceError(
             "evidence-provenance Unicode database = "
-            f"{unicodedata2.unidata_version}, want {UNICODE_VERSION}"
+            f"{unicodedata.unidata_version}, want {UNICODE_VERSION}"
         )
-    return unicodedata2
+    return unicodedata
 
 
 def _control(value: str) -> bool:
@@ -237,9 +239,11 @@ def _confusable(ch: str) -> str:
 
 def _simple_lower(value: str) -> str:
     """Unicode 15 simple lowercase mapping, not Python's full mapping."""
-    # U+0130 is the sole Unicode 15 simple-lowercase mapping whose full Python
-    # mapping expands to multiple code points (``i`` + COMBINING DOT ABOVE).
-    # Go's unicode.ToLower performs the simple one-to-one mapping.
+    # This reference verifier is constrained to Python 3.12, whose built-in
+    # Unicode database is exactly 15.0. U+0130 is the sole Unicode 15 simple
+    # lowercase mapping whose full Python mapping expands to multiple code
+    # points (``i`` + COMBINING DOT ABOVE); Go uses the one-rune mapping.
+    _unicode()
     return "".join("i" if ch == "\u0130" else ch.lower() for ch in value)
 
 
@@ -276,8 +280,9 @@ def _strict_percent(value: str, plus: bool = False) -> str:
         raise ProvenanceError("output: invalid UTF-8") from exc
 
 
-def _query_unescape(value: str) -> str:
+def _query_unescape(value: str, charge: Callable[[str], None]) -> str:
     for _ in range(500):
+        charge(value)
         try:
             decoded = _strict_percent(value, plus=True)
         except ProvenanceError:
@@ -302,9 +307,13 @@ def _decode(
                 raise ValueError("non-hexadecimal number")
             raw = binascii.unhexlify(value)
         elif kind == "base32":
+            if not padded and "=" in value:
+                raise ValueError("unexpected padding")
             source = value + ("=" * (-len(value) % 8) if not padded else "")
             raw = base64.b32decode(source, casefold=False)
         else:
+            if not padded and "=" in value:
+                raise ValueError("unexpected padding")
             source = value + ("=" * (-len(value) % 4) if not padded else "")
             raw = (
                 base64.b64decode(source, altchars=b"-_", validate=True)
@@ -346,6 +355,8 @@ class Recipe:
                 "recipe: transform profile digest: unknown profile "
                 f"{self.transform_profile_digest!r}"
             )
+        if len(self.operations) > MAX_OPERATIONS:
+            raise ProvenanceError(f"recipe: exceeds {MAX_OPERATIONS} operations")
         for index, op in enumerate(self.operations):
             try:
                 self._validate_op(op)
@@ -385,9 +396,7 @@ class Recipe:
                 # TypeScript verifiers rejected it, so the same recipe was valid
                 # in one implementation and invalid in two.
                 if op.get("selector", "") == "":
-                    raise ProvenanceError(
-                        "query component is missing selector"
-                    )
+                    raise ProvenanceError("query component: missing selector")
             elif "selector" in op or "occurrence" in op:
                 raise ProvenanceError(f"unsupported selector for {kind}")
         elif kind == "percent_decode":
@@ -431,12 +440,13 @@ class Recipe:
             allowed.add("indices")
             required.add("indices")
             indices = op.get("indices")
-            if (
-                not isinstance(indices, list)
-                or not 2 <= len(indices) <= 4
-                or any(not _uint(x, 8) or x >= 20 for x in indices)
-                or indices != sorted(set(indices))
-            ):
+            if not isinstance(indices, list) or not 2 <= len(indices) <= 4:
+                raise ProvenanceError(
+                    "query subsequence indices must contain 2..4 entries"
+                )
+            if any(not _uint(x, 8) or x >= 20 for x in indices):
+                raise ProvenanceError("query subsequence index exceeds scanner limit")
+            if indices != sorted(set(indices)):
                 raise ProvenanceError(
                     "query subsequence indices must be strictly increasing"
                 )
@@ -468,9 +478,19 @@ class Recipe:
         self.validate()
         if len(value.encode()) > MAX_INPUT_BYTES:
             raise ProvenanceError("recipe input: exceeds profile byte limit")
+        remaining = MAX_CUMULATIVE_PROCESSED_BYTES
+
+        def charge(processed: str) -> None:
+            nonlocal remaining
+            size = len(processed.encode())
+            if size > remaining:
+                raise ProvenanceError("recipe: exceeds cumulative processing budget")
+            remaining -= size
+
         for index, op in enumerate(self.operations):
             try:
-                value = self._apply_op(value, op)
+                charge(value)
+                value = self._apply_op(value, op, charge)
             except ProvenanceError as exc:
                 raise ProvenanceError(
                     f"recipe operation {index} ({op['kind']}): {exc}"
@@ -482,7 +502,9 @@ class Recipe:
                 )
         return value
 
-    def _apply_op(self, v: str, op: dict[str, Any]) -> str:
+    def _apply_op(
+        self, v: str, op: dict[str, Any], charge: Callable[[str], None]
+    ) -> str:
         k = op["kind"]
         if k == "identity":
             return v
@@ -490,6 +512,7 @@ class Recipe:
             return _url_component(v, op)
         if k == "percent_decode":
             for _ in range(op["passes"]):
+                charge(v)
                 v = _strict_percent(v)
             return v
         if k == "dlp_normalize":
@@ -521,7 +544,7 @@ class Recipe:
         if k == "vowel_fold":
             return v.translate(str.maketrans("aeiouAEIOU", "aaaaaAAAAA"))
         if k == "query_unescape":
-            return _query_unescape(v)
+            return _query_unescape(v, charge)
         if k == "invisible_space":
             return "".join(" " if _invisible(ch) else ch for ch in v)
         if k == "matching_normalize":
@@ -553,6 +576,7 @@ class Recipe:
             return _at(parts, op.get("occurrence", 0), "text segment")
         if k == "html_entity_decode":
             for _ in range(16):
+                charge(v)
                 out = html.unescape(v)
                 if out == v:
                     break
@@ -575,13 +599,13 @@ class Recipe:
             return v.translate(str.maketrans("", "", "./ +,;|\t\n\r"))
         if k == "ordered_query_concat":
             return "".join(
-                _query_unescape(x.partition("=")[2])
+                _query_unescape(x.partition("=")[2], charge)
                 for x in v.split("&")
                 if x.partition("=")[2]
             )
         if k == "query_subsequence":
             values = [
-                _query_unescape(x.partition("=")[2])
+                _query_unescape(x.partition("=")[2], charge)
                 for x in v.split("&")
                 if x.partition("=")[2]
             ][:20]

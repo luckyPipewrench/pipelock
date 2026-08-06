@@ -66,9 +66,10 @@ PYTHONPATH=sdk/verifiers/python/src python -m pipelock_aarp_verify aarp \
     <envelope> --trust <trust.json> --json
 ```
 
-Runtime dependencies are `cryptography` (Ed25519 verification) and the pinned
-`unicodedata2` 15.0.0 database used by evidence-provenance transforms; no network
-access is performed in any code path.
+The only runtime dependency is `cryptography` (Ed25519 verification). Evidence-
+provenance transforms use Python 3.12's built-in Unicode 15.0.0 database; the
+package's `<3.13` upper bound prevents a newer Unicode table from silently
+changing canonicalization. No network access is performed in any code path.
 
 ## Install (hash-pinned, offline-friendly)
 
@@ -77,9 +78,9 @@ pip install --require-hashes -r sdk/verifiers/python/requirements.txt
 pip install --no-deps sdk/verifiers/python
 ```
 
-`requirements.txt` pins `cryptography`, `unicodedata2`, and the transitive tree
-(`cffi`, `pycparser`) with hashes, matching the install style already used in CI
-for the companion v1-receipt verifier.
+`requirements.txt` pins `cryptography` and its transitive tree (`cffi`,
+`pycparser`) with hashes, matching the install style already used in CI for the
+companion v1-receipt verifier.
 
 ## Formatter and linter
 

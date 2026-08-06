@@ -10,7 +10,7 @@ name = "pipelock-aarp-verifier-py"
 version = "0.1.0"
 description = "In-repo AARP v0.1 envelope reference verifier (cross-language conformance only; not a published package)"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 keywords = ["aarp", "agent", "receipt", "verifier", "ed25519", "jcs"]
 classifiers = [
@@ -22,10 +22,10 @@ classifiers = [
   # makes an accidental `twine upload` of this reference impl fail.
   "Private :: Do Not Upload",
 ]
-# Runtime dependencies: `cryptography` verifies Ed25519; `unicodedata2` pins
-# evidence-provenance normalization to the profile's Unicode 15.0.0 semantics.
-# CI installs the hash-pinned tree from requirements.txt with --require-hashes.
-dependencies = ["cryptography>=50.0.0", "unicodedata2==15.0.0"]
+# Python 3.12's built-in Unicode database is exactly the profile's pinned 15.0.0
+# version. The upper bound is intentional: newer interpreters must not silently
+# change normalization or case-mapping semantics. `cryptography` verifies Ed25519.
+dependencies = ["cryptography>=50.0.0"]
 
 # No [project.scripts] console entry on purpose: this reference verifier is
 # invoked as `python -m pipelock_aarp_verify aarp` by the conformance gate and

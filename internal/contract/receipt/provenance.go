@@ -91,6 +91,9 @@ func (p EvidenceProvenanceProof) Validate() error {
 			return fmt.Errorf("source %d view commitment: %w", index, err)
 		}
 		for matchIndex, match := range source.Matches {
+			if match.MatchClass == "" {
+				return fmt.Errorf("source %d match %d: missing match class", index, matchIndex)
+			}
 			if err := validateMatchStructure(match); err != nil {
 				return fmt.Errorf("source %d match %d: %w", index, matchIndex, err)
 			}

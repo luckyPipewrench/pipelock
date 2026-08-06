@@ -82,6 +82,48 @@ test("evidence provenance: Unicode 15 tables pin newer code points as opaque", (
   assert.equal(Buffer.from(result).toString("utf8"), "\u{1C89}");
 });
 
+test("evidence provenance: execution limits reject unbounded verifier work", () => {
+  assert.throws(
+    () =>
+      applyEvidenceProvenanceRecipe(Buffer.from("value"), {
+        transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+        operations: Array.from({ length: 33 }, () => ({ kind: "identity" })),
+      }),
+    /exceeds 32 operations/u,
+  );
+
+  const token = `%${"25".repeat(500)}`;
+  assert.throws(
+    () =>
+      applyEvidenceProvenanceRecipe(Buffer.from(token.repeat(1500)), {
+        transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+        operations: [{ kind: "query_unescape" }],
+      }),
+    /cumulative processing budget/u,
+  );
+});
+
+test("encoded token normalization rejects non-ASCII whitespace separators", () => {
+  for (const separator of ["\u00a0", "\u1680", "\u3000", "\ufeff"]) {
+    const output = applyEvidenceProvenanceRecipe(Buffer.from(`SG${separator}k=`), {
+      transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+      operations: [{ kind: "encoded_token_normalize", alphabet: "base64_standard" }],
+    });
+    assert.equal(Buffer.from(output).toString(), "");
+  }
+});
+
+test("URL authority delimiter must immediately follow the scheme", () => {
+  assert.throws(
+    () =>
+      applyEvidenceProvenanceRecipe(Buffer.from("https:api.vendor.example/path://x"), {
+        transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+        operations: [{ kind: "url_component", component: "hostname" }],
+      }),
+    /invalid absolute URL/u,
+  );
+});
+
 // Unicode marks U+001C..U+001F as White_Space=Yes, but Go's unicode.IsSpace
 // excludes them and this profile follows Go. A verifier that strips them
 // produces a different view than the Go reference for byte-identical input, and

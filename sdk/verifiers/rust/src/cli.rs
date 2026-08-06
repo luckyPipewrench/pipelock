@@ -4,6 +4,7 @@
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::verify_chain_with_options;
 use crate::output::{emit_audit_packet, emit_chain, emit_receipt};
+use crate::provenance_proof::run_provenance;
 use crate::receipt::run_receipt;
 use crate::recorder::{extract_receipts, extract_receipts_from_session_dir};
 use crate::rotation::{load_rotation_endorsement_file, verify_chain_with_endorsements};
@@ -36,11 +37,25 @@ pub fn run(args: &[String]) -> Result<i32> {
         "audit-packet" => run_audit_packet_command(rest),
         "chain" => run_chain_command(rest),
         "receipt" => run_receipt_command(rest),
+        "provenance" => run_provenance_command(rest),
         _ => Err(VerifierError::Usage(format!(
             "unknown command {command}\n{}",
             usage(None)
         ))),
     }
+}
+
+fn run_provenance_command(args: &[String]) -> Result<i32> {
+    let target = require_one_arg(args, "provenance")?;
+    let report = run_provenance(&PathBuf::from(target))?;
+    // This is intentionally compact and has a fixed key order: it is a
+    // fixture-only differential surface, not the human receipt report.
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|err| VerifierError::Runtime(format!("encode provenance report: {err}")))?
+    );
+    Ok(if report.overall == "invalid" { 1 } else { 0 })
 }
 
 fn run_audit_packet_command(args: &[String]) -> Result<i32> {
@@ -265,7 +280,8 @@ fn usage(command: Option<&str>) -> String {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
         Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
-        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|receipt} PATH [flags]"
+        Some("provenance") => "Usage: pipelock-verifier-rs provenance PATH".to_string(),
+        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|provenance|receipt} PATH [flags]"
             .to_string(),
     }
 }

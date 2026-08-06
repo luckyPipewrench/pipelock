@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import base64
 import json
+import unicodedata
 from pathlib import Path
 
 import pytest
-import unicodedata2
 
 from pipelock_aarp_verify.provenance import (
     PROFILE_DIGEST,
@@ -30,12 +30,39 @@ CORPUS = (
 
 
 def test_evidence_provenance_uses_profile_pinned_unicode_database() -> None:
-    assert unicodedata2.unidata_version == UNICODE_VERSION == "15.0.0"
+    assert unicodedata.unidata_version == UNICODE_VERSION == "15.0.0"
+
+
+def test_lowercase_does_not_adopt_post_profile_case_mappings() -> None:
+    recipe = Recipe.from_json(PROFILE_DIGEST, [{"kind": "lowercase"}])
+    assert recipe.apply("\u1c89") == "\u1c89"
+
+
+def test_recipe_limits_reject_unbounded_verifier_work() -> None:
+    with pytest.raises(ProvenanceError, match="exceeds 32 operations"):
+        Recipe.from_json(PROFILE_DIGEST, [{"kind": "identity"}] * 33).validate()
+
+    token = "%" + "25" * 500
+    recipe = Recipe.from_json(PROFILE_DIGEST, [{"kind": "query_unescape"}])
+    with pytest.raises(ProvenanceError, match="cumulative processing budget"):
+        recipe.apply(token * 1500)
+
+
+@pytest.mark.parametrize("kind", ["base32_decode_liberal", "base64_decode_liberal"])
+def test_unpadded_liberal_decoders_reject_existing_padding(kind: str) -> None:
+    operation: dict[str, object] = {"kind": kind, "decode_padding": False}
+    value = "MZ======"
+    if kind == "base64_decode_liberal":
+        operation["alphabet"] = "standard"
+        value = "TQ=="
+    recipe = Recipe.from_json(PROFILE_DIGEST, [operation])
+    with pytest.raises(ProvenanceError, match="unexpected padding"):
+        recipe.apply(value)
 
 
 def test_html_entity_decode_iterates_non_common_named_entity() -> None:
     recipe = Recipe.from_json(
-        "sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316",
+        "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94",
         [{"kind": "html_entity_decode"}],
     )
     assert recipe.apply("&amp;CounterClockwiseContourIntegral;") == "∳"

@@ -138,7 +138,7 @@ func TestEvidenceProvenanceTransformCorpus(t *testing.T) {
 			}
 			matches := make([]contractreceipt.ProvenanceMatch, len(vector.Matches))
 			for index, bounds := range vector.Matches {
-				matches[index] = contractreceipt.ProvenanceMatch{MatchOrdinal: uint64(index + 1), ByteStart: bounds[0], ByteEnd: bounds[1], MatchCommitment: conformanceCommitment}
+				matches[index] = contractreceipt.ProvenanceMatch{MatchOrdinal: uint64(index + 1), ByteStart: bounds[0], ByteEnd: bounds[1], MatchClass: "fixture", MatchCommitment: conformanceCommitment}
 			}
 			source := contractreceipt.ProvenanceSource{SourceOrdinal: 1, SourceID: vector.ID, Recipe: normalize.Recipe{TransformProfileDigest: corpus.ProfileDigest, Operations: []normalize.Operation{{Kind: normalize.OperationIdentity}}}, ViewCommitment: conformanceCommitment, Matches: matches}
 			proof := contractreceipt.EvidenceProvenanceProof{Version: contractreceipt.EvidenceProvenanceProofVersionV1, TransformProfileDigest: corpus.ProfileDigest, Sources: []contractreceipt.ProvenanceSource{source}}

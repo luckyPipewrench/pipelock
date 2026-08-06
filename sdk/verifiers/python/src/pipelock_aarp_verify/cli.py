@@ -34,7 +34,12 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
-from .receipt import UNPINNED_RECEIPT_BANNER, verify_evidence_chain_file, verify_receipt_file
+from .provenance_proof import compact_fixture_json
+from .receipt import (
+    UNPINNED_RECEIPT_BANNER,
+    verify_evidence_chain_file,
+    verify_receipt_file,
+)
 from .svid import SVIDConfigError, appraise_with_svid, load_svid_file
 
 ED25519_PUBLIC_KEY_SIZE = 32
@@ -310,6 +315,20 @@ def _run_receipt(
     return EXIT_OK if report.get("valid") else EXIT_GENERAL
 
 
+def _run_provenance(stdout: IO[str], stderr: IO[str], target: str) -> int:
+    """Verify the experimental fixture-only evidence-provenance wrapper."""
+    try:
+        with open(target, "rb") as fh:
+            data = fh.read()
+    except OSError as exc:
+        stderr.write(f"read provenance fixture: {exc}\n")
+        return EXIT_CONFIG
+    rendered, exit_code = compact_fixture_json(data)
+    stdout.write(rendered)
+    stdout.write("\n")
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the process exit code."""
     if argv is None:
@@ -349,6 +368,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow structural-only verification without a trusted signer key",
     )
+    provenance_p = sub.add_parser(
+        "provenance",
+        help="verify an experimental fixture-only evidence-provenance proof",
+    )
+    provenance_p.add_argument("path", help="path to the provenance fixture JSON")
 
     try:
         args = parser.parse_args(argv)
@@ -365,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
             args.chain,
             args.allow_unpinned,
         )
+    if args.command == "provenance":
+        return _run_provenance(sys.stdout, sys.stderr, args.path)
 
     if args.command != "aarp":
         parser.print_usage(sys.stderr)

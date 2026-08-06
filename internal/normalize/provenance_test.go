@@ -21,6 +21,28 @@ import (
 
 const provenanceTestDigest = EvidenceProvenanceProfileV1Digest
 
+func TestQueryIndicesJSONWireShape(t *testing.T) {
+	operation := Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 2}}
+	encoded, err := json.Marshal(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"kind":"query_subsequence","indices":[0,2]}`; got != want {
+		t.Fatalf("Marshal() = %s, want %s", got, want)
+	}
+
+	var decoded Operation
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(decoded.Indices, operation.Indices) {
+		t.Fatalf("Unmarshal() indices = %v, want %v", decoded.Indices, operation.Indices)
+	}
+	if err := json.Unmarshal([]byte(`{"kind":"query_subsequence","indices":"AAI="}`), &decoded); err == nil {
+		t.Fatal("Unmarshal() accepted the legacy base64 string instead of array<uint8>")
+	}
+}
+
 func TestRecipeApplyOperations(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -66,7 +88,7 @@ func TestRecipeApplyOperations(t *testing.T) {
 		{"whitespace compact", "a\u2003 b\n", Operation{Kind: OperationWhitespaceCompact}, "ab"},
 		{"URL noise strip", "a./ +,;|\tb", Operation{Kind: OperationURLNoiseStrip}, "ab"},
 		{"ordered query concat", "a=x%2521&empty=&b=y+z", Operation{Kind: OperationOrderedQueryConcat}, "x!y z"},
-		{"query subsequence", "a=one&b=junk&c=two&d=three", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{0, 2, 3}}, "onetwothree"},
+		{"query subsequence", "a=one&b=junk&c=two&d=three", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 2, 3}}, "onetwothree"},
 		{"hostname dot remove", "api.vendor.example", Operation{Kind: OperationHostnameDotRemove}, "apivendorexample"},
 		{"encoded run", "prefix:QUJDRA== suffix", Operation{Kind: OperationEncodedRun, Occurrence: 1, MinimumLength: 6}, "QUJDRA=="},
 		{"canary canonicalize", "Ab-c_d/e?f", Operation{Kind: OperationCanaryCanonicalize}, "Abcdef"},
@@ -121,7 +143,7 @@ func TestRecipeApplyRejectsInvalidInputs(t *testing.T) {
 		{"malformed liberal base32", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase32DecodeLiberal, DecodePadding: true}}}, "!", "liberal base32 decode"},
 		{"malformed liberal base64", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationBase64DecodeLiberal, Alphabet: "standard", DecodePadding: true}}}, "!", "liberal base64 decode"},
 		{"missing text segment", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationTextSegment, Occurrence: 2}}}, "one/two", "occurrence 2 unavailable"},
-		{"missing query subsequence value", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationQuerySubsequence, Indices: []uint8{0, 2}}}}, "a=one&b=two", "index 2 unavailable"},
+		{"missing query subsequence value", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 2}}}}, "a=one&b=two", "index 2 unavailable"},
 		{"missing encoded run", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationEncodedRun, MinimumLength: 8}}}, "short", "occurrence 0 unavailable"},
 		{"identity rejects component", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationIdentity, Component: ComponentPath}}}, "value", "unsupported component"},
 		{"lowercase rejects selector", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationLowercase, Selector: "ignored"}}}, "value", "unsupported selector"},
@@ -205,6 +227,8 @@ func TestTransformProfileV1DigestMatchesCanonicalDocument(t *testing.T) {
 			QuerySubsequenceMaxValues     int `json:"query_subsequence_max_values"`
 			QuerySubsequenceMinSize       int `json:"query_subsequence_min_size"`
 			QuerySubsequenceMaxSize       int `json:"query_subsequence_max_size"`
+			MaxOperations                 int `json:"max_operations"`
+			MaxCumulativeProcessedBytes   int `json:"max_cumulative_processed_bytes"`
 			MaxInputBytes                 int `json:"max_input_bytes"`
 			MaxOutputBytes                int `json:"max_output_bytes"`
 		} `json:"limits"`
@@ -229,6 +253,9 @@ func TestTransformProfileV1DigestMatchesCanonicalDocument(t *testing.T) {
 	}
 	if profile.Limits.MaxDecodePasses != evidenceProvenanceProfileMaxDecodePasses || profile.Limits.MaxInputBytes != evidenceProvenanceProfileMaxInputBytes || profile.Limits.MaxOutputBytes != evidenceProvenanceProfileMaxOutputBytes {
 		t.Fatalf("profile limits = decode passes %d, input %d, output %d; Go = decode passes %d, input %d, output %d", profile.Limits.MaxDecodePasses, profile.Limits.MaxInputBytes, profile.Limits.MaxOutputBytes, evidenceProvenanceProfileMaxDecodePasses, evidenceProvenanceProfileMaxInputBytes, evidenceProvenanceProfileMaxOutputBytes)
+	}
+	if profile.Limits.MaxOperations != evidenceProvenanceMaxOperations || profile.Limits.MaxCumulativeProcessedBytes != evidenceProvenanceMaxTotalBytes {
+		t.Fatalf("profile execution limits = operations %d, cumulative bytes %d; Go = operations %d, cumulative bytes %d", profile.Limits.MaxOperations, profile.Limits.MaxCumulativeProcessedBytes, evidenceProvenanceMaxOperations, evidenceProvenanceMaxTotalBytes)
 	}
 	if profile.Limits.ScannerQueryUnescapeMaxRounds != evidenceProvenanceScannerMaxDecodeRounds || profile.Limits.HTMLEntityDecodeMaxPasses != evidenceProvenanceHTMLMaxDecodePasses {
 		t.Fatalf("scanner decode limits = query %d HTML %d; Go = query %d HTML %d", profile.Limits.ScannerQueryUnescapeMaxRounds, profile.Limits.HTMLEntityDecodeMaxPasses, evidenceProvenanceScannerMaxDecodeRounds, evidenceProvenanceHTMLMaxDecodePasses)
@@ -330,7 +357,7 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"URL profile", Operation{Kind: OperationURLComponent, Component: ComponentPath, Profile: "x"}, "unsupported profile"},
 		{"URL padding", Operation{Kind: OperationURLComponent, Component: ComponentPath, DecodePadding: true}, "unsupported decode_padding"},
 		{"URL alphabet", Operation{Kind: OperationURLComponent, Component: ComponentPath, Alphabet: "url"}, "unsupported alphabet"},
-		{"URL indices", Operation{Kind: OperationURLComponent, Component: ComponentPath, Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"URL indices", Operation{Kind: OperationURLComponent, Component: ComponentPath, Indices: QueryIndices{0, 1}}, "unsupported indices"},
 		{"URL minimum length", Operation{Kind: OperationURLComponent, Component: ComponentPath, MinimumLength: 8}, "unsupported minimum_length"},
 		{"URL selector", Operation{Kind: OperationURLComponent, Component: ComponentPath, Selector: "marker"}, "unsupported selector"},
 		{"URL occurrence", Operation{Kind: OperationURLComponent, Component: ComponentPath, Occurrence: 1}, "unsupported occurrence"},
@@ -338,7 +365,7 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"percent selector", Operation{Kind: OperationPercentDecode, Passes: 1, Selector: "marker"}, "unsupported selector"},
 		{"percent occurrence", Operation{Kind: OperationPercentDecode, Passes: 1, Occurrence: 1}, "unsupported occurrence"},
 		{"percent alphabet", Operation{Kind: OperationPercentDecode, Passes: 1, Alphabet: "url"}, "unsupported alphabet"},
-		{"percent indices", Operation{Kind: OperationPercentDecode, Passes: 1, Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"percent indices", Operation{Kind: OperationPercentDecode, Passes: 1, Indices: QueryIndices{0, 1}}, "unsupported indices"},
 		{"percent minimum length", Operation{Kind: OperationPercentDecode, Passes: 1, MinimumLength: 8}, "unsupported minimum_length"},
 		{"DLP passes", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", Passes: 1}, "unsupported passes"},
 		{"DLP component", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", Component: ComponentPath}, "unsupported component"},
@@ -346,7 +373,7 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"DLP occurrence", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", Occurrence: 1}, "unsupported occurrence"},
 		{"DLP padding", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", DecodePadding: true}, "unsupported decode_padding"},
 		{"DLP alphabet", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", Alphabet: "url"}, "unsupported alphabet"},
-		{"DLP indices", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"DLP indices", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", Indices: QueryIndices{0, 1}}, "unsupported indices"},
 		{"DLP minimum length", Operation{Kind: OperationDLPNormalize, Profile: "pipelock-dlp-v1", MinimumLength: 8}, "unsupported minimum_length"},
 		{"decoder padding is valid", Operation{Kind: OperationBase64Decode, DecodePadding: true}, ""},
 		{"hex rejects padding", Operation{Kind: OperationHexDecode, DecodePadding: true}, "unsupported decode_padding"},
@@ -356,7 +383,7 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"decoder passes", Operation{Kind: OperationHexDecode, Passes: 1}, "unsupported passes"},
 		{"decoder profile", Operation{Kind: OperationHexDecode, Profile: "x"}, "unsupported profile"},
 		{"decoder alphabet", Operation{Kind: OperationBase64Decode, Alphabet: "url"}, "unsupported alphabet"},
-		{"decoder indices", Operation{Kind: OperationBase64Decode, Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"decoder indices", Operation{Kind: OperationBase64Decode, Indices: QueryIndices{0, 1}}, "unsupported indices"},
 		{"decoder minimum length", Operation{Kind: OperationBase64Decode, MinimumLength: 8}, "unsupported minimum_length"},
 		{"new no-param component", Operation{Kind: OperationQueryUnescape, Component: ComponentPath}, "unsupported component"},
 		{"new no-param selector", Operation{Kind: OperationQueryUnescape, Selector: "marker"}, "unsupported selector"},
@@ -365,17 +392,17 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"new no-param profile", Operation{Kind: OperationQueryUnescape, Profile: "x"}, "unsupported profile"},
 		{"new no-param padding", Operation{Kind: OperationQueryUnescape, DecodePadding: true}, "unsupported decode_padding"},
 		{"new no-param alphabet", Operation{Kind: OperationQueryUnescape, Alphabet: "url"}, "unsupported alphabet"},
-		{"new no-param indices", Operation{Kind: OperationQueryUnescape, Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"new no-param indices", Operation{Kind: OperationQueryUnescape, Indices: QueryIndices{0, 1}}, "unsupported indices"},
 		{"new no-param minimum length", Operation{Kind: OperationQueryUnescape, MinimumLength: 8}, "unsupported minimum_length"},
 		{"identity alphabet", Operation{Kind: OperationIdentity, Alphabet: "url"}, "unsupported alphabet"},
-		{"identity indices", Operation{Kind: OperationIdentity, Indices: []uint8{0, 1}}, "unsupported indices"},
+		{"identity indices", Operation{Kind: OperationIdentity, Indices: QueryIndices{0, 1}}, "unsupported indices"},
 		{"identity minimum length", Operation{Kind: OperationIdentity, MinimumLength: 8}, "unsupported minimum_length"},
 		{"matching profile", Operation{Kind: OperationMatchingNormalize, Profile: "unknown"}, "unknown matching profile"},
 		{"liberal base64 alphabet", Operation{Kind: OperationBase64DecodeLiberal, Alphabet: "unknown"}, "unknown base64 alphabet"},
 		{"encoded token alphabet", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "unknown"}, "unknown encoded-token alphabet"},
-		{"query subsequence too short", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{0}}, "2..4"},
-		{"query subsequence unordered", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{1, 1}}, "strictly increasing"},
-		{"query subsequence out of range", Operation{Kind: OperationQuerySubsequence, Indices: []uint8{0, 20}}, "exceeds scanner limit"},
+		{"query subsequence too short", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0}}, "2..4"},
+		{"query subsequence unordered", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{1, 1}}, "strictly increasing"},
+		{"query subsequence out of range", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 20}}, "exceeds scanner limit"},
 		{"encoded run missing minimum", Operation{Kind: OperationEncodedRun}, "minimum_length must be positive"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -435,23 +462,42 @@ func TestSupportedOperationKinds(t *testing.T) {
 func TestRecipeExecutionBudgetsRejectUnboundedWork(t *testing.T) {
 	t.Parallel()
 
+	// Keep this normative value independent of the implementation constants so
+	// neutralizing a guard makes the test fail instead of moving its own target.
+	const profileMaxOperations = 32
 	identity := Operation{Kind: OperationIdentity}
 
 	t.Run("operation count is capped", func(t *testing.T) {
 		t.Parallel()
-		operations := make([]Operation, evidenceProvenanceMaxOperations+1)
+		operations := make([]Operation, profileMaxOperations+1)
 		for i := range operations {
 			operations[i] = identity
 		}
 		recipe := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: operations}
+		if err := recipe.Validate(); err == nil {
+			t.Fatal("recipe validation accepted an operation count that commitment reconstruction must reject")
+		}
 		if _, err := recipe.Apply("value"); err == nil {
 			t.Fatal("recipe exceeding the operation cap was accepted")
 		}
 	})
 
+	t.Run("repeated internal passes consume the same budget", func(t *testing.T) {
+		t.Parallel()
+		// One deeply nested token stays under the 2 MiB input cap, but each
+		// QueryUnescape round reprocesses almost all of it. Charging only once
+		// at operation dispatch would incorrectly accept this verifier DoS.
+		token := "%" + strings.Repeat("25", evidenceProvenanceScannerMaxDecodeRounds)
+		input := strings.Repeat(token, 1500)
+		recipe := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: []Operation{{Kind: OperationQueryUnescape}}}
+		if _, err := recipe.Apply(input); err == nil || !strings.Contains(err.Error(), "cumulative processing budget") {
+			t.Fatalf("repeated decode budget error = %v", err)
+		}
+	})
+
 	t.Run("cap boundary is inclusive", func(t *testing.T) {
 		t.Parallel()
-		operations := make([]Operation, evidenceProvenanceMaxOperations)
+		operations := make([]Operation, profileMaxOperations)
 		for i := range operations {
 			operations[i] = identity
 		}
@@ -465,7 +511,7 @@ func TestRecipeExecutionBudgetsRejectUnboundedWork(t *testing.T) {
 		t.Parallel()
 		// Each pass re-reads a large intermediate value. No single operation
 		// exceeds the per-output cap, but together they must exhaust the budget.
-		operations := make([]Operation, evidenceProvenanceMaxOperations)
+		operations := make([]Operation, profileMaxOperations)
 		for i := range operations {
 			operations[i] = identity
 		}

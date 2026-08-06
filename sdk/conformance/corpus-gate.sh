@@ -14,11 +14,9 @@
 #      for the documented policy fixtures the reference verifiers do not yet
 #      implement (max_age expiry, control-byte/header-injection rejection).
 #
-# Chain (.jsonl) fixtures are intentionally NOT run here: the corpus encodes
-# chains as bare receipts, while the receipt readers expect flight-recorder
-# entries, and several malicious chain fixtures test chain-level policy
-# (replay, verdict-chain consistency) that the reference verifiers do not yet
-# implement. Chain parity is tracked separately.
+# The receipt-v1 lane remains single-receipt compatibility coverage. The
+# provenance lane below includes signed multi-entry chains in its fixture
+# envelope, compares the exact staged JSON, and checks committed expectations.
 #
 # The verifier invocations are parameterized so this runs locally and in CI.
 # Each must accept `<command...> <fixture-path> --key <hex>` and exit 0 for
@@ -34,27 +32,35 @@ TS_VERIFY="${TS_VERIFY:-}"      # e.g. "node sdk/verifiers/ts/dist/src/cli.js re
 RUST_VERIFY="${RUST_VERIFY:-}"  # e.g. "sdk/verifiers/rust/target/release/pipelock-verifier-rs receipt"
 PY_VERIFY="${PY_VERIFY:-}"      # e.g. "python -m pipelock_verify"
 
+PROVENANCE_CORPUS="${PROVENANCE_CORPUS:-$ROOT/testdata/provenance}"
+GO_PROVENANCE="${GO_PROVENANCE:-}"
+TS_PROVENANCE="${TS_PROVENANCE:-}"
+RUST_PROVENANCE="${RUST_PROVENANCE:-}"
+PY_PROVENANCE="${PY_PROVENANCE:-}"
+
 # Policy fixtures: all four verifiers UNANIMOUSLY accept these because none yet
 # implement the verifier-policy check they exercise. They are not a
 # differential. Keep this list in sync with sdk/conformance/corpus_test.go.
 POLICY_FIXTURES=" m03-expired-timestamp m12-header-injection-null-byte "
 
-if [ -z "$KEY" ]; then
+if [ "${PROVENANCE_ONLY:-0}" != "1" ] && [ -z "$KEY" ]; then
   KEY="$(grep -o '"public_key_hex": *"[0-9a-f]*"' "$CORPUS/test-key.json" | sed 's/.*"\([0-9a-f]*\)"$/\1/')"
 fi
-if [ -z "$KEY" ]; then
+if [ "${PROVENANCE_ONLY:-0}" != "1" ] && [ -z "$KEY" ]; then
   echo "FATAL: could not resolve corpus public key" >&2
   exit 2
 fi
 
-missing=0
-for v in GO_VERIFY TS_VERIFY RUST_VERIFY PY_VERIFY; do
-  if [ -z "${!v}" ]; then
-    echo "FATAL: $v is not set (need all four verifier commands)" >&2
-    missing=1
-  fi
-done
-[ "$missing" -eq 0 ] || exit 2
+if [ "${PROVENANCE_ONLY:-0}" != "1" ]; then
+  missing=0
+  for v in GO_VERIFY TS_VERIFY RUST_VERIFY PY_VERIFY; do
+    if [ -z "${!v}" ]; then
+      echo "FATAL: $v is not set (need all four verifier commands)" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ] || exit 2
+fi
 
 verdict() { # cmd... path -> prints accept/reject
   local path="$1"; shift
@@ -78,6 +84,7 @@ expect_verdict() { # expect-file -> accept/reject
   grep -o '"verdict": *"[a-z]*"' "$1" | head -1 | sed 's/.*"\([a-z]*\)"$/\1/'
 }
 
+if [ "${PROVENANCE_ONLY:-0}" != "1" ]; then
 smoke_verifier Go $GO_VERIFY
 smoke_verifier TypeScript $TS_VERIFY
 smoke_verifier Rust $RUST_VERIFY
@@ -130,3 +137,67 @@ if [ "$checked" -eq 0 ]; then
 fi
 [ "$fails" -eq 0 ] || exit 1
 echo "PASS: all four verifiers agree across the corpus"
+fi
+
+for v in GO_PROVENANCE TS_PROVENANCE RUST_PROVENANCE PY_PROVENANCE; do
+  if [ -z "${!v}" ]; then
+    echo "FATAL: $v is not set (need all four provenance verifier commands)" >&2
+    exit 2
+  fi
+done
+
+read -r -a go_provenance_cmd <<< "$GO_PROVENANCE"
+read -r -a ts_provenance_cmd <<< "$TS_PROVENANCE"
+read -r -a rust_provenance_cmd <<< "$RUST_PROVENANCE"
+read -r -a py_provenance_cmd <<< "$PY_PROVENANCE"
+
+provenance_output() { # path cmd... -> stdout, preserving invalid-stage JSON
+  local path="$1"; shift
+  local output
+  output="$("$@" "$path" 2>/dev/null)"
+  local status=$?
+  if [ "$status" -gt 1 ]; then
+    echo "FATAL: provenance verifier command failed with status $status for $path" >&2
+    return 2
+  fi
+  printf '%s' "$output"
+}
+
+provenance_fails=0
+provenance_checked=0
+printf "\n%-44s %-12s %-12s %-12s %-12s %s\n" PROVENANCE GO TS RUST PY RESULT
+for f in "$PROVENANCE_CORPUS"/*.json; do
+  [ -f "$f" ] || continue
+  case "$f" in *.expect.json) continue ;; esac
+  base="$(basename "$f" .json)"
+  expfile="$PROVENANCE_CORPUS/$base.expect.json"
+  [ -f "$expfile" ] || { echo "FATAL: missing provenance expectation for $base" >&2; exit 2; }
+  expected="$(<"$expfile")"
+
+  go="$(provenance_output "$f" "${go_provenance_cmd[@]}")" || exit 2
+  ts="$(provenance_output "$f" "${ts_provenance_cmd[@]}")" || exit 2
+  rs="$(provenance_output "$f" "${rust_provenance_cmd[@]}")" || exit 2
+  py="$(provenance_output "$f" "${py_provenance_cmd[@]}")" || exit 2
+  provenance_checked=$((provenance_checked + 1))
+
+  result="ok"
+  if [ "$go" != "$ts" ] || [ "$go" != "$rs" ] || [ "$go" != "$py" ]; then
+    result="STAGE-DIFFERENTIAL"
+    provenance_fails=$((provenance_fails + 1))
+  elif [ "$go" != "$expected" ]; then
+    # This is the agreement-only-vacuity guard: four implementations making
+    # the same mistake still fail the frozen normative known answer.
+    result="KNOWN-ANSWER-MISMATCH"
+    provenance_fails=$((provenance_fails + 1))
+  fi
+  printf "%-44s %-12s %-12s %-12s %-12s %s\n" "$base" "$(printf '%s' "$go" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$(printf '%s' "$ts" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$(printf '%s' "$rs" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$(printf '%s' "$py" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$result"
+done
+
+echo "----"
+echo "checked $provenance_checked provenance fixtures (including signed chains); $provenance_fails failure(s)"
+if [ "$provenance_checked" -eq 0 ]; then
+  echo "FATAL: no provenance fixtures checked; corpus path wrong?" >&2
+  exit 2
+fi
+[ "$provenance_fails" -eq 0 ] || exit 1
+echo "PASS: all four verifiers emit byte-identical staged provenance results and match normative vectors"

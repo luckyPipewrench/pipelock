@@ -15,9 +15,11 @@
     "query_subsequence_max_values": 20,
     "query_subsequence_min_size": 2,
     "query_subsequence_max_size": 4,
+    "max_operations": 32,
+    "max_cumulative_processed_bytes": 16777216,
     "max_input_bytes": 2097152,
     "max_output_bytes": 1048576,
-    "enforcement": "MUST reject an input exceeding max_input_bytes before applying a recipe and an intermediate or final output exceeding max_output_bytes after every operation"
+    "enforcement": "MUST reject more than max_operations before execution or commitment reconstruction; MUST charge every operation input and every repeated internal decode pass against max_cumulative_processed_bytes before processing it; MUST reject an input exceeding max_input_bytes before applying a recipe and an intermediate or final output exceeding max_output_bytes after every operation"
   },
   "malformed_input_policy": "reject_never_substitute",
   "control_character_policy": {

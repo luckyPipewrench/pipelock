@@ -9,10 +9,12 @@ import unicode15LowercaseMap from "@unicode/unicode-15.0.0/Simple_Case_Mapping/L
 
 /** The pinned, fixture-only evidence-provenance transform profile. */
 export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
-  "sha256:49f44e3056be677c48e8177b844576ba10c50c452f70dac77aef516e231dd316";
+  "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 
 const MAX_INPUT_BYTES = 2 << 20;
 const MAX_OUTPUT_BYTES = 1 << 20;
+const MAX_OPERATIONS = 32;
+const MAX_CUMULATIVE_PROCESSED_BYTES = 16 << 20;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const encoder = new TextEncoder();
 const kinds = new Set([
@@ -187,6 +189,7 @@ export function validateEvidenceProvenanceRecipe(
   if (r.transform_profile_digest !== EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST)
     fail("recipe: transform profile digest: unknown profile");
   if (!Array.isArray(r.operations)) fail("recipe: operations must be an array");
+  if (r.operations.length > MAX_OPERATIONS) fail(`recipe: exceeds ${MAX_OPERATIONS} operations`);
   for (const [index, raw] of r.operations.entries()) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw))
       fail(`recipe operation ${index}: must be an object`);
@@ -301,10 +304,17 @@ export function applyEvidenceProvenanceRecipe(input: Uint8Array, recipe: unknown
   if (input.length > MAX_INPUT_BYTES) fail("recipe input: exceeds profile byte limit");
   validateEvidenceProvenanceRecipe(recipe);
   let value = source;
+  let remaining = MAX_CUMULATIVE_PROCESSED_BYTES;
+  const charge = (processed: string): void => {
+    const size = byteLength(processed);
+    if (size > remaining) fail("recipe: exceeds cumulative processing budget");
+    remaining -= size;
+  };
   for (const [index, raw] of recipe.operations.entries()) {
     const op = raw as Record<string, unknown>;
     try {
-      value = apply(value, op);
+      charge(value);
+      value = apply(value, op, charge);
     } catch (error) {
       throw new Error(
         `recipe operation ${index} (${String(op.kind)}): ${error instanceof Error ? error.message : String(error)}`,
@@ -331,8 +341,9 @@ function percentDecode(value: string): string {
 function queryUnescapeOnce(value: string): string {
   return percentDecode(value.replaceAll("+", " "));
 }
-function queryUnescape(value: string): string {
+function queryUnescape(value: string, charge: (value: string) => void): string {
   for (let i = 0; i < 500; i++) {
+    charge(value);
     try {
       const next = queryUnescapeOnce(value);
       if (next === value) break;
@@ -509,10 +520,10 @@ function encodedToken(value: string, alphabet: string): string {
         : /^[A-Za-z0-9_\-=]$/u;
   const separator =
     alphabet === "base32"
-      ? /^[\s._\-/]$/u
+      ? /^[ \t\n\r\f\v._\-/]$/u
       : alphabet === "base64_standard"
-        ? /^[\s._-]$/u
-        : /^[\s._/+]$/u;
+        ? /^[ \t\n\r\f\v._-]$/u
+        : /^[ \t\n\r\f\v._/+]$/u;
   let changed = false,
     result = "";
   for (const c of value) {
@@ -522,11 +533,12 @@ function encodedToken(value: string, alphabet: string): string {
   }
   return changed && result.length >= 4 ? result : "";
 }
-function htmlDecode(value: string): string {
+function htmlDecode(value: string, charge: (value: string) => void): string {
   // `he` ships the full WHATWG/HTML5 named-character-reference table. Its
   // non-strict text-mode decoding matches Go html.UnescapeString's liberal
   // treatment of malformed and semicolon-less references.
   for (let i = 0; i < 16 && value.includes("&"); i++) {
+    charge(value);
     const next = he.decode(value, { isAttributeValue: false, strict: false });
     if (next === value) break;
     value = next;
@@ -560,7 +572,11 @@ function rawHostname(value: string): string {
   const colon = authority.lastIndexOf(":");
   return colon < 0 ? authority : authority.slice(0, colon);
 }
-function apply(value: string, op: Record<string, unknown>): string {
+function apply(
+  value: string,
+  op: Record<string, unknown>,
+  charge: (value: string) => void,
+): string {
   const kind = op.kind as string;
   switch (kind) {
     case "identity":
@@ -578,7 +594,7 @@ function apply(value: string, op: Record<string, unknown>): string {
       // branch left path, raw_query and the query components deriving views
       // from a URL the reference implementation refuses, so the rejection
       // belongs here, before any component dispatch.
-      if (!value.includes("://")) fail("URL parse: invalid absolute URL");
+      if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(value)) fail("URL parse: invalid absolute URL");
       const c = op.component as string;
       if (c === "url") return value;
       if (c === "hostname") return rawHostname(value);
@@ -593,7 +609,10 @@ function apply(value: string, op: Record<string, unknown>): string {
       return c === "query_key" ? selector : matches[occurrence]![1];
     }
     case "percent_decode": {
-      for (let i = 0; i < (op.passes as number); i++) value = percentDecode(value);
+      for (let i = 0; i < (op.passes as number); i++) {
+        charge(value);
+        value = percentDecode(value);
+      }
       return value;
     }
     case "dlp_normalize":
@@ -617,7 +636,7 @@ function apply(value: string, op: Record<string, unknown>): string {
     case "vowel_fold":
       return value.replace(/[aeiouAEIOU]/gu, (c) => (c >= "A" && c <= "Z" ? "A" : "a"));
     case "query_unescape":
-      return queryUnescape(value);
+      return queryUnescape(value, charge);
     case "invisible_space":
       return stripInvisible(value, " ");
     case "matching_normalize":
@@ -642,7 +661,7 @@ function apply(value: string, op: Record<string, unknown>): string {
       return segments[occurrence]!;
     }
     case "html_entity_decode":
-      return htmlDecode(value);
+      return htmlDecode(value, charge);
     case "whitespace_compact":
       return compactUnicode15Whitespace(value);
     case "url_noise_strip":
@@ -652,7 +671,7 @@ function apply(value: string, op: Record<string, unknown>): string {
         .split("&")
         .map((x) => (x.includes("=") ? x.slice(x.indexOf("=") + 1) : ""))
         .filter(Boolean)
-        .map(queryUnescape)
+        .map((item) => queryUnescape(item, charge))
         .join("");
     case "query_subsequence": {
       const values = value
@@ -660,7 +679,7 @@ function apply(value: string, op: Record<string, unknown>): string {
         .map((x) => (x.includes("=") ? x.slice(x.indexOf("=") + 1) : ""))
         .filter(Boolean)
         .slice(0, 20)
-        .map(queryUnescape);
+        .map((item) => queryUnescape(item, charge));
       return (op.indices as number[])
         .map((i) => values[i] ?? fail(`query subsequence: index ${i} unavailable`))
         .join("");

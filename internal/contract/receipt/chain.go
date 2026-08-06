@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // GenesisHash is the chain_prev_hash of the first receipt in a v2 chain.
@@ -204,7 +205,11 @@ func ExtractEvidenceReceipts(path string) ([]EvidenceReceipt, error) {
 // session and returns v2 EvidenceReceipts in chain order. Files are ordered by
 // their numeric sequence suffix, matching recorder.QuerySession's v1 behavior.
 func ExtractEvidenceReceiptsFromSessionDir(dir, sessionID string) ([]EvidenceReceipt, error) {
-	clean := filepath.Clean(dir)
+	run, resolveErr := recorder.ResolveEvidenceRun(dir, "")
+	if resolveErr != nil {
+		return nil, fmt.Errorf("resolve evidence run: %w", resolveErr)
+	}
+	clean := run.Dir
 	entries, err := os.ReadDir(clean)
 	if err != nil {
 		return nil, fmt.Errorf("read evidence directory: %w", err)

@@ -148,21 +148,38 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 		return evidenceDoctorReport{}, fmt.Errorf("%q is not a directory", dir)
 	}
 
-	d := &evidenceDoctor{
-		dir:          cleanDir,
-		sidecarFiles: make(map[string]struct{}),
-		receiptRefs:  make(map[string][]doctorChainRef),
-		escrowRefs:   make(map[string][]doctorEntryRef),
+	runs, err := recorder.DiscoverEvidenceRuns(cleanDir)
+	if err != nil {
+		// Discovery failures are structural evidence findings, not command
+		// configuration errors. Preserve the doctor's established fail-closed
+		// report contract for an unreadable evidence root.
+		return evidenceDoctorReport{
+			Dir: cleanDir,
+			Findings: []evidenceDoctorFinding{{
+				Kind:    "directory_read_error",
+				Message: "discover evidence runs: " + err.Error(),
+			}},
+		}, nil
 	}
-	d.scan()
-	return evidenceDoctorReport{
-		Dir:           cleanDir,
-		FilesRead:     d.filesRead,
-		Findings:      d.findings,
-		Truncated:     d.truncated,
-		ScanTruncated: d.scanTruncated,
-		FilesSkipped:  d.filesSkipped,
-	}, nil
+	if len(runs) == 0 {
+		runs = []recorder.EvidenceRun{{Dir: cleanDir}}
+	}
+	report := evidenceDoctorReport{Dir: cleanDir}
+	for _, run := range runs {
+		d := &evidenceDoctor{
+			dir:          run.Dir,
+			sidecarFiles: make(map[string]struct{}),
+			receiptRefs:  make(map[string][]doctorChainRef),
+			escrowRefs:   make(map[string][]doctorEntryRef),
+		}
+		d.scan()
+		report.FilesRead += d.filesRead
+		report.Findings = append(report.Findings, d.findings...)
+		report.Truncated = report.Truncated || d.truncated
+		report.ScanTruncated = report.ScanTruncated || d.scanTruncated
+		report.FilesSkipped += d.filesSkipped
+	}
+	return report, nil
 }
 
 func (d *evidenceDoctor) scan() {

@@ -481,6 +481,14 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 	// session instead.
 	clean := filepath.Clean(dir)
 	wantSession := filepath.Base(sessionID)
+	run, resolveErr := recorder.ResolveEvidenceRun(clean, "")
+	if resolveErr != nil {
+		if errors.Is(resolveErr, fs.ErrNotExist) {
+			return receiptTail{}, errNoReceiptTail
+		}
+		return receiptTail{}, fmt.Errorf("resolve evidence run: %w", resolveErr)
+	}
+	clean = run.Dir
 	dirEntries, err := os.ReadDir(clean)
 	if err != nil {
 		// filepath.Glob, which this replaced, reported no matches and no error

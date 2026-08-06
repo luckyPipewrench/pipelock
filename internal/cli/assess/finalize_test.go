@@ -1429,12 +1429,17 @@ func TestRewriteAssessmentArtifacts_DeletesOnFailure(t *testing.T) {
 		t.Fatalf("initial write HTML: %v", err)
 	}
 
-	// Remove write permission on the JSON file so OpenFile truncate fails,
-	// but leave dir writable so Remove succeeds.
-	if err := os.Chmod(jsonPath, 0o400); err != nil {
-		t.Fatalf("chmod json: %v", err)
+	// Replace the JSON artifact with an empty directory. Writing to a path that
+	// is a directory fails on every supported platform, where a read-only file
+	// does not: Windows ignores the mode and so does root. The directory is
+	// empty, so the purge step can still remove it and the assertions below
+	// stay meaningful.
+	if err := os.Remove(jsonPath); err != nil {
+		t.Fatalf("removing json artifact: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(jsonPath, 0o600) })
+	if err := os.Mkdir(jsonPath, 0o750); err != nil {
+		t.Fatalf("creating directory at json path: %v", err)
+	}
 
 	a.Signed = false
 	artifacts := make(map[string]string)

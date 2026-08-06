@@ -150,7 +150,20 @@ func TestRenderAssessmentHTML(t *testing.T) {
 }
 
 func TestRenderSummaryHTML(t *testing.T) {
-	s := minimalSummary(assessGradeB, 82)
+	// Project a paid assessment rather than hand-building a Summary. The
+	// paid-only assertions below are only meaningful if the values existed
+	// upstream and projectToSummary is what removed them.
+	paid := minimalAssessment(assessGradeB, 82)
+	paid.Compliance = []compliance.Framework{{
+		ID: "owasp-mcp-top10", Name: "OWASP MCP Top 10", MappingVersion: 1,
+		Controls: []compliance.ControlMapping{
+			{ID: "c1", Status: compliance.StatusCovered},
+			{ID: "c2", Status: compliance.StatusCovered},
+			{ID: "c3", Status: compliance.StatusPartial},
+		},
+	}}
+	projected := projectToSummary(*paid)
+	s := &projected
 
 	var buf bytes.Buffer
 	if err := renderSummaryHTML(&buf, s); err != nil {
@@ -185,12 +198,24 @@ func TestRenderSummaryHTML(t *testing.T) {
 	}
 
 	// Per-framework coverage counts are free. The per-control mapping detail
-	// is what the paid report adds.
+	// is what the paid report adds. Assert the rendered numbers, not just the
+	// heading, so an empty or wrong rollup cannot pass.
 	if !strings.Contains(html, "Compliance Coverage") {
 		t.Error("summary should render the per-framework coverage rollup")
 	}
 	if !strings.Contains(html, "OWASP MCP Top 10") {
 		t.Error("summary should name the covered framework")
+	}
+	if !strings.Contains(html, "Mapping v1") {
+		t.Error("summary should render the mapping version")
+	}
+	if !strings.Contains(html, "2 covered / 3 total") {
+		t.Error("summary should render the actual coverage counts")
+	}
+	for _, controlID := range []string{"c1", "c2", "c3"} {
+		if strings.Contains(html, ">"+controlID+"<") {
+			t.Errorf("summary leaked per-control mapping detail %q", controlID)
+		}
 	}
 
 	// The summary names its non-claims, but must not leak the paid values.
@@ -201,9 +226,10 @@ func TestRenderSummaryHTML(t *testing.T) {
 		t.Error("summary should not contain evidence/detail value")
 	}
 
-	// Must contain finding title.
-	if !strings.Contains(html, "Missed exfiltration") {
-		t.Error("summary should contain top finding title")
+	// The finding title survives projection; the remediation and evidence
+	// attached to the same finding must not.
+	if !strings.Contains(html, "Secret exfiltration not blocked") {
+		t.Error("summary should contain the projected top finding title")
 	}
 }
 

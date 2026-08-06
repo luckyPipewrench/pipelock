@@ -156,7 +156,10 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 		return verifyExitTamperedArtifact, fmt.Errorf("stat attestation signature: %w", err)
 	}
 
-	agentName, err := resolveAssessSigningAgent(agent, "")
+	// Prefer the agent recorded in the manifest, matching assess verify. An
+	// attestation signed under a custom identity must resolve that identity
+	// rather than fall through to the default and fail on the wrong key.
+	agentName, err := resolveAssessSigningAgent(agent, manifest.SignerAgent)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("resolving agent: %w", err)
 	}

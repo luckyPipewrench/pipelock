@@ -432,10 +432,10 @@ func TestLoadSigningIdentity_ReusesExistingKeyPair(t *testing.T) {
 
 func TestLoadSigningIdentity_KeyGenerationFailure(t *testing.T) {
 	parent := t.TempDir()
-	if err := os.Chmod(parent, 0o500); err != nil {
+	if err := os.Chmod(parent, 0o500); err != nil { // #nosec G302 -- directory must be read-only to exercise generation failure
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restore private temp-directory traversal for cleanup
 	dir := filepath.Join(parent, "keystore")
 	id, err := loadSigningIdentity(assessFinalizeOpts{Agent: "new-agent", KeystoreDir: dir})
 	if err == nil {

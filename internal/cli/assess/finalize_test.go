@@ -1523,6 +1523,27 @@ func TestRemoveStaleSignature(t *testing.T) {
 	})
 }
 
+func TestRecordArtifactHash(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), []byte("summary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := make(map[string]string)
+	if err := recordArtifactHash(dir, "summary.json", artifacts); err != nil {
+		t.Fatalf("recordArtifactHash: %v", err)
+	}
+	want, err := hashFile(filepath.Join(dir, "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := artifacts["summary.json"]; got != want {
+		t.Errorf("recorded hash = %q, want %q", got, want)
+	}
+	if err := recordArtifactHash(dir, "missing.json", artifacts); err == nil || !strings.Contains(err.Error(), "hashing missing.json") {
+		t.Errorf("missing artifact error = %v, want named hashing failure", err)
+	}
+}
+
 func TestAssessFinalize_PartialSigningIdentityFailsClosed(t *testing.T) {
 	runDir := setupCompletedRun(t)
 	keystoreDir := filepath.Join(t.TempDir(), "keystore")

@@ -300,11 +300,11 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		if err := writeAssessmentHTML(filepath.Join(cleanDir, "assessment.html"), &assessment); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
-		if h, err := hashFile(filepath.Join(cleanDir, "assessment.json")); err == nil {
-			artifacts["assessment.json"] = h
+		if err := recordArtifactHash(cleanDir, "assessment.json", artifacts); err != nil {
+			return cliutil.ExitCodeError(2, err)
 		}
-		if h, err := hashFile(filepath.Join(cleanDir, "assessment.html")); err == nil {
-			artifacts["assessment.html"] = h
+		if err := recordArtifactHash(cleanDir, "assessment.html", artifacts); err != nil {
+			return cliutil.ExitCodeError(2, err)
 		}
 
 		if shouldEmitAttestation {
@@ -356,8 +356,8 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 			if err := writeAttestationJSON(filepath.Join(cleanDir, "attestation.json"), &att); err != nil {
 				return cliutil.ExitCodeError(2, err)
 			}
-			if h, err := hashFile(filepath.Join(cleanDir, "attestation.json")); err == nil {
-				artifacts["attestation.json"] = h
+			if err := recordArtifactHash(cleanDir, "attestation.json", artifacts); err != nil {
+				return cliutil.ExitCodeError(2, err)
 			}
 
 			// Sign AFTER attestation includes all metadata (signer, badge hash).
@@ -369,8 +369,8 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 			if err := signing.SaveSignature(sig, sigPath); err != nil {
 				return cliutil.ExitCodeError(1, fmt.Errorf("saving attestation signature: %w", err))
 			}
-			if h, err := hashFile(sigPath); err == nil {
-				artifacts["attestation.json"+signing.SigExtension] = h
+			if err := recordArtifactHash(cleanDir, "attestation.json"+signing.SigExtension, artifacts); err != nil {
+				return cliutil.ExitCodeError(2, err)
 			}
 		}
 	} else {
@@ -383,11 +383,11 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		if err := writeSummaryHTML(filepath.Join(cleanDir, "summary.html"), &summary); err != nil {
 			return cliutil.ExitCodeError(2, err)
 		}
-		if h, err := hashFile(filepath.Join(cleanDir, "summary.json")); err == nil {
-			artifacts["summary.json"] = h
+		if err := recordArtifactHash(cleanDir, "summary.json", artifacts); err != nil {
+			return cliutil.ExitCodeError(2, err)
 		}
-		if h, err := hashFile(filepath.Join(cleanDir, "summary.html")); err == nil {
-			artifacts["summary.html"] = h
+		if err := recordArtifactHash(cleanDir, "summary.html", artifacts); err != nil {
+			return cliutil.ExitCodeError(2, err)
 		}
 	}
 
@@ -874,6 +874,15 @@ func hashFile(path string) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func recordArtifactHash(cleanDir, name string, artifacts map[string]string) error {
+	h, err := hashFile(filepath.Join(cleanDir, name))
+	if err != nil {
+		return fmt.Errorf("hashing %s: %w", name, err)
+	}
+	artifacts[name] = h
+	return nil
 }
 
 // signingIdentity bundles the resolved agent + keystore + key material

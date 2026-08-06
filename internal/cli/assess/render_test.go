@@ -157,9 +157,9 @@ func TestRenderSummaryHTML(t *testing.T) {
 	paid.Compliance = []compliance.Framework{{
 		ID: "owasp-mcp-top10", Name: "OWASP MCP Top 10", MappingVersion: 1,
 		Controls: []compliance.ControlMapping{
-			{ID: "c1", Status: compliance.StatusCovered},
-			{ID: "c2", Status: compliance.StatusCovered},
-			{ID: "c3", Status: compliance.StatusPartial},
+			{ID: "sentinel-control-alpha", Status: compliance.StatusCovered},
+			{ID: "sentinel-control-bravo", Status: compliance.StatusCovered},
+			{ID: "sentinel-control-charlie", Status: compliance.StatusPartial},
 		},
 	}}
 	projected := projectToSummary(*paid)
@@ -212,8 +212,13 @@ func TestRenderSummaryHTML(t *testing.T) {
 	if !strings.Contains(html, "2 covered / 3 total") {
 		t.Error("summary should render the actual coverage counts")
 	}
-	for _, controlID := range []string{"c1", "c2", "c3"} {
-		if strings.Contains(html, ">"+controlID+"<") {
+	// Search for the bare ID anywhere in the output. A leak into an attribute,
+	// a title, or text with surrounding punctuation is still a leak, and an
+	// assertion that only recognizes one exact shape would miss all of them.
+	for _, controlID := range []string{
+		"sentinel-control-alpha", "sentinel-control-bravo", "sentinel-control-charlie",
+	} {
+		if strings.Contains(html, controlID) {
 			t.Errorf("summary leaked per-control mapping detail %q", controlID)
 		}
 	}

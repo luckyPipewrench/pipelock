@@ -178,6 +178,9 @@ func TestAssessFinalize_AttestationArtifacts(t *testing.T) {
 // signed anything and fail on a bundle that is perfectly valid.
 func TestAssessVerifyAttestation_ResolvesRecordedAgent(t *testing.T) {
 	runDir, keystoreDir, agentName := setupFinalizedRunWithAttestation(t)
+	// The empty value is what an operator who passes no --agent has. Pin it
+	// here rather than rely on TestMain, since this variable is the thing under test.
+	t.Setenv("PIPELOCK_AGENT", "")
 	if agentName == assessDefaultSigningAgent {
 		t.Fatalf("fixture agent %q must differ from the default for this test to mean anything", agentName)
 	}
@@ -194,6 +197,9 @@ func TestAssessVerifyAttestation_ResolvesRecordedAgent(t *testing.T) {
 // The manifest signature path has the same requirement, and had the same bug.
 func TestAssessVerify_ResolvesRecordedAgent(t *testing.T) {
 	runDir, keystoreDir, agentName := setupFinalizedRunWithAttestation(t)
+	// The empty value is what an operator who passes no --agent has. Pin it
+	// here rather than rely on TestMain, since this variable is the thing under test.
+	t.Setenv("PIPELOCK_AGENT", "")
 	if agentName == assessDefaultSigningAgent {
 		t.Fatalf("fixture agent %q must differ from the default", agentName)
 	}

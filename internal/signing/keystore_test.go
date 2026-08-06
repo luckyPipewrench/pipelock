@@ -208,6 +208,34 @@ func TestKeystoreGenerateAgentRecoversInterruptedForcePublish(t *testing.T) {
 	assertStoredAgentPairCoherent(t, ks)
 }
 
+func TestKeystoreLoadRecoversInterruptedForcePublish(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+	wantPub, err := ks.GenerateAgent("shared")
+	if err != nil {
+		t.Fatalf("initial GenerateAgent(): %v", err)
+	}
+	wantPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("initial LoadPrivateKey(): %v", err)
+	}
+	if err := os.Rename(ks.agentDir("shared"), ks.agentBackupDir("shared")); err != nil {
+		t.Fatalf("simulate interrupted publish: %v", err)
+	}
+
+	gotPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPrivateKey() recovery: %v", err)
+	}
+	gotPub, err := ks.LoadPublicKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPublicKey() recovery: %v", err)
+	}
+	if !bytes.Equal(gotPub, wantPub) || !bytes.Equal(gotPriv, wantPriv) {
+		t.Fatal("load recovery did not restore the prior coherent pair")
+	}
+	assertStoredAgentPairCoherent(t, ks)
+}
+
 func TestInstallStagedAgentDirectoryReplacesConcurrentEmptyPreflight(t *testing.T) {
 	parent := t.TempDir()
 	target := filepath.Join(parent, "active")

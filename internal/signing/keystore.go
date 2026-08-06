@@ -247,16 +247,46 @@ func (k *Keystore) recoverAgentTransaction(name string) error {
 	return nil
 }
 
+func (k *Keystore) recoverAgentTransactionForRead(name string) error {
+	backupDir := k.agentBackupDir(name)
+	if _, err := os.Lstat(backupDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking agent backup path: %w", err)
+	}
+	parent := filepath.Dir(k.agentDir(name))
+	if err := k.validateContainment(parent); err != nil {
+		return fmt.Errorf("agents directory containment check: %w", err)
+	}
+	return withAgentLock(filepath.Join(parent, agentLockPrefix+name), func() error {
+		return k.recoverAgentTransaction(name)
+	})
+}
+
 // LoadPrivateKey loads an agent's private key from the keystore.
 func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(k.agentDir(name), privateKeyFile)
-	if err := k.validateContainment(path); err != nil {
-		return nil, fmt.Errorf("private key containment check: %w", err)
+	for range 2 {
+		if err := k.recoverAgentTransactionForRead(name); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(k.agentDir(name), privateKeyFile)
+		if err := k.validateContainment(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("private key containment check: %w", err)
+		}
+		priv, err := LoadPrivateKeyFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		return priv, err
 	}
-	return LoadPrivateKeyFile(path)
+	return nil, fmt.Errorf("private key unavailable during concurrent key publication: %w", os.ErrNotExist)
 }
 
 // LoadPublicKey loads an agent's own public key from the keystore.
@@ -264,11 +294,24 @@ func (k *Keystore) LoadPublicKey(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(k.agentDir(name), publicKeyFile)
-	if err := k.validateContainment(path); err != nil {
-		return nil, fmt.Errorf("public key containment check: %w", err)
+	for range 2 {
+		if err := k.recoverAgentTransactionForRead(name); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(k.agentDir(name), publicKeyFile)
+		if err := k.validateContainment(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("public key containment check: %w", err)
+		}
+		pub, err := LoadPublicKeyFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		return pub, err
 	}
-	return LoadPublicKeyFile(path)
+	return nil, fmt.Errorf("public key unavailable during concurrent key publication: %w", os.ErrNotExist)
 }
 
 // TrustKey copies a public key file into trusted_keys/<name>.pub.

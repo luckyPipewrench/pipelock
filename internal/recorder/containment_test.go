@@ -27,11 +27,11 @@ func TestResolveEvidenceRunRefusesEscapingID(t *testing.T) {
 		t.Run(runID, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			writeDiscoveryShard(t, root, "evidence-proxy-0.jsonl")
+			writeDiscoveryShard(t, root)
 			// Give the escape a real target so a resolved path would succeed if
 			// containment failed, making the assertion meaningful rather than a
 			// missing-directory artifact.
-			writeDiscoveryShard(t, filepath.Join(filepath.Dir(root), "sibling-root"), "evidence-proxy-0.jsonl")
+			writeDiscoveryShard(t, filepath.Join(filepath.Dir(root), "sibling-root"))
 			if _, err := ResolveEvidenceRun(root, runID); err == nil {
 				t.Fatalf("ResolveEvidenceRun(%q) resolved outside the evidence root, want refusal", runID)
 			}
@@ -49,13 +49,18 @@ func TestDiscoverEvidenceRunsFailsClosedOnUnreadableDir(t *testing.T) {
 		t.Skip("root bypasses directory permissions")
 	}
 	root := t.TempDir()
-	writeDiscoveryShard(t, root, "evidence-proxy-0.jsonl")
+	writeDiscoveryShard(t, root)
+	// An empty directory is enough: discovery fails when it cannot read the
+	// directory, whatever it holds. Keeping it empty also lets the temp-dir
+	// cleanup rmdir it without needing its traversal bit restored, so the test
+	// never has to chmod a directory back to a permissive mode.
 	blocked := filepath.Join(root, "unreadable")
-	writeDiscoveryShard(t, blocked, "evidence-proxy-1.jsonl")
+	if err := os.Mkdir(blocked, 0o750); err != nil {
+		t.Fatalf("Mkdir blocked directory: %v", err)
+	}
 	if err := os.Chmod(blocked, 0o000); err != nil {
 		t.Skipf("chmod unavailable: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(blocked, 0o750) })
 
 	if _, err := DiscoverEvidenceRuns(root); err == nil {
 		t.Fatal("DiscoverEvidenceRuns() succeeded over an unreadable directory, want a surfaced error so missing evidence cannot look absent")

@@ -6,6 +6,7 @@ package recorder_test
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -87,7 +88,7 @@ func TestQuerySession_LegacyAndSingleRunLayoutMatch(t *testing.T) {
 		t.Fatalf("ReadDir legacy root: %v", err)
 	}
 	for _, entry := range entries {
-		data, readErr := os.ReadFile(filepath.Join(legacyRoot, entry.Name()))
+		data, readErr := fs.ReadFile(os.DirFS(legacyRoot), entry.Name())
 		if readErr != nil {
 			t.Fatalf("ReadFile legacy shard: %v", readErr)
 		}

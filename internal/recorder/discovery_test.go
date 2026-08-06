@@ -23,7 +23,7 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			name: "legacy flat directory",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
-				writeDiscoveryShard(t, root, "evidence-proxy-0.jsonl")
+				writeDiscoveryShard(t, root)
 			},
 			wantIDs: []string{""},
 		},
@@ -31,8 +31,8 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			name: "nested runs remain separate",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
-				writeDiscoveryShard(t, filepath.Join(root, "recorder-a", "run-a"), "evidence-proxy-0.jsonl")
-				writeDiscoveryShard(t, filepath.Join(root, "recorder-b", "run-b"), "evidence-proxy-0.jsonl")
+				writeDiscoveryShard(t, filepath.Join(root, "recorder-a", "run-a"))
+				writeDiscoveryShard(t, filepath.Join(root, "recorder-b", "run-b"))
 			},
 			wantIDs: []string{"recorder-a/run-a", "recorder-b/run-b"},
 		},
@@ -40,7 +40,7 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			name: "unexpected deeply nested run is found",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
-				writeDiscoveryShard(t, filepath.Join(root, "unexpected", "deep", "run"), "evidence-proxy-0.jsonl")
+				writeDiscoveryShard(t, filepath.Join(root, "unexpected", "deep", "run"))
 			},
 			wantIDs: []string{"unexpected/deep/run"},
 		},
@@ -49,7 +49,7 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			setup: func(t *testing.T, root string) {
 				t.Helper()
 				target := t.TempDir()
-				writeDiscoveryShard(t, target, "evidence-proxy-0.jsonl")
+				writeDiscoveryShard(t, target)
 				if err := os.Symlink(target, filepath.Join(root, "other-run")); err != nil {
 					t.Skipf("symlink unavailable: %v", err)
 				}
@@ -86,8 +86,8 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 func TestResolveEvidenceRun(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeDiscoveryShard(t, root, "evidence-proxy-0.jsonl")
-	writeDiscoveryShard(t, filepath.Join(root, "recorder-a", "run-a"), "evidence-proxy-0.jsonl")
+	writeDiscoveryShard(t, root)
+	writeDiscoveryShard(t, filepath.Join(root, "recorder-a", "run-a"))
 
 	if _, err := ResolveEvidenceRun(root, ""); err == nil || !strings.Contains(err.Error(), "multiple evidence runs") {
 		t.Fatalf("ResolveEvidenceRun without selector error = %v, want ambiguity", err)
@@ -104,12 +104,16 @@ func TestResolveEvidenceRun(t *testing.T) {
 	}
 }
 
-func writeDiscoveryShard(t *testing.T, dir, name string) {
+// discoveryShardName is the evidence filename every discovery test writes. The
+// tests care about which directory holds a shard, never what it is called.
+const discoveryShardName = "evidence-proxy-0.jsonl"
+
+func writeDiscoveryShard(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("MkdirAll(%q): %v", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q): %v", name, err)
+	if err := os.WriteFile(filepath.Join(dir, discoveryShardName), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", discoveryShardName, err)
 	}
 }

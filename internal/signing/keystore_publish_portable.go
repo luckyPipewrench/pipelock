@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -17,10 +18,10 @@ func publishAgentDirectoryPortable(targetDir, stageDir, backupDir string) error 
 	}
 	if err := installStagedAgentDirectory(targetDir, stageDir); err != nil {
 		if removeErr := removeEmptyDirectory(targetDir); removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("installing staged agent directory: %w (clearing active path for rollback: %v)", err, removeErr)
+			return fmt.Errorf("installing staged agent directory: %w", errors.Join(err, fmt.Errorf("clearing active path for rollback: %w", removeErr)))
 		}
 		if restoreErr := os.Rename(backupDir, targetDir); restoreErr != nil {
-			return fmt.Errorf("installing staged agent directory: %w (restoring prior key pair: %v)", err, restoreErr)
+			return fmt.Errorf("installing staged agent directory: %w", errors.Join(err, fmt.Errorf("restoring prior key pair: %w", restoreErr)))
 		}
 		return fmt.Errorf("installing staged agent directory: %w", err)
 	}

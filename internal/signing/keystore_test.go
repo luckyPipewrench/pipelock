@@ -100,7 +100,7 @@ func TestKeystoreGenerateAgentConcurrentFirstUse(t *testing.T) {
 	if successes != 1 {
 		t.Fatalf("successful GenerateAgent() calls = %d, want exactly 1", successes)
 	}
-	assertStoredAgentPairCoherent(t, ks, "shared")
+	assertStoredAgentPairCoherent(t, ks)
 }
 
 func TestKeystoreForceGenerateAgentConcurrent(t *testing.T) {
@@ -129,7 +129,7 @@ func TestKeystoreForceGenerateAgentConcurrent(t *testing.T) {
 			t.Fatalf("ForceGenerateAgent() error: %v", err)
 		}
 	}
-	assertStoredAgentPairCoherent(t, ks, "shared")
+	assertStoredAgentPairCoherent(t, ks)
 }
 
 func TestKeystoreForceGenerateAgentFailedPairWriteKeepsPriorPair(t *testing.T) {
@@ -165,7 +165,7 @@ func TestKeystoreForceGenerateAgentFailedPairWriteKeepsPriorPair(t *testing.T) {
 	if !bytes.Equal(gotPub, oldPub) || !bytes.Equal(gotPriv, oldPriv) {
 		t.Fatal("failed force generation changed the published key pair")
 	}
-	assertStoredAgentPairCoherent(t, ks, "shared")
+	assertStoredAgentPairCoherent(t, ks)
 	if _, err := os.Stat(ks.agentStageDir("shared")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staging directory remains after failed write: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestKeystoreGenerateAgentRecoversInterruptedForcePublish(t *testing.T) {
 	if !bytes.Equal(gotPub, wantPub) || !bytes.Equal(gotPriv, wantPriv) {
 		t.Fatal("interrupted publish recovery did not restore the prior coherent pair")
 	}
-	assertStoredAgentPairCoherent(t, ks, "shared")
+	assertStoredAgentPairCoherent(t, ks)
 }
 
 func TestInstallStagedAgentDirectoryReplacesConcurrentEmptyPreflight(t *testing.T) {
@@ -277,27 +277,27 @@ func TestKeystoreGenerateAgentRejectsTransactionSymlinkEscape(t *testing.T) {
 			if _, err := ks.ForceGenerateAgent("shared"); err == nil {
 				t.Fatal("ForceGenerateAgent() accepted transaction symlink")
 			}
-			got, err := os.ReadFile(outsideFile)
+			got, err := os.ReadFile(filepath.Clean(outsideFile))
 			if err != nil {
 				t.Fatalf("read outside sentinel: %v", err)
 			}
 			if string(got) != "unchanged" {
 				t.Fatalf("outside sentinel changed: %q", got)
 			}
-			assertStoredAgentPairCoherent(t, ks, "shared")
+			assertStoredAgentPairCoherent(t, ks)
 		})
 	}
 }
 
-func assertStoredAgentPairCoherent(t *testing.T, ks *Keystore, name string) {
+func assertStoredAgentPairCoherent(t *testing.T, ks *Keystore) {
 	t.Helper()
-	priv, err := ks.LoadPrivateKey(name)
+	priv, err := ks.LoadPrivateKey("shared")
 	if err != nil {
-		t.Fatalf("LoadPrivateKey(%q): %v", name, err)
+		t.Fatalf("LoadPrivateKey(%q): %v", "shared", err)
 	}
-	pub, err := ks.LoadPublicKey(name)
+	pub, err := ks.LoadPublicKey("shared")
 	if err != nil {
-		t.Fatalf("LoadPublicKey(%q): %v", name, err)
+		t.Fatalf("LoadPublicKey(%q): %v", "shared", err)
 	}
 	message := []byte("atomic keystore pair verification")
 	sig := ed25519.Sign(priv, message)

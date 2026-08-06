@@ -282,20 +282,22 @@ fn parse_verification(value: &Value) -> std::result::Result<VerificationInput, S
         signer,
         commitment_key,
         sources,
-        binary: parse_artifact(verification, "binary_b64"),
-        ruleset: parse_artifact(verification, "ruleset_b64"),
+        binary: parse_artifact(verification, "binary_b64")?,
+        ruleset: parse_artifact(verification, "ruleset_b64")?,
     })
 }
 
-fn parse_artifact(verification: &Map<String, Value>, key: &str) -> ArtifactInput {
-    match optional_string(verification, key) {
-        Ok(None) => ArtifactInput::Absent,
-        Ok(Some(value)) => match decode_b64(value, key) {
+fn parse_artifact(
+    verification: &Map<String, Value>,
+    key: &str,
+) -> std::result::Result<ArtifactInput, String> {
+    Ok(match optional_string(verification, key)? {
+        None => ArtifactInput::Absent,
+        Some(value) => match decode_b64(value, key) {
             Ok(bytes) if bytes.len() <= MAX_ARTIFACT_BYTES => ArtifactInput::Bytes(bytes),
             Ok(_) | Err(_) => ArtifactInput::Invalid,
         },
-        Err(_) => ArtifactInput::Invalid,
-    }
+    })
 }
 
 fn verify_entries(
@@ -1582,6 +1584,36 @@ mod tests {
     }
 
     #[test]
+    fn per_recipe_budget_precedes_fixture_wide_budget() {
+        let signing = SigningKey::from_bytes(&[18; 32]);
+        let input = "a".repeat(1024 * 1024);
+        let proof_sources = (0..7)
+            .map(|ordinal| {
+                let mut source = fixture_source(ordinal, &format!("source-{ordinal}"), vec![]);
+                let operation_count = if ordinal == 6 { 17 } else { 8 };
+                source["recipe"]["operations"] =
+                    json!(vec![json!({"kind": "identity"}); operation_count]);
+                source
+            })
+            .collect();
+        let sources = (0..7)
+            .map(|ordinal| {
+                json!({
+                    "source_id": format!("source-{ordinal}"),
+                    "bytes_b64": STANDARD.encode(&input),
+                })
+            })
+            .collect();
+        let report = verify_fixture_bytes(&signed_fixture(
+            &signing,
+            vec![proof_with_sources(proof_sources)],
+            sources,
+        ))
+        .unwrap();
+        assert_eq!(report.failure_stage.as_deref(), Some("view_reproduction"));
+    }
+
+    #[test]
     fn identical_source_recipe_pairs_reuse_the_view() {
         let signing = SigningKey::from_bytes(&[15; 32]);
         let input = "a".repeat(MAX_TOTAL_RECIPE_PROCESSING_BYTES / 64);
@@ -1743,5 +1775,19 @@ mod tests {
             Value::String(STANDARD.encode(vec![b'a'; MAX_ARTIFACT_BYTES + 1]));
         let report = verify_fixture_bytes(&serde_json::to_vec(&fixture).unwrap()).unwrap();
         assert_eq!(report.failure_stage.as_deref(), Some("artifacts"));
+
+        let mut malformed_artifact: Value = serde_json::from_slice(&signed_fixture(
+            &signing,
+            vec![proof_with_sources(vec![])],
+            vec![],
+        ))
+        .unwrap();
+        malformed_artifact["verification"]["binary_b64"] = json!(7);
+        assert_eq!(
+            proof_structure_report(serde_json::to_vec(&malformed_artifact).unwrap())
+                .failure_stage
+                .as_deref(),
+            Some("proof_structure")
+        );
     }
 }

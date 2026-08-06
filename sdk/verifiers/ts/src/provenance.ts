@@ -313,8 +313,8 @@ export function applyEvidenceProvenanceRecipe(
   let remaining = MAX_CUMULATIVE_PROCESSED_BYTES;
   const charge = (processed: string): void => {
     const size = byteLength(processed);
-    chargeFixtureWork(size);
     if (size > remaining) fail("recipe: exceeds cumulative processing budget");
+    chargeFixtureWork(size);
     remaining -= size;
   };
   for (const [index, raw] of recipe.operations.entries()) {

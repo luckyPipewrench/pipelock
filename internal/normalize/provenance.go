@@ -18,8 +18,12 @@ import (
 )
 
 // ErrEvidenceProvenanceProcessingBudget reports that a recipe exhausted the
-// caller-provided or profile-wide cumulative processing allowance.
+// profile-wide cumulative processing allowance.
 var ErrEvidenceProvenanceProcessingBudget = errors.New("recipe: exceeds cumulative processing budget")
+
+// ErrEvidenceProvenanceFixtureProcessingBudget reports that a verifier's
+// fixture-wide allowance was exhausted after the per-recipe allowance passed.
+var ErrEvidenceProvenanceFixtureProcessingBudget = errors.New("fixture: exceeds cumulative recipe processing budget")
 
 // Recipe is the fixture-only, typed transform language used by the evidence
 // provenance specification. TransformProfileDigest pins all table and limit
@@ -214,26 +218,30 @@ func (r Recipe) Validate() error {
 // offsets. The transform-profile document supplies the bound and invalid-input
 // policy for interoperable implementations.
 func (r Recipe) Apply(input string) (string, error) {
-	value, _, err := r.ApplyWithinBudget(input, evidenceProvenanceMaxTotalBytes)
-	return value, err
+	budget := processingBudget(evidenceProvenanceMaxTotalBytes)
+	return r.apply(input, &budget)
 }
 
 // ApplyWithinBudget executes a recipe while charging every operation and
-// internal pass against limit before the work runs. It returns the bytes
-// charged so a fixture verifier can enforce one budget across many recipes.
+// internal pass against the per-recipe profile limit first and the caller's
+// limit second. It returns the caller-budget bytes charged so a fixture
+// verifier can enforce one allowance across many recipes.
 func (r Recipe) ApplyWithinBudget(input string, limit int) (string, int, error) {
 	if limit < 0 {
 		limit = 0
 	}
-	if limit > evidenceProvenanceMaxTotalBytes {
-		limit = evidenceProvenanceMaxTotalBytes
-	}
-	budget := processingBudget(limit)
+	recipeBudget := processingBudget(evidenceProvenanceMaxTotalBytes)
+	fixtureBudget := processingBudget(limit)
+	budget := combinedProcessingBudget{recipe: &recipeBudget, fixture: &fixtureBudget}
 	value, err := r.apply(input, &budget)
-	return value, limit - int(budget), err
+	return value, limit - int(fixtureBudget), err
 }
 
-func (r Recipe) apply(input string, budget *processingBudget) (string, error) {
+type chargeBudget interface {
+	charge(string) error
+}
+
+func (r Recipe) apply(input string, budget chargeBudget) (string, error) {
 	if !utf8.ValidString(input) {
 		return "", fmt.Errorf("recipe input: invalid UTF-8")
 	}
@@ -282,6 +290,22 @@ func (budget *processingBudget) charge(value string) error {
 	return nil
 }
 
+type combinedProcessingBudget struct {
+	recipe  *processingBudget
+	fixture *processingBudget
+}
+
+func (budget *combinedProcessingBudget) charge(value string) error {
+	if err := budget.recipe.charge(value); err != nil {
+		return err
+	}
+	if len(value) > int(*budget.fixture) {
+		return ErrEvidenceProvenanceFixtureProcessingBudget
+	}
+	*budget.fixture -= processingBudget(len(value))
+	return nil
+}
+
 // ValidateOutput checks that value is valid UTF-8 and fits the recipe's
 // resolved transform profile. It is for commitment constructors that receive
 // an already reconstructed view rather than source bytes to transform.
@@ -302,7 +326,7 @@ func (r Recipe) ValidateOutput(value string) error {
 	return nil
 }
 
-func (op Operation) apply(value string, budget *processingBudget) (string, error) {
+func (op Operation) apply(value string, budget chargeBudget) (string, error) {
 	switch op.Kind {
 	case OperationIdentity:
 		return value, nil
@@ -618,7 +642,7 @@ func (op Operation) selectURLComponent(value string) (string, error) {
 	}
 }
 
-func scannerQueryUnescape(value string, budget *processingBudget) (string, error) {
+func scannerQueryUnescape(value string, budget chargeBudget) (string, error) {
 	for range evidenceProvenanceScannerMaxDecodeRounds {
 		if err := budget.charge(value); err != nil {
 			return "", err
@@ -741,7 +765,7 @@ func selectScannerTextSegment(value string, occurrence uint32) (string, error) {
 	return segments[occurrence], nil
 }
 
-func scannerHTMLEntityDecode(value string, budget *processingBudget) (string, error) {
+func scannerHTMLEntityDecode(value string, budget chargeBudget) (string, error) {
 	if !strings.Contains(value, "&") {
 		return value, nil
 	}
@@ -778,7 +802,7 @@ func scannerURLNoiseStrip(value string) string {
 	}, value)
 }
 
-func scannerOrderedQueryConcat(rawQuery string, budget *processingBudget) (string, error) {
+func scannerOrderedQueryConcat(rawQuery string, budget chargeBudget) (string, error) {
 	var result strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
@@ -793,7 +817,7 @@ func scannerOrderedQueryConcat(rawQuery string, budget *processingBudget) (strin
 	return result.String(), nil
 }
 
-func scannerQuerySubsequence(rawQuery string, indices []uint8, budget *processingBudget) (string, error) {
+func scannerQuerySubsequence(rawQuery string, indices []uint8, budget chargeBudget) (string, error) {
 	values := make([]string, 0, evidenceProvenanceQueryMaxValues)
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")

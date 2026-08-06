@@ -489,10 +489,10 @@ class Recipe:
         def charge(processed: str) -> None:
             nonlocal remaining
             size = len(processed.encode())
-            if charge_fixture_work is not None:
-                charge_fixture_work(size)
             if size > remaining:
                 raise ProvenanceError("recipe: exceeds cumulative processing budget")
+            if charge_fixture_work is not None:
+                charge_fixture_work(size)
             remaining -= size
 
         for index, op in enumerate(self.operations):

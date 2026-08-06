@@ -114,8 +114,38 @@ func TestVerifyProvenanceFixtureRejectsGlobalWorkLimits(t *testing.T) {
 				signed.Proof.Sources[index] = source
 			}
 		})
-		for len(fixture.Entries)*provenanceMaxSources <= provenanceMaxSourceReferences {
+		for len(fixture.Entries)*provenanceMaxSources < provenanceMaxSourceReferences {
 			appendProvenanceTestEntry(t, &fixture)
+		}
+		if got := len(fixture.Entries) * provenanceMaxSources; got != provenanceMaxSourceReferences {
+			t.Fatalf("source references at boundary = %d, want %d", got, provenanceMaxSourceReferences)
+		}
+		boundary := verifyProvenanceFixture(fixture)
+		if boundary.Overall != "incomplete" || boundary.FailureStage != "" {
+			t.Fatalf("boundary report = %+v, want accepted incomplete fixture", boundary)
+		}
+
+		appendProvenanceTestEntry(t, &fixture)
+		last := len(fixture.Entries) - 1
+		raw, err := base64.StdEncoding.DecodeString(fixture.Entries[last].SignedB64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var signed signedProvenanceProof
+		if err := json.Unmarshal(raw, &signed); err != nil {
+			t.Fatal(err)
+		}
+		signed.Proof.Sources = signed.Proof.Sources[:1]
+		raw, err = json.Marshal(signed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.Entries[last] = provenanceFixtureEntry{
+			SignedB64: base64.StdEncoding.EncodeToString(raw),
+			Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(provenanceFixtureSigningKey(), raw)),
+		}
+		if got := (len(fixture.Entries)-1)*provenanceMaxSources + len(signed.Proof.Sources); got != provenanceMaxSourceReferences+1 {
+			t.Fatalf("source references over boundary = %d, want %d", got, provenanceMaxSourceReferences+1)
 		}
 		assertProvenanceProofStructureRejection(t, fixture)
 	})
@@ -172,6 +202,39 @@ func TestVerifyProvenanceFixtureRejectsGlobalWorkLimits(t *testing.T) {
 			}
 		})
 		assertProvenanceProofStructureRejection(t, fixture)
+	})
+
+	t.Run("per-recipe budget takes precedence", func(t *testing.T) {
+		fixture := validProvenanceFixture(t, strings.Repeat("a", 1<<20), 0, 1)
+		const sourceCount = 7
+		sourceInput := fixture.Verification.Sources[0]
+		fixture.Verification.Sources = make([]provenanceFixtureSource, sourceCount)
+		for index := range fixture.Verification.Sources {
+			sourceInput.SourceID = fmt.Sprintf("source-%d", index)
+			fixture.Verification.Sources[index] = sourceInput
+		}
+		resignProvenanceFixture(t, &fixture, func(signed *signedProvenanceProof) {
+			source := signed.Proof.Sources[0]
+			signed.Proof.Sources = make([]contractreceipt.ProvenanceSource, sourceCount)
+			for index := range signed.Proof.Sources {
+				operationCount := 8
+				if index == sourceCount-1 {
+					operationCount = 17
+				}
+				source.SourceOrdinal = uint64(index + 1)
+				source.SourceID = fmt.Sprintf("source-%d", index)
+				source.Recipe.Operations = make([]normalize.Operation, operationCount)
+				for operationIndex := range source.Recipe.Operations {
+					source.Recipe.Operations[operationIndex] = normalize.Operation{Kind: normalize.OperationIdentity}
+				}
+				signed.Proof.Sources[index] = source
+			}
+		})
+
+		report := verifyProvenanceFixture(fixture)
+		if report.FailureStage != "view_reproduction" || report.Overall != "invalid" {
+			t.Fatalf("report = %+v, want per-recipe view_reproduction failure", report)
+		}
 	})
 }
 

@@ -410,6 +410,22 @@ def test_fixture_rejects_total_recipe_processing_bytes_across_entries() -> None:
     assert output["failure_stage"] == "proof_structure"
 
 
+def test_per_recipe_budget_precedes_fixture_wide_budget() -> None:
+    sources = _proof_sources(7)
+    for index, source in enumerate(sources):
+        source["recipe"]["operations"] = [  # type: ignore[index]
+            {"kind": "identity"}
+        ] * (17 if index == 6 else 8)
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs(
+            [_proof(sources)],
+            {f"source-{index + 1}": b"x" * (1 << 20) for index in range(7)},
+        )
+    )
+    assert exit_code == 1
+    assert output["failure_stage"] == "view_reproduction"
+
+
 def test_fixture_reuses_a_reconstructed_view_for_identical_source_and_recipe() -> None:
     identities = [{"kind": "identity"}] * 16
     output, exit_code = verify_fixture(

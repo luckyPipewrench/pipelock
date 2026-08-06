@@ -289,7 +289,7 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 				view, charged, err = source.Recipe.ApplyWithinBudget(input, remainingRecipeWork)
 				remainingRecipeWork -= charged
 				if err != nil {
-					if errors.Is(err, normalize.ErrEvidenceProvenanceProcessingBudget) {
+					if errors.Is(err, normalize.ErrEvidenceProvenanceFixtureProcessingBudget) {
 						return rejectProvenance(report, "proof_structure")
 					}
 					report.ViewReproduction = "mismatch"

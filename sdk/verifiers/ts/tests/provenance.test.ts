@@ -295,6 +295,25 @@ test("provenance fixture rejects total recipe processing bytes across entries", 
   assert.equal(report.failure_stage, "proof_structure");
 });
 
+test("provenance fixture gives the per-recipe budget precedence", async () => {
+  const sources = proofSources(7);
+  for (const [index, source] of sources.entries()) {
+    source.recipe.operations = Array.from({ length: index === 6 ? 17 : 8 }, () => ({
+      kind: "identity",
+    }));
+  }
+  const proof = signed();
+  (proof.proof as { sources: Array<Record<string, unknown>> }).sources = sources;
+  const report = await verifyProvenanceFixture(
+    await fixture([proof], {
+      sources: Object.fromEntries(
+        Array.from({ length: 7 }, (_, i) => [`source-${i + 1}`, "x".repeat(1 << 20)]),
+      ),
+    }),
+  );
+  assert.equal(report.failure_stage, "view_reproduction");
+});
+
 test("provenance fixture reuses a reconstructed view for identical source and recipe", async () => {
   const identities = Array.from({ length: 16 }, () => ({ kind: "identity" }));
   const report = await verifyProvenanceFixture(

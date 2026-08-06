@@ -182,10 +182,10 @@ impl Operation {
                     if selector.is_empty() {
                         return Err("query component: missing selector".to_string());
                     }
-                } else if self.fields.contains_key("selector")
-                    || self.fields.contains_key("occurrence")
-                {
+                } else if self.fields.contains_key("selector") {
                     return Err(format!("unsupported selector for {}", self.kind));
+                } else if self.fields.contains_key("occurrence") {
+                    return Err(format!("unsupported occurrence for {}", self.kind));
                 }
                 optional_u32(&self.fields, "occurrence")?;
             }

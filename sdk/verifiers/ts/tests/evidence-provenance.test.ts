@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import {
   applyEvidenceProvenanceRecipe,
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
   supportedOperationKinds,
 } from "../src/provenance.js";
+import { findPackageRoot } from "./paths.js";
 
 type Vector = {
   id: string;
@@ -20,16 +20,6 @@ type Vector = {
   recipe?: unknown[];
   transform_profile_digest?: string;
 };
-function findPackageRoot(moduleURL: string): string {
-  let current = dirname(fileURLToPath(moduleURL));
-  for (;;) {
-    if (existsSync(resolve(current, "package.json"))) return current;
-    const parent = dirname(current);
-    if (parent === current) throw new Error("TypeScript verifier package root not found");
-    current = parent;
-  }
-}
-
 const packageRoot = findPackageRoot(import.meta.url);
 const corpusPath = resolve(
   packageRoot,

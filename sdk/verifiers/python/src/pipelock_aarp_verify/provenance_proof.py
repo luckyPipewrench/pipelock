@@ -527,6 +527,8 @@ def _verify_entry(
         ruleset_digest is not None and ruleset is None
     ):
         result["artifacts"] = "attested_unchecked"
+    elif binary_digest is None and ruleset_digest is None:
+        result["artifacts"] = "not_attested"
     else:
         result["artifacts"] = "matched"
     unavailable_source = any(
@@ -655,7 +657,9 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
         )
     except (StrictParseError, UnicodeDecodeError, ValueError, ProvenanceError):
         return _invalid("proof_structure", _output()), 1
-    aggregate = _output(signature="verified", chain="verified", artifacts="matched")
+    aggregate = _output(
+        signature="verified", chain="verified", artifacts="not_attested"
+    )
     all_reproduced = True
     all_located = True
     all_commitments_opened = True
@@ -675,6 +679,11 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
             return result, 1
         if result["artifacts"] == "attested_unchecked":
             aggregate["artifacts"] = "attested_unchecked"
+        elif (
+            result["artifacts"] == "matched"
+            and aggregate["artifacts"] != "attested_unchecked"
+        ):
+            aggregate["artifacts"] = "matched"
         all_reproduced = all_reproduced and result["view_reproduction"] == "reproduced"
         all_located = all_located and result["location"] == "exact_coordinates"
         all_commitments_opened = (

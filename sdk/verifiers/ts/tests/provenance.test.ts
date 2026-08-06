@@ -3,9 +3,8 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import test from "node:test";
 import { RawNumber, parseJSONStrict } from "../src/aarp/strictjson.js";
@@ -15,20 +14,11 @@ import {
   verifyProvenanceFixture,
 } from "../src/provenance-proof.js";
 import { EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST } from "../src/provenance.js";
+import { findPackageRoot } from "./paths.js";
 
 const profileDigest = EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST;
 const commitment = `hmac-sha256:${"0".repeat(64)}`;
 const seed = Buffer.from("1".repeat(64), "hex");
-
-function findPackageRoot(moduleURL: string): string {
-  let current = dirname(fileURLToPath(moduleURL));
-  for (;;) {
-    if (existsSync(resolve(current, "package.json"))) return current;
-    const parent = dirname(current);
-    if (parent === current) throw new Error("TypeScript verifier package root not found");
-    current = parent;
-  }
-}
 
 const corpusDir = resolve(
   findPackageRoot(import.meta.url),
@@ -96,7 +86,7 @@ test("provenance fixture reports all available stages and remains incomplete wit
     authenticated_provenance: false,
     signature: "verified",
     chain: "verified",
-    artifacts: "matched",
+    artifacts: "not_attested",
     source_commitment: "not_checked",
     view_reproduction: "reproduced",
     location: "exact_coordinates",
@@ -224,7 +214,7 @@ test("provenance fixture reports an absent source as incomplete", async () => {
     {
       signature: "verified",
       chain: "verified",
-      artifacts: "matched",
+      artifacts: "not_attested",
       view_reproduction: "not_checked",
       location: "not_checked",
       match_commitment: "not_checked",

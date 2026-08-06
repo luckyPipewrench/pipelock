@@ -7,21 +7,10 @@
 // the built dist so exit-code wiring through main() is exercised.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-
-function findPackageRoot(moduleURL: string): string {
-  let current = dirname(fileURLToPath(moduleURL));
-  for (;;) {
-    if (existsSync(resolve(current, "package.json"))) return current;
-    const parent = dirname(current);
-    if (parent === current) throw new Error("TypeScript verifier package root not found");
-    current = parent;
-  }
-}
+import { findPackageRoot } from "./paths.js";
 
 const packageRoot = findPackageRoot(import.meta.url);
 const CLI = resolve(packageRoot, "dist/src/cli.js");
@@ -174,4 +163,18 @@ test("cli provenance: incomplete verification requires explicit opt-in", () => {
   const inspection = runCLI(["provenance", provenanceFixture, "--allow-incomplete"]);
   assert.equal(inspection.status, 0);
   assert.equal(JSON.parse(inspection.stdout).overall, "incomplete");
+});
+
+test("cli provenance: unreadable and invalid fixtures remain rejected", () => {
+  const missing = runCLI(["provenance", resolve(packageRoot, "does-not-exist.json")]);
+  assert.equal(missing.status, 1);
+  assert.equal(JSON.parse(missing.stdout).overall, "invalid");
+
+  const invalidFixture = resolve(
+    packageRoot,
+    "../../conformance/testdata/provenance/p02-bad-signature.json",
+  );
+  const invalid = runCLI(["provenance", invalidFixture, "--allow-incomplete"]);
+  assert.equal(invalid.status, 1);
+  assert.equal(JSON.parse(invalid.stdout).overall, "invalid");
 });

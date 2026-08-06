@@ -41,6 +41,8 @@ const (
 	provenanceMaxMatchesPerSource = 1024
 )
 
+var errProvenanceBase64Limit = errors.New("base64 value exceeds decoded byte limit")
+
 type provenanceFixture struct {
 	Format       string                       `json:"format"`
 	Entries      []provenanceFixtureEntry     `json:"entries"`
@@ -184,10 +186,10 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 	signedProofs := make([]signedProvenanceProof, 0, len(fixture.Entries))
 	signedBytes := make([][]byte, 0, len(fixture.Entries))
 	for _, entry := range fixture.Entries {
-		if len(entry.SignedB64) > base64.StdEncoding.EncodedLen(provenanceMaxSignedBytes) {
+		raw, decodeErr := decodeProvenanceBase64(entry.SignedB64, provenanceMaxSignedBytes)
+		if errors.Is(decodeErr, errProvenanceBase64Limit) {
 			return rejectProvenance(report, "proof_structure")
 		}
-		raw, decodeErr := base64.StdEncoding.Strict().DecodeString(entry.SignedB64)
 		sig, sigErr := decodePrefixedHex(entry.Signature, "ed25519:", ed25519.SignatureSize)
 		if decodeErr != nil || !utf8.Valid(raw) || sigErr != nil {
 			report.Signature = "invalid"
@@ -331,6 +333,7 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 }
 
 func verifyProvenanceArtifacts(proofs []signedProvenanceProof, inputs provenanceVerificationInputs) (string, error) {
+	attested := false
 	unchecked := false
 	for _, signed := range proofs {
 		for _, artifact := range []struct {
@@ -340,14 +343,12 @@ func verifyProvenanceArtifacts(proofs []signedProvenanceProof, inputs provenance
 			if artifact.attested == nil {
 				continue
 			}
+			attested = true
 			if artifact.encoded == nil {
 				unchecked = true
 				continue
 			}
-			if len(*artifact.encoded) > base64.StdEncoding.EncodedLen(provenanceMaxArtifactBytes) {
-				return "mismatch", errors.New("artifact exceeds byte limit")
-			}
-			data, err := base64.StdEncoding.Strict().DecodeString(*artifact.encoded)
+			data, err := decodeProvenanceBase64(*artifact.encoded, provenanceMaxArtifactBytes)
 			if err != nil {
 				return "mismatch", err
 			}
@@ -359,6 +360,9 @@ func verifyProvenanceArtifacts(proofs []signedProvenanceProof, inputs provenance
 	}
 	if unchecked {
 		return "attested_unchecked", nil
+	}
+	if !attested {
+		return "not_attested", nil
 	}
 	return "matched", nil
 }
@@ -373,10 +377,7 @@ func provenanceSources(values []provenanceFixtureSource) (map[string]string, err
 		if _, exists := result[source.SourceID]; exists {
 			return nil, fmt.Errorf("duplicate source ID %q", source.SourceID)
 		}
-		if len(source.BytesB64) > base64.StdEncoding.EncodedLen(provenanceMaxSourceBytes) {
-			return nil, fmt.Errorf("source %q exceeds byte limit", source.SourceID)
-		}
-		decoded, err := base64.StdEncoding.Strict().DecodeString(source.BytesB64)
+		decoded, err := decodeProvenanceBase64(source.BytesB64, provenanceMaxSourceBytes)
 		if err != nil || !utf8.Valid(decoded) {
 			return nil, fmt.Errorf("source %q is not canonical base64 UTF-8", source.SourceID)
 		}
@@ -387,6 +388,23 @@ func provenanceSources(values []provenanceFixtureSource) (map[string]string, err
 		result[source.SourceID] = string(decoded)
 	}
 	return result, nil
+}
+
+func decodeProvenanceBase64(value string, limit int) ([]byte, error) {
+	if len(value) > base64.StdEncoding.EncodedLen(limit) {
+		return nil, errProvenanceBase64Limit
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) > limit {
+		return nil, errProvenanceBase64Limit
+	}
+	if value != base64.StdEncoding.EncodeToString(decoded) {
+		return nil, errors.New("base64 value is not canonically encoded")
+	}
+	return decoded, nil
 }
 
 func validateProvenanceLocations(view string, matches []contractreceipt.ProvenanceMatch) error {

@@ -19,7 +19,7 @@ import (
 func TestVerifyProvenanceFixtureStages(t *testing.T) {
 	fixture := validProvenanceFixture(t, "A💩B", 1, 5)
 	report := verifyProvenanceFixture(fixture)
-	if report.Signature != "verified" || report.Chain != "verified" || report.Artifacts != "matched" || report.ViewReproduction != "reproduced" || report.Location != "exact_coordinates" || report.MatchCommitment != "opened" || report.SourceCommitment != "not_checked" || report.Overall != "incomplete" {
+	if report.Signature != "verified" || report.Chain != "verified" || report.Artifacts != "not_attested" || report.ViewReproduction != "reproduced" || report.Location != "exact_coordinates" || report.MatchCommitment != "opened" || report.SourceCommitment != "not_checked" || report.Overall != "incomplete" {
 		t.Fatalf("report = %+v", report)
 	}
 }

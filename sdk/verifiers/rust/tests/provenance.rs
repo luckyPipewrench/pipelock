@@ -114,6 +114,10 @@ fn recipe_validation_rejects_malformed_operation_shapes() {
             "unsupported selector",
         ),
         (
+            serde_json::json!([{"kind": "url_component", "component": "path", "occurrence": 1}]),
+            "unsupported occurrence",
+        ),
+        (
             serde_json::json!([{"kind": "base64_decode_liberal", "alphabet": "other"}]),
             "unknown base64 alphabet",
         ),

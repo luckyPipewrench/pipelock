@@ -23,7 +23,7 @@ const trustRoots = "fixture supplied; self-attested; not authenticated";
 
 type SignatureStage = "verified" | "invalid" | "not_checked";
 type ChainStage = "verified" | "invalid" | "not_checked";
-type ArtifactStage = "matched" | "mismatch" | "attested_unchecked";
+type ArtifactStage = "matched" | "mismatch" | "attested_unchecked" | "not_attested";
 type OpenStage = "opened" | "mismatch" | "not_checked";
 type ReproductionStage = "reproduced" | "mismatch" | "not_checked";
 type LocationStage = "exact_coordinates" | "mismatch" | "not_checked";
@@ -659,16 +659,19 @@ function artifacts(proof: Proof, fixture: Fixture): ArtifactStage {
     [proof.producer.binary_digest, fixture.binary],
     [proof.producer.ruleset_digest, fixture.ruleset],
   ];
+  let hasAttestation = false;
   let unchecked = false;
   let mismatch = false;
-  for (const [attested, supplied] of pairs) {
-    if (attested === undefined) continue;
+  for (const [attestedDigest, supplied] of pairs) {
+    if (attestedDigest === undefined) continue;
+    hasAttestation = true;
     if (supplied === undefined) unchecked = true;
-    else if (`sha256:${createHash("sha256").update(supplied).digest("hex")}` !== attested)
+    else if (`sha256:${createHash("sha256").update(supplied).digest("hex")}` !== attestedDigest)
       mismatch = true;
   }
   if (mismatch) return "mismatch";
-  return unchecked ? "attested_unchecked" : "matched";
+  if (unchecked) return "attested_unchecked";
+  return hasAttestation ? "matched" : "not_attested";
 }
 
 // verifyProvenanceFixture returns compact stages only. It never exposes source
@@ -711,6 +714,7 @@ export async function verifyProvenanceFixture(data: string): Promise<ProvenanceR
   } catch {
     return invalid("proof_structure", report);
   }
+  let artifactsMatched = false;
   let artifactsUnchecked = false;
   for (const entry of fixture.entries) {
     const artifactStage = artifacts(entry.proof, fixture);
@@ -718,9 +722,14 @@ export async function verifyProvenanceFixture(data: string): Promise<ProvenanceR
       report.artifacts = "mismatch";
       return invalid("artifacts", report);
     }
+    artifactsMatched ||= artifactStage === "matched";
     artifactsUnchecked ||= artifactStage === "attested_unchecked";
   }
-  report.artifacts = artifactsUnchecked ? "attested_unchecked" : "matched";
+  report.artifacts = artifactsUnchecked
+    ? "attested_unchecked"
+    : artifactsMatched
+      ? "matched"
+      : "not_attested";
   const allSources: Array<{ source: Source; raw?: string; view?: string }> = [];
   for (const entry of fixture.entries) {
     for (const source of entry.proof.sources)

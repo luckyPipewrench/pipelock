@@ -209,7 +209,7 @@ def test_fixture_verifies_available_stages_but_is_incomplete_without_source_comm
         "authenticated_provenance": False,
         "signature": "verified",
         "chain": "verified",
-        "artifacts": "matched",
+        "artifacts": "not_attested",
         "source_commitment": "not_checked",
         "view_reproduction": "reproduced",
         "location": "exact_coordinates",

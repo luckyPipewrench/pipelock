@@ -273,10 +273,12 @@ fn verify_entries(
         proofs.push(proof);
     }
 
+    let mut artifacts_matched = false;
     let mut artifacts_unchecked = false;
     for proof in &proofs {
         match verify_artifacts(proof, input) {
-            Stage::Matched => {}
+            Stage::Matched => artifacts_matched = true,
+            Stage::NotAttested => {}
             Stage::Unchecked => artifacts_unchecked = true,
             Stage::Mismatch => {
                 report.artifacts = "mismatch".into();
@@ -287,8 +289,10 @@ fn verify_entries(
     }
     report.artifacts = if artifacts_unchecked {
         "attested_unchecked".into()
-    } else {
+    } else if artifacts_matched {
         "matched".into()
+    } else {
+        "not_attested".into()
     };
     let missing_source = proofs.iter().any(|proof| {
         proof
@@ -673,6 +677,7 @@ fn parse_recipe(value: &Value) -> std::result::Result<Recipe, String> {
 
 enum Stage {
     Matched,
+    NotAttested,
     Unchecked,
     Mismatch,
 }
@@ -681,10 +686,12 @@ fn verify_artifacts(proof: &Proof, input: &VerificationInput) -> Stage {
         (proof.producer.binary.as_deref(), input.binary.as_deref()),
         (proof.producer.ruleset.as_deref(), input.ruleset.as_deref()),
     ];
+    let mut attested = false;
     let mut unchecked = false;
     let mut mismatch = false;
     for (claim, bytes) in checks {
         if let Some(claim) = claim {
+            attested = true;
             match bytes {
                 Some(bytes) if claim == format!("sha256:{}", sha256_hex(bytes)) => {}
                 Some(_) => mismatch = true,
@@ -696,6 +703,8 @@ fn verify_artifacts(proof: &Proof, input: &VerificationInput) -> Stage {
         Stage::Mismatch
     } else if unchecked {
         Stage::Unchecked
+    } else if !attested {
+        Stage::NotAttested
     } else {
         Stage::Matched
     }
@@ -1105,7 +1114,7 @@ mod tests {
         assert_eq!(report.signature, "verified");
         assert_eq!(report.chain, "verified");
         assert_eq!(report.overall, "incomplete");
-        assert_eq!(serde_json::to_string(&report).unwrap(),"{\"trust_roots\":\"fixture supplied; self-attested; not authenticated\",\"authenticated_provenance\":false,\"signature\":\"verified\",\"chain\":\"verified\",\"artifacts\":\"matched\",\"source_commitment\":\"not_checked\",\"view_reproduction\":\"not_checked\",\"location\":\"not_checked\",\"match_commitment\":\"not_checked\",\"overall\":\"incomplete\"}");
+        assert_eq!(serde_json::to_string(&report).unwrap(),"{\"trust_roots\":\"fixture supplied; self-attested; not authenticated\",\"authenticated_provenance\":false,\"signature\":\"verified\",\"chain\":\"verified\",\"artifacts\":\"not_attested\",\"source_commitment\":\"not_checked\",\"view_reproduction\":\"not_checked\",\"location\":\"not_checked\",\"match_commitment\":\"not_checked\",\"overall\":\"incomplete\"}");
     }
 
     #[test]

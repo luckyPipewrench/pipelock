@@ -56,10 +56,13 @@ func TestCommittedProvenanceCorpusMatchesFrozenExpectations(t *testing.T) {
 			}
 
 			var output bytes.Buffer
-			_ = runProvenance(&output, fixturePath, true)
+			runErr := runProvenance(&output, fixturePath, true)
 			var got provenanceStageReport
 			if err := decodeStrictJSON(output.Bytes(), &got); err != nil {
 				t.Fatalf("decode verifier output: %v (%q)", err, output.String())
+			}
+			if rejected := want.Overall == "invalid"; rejected != (runErr != nil) {
+				t.Fatalf("overall %q with error %v; want error presence %t", want.Overall, runErr, rejected)
 			}
 			if got != want {
 				gotJSON, _ := json.Marshal(got)

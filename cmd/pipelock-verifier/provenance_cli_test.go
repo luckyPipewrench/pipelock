@@ -5,12 +5,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
 
 type failingWriter struct{}
@@ -168,8 +171,12 @@ func TestDecodeStrictJSONRejectsNonCanonicalKeys(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := decodeStrictJSON([]byte(tc.data), tc.destination); err == nil {
+			err := decodeStrictJSON([]byte(tc.data), tc.destination)
+			if err == nil {
 				t.Fatal("decodeStrictJSON accepted a non-canonical key")
+			}
+			if !strings.Contains(err.Error(), "non-canonical JSON object key") {
+				t.Fatalf("error = %v, want non-canonical key rejection", err)
 			}
 		})
 	}
@@ -247,6 +254,30 @@ func TestVerifyProvenanceFixtureRejectsExcessiveCounts(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "proof sources",
+			mutate: func(fixture *provenanceFixture) {
+				resignProvenanceFixture(t, fixture, func(signed *signedProvenanceProof) {
+					source := signed.Proof.Sources[0]
+					signed.Proof.Sources = make([]contractreceipt.ProvenanceSource, provenanceMaxSources+1)
+					for index := range signed.Proof.Sources {
+						signed.Proof.Sources[index] = source
+					}
+				})
+			},
+		},
+		{
+			name: "matches per source",
+			mutate: func(fixture *provenanceFixture) {
+				resignProvenanceFixture(t, fixture, func(signed *signedProvenanceProof) {
+					match := signed.Proof.Sources[0].Matches[0]
+					signed.Proof.Sources[0].Matches = make([]contractreceipt.ProvenanceMatch, provenanceMaxMatchesPerSource+1)
+					for index := range signed.Proof.Sources[0].Matches {
+						signed.Proof.Sources[0].Matches[index] = match
+					}
+				})
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := validProvenanceFixture(t, "view", 0, 4)
@@ -256,6 +287,24 @@ func TestVerifyProvenanceFixtureRejectsExcessiveCounts(t *testing.T) {
 				t.Fatalf("report = %+v, want invalid at proof_structure", report)
 			}
 		})
+	}
+}
+
+func TestDecodeProvenanceBase64EnforcesDecodedLimitAndCanonicalText(t *testing.T) {
+	withinLimit := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'a'}, 20))
+	if _, err := decodeProvenanceBase64(withinLimit, 20); err != nil {
+		t.Fatalf("decode within limit: %v", err)
+	}
+
+	// EncodedLen rounds both 20 and 21 bytes to 28 characters. The decoded
+	// length check is therefore independently load-bearing.
+	overLimit := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'a'}, 21))
+	if _, err := decodeProvenanceBase64(overLimit, 20); !errors.Is(err, errProvenanceBase64Limit) {
+		t.Fatalf("error = %v, want decoded byte limit", err)
+	}
+
+	if _, err := decodeProvenanceBase64("YWJj\n", 4); err == nil || errors.Is(err, errProvenanceBase64Limit) {
+		t.Fatalf("error = %v, want canonical Base64 rejection", err)
 	}
 }
 

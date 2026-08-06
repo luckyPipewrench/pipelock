@@ -221,16 +221,16 @@ impl Operation {
                     ));
                 }
             }
-            "encoded_token_normalize" => {
+            "encoded_token_normalize"
                 if !["hex", "base32", "base64_standard", "base64_url"]
-                    .contains(&required_str(&self.fields, "alphabet")?)
-                {
-                    return Err(format!(
-                        "unknown encoded-token alphabet {:?}",
-                        required_str(&self.fields, "alphabet")?
-                    ));
-                }
+                    .contains(&required_str(&self.fields, "alphabet")?) =>
+            {
+                return Err(format!(
+                    "unknown encoded-token alphabet {:?}",
+                    required_str(&self.fields, "alphabet")?
+                ));
             }
+            "encoded_token_normalize" => {}
             "text_segment" => {
                 optional_u32(&self.fields, "occurrence")?;
             }

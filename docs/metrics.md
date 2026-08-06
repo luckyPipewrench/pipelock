@@ -127,8 +127,9 @@ health sampler is not measuring that fact in the current runtime.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_evidence_current_ael` | gauge | (none) | Current evidence assurance level, currently 0 through 1. Pipelock has one recorder, so no health or anchoring signal can establish AEL-2's separately keyed second recorder or any cumulative higher rung. The level is not a green completeness claim. |
-| `pipelock_evidence_ael_requirement_ok` | gauge | `requirement` | One when a bounded evidence-health signal is currently satisfied. Requirement labels are `recorder_enabled`, `emitter_healthy`, `durability_gate`, `heartbeats`, `anchoring_fresh`, `cpc_active`, and `selfaudit_ok`; these diagnostics do not independently award an AEL rung. |
+| `pipelock_evidence_local_recorder_operational` | gauge | (none) | One when this process's recorder and emitter are running with no locally observed sequence gap, self-audit failure, or ungated fsync failure. This does not check for a competing writer, prove corpus-wide integrity, or award an AEL grade. |
+| `pipelock_evidence_current_ael` | gauge | (none) | **Deprecated.** Always `NaN` (not a number). A live process cannot independently grade its own in-memory state. The series remains for one compatibility window so dashboards fail visibly instead of silently changing meaning. |
+| `pipelock_evidence_ael_requirement_ok` | gauge | `requirement` | **Deprecated.** Diagnostic inputs from the former live AEL estimate. Requirement labels are `recorder_enabled`, `emitter_healthy`, `durability_gate`, `heartbeats`, `anchoring_fresh`, `cpc_active`, and `selfaudit_ok`. These values do not award an AEL grade. |
 | `pipelock_evidence_chain_head_seq` | gauge | (none) | Last emitted in-memory receipt sequence, omitted when evidence health is not measured. |
 | `pipelock_evidence_chain_head_age_seconds` | gauge | (none) | Seconds since the last durable chain entry, omitted when evidence health is not measured. |
 | `pipelock_evidence_heartbeat_interval_seconds` | gauge | (none) | Configured receipt heartbeat interval in seconds; absent from JSON stats until heartbeats are enabled. |
@@ -140,9 +141,27 @@ health sampler is not measuring that fact in the current runtime.
 | `pipelock_evidence_selfaudit_ok` | gauge | (none) | One while evidence self-audit checks pass; latches to zero after a failure in the process. |
 | `pipelock_evidence_selfaudit_failures_total` | counter | `check` | Evidence self-audit failures by bounded check label: `durability_invariant`, `tail_divergence`, or `sampler_error`. |
 
-The `/stats` endpoint also includes a nullable `evidence_health` object with
-the same chain-head, sequence-gap, fsync, anchor, durability, and requirement
-state. Treat `null` as "not measured," not as healthy.
+The `/stats` endpoint also includes a nullable `evidence_health` object. In the
+`pipelock.evidencehealth.v2` object:
+
+- `current_ael` is retained as the string `UNAVAILABLE` for one compatibility
+  window. The string is deliberate: numeric clients fail visibly instead of
+  silently turning JSON `null` into the valid-looking number zero.
+- `local_recorder_operational` is the same process-local status as the new gauge.
+- `run_state` is `OPEN` while the recorder process is running. `run_id` is `null`
+  until bounded per-run recording exists. These are lifecycle facts, not
+  verification states.
+- `ael_artifact_capability` is a producer declaration. Today it reports no AEL
+  artifact-format versions, no bounded runs, no closed-run export, and no
+  verification-result import. Its `known_limitations` list includes the missing
+  concurrent-writer isolation. The declaration contains no AEL grade.
+
+Treat a top-level `evidence_health: null` as "not measured," not as healthy.
+During a rolling upgrade, old instances may still emit numeric
+`pipelock_evidence_current_ael` samples while new instances emit `NaN`. Do not
+aggregate that legacy series across versions. Migrate alerts to
+`pipelock_evidence_local_recorder_operational` and keep the process-local scope
+in the alert text.
 
 ## Session Profiling Metrics
 

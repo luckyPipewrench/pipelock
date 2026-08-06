@@ -29,6 +29,35 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
+func TestEvidenceHealthSeparatesLiveStateFromAELCapability(t *testing.T) {
+	h, _, e, _ := newEvidenceHealthTestMonitor(t, nil)
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+
+	stats, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable")
+	}
+	if stats.Schema != "pipelock.evidencehealth.v2" {
+		t.Fatalf("schema = %q, want pipelock.evidencehealth.v2", stats.Schema)
+	}
+	if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+		t.Fatalf("current AEL = %q, want UNAVAILABLE", stats.CurrentAEL)
+	}
+	if !stats.LocalRecorderOperational {
+		t.Fatal("healthy local recorder reported non-operational")
+	}
+	if stats.RunState != metrics.EvidenceRunStateOpen || stats.RunID != nil {
+		t.Fatalf("run lifecycle = %q/%v, want OPEN with no bounded run id", stats.RunState, stats.RunID)
+	}
+	capability := stats.AELArtifactCapability
+	if capability.Schema == "" || capability.AELFormatVersions == nil {
+		t.Fatalf("capability declaration is not explicit: %+v", capability)
+	}
+	if capability.BoundedRuns || capability.ClosedRunExport || capability.VerificationResultImport || len(capability.AELFormatVersions) != 0 {
+		t.Fatalf("capability declaration overstates the runtime: %+v", capability)
+	}
+}
+
 func TestEvidenceHealthSelfAuditDurabilityInvariantLatchesAndEmits(t *testing.T) {
 	t.Run("positive_divergence", func(t *testing.T) {
 		h, m, e, _ := newEvidenceHealthTestMonitor(t, func(cfg *config.Config) {
@@ -163,8 +192,11 @@ func TestEvidenceHealthSelfAuditSamplerErrorFailsClosedWithoutPanic(t *testing.T
 	if stats.Requirements[metrics.EvidenceRequirementSelfAuditOK] {
 		t.Fatal("selfaudit_ok requirement = true after sampler error")
 	}
-	if stats.CurrentAEL != 0 {
-		t.Fatalf("current AEL = %d, want 0 after sampler error", stats.CurrentAEL)
+	if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+		t.Fatalf("current AEL = %q, want UNAVAILABLE after sampler error", stats.CurrentAEL)
+	}
+	if stats.LocalRecorderOperational {
+		t.Fatal("local recorder reported operational after sampler error")
 	}
 	if stats.DurabilityBlocks != 0 {
 		t.Fatalf("durability blocks = %d, want 0; self-audit must not gate traffic", stats.DurabilityBlocks)
@@ -252,8 +284,11 @@ func TestEvidenceHealthAnchorStateMalformedMarkersFailClosed(t *testing.T) {
 			if stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 				t.Fatal("malformed marker made anchoring_fresh true")
 			}
-			if stats.CurrentAEL != 0 {
-				t.Fatalf("current AEL = %d, want 0 after malformed marker", stats.CurrentAEL)
+			if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+				t.Fatalf("current AEL = %q, want UNAVAILABLE after malformed marker", stats.CurrentAEL)
+			}
+			if stats.LocalRecorderOperational {
+				t.Fatal("local recorder reported operational after malformed marker")
 			}
 		})
 	}
@@ -771,8 +806,11 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatal("valid fresh marker did not set anchoring_fresh")
 	}
-	if stats.CurrentAEL != 1 {
-		t.Fatalf("current AEL = %d, want 1; a local anchor cannot supply AEL-2's second recorder", stats.CurrentAEL)
+	if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+		t.Fatalf("current AEL = %q, want UNAVAILABLE", stats.CurrentAEL)
+	}
+	if !stats.LocalRecorderOperational {
+		t.Fatal("valid local recorder reported non-operational")
 	}
 
 	older := validEvidenceHealthAnchorState()
@@ -813,8 +851,11 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	if afterStale.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatal("valid stale marker set anchoring_fresh")
 	}
-	if afterStale.CurrentAEL != 1 {
-		t.Fatalf("current AEL = %d, want 1 for stale marker; a single recorder cannot claim AEL-2", afterStale.CurrentAEL)
+	if afterStale.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+		t.Fatalf("current AEL = %q, want UNAVAILABLE for stale marker", afterStale.CurrentAEL)
+	}
+	if !afterStale.LocalRecorderOperational {
+		t.Fatal("stale anchor incorrectly degraded local recorder operation")
 	}
 }
 
@@ -844,8 +885,8 @@ func TestEvidenceHealthRekorMarkerWithReceiptSignerKeyDoesNotRaiseAEL(t *testing
 	if !stats.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatal("accepted Rekor marker did not set anchoring_fresh")
 	}
-	if stats.CurrentAEL != 1 {
-		t.Fatalf("current AEL = %d, want 1; a same-key Rekor checkpoint cannot satisfy AEL-2 or AEL-3", stats.CurrentAEL)
+	if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+		t.Fatalf("current AEL = %q, want UNAVAILABLE", stats.CurrentAEL)
 	}
 }
 
@@ -1053,8 +1094,11 @@ func assertEvidenceHealthLatched(t *testing.T, h *evidenceHealthMonitor) {
 	if stats.Requirements[metrics.EvidenceRequirementSelfAuditOK] {
 		t.Fatal("selfaudit_ok requirement = true, want false")
 	}
-	if stats.CurrentAEL != 0 {
-		t.Fatalf("current AEL = %d, want 0", stats.CurrentAEL)
+	if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+		t.Fatalf("current AEL = %q, want UNAVAILABLE", stats.CurrentAEL)
+	}
+	if stats.LocalRecorderOperational {
+		t.Fatal("local recorder reported operational after latched self-audit failure")
 	}
 }
 

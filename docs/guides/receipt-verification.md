@@ -380,8 +380,9 @@ entry key, invalid chain, or write failure increments
 `/stats` evidence-health JSON, and prints a `CRITICAL` line to stderr. Proxy
 traffic and receipt emission continue without waiting for the retry, which runs
 on a later pass. Successful markers feed the `anchoring_fresh` evidence-health
-diagnostic and anchor-lag metrics; they do not raise `current_ael` above the
-single-recorder ceiling.
+diagnostic and anchor-lag metrics. They do not award an AEL grade. The deprecated
+`current_ael` surface is unavailable because a live process cannot independently
+grade its own evidence.
 
 The log operator determines the ceiling of the proof. A self-hosted Rekor log
 adds tamper evidence and durability, but it is not independent from its

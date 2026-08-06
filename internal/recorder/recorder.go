@@ -1142,14 +1142,21 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 }
 
 func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
-	if n, err := r.writer.Write(data); err != nil {
+	// Emit the record and its terminating newline as ONE write. Concurrent
+	// recorder processes append to a shared file under a shared lock, so two
+	// writes leave a window in which another process can append between the
+	// record and its newline, producing a physical line holding two records
+	// and destroying both. Buffering hid this for records under the buffer
+	// size, because the pair coalesced into a single flush; a record larger
+	// than the buffer is written straight through and the newline follows
+	// separately. Records are permitted up to the evidence file limit, so the
+	// window is reachable in normal operation.
+	line := make([]byte, 0, len(data)+1)
+	line = append(line, data...)
+	line = append(line, '\n')
+	if n, err := r.writer.Write(line); err != nil {
 		return err
-	} else if n != len(data) {
-		return io.ErrShortWrite
-	}
-	if n, err := r.writer.Write([]byte("\n")); err != nil {
-		return err
-	} else if n != 1 {
+	} else if n != len(line) {
 		return io.ErrShortWrite
 	}
 	if err := r.writer.Flush(); err != nil {

@@ -1586,11 +1586,11 @@ func TestAssessFinalize_FreeSignatureSaveFailureClearsSignedClaim(t *testing.T) 
 	runDir := setupCompletedRun(t)
 	keystoreDir, agentName := generateTestKeys(t)
 	sigPath := filepath.Join(runDir, "manifest.json.sig")
+	// A directory at the signature path makes the save fail. Keeping it empty
+	// lets the rollback remove it, so the cleanup half of the rollback runs
+	// and can be asserted rather than silently failing.
 	if err := os.Mkdir(sigPath, 0o750); err != nil {
 		t.Fatalf("creating signature-path directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sigPath, "block-rename"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("making signature-path directory non-empty: %v", err)
 	}
 
 	err := runAssessFinalize(runDir, assessFinalizeOpts{
@@ -1615,6 +1615,21 @@ func TestAssessFinalize_FreeSignatureSaveFailureClearsSignedClaim(t *testing.T) 
 		t.Errorf("rolled-back manifest still names a signer: agent=%q fingerprint=%q",
 			rolledBack.SignerAgent, rolledBack.SignerKeyFingerprint)
 	}
+
+	// Nothing may remain at the signature path, or a later verify would treat
+	// the bundle as signed and fail on a signature that was never written.
+	if _, statErr := os.Stat(sigPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("detached signature path survived rollback (stat err = %v)", statErr)
+	}
+
+	// The end state a reader actually encounters: intact, and honestly unsigned.
+	exitCode, verifyErr := runAssessVerify(runDir, agentName, keystoreDir)
+	if verifyErr != nil {
+		t.Fatalf("verifying rolled-back bundle: %v", verifyErr)
+	}
+	if exitCode != verifyExitUnsigned {
+		t.Errorf("verify exit = %d, want %d (integrity intact, no signature)", exitCode, verifyExitUnsigned)
+	}
 	html, readErr := os.ReadFile(filepath.Clean(filepath.Join(runDir, "summary.html")))
 	if readErr != nil {
 		t.Fatalf("reading summary.html: %v", readErr)
@@ -1630,10 +1645,6 @@ func TestAssessFinalize_FreeSignatureSaveFailureClearsSignedClaim(t *testing.T) 
 	}
 	if got := manifest.Artifacts["summary.json"]; got != wantHash {
 		t.Errorf("summary hash after rollback = %q, want %q", got, wantHash)
-	}
-	exitCode, verifyErr := runAssessVerify(runDir, agentName, keystoreDir)
-	if verifyErr == nil || exitCode == 0 {
-		t.Errorf("failed signature publication verified as authentic: (%d, %v)", exitCode, verifyErr)
 	}
 }
 

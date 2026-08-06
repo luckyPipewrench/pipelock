@@ -6,6 +6,7 @@ package signing
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -132,6 +133,70 @@ func TestRecoverAgentTransaction_RestoresBackupWhenActivePairIsIncomplete(t *tes
 	}
 	if _, err := os.Stat(ks.agentBackupDir("agent")); !os.IsNotExist(err) {
 		t.Errorf("backup remained after being restored (stat err = %v)", err)
+	}
+}
+
+func TestRecoverAgentTransaction_RefusesMismatchedBackup(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+	// A backup whose halves came from different key pairs is not a recoverable
+	// identity. Recovery used to check only containment, so it would delete the
+	// incomplete active directory and promote this, leaving an agent whose
+	// public key does not match its private key and destroying the evidence of
+	// what went wrong. Refusing keeps both directories for an operator.
+	pubA, _ := encodedPair(t)
+	_, privB := encodedPair(t)
+	seedAgentPair(t, ks.agentBackupDir("agent"), pubA, privB)
+
+	torn := ks.agentDir("agent")
+	if err := os.MkdirAll(torn, dirPermission); err != nil {
+		t.Fatalf("creating torn agent dir: %v", err)
+	}
+	_, orphanPriv := encodedPair(t)
+	if err := os.WriteFile(filepath.Join(torn, privateKeyFile), orphanPriv, 0o600); err != nil {
+		t.Fatalf("writing orphan private key: %v", err)
+	}
+
+	err := ks.recoverAgentTransaction("agent")
+	if err == nil {
+		t.Fatal("recovery promoted a backup whose key halves do not match")
+	}
+	if !strings.Contains(err.Error(), "not a coherent key pair") {
+		t.Errorf("error = %q, want it to name the incoherent backup", err)
+	}
+
+	// Both directories must survive, or the refusal has still destroyed the
+	// operator's ability to investigate.
+	if _, statErr := os.Stat(ks.agentBackupDir("agent")); statErr != nil {
+		t.Errorf("backup was removed despite the refusal: %v", statErr)
+	}
+	if _, statErr := os.Stat(torn); statErr != nil {
+		t.Errorf("incomplete active directory was removed despite the refusal: %v", statErr)
+	}
+}
+
+func TestRecoverAgentTransaction_RefusesUnreadableBackupHalf(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+	// Same refusal when a half is missing outright rather than mismatched, which
+	// is the shape a crash mid-write leaves behind.
+	pub, _ := encodedPair(t)
+	backup := ks.agentBackupDir("agent")
+	if err := os.MkdirAll(backup, dirPermission); err != nil {
+		t.Fatalf("creating backup dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, publicKeyFile), pub, 0o600); err != nil {
+		t.Fatalf("writing lone public key: %v", err)
+	}
+
+	torn := ks.agentDir("agent")
+	if err := os.MkdirAll(torn, dirPermission); err != nil {
+		t.Fatalf("creating torn agent dir: %v", err)
+	}
+
+	if err := ks.recoverAgentTransaction("agent"); err == nil {
+		t.Fatal("recovery promoted a backup missing its private key")
+	}
+	if _, statErr := os.Stat(backup); statErr != nil {
+		t.Errorf("backup was removed despite the refusal: %v", statErr)
 	}
 }
 

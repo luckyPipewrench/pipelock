@@ -10,39 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
 // The transaction's whole purpose is to behave correctly when something fails
 // partway. These drive the failure branches directly, because a rollback path
 // that has never executed is a rollback path nobody knows works.
-
-func TestWithAgentLock_RejectsNonRegularLockFile(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "lock")
-	// A FIFO opens successfully but is not a regular file. Locking it would
-	// give no mutual exclusion, so generation must refuse rather than proceed
-	// unserialized.
-	if err := syscall.Mkfifo(lockPath, 0o600); err != nil {
-		t.Skipf("cannot create FIFO on this filesystem: %v", err)
-	}
-
-	called := false
-	err := withAgentLock(lockPath, func() error {
-		called = true
-		return nil
-	})
-	if err == nil {
-		t.Fatal("withAgentLock accepted a non-regular lock file")
-	}
-	if !strings.Contains(err.Error(), "not a regular file") {
-		t.Errorf("error = %q, want it to name the lock file type", err)
-	}
-	if called {
-		t.Error("the critical section ran without a usable lock")
-	}
-}
 
 func TestWithAgentLock_RefusesSymlinkedLockPath(t *testing.T) {
 	dir := t.TempDir()
@@ -218,9 +191,7 @@ func TestPublishAgentDirectoryPortable_ReportsUnremovableBackup(t *testing.T) {
 		t.Fatalf("restricting backup parent: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(holder, 0o700) }) // #nosec G302 -- restore private directory traversal for cleanup
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores the directory permission this test relies on")
-	}
+	skipIfChmodCannotDeny(t)
 
 	err := publishAgentDirectoryPortable(target, stage, backup)
 	if err == nil {

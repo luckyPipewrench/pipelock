@@ -11,9 +11,7 @@ import (
 )
 
 func TestGenerateAgent_ReportsUnstageableAgentsDirectory(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the directory permission this test relies on")
-	}
+	skipIfChmodCannotDeny(t)
 	ks := NewKeystore(t.TempDir())
 	agents := filepath.Join(ks.baseDir, agentsSubdir)
 	if err := os.MkdirAll(ks.agentDir("agent"), dirPermission); err != nil {
@@ -44,9 +42,7 @@ func TestGenerateAgent_ReportsUnstageableAgentsDirectory(t *testing.T) {
 }
 
 func TestRecoverAgentTransaction_ReportsFailedRestore(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the directory permission this test relies on")
-	}
+	skipIfChmodCannotDeny(t)
 	base := t.TempDir()
 	ks := NewKeystore(base)
 	agents := filepath.Join(base, agentsSubdir)

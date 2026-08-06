@@ -204,17 +204,26 @@ func writeAgentKeyPair(dir string, pub ed25519.PublicKey, priv ed25519.PrivateKe
 	return nil
 }
 
-func (k *Keystore) agentKeyPairExists(name string) bool {
-	priv, err := LoadPrivateKeyFile(filepath.Join(k.agentDir(name), privateKeyFile))
+// keyPairCoherentIn reports whether dir holds a readable private key, a
+// readable public key, and a public key that is the one derived from that
+// private key. Recovery and the ordinary existence check both need this
+// question answered, about different directories, so it takes the directory
+// rather than an agent name.
+func keyPairCoherentIn(dir string) bool {
+	priv, err := LoadPrivateKeyFile(filepath.Join(dir, privateKeyFile))
 	if err != nil {
 		return false
 	}
-	pub, err := LoadPublicKeyFile(filepath.Join(k.agentDir(name), publicKeyFile))
+	pub, err := LoadPublicKeyFile(filepath.Join(dir, publicKeyFile))
 	if err != nil {
 		return false
 	}
 	derived, ok := priv.Public().(ed25519.PublicKey)
 	return ok && bytes.Equal(derived, pub)
+}
+
+func (k *Keystore) agentKeyPairExists(name string) bool {
+	return keyPairCoherentIn(k.agentDir(name))
 }
 
 func (k *Keystore) recoverAgentTransaction(name string) error {
@@ -234,6 +243,15 @@ func (k *Keystore) recoverAgentTransaction(name string) error {
 			return fmt.Errorf("removing committed agent backup: %w", err)
 		}
 		return nil
+	}
+	// Check the backup is a coherent pair BEFORE destroying anything. Recovery
+	// runs when the active directory is already incomplete, so the backup is the
+	// only remaining candidate; promoting one whose halves do not match would
+	// install a broken identity and take the evidence of the failure with it.
+	// Refusing leaves both directories in place for an operator to inspect,
+	// which is recoverable, where a silent bad promotion is not.
+	if !keyPairCoherentIn(backupDir) {
+		return fmt.Errorf("agent backup for %q is not a coherent key pair; leaving both directories in place for inspection", name)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("removing incomplete agent directory: %w", err)

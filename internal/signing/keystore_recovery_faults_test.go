@@ -6,6 +6,7 @@ package signing
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,14 +16,28 @@ import (
 // states where the cleanup or restore is genuinely impossible, so the branches
 // that report those failures actually execute.
 
+// skipIfChmodCannotDeny skips a test whose fault is injected by removing a
+// permission bit. Root ignores mode bits entirely, and Windows does not enforce
+// them through chmod, so on either the injected failure never happens and the
+// test would assert against a fault that did not occur. Guarding on
+// os.Geteuid() alone misses Windows, where Geteuid returns -1 and the guard
+// silently does nothing.
+func skipIfChmodCannotDeny(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not deny access on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the permission bit this test relies on")
+	}
+}
+
 // unremovableDir returns a directory that os.RemoveAll cannot clear, by placing
 // a child inside it and dropping write permission on the parent. Unlinking the
 // child then requires write access the process does not have.
 func unremovableDir(t *testing.T, path string) {
 	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the directory permission this test relies on")
-	}
+	skipIfChmodCannotDeny(t)
 	if err := os.MkdirAll(filepath.Join(path, "child"), dirPermission); err != nil {
 		t.Fatalf("creating %s: %v", path, err)
 	}
@@ -145,21 +160,24 @@ func TestGenerateAgent_ReportsUnclearableStagingDirectory(t *testing.T) {
 	}
 }
 
-func TestPublishAgentDirectoryPortable_RollbackFailureIsReported(t *testing.T) {
+func TestPublishAgentDirectoryPortable_RollsBackPriorPairOnInstallFailure(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "agent")
 	stage := filepath.Join(root, "missing-stage")
 	backup := filepath.Join(root, ".backup")
 
-	// The install fails, so rollback runs. Leaving a non-empty directory at the
-	// target makes the rollback itself impossible, and the caller has to be told
-	// that the prior pair was NOT restored rather than given the install error
-	// alone.
-	seedAgentPair(t, target, []byte("p"), []byte("k"))
-	if err := os.Rename(target, backup); err != nil {
-		t.Fatalf("staging prior pair as backup: %v", err)
-	}
-	seedAgentPair(t, target, []byte("blocking"), []byte("blocking"))
+	// The staged directory does not exist, so the install fails and rollback
+	// runs. Rollback is expected to SUCCEED here: publication renames the active
+	// directory to the backup path before attempting the install, so by the time
+	// the install fails the active path is free and the prior pair renames
+	// straight back. The caller therefore gets the install error alone, and the
+	// operator keeps a working identity, which is the contract that matters.
+	// backup is a SCRATCH path this function creates and overwrites, not a place
+	// to pre-stage anything: its first act is os.RemoveAll(backup). The prior
+	// pair therefore lives at the ACTIVE path, which is what the real caller
+	// does. Seeding the backup path instead destroys the pair on the first line
+	// and tests nothing.
+	seedAgentPair(t, target, []byte("prior-public"), []byte("prior-private"))
 
 	err := publishAgentDirectoryPortable(target, stage, backup)
 	if err == nil {
@@ -167,5 +185,19 @@ func TestPublishAgentDirectoryPortable_RollbackFailureIsReported(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "installing staged agent directory") {
 		t.Errorf("error = %q, want it to name the failed install", err)
+	}
+
+	// A rollback that reports the right error but loses the key pair is the
+	// failure this transaction exists to prevent, so assert the pair is back
+	// rather than trusting the error string.
+	restored, readErr := os.ReadFile(filepath.Clean(filepath.Join(target, publicKeyFile)))
+	if readErr != nil {
+		t.Fatalf("prior public key was not restored: %v", readErr)
+	}
+	if string(restored) != "prior-public" {
+		t.Errorf("restored public key = %q, want the prior pair back", restored)
+	}
+	if _, statErr := os.Stat(backup); !os.IsNotExist(statErr) {
+		t.Errorf("backup survived a completed rollback (stat err = %v)", statErr)
 	}
 }

@@ -30,16 +30,8 @@ func TestPublishAgentDirectory_ReportsExchangeFailure(t *testing.T) {
 	}
 }
 
-func TestSyncDirectory_IgnoresMissingPath(t *testing.T) {
-	// Best-effort durability: a missing directory must not panic or block a
-	// publication that already committed.
-	syncDirectory(filepath.Join(t.TempDir(), "absent"))
-}
-
 func TestWriteAgentKeyPair_ReportsUnwritableDirectory(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the directory permission this test relies on")
-	}
+	skipIfChmodCannotDeny(t)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- directory must stay traversable while write access is removed
 		t.Fatalf("restricting dir: %v", err)

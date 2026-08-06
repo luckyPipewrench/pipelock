@@ -7,12 +7,30 @@
 // the built dist so exit-code wiring through main() is exercised.
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const CLI = "dist/src/cli.js";
-const corpus = "../../conformance/testdata/aarp-corpus";
+function findPackageRoot(moduleURL: string): string {
+  let current = dirname(fileURLToPath(moduleURL));
+  for (;;) {
+    if (existsSync(resolve(current, "package.json"))) return current;
+    const parent = dirname(current);
+    if (parent === current) throw new Error("TypeScript verifier package root not found");
+    current = parent;
+  }
+}
+
+const packageRoot = findPackageRoot(import.meta.url);
+const CLI = resolve(packageRoot, "dist/src/cli.js");
+const corpus = resolve(packageRoot, "../../conformance/testdata/aarp-corpus");
 const trust = `${corpus}/trust.json`;
+const provenanceFixture = resolve(
+  packageRoot,
+  "../../conformance/testdata/provenance/p00-valid.json",
+);
 
 interface RunResult {
   status: number;
@@ -146,4 +164,14 @@ test("cli aarp: no --trust runs with empty trust (every sig unknown_key)", () =>
   assert.equal(r.status, 0);
   assert.match(r.stdout, /"status":"unknown_key"/u);
   assert.match(r.stdout, /"assertion_signed":false/u);
+});
+
+test("cli provenance: incomplete verification requires explicit opt-in", () => {
+  const strict = runCLI(["provenance", provenanceFixture]);
+  assert.equal(strict.status, 1);
+  assert.equal(JSON.parse(strict.stdout).overall, "incomplete");
+
+  const inspection = runCLI(["provenance", provenanceFixture, "--allow-incomplete"]);
+  assert.equal(inspection.status, 0);
+  assert.equal(JSON.parse(inspection.stdout).overall, "incomplete");
 });

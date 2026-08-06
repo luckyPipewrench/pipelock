@@ -131,6 +131,10 @@ const (
 const evidenceProvenanceProfileMaxDecodePasses = 4
 
 const (
+	// ScannerQueryUnescapeMaxRounds is shared with the production scanner so
+	// receipt replay cannot drift from IterativeDecode's safety ceiling.
+	ScannerQueryUnescapeMaxRounds = 500
+
 	// evidenceProvenanceMaxOperations bounds recipe length. Per-operation input
 	// and output caps do not bound verifier work when the attacker controls how
 	// MANY operations run: a long sequence of individually legal transforms each
@@ -145,7 +149,7 @@ const (
 	// the budget is charged in aggregate and exhaustion is a rejection.
 	evidenceProvenanceMaxTotalBytes = 16 << 20
 
-	evidenceProvenanceScannerMaxDecodeRounds = 500
+	evidenceProvenanceScannerMaxDecodeRounds = ScannerQueryUnescapeMaxRounds
 	evidenceProvenanceHTMLMaxDecodePasses    = 16
 	evidenceProvenanceQueryMaxValues         = 20
 	evidenceProvenanceQueryMinIndices        = 2
@@ -430,24 +434,6 @@ func (op Operation) validate() error {
 		OperationCanaryCanonicalize, OperationHTMLEntityDecode, OperationHexDecodeLiberal:
 		return noParameters()
 	case OperationURLComponent:
-		if op.Passes != 0 {
-			return reject("passes")
-		}
-		if op.Profile != "" {
-			return reject("profile")
-		}
-		if op.DecodePadding {
-			return reject("decode_padding")
-		}
-		if op.Alphabet != "" {
-			return reject("alphabet")
-		}
-		if len(op.Indices) != 0 {
-			return reject("indices")
-		}
-		if op.MinimumLength != 0 {
-			return reject("minimum_length")
-		}
 		switch op.Component {
 		case ComponentURL, ComponentHostname, ComponentPath, ComponentRawQuery:
 			if op.Selector != "" {
@@ -463,93 +449,31 @@ func (op Operation) validate() error {
 		default:
 			return fmt.Errorf("unknown URL component %q", op.Component)
 		}
-		return nil
+		parameterless := op
+		parameterless.Component = ""
+		parameterless.Selector = ""
+		parameterless.Occurrence = 0
+		return parameterless.noParametersForValidation(reject)
 	case OperationPercentDecode:
 		if op.Passes == 0 || op.Passes > evidenceProvenanceProfileMaxDecodePasses {
 			return fmt.Errorf("percent decode passes must be 1..%d", evidenceProvenanceProfileMaxDecodePasses)
 		}
-		if op.Component != "" {
-			return reject("component")
-		}
-		if op.Selector != "" {
-			return reject("selector")
-		}
-		if op.Occurrence != 0 {
-			return reject("occurrence")
-		}
-		if op.Profile != "" {
-			return reject("profile")
-		}
-		if op.DecodePadding {
-			return reject("decode_padding")
-		}
-		if op.Alphabet != "" {
-			return reject("alphabet")
-		}
-		if len(op.Indices) != 0 {
-			return reject("indices")
-		}
-		if op.MinimumLength != 0 {
-			return reject("minimum_length")
-		}
-		return nil
+		parameterless := op
+		parameterless.Passes = 0
+		return parameterless.noParametersForValidation(reject)
 	case OperationDLPNormalize:
 		if op.Profile != "pipelock-dlp-v1" {
 			return fmt.Errorf("unknown DLP profile %q", op.Profile)
 		}
-		if op.Component != "" {
-			return reject("component")
-		}
-		if op.Selector != "" {
-			return reject("selector")
-		}
-		if op.Occurrence != 0 {
-			return reject("occurrence")
-		}
-		if op.Passes != 0 {
-			return reject("passes")
-		}
-		if op.DecodePadding {
-			return reject("decode_padding")
-		}
-		if op.Alphabet != "" {
-			return reject("alphabet")
-		}
-		if len(op.Indices) != 0 {
-			return reject("indices")
-		}
-		if op.MinimumLength != 0 {
-			return reject("minimum_length")
-		}
-		return nil
+		parameterless := op
+		parameterless.Profile = ""
+		return parameterless.noParametersForValidation(reject)
 	case OperationHexDecode:
 		return noParameters()
 	case OperationBase32Decode, OperationBase64Decode:
-		if op.Component != "" {
-			return reject("component")
-		}
-		if op.Selector != "" {
-			return reject("selector")
-		}
-		if op.Occurrence != 0 {
-			return reject("occurrence")
-		}
-		if op.Passes != 0 {
-			return reject("passes")
-		}
-		if op.Profile != "" {
-			return reject("profile")
-		}
-		if op.Alphabet != "" {
-			return reject("alphabet")
-		}
-		if len(op.Indices) != 0 {
-			return reject("indices")
-		}
-		if op.MinimumLength != 0 {
-			return reject("minimum_length")
-		}
-		return nil
+		parameterless := op
+		parameterless.DecodePadding = false
+		return parameterless.noParametersForValidation(reject)
 	case OperationMatchingNormalize:
 		if op.Profile != "pipelock-matching-v1" {
 			return fmt.Errorf("unknown matching profile %q", op.Profile)
@@ -658,7 +582,7 @@ func (op Operation) selectURLComponent(value string) (string, error) {
 			return "", fmt.Errorf("query parse: %w", err)
 		}
 		values, ok := query[op.Selector]
-		if !ok || int(op.Occurrence) >= len(values) {
+		if !ok || uint64(op.Occurrence) >= uint64(len(values)) {
 			return "", fmt.Errorf("query component: occurrence %d unavailable", op.Occurrence)
 		}
 		if op.Component == ComponentQueryKey {
@@ -787,7 +711,7 @@ func selectScannerTextSegment(value string, occurrence uint32) (string, error) {
 			return false
 		}
 	})
-	if int(occurrence) >= len(segments) {
+	if uint64(occurrence) >= uint64(len(segments)) {
 		return "", fmt.Errorf("text segment: occurrence %d unavailable", occurrence)
 	}
 	return segments[occurrence], nil
@@ -897,7 +821,7 @@ func selectScannerEncodedRun(value string, occurrence, minimumLength uint32) (st
 	if start >= 0 && int64(len(value)-start) >= int64(minimumLength) {
 		runs = append(runs, value[start:])
 	}
-	if int(occurrence) >= len(runs) {
+	if uint64(occurrence) >= uint64(len(runs)) {
 		return "", fmt.Errorf("encoded run: occurrence %d unavailable", occurrence)
 	}
 	return runs[occurrence], nil

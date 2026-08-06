@@ -74,6 +74,7 @@ impl ProvenanceReport {
 struct SignedEntry {
     bytes: Vec<u8>,
     value: Value,
+    signature_hex: String,
 }
 
 #[derive(Clone)]
@@ -127,21 +128,20 @@ fn parse_entry(value: &Value, index: usize) -> std::result::Result<SignedEntry, 
     reject_duplicate_keys(signed_text).map_err(|err| format!("signed JSON: {err}"))?;
     let signed: Value =
         serde_json::from_str(signed_text).map_err(|err| format!("signed JSON: {err}"))?;
+    exact_keys(
+        object(&signed, "signed JSON")?,
+        &["chain_seq", "chain_prev_hash", "critical_features", "proof"],
+        "signed JSON",
+    )?;
     let signature = string(entry, "signature", "fixture entry")?;
     if !signature.starts_with("ed25519:") {
         return Err("fixture entry: signature must use ed25519:".into());
     }
-    // Retain the detached signature in the object so verification stays exact
-    // while avoiding a second public wrapper type.
-    let mut value = signed;
-    value
-        .as_object_mut()
-        .ok_or_else(|| "signed JSON: must be an object".to_string())?
-        .insert(
-            "__fixture_signature".into(),
-            Value::String(signature[8..].into()),
-        );
-    Ok(SignedEntry { bytes, value })
+    Ok(SignedEntry {
+        bytes,
+        value: signed,
+        signature_hex: signature[8..].into(),
+    })
 }
 
 fn parse_verification(value: &Value) -> std::result::Result<VerificationInput, String> {
@@ -217,14 +217,8 @@ fn verify_entries(
         .map_err(|_| "signer key length".to_string())?;
     let verifying =
         VerifyingKey::from_bytes(&verifying).map_err(|err| format!("signer key: {err}"))?;
-    let mut missing_source = false;
     for entry in entries {
-        let signature_hex = entry
-            .value
-            .get("__fixture_signature")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "fixture signature missing".to_string())?;
-        let signature = decode_hex(signature_hex, 64, "signature")?;
+        let signature = decode_hex(&entry.signature_hex, 64, "signature")?;
         let signature =
             Signature::from_slice(&signature).map_err(|err| format!("signature: {err}"))?;
         if verifying.verify_strict(&entry.bytes, &signature).is_err() {
@@ -249,6 +243,7 @@ fn verify_entries(
     }
     report.chain = "verified".into();
 
+    let mut proofs = Vec::with_capacity(entries.len());
     for entry in entries {
         let signed = match signed_object(entry) {
             Ok(signed) => signed,
@@ -275,18 +270,36 @@ fn verify_entries(
                 return Ok(report);
             }
         };
-        match verify_artifacts(&proof, input) {
-            Stage::Matched => report.artifacts = "matched".into(),
-            Stage::Unchecked => report.artifacts = "attested_unchecked".into(),
+        proofs.push(proof);
+    }
+
+    let mut artifacts_unchecked = false;
+    for proof in &proofs {
+        match verify_artifacts(proof, input) {
+            Stage::Matched => {}
+            Stage::Unchecked => artifacts_unchecked = true,
             Stage::Mismatch => {
                 report.artifacts = "mismatch".into();
                 report.fail("artifacts");
                 return Ok(report);
             }
         }
+    }
+    report.artifacts = if artifacts_unchecked {
+        "attested_unchecked".into()
+    } else {
+        "matched".into()
+    };
+    let missing_source = proofs.iter().any(|proof| {
+        proof
+            .sources
+            .iter()
+            .any(|source| !input.sources.contains_key(&source.source_id))
+    });
+
+    for proof in &proofs {
         for source in &proof.sources {
             let Some(raw) = input.sources.get(&source.source_id) else {
-                missing_source = true;
                 report.view_reproduction = "not_checked".into();
                 report.location = "not_checked".into();
                 report.match_commitment = "not_checked".into();
@@ -311,42 +324,48 @@ fn verify_entries(
             )
             .is_err()
             {
-                report.location = "mismatch".into();
+                if missing_source {
+                    report.view_reproduction = "not_checked".into();
+                    report.location = "not_checked".into();
+                    report.match_commitment = "not_checked".into();
+                } else {
+                    report.location = "mismatch".into();
+                }
                 report.fail("location");
                 return Ok(report);
             }
-            for matched in &source.matches {
-                report.location = "exact_coordinates".into();
-                let Some(key) = input.commitment_key.as_deref() else {
-                    report.match_commitment = "not_checked".into();
-                    continue;
-                };
-                let expected_view = commitment(
-                    key,
-                    "pipelock/evidence-provenance/view/v1",
-                    &[
-                        u64_bytes(source.source_ordinal),
-                        source.source_id.as_bytes().to_vec(),
-                        source.recipe.profile.as_bytes().to_vec(),
-                        recipe_bytes(&source.recipe)?,
-                        view.as_bytes().to_vec(),
-                    ],
-                );
-                if expected_view != source.view_commitment {
-                    // Reproduction means the typed recipe ran and coordinates
-                    // address that view. A view HMAC is a separate opening
-                    // claim, so do not misreport this as failed reproduction.
-                    if missing_source {
-                        // Aggregate stages are only positive when every
-                        // source can be reproduced. Still surface the later
-                        // HMAC failure so a missing sibling cannot mask it.
-                        report.view_reproduction = "not_checked".into();
-                        report.location = "not_checked".into();
-                    }
-                    report.match_commitment = "mismatch".into();
-                    report.fail("view_commitment");
-                    return Ok(report);
+            report.location = "exact_coordinates".into();
+            let Some(key) = input.commitment_key.as_deref() else {
+                report.match_commitment = "not_checked".into();
+                continue;
+            };
+            let expected_view = commitment(
+                key,
+                "pipelock/evidence-provenance/view/v1",
+                &[
+                    u64_bytes(source.source_ordinal),
+                    source.source_id.as_bytes().to_vec(),
+                    source.recipe.profile.as_bytes().to_vec(),
+                    recipe_bytes(&source.recipe)?,
+                    view.as_bytes().to_vec(),
+                ],
+            );
+            if expected_view != source.view_commitment {
+                // Reproduction means the typed recipe ran and coordinates
+                // address that view. A view HMAC is a separate opening
+                // claim, so do not misreport this as failed reproduction.
+                if missing_source {
+                    // Aggregate stages are only positive when every source
+                    // can be reproduced. Still surface a later HMAC failure
+                    // so a missing sibling cannot mask it.
+                    report.view_reproduction = "not_checked".into();
+                    report.location = "not_checked".into();
                 }
+                report.match_commitment = "mismatch".into();
+                report.fail("view_commitment");
+                return Ok(report);
+            }
+            for matched in &source.matches {
                 let expected = commitment(
                     key,
                     "pipelock/evidence-provenance/match/v1",
@@ -366,8 +385,8 @@ fn verify_entries(
                     report.fail("match_commitment");
                     return Ok(report);
                 }
-                report.match_commitment = "opened".into();
             }
+            report.match_commitment = "opened".into();
         }
     }
     if missing_source {
@@ -397,13 +416,7 @@ fn chain_fields_match(
 
 fn signed_object(entry: &SignedEntry) -> std::result::Result<&Map<String, Value>, String> {
     let object = object(&entry.value, "signed")?;
-    let mut allowed = HashSet::from([
-        "chain_seq",
-        "chain_prev_hash",
-        "critical_features",
-        "proof",
-        "__fixture_signature",
-    ]);
+    let mut allowed = HashSet::from(["chain_seq", "chain_prev_hash", "critical_features", "proof"]);
     if object.keys().any(|key| !allowed.remove(key.as_str())) || !allowed.is_empty() {
         return Err("signed: unknown or missing field".into());
     }

@@ -50,12 +50,29 @@ def _fixture(
 ) -> bytes:
     key = bytes(range(32))
     source = "A💩B".encode()
+    operations = [{"kind": "identity"}]
+    if overflow_occurrence:
+        operations = [
+            {
+                "kind": "url_component",
+                "component": "query_value",
+                "selector": "q",
+                "occurrence": 1 << 32,
+            }
+        ]
     recipe = {
+        "transform_profile_digest": PROFILE_DIGEST,
+        "operations": operations,
+    }
+    commitment_recipe = {
         "transform_profile_digest": PROFILE_DIGEST,
         "operations": [{"kind": "identity"}],
     }
-    strict_recipe = parse_json_strict(json.dumps(recipe).encode())
-    recipe_bytes = _recipe_bytes(strict_recipe)
+    # The overflow recipe must remain parseable JSON but cannot be framed as a
+    # uint32. Commitments are irrelevant because proof-structure validation
+    # must reject it before any opening is attempted.
+    strict_commitment_recipe = parse_json_strict(json.dumps(commitment_recipe).encode())
+    recipe_bytes = _recipe_bytes(strict_commitment_recipe)
     view_commitment = _commit(
         key,
         "pipelock/evidence-provenance/view/v1",
@@ -98,15 +115,6 @@ def _fixture(
             ],
         }
     ]
-    if overflow_occurrence:
-        recipe["operations"] = [
-            {
-                "kind": "url_component",
-                "component": "query_value",
-                "selector": "q",
-                "occurrence": 1 << 32,
-            }
-        ]
     source_inputs = [
         {
             "source_id": "source",

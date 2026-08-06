@@ -6,11 +6,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
 
 // writeProvenanceFixtureFile marshals a fixture to a temp file and returns its path.
 func writeProvenanceFixtureFile(t *testing.T, fixture provenanceFixture) string {
@@ -111,6 +118,42 @@ func TestRunProvenanceRejectsDuplicateEnvelopeKeys(t *testing.T) {
 	}
 	if report.FailureStage != "proof_structure" {
 		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestDecodeStrictJSONRejectsNonCanonicalKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		data        string
+		destination any
+	}{
+		{
+			name:        "fixture envelope",
+			data:        `{"FORMAT":"pipelock-evidence-provenance-verification-fixture/v1","entries":[],"verification":{}}`,
+			destination: &provenanceFixture{},
+		},
+		{
+			name:        "signed proof",
+			data:        `{"CHAIN_SEQ":0,"chain_prev_hash":"genesis","critical_features":[],"proof":{}}`,
+			destination: &signedProvenanceProof{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := decodeStrictJSON([]byte(tc.data), tc.destination); err == nil {
+				t.Fatal("decodeStrictJSON accepted a non-canonical key")
+			}
+		})
+	}
+}
+
+func TestRunProvenancePropagatesReportWriteFailure(t *testing.T) {
+	path := writeProvenanceFixtureFile(t, validProvenanceFixture(t, "view", 0, 4))
+	err := runProvenance(failingWriter{}, path, true)
+	if err == nil {
+		t.Fatal("runProvenance ignored the report output failure")
+	}
+	if !strings.Contains(err.Error(), "write provenance report") {
+		t.Fatalf("error = %v, want report write context", err)
 	}
 }
 

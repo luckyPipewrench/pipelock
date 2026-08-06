@@ -153,13 +153,17 @@ read -r -a py_provenance_cmd <<< "$PY_PROVENANCE"
 
 provenance_output() { # path cmd... -> stdout, preserving invalid-stage JSON
   local path="$1"; shift
-  local output
-  output="$("$@" "$path" 2>/dev/null)"
+  local output error_file
+  error_file="$(mktemp)" || { echo "FATAL: could not create verifier stderr file" >&2; return 2; }
+  output="$("$@" "$path" 2>"$error_file")"
   local status=$?
   if [ "$status" -gt 1 ]; then
     echo "FATAL: provenance verifier command failed with status $status for $path" >&2
+    cat "$error_file" >&2
+    rm -f "$error_file"
     return 2
   fi
+  rm -f "$error_file"
   printf '%s' "$output"
 }
 
@@ -191,6 +195,12 @@ for f in "$PROVENANCE_CORPUS"/*.json; do
     provenance_fails=$((provenance_fails + 1))
   fi
   printf "%-44s %-12s %-12s %-12s %-12s %s\n" "$base" "$(printf '%s' "$go" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$(printf '%s' "$ts" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$(printf '%s' "$rs" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$(printf '%s' "$py" | sed -n 's/.*\"overall\":\"\([^\"]*\)\".*/\1/p')" "$result"
+done
+
+for expfile in "$PROVENANCE_CORPUS"/*.expect.json; do
+  [ -f "$expfile" ] || continue
+  fixture="${expfile%.expect.json}.json"
+  [ -f "$fixture" ] || { echo "FATAL: orphan provenance expectation $(basename "$expfile")" >&2; exit 2; }
 done
 
 echo "----"

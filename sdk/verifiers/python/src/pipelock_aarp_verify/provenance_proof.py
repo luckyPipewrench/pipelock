@@ -15,10 +15,8 @@ import hashlib
 import hmac
 import json
 import struct
-import unicodedata
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import unquote_plus, urlsplit
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -269,311 +267,6 @@ def _recipe_bytes(recipe: dict[str, Any]) -> bytes:
             )
         result += _frame(encoded)
     return result
-
-
-def _has_control(value: str) -> bool:
-    # Go's unicode.IsControl is the Unicode Cc category, not every C* format
-    # or private-use code point.
-    return any(unicodedata.category(char) == "Cc" for char in value)
-
-
-def _validate_operation(
-    kind: str,
-    component: str,
-    selector: str,
-    occurrence: int,
-    passes: int,
-    profile: str,
-    padding: bool,
-) -> None:
-    if occurrence > 0xFFFFFFFF:
-        raise ProvenanceError("proof_structure", "operation occurrence exceeds uint32")
-    if kind not in _OP_BYTES:
-        raise ProvenanceError("proof_structure", f"unknown operation {kind!r}")
-    if component not in _COMPONENT_BYTES:
-        raise ProvenanceError("proof_structure", f"unknown URL component {component!r}")
-    if _has_control(selector):
-        raise ProvenanceError(
-            "proof_structure", f"selector for {kind} contains control character"
-        )
-    if _has_control(profile):
-        raise ProvenanceError(
-            "proof_structure", f"profile for {kind} contains control character"
-        )
-    none = (
-        component == ""
-        and selector == ""
-        and occurrence == 0
-        and passes == 0
-        and profile == ""
-        and not padding
-    )
-    if kind in {
-        "identity",
-        "lowercase",
-        "invisible_strip",
-        "leetspeak",
-        "vowel_fold",
-        "hex_decode",
-    }:
-        if not none:
-            raise ProvenanceError(
-                "proof_structure", f"unsupported operation parameter for {kind}"
-            )
-        return
-    if kind == "url_component":
-        if passes != 0 or profile != "" or padding:
-            raise ProvenanceError(
-                "proof_structure", "unsupported URL component parameter"
-            )
-        if component in {"url", "hostname", "path"} and (
-            selector != "" or occurrence != 0
-        ):
-            raise ProvenanceError(
-                "proof_structure", "unsupported URL selector or occurrence"
-            )
-        if component in {"query_key", "query_value"} and selector == "":
-            raise ProvenanceError(
-                "proof_structure", "query component is missing selector"
-            )
-        return
-    if kind == "percent_decode":
-        if (
-            component
-            or selector
-            or occurrence
-            or profile
-            or padding
-            or not 1 <= passes <= 4
-        ):
-            raise ProvenanceError(
-                "proof_structure", "percent decode passes must be 1..4"
-            )
-        return
-    if kind == "dlp_normalize":
-        if profile != "pipelock-dlp-v1":
-            raise ProvenanceError("proof_structure", f"unknown DLP profile {profile!r}")
-        if component or selector or occurrence or passes or padding:
-            raise ProvenanceError("proof_structure", "invalid DLP normalize parameters")
-        return
-    if kind in {"base32_decode", "base64_decode"} and (
-        component or selector or occurrence or passes or profile
-    ):
-        raise ProvenanceError("proof_structure", "invalid base decoder parameters")
-
-
-def _check_percent(value: str, label: str = "percent decode") -> None:
-    for index, char in enumerate(value):
-        if char == "%" and (
-            index + 2 >= len(value)
-            or any(
-                c not in "0123456789abcdefABCDEF" for c in value[index + 1 : index + 3]
-            )
-        ):
-            raise ProvenanceError("view_reproduction", f"{label}: malformed escape")
-
-
-def _strip_invisible(value: str, *, preserve_whitespace: bool = True) -> str:
-    keep = []
-    for char in value:
-        code = ord(char)
-        if (
-            code < 32 and (not preserve_whitespace or char not in "\t\n\r")
-        ) or 127 <= code <= 159:
-            continue
-        if (
-            code in {0xAD, 0x3164, 0xFEFF}
-            or 0x115F <= code <= 0x1160
-            or 0x200B <= code <= 0x200F
-            or 0x202A <= code <= 0x202E
-            or 0x2060 <= code <= 0x2064
-            or 0x2066 <= code <= 0x2069
-            or 0xFE00 <= code <= 0xFE0F
-            or 0xFFF9 <= code <= 0xFFFB
-            or 0xE0000 <= code <= 0xE007F
-            or 0xE0100 <= code <= 0xE01EF
-        ):
-            continue
-        keep.append(char)
-    return "".join(keep)
-
-
-_CONFUSABLES = str.maketrans(
-    {
-        "А": "A",
-        "В": "B",
-        "С": "C",
-        "Е": "E",
-        "Н": "H",
-        "І": "I",
-        "Ј": "J",
-        "К": "K",
-        "М": "M",
-        "О": "O",
-        "Р": "P",
-        "Ѕ": "S",
-        "Т": "T",
-        "Х": "X",
-        "а": "a",
-        "в": "v",
-        "е": "e",
-        "н": "h",
-        "і": "i",
-        "к": "k",
-        "м": "m",
-        "о": "o",
-        "р": "p",
-        "с": "c",
-        "т": "t",
-        "у": "y",
-        "х": "x",
-        "ј": "j",
-        "ѕ": "s",
-        "Α": "A",
-        "Β": "B",
-        "Ε": "E",
-        "Ζ": "Z",
-        "Η": "H",
-        "Ι": "I",
-        "Κ": "K",
-        "Μ": "M",
-        "Ν": "N",
-        "Ο": "O",
-        "Ρ": "P",
-        "Τ": "T",
-        "Υ": "Y",
-        "Χ": "X",
-        "α": "a",
-        "ε": "e",
-        "ι": "i",
-        "κ": "k",
-        "ν": "v",
-        "ο": "o",
-        "Օ": "O",
-        "օ": "o",
-        "Ս": "S",
-        "ս": "s",
-        "Լ": "L",
-        "հ": "h",
-        "ո": "n",
-        "ռ": "n",
-        "ա": "a",
-        "Ꭺ": "A",
-        "Ꭲ": "I",
-        "Ꮲ": "P",
-        "Ꮪ": "S",
-        "Ꭱ": "E",
-        "Ꮃ": "W",
-        "Ꮤ": "T",
-        "Ø": "O",
-        "ø": "o",
-        "Đ": "D",
-        "đ": "d",
-        "Ł": "L",
-        "ł": "l",
-        "Ħ": "H",
-        "ħ": "h",
-        "Ŧ": "T",
-        "ŧ": "t",
-        "ᴀ": "A",
-        "ʙ": "B",
-        "ᴄ": "C",
-        "ᴅ": "D",
-        "ᴇ": "E",
-        "ꜰ": "F",
-        "ɢ": "G",
-        "ʜ": "H",
-        "ɪ": "I",
-        "ᴊ": "J",
-        "ᴋ": "K",
-        "ʟ": "L",
-        "ᴍ": "M",
-        "ɴ": "N",
-        "ᴏ": "O",
-        "ᴘ": "P",
-        "ʀ": "R",
-        "ꜱ": "S",
-        "ᴛ": "T",
-        "ᴜ": "U",
-        "ᴠ": "V",
-        "ᴡ": "W",
-        "ʏ": "Y",
-        "ᴢ": "Z",
-    }
-)
-
-
-def _confusable_to_ascii(value: str) -> str:
-    """Apply the profile's explicit map and its two alphabetic ranges."""
-    mapped = value.translate(_CONFUSABLES)
-    result = []
-    for char in mapped:
-        code = ord(char)
-        if 0x1F170 <= code <= 0x1F189:
-            result.append(chr(ord("A") + code - 0x1F170))
-        elif 0x1F1E6 <= code <= 0x1F1FF:
-            result.append(chr(ord("A") + code - 0x1F1E6))
-        else:
-            result.append(char)
-    return "".join(result)
-
-
-def _dlp_normalize(value: str) -> str:
-    value = _strip_invisible(value, preserve_whitespace=False)
-    value = "".join(
-        ""
-        if ord(char)
-        in {
-            0xA0,
-            0x1680,
-            0x180E,
-            *range(0x2000, 0x200B),
-            0x2028,
-            0x2029,
-            0x202F,
-            0x205F,
-            0x3000,
-        }
-        else char
-        for char in value
-    )
-    value = _confusable_to_ascii(unicodedata.normalize("NFKC", value))
-    return "".join(
-        char
-        for char in unicodedata.normalize("NFD", value)
-        if unicodedata.category(char) != "Mn"
-    )
-
-
-def _url_component(value: str, component: str, selector: str, occurrence: int) -> str:
-    try:
-        parsed = urlsplit(value)
-    except ValueError as exc:
-        raise ProvenanceError("view_reproduction", "invalid absolute URL") from exc
-    if not parsed.scheme or not parsed.netloc:
-        raise ProvenanceError("view_reproduction", "invalid absolute URL")
-    if component == "url":
-        return value
-    if component == "hostname":
-        return parsed.hostname or ""
-    if component == "path":
-        return parsed.path
-    _check_percent(parsed.query, "query parse")
-    pairs: list[tuple[str, str]] = []
-    for part in parsed.query.split("&"):
-        key, sep, item = part.partition("=")
-        pairs.append(
-            (
-                unquote_plus(key, encoding="utf-8", errors="strict"),
-                unquote_plus(item if sep else "", encoding="utf-8", errors="strict"),
-            )
-        )
-    values = [item for key, item in pairs if key == selector]
-    if occurrence >= len(values):
-        raise ProvenanceError(
-            "view_reproduction", f"query occurrence {occurrence} unavailable"
-        )
-    return selector if component == "query_key" else values[occurrence]
 
 
 def _apply_recipe(recipe: dict[str, Any], source: bytes) -> bytes:
@@ -836,7 +529,9 @@ def _verify_entry(
         result["artifacts"] = "attested_unchecked"
     else:
         result["artifacts"] = "matched"
-    unavailable_source = False
+    unavailable_source = any(
+        source_id not in sources for _, source_id, _, _, _, _ in parsed_sources
+    )
     for (
         ordinal,
         source_id,
@@ -847,7 +542,6 @@ def _verify_entry(
     ) in parsed_sources:
         source = sources.get(source_id)
         if source is None:
-            unavailable_source = True
             continue
         try:
             view = _apply_recipe(recipe, source)
@@ -857,9 +551,13 @@ def _verify_entry(
         try:
             _validate_intervals(view, [(match[1], match[2]) for match in matches])
         except ProvenanceError:
-            return _invalid("location", result)
-        if matches:
-            result["location"] = "exact_coordinates"
+            invalid = _invalid("location", result)
+            if unavailable_source:
+                invalid["view_reproduction"] = "not_checked"
+                invalid["location"] = "not_checked"
+                invalid["match_commitment"] = "not_checked"
+            return invalid
+        result["location"] = "exact_coordinates"
         if commitment_key is not None:
             computed_view = _commit(
                 commitment_key,

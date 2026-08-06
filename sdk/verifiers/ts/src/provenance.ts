@@ -296,6 +296,8 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
       if (opUint(op, "minimum_length", true) < 1)
         fail("encoded run minimum_length must be positive");
       return;
+    default:
+      fail(`unknown operation ${JSON.stringify(kind)}`);
   }
 }
 

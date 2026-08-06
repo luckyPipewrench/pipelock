@@ -1519,7 +1519,7 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 // The loop exits early when decoding produces no change (decoded == s),
 // so this limit only matters for pathological inputs. URL decoding is
 // microsecond-cheap per round, so a generous ceiling has no real cost.
-const maxDecodeRounds = 500
+const maxDecodeRounds = normalize.ScannerQueryUnescapeMaxRounds
 
 // IterativeDecode applies URL decoding until the string stops changing
 // or the safety ceiling is reached. Catches multi-layer encoding (e.g., %252D → %2D → -).
@@ -2143,24 +2143,11 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []Warn
 		return Result{Allowed: true}, nil
 	}
 
-	var values []string
-	for _, pair := range strings.Split(rawQuery, "&") {
-		_, value, _ := strings.Cut(pair, "=")
-		if value != "" {
-			values = append(values, IterativeDecode(value))
-		}
-	}
-
+	values := querySubsequenceValues(rawQuery)
 	n := len(values)
 	if n < 3 {
 		return Result{Allowed: true}, nil
 	}
-	// Cap to first 20 values to bound combinatorial cost (O(n^4)).
-	if n > 20 {
-		values = values[:20]
-		n = 20
-	}
-
 	var warnMatches []WarnMatch
 	for size := 2; size <= 4 && size <= n; size++ {
 		result, warns := s.checkDLPCombinations(values, n, size, hostname)
@@ -2171,6 +2158,24 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []Warn
 	}
 
 	return Result{Allowed: true}, warnMatches
+}
+
+// querySubsequenceValues extracts the production query-value view shared by
+// core DLP, configured DLP, and the provenance parity test.
+func querySubsequenceValues(rawQuery string) []string {
+	const maxValues = 20
+	values := make([]string, 0, maxValues)
+	for _, pair := range strings.Split(rawQuery, "&") {
+		_, value, _ := strings.Cut(pair, "=")
+		if value == "" {
+			continue
+		}
+		values = append(values, IterativeDecode(value))
+		if len(values) == maxValues {
+			break
+		}
+	}
+	return values
 }
 
 // checkDLPCombinations generates all ordered combinations of the given size

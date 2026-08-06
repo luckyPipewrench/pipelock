@@ -41,6 +41,10 @@ func TestQueryIndicesJSONWireShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"kind":"query_subsequence","indices":"AAI="}`), &decoded); err == nil {
 		t.Fatal("Unmarshal() accepted the legacy base64 string instead of array<uint8>")
 	}
+	err = json.Unmarshal([]byte(`{"kind":"query_subsequence","indices":[0,300]}`), &decoded)
+	if err == nil || !strings.Contains(err.Error(), "exceeds uint8") {
+		t.Fatalf("Unmarshal() out-of-range index error = %v, want a uint8 range rejection", err)
+	}
 }
 
 func TestRecipeApplyOperations(t *testing.T) {
@@ -145,6 +149,9 @@ func TestRecipeApplyRejectsInvalidInputs(t *testing.T) {
 		{"missing text segment", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationTextSegment, Occurrence: 2}}}, "one/two", "occurrence 2 unavailable"},
 		{"missing query subsequence value", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 2}}}}, "a=one&b=two", "index 2 unavailable"},
 		{"missing encoded run", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationEncodedRun, MinimumLength: 8}}}, "short", "occurrence 0 unavailable"},
+		{"huge query occurrence", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationURLComponent, Component: ComponentQueryVal, Selector: "q", Occurrence: ^uint32(0)}}}, "https://api.vendor.example/?q=value", "occurrence 4294967295 unavailable"},
+		{"huge text occurrence", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationTextSegment, Occurrence: ^uint32(0)}}}, "one/two", "occurrence 4294967295 unavailable"},
+		{"huge encoded run occurrence", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationEncodedRun, Occurrence: ^uint32(0), MinimumLength: 4}}}, "QUJD", "occurrence 4294967295 unavailable"},
 		{"identity rejects component", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationIdentity, Component: ComponentPath}}}, "value", "unsupported component"},
 		{"lowercase rejects selector", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationLowercase, Selector: "ignored"}}}, "value", "unsupported selector"},
 		{"URL rejects passes", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationURLComponent, Component: ComponentURL, Passes: 1}}}, "https://api.vendor.example", "unsupported passes"},
@@ -404,6 +411,13 @@ func TestOperationValidateParameterShapes(t *testing.T) {
 		{"query subsequence unordered", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{1, 1}}, "strictly increasing"},
 		{"query subsequence out of range", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 20}}, "exceeds scanner limit"},
 		{"encoded run missing minimum", Operation{Kind: OperationEncodedRun}, "minimum_length must be positive"},
+		{"matching normalize rejects alphabet", Operation{Kind: OperationMatchingNormalize, Profile: "pipelock-matching-v1", Alphabet: "url"}, "unsupported alphabet"},
+		{"liberal base32 rejects occurrence", Operation{Kind: OperationBase32DecodeLiberal, Occurrence: 1}, "unsupported occurrence"},
+		{"liberal base64 rejects indices", Operation{Kind: OperationBase64DecodeLiberal, Alphabet: "standard", Indices: QueryIndices{0, 1}}, "unsupported indices"},
+		{"encoded token rejects padding", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex", DecodePadding: true}, "unsupported decode_padding"},
+		{"text segment rejects selector", Operation{Kind: OperationTextSegment, Selector: "marker"}, "unsupported selector"},
+		{"query subsequence rejects minimum", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 1}, MinimumLength: 8}, "unsupported minimum_length"},
+		{"encoded run rejects alphabet", Operation{Kind: OperationEncodedRun, MinimumLength: 6, Alphabet: "hex"}, "unsupported alphabet"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.op.validate()

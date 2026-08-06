@@ -315,7 +315,9 @@ def _run_receipt(
     return EXIT_OK if report.get("valid") else EXIT_GENERAL
 
 
-def _run_provenance(stdout: IO[str], stderr: IO[str], target: str) -> int:
+def _run_provenance(
+    stdout: IO[str], stderr: IO[str], target: str, allow_incomplete: bool
+) -> int:
     """Verify the experimental fixture-only evidence-provenance wrapper."""
     try:
         with open(target, "rb") as fh:
@@ -326,6 +328,8 @@ def _run_provenance(stdout: IO[str], stderr: IO[str], target: str) -> int:
     rendered, exit_code = compact_fixture_json(data)
     stdout.write(rendered)
     stdout.write("\n")
+    if json.loads(rendered).get("overall") == "incomplete" and not allow_incomplete:
+        return EXIT_GENERAL
     return exit_code
 
 
@@ -373,6 +377,11 @@ def main(argv: list[str] | None = None) -> int:
         help="verify an experimental fixture-only evidence-provenance proof",
     )
     provenance_p.add_argument("path", help="path to the provenance fixture JSON")
+    provenance_p.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="return success for an incomplete fixture inspection",
+    )
 
     try:
         args = parser.parse_args(argv)
@@ -390,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
             args.allow_unpinned,
         )
     if args.command == "provenance":
-        return _run_provenance(sys.stdout, sys.stderr, args.path)
+        return _run_provenance(sys.stdout, sys.stderr, args.path, args.allow_incomplete)
 
     if args.command != "aarp":
         parser.print_usage(sys.stderr)

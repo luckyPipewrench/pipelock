@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   applyEvidenceProvenanceRecipe,
@@ -18,9 +20,26 @@ type Vector = {
   recipe?: unknown[];
   transform_profile_digest?: string;
 };
-const corpus = JSON.parse(
-  readFileSync("../../conformance/testdata/transform-profile/evidence-provenance-v1.json", "utf8"),
-) as { profile_digest: string; operation_coverage: string[]; vectors: Vector[] };
+function findPackageRoot(moduleURL: string): string {
+  let current = dirname(fileURLToPath(moduleURL));
+  for (;;) {
+    if (existsSync(resolve(current, "package.json"))) return current;
+    const parent = dirname(current);
+    if (parent === current) throw new Error("TypeScript verifier package root not found");
+    current = parent;
+  }
+}
+
+const packageRoot = findPackageRoot(import.meta.url);
+const corpusPath = resolve(
+  packageRoot,
+  "../../conformance/testdata/transform-profile/evidence-provenance-v1.json",
+);
+const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as {
+  profile_digest: string;
+  operation_coverage: string[];
+  vectors: Vector[];
+};
 
 test("evidence provenance: pinned corpus profile and every operation are exercised", () => {
   assert.equal(corpus.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST);
@@ -69,7 +88,7 @@ test("evidence provenance: HTML5 named entities decode repeatedly", () => {
 
 test("evidence provenance: Unicode 15 tables pin newer code points as opaque", () => {
   const unicodeData = JSON.parse(
-    readFileSync("node_modules/@unicode/unicode-15.0.0/package.json", "utf8"),
+    readFileSync(resolve(packageRoot, "node_modules/@unicode/unicode-15.0.0/package.json"), "utf8"),
   ) as { version: string };
   assert.equal(unicodeData.version, "1.6.17");
 

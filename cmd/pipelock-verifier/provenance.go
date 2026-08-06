@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -126,7 +127,9 @@ func writeProvenanceReport(stdout io.Writer, report provenanceStageReport) error
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("encode provenance report: %w", err))
 	}
-	_, _ = fmt.Fprintf(stdout, "%s\n", encoded)
+	if _, err := fmt.Fprintf(stdout, "%s\n", encoded); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("write provenance report: %w", err))
+	}
 	return nil
 }
 
@@ -218,9 +221,15 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 	for _, signed := range signedProofs {
 		for _, source := range signed.Proof.Sources {
 			sourceVisited = true
+			if _, ok := sources[source.SourceID]; !ok {
+				sourceUnavailable = true
+			}
+		}
+	}
+	for _, signed := range signedProofs {
+		for _, source := range signed.Proof.Sources {
 			input, ok := sources[source.SourceID]
 			if !ok {
-				sourceUnavailable = true
 				continue
 			}
 			view, err := source.Recipe.Apply(input)
@@ -230,7 +239,13 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 			}
 			report.ViewReproduction = "reproduced"
 			if err := validateProvenanceLocations(view, source.Matches); err != nil {
-				report.Location = "mismatch"
+				if sourceUnavailable {
+					report.ViewReproduction = "not_checked"
+					report.Location = "not_checked"
+					report.MatchCommitment = "not_checked"
+				} else {
+					report.Location = "mismatch"
+				}
 				return rejectProvenance(report, "location")
 			}
 		}
@@ -368,6 +383,9 @@ func decodeStrictJSON(data []byte, destination any) error {
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return err
 	}
+	if err := rejectNonCanonicalJSONKeys(data, reflect.TypeOf(destination)); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
@@ -381,6 +399,114 @@ func decodeStrictJSON(data []byte, destination any) error {
 		return fmt.Errorf("decode trailing JSON: %w", err)
 	}
 	return nil
+}
+
+func rejectNonCanonicalJSONKeys(data []byte, destinationType reflect.Type) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := scanJSONValueType(decoder, destinationType); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("found trailing JSON value")
+		}
+		return fmt.Errorf("decode trailing JSON: %w", err)
+	}
+	return nil
+}
+
+func scanJSONValueType(decoder *json.Decoder, valueType reflect.Type) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	valueType = indirectJSONType(valueType)
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		fields := jsonFieldTypes(valueType)
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("JSON object key is not a string")
+			}
+			var fieldType reflect.Type
+			switch {
+			case valueType == nil || valueType.Kind() == reflect.Interface:
+			case valueType.Kind() == reflect.Map:
+				fieldType = valueType.Elem()
+			case valueType.Kind() == reflect.Struct:
+				var exists bool
+				fieldType, exists = fields[key]
+				if !exists {
+					return fmt.Errorf("unknown or non-canonical JSON object key %q", key)
+				}
+			}
+			if err := scanJSONValueType(decoder, fieldType); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		var elementType reflect.Type
+		if valueType != nil && (valueType.Kind() == reflect.Array || valueType.Kind() == reflect.Slice) {
+			elementType = valueType.Elem()
+		}
+		for decoder.More() {
+			if err := scanJSONValueType(decoder, elementType); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
+}
+
+func indirectJSONType(valueType reflect.Type) reflect.Type {
+	for valueType != nil && valueType.Kind() == reflect.Pointer {
+		valueType = valueType.Elem()
+	}
+	return valueType
+}
+
+func jsonFieldTypes(valueType reflect.Type) map[string]reflect.Type {
+	result := make(map[string]reflect.Type)
+	if valueType == nil || valueType.Kind() != reflect.Struct {
+		return result
+	}
+	for index := range valueType.NumField() {
+		field := valueType.Field(index)
+		if !field.IsExported() {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			if field.Anonymous {
+				for embeddedName, embeddedType := range jsonFieldTypes(indirectJSONType(field.Type)) {
+					result[embeddedName] = embeddedType
+				}
+				continue
+			}
+			name = field.Name
+		}
+		result[name] = field.Type
+	}
+	return result
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {

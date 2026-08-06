@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -40,14 +41,7 @@ func TestCommittedProvenanceCorpusMatchesFrozenExpectations(t *testing.T) {
 		base := strings.TrimSuffix(name, ".json")
 
 		t.Run(base, func(t *testing.T) {
-			fixtureData, err := os.ReadFile(filepath.Clean(filepath.Join(dir, name)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var fixture provenanceFixture
-			if err := decodeStrictJSON(fixtureData, &fixture); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
+			fixturePath := filepath.Clean(filepath.Join(dir, name))
 
 			// A fixture with no committed expectation is a hole in the corpus,
 			// not a case to skip.
@@ -61,7 +55,12 @@ func TestCommittedProvenanceCorpusMatchesFrozenExpectations(t *testing.T) {
 				t.Fatalf("decode expectation: %v", err)
 			}
 
-			got := verifyProvenanceFixture(fixture)
+			var output bytes.Buffer
+			_ = runProvenance(&output, fixturePath, true)
+			var got provenanceStageReport
+			if err := decodeStrictJSON(output.Bytes(), &got); err != nil {
+				t.Fatalf("decode verifier output: %v (%q)", err, output.String())
+			}
 			if got != want {
 				gotJSON, _ := json.Marshal(got)
 				wantJSON, _ := json.Marshal(want)

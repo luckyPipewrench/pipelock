@@ -25,6 +25,13 @@ _TRUST = _CORPUS / "trust.json"
 _G01 = _CORPUS / "golden" / "g01-single-ed25519-mediated.aarp.json"
 _M09 = _CORPUS / "malicious" / "m09-profile-mismatch.aarp.json"
 _C01 = _CORPUS / "chain" / "c01-valid-stream.aarp.jsonl"
+_PROVENANCE = (
+    Path(__file__).resolve().parents[3]
+    / "conformance"
+    / "testdata"
+    / "provenance"
+    / "p00-valid.json"
+)
 
 
 def run(args, monkeypatch_out=True):
@@ -104,6 +111,16 @@ def test_no_command_is_usage_error():
 def test_unknown_flag_is_usage_error():
     rc, _, _ = run(["aarp", str(_G01), "--bogus"])
     assert rc == EXIT_USAGE
+
+
+def test_provenance_requires_explicit_incomplete_opt_in():
+    rc, out, _ = run(["provenance", str(_PROVENANCE)])
+    assert rc == EXIT_GENERAL
+    assert json.loads(out)["overall"] == "incomplete"
+
+    rc, out, _ = run(["provenance", str(_PROVENANCE), "--allow-incomplete"])
+    assert rc == EXIT_OK
+    assert json.loads(out)["overall"] == "incomplete"
 
 
 def test_bad_trust_unknown_field(tmp_path: Path):

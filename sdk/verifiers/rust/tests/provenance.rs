@@ -5,8 +5,41 @@ use base64::Engine;
 use pipelock_verifier_rs::provenance::{Recipe, PROFILE_DIGEST};
 use serde_json::Value;
 use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 const CORPUS: &str = "../../conformance/testdata/transform-profile/evidence-provenance-v1.json";
+
+#[test]
+fn provenance_cli_requires_explicit_incomplete_opt_in() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../conformance/testdata/provenance/p00-valid.json");
+    let binary = env!("CARGO_BIN_EXE_pipelock-verifier-rs");
+
+    let strict = Command::new(binary)
+        .args(["provenance", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run strict provenance CLI");
+    assert_eq!(strict.status.code(), Some(1));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&strict.stdout).expect("strict report")["overall"],
+        "incomplete"
+    );
+
+    let inspection = Command::new(binary)
+        .args([
+            "provenance",
+            fixture.to_str().expect("fixture path"),
+            "--allow-incomplete",
+        ])
+        .output()
+        .expect("run inspection provenance CLI");
+    assert!(inspection.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&inspection.stdout).expect("inspection report")["overall"],
+        "incomplete"
+    );
+}
 
 #[test]
 fn unicode_normalization_tables_match_pinned_profile_version() {
@@ -38,7 +71,7 @@ fn evidence_provenance_shared_corpus() {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            assert!(result.unwrap_err().contains(want), "{id}");
+            assert!(result.expect_err(id).contains(want), "{id}");
         } else {
             let want = base64::engine::general_purpose::STANDARD
                 .decode(vector["output_b64"].as_str().expect("output_b64"))

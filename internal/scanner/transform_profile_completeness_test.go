@@ -63,17 +63,13 @@ func TestScannerTransformProfileCompleteness(t *testing.T) {
 	// blocks the profile offers rather than transforms the scanner performs, so
 	// requiring a production claim for them would force a fake directive.
 	vocabularyOnly := map[string]bool{
-		"identity":        true,
-		"url_component":   true,
-		"percent_decode":  true,
-		"hex_decode":      true,
-		"base32_decode":   true,
-		"base64_decode":   true,
-		"lowercase":       true,
-		"leetspeak":       true,
-		"vowel_fold":      true,
-		"invisible_strip": true,
-		"dlp_normalize":   true,
+		"identity":       true,
+		"url_component":  true,
+		"percent_decode": true,
+		"hex_decode":     true,
+		"base32_decode":  true,
+		"base64_decode":  true,
+		"lowercase":      true,
 	}
 	for _, kind := range normalize.SupportedOperationKinds() {
 		operation := string(kind)
@@ -238,16 +234,7 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 	}
 	productionSubsequence := func(t *testing.T, rawQuery string, indices []uint8) string {
 		t.Helper()
-		var values []string
-		for _, pair := range strings.Split(rawQuery, "&") {
-			_, value, _ := strings.Cut(pair, "=")
-			if value != "" {
-				values = append(values, IterativeDecode(value))
-			}
-		}
-		if len(values) > 20 {
-			values = values[:20]
-		}
+		values := querySubsequenceValues(rawQuery)
 		var result strings.Builder
 		for _, index := range indices {
 			if int(index) >= len(values) {

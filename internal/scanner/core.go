@@ -833,20 +833,10 @@ func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}
 	}
-	var values []string
-	for _, pair := range strings.Split(rawQuery, "&") {
-		_, value, _ := strings.Cut(pair, "=")
-		if value != "" {
-			values = append(values, IterativeDecode(value))
-		}
-	}
+	values := querySubsequenceValues(rawQuery)
 	n := len(values)
 	if n < 3 {
 		return Result{Allowed: true}
-	}
-	if n > 20 {
-		values = values[:20]
-		n = 20
 	}
 	for size := 2; size <= 4 && size <= n; size++ {
 		if result := s.checkCoreDLPCombinations(values, n, size); !result.Allowed {

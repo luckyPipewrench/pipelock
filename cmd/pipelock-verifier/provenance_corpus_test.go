@@ -47,7 +47,7 @@ func TestCommittedProvenanceCorpusCoverageAndKnownAnswers(t *testing.T) {
 			t.Fatalf("%s lacks exact expected staged output: %v", base, err)
 		}
 	}
-	const proofCases = 36
+	const proofCases = 41
 	const propertyCases = 16
 	wantCases := proofCases + len(normalize.SupportedOperationKinds()) + propertyCases
 	if caseCount != wantCases || operationCount != len(normalize.SupportedOperationKinds()) || propertyCount != propertyCases {
@@ -280,9 +280,83 @@ func TestGenerateProvenanceCorpus(t *testing.T) {
 	})
 	writeProvenanceCase(t, dir, "p34-empty-match-class", emptyMatchClass)
 
+	nonCanonicalEnvelope := corpusMustJSON(t, baseline)
+	nonCanonicalEnvelope = bytes.Replace(nonCanonicalEnvelope, []byte(`"format":`), []byte(`"FORMAT":`), 1)
+	if bytes.Contains(nonCanonicalEnvelope, []byte(`"format":`)) {
+		t.Fatal("failed to construct non-canonical envelope key")
+	}
+	writeRawProvenanceCase(t, dir, "p35-noncanonical-envelope-key", nonCanonicalEnvelope)
+
+	nonCanonicalSignedKey := cloneCorpusFixture(t, baseline)
+	raw, err = base64.StdEncoding.DecodeString(nonCanonicalSignedKey.Entries[0].SignedB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`{"chain_seq":0,`), []byte(`{"CHAIN_SEQ":0,`), 1)
+	if bytes.Contains(raw, []byte(`"chain_seq":0`)) {
+		t.Fatal("failed to construct non-canonical signed key")
+	}
+	nonCanonicalSignedKey.Entries[0] = provenanceFixtureEntry{
+		SignedB64: base64.StdEncoding.EncodeToString(raw),
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(privateKey, raw)),
+	}
+	writeProvenanceCase(t, dir, "p36-noncanonical-signed-key", nonCanonicalSignedKey)
+
+	zeroMatches := cloneCorpusFixture(t, baseline)
+	replaceCorpusMatches(t, &zeroMatches, []contractreceipt.ProvenanceMatch{})
+	writeProvenanceCase(t, dir, "p37-zero-matches", zeroMatches)
+
+	missingThenBadLocation := cloneCorpusFixture(t, baseline)
+	mutateCorpusFixture(t, &missingThenBadLocation, func(s *signedProvenanceProof, f *provenanceFixture) {
+		commitmentKey := sha256.Sum256([]byte("pipelock-provenance-fixture-commitment-key-v1"))
+		missing := s.Proof.Sources[0]
+		missing.SourceID = "missing-source"
+		missing.SourceOrdinal = 2
+		available := s.Proof.Sources[0]
+		match := available.Matches[0]
+		match.ByteEnd = 99
+		match.MatchCommitment = corpusMatchCommitment(t, commitmentKey[:], available, match)
+		available.Matches = []contractreceipt.ProvenanceMatch{match}
+		s.Proof.Sources = []contractreceipt.ProvenanceSource{available, missing}
+		f.Verification.Sources = []provenanceFixtureSource{{
+			SourceID: available.SourceID,
+			BytesB64: base64.StdEncoding.EncodeToString([]byte("A💩B")),
+		}}
+	})
+	writeProvenanceCase(t, dir, "p38-bad-location-before-missing-source", missingThenBadLocation)
+
+	artifactUncheckedThenMatched := cloneCorpusFixture(t, baseline)
+	mutateCorpusFixture(t, &artifactUncheckedThenMatched, func(s *signedProvenanceProof, _ *provenanceFixture) {
+		digest := sha256.Sum256([]byte("unavailable-binary"))
+		s.Proof.Producer.BinaryDigest = stringRef("sha256:" + hex.EncodeToString(digest[:]))
+	})
+	appendCorpusEntry(t, &artifactUncheckedThenMatched)
+	raw, err = base64.StdEncoding.DecodeString(artifactUncheckedThenMatched.Entries[1].SignedB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondEntry signedProvenanceProof
+	if err := json.Unmarshal(raw, &secondEntry); err != nil {
+		t.Fatal(err)
+	}
+	secondEntry.Proof.Producer = contractreceipt.ProducerAttestation{}
+	raw = corpusMustJSON(t, secondEntry)
+	artifactUncheckedThenMatched.Entries[1] = provenanceFixtureEntry{
+		SignedB64: base64.StdEncoding.EncodeToString(raw),
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(privateKey, raw)),
+	}
+	writeProvenanceCase(t, dir, "p39-artifact-unchecked-before-matched", artifactUncheckedThenMatched)
+
 	operationCases := successfulOperationCases()
 	for index, operationCase := range operationCases {
-		fixture := corpusFixture(t, operationCase.recipe, operationCase.input, 0, uint64(len(operationCase.output)))
+		view, err := operationCase.recipe.Apply(operationCase.input)
+		if err != nil {
+			t.Fatalf("%s: apply recipe: %v", operationCase.name, err)
+		}
+		if view != operationCase.output {
+			t.Fatalf("%s: recipe produced %q, declared output %q", operationCase.name, view, operationCase.output)
+		}
+		fixture := corpusFixture(t, operationCase.recipe, operationCase.input, 0, uint64(len(view)))
 		mutateCorpusFixture(t, &fixture, func(s *signedProvenanceProof, _ *provenanceFixture) {
 			s.Proof.Sources[0].Recipe.Operations = append(s.Proof.Sources[0].Recipe.Operations, normalize.Operation{Kind: normalize.OperationIdentity})
 		})
@@ -560,6 +634,14 @@ func writeProvenanceCase(t *testing.T, dir, id string, fixture provenanceFixture
 	// output. Recomputing them through the Go verifier would let a shared bug
 	// bless itself during regeneration and make four-way agreement vacuous.
 	// New cases require a separately reviewed, hand-authored .expect.json file.
+}
+
+func writeRawProvenanceCase(t *testing.T, dir, id string, data []byte) {
+	t.Helper()
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeJSONFile(t *testing.T, path string, value any) {

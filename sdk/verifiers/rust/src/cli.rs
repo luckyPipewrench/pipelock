@@ -21,6 +21,7 @@ struct ParsedArgs {
     offline: bool,
     allow_self_consistent_only: bool,
     allow_unpinned: bool,
+    allow_incomplete: bool,
     no_trust_required: bool,
     expect_sha256: String,
     dir: bool,
@@ -46,7 +47,8 @@ pub fn run(args: &[String]) -> Result<i32> {
 }
 
 fn run_provenance_command(args: &[String]) -> Result<i32> {
-    let target = require_one_arg(args, "provenance")?;
+    let parsed = parse_args(args, "provenance")?;
+    let target = require_one_arg(&parsed.positionals, "provenance")?;
     let report = run_provenance(&PathBuf::from(target))?;
     // This is intentionally compact and has a fixed key order: it is a
     // fixture-only differential surface, not the human receipt report.
@@ -55,7 +57,15 @@ fn run_provenance_command(args: &[String]) -> Result<i32> {
         serde_json::to_string(&report)
             .map_err(|err| VerifierError::Runtime(format!("encode provenance report: {err}")))?
     );
-    Ok(if report.overall == "invalid" { 1 } else { 0 })
+    Ok(
+        if report.overall == "invalid"
+            || (report.overall == "incomplete" && !parsed.allow_incomplete)
+        {
+            1
+        } else {
+            0
+        },
+    )
 }
 
 fn run_audit_packet_command(args: &[String]) -> Result<i32> {
@@ -179,6 +189,7 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
             "--allow-unpinned" if command == "chain" || command == "receipt" => {
                 parsed.allow_unpinned = true;
             }
+            "--allow-incomplete" if command == "provenance" => parsed.allow_incomplete = true,
             "--no-trust-required" if command == "audit-packet" => parsed.no_trust_required = true,
             "--dir" if command == "chain" => parsed.dir = true,
             "--key" => {
@@ -280,7 +291,9 @@ fn usage(command: Option<&str>) -> String {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
         Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
-        Some("provenance") => "Usage: pipelock-verifier-rs provenance PATH".to_string(),
+        Some("provenance") => {
+            "Usage: pipelock-verifier-rs provenance PATH [--allow-incomplete]".to_string()
+        }
         _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|provenance|receipt} PATH [flags]"
             .to_string(),
     }

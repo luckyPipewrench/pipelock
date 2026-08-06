@@ -62,7 +62,7 @@ def test_unpadded_liberal_decoders_reject_existing_padding(kind: str) -> None:
 
 def test_html_entity_decode_iterates_non_common_named_entity() -> None:
     recipe = Recipe.from_json(
-        "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94",
+        PROFILE_DIGEST,
         [{"kind": "html_entity_decode"}],
     )
     assert recipe.apply("&amp;CounterClockwiseContourIntegral;") == "∳"

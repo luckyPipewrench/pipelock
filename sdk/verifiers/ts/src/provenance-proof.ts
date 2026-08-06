@@ -20,8 +20,6 @@ const proofVersion = "pipelock-evidence-provenance-proof/v1";
 const profileDigest = EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST;
 const knownFeature = "evidence_provenance";
 const trustRoots = "fixture supplied; self-attested; not authenticated";
-const maxInputBytes = 2 << 20;
-const maxOutputBytes = 1 << 20;
 
 type SignatureStage = "verified" | "invalid" | "not_checked";
 type ChainStage = "verified" | "invalid" | "not_checked";
@@ -588,255 +586,6 @@ function commitMatch(key: Buffer, source: Source, match: Match): string {
   ]);
 }
 
-function decodePercent(value: string): string {
-  const chunks: Buffer[] = [];
-  for (let index = 0; index < value.length; ) {
-    if (value[index] === "%") {
-      const encoded = value.slice(index + 1, index + 3);
-      if (!/^[0-9a-fA-F]{2}$/u.test(encoded))
-        throw new FixtureError("percent decode: malformed escape");
-      chunks.push(Buffer.from([Number.parseInt(encoded, 16)]));
-      index += 3;
-      continue;
-    }
-    const point = value.codePointAt(index);
-    if (point === undefined) break;
-    const character = String.fromCodePoint(point);
-    chunks.push(Buffer.from(character, "utf8"));
-    index += character.length;
-  }
-  return utf8(Buffer.concat(chunks), "percent decode output");
-}
-
-function queryValues(raw: string, selector: string): string[] {
-  const values: string[] = [];
-  for (const part of raw === "" ? [] : raw.split("&")) {
-    const equals = part.indexOf("=");
-    const rawKey = equals < 0 ? part : part.slice(0, equals);
-    const rawValue = equals < 0 ? "" : part.slice(equals + 1);
-    let key: string;
-    let value: string;
-    try {
-      key = decodeURIComponent(rawKey.replaceAll("+", " "));
-      value = decodeURIComponent(rawValue.replaceAll("+", " "));
-    } catch {
-      throw new FixtureError("query parse failed");
-    }
-    if (key === selector) values.push(value);
-  }
-  return values;
-}
-
-function selectURLComponent(value: string, op: Operation): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new FixtureError("URL parse: invalid absolute URL");
-  }
-  switch (op.component) {
-    case "url":
-      return value;
-    case "hostname":
-      return parsed.hostname;
-    case "path":
-      return parsed.pathname;
-    case "query_key":
-      if (queryValues(parsed.search.slice(1), op.selector)[op.occurrence] === undefined) {
-        throw new FixtureError(`query component: occurrence ${op.occurrence} unavailable`);
-      }
-      return op.selector;
-    case "query_value": {
-      const valueAt = queryValues(parsed.search.slice(1), op.selector)[op.occurrence];
-      if (valueAt === undefined)
-        throw new FixtureError(`query component: occurrence ${op.occurrence} unavailable`);
-      return valueAt;
-    }
-    default:
-      throw new FixtureError("unknown URL component");
-  }
-}
-
-function invisibleStrip(value: string): string {
-  return Array.from(value)
-    .filter((ch) => {
-      const point = ch.codePointAt(0) ?? 0;
-      if (
-        (point <= 0x1f && point !== 9 && point !== 10 && point !== 13) ||
-        point === 0x7f ||
-        (point >= 0x80 && point <= 0x9f)
-      )
-        return false;
-      return !(
-        point === 0xad ||
-        (point >= 0x115f && point <= 0x1160) ||
-        (point >= 0x200b && point <= 0x200f) ||
-        (point >= 0x202a && point <= 0x202e) ||
-        (point >= 0x2060 && point <= 0x2064) ||
-        (point >= 0x2066 && point <= 0x2069) ||
-        point === 0x3164 ||
-        (point >= 0xfe00 && point <= 0xfe0f) ||
-        point === 0xfeff ||
-        (point >= 0xfff9 && point <= 0xfffb) ||
-        (point >= 0xe0000 && point <= 0xe007f) ||
-        (point >= 0xe0100 && point <= 0xe01ef)
-      );
-    })
-    .join("");
-}
-
-// The canonical transform profile owns this exact Unicode 15.0 mapping. Keep
-// the single-code-point table and the two alphabetic ranges explicit here: a
-// partial "common confusables" list would silently make a fixture verifier
-// disagree with the pinned profile on an attacker-controlled character.
-const dlpConfusables: Readonly<Record<string, string>> = {
-  "\u0410": "A",
-  "\u0412": "B",
-  "\u0421": "C",
-  "\u0415": "E",
-  "\u041d": "H",
-  "\u0406": "I",
-  "\u0408": "J",
-  "\u041a": "K",
-  "\u041c": "M",
-  "\u041e": "O",
-  "\u0420": "P",
-  "\u0405": "S",
-  "\u0422": "T",
-  "\u0425": "X",
-  "\u0430": "a",
-  "\u0432": "v",
-  "\u0435": "e",
-  "\u043d": "h",
-  "\u0456": "i",
-  "\u043a": "k",
-  "\u043c": "m",
-  "\u043e": "o",
-  "\u0440": "p",
-  "\u0441": "c",
-  "\u0442": "t",
-  "\u0443": "y",
-  "\u0445": "x",
-  "\u0458": "j",
-  "\u0455": "s",
-  "\u0391": "A",
-  "\u0392": "B",
-  "\u0395": "E",
-  "\u0396": "Z",
-  "\u0397": "H",
-  "\u0399": "I",
-  "\u039a": "K",
-  "\u039c": "M",
-  "\u039d": "N",
-  "\u039f": "O",
-  "\u03a1": "P",
-  "\u03a4": "T",
-  "\u03a5": "Y",
-  "\u03a7": "X",
-  "\u03b1": "a",
-  "\u03b5": "e",
-  "\u03b9": "i",
-  "\u03ba": "k",
-  "\u03bd": "v",
-  "\u03bf": "o",
-  "\u0555": "O",
-  "\u0585": "o",
-  "\u054d": "S",
-  "\u057d": "s",
-  "\u054c": "L",
-  "\u0570": "h",
-  "\u0578": "n",
-  "\u057c": "n",
-  "\u0561": "a",
-  "\u13aa": "A",
-  "\u13a2": "I",
-  "\u13d2": "P",
-  "\u13da": "S",
-  "\u13a1": "E",
-  "\u13b3": "W",
-  "\u13d4": "T",
-  "\u00d8": "O",
-  "\u00f8": "o",
-  "\u0110": "D",
-  "\u0111": "d",
-  "\u0141": "L",
-  "\u0142": "l",
-  "\u0126": "H",
-  "\u0127": "h",
-  "\u0166": "T",
-  "\u0167": "t",
-  "\u1d00": "A",
-  "\u0299": "B",
-  "\u1d04": "C",
-  "\u1d05": "D",
-  "\u1d07": "E",
-  "\ua730": "F",
-  "\u0262": "G",
-  "\u029c": "H",
-  "\u026a": "I",
-  "\u1d0a": "J",
-  "\u1d0b": "K",
-  "\u029f": "L",
-  "\u1d0d": "M",
-  "\u0274": "N",
-  "\u1d0f": "O",
-  "\u1d18": "P",
-  "\u0280": "R",
-  "\ua731": "S",
-  "\u1d1b": "T",
-  "\u1d1c": "U",
-  "\u1d20": "V",
-  "\u1d21": "W",
-  "\u028f": "Y",
-  "\u1d22": "Z",
-};
-
-function dlpConfusable(char: string): string {
-  const point = char.codePointAt(0) ?? 0;
-  if (point >= 0x1f170 && point <= 0x1f189) return String.fromCharCode(65 + point - 0x1f170);
-  if (point >= 0x1f1e6 && point <= 0x1f1ff) return String.fromCharCode(65 + point - 0x1f1e6);
-  return dlpConfusables[char] ?? char;
-}
-
-function dlpNormalize(value: string): string {
-  const stripped = invisibleStrip(value).replace(/[\u0009\u000a\u000d]/gu, "");
-  const noExoticSpace = stripped.replace(
-    /[\u00a0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/gu,
-    "",
-  );
-  return Array.from(noExoticSpace.normalize("NFKC"), dlpConfusable)
-    .join("")
-    .normalize("NFD")
-    .replace(/\p{Mn}/gu, "");
-}
-
-function base32Decode(value: string, padded: boolean): Buffer {
-  if (!/^[A-Z2-7]*={0,6}$/u.test(value) || (!padded && value.includes("=")))
-    throw new FixtureError("base32 decode failed");
-  const unpadded = value.replace(/=+$/u, "");
-  let bits = "";
-  for (const ch of unpadded)
-    bits += "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".indexOf(ch).toString(2).padStart(5, "0");
-  const bytes: number[] = [];
-  for (let index = 0; index + 8 <= bits.length; index += 8)
-    bytes.push(Number.parseInt(bits.slice(index, index + 8), 2));
-  const decoded = Buffer.from(bytes);
-  const encoded = base32Encode(decoded, padded);
-  if (encoded !== value) throw new FixtureError("base32 decode: non-canonical encoding");
-  return decoded;
-}
-
-function base32Encode(bytes: Buffer, padded: boolean): string {
-  let bits = "";
-  for (const byte of bytes) bits += byte.toString(2).padStart(8, "0");
-  let out = "";
-  for (let index = 0; index < bits.length; index += 5)
-    out += "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[
-      Number.parseInt(bits.slice(index, index + 5).padEnd(5, "0"), 2)
-    ];
-  return padded ? out.padEnd(Math.ceil(out.length / 8) * 8, "=") : out;
-}
-
 function applyRecipe(recipe: Source["recipe"], input: string): string {
   try {
     return Buffer.from(
@@ -996,7 +745,13 @@ export async function verifyProvenanceFixture(data: string): Promise<ProvenanceR
         item.source.matches.map((match) => [match.byte_start, match.byte_end] as const),
       );
     } catch {
-      report.location = "mismatch";
+      if (missingSource) {
+        report.view_reproduction = "not_checked";
+        report.location = "not_checked";
+        report.match_commitment = "not_checked";
+      } else {
+        report.location = "mismatch";
+      }
       return invalid("location", report);
     }
   }

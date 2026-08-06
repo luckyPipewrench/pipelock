@@ -40,7 +40,7 @@ function usage(command?: string): string {
     return "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--chain] [--json]";
   }
   if (command === "provenance") {
-    return "Usage: pipelock-verifier-ts provenance PATH";
+    return "Usage: pipelock-verifier-ts provenance PATH [--allow-incomplete]";
   }
   return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt|aarp|provenance} PATH [flags]";
 }
@@ -174,10 +174,20 @@ async function runReceiptCommand(args: string[]): Promise<number> {
 }
 
 async function runProvenanceCommand(args: string[]): Promise<number> {
-  const target = requireOneArg(args, "provenance");
+  const parsed = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      "allow-incomplete": { type: "boolean", default: false },
+    },
+  });
+  const target = requireOneArg(parsed.positionals, "provenance");
   const report = await runProvenanceFixture(target);
   process.stdout.write(`${comparableProvenance(report)}\n`);
-  return report.overall === "invalid" ? 1 : 0;
+  return report.overall === "invalid" ||
+    (report.overall === "incomplete" && parsed.values["allow-incomplete"] !== true)
+    ? 1
+    : 0;
 }
 
 async function main(): Promise<number> {

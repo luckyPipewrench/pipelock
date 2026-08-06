@@ -280,9 +280,6 @@ func TestAssessFinalize_LicenseControlsContentNotSigning(t *testing.T) {
 					var summary Summary
 					readJSONFile(t, filepath.Join(runDir, outputPath), &summary)
 					signed = summary.Signed
-					if len(summary.Compliance) != 0 {
-						t.Error("free summary leaked paid compliance mappings")
-					}
 				}
 				if signed == unsigned {
 					t.Errorf("%s signed=%v, want %v", outputPath, signed, !unsigned)

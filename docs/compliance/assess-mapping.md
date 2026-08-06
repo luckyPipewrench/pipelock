@@ -69,7 +69,7 @@ When sharing an assessment bundle as evidence:
 
 - Pipelock attests its own mediation, not the model's training data lineage. Upstream model provenance is out of scope for every framework above.
 - The `pipelock assess` evidence bundle is signed at finalize time. The manifest itself is unsigned at `assess run` time; under threat models where `assess run` and `assess finalize` run under different principals, sign the run directory out of band between the two steps.
-- Free-tier summaries redact MCP server names. The signed paid-tier assessment includes full server identity for the operator's own consumption; redact before sharing externally when sharing operator-private infrastructure detail is undesirable.
+- Free-tier summaries redact MCP server names and are signed on the same terms as the paid report. The paid-tier assessment includes full server identity for the operator's own consumption; redact before sharing externally when sharing operator-private infrastructure detail is undesirable.
 
 ## Updating mappings
 

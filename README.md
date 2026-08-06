@@ -368,7 +368,7 @@ pipelock contain run -- claude-code
 - **Scan API:** programmatic scanning for `url`, `dlp`, `prompt_injection`, and `tool_call` verdicts with bearer token auth, per-token rate limiting, structured findings, and Prometheus metrics. See [docs/scan-api.md](docs/scan-api.md).
 - **Filesystem sentinel:** watches agent working directories for secrets written to disk and attributes writes to the MCP subprocess lineage on Linux. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
 - **Event emission:** forwards audit events to SIEMs, webhook receivers, syslog, CEF, OTLP, and metrics outputs without blocking the proxy hot path. See [docs/guides/siem-integration.md](docs/guides/siem-integration.md).
-- **Security assessment:** `pipelock assess init`, `pipelock assess run`, and `pipelock assess finalize` orchestrate attack simulation, config scoring, install verification, and MCP discovery into a reproducible evidence bundle. Critical exposures such as unprotected MCP servers cap the grade regardless of numeric score. The free summary shows your grade, section scores, and top findings; a license unlocks the full report with server-specific findings, remediation commands, and Ed25519-signed evidence.
+- **Security assessment:** `pipelock assess init`, `pipelock assess run`, and `pipelock assess finalize` orchestrate attack simulation, config scoring, install verification, and MCP discovery into a reproducible evidence bundle. Critical exposures such as unprotected MCP servers cap the grade regardless of numeric score. Every finalized assessment is Ed25519-signed by default, licensed or not, so any report can be verified with `pipelock assess verify`. The free summary shows your grade, section scores, top findings, and compliance coverage counts; a license unlocks the full report with server-specific findings, remediation commands, and the detached attestation and badge.
 
 <details>
 <summary>More features</summary>
@@ -438,7 +438,7 @@ All detection, enforcement, containment, and single-agent evidence is free forev
 | mTLS follower enrollment and roster-verified signed policy distribution | No | No | Yes |
 | Dashboard fleet views: Fleet, Workbench, Incident | No | No | Yes |
 
-The signed `pipelock assess` report is a separate `assess` entitlement, independent of Pro and Enterprise. The free assess grade is unchanged.
+The full `pipelock assess` report is a separate `assess` entitlement, independent of Pro and Enterprise. Signing is not part of that entitlement: the free summary is signed too, and the free assess grade is unchanged.
 
 ---
 

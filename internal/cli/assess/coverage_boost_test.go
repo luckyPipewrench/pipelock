@@ -502,14 +502,14 @@ func TestProjectToSummary_ServerCounts(t *testing.T) {
 	}
 }
 
-func TestProjectToSummary_OmitsPaidComplianceMappings(t *testing.T) {
+func TestProjectToSummary_Compliance(t *testing.T) {
 	a := *minimalAssessment(assessGradeA, 95)
 	a.Compliance = compliance.Catalog()
 
 	summary := projectToSummary(a)
 
-	if len(summary.Compliance) != 0 {
-		t.Errorf("Compliance count = %d, want 0 on free summary", len(summary.Compliance))
+	if len(summary.Compliance) != len(a.Compliance) {
+		t.Errorf("Compliance count = %d, want %d", len(summary.Compliance), len(a.Compliance))
 	}
 }
 

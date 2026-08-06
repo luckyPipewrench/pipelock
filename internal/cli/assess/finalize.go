@@ -784,9 +784,10 @@ func projectToSummary(a Assessment) Summary {
 		ServerCounts:  serverCounts,
 		DetectionPct:  detectionPct,
 		Signed:        a.Signed,
-		// Compliance mappings are paid assessment content. The free summary
-		// retains its scored metric vector but does not project the catalog.
-		Compliance: nil,
+		// Per-framework coverage counts, not the per-control mapping catalog.
+		// The free summary has always carried this rollup and keeps it; the
+		// paid boundary is the detailed mapping content, not the totals.
+		Compliance: compliance.CoverageSummaries(a.Compliance),
 	}
 }
 

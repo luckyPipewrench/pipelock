@@ -1516,7 +1516,7 @@ type FlightRecorder struct {
 	SigningKeyPath     string                       `yaml:"signing_key_path"`         // Ed25519 private key for checkpoint signing and action receipts
 	RequireReceipts    bool                         `yaml:"require_receipts"`         // fail closed when a required receipt cannot be emitted (default false)
 	Completeness       FlightRecorderCompleteness   `yaml:"completeness" json:"-"`    // restart-only evidence completeness knobs
-	EvidenceHealth     FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"` // observability-only evidence health grading
+	EvidenceHealth     FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"` // process-local evidence health monitoring
 	Anchor             FlightRecorderAnchor         `yaml:"anchor" json:"-"`          // optional runtime receipt-chain anchoring
 }
 

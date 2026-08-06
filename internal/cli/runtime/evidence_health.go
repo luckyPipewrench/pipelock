@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	evidenceHealthSchema    = "pipelock.evidencehealth.v1"
+	evidenceHealthSchema    = metrics.EvidenceHealthSchemaV2
 	evidenceAnchorStateFile = "anchor-state.json"
 	maxTailReadBytes        = 64 * 1024
 	anchorStateHashBytes    = 32
@@ -306,20 +306,20 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 	fsyncStats := h.fsyncStats()
 	gapStats := h.gapStats()
 	fileStats := h.fileStats(cfg)
-	in := metrics.EvidenceAELInput{
+	operational := metrics.EvidenceOperationalInput{
 		RecorderEnabled:  requirements[metrics.EvidenceRequirementRecorderEnabled],
 		EmitterHealthy:   requirements[metrics.EvidenceRequirementEmitterHealthy],
-		DurabilityGate:   requirements[metrics.EvidenceRequirementDurabilityGate],
-		Heartbeats:       requirements[metrics.EvidenceRequirementHeartbeats],
-		AnchoringFresh:   requirements[metrics.EvidenceRequirementAnchoringFresh],
-		CPCActive:        false,
 		SelfAuditOK:      requirements[metrics.EvidenceRequirementSelfAuditOK],
 		UnresolvedGaps:   gapStats.Resume+gapStats.SelfAudit > 0,
 		UngatedFsyncFail: fsyncStats.Ungated > 0,
 	}
 	return metrics.EvidenceHealthStats{
 		Schema:                     evidenceHealthSchema,
-		CurrentAEL:                 metrics.EvidenceCurrentAEL(in),
+		CurrentAEL:                 metrics.EvidenceCurrentAELUnavailable,
+		LocalRecorderOperational:   metrics.EvidenceLocalRecorderOperational(operational),
+		RunState:                   metrics.EvidenceRunStateOpen,
+		RunID:                      nil,
+		AELArtifactCapability:      metrics.CurrentEvidenceArtifactCapability(),
 		Requirements:               requirements,
 		ChainHeadSeq:               snap.ChainSeq,
 		ChainHeadAgeSeconds:        ageSeconds,

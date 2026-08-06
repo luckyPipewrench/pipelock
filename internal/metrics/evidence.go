@@ -19,16 +19,20 @@ const (
 	EvidenceRequirementCPCActive       = "cpc_active"
 	EvidenceRequirementSelfAuditOK     = "selfaudit_ok"
 
-	// evidenceMaximumSupportedAEL is deliberately a product-capability ceiling,
-	// not a statement about a particular anchor's current health. Pipelock has
-	// one receipt recorder today. It does not verify a separately keyed second
-	// recorder with declared custody separation (AEL-2), so it cannot honestly
-	// claim AEL-2 or any cumulative rung above it. A local anchor is a test
-	// backend, while the current Rekor path does not establish the required
-	// separate log key or per-payload inclusion proof; neither can raise this
-	// ceiling. Raise it only alongside an implementation that verifies every
-	// prerequisite of the next AEL rung.
-	evidenceMaximumSupportedAEL = 1
+	// EvidenceRunStateOpen identifies a live recorder process. It is a lifecycle
+	// fact, not an AEL verification state.
+	EvidenceRunStateOpen = "OPEN"
+	// EvidenceCurrentAELUnavailable is the only value emitted on the deprecated
+	// JSON field. A string makes legacy numeric decoders fail visibly instead of
+	// silently coercing JSON null into the valid-looking AEL-0 value.
+	EvidenceCurrentAELUnavailable = "UNAVAILABLE"
+	// EvidenceHealthSchemaV2 is the canonical evidence-health schema for this
+	// release. The sanitized snapshot forces it so an alternate callback cannot
+	// declare the v1 contract while emitting v2 field shapes, which would let a
+	// consumer that selects its decoder from the schema pick the wrong one.
+	EvidenceHealthSchemaV2 = "pipelock.evidencehealth.v2"
+
+	evidenceArtifactCapabilitySchema = "pipelock.ael-artifact-capability.v1"
 )
 
 var evidenceSequenceGapSources = map[string]bool{
@@ -73,23 +77,61 @@ var evidenceAELRequirementOrder = []string{
 // Prometheus collectors and the JSON /stats endpoint. Nil/false callback
 // results mean evidence health is not measured and should render UNKNOWN.
 type EvidenceHealthStats struct {
-	Schema                     string                  `json:"schema"`
-	CurrentAEL                 int                     `json:"current_ael"`
-	Requirements               map[string]bool         `json:"requirements"`
-	ChainHeadSeq               uint64                  `json:"chain_head_seq"`
-	ChainHeadAgeSeconds        *float64                `json:"chain_head_age_seconds"`
-	HeartbeatIntervalSeconds   *float64                `json:"heartbeat_interval_seconds"`
-	SequenceGaps               EvidenceGapStats        `json:"sequence_gaps"`
-	FsyncErrors                EvidenceFsyncStats      `json:"fsync_errors"`
-	Files                      EvidenceFileStats       `json:"files"`
-	DurabilityBlocks           uint64                  `json:"durability_blocks"`
-	DurabilityInvariantOK      bool                    `json:"durability_invariant_ok"`
-	Anchor                     *EvidenceAnchorStats    `json:"anchor"`
-	AutoAnchor                 EvidenceAutoAnchorStats `json:"auto_anchor"`
-	CPC                        any                     `json:"cpc"`
-	AnchoredFinalSeq           uint64                  `json:"-"`
-	AnchorLagReceipts          uint64                  `json:"-"`
-	LastAnchorTimestampSeconds float64                 `json:"-"`
+	Schema string `json:"schema"`
+	// CurrentAEL is retained as UNAVAILABLE for one compatibility window. A live
+	// process cannot independently verify and award an AEL grade to itself.
+	// Deprecated: use LocalRecorderOperational, RunState, and
+	// AELArtifactCapability.
+	CurrentAEL                 string                     `json:"current_ael"`
+	LocalRecorderOperational   bool                       `json:"local_recorder_operational"`
+	RunState                   string                     `json:"run_state"`
+	RunID                      *string                    `json:"run_id"`
+	AELArtifactCapability      EvidenceArtifactCapability `json:"ael_artifact_capability"`
+	Requirements               map[string]bool            `json:"requirements"`
+	ChainHeadSeq               uint64                     `json:"chain_head_seq"`
+	ChainHeadAgeSeconds        *float64                   `json:"chain_head_age_seconds"`
+	HeartbeatIntervalSeconds   *float64                   `json:"heartbeat_interval_seconds"`
+	SequenceGaps               EvidenceGapStats           `json:"sequence_gaps"`
+	FsyncErrors                EvidenceFsyncStats         `json:"fsync_errors"`
+	Files                      EvidenceFileStats          `json:"files"`
+	DurabilityBlocks           uint64                     `json:"durability_blocks"`
+	DurabilityInvariantOK      bool                       `json:"durability_invariant_ok"`
+	Anchor                     *EvidenceAnchorStats       `json:"anchor"`
+	AutoAnchor                 EvidenceAutoAnchorStats    `json:"auto_anchor"`
+	CPC                        any                        `json:"cpc"`
+	AnchoredFinalSeq           uint64                     `json:"-"`
+	AnchorLagReceipts          uint64                     `json:"-"`
+	LastAnchorTimestampSeconds float64                    `json:"-"`
+}
+
+// EvidenceArtifactCapability is a producer declaration, not an AEL grade or
+// verification result. It deliberately contains no target, maximum, or current
+// AEL rung.
+type EvidenceArtifactCapability struct {
+	Schema                   string   `json:"schema"`
+	AELFormatVersions        []int    `json:"ael_format_versions"`
+	BoundedRuns              bool     `json:"bounded_runs"`
+	ClosedRunExport          bool     `json:"closed_run_export"`
+	VerificationResultImport bool     `json:"verification_result_import"`
+	KnownLimitations         []string `json:"known_limitations"`
+}
+
+// CurrentEvidenceArtifactCapability returns Pipelock's current producer
+// declaration. Empty format versions and false operation flags are explicit
+// unsupported states, not unknown values.
+func CurrentEvidenceArtifactCapability() EvidenceArtifactCapability {
+	return EvidenceArtifactCapability{
+		Schema:                   evidenceArtifactCapabilitySchema,
+		AELFormatVersions:        []int{},
+		BoundedRuns:              false,
+		ClosedRunExport:          false,
+		VerificationResultImport: false,
+		KnownLimitations: []string{
+			"ael_artifact_export_not_implemented",
+			"concurrent_writer_isolation_not_enforced",
+			"verification_result_import_not_implemented",
+		},
+	}
 }
 
 type EvidenceGapStats struct {
@@ -135,63 +177,17 @@ type EvidenceAutoAnchorStats struct {
 	LastError string `json:"last_error"`
 }
 
-type EvidenceAELInput struct {
+type EvidenceOperationalInput struct {
 	RecorderEnabled  bool
 	EmitterHealthy   bool
-	DurabilityGate   bool
-	Heartbeats       bool
-	AnchoringFresh   bool
-	CPCActive        bool
 	SelfAuditOK      bool
 	UnresolvedGaps   bool
 	UngatedFsyncFail bool
 }
 
-type evidenceAELRule struct {
-	rung int
-	ok   func(EvidenceAELInput) bool
-}
-
-var evidenceAELRules = []evidenceAELRule{
-	{rung: 0, ok: func(in EvidenceAELInput) bool {
-		return in.RecorderEnabled
-	}},
-	{rung: 1, ok: func(in EvidenceAELInput) bool {
-		return in.RecorderEnabled && in.EmitterHealthy && in.SelfAuditOK && !in.UngatedFsyncFail
-	}},
-	{rung: 2, ok: func(in EvidenceAELInput) bool {
-		return in.DurabilityGate && in.Heartbeats && !in.UnresolvedGaps
-	}},
-	{rung: 3, ok: func(in EvidenceAELInput) bool {
-		return in.AnchoringFresh
-	}},
-	{rung: 4, ok: func(in EvidenceAELInput) bool {
-		return in.CPCActive
-	}},
-}
-
-func EvidenceCurrentAEL(in EvidenceAELInput) int {
-	level := 0
-	for _, rule := range evidenceAELRules {
-		if rule.rung > evidenceMaximumSupportedAEL {
-			return level
-		}
-		if !rule.ok(in) {
-			return level
-		}
-		level = rule.rung
-	}
-	return level
-}
-
-func clampEvidenceCurrentAEL(level int) int {
-	if level < 0 {
-		return 0
-	}
-	if level > evidenceMaximumSupportedAEL {
-		return evidenceMaximumSupportedAEL
-	}
-	return level
+func EvidenceLocalRecorderOperational(in EvidenceOperationalInput) bool {
+	return in.RecorderEnabled && in.EmitterHealthy && in.SelfAuditOK &&
+		!in.UnresolvedGaps && !in.UngatedFsyncFail
 }
 
 func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
@@ -229,7 +225,7 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 		Namespace: "pipelock",
 		Subsystem: "evidence",
 		Name:      "ael_requirement_ok",
-		Help:      "Evidence assurance requirement state as 1/0 by closed requirement label.",
+		Help:      "Deprecated diagnostic inputs from the former live AEL estimate; these 1/0 values do not award an AEL grade.",
 	}, []string{"requirement"})
 	m.evidenceSelfAuditOK = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "pipelock",
@@ -529,10 +525,17 @@ func (m *Metrics) EvidenceHealthStatsSnapshot() (EvidenceHealthStats, bool) {
 	if !ok {
 		return stats, false
 	}
-	// The callback backs both /stats and the Prometheus collector. Clamp here
-	// as well as in EvidenceCurrentAEL so no alternate producer can publish an
-	// unsupported AEL rung.
-	stats.CurrentAEL = clampEvidenceCurrentAEL(stats.CurrentAEL)
+	// The callback backs both /stats and the Prometheus collector. Force the
+	// deprecated producer-computed grade and producer-set verification lifecycle
+	// to honest current-release values so an alternate callback cannot restore a
+	// self-awarded AEL number or label an open legacy run as verified. The schema
+	// is forced with them: a preserved v1 schema alongside v2 field shapes would
+	// point a schema-selecting decoder at the wrong contract.
+	stats.Schema = EvidenceHealthSchemaV2
+	stats.CurrentAEL = EvidenceCurrentAELUnavailable
+	stats.RunState = EvidenceRunStateOpen
+	stats.RunID = nil
+	stats.AELArtifactCapability = CurrentEvidenceArtifactCapability()
 	return stats, true
 }
 
@@ -546,11 +549,12 @@ func (m *Metrics) SetEvidenceHealthFunc(fn func() (EvidenceHealthStats, bool)) {
 }
 
 type evidenceCollector struct {
-	m       *Metrics
-	age     *prometheus.Desc
-	seq     *prometheus.Desc
-	lag     *prometheus.Desc
-	current *prometheus.Desc
+	m                *Metrics
+	age              *prometheus.Desc
+	seq              *prometheus.Desc
+	lag              *prometheus.Desc
+	current          *prometheus.Desc
+	localOperational *prometheus.Desc
 }
 
 func newEvidenceCollector(m *Metrics) *evidenceCollector {
@@ -574,7 +578,12 @@ func newEvidenceCollector(m *Metrics) *evidenceCollector {
 		),
 		current: prometheus.NewDesc(
 			"pipelock_evidence_current_ael",
-			"Current evidence assurance level, capped at 1 until Pipelock verifies higher-rung evidence requirements.",
+			"Deprecated self-reported AEL gauge; always NaN because a live process cannot award AEL and grades require a separately verified exported artifact.",
+			nil, labels,
+		),
+		localOperational: prometheus.NewDesc(
+			"pipelock_evidence_local_recorder_operational",
+			"One when this process's recorder and emitter are operational with no locally observed gap, self-audit, or ungated fsync failure; does not establish corpus-wide integrity or an AEL grade.",
 			nil, labels,
 		),
 	}
@@ -585,6 +594,7 @@ func (c *evidenceCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.seq
 	ch <- c.lag
 	ch <- c.current
+	ch <- c.localOperational
 }
 
 func (c *evidenceCollector) Collect(ch chan<- prometheus.Metric) {
@@ -597,5 +607,10 @@ func (c *evidenceCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	ch <- prometheus.MustNewConstMetric(c.seq, prometheus.GaugeValue, float64(stats.ChainHeadSeq))
 	ch <- prometheus.MustNewConstMetric(c.lag, prometheus.GaugeValue, float64(stats.AnchorLagReceipts))
-	ch <- prometheus.MustNewConstMetric(c.current, prometheus.GaugeValue, float64(stats.CurrentAEL))
+	ch <- prometheus.MustNewConstMetric(c.current, prometheus.GaugeValue, math.NaN())
+	operational := 0.0
+	if stats.LocalRecorderOperational {
+		operational = 1
+	}
+	ch <- prometheus.MustNewConstMetric(c.localOperational, prometheus.GaugeValue, operational)
 }

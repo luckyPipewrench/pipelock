@@ -26,6 +26,11 @@ const (
 	// JSON field. A string makes legacy numeric decoders fail visibly instead of
 	// silently coercing JSON null into the valid-looking AEL-0 value.
 	EvidenceCurrentAELUnavailable = "UNAVAILABLE"
+	// EvidenceHealthSchemaV2 is the canonical evidence-health schema for this
+	// release. The sanitized snapshot forces it so an alternate callback cannot
+	// declare the v1 contract while emitting v2 field shapes, which would let a
+	// consumer that selects its decoder from the schema pick the wrong one.
+	EvidenceHealthSchemaV2 = "pipelock.evidencehealth.v2"
 
 	evidenceArtifactCapabilitySchema = "pipelock.ael-artifact-capability.v1"
 )
@@ -523,7 +528,10 @@ func (m *Metrics) EvidenceHealthStatsSnapshot() (EvidenceHealthStats, bool) {
 	// The callback backs both /stats and the Prometheus collector. Force the
 	// deprecated producer-computed grade and producer-set verification lifecycle
 	// to honest current-release values so an alternate callback cannot restore a
-	// self-awarded AEL number or label an open legacy run as verified.
+	// self-awarded AEL number or label an open legacy run as verified. The schema
+	// is forced with them: a preserved v1 schema alongside v2 field shapes would
+	// point a schema-selecting decoder at the wrong contract.
+	stats.Schema = EvidenceHealthSchemaV2
 	stats.CurrentAEL = EvidenceCurrentAELUnavailable
 	stats.RunState = EvidenceRunStateOpen
 	stats.RunID = nil

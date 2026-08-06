@@ -51,6 +51,7 @@ func TestEvidenceHealthStatsSnapshotRejectsAlternateAELProducer(t *testing.T) {
 	producerRunID := "producer-chosen-run"
 	m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {
 		return EvidenceHealthStats{
+			Schema:     "pipelock.evidencehealth.v1",
 			CurrentAEL: "AEL-4",
 			RunState:   "VERIFIED",
 			RunID:      &producerRunID,
@@ -65,6 +66,9 @@ func TestEvidenceHealthStatsSnapshotRejectsAlternateAELProducer(t *testing.T) {
 	stats, ok := m.EvidenceHealthStatsSnapshot()
 	if !ok {
 		t.Fatal("EvidenceHealthStatsSnapshot unavailable")
+	}
+	if stats.Schema != EvidenceHealthSchemaV2 {
+		t.Fatalf("Schema = %q, want %q: a preserved legacy schema points a schema-selecting decoder at the wrong contract", stats.Schema, EvidenceHealthSchemaV2)
 	}
 	if stats.CurrentAEL != EvidenceCurrentAELUnavailable {
 		t.Fatalf("CurrentAEL = %q, want %q", stats.CurrentAEL, EvidenceCurrentAELUnavailable)

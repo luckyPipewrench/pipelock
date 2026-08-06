@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	evidenceHealthSchema    = "pipelock.evidencehealth.v2"
+	evidenceHealthSchema    = metrics.EvidenceHealthSchemaV2
 	evidenceAnchorStateFile = "anchor-state.json"
 	maxTailReadBytes        = 64 * 1024
 	anchorStateHashBytes    = 32

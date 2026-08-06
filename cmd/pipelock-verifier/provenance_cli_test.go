@@ -94,6 +94,35 @@ func TestRunProvenanceRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestRunProvenanceRejectsOversizedFixtureBeforeParsing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.json")
+	data := bytes.Repeat([]byte{'x'}, provenanceMaxFixtureBytes+1)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := runProvenance(&out, path, true)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want fixture size rejection", err)
+	}
+	var report provenanceStageReport
+	if decodeErr := json.Unmarshal(out.Bytes(), &report); decodeErr != nil {
+		t.Fatalf("stdout was not a staged rejection: %v", decodeErr)
+	}
+	if report.FailureStage != "proof_structure" {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestDecodeStrictJSONRejectsExcessiveNesting(t *testing.T) {
+	data := strings.Repeat("[", provenanceMaxJSONDepth+1) + "0" + strings.Repeat("]", provenanceMaxJSONDepth+1)
+	var destination any
+	if err := decodeStrictJSON([]byte(data), &destination); err == nil || !strings.Contains(err.Error(), "depth limit") {
+		t.Fatalf("error = %v, want JSON depth rejection", err)
+	}
+}
+
 func TestRunProvenanceRejectsDuplicateEnvelopeKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "duplicate.json")
 	data, err := json.Marshal(validProvenanceFixture(t, "view", 0, 4))
@@ -190,6 +219,43 @@ func TestVerifyProvenanceFixtureRejectsEmptyEntries(t *testing.T) {
 	report := verifyProvenanceFixture(fixture)
 	if report.Overall != "invalid" || report.FailureStage != "proof_structure" {
 		t.Fatalf("report = %+v, want invalid at proof_structure", report)
+	}
+}
+
+func TestVerifyProvenanceFixtureRejectsExcessiveCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*provenanceFixture)
+	}{
+		{
+			name: "entries",
+			mutate: func(fixture *provenanceFixture) {
+				entry := fixture.Entries[0]
+				fixture.Entries = make([]provenanceFixtureEntry, provenanceMaxEntries+1)
+				for index := range fixture.Entries {
+					fixture.Entries[index] = entry
+				}
+			},
+		},
+		{
+			name: "verification sources",
+			mutate: func(fixture *provenanceFixture) {
+				source := fixture.Verification.Sources[0]
+				fixture.Verification.Sources = make([]provenanceFixtureSource, provenanceMaxSources+1)
+				for index := range fixture.Verification.Sources {
+					fixture.Verification.Sources[index] = source
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := validProvenanceFixture(t, "view", 0, 4)
+			tc.mutate(&fixture)
+			report := verifyProvenanceFixture(fixture)
+			if report.Overall != "invalid" || report.FailureStage != "proof_structure" {
+				t.Fatalf("report = %+v, want invalid at proof_structure", report)
+			}
+		})
 	}
 }
 

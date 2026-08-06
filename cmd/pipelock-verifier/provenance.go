@@ -29,6 +29,16 @@ const (
 	provenanceFixtureFormat = "pipelock-evidence-provenance-verification-fixture/v1"
 	provenanceFeature       = "evidence_provenance"
 	provenanceTrustRoots    = "fixture supplied; self-attested; not authenticated"
+
+	provenanceMaxFixtureBytes     = 16 << 20
+	provenanceMaxJSONDepth        = 64
+	provenanceMaxEntries          = 32
+	provenanceMaxSources          = 32
+	provenanceMaxSignedBytes      = 1 << 20
+	provenanceMaxSourceBytes      = 2 << 20
+	provenanceMaxTotalSourceBytes = 16 << 20
+	provenanceMaxArtifactBytes    = 2 << 20
+	provenanceMaxMatchesPerSource = 1024
 )
 
 type provenanceFixture struct {
@@ -93,9 +103,21 @@ func newProvenanceCmd() *cobra.Command {
 }
 
 func runProvenance(stdout io.Writer, path string, allowIncomplete bool) error {
-	data, err := os.ReadFile(path) // #nosec G304 -- explicit CLI input
+	file, err := os.Open(path) // #nosec G304 -- explicit CLI input
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read provenance fixture: %w", err))
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, provenanceMaxFixtureBytes+1))
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read provenance fixture: %w", err))
+	}
+	if len(data) > provenanceMaxFixtureBytes {
+		report := rejectProvenance(initialProvenanceReport(), "proof_structure")
+		if writeErr := writeProvenanceReport(stdout, report); writeErr != nil {
+			return writeErr
+		}
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("provenance fixture exceeds %d-byte limit", provenanceMaxFixtureBytes))
 	}
 	var fixture provenanceFixture
 	if err := decodeStrictJSON(data, &fixture); err != nil {
@@ -150,7 +172,7 @@ func rejectProvenance(report provenanceStageReport, stage string) provenanceStag
 
 func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 	report := initialProvenanceReport()
-	if fixture.Format != provenanceFixtureFormat || len(fixture.Entries) == 0 {
+	if fixture.Format != provenanceFixtureFormat || len(fixture.Entries) == 0 || len(fixture.Entries) > provenanceMaxEntries || len(fixture.Verification.Sources) > provenanceMaxSources {
 		return rejectProvenance(report, "proof_structure")
 	}
 	publicKey, err := hex.DecodeString(fixture.Verification.SignerPublicKeyHex)
@@ -162,6 +184,9 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 	signedProofs := make([]signedProvenanceProof, 0, len(fixture.Entries))
 	signedBytes := make([][]byte, 0, len(fixture.Entries))
 	for _, entry := range fixture.Entries {
+		if len(entry.SignedB64) > base64.StdEncoding.EncodedLen(provenanceMaxSignedBytes) {
+			return rejectProvenance(report, "proof_structure")
+		}
 		raw, decodeErr := base64.StdEncoding.Strict().DecodeString(entry.SignedB64)
 		sig, sigErr := decodePrefixedHex(entry.Signature, "ed25519:", ed25519.SignatureSize)
 		if decodeErr != nil || !utf8.Valid(raw) || sigErr != nil {
@@ -171,6 +196,14 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 		var signed signedProvenanceProof
 		if err := decodeStrictJSON(raw, &signed); err != nil {
 			return rejectProvenance(report, "proof_structure")
+		}
+		if len(signed.Proof.Sources) > provenanceMaxSources {
+			return rejectProvenance(report, "proof_structure")
+		}
+		for _, source := range signed.Proof.Sources {
+			if len(source.Matches) > provenanceMaxMatchesPerSource {
+				return rejectProvenance(report, "proof_structure")
+			}
 		}
 		if !ed25519.Verify(publicKey, raw, sig) {
 			report.Signature = "invalid"
@@ -311,6 +344,9 @@ func verifyProvenanceArtifacts(proofs []signedProvenanceProof, inputs provenance
 				unchecked = true
 				continue
 			}
+			if len(*artifact.encoded) > base64.StdEncoding.EncodedLen(provenanceMaxArtifactBytes) {
+				return "mismatch", errors.New("artifact exceeds byte limit")
+			}
 			data, err := base64.StdEncoding.Strict().DecodeString(*artifact.encoded)
 			if err != nil {
 				return "mismatch", err
@@ -329,6 +365,7 @@ func verifyProvenanceArtifacts(proofs []signedProvenanceProof, inputs provenance
 
 func provenanceSources(values []provenanceFixtureSource) (map[string]string, error) {
 	result := make(map[string]string, len(values))
+	totalBytes := 0
 	for _, source := range values {
 		if source.SourceID == "" {
 			return nil, errors.New("missing source ID")
@@ -336,9 +373,16 @@ func provenanceSources(values []provenanceFixtureSource) (map[string]string, err
 		if _, exists := result[source.SourceID]; exists {
 			return nil, fmt.Errorf("duplicate source ID %q", source.SourceID)
 		}
+		if len(source.BytesB64) > base64.StdEncoding.EncodedLen(provenanceMaxSourceBytes) {
+			return nil, fmt.Errorf("source %q exceeds byte limit", source.SourceID)
+		}
 		decoded, err := base64.StdEncoding.Strict().DecodeString(source.BytesB64)
 		if err != nil || !utf8.Valid(decoded) {
 			return nil, fmt.Errorf("source %q is not canonical base64 UTF-8", source.SourceID)
+		}
+		totalBytes += len(decoded)
+		if totalBytes > provenanceMaxTotalSourceBytes {
+			return nil, errors.New("provenance sources exceed cumulative byte limit")
 		}
 		result[source.SourceID] = string(decoded)
 	}
@@ -404,7 +448,7 @@ func decodeStrictJSON(data []byte, destination any) error {
 func rejectNonCanonicalJSONKeys(data []byte, destinationType reflect.Type) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := scanJSONValueType(decoder, destinationType); err != nil {
+	if err := scanJSONValueType(decoder, destinationType, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -416,7 +460,10 @@ func rejectNonCanonicalJSONKeys(data []byte, destinationType reflect.Type) error
 	return nil
 }
 
-func scanJSONValueType(decoder *json.Decoder, valueType reflect.Type) error {
+func scanJSONValueType(decoder *json.Decoder, valueType reflect.Type, depth int) error {
+	if depth > provenanceMaxJSONDepth {
+		return fmt.Errorf("JSON nesting exceeds depth limit %d", provenanceMaxJSONDepth)
+	}
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -450,7 +497,7 @@ func scanJSONValueType(decoder *json.Decoder, valueType reflect.Type) error {
 					return fmt.Errorf("unknown or non-canonical JSON object key %q", key)
 				}
 			}
-			if err := scanJSONValueType(decoder, fieldType); err != nil {
+			if err := scanJSONValueType(decoder, fieldType, depth+1); err != nil {
 				return err
 			}
 		}
@@ -462,7 +509,7 @@ func scanJSONValueType(decoder *json.Decoder, valueType reflect.Type) error {
 			elementType = valueType.Elem()
 		}
 		for decoder.More() {
-			if err := scanJSONValueType(decoder, elementType); err != nil {
+			if err := scanJSONValueType(decoder, elementType, depth+1); err != nil {
 				return err
 			}
 		}
@@ -512,7 +559,7 @@ func jsonFieldTypes(valueType reflect.Type) map[string]reflect.Type {
 func rejectDuplicateJSONKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := scanJSONValue(decoder); err != nil {
+	if err := scanJSONValue(decoder, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -524,7 +571,10 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	return nil
 }
 
-func scanJSONValue(decoder *json.Decoder) error {
+func scanJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > provenanceMaxJSONDepth {
+		return fmt.Errorf("JSON nesting exceeds depth limit %d", provenanceMaxJSONDepth)
+	}
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -549,7 +599,7 @@ func scanJSONValue(decoder *json.Decoder) error {
 				return fmt.Errorf("duplicate JSON object key %q", key)
 			}
 			seen[key] = struct{}{}
-			if err := scanJSONValue(decoder); err != nil {
+			if err := scanJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}
@@ -557,7 +607,7 @@ func scanJSONValue(decoder *json.Decoder) error {
 		return err
 	case '[':
 		for decoder.More() {
-			if err := scanJSONValue(decoder); err != nil {
+			if err := scanJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}

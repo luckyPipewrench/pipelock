@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -33,6 +34,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	var expectedKeys []string
 	var chainDir string
 	var sessionID string
+	var runID string
 	var allowUnpinned bool
 	var fleetReport bool
 	var cleanReport string
@@ -124,6 +126,13 @@ Examples:
 				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
 			}
 			if chainDir != "" {
+				if runID != "" {
+					run, runErr := recorder.ResolveEvidenceRun(chainDir, runID)
+					if runErr != nil {
+						return fmt.Errorf("resolve evidence run: %w", runErr)
+					}
+					chainDir = run.Dir
+				}
 				if cleanReport == "" {
 					return verifyChainFromSessionDirDetailed(out, chainDir, sessionID, trustedKeys, verifyOpts)
 				}
@@ -161,6 +170,7 @@ Examples:
 	cmd.Flags().StringArrayVar(&expectedKeys, "key", nil, "trusted signer public key (hex or file path); repeat for rotated chains")
 	cmd.Flags().StringVar(&chainDir, "chain", "", "verify the full receipt chain from an evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
+	cmd.Flags().StringVar(&runID, "run", "", "run path relative to the evidence directory")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
 	cmd.Flags().StringVar(&cleanReport, "clean-report", "", "write minimal offline-verifiable action report after chain and defer-pair validation")
@@ -822,6 +832,7 @@ func TranscriptRootCmd() *cobra.Command {
 	var expectedKeys []string
 	var chainDir string
 	var sessionID string
+	var runID string
 
 	cmd := &cobra.Command{
 		Use:   "transcript-root [file]",
@@ -856,6 +867,13 @@ Examples:
 			var label string
 			var receipts []receipt.Receipt
 			if chainDir != "" {
+				if runID != "" {
+					run, runErr := recorder.ResolveEvidenceRun(chainDir, runID)
+					if runErr != nil {
+						return fmt.Errorf("resolve evidence run: %w", runErr)
+					}
+					chainDir = run.Dir
+				}
 				receipts, err = receipt.ExtractReceiptsFromSessionDir(chainDir, sessionID)
 				if err != nil {
 					return fmt.Errorf("extracting session receipts: %w", err)
@@ -899,6 +917,7 @@ Examples:
 	cmd.Flags().StringArrayVar(&expectedKeys, "key", nil, "trusted signer public key (hex or file path); repeat for rotated chains")
 	cmd.Flags().StringVar(&chainDir, "chain", "", "read the receipt chain from an evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
+	cmd.Flags().StringVar(&runID, "run", "", "run path relative to the evidence directory")
 	return cmd
 }
 

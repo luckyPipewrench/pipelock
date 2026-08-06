@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type independentOptions struct {
@@ -23,6 +24,7 @@ type independentOptions struct {
 	logPath      string
 	logID        string
 	sessionID    string
+	runID        string
 	asDir        bool
 	jsonOutput   bool
 }
@@ -53,6 +55,7 @@ and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 	cmd.Flags().StringVar(&opts.logID, "log-id", anchor.DefaultLocalLogID, "local fake-log identifier")
 	cmd.Flags().StringArrayVar(&opts.rekorLogKeys, "rekor-log-key", nil, "trusted Rekor log public key (PEM, Pipelock Ed25519 key, raw hex, or file path); repeat for rotations")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory when --dir is set")
+	cmd.Flags().StringVar(&opts.runID, "run", "", "run path relative to the evidence directory when --dir is set")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single evidence file")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	return cmd
@@ -115,6 +118,13 @@ func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.B
 
 func independentReceipts(target string, opts independentOptions) ([]receipt.Receipt, error) {
 	if opts.asDir {
+		if opts.runID != "" {
+			run, err := recorder.ResolveEvidenceRun(target, opts.runID)
+			if err != nil {
+				return nil, fmt.Errorf("resolve evidence run: %w", err)
+			}
+			target = run.Dir
+		}
 		return receipt.ExtractReceiptsFromSessionDir(target, opts.sessionID)
 	}
 	return receipt.ExtractReceipts(target)

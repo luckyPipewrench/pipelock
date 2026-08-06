@@ -17,12 +17,14 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // chainOptions holds resolved CLI flags for the chain subcommand.
 type chainOptions struct {
 	signerKey string
 	sessionID string
+	runID     string
 	evidenceBindingOptions
 	jsonOutput    bool
 	asDir         bool
@@ -56,6 +58,7 @@ key.`,
 
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory (--dir)")
+	cmd.Flags().StringVar(&opts.runID, "run", "", "run path relative to the evidence directory (--dir)")
 	cmd.Flags().StringVar(&opts.expectSignerKeyID, "expect-signer-id", "", "EvidenceReceipt v2: require signer_key_id")
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
 	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
@@ -93,6 +96,13 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 	var label string
 	if opts.asDir {
 		clean := filepath.Clean(target)
+		if opts.runID != "" {
+			run, runErr := recorder.ResolveEvidenceRun(clean, opts.runID)
+			if runErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence run: %w", runErr))
+			}
+			clean = run.Dir
+		}
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
 		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
 			return handleErr

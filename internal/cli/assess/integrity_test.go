@@ -430,6 +430,22 @@ func TestLoadSigningIdentity_ReusesExistingKeyPair(t *testing.T) {
 	}
 }
 
+func TestLoadSigningIdentity_KeyGenerationFailure(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	dir := filepath.Join(parent, "keystore")
+	id, err := loadSigningIdentity(assessFinalizeOpts{Agent: "new-agent", KeystoreDir: dir})
+	if err == nil {
+		t.Fatalf("loadSigningIdentity returned id=%+v, want generation error", id)
+	}
+	if !strings.Contains(err.Error(), "generating key") {
+		t.Errorf("error %q does not identify key generation", err)
+	}
+}
+
 func TestSynthesizeAssessment_SkippedOmitsCompliance(t *testing.T) {
 	m := AssessManifest{
 		SchemaVersion:     assessSchemaVersion,

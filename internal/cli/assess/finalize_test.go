@@ -1495,6 +1495,34 @@ func TestRewriteSummaryArtifacts_ErrorPathsPurgeSignedOutputs(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleSignature(t *testing.T) {
+	t.Run("removes regular signature", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "manifest.json.sig")
+		if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := removeStaleSignature(path); err != nil {
+			t.Fatalf("removeStaleSignature: %v", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Error("stale signature was not removed")
+		}
+	})
+
+	t.Run("refuses nonempty directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "manifest.json.sig")
+		if err := os.Mkdir(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "entry"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := removeStaleSignature(path); err == nil || !strings.Contains(err.Error(), "removing stale") {
+			t.Errorf("removeStaleSignature error = %v, want wrapped removal failure", err)
+		}
+	})
+}
+
 func TestAssessFinalize_PartialSigningIdentityFailsClosed(t *testing.T) {
 	runDir := setupCompletedRun(t)
 	keystoreDir := filepath.Join(t.TempDir(), "keystore")

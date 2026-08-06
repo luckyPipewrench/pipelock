@@ -17,6 +17,7 @@ from pipelock_aarp_verify.cli import (
     EXIT_USAGE,
     main,
 )
+from pipelock_aarp_verify.provenance_proof import MAX_FIXTURE_BYTES
 
 _CORPUS = (
     Path(__file__).resolve().parents[3] / "conformance" / "testdata" / "aarp-corpus"
@@ -121,6 +122,27 @@ def test_provenance_requires_explicit_incomplete_opt_in():
     rc, out, _ = run(["provenance", str(_PROVENANCE), "--allow-incomplete"])
     assert rc == EXIT_OK
     assert json.loads(out)["overall"] == "incomplete"
+
+
+def test_provenance_cli_bounds_the_file_read(monkeypatch):
+    read_sizes = []
+
+    class FixtureReader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return b"{}"
+
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: FixtureReader())
+    rc, out, _ = run(["provenance", "fixture.json"])
+    assert rc == EXIT_GENERAL
+    assert json.loads(out)["failure_stage"] == "proof_structure"
+    assert read_sizes == [MAX_FIXTURE_BYTES + 1]
 
 
 def test_bad_trust_unknown_field(tmp_path: Path):

@@ -7,7 +7,7 @@
 
 import { createHash, createHmac } from "node:crypto";
 import * as ed25519 from "@noble/ed25519";
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import { RawNumber, parseJSONStrict } from "./aarp/strictjson.js";
 import {
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
@@ -20,6 +20,22 @@ const proofVersion = "pipelock-evidence-provenance-proof/v1";
 const profileDigest = EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST;
 const knownFeature = "evidence_provenance";
 const trustRoots = "fixture supplied; self-attested; not authenticated";
+// These are fixture-wide limits, rather than per-entry limits. A chain can
+// otherwise repeat a valid source or match list enough times to turn this
+// fixture-only verifier into an unbounded work amplifier.
+const maxFixtureSourceReferences = 128;
+const maxFixtureMatchChecks = 4096;
+const maxFixtureRecipeProcessingBytes = 64 << 20;
+const maxFixtureBytes = 16 << 20;
+const maxFixtureJSONDepth = 64;
+const maxFixtureEntries = 32;
+const maxVerificationSources = 32;
+const maxProofSources = 32;
+const maxMatchesPerSource = 1024;
+const maxSignedBytes = 1 << 20;
+const maxSourceBytes = 2 << 20;
+const maxTotalSourceBytes = 16 << 20;
+const maxArtifactBytes = 2 << 20;
 
 type SignatureStage = "verified" | "invalid" | "not_checked";
 type ChainStage = "verified" | "invalid" | "not_checked";
@@ -104,11 +120,20 @@ interface Fixture {
   signer: Buffer;
   commitmentKey?: Buffer;
   sources: Map<string, string>;
-  binary?: Buffer;
-  ruleset?: Buffer;
+  binaryB64?: string;
+  rulesetB64?: string;
+}
+
+interface FixtureWork {
+  sourceReferences: number;
+  matchChecks: number;
 }
 
 class FixtureError extends Error {}
+
+class FixtureWorkLimit extends Error {
+  override name = "FixtureWorkLimit";
+}
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (
@@ -182,7 +207,7 @@ function utf8(bytes: Buffer, label: string): string {
   }
 }
 
-function b64(value: unknown, label: string): Buffer {
+function b64(value: unknown, label: string, maxBytes?: number): Buffer {
   const encoded = string(value, label);
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)) {
     throw new FixtureError(`${label} must be canonical base64`);
@@ -190,6 +215,8 @@ function b64(value: unknown, label: string): Buffer {
   const decoded = Buffer.from(encoded, "base64");
   if (decoded.toString("base64") !== encoded)
     throw new FixtureError(`${label} must be canonical base64`);
+  if (maxBytes !== undefined && decoded.length > maxBytes)
+    throw new FixtureError(`${label} exceeds byte limit`);
   return decoded;
 }
 
@@ -264,11 +291,16 @@ function parseOperation(value: unknown, index: number): Operation {
   return operation;
 }
 
-function parseProof(value: unknown): Proof {
+function parseProof(value: unknown, work: FixtureWork): Proof {
   const raw = object(value, "proof");
   exactKeys(raw, ["version", "transform_profile_digest", "sources", "producer"], "proof");
   const sourceValues = array(raw.sources, "proof.sources");
-  const sources = sourceValues.map((item, sourceIndex) => {
+  if (sourceValues.length > maxProofSources) throw new FixtureError("proof exceeds source limit");
+  const sources: Source[] = [];
+  for (const [sourceIndex, item] of sourceValues.entries()) {
+    work.sourceReferences += 1;
+    if (work.sourceReferences > maxFixtureSourceReferences)
+      throw new FixtureError("fixture exceeds source-reference limit");
     const source = object(item, `proof.sources[${sourceIndex}]`);
     exactKeys(
       source,
@@ -277,7 +309,13 @@ function parseProof(value: unknown): Proof {
     );
     const recipe = object(source.recipe, "source recipe");
     exactKeys(recipe, ["transform_profile_digest", "operations"], "source recipe");
-    const matches = array(source.matches, "source matches").map((matchValue, matchIndex) => {
+    const matchValues = array(source.matches, "source matches");
+    if (matchValues.length > maxMatchesPerSource)
+      throw new FixtureError("proof source exceeds match limit");
+    work.matchChecks += matchValues.length;
+    if (work.matchChecks > maxFixtureMatchChecks)
+      throw new FixtureError("fixture exceeds match-check limit");
+    const matches = matchValues.map((matchValue, matchIndex) => {
       const match = object(matchValue, `source match ${matchIndex}`);
       exactKeys(
         match,
@@ -292,7 +330,7 @@ function parseProof(value: unknown): Proof {
         match_commitment: string(match.match_commitment, "match commitment"),
       };
     });
-    return {
+    sources.push({
       source_ordinal: uint(source.source_ordinal, "source ordinal", (1n << 64n) - 1n),
       source_id: string(source.source_id, "source ID"),
       recipe: {
@@ -304,8 +342,8 @@ function parseProof(value: unknown): Proof {
       },
       view_commitment: string(source.view_commitment, "view commitment"),
       matches,
-    };
-  });
+    });
+  }
   const producerRaw = object(raw.producer, "proof.producer");
   const allowedProducer = new Set(["binary_digest", "ruleset_digest"]);
   for (const key of Object.keys(producerRaw))
@@ -325,7 +363,9 @@ function parseProof(value: unknown): Proof {
 }
 
 function parseFixture(data: string): Fixture {
-  const root = object(parseJSONStrict(data), "fixture");
+  if (Buffer.byteLength(data, "utf8") > maxFixtureBytes)
+    throw new FixtureError("fixture exceeds byte limit");
+  const root = object(parseJSONStrict(data, maxFixtureJSONDepth), "fixture");
   exactKeys(root, ["format", "entries", "verification"], "fixture");
   if (string(root.format, "format") !== provenanceFixtureFormat)
     throw new FixtureError("unsupported fixture format");
@@ -349,21 +389,32 @@ function parseFixture(data: string): Fixture {
       ? undefined
       : hex(commitmentHex, "verification.commitment_key_hex", 32);
   const sources = new Map<string, string>();
-  for (const value of array(verification.sources ?? [], "verification.sources")) {
+  let totalSourceBytes = 0;
+  const sourceValues = array(verification.sources ?? [], "verification.sources");
+  if (sourceValues.length > maxVerificationSources)
+    throw new FixtureError("verification exceeds source limit");
+  for (const value of sourceValues) {
     const source = object(value, "verification source");
     exactKeys(source, ["source_id", "bytes_b64"], "verification source");
     const id = string(source.source_id, "verification source_id");
     if (sources.has(id)) throw new FixtureError(`duplicate verification source ${id}`);
-    sources.set(
-      id,
-      utf8(b64(source.bytes_b64, "verification source bytes_b64"), "verification source bytes"),
-    );
+    const bytes = b64(source.bytes_b64, "verification source bytes_b64", maxSourceBytes);
+    totalSourceBytes += bytes.length;
+    if (totalSourceBytes > maxTotalSourceBytes)
+      throw new FixtureError("verification sources exceed byte limit");
+    sources.set(id, utf8(bytes, "verification source bytes"));
   }
-  const entries = array(root.entries, "entries").map((value, index) => {
+  const work: FixtureWork = { sourceReferences: 0, matchChecks: 0 };
+  const entryValues = array(root.entries, "entries");
+  if (entryValues.length > maxFixtureEntries) throw new FixtureError("fixture exceeds entry limit");
+  const entries = entryValues.map((value, index) => {
     const entry = object(value, `entries[${index}]`);
     exactKeys(entry, ["signed_b64", "signature"], "entry");
-    const bytes = b64(entry.signed_b64, "entry.signed_b64");
-    const signed = object(parseJSONStrict(utf8(bytes, "signed_b64")), "signed");
+    const bytes = b64(entry.signed_b64, "entry.signed_b64", maxSignedBytes);
+    const signed = object(
+      parseJSONStrict(utf8(bytes, "signed_b64"), maxFixtureJSONDepth),
+      "signed",
+    );
     knownKeys(signed, ["chain_seq", "chain_prev_hash", "critical_features", "proof"], "signed");
     for (const key of ["chain_seq", "chain_prev_hash", "proof"]) {
       if (!(key in signed)) throw new FixtureError(`signed: missing required field ${key}`);
@@ -379,7 +430,7 @@ function parseFixture(data: string): Fixture {
       critical_features: array(signed.critical_features ?? [], "signed.critical_features").map(
         (feature, i) => string(feature, `signed.critical_features[${i}]`),
       ),
-      proof: parseProof(signed.proof),
+      proof: parseProof(signed.proof, work),
     };
   });
   if (entries.length === 0) throw new FixtureError("entries must not be empty");
@@ -388,14 +439,8 @@ function parseFixture(data: string): Fixture {
     signer,
     commitmentKey,
     sources,
-    binary:
-      verification.binary_b64 === undefined
-        ? undefined
-        : b64(verification.binary_b64, "verification.binary_b64"),
-    ruleset:
-      verification.ruleset_b64 === undefined
-        ? undefined
-        : b64(verification.ruleset_b64, "verification.ruleset_b64"),
+    binaryB64: optionalString(verification.binary_b64, "verification.binary_b64"),
+    rulesetB64: optionalString(verification.ruleset_b64, "verification.ruleset_b64"),
   };
 }
 
@@ -586,15 +631,24 @@ function commitMatch(key: Buffer, source: Source, match: Match): string {
   ]);
 }
 
-function applyRecipe(recipe: Source["recipe"], input: string): string {
+function applyRecipe(
+  recipe: Source["recipe"],
+  input: string,
+  chargeFixtureWork: (bytes: number) => void,
+): string {
   try {
     return Buffer.from(
-      applyEvidenceProvenanceRecipe(Buffer.from(input, "utf8"), {
-        transform_profile_digest: recipe.transform_profile_digest,
-        operations: recipe.operations.map((operation) => operation.raw),
-      }),
+      applyEvidenceProvenanceRecipe(
+        Buffer.from(input, "utf8"),
+        {
+          transform_profile_digest: recipe.transform_profile_digest,
+          operations: recipe.operations.map((operation) => operation.raw),
+        },
+        chargeFixtureWork,
+      ),
     ).toString("utf8");
   } catch (error) {
+    if (error instanceof FixtureWorkLimit) throw error;
     throw new FixtureError(error instanceof Error ? error.message : String(error));
   }
 }
@@ -614,7 +668,10 @@ export function executeProvenanceRecipe(recipeValue: unknown, input: Buffer): Bu
     operations: array(recipeObject.operations, "recipe.operations").map(parseOperation),
   };
   validateRecipe(recipe);
-  return Buffer.from(applyRecipe(recipe, raw), "utf8");
+  return Buffer.from(
+    applyRecipe(recipe, raw, () => {}),
+    "utf8",
+  );
 }
 
 function decodeRawBase64(value: string): Buffer {
@@ -655,19 +712,27 @@ export function validateProvenanceIntervals(
 }
 
 function artifacts(proof: Proof, fixture: Fixture): ArtifactStage {
-  const pairs: Array<[string | undefined, Buffer | undefined]> = [
-    [proof.producer.binary_digest, fixture.binary],
-    [proof.producer.ruleset_digest, fixture.ruleset],
+  const pairs: Array<[string | undefined, string | undefined, string]> = [
+    [proof.producer.binary_digest, fixture.binaryB64, "verification.binary_b64"],
+    [proof.producer.ruleset_digest, fixture.rulesetB64, "verification.ruleset_b64"],
   ];
   let hasAttestation = false;
   let unchecked = false;
   let mismatch = false;
-  for (const [attestedDigest, supplied] of pairs) {
+  for (const [attestedDigest, encoded, label] of pairs) {
     if (attestedDigest === undefined) continue;
     hasAttestation = true;
-    if (supplied === undefined) unchecked = true;
-    else if (`sha256:${createHash("sha256").update(supplied).digest("hex")}` !== attestedDigest)
-      mismatch = true;
+    if (encoded === undefined) unchecked = true;
+    else {
+      let supplied: Buffer;
+      try {
+        supplied = b64(encoded, label, maxArtifactBytes);
+      } catch {
+        return "mismatch";
+      }
+      if (`sha256:${createHash("sha256").update(supplied).digest("hex")}` !== attestedDigest)
+        mismatch = true;
+    }
   }
   if (mismatch) return "mismatch";
   if (unchecked) return "attested_unchecked";
@@ -739,9 +804,24 @@ export async function verifyProvenanceFixture(data: string): Promise<ProvenanceR
   const availableSources = allSources.filter(
     (item): item is { source: Source; raw: string; view?: string } => item.raw !== undefined,
   );
+  let recipeProcessingBytes = 0;
+  const reconstructedViews = new Map<string, string>();
+  const chargeFixtureWork = (bytes: number): void => {
+    if (bytes > maxFixtureRecipeProcessingBytes - recipeProcessingBytes)
+      throw new FixtureWorkLimit("fixture exceeds recipe-processing byte limit");
+    recipeProcessingBytes += bytes;
+  };
   try {
-    for (const item of availableSources) item.view = applyRecipe(item.source.recipe, item.raw);
-  } catch {
+    for (const item of availableSources) {
+      const key = `${item.source.source_id}\u0000${recipeBytes(item.source.recipe).toString("base64")}`;
+      item.view = reconstructedViews.get(key);
+      if (item.view === undefined) {
+        item.view = applyRecipe(item.source.recipe, item.raw, chargeFixtureWork);
+        reconstructedViews.set(key, item.view);
+      }
+    }
+  } catch (error) {
+    if (error instanceof FixtureWorkLimit) return invalid("proof_structure", report);
     report.view_reproduction = "mismatch";
     return invalid("view_reproduction", report);
   }
@@ -812,7 +892,21 @@ export async function verifyProvenanceFixture(data: string): Promise<ProvenanceR
 
 export async function runProvenanceFixture(path: string): Promise<ProvenanceReport> {
   try {
-    return await verifyProvenanceFixture(readFileSync(path, "utf8"));
+    const fd = openSync(path, "r");
+    try {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      while (total <= maxFixtureBytes) {
+        const chunk = Buffer.allocUnsafe(Math.min(64 << 10, maxFixtureBytes + 1 - total));
+        const read = readSync(fd, chunk, 0, chunk.length, null);
+        if (read === 0) break;
+        chunks.push(chunk.subarray(0, read));
+        total += read;
+      }
+      return await verifyProvenanceFixture(utf8(Buffer.concat(chunks), "fixture"));
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return invalid("proof_structure", stage("proof_structure"));
   }

@@ -301,7 +301,11 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
   }
 }
 
-export function applyEvidenceProvenanceRecipe(input: Uint8Array, recipe: unknown): Uint8Array {
+export function applyEvidenceProvenanceRecipe(
+  input: Uint8Array,
+  recipe: unknown,
+  chargeFixtureWork: (bytes: number) => void = () => {},
+): Uint8Array {
   const source = text(input, "recipe input");
   if (input.length > MAX_INPUT_BYTES) fail("recipe input: exceeds profile byte limit");
   validateEvidenceProvenanceRecipe(recipe);
@@ -309,6 +313,7 @@ export function applyEvidenceProvenanceRecipe(input: Uint8Array, recipe: unknown
   let remaining = MAX_CUMULATIVE_PROCESSED_BYTES;
   const charge = (processed: string): void => {
     const size = byteLength(processed);
+    chargeFixtureWork(size);
     if (size > remaining) fail("recipe: exceeds cumulative processing budget");
     remaining -= size;
   };
@@ -318,6 +323,7 @@ export function applyEvidenceProvenanceRecipe(input: Uint8Array, recipe: unknown
       charge(value);
       value = apply(value, op, charge);
     } catch (error) {
+      if (error instanceof Error && error.name === "FixtureWorkLimit") throw error;
       throw new Error(
         `recipe operation ${index} (${String(op.kind)}): ${error instanceof Error ? error.message : String(error)}`,
       );

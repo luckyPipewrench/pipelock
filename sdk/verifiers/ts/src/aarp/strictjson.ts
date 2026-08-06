@@ -31,11 +31,14 @@ const WHITESPACE = new Set([" ", "\t", "\n", "\r"]);
 
 class Parser {
   private i = 0;
-  constructor(private readonly s: string) {}
+  constructor(
+    private readonly s: string,
+    private readonly maxDepth = Number.POSITIVE_INFINITY,
+  ) {}
 
   parse(): unknown {
     this.skipWhitespace();
-    const value = this.parseValue();
+    const value = this.parseValue(0);
     this.skipWhitespace();
     if (this.i !== this.s.length) {
       throw new FatalParseError(`trailing tokens after JSON value at offset ${this.i}`);
@@ -49,15 +52,16 @@ class Parser {
     }
   }
 
-  private parseValue(): unknown {
+  private parseValue(depth: number): unknown {
     this.skipWhitespace();
     if (this.i >= this.s.length) throw new FatalParseError("unexpected end of JSON input");
+    if (depth > this.maxDepth) throw new FatalParseError("JSON depth limit exceeded");
     const c = this.s[this.i];
     switch (c) {
       case "{":
-        return this.parseObject();
+        return this.parseObject(depth);
       case "[":
-        return this.parseArray();
+        return this.parseArray(depth);
       case '"':
         return this.parseString();
       case "t":
@@ -82,7 +86,7 @@ class Parser {
     return value;
   }
 
-  private parseObject(): Record<string, unknown> {
+  private parseObject(depth: number): Record<string, unknown> {
     this.i++; // consume {
     const obj: Record<string, unknown> = {};
     const seen = new Set<string>();
@@ -106,7 +110,7 @@ class Parser {
         throw new FatalParseError(`expected ':' at offset ${this.i}`);
       }
       this.i++; // consume :
-      obj[key] = this.parseValue();
+      obj[key] = this.parseValue(depth + 1);
       this.skipWhitespace();
       const next = this.s[this.i];
       if (next === ",") {
@@ -121,7 +125,7 @@ class Parser {
     }
   }
 
-  private parseArray(): unknown[] {
+  private parseArray(depth: number): unknown[] {
     this.i++; // consume [
     const arr: unknown[] = [];
     this.skipWhitespace();
@@ -130,7 +134,7 @@ class Parser {
       return arr;
     }
     for (;;) {
-      arr.push(this.parseValue());
+      arr.push(this.parseValue(depth + 1));
       this.skipWhitespace();
       const next = this.s[this.i];
       if (next === ",") {
@@ -276,6 +280,6 @@ class Parser {
 
 // parseJSONStrict parses with duplicate-key, trailing-token, and number-literal
 // fidelity. The returned tree carries RawNumber for every JSON number.
-export function parseJSONStrict(text: string): unknown {
-  return new Parser(text).parse();
+export function parseJSONStrict(text: string, maxDepth?: number): unknown {
+  return new Parser(text, maxDepth).parse();
 }

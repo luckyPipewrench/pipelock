@@ -54,18 +54,40 @@ impl Recipe {
     }
 
     pub fn apply_bytes(&self, input: &[u8]) -> Result<Vec<u8>, String> {
-        let mut value = std::str::from_utf8(input)
-            .map_err(|_| "recipe input: invalid UTF-8".to_string())?
-            .to_string();
+        let input =
+            std::str::from_utf8(input).map_err(|_| "recipe input: invalid UTF-8".to_string())?;
+        let mut budget = ProcessingBudget::new(MAX_CUMULATIVE_PROCESSED_BYTES);
+        self.apply_with_budget_impl(input, &mut budget)
+            .map(String::into_bytes)
+    }
+
+    pub(crate) fn apply_with_budget(
+        &self,
+        input: &str,
+        total_budget: &mut ProcessingBudget,
+    ) -> Result<String, String> {
+        let mut per_recipe_budget = ProcessingBudget::new(MAX_CUMULATIVE_PROCESSED_BYTES);
+        let mut budget = CombinedBudget {
+            per_recipe: &mut per_recipe_budget,
+            total: total_budget,
+        };
+        self.apply_with_budget_impl(input, &mut budget)
+    }
+
+    fn apply_with_budget_impl<B: Budget>(
+        &self,
+        input: &str,
+        budget: &mut B,
+    ) -> Result<String, String> {
+        let mut value = input.to_string();
         if input.len() > MAX_INPUT {
             return Err("recipe input: exceeds profile byte limit".to_string());
         }
         validate_digest(&self.digest)?;
-        let mut budget = ProcessingBudget(MAX_CUMULATIVE_PROCESSED_BYTES);
         for (i, operation) in self.operations.iter().enumerate() {
             budget.charge(&value)?;
             value = operation
-                .apply(&value, &mut budget)
+                .apply(&value, budget)
                 .map_err(|e| format!("recipe operation {i} ({}): {e}", operation.kind))?;
             if value.len() > MAX_OUTPUT {
                 return Err(format!(
@@ -74,7 +96,7 @@ impl Recipe {
                 ));
             }
         }
-        Ok(value.into_bytes())
+        Ok(value)
     }
 
     pub fn apply(&self, input: &str) -> Result<String, String> {
@@ -83,15 +105,50 @@ impl Recipe {
     }
 }
 
-struct ProcessingBudget(usize);
+pub(crate) struct ProcessingBudget {
+    remaining: usize,
+    exhausted: bool,
+}
 
 impl ProcessingBudget {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            remaining: limit,
+            exhausted: false,
+        }
+    }
+
+    pub(crate) fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
+trait Budget {
+    fn charge(&mut self, value: &str) -> Result<(), String>;
+}
+
+impl Budget for ProcessingBudget {
     fn charge(&mut self, value: &str) -> Result<(), String> {
-        self.0 = self
-            .0
-            .checked_sub(value.len())
-            .ok_or_else(|| "recipe: exceeds cumulative processing budget".to_string())?;
+        self.remaining = match self.remaining.checked_sub(value.len()) {
+            Some(remaining) => remaining,
+            None => {
+                self.exhausted = true;
+                return Err("recipe: exceeds cumulative processing budget".to_string());
+            }
+        };
         Ok(())
+    }
+}
+
+struct CombinedBudget<'a> {
+    per_recipe: &'a mut ProcessingBudget,
+    total: &'a mut ProcessingBudget,
+}
+
+impl Budget for CombinedBudget<'_> {
+    fn charge(&mut self, value: &str) -> Result<(), String> {
+        self.per_recipe.charge(value)?;
+        self.total.charge(value)
     }
 }
 
@@ -265,7 +322,7 @@ impl Operation {
         Ok(())
     }
 
-    fn apply(&self, value: &str, budget: &mut ProcessingBudget) -> Result<String, String> {
+    fn apply<B: Budget>(&self, value: &str, budget: &mut B) -> Result<String, String> {
         match self.kind.as_str() {
             "identity" => Ok(value.to_string()),
             "url_component" => url_component(
@@ -273,6 +330,7 @@ impl Operation {
                 required_str(&self.fields, "component")?,
                 self.fields.get("selector").and_then(Value::as_str),
                 optional_u32(&self.fields, "occurrence")?.unwrap_or(0),
+                budget,
             ),
             "percent_decode" => {
                 let mut v = value.to_string();
@@ -454,7 +512,7 @@ fn strict_percent_decode(s: &str, plus: bool) -> Result<String, String> {
     String::from_utf8(percent_decode_str(&bytes).collect())
         .map_err(|_| "output: invalid UTF-8".to_string())
 }
-fn query_unescape(s: &str, budget: &mut ProcessingBudget) -> Result<String, String> {
+fn query_unescape<B: Budget>(s: &str, budget: &mut B) -> Result<String, String> {
     let mut v = s.to_string();
     for _ in 0..500 {
         budget.charge(&v)?;
@@ -470,6 +528,7 @@ fn url_component(
     component: &str,
     selector: Option<&str>,
     occurrence: u32,
+    budget: &mut impl Budget,
 ) -> Result<String, String> {
     let u = Url::parse(value).map_err(|_| "URL parse: invalid absolute URL".to_string())?;
     if u.scheme().is_empty() || u.host_str().is_none() {
@@ -490,7 +549,7 @@ fn url_component(
         "raw_query" => Ok(u.query().unwrap_or("").to_string()),
         "query_key" | "query_value" => {
             let key = selector.ok_or_else(|| "query component: missing selector".to_string())?;
-            let pairs = strict_query(u.query().unwrap_or(""))?;
+            let pairs = strict_query(u.query().unwrap_or(""), budget)?;
             let values: Vec<_> = pairs
                 .into_iter()
                 .filter(|(k, _)| k == key)
@@ -527,11 +586,13 @@ fn raw_hostname(value: &str) -> String {
         .unwrap_or(host_port)
         .to_string()
 }
-fn strict_query(q: &str) -> Result<Vec<(String, String)>, String> {
+fn strict_query<B: Budget>(q: &str, budget: &mut B) -> Result<Vec<(String, String)>, String> {
     q.split('&')
         .filter(|p| !p.is_empty())
         .map(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            budget.charge(k)?;
+            budget.charge(v)?;
             Ok((
                 strict_percent_decode(k, true).map_err(|e| format!("query parse: {e}"))?,
                 strict_percent_decode(v, true).map_err(|e| format!("query parse: {e}"))?,
@@ -878,7 +939,7 @@ fn text_segment(s: &str, n: u32) -> Result<String, String> {
         .map(ToString::to_string)
         .ok_or_else(|| format!("text segment: occurrence {n} unavailable"))
 }
-fn html_decode(s: &str, budget: &mut ProcessingBudget) -> Result<String, String> {
+fn html_decode<B: Budget>(s: &str, budget: &mut B) -> Result<String, String> {
     let mut v = s.to_string();
     for _ in 0..16 {
         budget.charge(&v)?;

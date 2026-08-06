@@ -34,7 +34,7 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
-from .provenance_proof import compact_fixture_json
+from .provenance_proof import MAX_FIXTURE_BYTES, compact_fixture_json
 from .receipt import (
     UNPINNED_RECEIPT_BANNER,
     verify_evidence_chain_file,
@@ -321,7 +321,7 @@ def _run_provenance(
     """Verify the experimental fixture-only evidence-provenance wrapper."""
     try:
         with open(target, "rb") as fh:
-            data = fh.read()
+            data = fh.read(MAX_FIXTURE_BYTES + 1)
     except OSError as exc:
         stderr.write(f"read provenance fixture: {exc}\n")
         return EXIT_CONFIG

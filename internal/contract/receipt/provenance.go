@@ -291,6 +291,12 @@ func recipeBytes(recipe normalize.Recipe) ([]byte, error) {
 	return result, nil
 }
 
+// CanonicalRecipeBytes returns the normative length-framed recipe encoding
+// used by provenance commitments and cross-entry verifier cache keys.
+func CanonicalRecipeBytes(recipe normalize.Recipe) ([]byte, error) {
+	return recipeBytes(recipe)
+}
+
 func operationBytes(operation normalize.Operation) ([]byte, error) {
 	kind, err := operationKindByte(operation.Kind)
 	if err != nil {

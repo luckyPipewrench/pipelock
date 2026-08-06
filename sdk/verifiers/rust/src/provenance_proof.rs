@@ -13,17 +13,33 @@ use hmac::{Hmac, Mac};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2_10::Sha256 as HmacSha256;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
-use crate::provenance::{Recipe as TransformRecipe, PROFILE_DIGEST};
+use crate::provenance::{ProcessingBudget, Recipe as TransformRecipe, PROFILE_DIGEST};
 use crate::util::{reject_duplicate_keys, sha256_hex, Result, VerifierError};
 
 const FIXTURE_FORMAT: &str = "pipelock-evidence-provenance-verification-fixture/v1";
 const PROOF_VERSION: &str = "pipelock-evidence-provenance-proof/v1";
 const GENESIS: &str = "genesis";
 const TRUST_ROOTS: &str = "fixture supplied; self-attested; not authenticated";
+// Fixture-wide limits prevent a validly signed, wide fixture from multiplying
+// the bounded per-recipe work into unbounded verifier work.
+const MAX_TOTAL_SOURCE_REFERENCES: usize = 128;
+const MAX_TOTAL_MATCH_CHECKS: usize = 4096;
+const MAX_TOTAL_RECIPE_PROCESSING_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FIXTURE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_JSON_DEPTH: usize = 64;
+const MAX_ENTRIES: usize = 32;
+const MAX_SIGNED_PAYLOAD_BYTES: usize = 1024 * 1024;
+const MAX_VERIFICATION_SOURCES: usize = 32;
+const MAX_PROOF_SOURCES_PER_ENTRY: usize = 32;
+const MAX_MATCHES_PER_SOURCE: usize = 1024;
+const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CUMULATIVE_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ProvenanceReport {
@@ -82,12 +98,59 @@ struct VerificationInput {
     signer: Vec<u8>,
     commitment_key: Option<Vec<u8>>,
     sources: BTreeMap<String, String>,
-    binary: Option<Vec<u8>>,
-    ruleset: Option<Vec<u8>>,
+    binary: ArtifactInput,
+    ruleset: ArtifactInput,
+}
+
+#[derive(Clone)]
+enum ArtifactInput {
+    Absent,
+    Bytes(Vec<u8>),
+    Invalid,
+}
+
+struct FixtureWorkBudget {
+    source_references: usize,
+    match_checks: usize,
+    recipe_processing: ProcessingBudget,
+}
+
+impl Default for FixtureWorkBudget {
+    fn default() -> Self {
+        Self {
+            source_references: 0,
+            match_checks: 0,
+            recipe_processing: ProcessingBudget::new(MAX_TOTAL_RECIPE_PROCESSING_BYTES),
+        }
+    }
+}
+
+impl FixtureWorkBudget {
+    fn charge_source_reference(&mut self) -> std::result::Result<(), String> {
+        self.source_references = self
+            .source_references
+            .checked_add(1)
+            .filter(|count| *count <= MAX_TOTAL_SOURCE_REFERENCES)
+            .ok_or_else(|| "proof: exceeds total source reference limit".to_string())?;
+        Ok(())
+    }
+
+    fn charge_match_check(&mut self) -> std::result::Result<(), String> {
+        self.match_checks = self
+            .match_checks
+            .checked_add(1)
+            .filter(|count| *count <= MAX_TOTAL_MATCH_CHECKS)
+            .ok_or_else(|| "proof: exceeds total match check limit".to_string())?;
+        Ok(())
+    }
 }
 
 pub fn run_provenance(path: &Path) -> Result<ProvenanceReport> {
-    let bytes = fs::read(path)
+    let file = fs::File::open(path)
+        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_FIXTURE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
     Ok(
         verify_fixture_bytes(&bytes)
@@ -98,9 +161,15 @@ pub fn run_provenance(path: &Path) -> Result<ProvenanceReport> {
 /// Verify one fixture. Errors here indicate a malformed fixture envelope;
 /// authenticated proof failures are represented in [`ProvenanceReport`].
 pub fn verify_fixture_bytes(bytes: &[u8]) -> std::result::Result<ProvenanceReport, String> {
+    if bytes.len() > MAX_FIXTURE_BYTES {
+        return Err("fixture: exceeds byte limit".into());
+    }
     let text = std::str::from_utf8(bytes).map_err(|_| "fixture: invalid UTF-8".to_string())?;
     reject_duplicate_keys(text).map_err(|err| err.to_string())?;
     let value: Value = serde_json::from_str(text).map_err(|err| format!("fixture JSON: {err}"))?;
+    if json_depth(&value) > MAX_JSON_DEPTH {
+        return Err("fixture: exceeds JSON depth limit".into());
+    }
     let object = object(&value, "fixture")?;
     exact_keys(object, &["format", "entries", "verification"], "fixture")?;
     if string(object, "format", "fixture")? != FIXTURE_FORMAT {
@@ -108,7 +177,7 @@ pub fn verify_fixture_bytes(bytes: &[u8]) -> std::result::Result<ProvenanceRepor
     }
     let verification = parse_verification(required(object, "verification", "fixture")?)?;
     let entries = array(required(object, "entries", "fixture")?, "fixture.entries")?;
-    if entries.is_empty() {
+    if entries.is_empty() || entries.len() > MAX_ENTRIES {
         return Err("fixture.entries: must not be empty".into());
     }
     let parsed = entries
@@ -123,11 +192,17 @@ fn parse_entry(value: &Value, index: usize) -> std::result::Result<SignedEntry, 
     let entry = object(value, &format!("fixture.entries[{index}]"))?;
     exact_keys(entry, &["signed_b64", "signature"], "fixture entry")?;
     let bytes = decode_b64(string(entry, "signed_b64", "fixture entry")?, "signed_b64")?;
+    if bytes.len() > MAX_SIGNED_PAYLOAD_BYTES {
+        return Err("signed_b64: exceeds byte limit".into());
+    }
     let signed_text =
         std::str::from_utf8(&bytes).map_err(|_| "signed_b64: invalid UTF-8".to_string())?;
     reject_duplicate_keys(signed_text).map_err(|err| format!("signed JSON: {err}"))?;
     let signed: Value =
         serde_json::from_str(signed_text).map_err(|err| format!("signed JSON: {err}"))?;
+    if json_depth(&signed) > MAX_JSON_DEPTH {
+        return Err("signed JSON: exceeds depth limit".into());
+    }
     exact_keys(
         object(&signed, "signed JSON")?,
         &["chain_seq", "chain_prev_hash", "critical_features", "proof"],
@@ -175,7 +250,11 @@ fn parse_verification(value: &Value) -> std::result::Result<VerificationInput, S
         Some(value) => array(value, "verification.sources")?,
         None => &[],
     };
+    if sources_array.len() > MAX_VERIFICATION_SOURCES {
+        return Err("verification.sources: exceeds limit".into());
+    }
     let mut sources = BTreeMap::new();
+    let mut source_bytes = 0_usize;
     for (index, source) in sources_array.iter().enumerate() {
         let source = object(source, "verification source")?;
         exact_keys(source, &["source_id", "bytes_b64"], "verification source")?;
@@ -184,6 +263,13 @@ fn parse_verification(value: &Value) -> std::result::Result<VerificationInput, S
             string(source, "bytes_b64", "verification source")?,
             "source bytes",
         )?;
+        if bytes.len() > MAX_SOURCE_BYTES {
+            return Err("source bytes: exceeds byte limit".into());
+        }
+        source_bytes = source_bytes
+            .checked_add(bytes.len())
+            .filter(|total| *total <= MAX_CUMULATIVE_SOURCE_BYTES)
+            .ok_or_else(|| "verification.sources: exceeds cumulative byte limit".to_string())?;
         let text =
             String::from_utf8(bytes).map_err(|_| "source bytes: invalid UTF-8".to_string())?;
         if sources.insert(id.clone(), text).is_some() {
@@ -196,13 +282,20 @@ fn parse_verification(value: &Value) -> std::result::Result<VerificationInput, S
         signer,
         commitment_key,
         sources,
-        binary: optional_string(verification, "binary_b64")?
-            .map(|v| decode_b64(v, "binary_b64"))
-            .transpose()?,
-        ruleset: optional_string(verification, "ruleset_b64")?
-            .map(|v| decode_b64(v, "ruleset_b64"))
-            .transpose()?,
+        binary: parse_artifact(verification, "binary_b64"),
+        ruleset: parse_artifact(verification, "ruleset_b64"),
     })
+}
+
+fn parse_artifact(verification: &Map<String, Value>, key: &str) -> ArtifactInput {
+    match optional_string(verification, key) {
+        Ok(None) => ArtifactInput::Absent,
+        Ok(Some(value)) => match decode_b64(value, key) {
+            Ok(bytes) if bytes.len() <= MAX_ARTIFACT_BYTES => ArtifactInput::Bytes(bytes),
+            Ok(_) | Err(_) => ArtifactInput::Invalid,
+        },
+        Err(_) => ArtifactInput::Invalid,
+    }
 }
 
 fn verify_entries(
@@ -244,6 +337,7 @@ fn verify_entries(
     report.chain = "verified".into();
 
     let mut proofs = Vec::with_capacity(entries.len());
+    let mut work_budget = FixtureWorkBudget::default();
     for entry in entries {
         let signed = match signed_object(entry) {
             Ok(signed) => signed,
@@ -263,7 +357,7 @@ fn verify_entries(
                 return Ok(report);
             }
         };
-        let proof = match parse_proof(proof_value) {
+        let proof = match parse_proof(proof_value, &mut work_budget) {
             Ok(proof) => proof,
             Err(_) => {
                 report.fail("proof_structure");
@@ -301,6 +395,7 @@ fn verify_entries(
             .any(|source| !input.sources.contains_key(&source.source_id))
     });
 
+    let mut views: HashMap<(String, Vec<u8>), String> = HashMap::new();
     for proof in &proofs {
         for source in &proof.sources {
             let Some(raw) = input.sources.get(&source.source_id) else {
@@ -310,13 +405,35 @@ fn verify_entries(
                 report.overall = "incomplete".into();
                 continue;
             };
-            let view = match apply_recipe(raw, &source.recipe) {
-                Ok(view) => view,
+            let recipe_encoding = match recipe_bytes(&source.recipe) {
+                Ok(bytes) => bytes,
                 Err(_) => {
-                    report.view_reproduction = "mismatch".into();
-                    report.fail("view_reproduction");
+                    report.fail("proof_structure");
                     return Ok(report);
                 }
+            };
+            let cache_key = (source.source_id.clone(), recipe_encoding.clone());
+            let view = if let Some(view) = views.get(&cache_key) {
+                view.clone()
+            } else {
+                let view = match source
+                    .recipe
+                    .executor
+                    .apply_with_budget(raw, &mut work_budget.recipe_processing)
+                {
+                    Ok(view) => view,
+                    Err(_) => {
+                        if work_budget.recipe_processing.exhausted() {
+                            report.fail("proof_structure");
+                            return Ok(report);
+                        }
+                        report.view_reproduction = "mismatch".into();
+                        report.fail("view_reproduction");
+                        return Ok(report);
+                    }
+                };
+                views.insert(cache_key, view.clone());
+                view
             };
             report.view_reproduction = "reproduced".into();
             if validate_intervals(
@@ -350,7 +467,7 @@ fn verify_entries(
                     u64_bytes(source.source_ordinal),
                     source.source_id.as_bytes().to_vec(),
                     source.recipe.profile.as_bytes().to_vec(),
-                    recipe_bytes(&source.recipe)?,
+                    recipe_encoding.clone(),
                     view.as_bytes().to_vec(),
                 ],
             );
@@ -376,7 +493,7 @@ fn verify_entries(
                     &[
                         source.source_id.as_bytes().to_vec(),
                         source.recipe.profile.as_bytes().to_vec(),
-                        recipe_bytes(&source.recipe)?,
+                        recipe_encoding.clone(),
                         source.view_commitment.as_bytes().to_vec(),
                         u64_bytes(matched.ordinal),
                         u64_bytes(matched.start),
@@ -480,7 +597,10 @@ struct Operation {
     minimum_length: u32,
 }
 
-fn parse_proof(value: &Value) -> std::result::Result<Proof, String> {
+fn parse_proof(
+    value: &Value,
+    work_budget: &mut FixtureWorkBudget,
+) -> std::result::Result<Proof, String> {
     let proof = object(value, "proof")?;
     exact_keys(
         proof,
@@ -512,7 +632,12 @@ fn parse_proof(value: &Value) -> std::result::Result<Proof, String> {
     let mut prior_source = None;
     let mut ids = HashSet::new();
     let mut sources = Vec::new();
-    for value in array(required(proof, "sources", "proof")?, "proof.sources")? {
+    let source_values = array(required(proof, "sources", "proof")?, "proof.sources")?;
+    if source_values.len() > MAX_PROOF_SOURCES_PER_ENTRY {
+        return Err("proof.sources: exceeds limit".into());
+    }
+    for value in source_values {
+        work_budget.charge_source_reference()?;
         let source = object(value, "proof source")?;
         exact_keys(
             source,
@@ -539,7 +664,12 @@ fn parse_proof(value: &Value) -> std::result::Result<Proof, String> {
         valid_digest(&commitment, "hmac-sha256:")?;
         let mut matches = Vec::new();
         let mut prior_match_ordinal = None;
-        for value in array(required(source, "matches", "proof source")?, "matches")? {
+        let match_values = array(required(source, "matches", "proof source")?, "matches")?;
+        if match_values.len() > MAX_MATCHES_PER_SOURCE {
+            return Err("matches: exceeds limit".into());
+        }
+        for value in match_values {
+            work_budget.charge_match_check()?;
             let matched = object(value, "match")?;
             exact_keys(
                 matched,
@@ -683,19 +813,20 @@ enum Stage {
 }
 fn verify_artifacts(proof: &Proof, input: &VerificationInput) -> Stage {
     let checks = [
-        (proof.producer.binary.as_deref(), input.binary.as_deref()),
-        (proof.producer.ruleset.as_deref(), input.ruleset.as_deref()),
+        (proof.producer.binary.as_deref(), &input.binary),
+        (proof.producer.ruleset.as_deref(), &input.ruleset),
     ];
     let mut attested = false;
     let mut unchecked = false;
     let mut mismatch = false;
-    for (claim, bytes) in checks {
+    for (claim, artifact) in checks {
         if let Some(claim) = claim {
             attested = true;
-            match bytes {
-                Some(bytes) if claim == format!("sha256:{}", sha256_hex(bytes)) => {}
-                Some(_) => mismatch = true,
-                None => unchecked = true,
+            match artifact {
+                ArtifactInput::Bytes(bytes) if claim == format!("sha256:{}", sha256_hex(bytes)) => {
+                }
+                ArtifactInput::Bytes(_) | ArtifactInput::Invalid => mismatch = true,
+                ArtifactInput::Absent => unchecked = true,
             }
         }
     }
@@ -708,10 +839,6 @@ fn verify_artifacts(proof: &Proof, input: &VerificationInput) -> Stage {
     } else {
         Stage::Matched
     }
-}
-
-fn apply_recipe(input: &str, recipe: &Recipe) -> std::result::Result<String, String> {
-    recipe.executor.apply(input)
 }
 
 fn recipe_bytes(recipe: &Recipe) -> std::result::Result<Vec<u8>, String> {
@@ -835,6 +962,27 @@ fn byte_boundary(view: &str, offset: u64) -> bool {
     offset == 0
         || offset == view.len() as u64
         || (offset < view.len() as u64 && view.as_bytes()[offset as usize] & 0xc0 != 0x80)
+}
+
+fn json_depth(value: &Value) -> usize {
+    let mut maximum = 0;
+    let mut stack = vec![(value, 0_usize)];
+    while let Some((value, depth)) = stack.pop() {
+        match value {
+            Value::Array(values) => {
+                let next = depth + 1;
+                maximum = maximum.max(next);
+                stack.extend(values.iter().map(|value| (value, next)));
+            }
+            Value::Object(values) => {
+                let next = depth + 1;
+                maximum = maximum.max(next);
+                stack.extend(values.values().map(|value| (value, next)));
+            }
+            _ => {}
+        }
+    }
+    maximum
 }
 
 fn object<'a>(
@@ -985,6 +1133,67 @@ mod tests {
         view_b64: String,
         matches: Vec<[u64; 2]>,
         want_error: String,
+    }
+
+    fn fixture_source(ordinal: u64, id: &str, matches: Vec<Value>) -> Value {
+        json!({
+            "source_ordinal": ordinal,
+            "source_id": id,
+            "recipe": {
+                "transform_profile_digest": PROFILE_DIGEST,
+                "operations": [{"kind": "identity"}],
+            },
+            "view_commitment": format!("hmac-sha256:{}", "0".repeat(64)),
+            "matches": matches,
+        })
+    }
+
+    fn signed_fixture(signing: &SigningKey, proofs: Vec<Value>, sources: Vec<Value>) -> Vec<u8> {
+        let mut previous = GENESIS.to_string();
+        let mut entries = Vec::with_capacity(proofs.len());
+        for (sequence, proof) in proofs.into_iter().enumerate() {
+            let signed = json!({
+                "chain_seq": sequence,
+                "chain_prev_hash": previous,
+                "critical_features": ["evidence_provenance"],
+                "proof": proof,
+            });
+            let bytes = serde_json::to_vec(&signed).unwrap();
+            previous = format!("sha256:{}", sha256_hex(&bytes));
+            entries.push(json!({
+                "signed_b64": STANDARD.encode(&bytes),
+                "signature": format!("ed25519:{}", hex::encode(signing.sign(&bytes).to_bytes())),
+            }));
+        }
+        serde_json::to_vec(&json!({
+            "format": FIXTURE_FORMAT,
+            "entries": entries,
+            "verification": {
+                "signer_public_key_hex": hex::encode(signing.verifying_key().to_bytes()),
+                "sources": sources,
+            },
+        }))
+        .unwrap()
+    }
+
+    fn proof_with_sources(sources: Vec<Value>) -> Value {
+        json!({
+            "version": PROOF_VERSION,
+            "transform_profile_digest": PROFILE_DIGEST,
+            "producer": {},
+            "sources": sources,
+        })
+    }
+
+    fn assert_proof_structure_rejection(fixture: Vec<u8>) {
+        let report = verify_fixture_bytes(&fixture).unwrap();
+        assert_eq!(report.failure_stage.as_deref(), Some("proof_structure"));
+        assert_eq!(report.overall, "invalid");
+    }
+
+    fn proof_structure_report(fixture: Vec<u8>) -> ProvenanceReport {
+        verify_fixture_bytes(&fixture)
+            .unwrap_or_else(|_| ProvenanceReport::proof_structure_failure())
     }
 
     #[test]
@@ -1311,5 +1520,228 @@ mod tests {
             "required field",
         )
         .is_err());
+    }
+
+    #[test]
+    fn fixture_wide_source_reference_limit_fails_closed() {
+        let signing = SigningKey::from_bytes(&[12; 32]);
+        let sources: Vec<Value> = (0..32)
+            .map(|ordinal| fixture_source(ordinal, &format!("source-{ordinal}"), vec![]))
+            .collect();
+        let proofs = (0..5)
+            .map(|_| proof_with_sources(sources.clone()))
+            .collect();
+        assert_proof_structure_rejection(signed_fixture(&signing, proofs, vec![]));
+    }
+
+    #[test]
+    fn fixture_wide_match_check_limit_fails_closed() {
+        let signing = SigningKey::from_bytes(&[13; 32]);
+        let matches: Vec<Value> = (0..1024)
+            .map(|ordinal| {
+                json!({
+                    "match_ordinal": ordinal,
+                    "byte_start": ordinal * 2,
+                    "byte_end": ordinal * 2 + 1,
+                    "match_class": "credential",
+                    "match_commitment": format!("hmac-sha256:{}", "0".repeat(64)),
+                })
+            })
+            .collect();
+        let sources = (0..5)
+            .map(|ordinal| fixture_source(ordinal, &format!("source-{ordinal}"), matches.clone()))
+            .collect();
+        let proofs = vec![proof_with_sources(sources)];
+        assert_proof_structure_rejection(signed_fixture(&signing, proofs, vec![]));
+    }
+
+    #[test]
+    fn fixture_wide_recipe_processing_byte_limit_fails_closed() {
+        let signing = SigningKey::from_bytes(&[14; 32]);
+        let input = "a".repeat(MAX_TOTAL_RECIPE_PROCESSING_BYTES / 64);
+        let proof_sources = (0..8)
+            .map(|ordinal| {
+                let mut source = fixture_source(ordinal, &format!("source-{ordinal}"), vec![]);
+                source["recipe"]["operations"] = json!(vec![json!({"kind": "identity"}); 9]);
+                source
+            })
+            .collect();
+        let sources = (0..8)
+            .map(|ordinal| {
+                json!({
+                    "source_id": format!("source-{ordinal}"),
+                    "bytes_b64": STANDARD.encode(&input),
+                })
+            })
+            .collect();
+        assert_proof_structure_rejection(signed_fixture(
+            &signing,
+            vec![proof_with_sources(proof_sources)],
+            sources,
+        ));
+    }
+
+    #[test]
+    fn identical_source_recipe_pairs_reuse_the_view() {
+        let signing = SigningKey::from_bytes(&[15; 32]);
+        let input = "a".repeat(MAX_TOTAL_RECIPE_PROCESSING_BYTES / 64);
+        // Without cache reuse, these 14 identical pairs would charge 70 MiB
+        // and fail the 64 MiB fixture-wide budget.
+        let mut source = fixture_source(0, "source", vec![]);
+        source["recipe"]["operations"] = json!(vec![json!({"kind": "identity"}); 5]);
+        let proofs = (0..14)
+            .map(|_| proof_with_sources(vec![source.clone()]))
+            .collect();
+        let sources = vec![json!({
+            "source_id": "source",
+            "bytes_b64": STANDARD.encode(input),
+        })];
+        let report = verify_fixture_bytes(&signed_fixture(&signing, proofs, sources)).unwrap();
+        assert_eq!(report.view_reproduction, "reproduced");
+        assert_eq!(report.overall, "incomplete");
+    }
+
+    #[test]
+    fn outer_fixture_limits_fail_closed() {
+        let signing = SigningKey::from_bytes(&[16; 32]);
+        let oversized = vec![b' '; MAX_FIXTURE_BYTES + 1];
+        assert_eq!(
+            proof_structure_report(oversized).failure_stage.as_deref(),
+            Some("proof_structure")
+        );
+
+        let mut nested = "null".to_string();
+        for _ in 0..=MAX_JSON_DEPTH {
+            nested = format!("[{nested}]");
+        }
+        assert_eq!(
+            proof_structure_report(nested.into_bytes())
+                .failure_stage
+                .as_deref(),
+            Some("proof_structure")
+        );
+
+        let entries = (0..=MAX_ENTRIES)
+            .map(|_| proof_with_sources(vec![]))
+            .collect();
+        assert_eq!(
+            proof_structure_report(signed_fixture(&signing, entries, vec![]))
+                .failure_stage
+                .as_deref(),
+            Some("proof_structure")
+        );
+
+        let oversized_signed = json!({
+            "format": FIXTURE_FORMAT,
+            "entries": [{
+                "signed_b64": STANDARD.encode(vec![b'a'; MAX_SIGNED_PAYLOAD_BYTES + 1]),
+                "signature": format!("ed25519:{}", "0".repeat(128)),
+            }],
+            "verification": {"signer_public_key_hex": hex::encode([0_u8; 32])},
+        });
+        assert_eq!(
+            proof_structure_report(serde_json::to_vec(&oversized_signed).unwrap())
+                .failure_stage
+                .as_deref(),
+            Some("proof_structure")
+        );
+
+        let verification_sources = (0..=MAX_VERIFICATION_SOURCES)
+            .map(|ordinal| json!({"source_id": format!("source-{ordinal}"), "bytes_b64": ""}))
+            .collect();
+        assert_eq!(
+            proof_structure_report(signed_fixture(
+                &signing,
+                vec![proof_with_sources(vec![])],
+                verification_sources,
+            ))
+            .failure_stage
+            .as_deref(),
+            Some("proof_structure")
+        );
+
+        let source_b64 = STANDARD.encode(vec![b'a'; MAX_SOURCE_BYTES]);
+        let cumulative_sources: Vec<Value> = (0..9)
+            .map(|ordinal| {
+                json!({
+                    "source_id": format!("source-{ordinal}"),
+                    "bytes_b64": source_b64,
+                })
+            })
+            .collect();
+        let verification = json!({
+            "signer_public_key_hex": hex::encode([0_u8; 32]),
+            "sources": cumulative_sources,
+        });
+        assert!(parse_verification(&verification).is_err());
+    }
+
+    #[test]
+    fn nested_and_decoded_input_limits_preserve_failure_stages() {
+        let signing = SigningKey::from_bytes(&[17; 32]);
+        let proof_sources = (0..=MAX_PROOF_SOURCES_PER_ENTRY)
+            .map(|ordinal| fixture_source(ordinal as u64, &format!("source-{ordinal}"), vec![]))
+            .collect();
+        assert_eq!(
+            proof_structure_report(signed_fixture(
+                &signing,
+                vec![proof_with_sources(proof_sources)],
+                vec![],
+            ))
+            .failure_stage
+            .as_deref(),
+            Some("proof_structure")
+        );
+
+        let matches = (0..=MAX_MATCHES_PER_SOURCE)
+            .map(|ordinal| {
+                json!({
+                    "match_ordinal": ordinal,
+                    "byte_start": ordinal * 2,
+                    "byte_end": ordinal * 2 + 1,
+                    "match_class": "credential",
+                    "match_commitment": format!("hmac-sha256:{}", "0".repeat(64)),
+                })
+            })
+            .collect();
+        assert_eq!(
+            proof_structure_report(signed_fixture(
+                &signing,
+                vec![proof_with_sources(vec![fixture_source(
+                    0, "source", matches
+                )])],
+                vec![],
+            ))
+            .failure_stage
+            .as_deref(),
+            Some("proof_structure")
+        );
+
+        let oversized_source = vec![b'a'; MAX_SOURCE_BYTES + 1];
+        assert_eq!(
+            proof_structure_report(signed_fixture(
+                &signing,
+                vec![proof_with_sources(vec![])],
+                vec![
+                    json!({"source_id": "source", "bytes_b64": STANDARD.encode(oversized_source)})
+                ],
+            ))
+            .failure_stage
+            .as_deref(),
+            Some("proof_structure")
+        );
+
+        let proof = json!({
+            "version": PROOF_VERSION,
+            "transform_profile_digest": PROFILE_DIGEST,
+            "producer": {"binary_digest": format!("sha256:{}", "0".repeat(64))},
+            "sources": [],
+        });
+        let mut fixture: Value =
+            serde_json::from_slice(&signed_fixture(&signing, vec![proof], vec![])).unwrap();
+        fixture["verification"]["binary_b64"] =
+            Value::String(STANDARD.encode(vec![b'a'; MAX_ARTIFACT_BYTES + 1]));
+        let report = verify_fixture_bytes(&serde_json::to_vec(&fixture).unwrap()).unwrap();
+        assert_eq!(report.failure_stage.as_deref(), Some("artifacts"));
     }
 }

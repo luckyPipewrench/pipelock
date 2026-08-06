@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -99,6 +100,144 @@ func TestVerifyProvenanceFixtureChecksSignatureBeforeSemantics(t *testing.T) {
 	if report.Signature != "invalid" || report.Chain != "not_checked" || report.FailureStage != "signature" {
 		t.Fatalf("report = %+v", report)
 	}
+}
+
+func TestVerifyProvenanceFixtureRejectsGlobalWorkLimits(t *testing.T) {
+	t.Run("source references", func(t *testing.T) {
+		fixture := validProvenanceFixture(t, "view", 0, 4)
+		resignProvenanceFixture(t, &fixture, func(signed *signedProvenanceProof) {
+			source := signed.Proof.Sources[0]
+			signed.Proof.Sources = make([]contractreceipt.ProvenanceSource, provenanceMaxSources)
+			for index := range signed.Proof.Sources {
+				source.SourceOrdinal = uint64(index + 1)
+				source.SourceID = fmt.Sprintf("source-%d", index)
+				signed.Proof.Sources[index] = source
+			}
+		})
+		for len(fixture.Entries)*provenanceMaxSources <= provenanceMaxSourceReferences {
+			appendProvenanceTestEntry(t, &fixture)
+		}
+		assertProvenanceProofStructureRejection(t, fixture)
+	})
+
+	t.Run("match checks", func(t *testing.T) {
+		fixture := validProvenanceFixture(t, "view", 0, 4)
+		resignProvenanceFixture(t, &fixture, func(signed *signedProvenanceProof) {
+			source := signed.Proof.Sources[0]
+			match := source.Matches[0]
+			source.Matches = make([]contractreceipt.ProvenanceMatch, provenanceMaxMatchesPerSource)
+			for index := range source.Matches {
+				match.MatchOrdinal = uint64(index + 1)
+				match.ByteStart = uint64(index)
+				match.ByteEnd = uint64(index + 1)
+				source.Matches[index] = match
+			}
+			signed.Proof.Sources = make([]contractreceipt.ProvenanceSource, provenanceMaxMatchChecks/provenanceMaxMatchesPerSource+1)
+			for index := range signed.Proof.Sources {
+				source.SourceOrdinal = uint64(index + 1)
+				source.SourceID = fmt.Sprintf("source-%d", index)
+				signed.Proof.Sources[index] = source
+			}
+		})
+		assertProvenanceProofStructureRejection(t, fixture)
+	})
+
+	t.Run("recipe processing bytes", func(t *testing.T) {
+		fixture := validProvenanceFixture(t, strings.Repeat("a", 1<<20), 0, 1)
+		const sourceCount = 8
+		sourceInput := fixture.Verification.Sources[0]
+		fixture.Verification.Sources = make([]provenanceFixtureSource, sourceCount)
+		for index := range fixture.Verification.Sources {
+			sourceInput.SourceID = fmt.Sprintf("source-%d", index)
+			fixture.Verification.Sources[index] = sourceInput
+		}
+		resignProvenanceFixture(t, &fixture, func(signed *signedProvenanceProof) {
+			source := signed.Proof.Sources[0]
+			source.Recipe.Operations = []normalize.Operation{
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+				{Kind: normalize.OperationIdentity},
+			}
+			signed.Proof.Sources = make([]contractreceipt.ProvenanceSource, sourceCount)
+			for index := range signed.Proof.Sources {
+				source.SourceOrdinal = uint64(index + 1)
+				source.SourceID = fmt.Sprintf("source-%d", index)
+				signed.Proof.Sources[index] = source
+			}
+		})
+		assertProvenanceProofStructureRejection(t, fixture)
+	})
+}
+
+func TestVerifyProvenanceFixtureReusesViewsForCommitments(t *testing.T) {
+	input := strings.Repeat("a", 1<<20)
+	fixture := validProvenanceFixture(t, input, 0, 1)
+	resignProvenanceFixture(t, &fixture, func(signed *signedProvenanceProof) {
+		source := &signed.Proof.Sources[0]
+		source.Recipe.Operations = make([]normalize.Operation, 8)
+		for index := range source.Recipe.Operations {
+			source.Recipe.Operations[index] = normalize.Operation{Kind: normalize.OperationIdentity}
+		}
+		key := sha256.Sum256([]byte("pipelock-provenance-fixture-commitment-key-v1"))
+		viewCommitment, err := contractreceipt.CommitView(key[:], *source, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.ViewCommitment = viewCommitment
+		matchCommitment, err := contractreceipt.CommitMatch(key[:], source.SourceID, source.Recipe, viewCommitment, source.Matches[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.Matches[0].MatchCommitment = matchCommitment
+	})
+	// Without cross-entry view caching, nine eight-MiB recipe executions would
+	// exceed the 64 MiB fixture budget. The identical source/recipe pair runs once.
+	for len(fixture.Entries) < 9 {
+		appendProvenanceTestEntry(t, &fixture)
+	}
+
+	report := verifyProvenanceFixture(fixture)
+	if report.Overall != "incomplete" || report.ViewReproduction != "reproduced" || report.MatchCommitment != "opened" {
+		t.Fatalf("report = %+v, want cached successful verification", report)
+	}
+}
+
+func assertProvenanceProofStructureRejection(t *testing.T, fixture provenanceFixture) {
+	t.Helper()
+	report := verifyProvenanceFixture(fixture)
+	if report.Overall != "invalid" || report.FailureStage != "proof_structure" {
+		t.Fatalf("report = %+v, want invalid at proof_structure", report)
+	}
+}
+
+func appendProvenanceTestEntry(t *testing.T, fixture *provenanceFixture) {
+	t.Helper()
+	previous, err := base64.StdEncoding.DecodeString(fixture.Entries[len(fixture.Entries)-1].SignedB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var signed signedProvenanceProof
+	if err := json.Unmarshal(previous, &signed); err != nil {
+		t.Fatal(err)
+	}
+	previousHash := sha256.Sum256(previous)
+	signed.ChainSeq++
+	signed.ChainPrevHash = "sha256:" + hex.EncodeToString(previousHash[:])
+	raw, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := provenanceFixtureSigningKey()
+	fixture.Entries = append(fixture.Entries, provenanceFixtureEntry{
+		SignedB64: base64.StdEncoding.EncodeToString(raw),
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(privateKey, raw)),
+	})
 }
 
 func validProvenanceFixture(t *testing.T, input string, start, end uint64) provenanceFixture {

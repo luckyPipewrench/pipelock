@@ -467,14 +467,20 @@ class Recipe:
         if "decode_padding" in op and not isinstance(op["decode_padding"], bool):
             raise ProvenanceError("decode_padding must be boolean")
 
-    def apply_bytes(self, input_bytes: bytes) -> str:
+    def apply_bytes(
+        self,
+        input_bytes: bytes,
+        charge_fixture_work: Callable[[int], None] | None = None,
+    ) -> str:
         try:
             value = input_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ProvenanceError("recipe input: invalid UTF-8") from exc
-        return self.apply(value)
+        return self.apply(value, charge_fixture_work)
 
-    def apply(self, value: str) -> str:
+    def apply(
+        self, value: str, charge_fixture_work: Callable[[int], None] | None = None
+    ) -> str:
         self.validate()
         if len(value.encode()) > MAX_INPUT_BYTES:
             raise ProvenanceError("recipe input: exceeds profile byte limit")
@@ -483,6 +489,8 @@ class Recipe:
         def charge(processed: str) -> None:
             nonlocal remaining
             size = len(processed.encode())
+            if charge_fixture_work is not None:
+                charge_fixture_work(size)
             if size > remaining:
                 raise ProvenanceError("recipe: exceeds cumulative processing budget")
             remaining -= size

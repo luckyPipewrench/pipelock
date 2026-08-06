@@ -16,6 +16,7 @@ import hmac
 import json
 import struct
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -31,6 +32,21 @@ GENESIS = "genesis"
 TRUST_ROOTS = "fixture supplied; self-attested; not authenticated"
 _MAX_INPUT = 2 << 20
 _MAX_OUTPUT = 1 << 20
+# Fixture-wide ceilings prevent a multi-entry chain from multiplying otherwise
+# bounded per-recipe work.
+_MAX_FIXTURE_SOURCE_REFERENCES = 128
+_MAX_FIXTURE_MATCH_CHECKS = 4096
+_MAX_FIXTURE_RECIPE_PROCESSING_BYTES = 64 << 20
+MAX_FIXTURE_BYTES = 16 << 20
+_MAX_FIXTURE_JSON_DEPTH = 64
+_MAX_FIXTURE_ENTRIES = 32
+_MAX_VERIFICATION_SOURCES = 32
+_MAX_PROOF_SOURCES = 32
+_MAX_MATCHES_PER_SOURCE = 1024
+_MAX_SIGNED_BYTES = 1 << 20
+_MAX_SOURCE_BYTES = 2 << 20
+_MAX_TOTAL_SOURCE_BYTES = 16 << 20
+_MAX_ARTIFACT_BYTES = 2 << 20
 _OP_BYTES = {
     "identity": 1,
     "url_component": 2,
@@ -69,6 +85,24 @@ _COMPONENT_BYTES = {
     "query_value": 5,
     "raw_query": 6,
 }
+
+
+@dataclass
+class _FixtureWork:
+    source_references: int = 0
+    match_checks: int = 0
+    recipe_processing_bytes: int = 0
+
+    def charge_recipe_processing(self, size: int) -> None:
+        if size > _MAX_FIXTURE_RECIPE_PROCESSING_BYTES - self.recipe_processing_bytes:
+            raise _FixtureWorkLimitError
+        self.recipe_processing_bytes += size
+
+
+class _FixtureWorkLimitError(Exception):
+    """Raised before a fixture-wide transform operation would exceed its budget."""
+
+
 _PROOF_KEYS = {"version", "transform_profile_digest", "sources", "producer"}
 _SOURCE_KEYS = {"source_ordinal", "source_id", "recipe", "view_commitment", "matches"}
 _MATCH_KEYS = {
@@ -148,13 +182,18 @@ def _utf8(value: str, label: str) -> bytes:
         raise ProvenanceError("proof_structure", f"{label} is not UTF-8") from exc
 
 
-def _b64(value: Any, label: str) -> bytes:
+def _b64(value: Any, label: str, max_bytes: int | None = None) -> bytes:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a base64 string")
+    if max_bytes is not None and len(value) > ((max_bytes + 2) // 3) * 4:
+        raise ValueError(f"{label} exceeds byte limit")
     try:
-        return base64.b64decode(value, validate=True)
+        decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"{label} is not base64") from exc
+    if max_bytes is not None and len(decoded) > max_bytes:
+        raise ValueError(f"{label} exceeds byte limit")
+    return decoded
 
 
 def _hex(value: Any, label: str, size: int | None = None) -> bytes:
@@ -269,10 +308,13 @@ def _recipe_bytes(recipe: dict[str, Any]) -> bytes:
     return result
 
 
-def _apply_recipe(recipe: dict[str, Any], source: bytes) -> bytes:
+def _apply_recipe(
+    recipe: dict[str, Any], source: bytes, work: _FixtureWork | None = None
+) -> bytes:
     transformed = _transform_recipe(recipe)
     try:
-        return transformed.apply_bytes(source).encode()
+        charge = None if work is None else work.charge_recipe_processing
+        return transformed.apply_bytes(source, charge).encode()
     except (TypeError, ValueError) as exc:
         raise ProvenanceError("view_reproduction", str(exc)) from exc
 
@@ -360,8 +402,8 @@ def _invalid(stage: str, current: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_signed(signed: bytes) -> dict[str, Any]:
     try:
-        value = parse_json_strict(signed)
-    except (UnicodeDecodeError, StrictParseError) as exc:
+        value = parse_json_strict(signed, _MAX_FIXTURE_JSON_DEPTH)
+    except (UnicodeDecodeError, StrictParseError, RecursionError) as exc:
         raise ProvenanceError(
             "proof_structure", "signed bytes are not strict UTF-8 JSON"
         ) from exc
@@ -378,14 +420,16 @@ def _verify_entry(
     public_key: bytes,
     commitment_key: bytes | None,
     sources: dict[str, bytes],
-    binary: bytes | None,
-    ruleset: bytes | None,
+    binary_b64: str | None,
+    ruleset_b64: str | None,
     previous_signed: bytes | None,
+    work: _FixtureWork,
+    reconstructed_views: dict[tuple[str, bytes], bytes],
 ) -> dict[str, Any]:
     result = _output()
     try:
         entry = _exact_dict(entry, {"signed_b64", "signature"}, "entry")
-        signed = _b64(entry["signed_b64"], "signed_b64")
+        signed = _b64(entry["signed_b64"], "signed_b64", _MAX_SIGNED_BYTES)
         signed_object = _parse_signed(signed)
         signature = _require_str(entry["signature"], "signature")
         if not signature.startswith("ed25519:"):
@@ -427,11 +471,18 @@ def _verify_entry(
         source_list = proof["sources"]
         if not isinstance(source_list, list):
             raise ProvenanceError("proof_structure", "proof sources must be an array")
+        if len(source_list) > _MAX_PROOF_SOURCES:
+            raise ProvenanceError("proof_structure", "proof exceeds source limit")
         parsed_sources = []
         source_ids: set[str] = set()
         ordinals: set[int] = set()
         last_ordinal = -1
         for source in source_list:
+            work.source_references += 1
+            if work.source_references > _MAX_FIXTURE_SOURCE_REFERENCES:
+                raise ProvenanceError(
+                    "proof_structure", "fixture exceeds source-reference limit"
+                )
             source = _fields(source, _SOURCE_KEYS - {"matches"}, {"matches"}, "source")
             source_id = _require_str(source["source_id"], "source id")
             _utf8(source_id, "source id")
@@ -460,6 +511,15 @@ def _verify_entry(
             matches = source.get("matches", [])
             if not isinstance(matches, list):
                 raise ProvenanceError("proof_structure", "matches must be an array")
+            if len(matches) > _MAX_MATCHES_PER_SOURCE:
+                raise ProvenanceError(
+                    "proof_structure", "proof source exceeds match limit"
+                )
+            work.match_checks += len(matches)
+            if work.match_checks > _MAX_FIXTURE_MATCH_CHECKS:
+                raise ProvenanceError(
+                    "proof_structure", "fixture exceeds match-check limit"
+                )
             parsed_matches = []
             previous_ordinal = -1
             for match in matches:
@@ -511,6 +571,19 @@ def _verify_entry(
             _digest(ruleset_digest, "ruleset digest")
     except ProvenanceError:
         return _invalid("proof_structure", result)
+    try:
+        binary = (
+            None
+            if binary_digest is None or binary_b64 is None
+            else _b64(binary_b64, "binary", _MAX_ARTIFACT_BYTES)
+        )
+        ruleset = (
+            None
+            if ruleset_digest is None or ruleset_b64 is None
+            else _b64(ruleset_b64, "ruleset", _MAX_ARTIFACT_BYTES)
+        )
+    except ValueError:
+        return _invalid("artifacts", result)
     binary_mismatch = (
         binary_digest is not None
         and binary is not None
@@ -546,7 +619,13 @@ def _verify_entry(
         if source is None:
             continue
         try:
-            view = _apply_recipe(recipe, source)
+            key = (source_id, recipe_bytes)
+            view = reconstructed_views.get(key)
+            if view is None:
+                view = _apply_recipe(recipe, source, work)
+                reconstructed_views[key] = view
+        except _FixtureWorkLimitError:
+            return _invalid("proof_structure", result)
         except (ProvenanceError, UnicodeError):
             return _invalid("view_reproduction", result)
         result["view_reproduction"] = "reproduced"
@@ -610,7 +689,9 @@ def _verify_entry(
 def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
     """Verify the fixture wrapper and return one aggregate staged report."""
     try:
-        wrapper = parse_json_strict(data)
+        if len(data) > MAX_FIXTURE_BYTES:
+            raise ValueError("fixture exceeds byte limit")
+        wrapper = parse_json_strict(data, _MAX_FIXTURE_JSON_DEPTH)
         wrapper = _exact_dict(wrapper, {"format", "entries", "verification"}, "fixture")
         if _require_str(wrapper["format"], "format") != FIXTURE_FORMAT:
             raise ValueError("unsupported fixture format")
@@ -628,6 +709,10 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
             or not isinstance(source_inputs, list)
         ):
             raise ValueError("entries and sources must be arrays")
+        if len(entries) > _MAX_FIXTURE_ENTRIES:
+            raise ValueError("fixture exceeds entry limit")
+        if len(source_inputs) > _MAX_VERIFICATION_SOURCES:
+            raise ValueError("verification exceeds source limit")
         public_key = _hex(
             verification["signer_public_key_hex"], "signer public key", 32
         )
@@ -639,23 +724,30 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
         if commitment_key is not None and len(commitment_key) < 32:
             raise ValueError("commitment key is too short")
         sources: dict[str, bytes] = {}
+        total_source_bytes = 0
         for item in source_inputs:
             item = _exact_dict(item, {"source_id", "bytes_b64"}, "source input")
             source_id = _require_str(item["source_id"], "source input id")
             if not source_id or source_id in sources:
                 raise ValueError("source input IDs must be unique")
-            sources[source_id] = _b64(item["bytes_b64"], "source bytes")
-        binary = (
-            None
-            if verification.get("binary_b64") is None
-            else _b64(verification["binary_b64"], "binary")
-        )
-        ruleset = (
-            None
-            if verification.get("ruleset_b64") is None
-            else _b64(verification["ruleset_b64"], "ruleset")
-        )
-    except (StrictParseError, UnicodeDecodeError, ValueError, ProvenanceError):
+            source_bytes = _b64(item["bytes_b64"], "source bytes", _MAX_SOURCE_BYTES)
+            total_source_bytes += len(source_bytes)
+            if total_source_bytes > _MAX_TOTAL_SOURCE_BYTES:
+                raise ValueError("verification sources exceed byte limit")
+            sources[source_id] = source_bytes
+        binary_b64 = verification.get("binary_b64")
+        ruleset_b64 = verification.get("ruleset_b64")
+        if binary_b64 is not None and not isinstance(binary_b64, str):
+            raise ValueError("binary must be base64")
+        if ruleset_b64 is not None and not isinstance(ruleset_b64, str):
+            raise ValueError("ruleset must be base64")
+    except (
+        StrictParseError,
+        UnicodeDecodeError,
+        RecursionError,
+        ValueError,
+        ProvenanceError,
+    ):
         return _invalid("proof_structure", _output()), 1
     aggregate = _output(
         signature="verified", chain="verified", artifacts="not_attested"
@@ -664,6 +756,8 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
     all_located = True
     all_commitments_opened = True
     previous_signed = None
+    work = _FixtureWork()
+    reconstructed_views: dict[tuple[str, bytes], bytes] = {}
     for index, entry in enumerate(entries):
         result = _verify_entry(
             entry,
@@ -671,9 +765,11 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
             public_key,
             commitment_key,
             sources,
-            binary,
-            ruleset,
+            binary_b64,
+            ruleset_b64,
             previous_signed,
+            work,
+            reconstructed_views,
         )
         if result["overall"] == "invalid":
             return result, 1
@@ -691,7 +787,7 @@ def verify_fixture(data: bytes) -> tuple[dict[str, Any], int]:
         )
         try:
             previous_signed = (
-                _b64(entry["signed_b64"], "signed_b64")
+                _b64(entry["signed_b64"], "signed_b64", _MAX_SIGNED_BYTES)
                 if isinstance(entry, dict)
                 else None
             )

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -15,6 +16,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 )
+
+// ErrEvidenceProvenanceProcessingBudget reports that a recipe exhausted the
+// caller-provided or profile-wide cumulative processing allowance.
+var ErrEvidenceProvenanceProcessingBudget = errors.New("recipe: exceeds cumulative processing budget")
 
 // Recipe is the fixture-only, typed transform language used by the evidence
 // provenance specification. TransformProfileDigest pins all table and limit
@@ -209,6 +214,26 @@ func (r Recipe) Validate() error {
 // offsets. The transform-profile document supplies the bound and invalid-input
 // policy for interoperable implementations.
 func (r Recipe) Apply(input string) (string, error) {
+	value, _, err := r.ApplyWithinBudget(input, evidenceProvenanceMaxTotalBytes)
+	return value, err
+}
+
+// ApplyWithinBudget executes a recipe while charging every operation and
+// internal pass against limit before the work runs. It returns the bytes
+// charged so a fixture verifier can enforce one budget across many recipes.
+func (r Recipe) ApplyWithinBudget(input string, limit int) (string, int, error) {
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > evidenceProvenanceMaxTotalBytes {
+		limit = evidenceProvenanceMaxTotalBytes
+	}
+	budget := processingBudget(limit)
+	value, err := r.apply(input, &budget)
+	return value, limit - int(budget), err
+}
+
+func (r Recipe) apply(input string, budget *processingBudget) (string, error) {
 	if !utf8.ValidString(input) {
 		return "", fmt.Errorf("recipe input: invalid UTF-8")
 	}
@@ -223,7 +248,6 @@ func (r Recipe) Apply(input string) (string, error) {
 		return "", fmt.Errorf("recipe input: exceeds profile byte limit")
 	}
 	value := input
-	budget := processingBudget(evidenceProvenanceMaxTotalBytes)
 	for index, op := range r.Operations {
 		// Charge the operation's input against the cumulative budget BEFORE
 		// running it, so an expensive operation cannot spend work it has not
@@ -231,7 +255,7 @@ func (r Recipe) Apply(input string) (string, error) {
 		if err := budget.charge(value); err != nil {
 			return "", err
 		}
-		value, err = op.apply(value, &budget)
+		value, err = op.apply(value, budget)
 		if err != nil {
 			return "", fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
 		}
@@ -252,7 +276,7 @@ type processingBudget int
 
 func (budget *processingBudget) charge(value string) error {
 	if len(value) > int(*budget) {
-		return fmt.Errorf("recipe: exceeds cumulative processing budget")
+		return ErrEvidenceProvenanceProcessingBudget
 	}
 	*budget -= processingBudget(len(value))
 	return nil

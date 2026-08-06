@@ -47,9 +47,14 @@ def _fixture(
     overflow_occurrence: bool = False,
     duplicate_chain_seq: bool = False,
     match_class: str = "credential",
+    match_count: int = 1,
+    source: bytes | None = None,
+    operations_by_entry: list[list[dict[str, object]]] | None = None,
+    include_commitment_key: bool = True,
 ) -> bytes:
     key = bytes(range(32))
-    source = "A💩B".encode()
+    if source is None:
+        source = "A💩B".encode() if match_count == 1 else b"ab" * match_count
     operations = [{"kind": "identity"}]
     if overflow_occurrence:
         operations = [
@@ -84,35 +89,41 @@ def _fixture(
             source,
         ],
     )
-    match_commitment = _commit(
-        key,
-        "pipelock/evidence-provenance/match/v1",
-        [
-            b"source",
-            PROFILE_DIGEST.encode(),
-            recipe_bytes,
-            view_commitment.encode(),
-            (1).to_bytes(8, "big"),
-            span[0].to_bytes(8, "big"),
-            span[1].to_bytes(8, "big"),
-            match_class.encode(),
-        ],
-    )
+    matches = []
+    for match_index in range(match_count):
+        start, end = (
+            span if match_count == 1 else (match_index * 2, match_index * 2 + 1)
+        )
+        match_commitment = _commit(
+            key,
+            "pipelock/evidence-provenance/match/v1",
+            [
+                b"source",
+                PROFILE_DIGEST.encode(),
+                recipe_bytes,
+                view_commitment.encode(),
+                (match_index + 1).to_bytes(8, "big"),
+                start.to_bytes(8, "big"),
+                end.to_bytes(8, "big"),
+                match_class.encode(),
+            ],
+        )
+        matches.append(
+            {
+                "match_ordinal": match_index + 1,
+                "byte_start": start,
+                "byte_end": end,
+                "match_class": match_class,
+                "match_commitment": match_commitment,
+            }
+        )
     proof_sources = [
         {
             "source_ordinal": 1,
             "source_id": "source",
             "recipe": recipe,
             "view_commitment": view_commitment,
-            "matches": [
-                {
-                    "match_ordinal": 1,
-                    "byte_start": span[0],
-                    "byte_end": span[1],
-                    "match_class": match_class,
-                    "match_commitment": match_commitment,
-                }
-            ],
+            "matches": matches,
         }
     ]
     source_inputs = [
@@ -167,7 +178,22 @@ def _fixture(
                 "critical_features": ["evidence_provenance"]
                 if critical is None
                 else critical,
-                "proof": proof,
+                "proof": (
+                    proof
+                    if operations_by_entry is None
+                    else {
+                        **proof,
+                        "sources": [
+                            {
+                                **proof_sources[0],
+                                "recipe": {
+                                    "transform_profile_digest": PROFILE_DIGEST,
+                                    "operations": operations_by_entry[sequence],
+                                },
+                            }
+                        ],
+                    }
+                ),
             },
             separators=(",", ":"),
         ).encode()
@@ -184,9 +210,10 @@ def _fixture(
         previous = signed
     verification = {
         "signer_public_key_hex": public.hex(),
-        "commitment_key_hex": key.hex(),
         "sources": source_inputs,
     }
+    if include_commitment_key:
+        verification["commitment_key_hex"] = key.hex()
     if verification_artifacts is not None:
         verification.update(verification_artifacts)
     return json.dumps(
@@ -197,6 +224,89 @@ def _fixture(
         },
         separators=(",", ":"),
     ).encode()
+
+
+def _fixture_with_proofs(
+    proofs: list[dict[str, object]], source_values: dict[str, bytes]
+) -> bytes:
+    """Build a signed legal-shape chain for fixture-wide work-cap tests."""
+    private = Ed25519PrivateKey.generate()
+    previous: bytes | None = None
+    entries = []
+    for sequence, proof in enumerate(proofs):
+        signed = json.dumps(
+            {
+                "chain_seq": sequence,
+                "chain_prev_hash": (
+                    "genesis"
+                    if previous is None
+                    else "sha256:" + hashlib.sha256(previous).hexdigest()
+                ),
+                "critical_features": ["evidence_provenance"],
+                "proof": proof,
+            },
+            separators=(",", ":"),
+        ).encode()
+        entries.append(
+            {
+                "signed_b64": base64.b64encode(signed).decode(),
+                "signature": "ed25519:" + private.sign(signed).hex(),
+            }
+        )
+        previous = signed
+    return json.dumps(
+        {
+            "format": FIXTURE_FORMAT,
+            "entries": entries,
+            "verification": {
+                "signer_public_key_hex": private.public_key().public_bytes_raw().hex(),
+                "sources": [
+                    {
+                        "source_id": source_id,
+                        "bytes_b64": base64.b64encode(value).decode(),
+                    }
+                    for source_id, value in source_values.items()
+                ],
+            },
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def _proof_sources(
+    count: int, matches: int = 0, operations: list[dict[str, object]] | None = None
+) -> list[dict[str, object]]:
+    return [
+        {
+            "source_ordinal": index + 1,
+            "source_id": f"source-{index + 1}",
+            "recipe": {
+                "transform_profile_digest": PROFILE_DIGEST,
+                "operations": operations or [{"kind": "identity"}],
+            },
+            "view_commitment": "hmac-sha256:" + "0" * 64,
+            "matches": [
+                {
+                    "match_ordinal": match + 1,
+                    "byte_start": match * 2,
+                    "byte_end": match * 2 + 1,
+                    "match_class": "credential",
+                    "match_commitment": "hmac-sha256:" + "0" * 64,
+                }
+                for match in range(matches)
+            ],
+        }
+        for index in range(count)
+    ]
+
+
+def _proof(sources: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "version": "pipelock-evidence-provenance-proof/v1",
+        "transform_profile_digest": PROFILE_DIGEST,
+        "producer": {},
+        "sources": sources,
+    }
 
 
 def test_fixture_verifies_available_stages_but_is_incomplete_without_source_commitment() -> (
@@ -267,6 +377,73 @@ def test_fixture_checks_every_chain_entry() -> None:
     assert exit_code == 1
     assert output["signature"] == "verified"
     assert output["failure_stage"] == "chain"
+
+
+def test_fixture_rejects_total_source_references_across_entries() -> None:
+    source_values = {f"source-{index + 1}": b"x" for index in range(32)}
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs(
+            [_proof(_proof_sources(32)) for _ in range(5)], source_values
+        )
+    )
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+
+
+def test_fixture_rejects_total_match_checks_across_entries() -> None:
+    source_values = {f"source-{index + 1}": b"ab" * 1024 for index in range(5)}
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs([_proof(_proof_sources(5, 1024))], source_values)
+    )
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+
+
+def test_fixture_rejects_total_recipe_processing_bytes_across_entries() -> None:
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs(
+            [_proof(_proof_sources(8, operations=[{"kind": "identity"}] * 9))],
+            {f"source-{index + 1}": b"x" * (1 << 20) for index in range(8)},
+        )
+    )
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+
+
+def test_fixture_reuses_a_reconstructed_view_for_identical_source_and_recipe() -> None:
+    identities = [{"kind": "identity"}] * 16
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs(
+            [_proof(_proof_sources(4, operations=identities)) for _ in range(32)],
+            {f"source-{index + 1}": b"x" * (1 << 20) for index in range(4)},
+        )
+    )
+    assert exit_code == 0
+    assert output["view_reproduction"] == "reproduced"
+
+
+def test_fixture_rejects_outer_envelope_limits_and_depth() -> None:
+    output, exit_code = verify_fixture(b" " * ((16 << 20) + 1))
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+    output, exit_code = verify_fixture(_fixture(chain_length=33))
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+    output, exit_code = verify_fixture(b"[" * 65 + b"0" + b"]" * 65)
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs([_proof(_proof_sources(33))], {})
+    )
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
+    output, exit_code = verify_fixture(
+        _fixture_with_proofs(
+            [_proof(_proof_sources(1))], {"source-1": b"x" * ((2 << 20) + 1)}
+        )
+    )
+    assert exit_code == 1
+    assert output["failure_stage"] == "proof_structure"
 
 
 def test_artifact_mismatch_outranks_an_unavailable_sibling_attestation() -> None:

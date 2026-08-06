@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 const (
@@ -39,6 +40,9 @@ const (
 	provenanceMaxTotalSourceBytes = 16 << 20
 	provenanceMaxArtifactBytes    = 2 << 20
 	provenanceMaxMatchesPerSource = 1024
+	provenanceMaxSourceReferences = 128
+	provenanceMaxMatchChecks      = 4096
+	provenanceMaxRecipeWorkBytes  = 64 << 20
 )
 
 var errProvenanceBase64Limit = errors.New("base64 value exceeds decoded byte limit")
@@ -237,6 +241,9 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 			return rejectProvenance(report, "proof_structure")
 		}
 	}
+	if !provenanceWorkWithinLimits(signedProofs) {
+		return rejectProvenance(report, "proof_structure")
+	}
 
 	artifactStatus, artifactErr := verifyProvenanceArtifacts(signedProofs, fixture.Verification)
 	report.Artifacts = artifactStatus
@@ -261,17 +268,36 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 			}
 		}
 	}
-	for _, signed := range signedProofs {
-		for _, source := range signed.Proof.Sources {
+	views := make([][]string, len(signedProofs))
+	viewCache := make(map[string]string)
+	remainingRecipeWork := provenanceMaxRecipeWorkBytes
+	for signedIndex, signed := range signedProofs {
+		views[signedIndex] = make([]string, len(signed.Proof.Sources))
+		for sourceIndex, source := range signed.Proof.Sources {
 			input, ok := sources[source.SourceID]
 			if !ok {
 				continue
 			}
-			view, err := source.Recipe.Apply(input)
+			recipeBytes, err := contractreceipt.CanonicalRecipeBytes(source.Recipe)
 			if err != nil {
-				report.ViewReproduction = "mismatch"
-				return rejectProvenance(report, "view_reproduction")
+				return rejectProvenance(report, "proof_structure")
 			}
+			cacheKey := source.SourceID + "\x00" + string(recipeBytes)
+			view, cached := viewCache[cacheKey]
+			if !cached {
+				var charged int
+				view, charged, err = source.Recipe.ApplyWithinBudget(input, remainingRecipeWork)
+				remainingRecipeWork -= charged
+				if err != nil {
+					if errors.Is(err, normalize.ErrEvidenceProvenanceProcessingBudget) {
+						return rejectProvenance(report, "proof_structure")
+					}
+					report.ViewReproduction = "mismatch"
+					return rejectProvenance(report, "view_reproduction")
+				}
+				viewCache[cacheKey] = view
+			}
+			views[signedIndex][sourceIndex] = view
 			report.ViewReproduction = "reproduced"
 			if err := validateProvenanceLocations(view, source.Matches); err != nil {
 				if sourceUnavailable {
@@ -300,17 +326,13 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 	if err != nil || len(commitmentKey) < sha256.Size {
 		return rejectProvenance(report, "proof_structure")
 	}
-	for _, signed := range signedProofs {
-		for _, source := range signed.Proof.Sources {
-			input, ok := sources[source.SourceID]
+	for signedIndex, signed := range signedProofs {
+		for sourceIndex, source := range signed.Proof.Sources {
+			_, ok := sources[source.SourceID]
 			if !ok {
 				continue
 			}
-			view, err := source.Recipe.Apply(input)
-			if err != nil {
-				report.ViewReproduction = "mismatch"
-				return rejectProvenance(report, "view_reproduction")
-			}
+			view := views[signedIndex][sourceIndex]
 			viewCommitment, err := contractreceipt.CommitView(commitmentKey, source, view)
 			if err != nil || !hmacStringEqual(viewCommitment, source.ViewCommitment) {
 				report.MatchCommitment = "mismatch"
@@ -330,6 +352,24 @@ func verifyProvenanceFixture(fixture provenanceFixture) provenanceStageReport {
 	}
 	report.MatchCommitment = "opened"
 	return report
+}
+
+func provenanceWorkWithinLimits(proofs []signedProvenanceProof) bool {
+	sourceReferences := 0
+	matchChecks := 0
+	for _, signed := range proofs {
+		for _, source := range signed.Proof.Sources {
+			sourceReferences++
+			if sourceReferences > provenanceMaxSourceReferences {
+				return false
+			}
+			matchChecks += len(source.Matches)
+			if matchChecks > provenanceMaxMatchChecks {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func verifyProvenanceArtifacts(proofs []signedProvenanceProof, inputs provenanceVerificationInputs) (string, error) {

@@ -89,7 +89,7 @@ def _reject_json_constant(name: str) -> Any:
     )
 
 
-def parse_json_strict(data: bytes | str) -> Any:
+def parse_json_strict(data: bytes | str, max_depth: int | None = None) -> Any:
     """Parse ``data`` rejecting duplicate keys and trailing non-whitespace tokens.
 
     Numbers are preserved as :class:`IJSONNumber`. Trailing whitespace is allowed
@@ -119,6 +119,19 @@ def parse_json_strict(data: bytes | str) -> Any:
     remainder = text[end:]
     if remainder.strip() != "":
         raise StrictParseError(f"trailing tokens after JSON value: {remainder[:32]!r}")
+    if max_depth is not None:
+
+        def check_depth(current: Any, depth: int = 0) -> None:
+            if depth > max_depth:
+                raise StrictParseError("JSON depth limit exceeded")
+            if isinstance(current, dict):
+                for child in current.values():
+                    check_depth(child, depth + 1)
+            elif isinstance(current, list):
+                for child in current:
+                    check_depth(child, depth + 1)
+
+        check_depth(value)
     return value
 
 

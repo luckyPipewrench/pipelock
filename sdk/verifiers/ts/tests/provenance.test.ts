@@ -27,7 +27,7 @@ const corpusDir = resolve(
 
 async function fixture(
   signed: Record<string, unknown>[],
-  options: { corruptSignature?: boolean; source?: string } = {},
+  options: { corruptSignature?: boolean; source?: string; sources?: Record<string, string> } = {},
 ): Promise<string> {
   const signer = await ed25519.getPublicKeyAsync(seed);
   const entries = await Promise.all(
@@ -46,12 +46,9 @@ async function fixture(
     entries,
     verification: {
       signer_public_key_hex: Buffer.from(signer).toString("hex"),
-      sources: [
-        {
-          source_id: "source-1",
-          bytes_b64: Buffer.from(options.source ?? "A💩B").toString("base64"),
-        },
-      ],
+      sources: Object.entries(options.sources ?? { "source-1": options.source ?? "A💩B" }).map(
+        ([source_id, source]) => ({ source_id, bytes_b64: Buffer.from(source).toString("base64") }),
+      ),
     },
   });
 }
@@ -77,6 +74,56 @@ function signed(overrides: Record<string, unknown> = {}): Record<string, unknown
     },
     ...overrides,
   };
+}
+
+function signedChain(
+  length: number,
+  operationsByEntry?: Array<Array<Record<string, unknown>>>,
+): Record<string, unknown>[] {
+  const entries: Record<string, unknown>[] = [];
+  let previous = "genesis";
+  for (let index = 0; index < length; index++) {
+    const entry = signed({ chain_seq: index, chain_prev_hash: previous });
+    if (operationsByEntry !== undefined) {
+      const source = (entry.proof as { sources: Array<Record<string, unknown>> }).sources[0]!;
+      source.recipe = {
+        transform_profile_digest: profileDigest,
+        operations: operationsByEntry[index]!,
+      };
+    }
+    entries.push(entry);
+    previous = `sha256:${createHash("sha256").update(JSON.stringify(entry)).digest("hex")}`;
+  }
+  return entries;
+}
+
+function chainWithProofs(proofs: Array<Record<string, unknown>>): Record<string, unknown>[] {
+  let previous = "genesis";
+  return proofs.map((proof, index) => {
+    const entry = signed({ chain_seq: index, chain_prev_hash: previous, proof });
+    previous = `sha256:${createHash("sha256").update(JSON.stringify(entry)).digest("hex")}`;
+    return entry;
+  });
+}
+
+function proofSources(
+  count: number,
+  matches = 0,
+  operations: Record<string, unknown>[] = [{ kind: "identity" }],
+) {
+  return Array.from({ length: count }, (_, index) => ({
+    source_ordinal: index + 1,
+    source_id: `source-${index + 1}`,
+    recipe: { transform_profile_digest: profileDigest, operations },
+    view_commitment: commitment,
+    matches: Array.from({ length: matches }, (_, match) => ({
+      match_ordinal: match + 1,
+      byte_start: match * 2,
+      byte_end: match * 2 + 1,
+      match_class: "credential",
+      match_commitment: commitment,
+    })),
+  }));
 }
 
 test("provenance fixture reports all available stages and remains incomplete without source commitments", async () => {
@@ -195,6 +242,109 @@ test("provenance fixture marks a signed chain break invalid", async () => {
   );
   assert.equal(report.failure_stage, "chain");
   assert.equal(report.chain, "invalid");
+});
+
+test("provenance fixture rejects total source references across entries", async () => {
+  const sources = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`source-${i + 1}`, "x"]),
+  );
+  const proofs = Array.from({ length: 5 }, () => ({
+    version: "pipelock-evidence-provenance-proof/v1",
+    transform_profile_digest: profileDigest,
+    producer: {},
+    sources: proofSources(32),
+  }));
+  const report = await verifyProvenanceFixture(await fixture(chainWithProofs(proofs), { sources }));
+  assert.equal(report.failure_stage, "proof_structure");
+});
+
+test("provenance fixture rejects total match checks across entries", async () => {
+  const proof = signed();
+  (proof.proof as { sources: Array<Record<string, unknown>> }).sources = proofSources(5, 1024);
+  const sources = Object.fromEntries(
+    Array.from({ length: 5 }, (_, i) => [`source-${i + 1}`, "ab".repeat(1024)]),
+  );
+  const report = await verifyProvenanceFixture(await fixture([proof], { sources }));
+  assert.equal(report.failure_stage, "proof_structure");
+});
+
+test("provenance fixture rejects total recipe processing bytes across entries", async () => {
+  const report = await verifyProvenanceFixture(
+    await fixture(
+      [
+        signed({
+          proof: {
+            version: "pipelock-evidence-provenance-proof/v1",
+            transform_profile_digest: profileDigest,
+            producer: {},
+            sources: proofSources(
+              8,
+              0,
+              Array.from({ length: 9 }, () => ({ kind: "identity" })),
+            ),
+          },
+        }),
+      ],
+      {
+        sources: Object.fromEntries(
+          Array.from({ length: 8 }, (_, i) => [`source-${i + 1}`, "x".repeat(1 << 20)]),
+        ),
+      },
+    ),
+  );
+  assert.equal(report.failure_stage, "proof_structure");
+});
+
+test("provenance fixture reuses a reconstructed view for identical source and recipe", async () => {
+  const identities = Array.from({ length: 16 }, () => ({ kind: "identity" }));
+  const report = await verifyProvenanceFixture(
+    await fixture(
+      chainWithProofs(
+        Array.from({ length: 32 }, () => ({
+          version: "pipelock-evidence-provenance-proof/v1",
+          transform_profile_digest: profileDigest,
+          producer: {},
+          sources: proofSources(4, 0, identities),
+        })),
+      ),
+      {
+        sources: Object.fromEntries(
+          Array.from({ length: 4 }, (_, i) => [`source-${i + 1}`, "x".repeat(1 << 20)]),
+        ),
+      },
+    ),
+  );
+  assert.equal(report.overall, "incomplete");
+  assert.equal(report.view_reproduction, "reproduced");
+});
+
+test("provenance fixture rejects outer envelope size, counts, decoded payloads, and depth", async () => {
+  const oversized = " ".repeat((16 << 20) + 1);
+  assert.equal((await verifyProvenanceFixture(oversized)).failure_stage, "proof_structure");
+  const tooManyEntries = await fixture(signedChain(33));
+  assert.equal((await verifyProvenanceFixture(tooManyEntries)).failure_stage, "proof_structure");
+  const tooManySources = await fixture([signed()], {
+    sources: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`source-${i}`, "x"])),
+  });
+  assert.equal((await verifyProvenanceFixture(tooManySources)).failure_stage, "proof_structure");
+  const tooManyProofSources = signed();
+  (tooManyProofSources.proof as { sources: Array<Record<string, unknown>> }).sources =
+    proofSources(33);
+  assert.equal(
+    (await verifyProvenanceFixture(await fixture([tooManyProofSources], { sources: {} })))
+      .failure_stage,
+    "proof_structure",
+  );
+  const tooLargeSource = await fixture([signed()], { source: "x".repeat((2 << 20) + 1) });
+  assert.equal((await verifyProvenanceFixture(tooLargeSource)).failure_stage, "proof_structure");
+  const deep = "[".repeat(65) + "0" + "]".repeat(65);
+  assert.equal((await verifyProvenanceFixture(deep)).failure_stage, "proof_structure");
+  const value = JSON.parse(await fixture([signed()])) as { entries: Array<Record<string, string>> };
+  value.entries[0]!.signed_b64 = Buffer.alloc((1 << 20) + 1).toString("base64");
+  assert.equal(
+    (await verifyProvenanceFixture(JSON.stringify(value))).failure_stage,
+    "proof_structure",
+  );
 });
 
 test("provenance fixture reports an absent source as incomplete", async () => {

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -535,4 +536,32 @@ func TestRecipeExecutionBudgetsRejectUnboundedWork(t *testing.T) {
 			t.Fatal("recipe exhausting the cumulative budget was accepted")
 		}
 	})
+}
+
+func TestRecipeApplyWithinBudgetDistinguishesBudgetFailures(t *testing.T) {
+	t.Parallel()
+	recipe := Recipe{
+		TransformProfileDigest: EvidenceProvenanceProfileV1Digest,
+		Operations:             []Operation{{Kind: OperationIdentity}, {Kind: OperationIdentity}},
+	}
+	value, charged, err := recipe.ApplyWithinBudget("value", 10)
+	if err != nil || value != "value" || charged != 10 {
+		t.Fatalf("successful shared budget = value %q, charged %d, err %v", value, charged, err)
+	}
+
+	_, charged, err = recipe.ApplyWithinBudget("value", -1)
+	if !errors.Is(err, ErrEvidenceProvenanceFixtureProcessingBudget) || errors.Is(err, ErrEvidenceProvenanceProcessingBudget) || charged != 0 {
+		t.Fatalf("fixture budget error = charged %d, err %v", charged, err)
+	}
+
+	large := strings.Repeat("a", 1<<20)
+	operations := make([]Operation, 17)
+	for index := range operations {
+		operations[index] = Operation{Kind: OperationIdentity}
+	}
+	perRecipe := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: operations}
+	_, charged, err = perRecipe.ApplyWithinBudget(large, evidenceProvenanceMaxTotalBytes)
+	if !errors.Is(err, ErrEvidenceProvenanceProcessingBudget) || errors.Is(err, ErrEvidenceProvenanceFixtureProcessingBudget) || charged != evidenceProvenanceMaxTotalBytes {
+		t.Fatalf("per-recipe budget error = charged %d, err %v", charged, err)
+	}
 }

@@ -432,8 +432,16 @@ func TestRecipeBytesEncodesAllOperationFields(t *testing.T) {
 		{Kind: normalize.OperationBase32Decode},
 		{Kind: normalize.OperationBase64Decode, DecodePadding: true},
 	}}
-	if _, err := recipeBytes(recipe); err != nil {
+	want, err := recipeBytes(recipe)
+	if err != nil {
 		t.Fatal(err)
+	}
+	got, err := CanonicalRecipeBytes(recipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatal("exported canonical recipe encoding differs from commitment encoding")
 	}
 	if _, err := recipeBytes(normalize.Recipe{}); err == nil || !strings.Contains(err.Error(), "missing transform profile digest") {
 		t.Fatalf("invalid recipe error = %v", err)

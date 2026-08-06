@@ -360,36 +360,48 @@ func TestEvidenceHealthUnmeasuredStatsNullAndDynamicGaugesAbsent(t *testing.T) {
 }
 
 func TestEvidenceCollectorSeparatesLocalOperationFromDeprecatedAEL(t *testing.T) {
-	m := New()
-	m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {
-		return EvidenceHealthStats{CurrentAEL: "AEL-4", LocalRecorderOperational: true, ChainHeadSeq: 9}, true
-	})
-	reg := prometheus.NewPedanticRegistry()
-	if err := reg.Register(m.evidenceCollector); err != nil {
-		t.Fatalf("register evidence collector: %v", err)
+	tests := []struct {
+		name        string
+		operational bool
+		wantGauge   float64
+	}{
+		{name: "operational", operational: true, wantGauge: 1},
+		{name: "not operational", operational: false, wantGauge: 0},
 	}
-	fams, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	foundCurrent := false
-	foundOperational := false
-	for _, fam := range fams {
-		switch fam.GetName() {
-		case "pipelock_evidence_current_ael":
-			foundCurrent = true
-			if v := fam.GetMetric()[0].GetGauge().GetValue(); !math.IsNaN(v) {
-				t.Fatalf("exported pipelock_evidence_current_ael = %v, want NaN", v)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New()
+			m.SetEvidenceHealthFunc(func() (EvidenceHealthStats, bool) {
+				return EvidenceHealthStats{CurrentAEL: "AEL-4", LocalRecorderOperational: tc.operational, ChainHeadSeq: 9}, true
+			})
+			reg := prometheus.NewPedanticRegistry()
+			if err := reg.Register(m.evidenceCollector); err != nil {
+				t.Fatalf("register evidence collector: %v", err)
 			}
-		case "pipelock_evidence_local_recorder_operational":
-			foundOperational = true
-			if v := fam.GetMetric()[0].GetGauge().GetValue(); v != 1 {
-				t.Fatalf("exported pipelock_evidence_local_recorder_operational = %v, want 1", v)
+			fams, err := reg.Gather()
+			if err != nil {
+				t.Fatalf("gather: %v", err)
 			}
-		}
-	}
-	if !foundCurrent || !foundOperational {
-		t.Fatalf("metric presence current_ael=%v local_recorder_operational=%v, want both", foundCurrent, foundOperational)
+			foundCurrent := false
+			foundOperational := false
+			for _, fam := range fams {
+				switch fam.GetName() {
+				case "pipelock_evidence_current_ael":
+					foundCurrent = true
+					if v := fam.GetMetric()[0].GetGauge().GetValue(); !math.IsNaN(v) {
+						t.Fatalf("exported pipelock_evidence_current_ael = %v, want NaN", v)
+					}
+				case "pipelock_evidence_local_recorder_operational":
+					foundOperational = true
+					if v := fam.GetMetric()[0].GetGauge().GetValue(); v != tc.wantGauge {
+						t.Fatalf("exported pipelock_evidence_local_recorder_operational = %v, want %v", v, tc.wantGauge)
+					}
+				}
+			}
+			if !foundCurrent || !foundOperational {
+				t.Fatalf("metric presence current_ael=%v local_recorder_operational=%v, want both", foundCurrent, foundOperational)
+			}
+		})
 	}
 }
 

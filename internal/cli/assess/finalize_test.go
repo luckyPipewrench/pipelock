@@ -1606,6 +1606,15 @@ func TestAssessFinalize_FreeSignatureSaveFailureClearsSignedClaim(t *testing.T) 
 	if summary.Signed {
 		t.Error("summary retained signed=true after detached signature save failed")
 	}
+
+	// The signer fields describe a signature that was never published. A
+	// rolled-back bundle that still names a key and a fingerprint claims
+	// provenance it does not have.
+	rolledBack := readTestManifest(t, runDir)
+	if rolledBack.SignerAgent != "" || rolledBack.SignerKeyFingerprint != "" {
+		t.Errorf("rolled-back manifest still names a signer: agent=%q fingerprint=%q",
+			rolledBack.SignerAgent, rolledBack.SignerKeyFingerprint)
+	}
 	html, readErr := os.ReadFile(filepath.Clean(filepath.Join(runDir, "summary.html")))
 	if readErr != nil {
 		t.Fatalf("reading summary.html: %v", readErr)

@@ -301,6 +301,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 			purgeAttestationArtifacts(cleanDir, artifacts)
 		}
 		assessment.Signed = false
+		// The signer fields describe a signature that no longer exists. Leaving
+		// them would let a rolled-back bundle name a key that never signed it.
+		manifest.SignerAgent = ""
+		manifest.SignerKeyFingerprint = ""
 		rewriteFinalizedArtifacts(cleanDir, &assessment, opts.HasAssess, artifacts)
 		manifest.Artifacts = artifacts
 		_ = writeManifest(manifestPath, &manifest)

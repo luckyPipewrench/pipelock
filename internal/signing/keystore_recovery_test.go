@@ -13,7 +13,7 @@ import (
 // transaction is only worth having if the NEXT run reads that state correctly,
 // so each case builds the residue by hand and asserts which pair survives.
 
-func writeAgentPair(t *testing.T, dir string, pub, priv []byte) {
+func seedAgentPair(t *testing.T, dir string, pub, priv []byte) {
 	t.Helper()
 	if err := os.MkdirAll(dir, dirPermission); err != nil {
 		t.Fatalf("creating %s: %v", dir, err)
@@ -43,7 +43,7 @@ func TestAgentKeyPairExists_RejectsMismatchedPair(t *testing.T) {
 	// the keystore must not report it as a usable identity.
 	_, privA := encodedPair(t)
 	pubB, _ := encodedPair(t)
-	writeAgentPair(t, ks.agentDir("mixed"), pubB, privA)
+	seedAgentPair(t, ks.agentDir("mixed"), pubB, privA)
 
 	if ks.agentKeyPairExists("mixed") {
 		t.Error("a mismatched key pair was reported as an existing identity")
@@ -53,7 +53,7 @@ func TestAgentKeyPairExists_RejectsMismatchedPair(t *testing.T) {
 func TestAgentKeyPairExists_AcceptsCoherentPair(t *testing.T) {
 	ks := NewKeystore(t.TempDir())
 	pub, priv := encodedPair(t)
-	writeAgentPair(t, ks.agentDir("coherent"), pub, priv)
+	seedAgentPair(t, ks.agentDir("coherent"), pub, priv)
 
 	if !ks.agentKeyPairExists("coherent") {
 		t.Error("a coherent key pair was not recognized")
@@ -63,7 +63,7 @@ func TestAgentKeyPairExists_AcceptsCoherentPair(t *testing.T) {
 func TestRecoverAgentTransaction_NoBackupIsNoop(t *testing.T) {
 	ks := NewKeystore(t.TempDir())
 	pub, priv := encodedPair(t)
-	writeAgentPair(t, ks.agentDir("agent"), pub, priv)
+	seedAgentPair(t, ks.agentDir("agent"), pub, priv)
 
 	if err := ks.recoverAgentTransaction("agent"); err != nil {
 		t.Fatalf("recoverAgentTransaction: %v", err)
@@ -80,8 +80,8 @@ func TestRecoverAgentTransaction_DropsBackupWhenActivePairIsComplete(t *testing.
 	// roll the operator back to a superseded key.
 	newPub, newPriv := encodedPair(t)
 	oldPub, oldPriv := encodedPair(t)
-	writeAgentPair(t, ks.agentDir("agent"), newPub, newPriv)
-	writeAgentPair(t, ks.agentBackupDir("agent"), oldPub, oldPriv)
+	seedAgentPair(t, ks.agentDir("agent"), newPub, newPriv)
+	seedAgentPair(t, ks.agentBackupDir("agent"), oldPub, oldPriv)
 
 	if err := ks.recoverAgentTransaction("agent"); err != nil {
 		t.Fatalf("recoverAgentTransaction: %v", err)
@@ -105,7 +105,7 @@ func TestRecoverAgentTransaction_RestoresBackupWhenActivePairIsIncomplete(t *tes
 	// partial pair. The backup is the last coherent identity and must come back,
 	// because the alternative is an operator who can no longer sign at all.
 	oldPub, oldPriv := encodedPair(t)
-	writeAgentPair(t, ks.agentBackupDir("agent"), oldPub, oldPriv)
+	seedAgentPair(t, ks.agentBackupDir("agent"), oldPub, oldPriv)
 
 	torn := ks.agentDir("agent")
 	if err := os.MkdirAll(torn, dirPermission); err != nil {
@@ -141,7 +141,7 @@ func TestGenerateAgent_RecoversInterruptedTransactionFirst(t *testing.T) {
 	// before deciding whether the agent already exists. Otherwise the torn
 	// directory reads as "no agent" and the prior identity is overwritten.
 	oldPub, oldPriv := encodedPair(t)
-	writeAgentPair(t, ks.agentBackupDir("agent"), oldPub, oldPriv)
+	seedAgentPair(t, ks.agentBackupDir("agent"), oldPub, oldPriv)
 	torn := ks.agentDir("agent")
 	if err := os.MkdirAll(torn, dirPermission); err != nil {
 		t.Fatalf("creating torn agent dir: %v", err)

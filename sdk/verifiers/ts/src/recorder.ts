@@ -44,6 +44,13 @@ export function readEntries(file: string): RecorderEntry[] {
       if (typeof entry.writer_instance_id !== "string" || entry.writer_instance_id === "") {
         throw new RuntimeError(`line ${i + 1}: v3 writer_instance_id required`);
       }
+    } else if (
+      (typeof entry.chain_kind === "string" && entry.chain_kind !== "") ||
+      (typeof entry.writer_instance_id === "string" && entry.writer_instance_id !== "")
+    ) {
+      throw new RuntimeError(
+        `line ${i + 1}: legacy entry cannot carry v3 recorder namespace fields`,
+      );
     }
     entries.push(entry);
   }

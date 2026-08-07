@@ -980,12 +980,12 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		}
 
 		// Reader support may lead writer support during a rolling upgrade. Never
-		// append the current writer format to a tail produced by another format:
-		// that transition would make the entire shard unverifiable. Refuse the
-		// write so an operator can preserve the existing evidence intact.
-		if last.Version != CurrentWriteEntryVersion {
+		// append the current writer format to a tail produced by a newer format:
+		// that downgrade would make the entire shard unverifiable. Older legacy
+		// tails remain appendable because VerifyChain accepts v1-to-v2 upgrades.
+		if last.Version > CurrentWriteEntryVersion {
 			return fmt.Errorf(
-				"evidence file %s: tail entry seq %d uses version %d, current writer uses version %d; refusing to mix recorder versions",
+				"evidence file %s: tail entry seq %d uses version %d, newer than current writer version %d; refusing to mix recorder versions",
 				candidate.base, last.Sequence, last.Version, CurrentWriteEntryVersion)
 		}
 

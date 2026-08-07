@@ -1385,11 +1385,19 @@ func (a AuditBatchEnvelope) ForksWith(other AuditBatchEnvelope) bool {
 	return a.PayloadSHA256 != other.PayloadSHA256 || a.Chain.SegmentTailHash != other.Chain.SegmentTailHash
 }
 
+// IsSupportedAuditEntryVersion reports whether audit transport accepts version.
+func IsSupportedAuditEntryVersion(version int) bool {
+	return version == 2 || recorder.EntryVersionHasNamespace(version)
+}
+
+// SupportedAuditEntryVersions returns the versions advertised to followers.
+func SupportedAuditEntryVersions() []int { return []int{2, 3} }
+
 func (c EvidenceChain) Validate(seqStart, seqEnd uint64) error {
-	if c.EntryVersion != 2 && c.EntryVersion != recorder.LatestEntryVersion {
+	if !IsSupportedAuditEntryVersion(c.EntryVersion) {
 		return fmt.Errorf("%w: entry_version=%d", ErrInvalidSequenceRange, c.EntryVersion)
 	}
-	if c.EntryVersion == recorder.LatestEntryVersion {
+	if recorder.EntryVersionHasNamespace(c.EntryVersion) {
 		if err := validateIdentifier("chain.chain_kind", c.ChainKind); err != nil {
 			return err
 		}

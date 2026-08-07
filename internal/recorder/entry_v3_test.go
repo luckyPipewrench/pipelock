@@ -237,6 +237,7 @@ func TestLegacyEntriesRejectV3NamespaceFields(t *testing.T) {
 	}
 }
 
+// Remove this rollout tripwire when the recorder advances its writer to v3.
 func TestRecorderStillWritesV2DuringReaderFirstRollout(t *testing.T) {
 	if recorder.CurrentWriteEntryVersion != 2 {
 		t.Fatalf("CurrentWriteEntryVersion = %d, want 2 during reader-first rollout", recorder.CurrentWriteEntryVersion)

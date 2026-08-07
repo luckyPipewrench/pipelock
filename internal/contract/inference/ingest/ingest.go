@@ -87,9 +87,9 @@ func newStreamState(opts StreamOptions) streamState {
 		allowedVersions:  make(map[int]bool),
 	}
 	if len(opts.AllowSchemaVersion) == 0 {
-		state.allowedVersions[1] = true
-		state.allowedVersions[2] = true
-		state.allowedVersions[recorder.LatestEntryVersion] = true
+		for _, version := range recorder.AcceptedEntryVersions() {
+			state.allowedVersions[version] = true
+		}
 		return state
 	}
 	for _, version := range opts.AllowSchemaVersion {
@@ -126,11 +126,11 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 			return
 		}
 		if seenEntry {
-			if (rec.Version == recorder.LatestEntryVersion) != (chainVersion == recorder.LatestEntryVersion) {
+			if recorder.EntryVersionHasNamespace(rec.Version) != recorder.EntryVersionHasNamespace(chainVersion) {
 				errs <- fmt.Errorf("%w (line=%d, seq=%d): recorder namespace version changed", ErrHashChainBroken, lineNo, rec.Sequence)
 				return
 			}
-			if rec.Version == recorder.LatestEntryVersion && (rec.ChainKind != chainKind || rec.WriterInstanceID != writerID) {
+			if recorder.EntryVersionHasNamespace(rec.Version) && (rec.ChainKind != chainKind || rec.WriterInstanceID != writerID) {
 				errs <- fmt.Errorf("%w (line=%d, seq=%d): recorder chain namespace changed", ErrHashChainBroken, lineNo, rec.Sequence)
 				return
 			}
@@ -207,10 +207,8 @@ func (s streamState) verifyRecorderEntry(rec recorder.Entry, lineNo int, previou
 	if !s.allowedVersions[rec.Version] || !hashSupportedVersion(rec.Version) {
 		return fmt.Errorf("%w (line=%d, seq=%d, version=%d)", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence, rec.Version)
 	}
-	if rec.Version == recorder.LatestEntryVersion {
-		if rec.ChainKind == "" || rec.WriterInstanceID == "" {
-			return fmt.Errorf("%w (line=%d, seq=%d): v3 chain namespace incomplete", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence)
-		}
+	if err := recorder.ValidateEntryNamespace(rec.Version, rec.ChainKind, rec.WriterInstanceID); err != nil {
+		return fmt.Errorf("%w (line=%d, seq=%d): %w", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence, err)
 	}
 
 	computedHash := recorder.ComputeHash(rec)

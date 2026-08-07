@@ -181,7 +181,7 @@ func (p *Producer) run() {
 	defer close(p.done)
 	var pending []recorder.Entry
 	for entry := range p.entries {
-		if !recorder.IsAcceptedEntryVersion(entry.Version) {
+		if !conductor.IsSupportedAuditEntryVersion(entry.Version) {
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
@@ -211,11 +211,6 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	if checkpoint.Type != checkpointEntryType {
 		return nil
 	}
-	if !homogeneousRecorderNamespace(entries) {
-		droppedActions := droppedActionReceiptCount(entries)
-		p.drop(producerDropInvalidCheckpoint, droppedActions)
-		return fmt.Errorf("%s: recorder entry version or namespace changed within segment", producerDropInvalidCheckpoint)
-	}
 	// The recorder committed this checkpoint to its local hash chain before
 	// we observed it, so advance the chain tail unconditionally - even on a
 	// drop. The next segment's PreviousSegmentTail must reflect the true
@@ -224,7 +219,11 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	// continuity across a checkpoint the recorder actually wrote, and a
 	// verifier replaying the local recorder file would reject the chain.
 	defer func() { p.previousSegmentTail = checkpoint.Hash }()
-
+	if !homogeneousRecorderNamespace(entries) {
+		droppedActions := droppedActionReceiptCount(entries)
+		p.drop(producerDropInvalidCheckpoint, droppedActions)
+		return fmt.Errorf("%s: recorder entry version or namespace changed within segment", producerDropInvalidCheckpoint)
+	}
 	droppedActions := droppedActionReceiptCount(entries)
 	cp, err := checkpointDetail(checkpoint)
 	if err != nil {

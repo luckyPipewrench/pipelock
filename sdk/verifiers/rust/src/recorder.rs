@@ -40,6 +40,19 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         }
         if version == Some(3) {
             require_v3_namespace(&entry, index + 1)?;
+        } else if entry
+            .get("chain_kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+            || entry
+                .get("writer_instance_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        {
+            return Err(VerifierError::Invalid(format!(
+                "line {}: legacy entry cannot carry v3 recorder namespace fields",
+                index + 1
+            )));
         }
         entries.push(entry);
     }

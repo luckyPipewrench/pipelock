@@ -471,6 +471,35 @@ func TestRecorder_ResumeRefusesTailFromDifferentEntryVersion(t *testing.T) {
 	}
 }
 
+func TestRecorder_ResumeAllowsOlderLegacyTail(t *testing.T) {
+	dir := t.TempDir()
+	entry := recorder.Entry{
+		Version: recorder.AcceptedEntryVersions()[0], Sequence: 0,
+		Timestamp: time.Unix(1712345678, 0).UTC(), SessionID: "upgrade",
+		Type: testType, Transport: testTransport, Summary: "v1 tail",
+		Detail: map[string]string{"safe": "value"}, PrevHash: recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-upgrade-0.jsonl"), append(line, '\n'), filePermissions); err != nil {
+		t.Fatal(err)
+	}
+	rec := newResumeRecorder(t, dir)
+	if err := rec.Record(recorder.Entry{
+		SessionID: "upgrade", Type: testType, Transport: testTransport,
+		Summary: "v2 continuation", Detail: map[string]string{"safe": "value"},
+	}); err != nil {
+		t.Fatalf("Record() after v1 tail = %v", err)
+	}
+	entries := readAllEntriesForSession(t, dir, "upgrade")
+	if len(entries) != 2 || entries[1].Version != recorder.CurrentWriteEntryVersion {
+		t.Fatalf("resumed entries = %+v, want v1 tail followed by v2", entries)
+	}
+}
+
 // The candidate scan has two I/O error branches. Both must surface the wrapped
 // directory-read context rather than being mistaken for an empty directory,
 // which would resume at genesis and fork the chain.

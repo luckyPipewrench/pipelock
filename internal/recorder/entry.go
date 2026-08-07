@@ -70,6 +70,29 @@ func IsAcceptedEntryVersion(version int) bool {
 	return acceptedEntryVersions[version]
 }
 
+// AcceptedEntryVersions returns the recorder schema versions readers accept.
+func AcceptedEntryVersions() []int { return []int{1, 2, 3} }
+
+// EntryVersionHasNamespace reports whether version binds a recorder namespace.
+func EntryVersionHasNamespace(version int) bool { return version == 3 }
+
+// ValidateEntryNamespace enforces the namespace fields appropriate to version.
+func ValidateEntryNamespace(version int, chainKind, writerInstanceID string) error {
+	if EntryVersionHasNamespace(version) {
+		if chainKind == "" {
+			return errors.New("v3 chain_kind required")
+		}
+		if writerInstanceID == "" {
+			return errors.New("v3 writer_instance_id required")
+		}
+		return nil
+	}
+	if chainKind != "" || writerInstanceID != "" {
+		return errors.New("legacy entry cannot carry v3 recorder namespace fields")
+	}
+	return nil
+}
+
 // Entry is a single evidence record in the hash chain.
 //
 // EventKind is informational at the recorder layer. Empty for envelope
@@ -252,14 +275,11 @@ func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
 		if !acceptedEntryVersions[e.Version] {
 			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2, 3)", e.Sequence, e.Version)
 		}
-		if e.Version == LatestEntryVersion {
-			if e.ChainKind == "" {
-				return fmt.Errorf("entry seq %d: v3 chain_kind required", e.Sequence)
-			}
-			if e.WriterInstanceID == "" {
-				return fmt.Errorf("entry seq %d: v3 writer_instance_id required", e.Sequence)
-			}
-			if i > 0 && entries[i-1].Version != LatestEntryVersion {
+		if err := ValidateEntryNamespace(e.Version, e.ChainKind, e.WriterInstanceID); err != nil {
+			return fmt.Errorf("entry seq %d: %w", e.Sequence, err)
+		}
+		if EntryVersionHasNamespace(e.Version) {
+			if i > 0 && !EntryVersionHasNamespace(entries[i-1].Version) {
 				return fmt.Errorf("entry seq %d: v3 chain cannot continue a legacy recorder namespace", e.Sequence)
 			}
 			if v3ChainKind == "" {
@@ -268,9 +288,6 @@ func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
 				return fmt.Errorf("entry seq %d: v3 chain namespace changed", e.Sequence)
 			}
 		} else {
-			if e.ChainKind != "" || e.WriterInstanceID != "" {
-				return fmt.Errorf("entry seq %d: legacy entry cannot carry v3 recorder namespace fields", e.Sequence)
-			}
 			if v3ChainKind != "" {
 				return fmt.Errorf("entry seq %d: legacy entry cannot continue a v3 recorder namespace", e.Sequence)
 			}
@@ -484,15 +501,8 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 		if !acceptedEntryVersions[e.Version] {
 			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, e.Version)
 		}
-		if e.Version == LatestEntryVersion {
-			if e.ChainKind == "" {
-				return nil, false, bytesRead, fmt.Errorf("line %d: v3 chain_kind required", lineNum)
-			}
-			if e.WriterInstanceID == "" {
-				return nil, false, bytesRead, fmt.Errorf("line %d: v3 writer_instance_id required", lineNum)
-			}
-		} else if e.ChainKind != "" || e.WriterInstanceID != "" {
-			return nil, false, bytesRead, fmt.Errorf("line %d: legacy entry cannot carry v3 recorder namespace fields", lineNum)
+		if err := ValidateEntryNamespace(e.Version, e.ChainKind, e.WriterInstanceID); err != nil {
+			return nil, false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
 		}
 		entries = append(entries, e)
 		if errors.Is(err, io.EOF) {

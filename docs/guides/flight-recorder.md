@@ -308,7 +308,7 @@ Fields:
 
 Each schema version has a frozen field projection joined with null-byte separators. V1 uses:
 
-```
+```text
 SHA256(v \0 seq \0 ts \0 session_id \0 trace_id \0 type \0 transport \0 summary \0 detail_json \0 raw_ref \0 prev_hash)
 ```
 

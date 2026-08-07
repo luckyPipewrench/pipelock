@@ -46,6 +46,34 @@ func TestHomogeneousRecorderNamespace(t *testing.T) {
 	if !homogeneousRecorderNamespace([]recorder.Entry{base, base}) {
 		t.Fatal("homogeneousRecorderNamespace() = false for identical namespace")
 	}
+	legacy := recorder.Entry{Version: recorder.CurrentWriteEntryVersion}
+	if !homogeneousRecorderNamespace([]recorder.Entry{legacy, legacy}) {
+		t.Fatal("homogeneousRecorderNamespace() = false for v2 entries without namespace")
+	}
+}
+
+func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := &transportMetricsRecorder{}
+	p := newTestProducer(t, q, metrics, priv)
+	p.ObserveRecorderEntry(recorder.Entry{Version: 1, Type: "action_receipt"})
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := q.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 0 || metrics.delivery["drop:invalid_checkpoint"] != 1 {
+		t.Fatalf("v1 segment pending=%d invalid drops=%d, want 0 and 1", stats.Pending, metrics.delivery["drop:invalid_checkpoint"])
+	}
 }
 
 func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
@@ -370,6 +398,29 @@ func TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint(t *testing.T) 
 	}
 	if stats.Pending != 0 {
 		t.Fatalf("pending = %d, want 0 (nothing enqueued)", stats.Pending)
+	}
+}
+
+func TestProducer_AdvancesTailOnMixedNamespaceRejection(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
+	defer func() { _ = p.Close() }()
+	seg := checkpointSegment(0)
+	seg[1].Version = recorder.LatestEntryVersion
+	seg[1].ChainKind = recorder.ChainKindRecorder
+	seg[1].WriterInstanceID = "writer-a"
+	if err := p.enqueueSegment(seg); err == nil {
+		t.Fatal("mixed namespace segment accepted")
+	}
+	if p.previousSegmentTail != seg[1].Hash {
+		t.Fatalf("tail after mixed namespace rejection = %q, want %q", p.previousSegmentTail, seg[1].Hash)
 	}
 }
 

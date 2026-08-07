@@ -17,6 +17,14 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+struct TempFixture(std::path::PathBuf);
+
+impl Drop for TempFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 const V2_GOLDEN_PUBLIC_KEY: &str =
     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 const V2_PRIVATE_SEED_HEX: &str = concat!(
@@ -726,11 +734,11 @@ fn recorder_extraction_rejects_duplicate_keys_inside_receipt_detail() {
 
 #[test]
 fn recorder_reader_accepts_namespaced_v3_entries() {
-    let path = recorder_fixture_path("v3-valid");
+    let fixture = TempFixture(recorder_fixture_path("v3-valid"));
+    let path = &fixture.0;
     let line = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
     fs::write(&path, format!("{line}\n")).expect("write JSONL");
     let receipts = extract_receipts(&path).expect("v3 entry should parse");
-    let _ = fs::remove_file(&path);
     assert!(receipts.is_empty());
 }
 
@@ -748,15 +756,25 @@ fn recorder_reader_rejects_v3_entries_without_complete_namespace() {
             "writer_instance_id required",
         ),
     ] {
-        let path = recorder_fixture_path(name);
+        let fixture = TempFixture(recorder_fixture_path(name));
+        let path = &fixture.0;
         let line = format!(
             r#"{{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s",{namespace}"type":"checkpoint","transport":"x","summary":"","detail":{{}},"prev_hash":"genesis","hash":"h"}}"#
         );
         fs::write(&path, format!("{line}\n")).expect("write JSONL");
         let err = extract_receipts(&path).expect_err("incomplete v3 namespace should reject");
-        let _ = fs::remove_file(&path);
         assert!(err.to_string().contains(expected), "{err}");
     }
+}
+
+#[test]
+fn recorder_reader_rejects_namespace_fields_on_legacy_entries() {
+    let fixture = TempFixture(recorder_fixture_path("v2-namespace"));
+    let path = &fixture.0;
+    let line = r#"{"v":2,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
+    fs::write(path, format!("{line}\n")).expect("write JSONL");
+    let err = extract_receipts(path).expect_err("legacy namespace should reject");
+    assert!(err.to_string().contains("legacy entry cannot carry"));
 }
 
 fn recorder_fixture_path(name: &str) -> std::path::PathBuf {

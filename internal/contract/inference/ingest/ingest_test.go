@@ -232,6 +232,17 @@ func TestStreamSchemaVersionGating(t *testing.T) {
 		requireOneErrorIs(t, errs, ErrUnsupportedSchemaVersion)
 	})
 
+	t.Run("legacy entries reject unhashed chain namespace", func(t *testing.T) {
+		rec := testEntry(t, recorder.CurrentWriteEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 2})
+		rec.ChainKind = recorder.ChainKindRecorder
+		rec.Hash = recorder.ComputeHash(rec)
+		entries, errs := collectStream(t, mustJSONLines(t, rec), StreamOptions{})
+		if len(entries) != 0 {
+			t.Fatalf("entries len = %d, want 0", len(entries))
+		}
+		requireOneErrorIs(t, errs, ErrUnsupportedSchemaVersion)
+	})
+
 	t.Run("v3 namespace cannot change within a stream", func(t *testing.T) {
 		first := testEntry(t, recorder.LatestEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
 		second := testEntry(t, recorder.LatestEntryVersion, 2, first.Hash, "checkpoint", map[string]any{"version": 3})
@@ -321,7 +332,7 @@ func testEntry(t *testing.T, version int, seq int, prevHash, entryType string, d
 		Detail:    detail,
 		PrevHash:  prevHash,
 	}
-	if version == recorder.LatestEntryVersion {
+	if recorder.EntryVersionHasNamespace(version) {
 		rec.ChainKind = recorder.ChainKindRecorder
 		rec.WriterInstanceID = "writer-test"
 	}

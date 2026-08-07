@@ -617,6 +617,21 @@ test("JSONL recorder reader rejects v3 entries without a complete namespace", ()
   }
 });
 
+test("JSONL recorder reader rejects namespace fields on legacy entries", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "v2-namespace.jsonl");
+  try {
+    writeFileSync(
+      file,
+      '{"v":2,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}\n',
+      { mode: 0o600 },
+    );
+    assert.throws(() => extractReceipts(file), /legacy entry cannot carry/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder extraction rejects duplicate keys inside receipt detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   const file = join(dir, "duplicate-key.jsonl");

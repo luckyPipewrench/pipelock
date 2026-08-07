@@ -21,7 +21,7 @@ import (
 type completenessOptions struct {
 	signerKey     string
 	sessionID     string
-	runID         string
+	locationID    string
 	jsonOutput    bool
 	allowUnpinned bool
 }
@@ -53,7 +53,7 @@ Exit-code contract:
 	cmd.SetFlagErrorFunc(usageFlagError)
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside an evidence directory")
-	cmd.Flags().StringVar(&opts.runID, "run", "", "run path relative to the evidence directory")
+	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON report on stdout")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	return cmd
@@ -65,19 +65,19 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
 	}
 	clean := filepath.Clean(target)
-	if opts.runID != "" {
+	if opts.locationID != "" {
 		info, statErr := os.Stat(clean)
 		if statErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", clean, statErr))
 		}
 		if !info.IsDir() {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--run requires an evidence directory"))
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires an evidence directory"))
 		}
-		run, runErr := recorder.ResolveEvidenceRun(clean, opts.runID)
-		if runErr != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence run: %w", runErr))
+		location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
+		if locationErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
-		clean = run.Dir
+		clean = location.Dir
 	}
 	receipts, label, err := extractCompletenessReceipts(clean, opts.sessionID)
 	if err != nil {

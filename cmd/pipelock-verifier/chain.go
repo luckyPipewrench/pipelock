@@ -22,9 +22,9 @@ import (
 
 // chainOptions holds resolved CLI flags for the chain subcommand.
 type chainOptions struct {
-	signerKey string
-	sessionID string
-	runID     string
+	signerKey  string
+	sessionID  string
+	locationID string
 	evidenceBindingOptions
 	jsonOutput    bool
 	asDir         bool
@@ -58,7 +58,7 @@ key.`,
 
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory (--dir)")
-	cmd.Flags().StringVar(&opts.runID, "run", "", "run path relative to the evidence directory (--dir)")
+	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory (--dir)")
 	cmd.Flags().StringVar(&opts.expectSignerKeyID, "expect-signer-id", "", "EvidenceReceipt v2: require signer_key_id")
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
 	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
@@ -96,12 +96,12 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 	var label string
 	if opts.asDir {
 		clean := filepath.Clean(target)
-		if opts.runID != "" {
-			run, runErr := recorder.ResolveEvidenceRun(clean, opts.runID)
-			if runErr != nil {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence run: %w", runErr))
+		if opts.locationID != "" {
+			location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
+			if locationErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 			}
-			clean = run.Dir
+			clean = location.Dir
 		}
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
 		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {

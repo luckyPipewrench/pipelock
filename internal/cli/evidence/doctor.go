@@ -148,7 +148,7 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 		return evidenceDoctorReport{}, fmt.Errorf("%q is not a directory", dir)
 	}
 
-	runs, err := recorder.DiscoverEvidenceRuns(cleanDir)
+	locations, err := recorder.DiscoverEvidenceLocations(cleanDir)
 	if err != nil {
 		// Discovery failures are structural evidence findings, not command
 		// configuration errors. Preserve the doctor's established fail-closed
@@ -157,17 +157,17 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 			Dir: cleanDir,
 			Findings: []evidenceDoctorFinding{{
 				Kind:    "directory_read_error",
-				Message: "discover evidence runs: " + err.Error(),
+				Message: "discover evidence locations: " + err.Error(),
 			}},
 		}, nil
 	}
-	if len(runs) == 0 {
-		runs = []recorder.EvidenceRun{{Dir: cleanDir}}
+	if len(locations) == 0 {
+		locations = []recorder.EvidenceLocation{{Dir: cleanDir}}
 	}
 	report := evidenceDoctorReport{Dir: cleanDir}
-	for _, run := range runs {
+	for _, location := range locations {
 		d := &evidenceDoctor{
-			dir:          run.Dir,
+			dir:          location.Dir,
 			sidecarFiles: make(map[string]struct{}),
 			receiptRefs:  make(map[string][]doctorChainRef),
 			escrowRefs:   make(map[string][]doctorEntryRef),

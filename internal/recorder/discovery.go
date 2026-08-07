@@ -13,19 +13,19 @@ import (
 	"strings"
 )
 
-// EvidenceRun is one independently chained evidence-file directory below an
+// EvidenceLocation identifies an evidence-file directory below an
 // operator-supplied evidence root. ID is empty for the legacy flat layout and
 // otherwise is a slash-separated path relative to the root.
-type EvidenceRun struct {
+type EvidenceLocation struct {
 	ID  string
 	Dir string
 }
 
-// DiscoverEvidenceRuns finds every evidence-file directory under root without
-// following symlinks. A directory that contains evidence files is a run
-// boundary: descendants are not merged into its chain. Any unreadable path or
-// symlink fails closed so missing evidence cannot look absent.
-func DiscoverEvidenceRuns(root string) ([]EvidenceRun, error) {
+// DiscoverEvidenceLocations finds evidence-file directories under root without
+// following symlinks. Each location holds its immediate evidence files. Any
+// unreadable path or symlink fails closed so missing evidence cannot look
+// absent.
+func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 	cleanRoot := filepath.Clean(root)
 	info, err := os.Stat(cleanRoot)
 	if err != nil {
@@ -35,7 +35,7 @@ func DiscoverEvidenceRuns(root string) ([]EvidenceRun, error) {
 		return nil, fmt.Errorf("evidence root %q is not a directory", root)
 	}
 
-	runs := make([]EvidenceRun, 0)
+	locations := make([]EvidenceLocation, 0)
 	err = filepath.WalkDir(cleanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("read evidence path %q: %w", path, walkErr)
@@ -55,15 +55,15 @@ func DiscoverEvidenceRuns(root string) ([]EvidenceRun, error) {
 		}
 		rel, relErr := filepath.Rel(cleanRoot, path)
 		if relErr != nil {
-			return fmt.Errorf("resolve evidence run %q: %w", path, relErr)
+			return fmt.Errorf("resolve evidence location %q: %w", path, relErr)
 		}
 		id := ""
 		if rel != "." {
 			id = filepath.ToSlash(rel)
 		}
-		runs = append(runs, EvidenceRun{ID: id, Dir: path})
-		// A legacy root can coexist with migrated runs during rollout. Keep
-		// walking below that root, but never merge a nested run with a child.
+		locations = append(locations, EvidenceLocation{ID: id, Dir: path})
+		// Keep walking below a root-level location to preserve support for a
+		// legacy flat layout alongside nested locations.
 		if path == cleanRoot {
 			return nil
 		}
@@ -72,8 +72,8 @@ func DiscoverEvidenceRuns(root string) ([]EvidenceRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].ID < runs[j].ID })
-	return runs, nil
+	sort.Slice(locations, func(i, j int) bool { return locations[i].ID < locations[j].ID })
+	return locations, nil
 }
 
 func directoryHasEvidenceFiles(dir string) (bool, error) {
@@ -107,50 +107,51 @@ func isEvidenceRawSidecar(name string) bool {
 	return ok
 }
 
-// ResolveEvidenceRun returns the one run a single-chain reader may consume.
-// An empty runID preserves legacy behavior when exactly one run exists. It
-// refuses an ambiguous root rather than joining independent chains.
-func ResolveEvidenceRun(root, runID string) (EvidenceRun, error) {
-	runs, err := DiscoverEvidenceRuns(root)
+// ResolveEvidenceLocation returns the evidence-file location a reader may
+// consume. An empty locationID preserves legacy behavior when exactly one
+// location exists. It refuses an ambiguous root rather than silently choosing
+// a location.
+func ResolveEvidenceLocation(root, locationID string) (EvidenceLocation, error) {
+	locations, err := DiscoverEvidenceLocations(root)
 	if err != nil {
-		return EvidenceRun{}, err
+		return EvidenceLocation{}, err
 	}
-	if runID != "" {
-		cleanID, cleanErr := cleanEvidenceRunID(runID)
+	if locationID != "" {
+		cleanID, cleanErr := cleanEvidenceLocationID(locationID)
 		if cleanErr != nil {
-			return EvidenceRun{}, cleanErr
+			return EvidenceLocation{}, cleanErr
 		}
-		for _, run := range runs {
-			if run.ID == cleanID {
-				return run, nil
+		for _, location := range locations {
+			if location.ID == cleanID {
+				return location, nil
 			}
 		}
-		return EvidenceRun{}, fmt.Errorf("evidence run %q not found", runID)
+		return EvidenceLocation{}, fmt.Errorf("evidence location %q not found", locationID)
 	}
-	if len(runs) == 0 {
-		return EvidenceRun{Dir: filepath.Clean(root)}, nil
+	if len(locations) == 0 {
+		return EvidenceLocation{Dir: filepath.Clean(root)}, nil
 	}
-	if len(runs) == 1 {
-		return runs[0], nil
+	if len(locations) == 1 {
+		return locations[0], nil
 	}
-	ids := make([]string, 0, len(runs))
-	for _, run := range runs {
-		if run.ID == "" {
+	ids := make([]string, 0, len(locations))
+	for _, location := range locations {
+		if location.ID == "" {
 			ids = append(ids, ".")
 			continue
 		}
-		ids = append(ids, run.ID)
+		ids = append(ids, location.ID)
 	}
-	return EvidenceRun{}, fmt.Errorf("multiple evidence runs found (%s); select one run", strings.Join(ids, ", "))
+	return EvidenceLocation{}, fmt.Errorf("multiple evidence locations found (%s); select one location", strings.Join(ids, ", "))
 }
 
-func cleanEvidenceRunID(runID string) (string, error) {
-	if filepath.IsAbs(runID) {
-		return "", errors.New("evidence run must be relative to the evidence root")
+func cleanEvidenceLocationID(locationID string) (string, error) {
+	if filepath.IsAbs(locationID) {
+		return "", errors.New("evidence location must be relative to the evidence root")
 	}
-	clean := filepath.Clean(runID)
+	clean := filepath.Clean(locationID)
 	if clean == "." || clean == "" || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", errors.New("evidence run must name a descendant directory")
+		return "", errors.New("evidence location must name a descendant directory")
 	}
 	return filepath.ToSlash(clean), nil
 }

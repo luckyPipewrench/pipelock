@@ -205,11 +205,11 @@ func ExtractEvidenceReceipts(path string) ([]EvidenceReceipt, error) {
 // session and returns v2 EvidenceReceipts in chain order. Files are ordered by
 // their numeric sequence suffix, matching recorder.QuerySession's v1 behavior.
 func ExtractEvidenceReceiptsFromSessionDir(dir, sessionID string) ([]EvidenceReceipt, error) {
-	run, resolveErr := recorder.ResolveEvidenceRun(dir, "")
+	location, resolveErr := recorder.ResolveEvidenceLocation(dir, "")
 	if resolveErr != nil {
-		return nil, fmt.Errorf("resolve evidence run: %w", resolveErr)
+		return nil, fmt.Errorf("resolve evidence location: %w", resolveErr)
 	}
-	clean := run.Dir
+	clean := location.Dir
 	entries, err := os.ReadDir(clean)
 	if err != nil {
 		return nil, fmt.Errorf("read evidence directory: %w", err)

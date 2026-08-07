@@ -55,7 +55,7 @@ const (
 type viewOptions struct {
 	receiptDir     string
 	sessionID      string
-	runID          string
+	locationID     string
 	trustedSigners []string
 	outFile        string
 	title          string
@@ -82,7 +82,7 @@ cross-agent evidence console, see the Pro/Enterprise dashboard.`,
 		"flight-recorder evidence directory holding action receipts")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "",
 		"session ID to render; if omitted, uses the single or first session")
-	cmd.Flags().StringVar(&opts.runID, "run", "", "run path relative to the evidence directory")
+	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
 		"trusted receipt signing key as comma-separated kv pairs: "+
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
@@ -99,12 +99,12 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 	if err != nil {
 		return err
 	}
-	if opts.runID != "" {
-		run, runErr := recorder.ResolveEvidenceRun(cleanDir, opts.runID)
-		if runErr != nil {
-			return fmt.Errorf("resolve evidence run: %w", runErr)
+	if opts.locationID != "" {
+		location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
+		if locationErr != nil {
+			return fmt.Errorf("resolve evidence location: %w", locationErr)
 		}
-		cleanDir = run.Dir
+		cleanDir = location.Dir
 	}
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
@@ -136,7 +136,7 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 type serveOptions struct {
 	receiptDir string
 	sessionID  string
-	runID      string
+	locationID string
 	listen     string
 }
 
@@ -236,7 +236,7 @@ does not expose any route or query parameter that can select another session.`,
 		"flight-recorder evidence directory holding action receipts")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "",
 		"session ID to serve; required when the receipt directory contains multiple sessions")
-	cmd.Flags().StringVar(&opts.runID, "run", "", "run path relative to the evidence directory")
+	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().StringVar(&opts.listen, "listen", defaultEvidenceServeListen,
 		"TCP listen address for the read-only evidence server")
 	_ = cmd.MarkFlagRequired("receipt-dir")
@@ -248,12 +248,12 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
-	if opts.runID != "" {
-		run, runErr := recorder.ResolveEvidenceRun(cleanDir, opts.runID)
-		if runErr != nil {
-			return fmt.Errorf("resolve evidence run: %w", runErr)
+	if opts.locationID != "" {
+		location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
+		if locationErr != nil {
+			return fmt.Errorf("resolve evidence location: %w", locationErr)
 		}
-		cleanDir = run.Dir
+		cleanDir = location.Dir
 	}
 	sessionID, err := resolveServeSession(cleanDir, opts.sessionID)
 	if err != nil {

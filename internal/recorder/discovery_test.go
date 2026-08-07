@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestDiscoverEvidenceRuns(t *testing.T) {
+func TestDiscoverEvidenceLocations(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -28,7 +28,7 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			wantIDs: []string{""},
 		},
 		{
-			name: "nested runs remain separate",
+			name: "nested locations remain separate",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
 				writeDiscoveryShard(t, filepath.Join(root, "recorder-a", "run-a"))
@@ -37,7 +37,7 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			wantIDs: []string{"recorder-a/run-a", "recorder-b/run-b"},
 		},
 		{
-			name: "unexpected deeply nested run is found",
+			name: "unexpected deeply nested location is found",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
 				writeDiscoveryShard(t, filepath.Join(root, "unexpected", "deep", "run"))
@@ -62,45 +62,45 @@ func TestDiscoverEvidenceRuns(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			tt.setup(t, root)
-			runs, err := DiscoverEvidenceRuns(root)
+			locations, err := DiscoverEvidenceLocations(root)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("DiscoverEvidenceRuns() error = %v, want %q", err, tt.wantErr)
+					t.Fatalf("DiscoverEvidenceLocations() error = %v, want %q", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("DiscoverEvidenceRuns(): %v", err)
+				t.Fatalf("DiscoverEvidenceLocations(): %v", err)
 			}
-			gotIDs := make([]string, 0, len(runs))
-			for _, run := range runs {
-				gotIDs = append(gotIDs, run.ID)
+			gotIDs := make([]string, 0, len(locations))
+			for _, location := range locations {
+				gotIDs = append(gotIDs, location.ID)
 			}
 			if !reflect.DeepEqual(gotIDs, tt.wantIDs) {
-				t.Fatalf("run IDs = %q, want %q", gotIDs, tt.wantIDs)
+				t.Fatalf("location IDs = %q, want %q", gotIDs, tt.wantIDs)
 			}
 		})
 	}
 }
 
-func TestResolveEvidenceRun(t *testing.T) {
+func TestResolveEvidenceLocation(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeDiscoveryShard(t, root)
 	writeDiscoveryShard(t, filepath.Join(root, "recorder-a", "run-a"))
 
-	if _, err := ResolveEvidenceRun(root, ""); err == nil || !strings.Contains(err.Error(), "multiple evidence runs") {
-		t.Fatalf("ResolveEvidenceRun without selector error = %v, want ambiguity", err)
+	if _, err := ResolveEvidenceLocation(root, ""); err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+		t.Fatalf("ResolveEvidenceLocation without selector error = %v, want ambiguity", err)
 	}
-	run, err := ResolveEvidenceRun(root, "recorder-a/run-a")
+	location, err := ResolveEvidenceLocation(root, "recorder-a/run-a")
 	if err != nil {
-		t.Fatalf("ResolveEvidenceRun selected run: %v", err)
+		t.Fatalf("ResolveEvidenceLocation selected location: %v", err)
 	}
-	if run.ID != "recorder-a/run-a" {
-		t.Fatalf("selected run ID = %q", run.ID)
+	if location.ID != "recorder-a/run-a" {
+		t.Fatalf("selected location ID = %q", location.ID)
 	}
-	if _, err := ResolveEvidenceRun(root, "../escape"); err == nil {
-		t.Fatal("ResolveEvidenceRun accepted an escaping selector")
+	if _, err := ResolveEvidenceLocation(root, "../escape"); err == nil {
+		t.Fatal("ResolveEvidenceLocation accepted an escaping selector")
 	}
 }
 

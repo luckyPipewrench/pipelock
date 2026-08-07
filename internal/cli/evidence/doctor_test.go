@@ -48,6 +48,29 @@ func TestEvidenceDoctorCleanDirectory(t *testing.T) {
 	}
 }
 
+func TestEvidenceDoctorJSONReport(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeDoctorEntries(t, dir, "evidence-proxy-0.jsonl", doctorEntryPlan{
+		{session: "proxy", seq: 0, prev: recorder.GenesisHash},
+	})
+
+	var stdout bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"doctor", "--json", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor command JSON report: %v", err)
+	}
+	var report evidenceDoctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v (output: %s)", err, stdout.String())
+	}
+	if report.Dir != dir || report.FilesRead != 1 || len(report.Findings) != 0 {
+		t.Fatalf("doctor JSON report = %+v", report)
+	}
+}
+
 func TestParseDoctorEvidenceName(t *testing.T) {
 	t.Parallel()
 

@@ -53,7 +53,10 @@ echo "corpus written: $written evidence file(s)"
 
 echo "running the shipped structural doctor"
 report="$workdir/doctor.txt"
-"$bin" evidence doctor "$evidence_dir" >"$report" 2>&1 || true
+if "$bin" evidence doctor --json "$evidence_dir" >"$report"; then
+  echo "FAIL: the doctor returned healthy despite the expected concurrent-writer fork" >&2
+  exit 1
+fi
 cat "$report"
 
 # Concurrent writers still share one chain namespace, so the doctor reports a
@@ -61,9 +64,38 @@ cat "$report"
 # here is what lets this gate run today instead of waiting for it. Everything
 # else must be absent, because everything else is a defect that has been fixed
 # and must never come back.
-readonly KNOWN_OPEN='duplicate_recorder_seq|conflicting_recorder_prev_hash'
+if ! unexpected=$(python3 - "$report" <<'PY'
+import json
+import sys
 
-unexpected=$(grep -oE '^  [a-z_]+:' "$report" | tr -d ' :' | grep -vE "^(${KNOWN_OPEN})$" || true)
+known_open = {"duplicate_recorder_seq", "conflicting_recorder_prev_hash"}
+
+with open(sys.argv[1], encoding="utf-8") as report_file:
+    report = json.load(report_file)
+
+findings = report.get("findings")
+if not isinstance(findings, list) or not findings:
+    raise SystemExit("doctor returned no findings; expected the known concurrent-writer fork")
+
+kinds = []
+for finding in findings:
+    kind = finding.get("kind") if isinstance(finding, dict) else None
+    if not isinstance(kind, str) or not kind:
+        raise SystemExit("doctor report contains a finding without a kind")
+    kinds.append(kind)
+
+missing = known_open.difference(kinds)
+if missing:
+    raise SystemExit("doctor report omitted expected known finding kinds: " + ", ".join(sorted(missing)))
+
+unexpected = sorted(set(kinds).difference(known_open))
+if unexpected:
+    print("\n".join(unexpected))
+PY
+); then
+  echo "FAIL: could not validate the machine-readable evidence doctor report" >&2
+  exit 1
+fi
 if [ -n "$unexpected" ]; then
   cat >&2 <<MSG
 

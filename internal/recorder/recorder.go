@@ -46,6 +46,10 @@ const (
 	// escrowNameTokenBytes keeps collision retries astronomically unlikely while
 	// os.O_EXCL remains the authoritative no-overwrite guard.
 	escrowNameTokenBytes = 16
+	// maxEscrowNameAttempts turns repeated name collisions into a recorded error
+	// instead of an unbounded
+	// retry loop. O_EXCL still prevents every overwrite on every attempt.
+	maxEscrowNameAttempts = 16
 
 	// recorderTypeReceipt is the entry type for action receipts. These get
 	// selective field redaction (target/pattern only) instead of full detail
@@ -852,9 +856,19 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 }
 
 func (r *Recorder) writeEscrowPayload(payload []byte) (string, error) {
-	for {
+	return r.writeEscrowPayloadWithReader(payload, rand.Reader)
+}
+
+func (r *Recorder) writeEscrowPayloadWithReader(payload []byte, tokenReader io.Reader) (string, error) {
+	root, err := os.OpenRoot(filepath.Clean(r.cfg.Dir))
+	if err != nil {
+		return "", fmt.Errorf("opening evidence directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
+	for range maxEscrowNameAttempts {
 		var token [escrowNameTokenBytes]byte
-		if _, err := io.ReadFull(rand.Reader, token[:]); err != nil {
+		if _, err := io.ReadFull(tokenReader, token[:]); err != nil {
 			return "", fmt.Errorf("generating escrow filename token: %w", err)
 		}
 
@@ -864,21 +878,12 @@ func (r *Recorder) writeEscrowPayload(payload []byte) (string, error) {
 		// proves an existing payload will be preserved.
 		escrowName := fmt.Sprintf("evidence-%s-%d-raw-%s.raw.enc", filepath.Base(r.sessionID), r.seq, hex.EncodeToString(token[:]))
 		escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
-		root, err := os.OpenRoot(filepath.Clean(r.cfg.Dir))
-		if err != nil {
-			return "", fmt.Errorf("opening evidence directory: %w", err)
-		}
 		file, openErr := root.OpenFile(escrowName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, r.cfg.FileMode)
-		closeErr := root.Close()
 		if openErr != nil {
 			if errors.Is(openErr, fs.ErrExist) {
 				continue
 			}
 			return "", fmt.Errorf("creating escrow file: %w", openErr)
-		}
-		if closeErr != nil {
-			_ = file.Close()
-			return "", fmt.Errorf("closing evidence directory: %w", closeErr)
 		}
 
 		if err := writeEscrowFile(file, payload, r.cfg.FileMode); err != nil {
@@ -886,6 +891,7 @@ func (r *Recorder) writeEscrowPayload(payload []byte) (string, error) {
 		}
 		return escrowPath, nil
 	}
+	return "", fmt.Errorf("creating unique escrow filename after %d attempts: %w", maxEscrowNameAttempts, fs.ErrExist)
 }
 
 func writeEscrowFile(file *os.File, payload []byte, mode os.FileMode) error {

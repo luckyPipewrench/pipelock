@@ -4,7 +4,11 @@
 package recorder
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -76,5 +80,35 @@ func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 	}
 	if len(sidecars) != recorderCount {
 		t.Fatalf("discoverable sidecars = %d, want %d", len(sidecars), recorderCount)
+	}
+}
+
+func TestWriteEscrowPayload_RefusesUnboundedCollisionRetries(t *testing.T) {
+	dir := t.TempDir()
+	const (
+		sessionID = "proxy"
+		seq       = 42
+	)
+	token := bytes.Repeat([]byte{0x42}, escrowNameTokenBytes)
+	name := "evidence-" + sessionID + "-42-raw-" + hex.EncodeToString(token) + ".raw.enc"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("existing"), filePermissions); err != nil {
+		t.Fatalf("create colliding sidecar: %v", err)
+	}
+	rec := &Recorder{cfg: Config{Dir: dir, FileMode: filePermissions}, sessionID: sessionID, seq: seq}
+	_, err := rec.writeEscrowPayloadWithReader([]byte("payload"), bytes.NewReader(bytes.Repeat(token, maxEscrowNameAttempts)))
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("writeEscrowPayloadWithReader collision error = %v, want fs.ErrExist", err)
+	}
+	root, openErr := os.OpenRoot(dir)
+	if openErr != nil {
+		t.Fatalf("open evidence directory: %v", openErr)
+	}
+	defer func() { _ = root.Close() }()
+	data, readErr := root.ReadFile(name)
+	if readErr != nil {
+		t.Fatalf("read existing sidecar: %v", readErr)
+	}
+	if string(data) != "existing" {
+		t.Fatalf("existing sidecar changed to %q", data)
 	}
 }

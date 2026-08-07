@@ -52,12 +52,12 @@ const (
 )
 
 type evidenceDoctorReport struct {
-	Dir           string
-	FilesRead     int
-	Findings      []evidenceDoctorFinding
-	Truncated     bool
-	ScanTruncated bool
-	FilesSkipped  int
+	Dir           string                  `json:"dir"`
+	FilesRead     int                     `json:"files_read"`
+	Findings      []evidenceDoctorFinding `json:"findings"`
+	Truncated     bool                    `json:"truncated"`
+	ScanTruncated bool                    `json:"scan_truncated"`
+	FilesSkipped  int                     `json:"files_skipped"`
 }
 
 func (r evidenceDoctorReport) Damaged() bool {
@@ -72,8 +72,8 @@ func (r evidenceDoctorReport) Conclusive() bool {
 }
 
 type evidenceDoctorFinding struct {
-	Kind    string
-	Message string
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
 }
 
 type doctorEntryRef struct {
@@ -109,6 +109,7 @@ type evidenceDoctor struct {
 }
 
 func doctorCmd() *cobra.Command {
+	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "doctor DIR",
 		Short: "Detect structural damage in a flight-recorder evidence directory",
@@ -124,7 +125,13 @@ can use it in CI.`,
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			printEvidenceDoctorReport(cmd, report)
+			if jsonOutput {
+				if err := json.NewEncoder(cmd.OutOrStdout()).Encode(report); err != nil {
+					return fmt.Errorf("encode evidence doctor report JSON: %w", err)
+				}
+			} else {
+				printEvidenceDoctorReport(cmd, report)
+			}
 			if report.Damaged() {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor found structural damage"))
 			}
@@ -136,6 +143,7 @@ can use it in CI.`,
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 	return cmd
 }
 

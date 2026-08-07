@@ -380,13 +380,27 @@ func TestCheckRedirect_MalformedPriorEnvelopeBlocks(t *testing.T) {
 		// Values-based read a malformed later value reads as absent and
 		// skips the block entirely.
 		extra []string
+		// validFirst makes the FIRST header value a genuinely valid signed
+		// envelope. Without it a repeated-header case proves nothing about
+		// the repeated-header guard, because an incomplete first value is
+		// rejected by envelope.Parse whether or not that guard exists.
+		validFirst bool
 	}{
 		{name: "invalid structured field", raw: "not a valid dictionary ((("},
 		{name: "missing required verdict", raw: "v=1, act=\"read\", rid=\"01961f3a-7b2c-7000-8000-000000000023\", ts=1"},
 		{name: "present but empty", raw: ""},
 		{name: "present but whitespace only", raw: "   "},
 		{name: "empty then malformed", raw: "", extra: []string{"not a valid dictionary ((("}},
-		{name: "valid then malformed", raw: "v=1", extra: []string{"not a valid dictionary ((("}},
+		{
+			name:       "valid then malformed",
+			validFirst: true,
+			extra:      []string{"not a valid dictionary ((("},
+		},
+		{
+			name:       "valid then valid",
+			validFirst: true,
+			extra:      []string{"v=1, act=\"read\", rid=\"01961f3a-7b2c-7000-8000-000000000024\", ts=1, vd=\"allow\""},
+		},
 	}
 
 	for _, tt := range tests {
@@ -395,7 +409,27 @@ func TestCheckRedirect_MalformedPriorEnvelopeBlocks(t *testing.T) {
 
 			p := newSigningProxyForTest(t)
 			original := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://origin.example/start", nil)
-			original.Header.Set(envelope.HeaderName, tt.raw)
+			if tt.validFirst {
+				em := p.envelopeEmitterPtr.Load()
+				if em == nil {
+					t.Fatal("expected startup signing emitter")
+				}
+				prev, err := em.Build(envelope.BuildOpts{
+					ActionID:  "01961f3a-7b2c-7000-8000-000000000025",
+					Action:    "read",
+					Verdict:   config.ActionAllow,
+					Actor:     "agent",
+					ActorAuth: envelope.ActorAuthBound,
+				})
+				if err != nil {
+					t.Fatalf("build valid first envelope: %v", err)
+				}
+				if err := envelope.InjectHTTP(original.Header, prev); err != nil {
+					t.Fatalf("inject valid first envelope: %v", err)
+				}
+			} else {
+				original.Header.Set(envelope.HeaderName, tt.raw)
+			}
 			for _, value := range tt.extra {
 				original.Header.Add(envelope.HeaderName, value)
 			}

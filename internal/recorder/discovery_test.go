@@ -174,6 +174,28 @@ func TestDiscoverEvidenceLocationsRejectsSymlinkedRootAncestor(t *testing.T) {
 	}
 }
 
+func TestDiscoverEvidenceLocationsRejectsRootSwapAfterOpen(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "evidence")
+	replacement := filepath.Join(parent, "replacement")
+	moved := filepath.Join(parent, "moved")
+	writeDiscoveryShard(t, root)
+	writeDiscoveryShard(t, replacement)
+
+	locations, err := discoverEvidenceLocations(root, func() {
+		if renameErr := os.Rename(root, moved); renameErr != nil {
+			t.Fatalf("move opened evidence root: %v", renameErr)
+		}
+		if renameErr := os.Rename(replacement, root); renameErr != nil {
+			t.Fatalf("swap evidence root: %v", renameErr)
+		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed while opening") {
+		t.Fatalf("discover after root swap = %+v, %v; want fail-closed identity error", locations, err)
+	}
+}
+
 func TestDiscoverEvidenceLocationsRejectsMissingAndNonDirectoryRoots(t *testing.T) {
 	t.Parallel()
 	if _, err := DiscoverEvidenceLocations(filepath.Join(t.TempDir(), "missing")); err == nil {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -27,49 +28,73 @@ type EvidenceLocation struct {
 // unreadable path or symlink fails closed so missing evidence cannot look
 // absent.
 func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
+	return discoverEvidenceLocations(root, nil)
+}
+
+// discoverEvidenceLocations anchors traversal to an opened root. The optional
+// hook lets tests replace the pathname after the handle is open.
+func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLocation, error) {
 	cleanRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
 		return nil, fmt.Errorf("resolve evidence root: %w", err)
+	}
+	initialInfo, err := validateEvidenceRootComponents(cleanRoot)
+	if err != nil {
+		return nil, err
+	}
+	if !initialInfo.IsDir() {
+		return nil, fmt.Errorf("evidence root %q is not a directory", root)
+	}
+	rootHandle, err := os.OpenRoot(cleanRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open evidence root: %w", err)
+	}
+	defer func() { _ = rootHandle.Close() }()
+	if afterRootOpen != nil {
+		afterRootOpen()
 	}
 	info, err := validateEvidenceRootComponents(cleanRoot)
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("evidence root %q is not a directory", root)
+	rootedInfo, err := rootHandle.Stat(".")
+	if err != nil {
+		return nil, fmt.Errorf("stat opened evidence root: %w", err)
+	}
+	if !os.SameFile(initialInfo, rootedInfo) || !os.SameFile(info, rootedInfo) {
+		return nil, fmt.Errorf("evidence root changed while opening: %q", root)
 	}
 
 	locations := make([]EvidenceLocation, 0)
-	err = filepath.WalkDir(cleanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	rootFS := rootHandle.FS()
+	err = fs.WalkDir(rootFS, ".", func(relPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return fmt.Errorf("read evidence path %q: %w", path, walkErr)
+			return fmt.Errorf("read evidence path %q: %w", relPath, walkErr)
 		}
 		entryInfo, infoErr := entry.Info()
 		if infoErr != nil {
-			return fmt.Errorf("stat evidence path %q: %w", path, infoErr)
+			return fmt.Errorf("stat evidence path %q: %w", relPath, infoErr)
 		}
 		if entryInfo.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("refuse symlink in evidence root: %q", path)
+			return fmt.Errorf("refuse symlink in evidence root: %q", relPath)
 		}
 		if !entryInfo.IsDir() {
 			return nil
 		}
-		hasEvidence, readErr := directoryHasEvidenceFiles(path)
+		hasEvidence, readErr := directoryHasEvidenceFiles(rootFS, relPath)
 		if readErr != nil {
-			return fmt.Errorf("read evidence directory %q: %w", path, readErr)
+			return fmt.Errorf("read evidence directory %q: %w", relPath, readErr)
 		}
 		if !hasEvidence {
 			return nil
 		}
-		rel, relErr := filepath.Rel(cleanRoot, path)
-		if relErr != nil {
-			return fmt.Errorf("resolve evidence location %q: %w", path, relErr)
-		}
 		id := ""
-		if rel != "." {
-			id = filepath.ToSlash(rel)
+		dir := cleanRoot
+		if relPath != "." {
+			id = relPath
+			dir = filepath.Join(cleanRoot, filepath.FromSlash(relPath))
 		}
-		locations = append(locations, EvidenceLocation{Root: cleanRoot, ID: id, Dir: path})
+		locations = append(locations, EvidenceLocation{Root: cleanRoot, ID: id, Dir: dir})
 		// A directory containing evidence is a location, not a chain boundary.
 		// Descendants can hold independent evidence files and must be discovered
 		// so a reader never mistakes a partial traversal for complete evidence.
@@ -111,8 +136,8 @@ func validateEvidenceRootComponents(cleanRoot string) (fs.FileInfo, error) {
 	return rootInfo, nil
 }
 
-func directoryHasEvidenceFiles(dir string) (bool, error) {
-	entries, err := os.ReadDir(filepath.Clean(dir))
+func directoryHasEvidenceFiles(rootFS fs.FS, dir string) (bool, error) {
+	entries, err := fs.ReadDir(rootFS, dir)
 	if err != nil {
 		return false, err
 	}
@@ -122,7 +147,7 @@ func directoryHasEvidenceFiles(dir string) (bool, error) {
 			return false, infoErr
 		}
 		if entryInfo.Mode()&fs.ModeSymlink != 0 {
-			return false, fmt.Errorf("refuse symlink in evidence directory: %q", filepath.Join(dir, entry.Name()))
+			return false, fmt.Errorf("refuse symlink in evidence directory: %q", path.Join(dir, entry.Name()))
 		}
 		if entryInfo.IsDir() {
 			continue

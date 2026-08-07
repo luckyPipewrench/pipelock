@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -18,13 +19,16 @@ import (
 const DefaultPipelockDir = ".pipelock"
 
 const (
-	agentsSubdir     = "agents"
-	trustedSubdir    = "trusted_keys"
-	privateKeyFile   = "id_ed25519"
-	publicKeyFile    = "id_ed25519.pub"
-	maxAgentNameLen  = 64
-	dirPermission    = 0o750
-	trustedPubSuffix = ".pub"
+	agentsSubdir      = "agents"
+	trustedSubdir     = "trusted_keys"
+	privateKeyFile    = "id_ed25519"
+	publicKeyFile     = "id_ed25519.pub"
+	agentLockPrefix   = ".pipelock-lock@"
+	agentStagePrefix  = ".pipelock-stage@"
+	agentBackupPrefix = ".pipelock-backup@"
+	maxAgentNameLen   = 64
+	dirPermission     = 0o750
+	trustedPubSuffix  = ".pub"
 )
 
 // agentNameRe matches characters NOT allowed in agent names.
@@ -33,7 +37,8 @@ var agentNameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
 // Keystore manages Ed25519 keys on disk under a base directory.
 type Keystore struct {
-	baseDir string
+	baseDir        string
+	writeAgentPair func(string, ed25519.PublicKey, ed25519.PrivateKey) error
 }
 
 // NewKeystore creates a Keystore rooted at baseDir.
@@ -81,18 +86,15 @@ func ValidateAgentName(name string) error {
 // GenerateAgent creates a new Ed25519 key pair for an agent.
 // Returns an error if keys already exist unless force is true.
 func (k *Keystore) GenerateAgent(name string) (ed25519.PublicKey, error) {
-	if k.AgentExists(name) {
-		return nil, fmt.Errorf("keys already exist for agent %q (use --force to overwrite)", name)
-	}
-	return k.generateAgent(name)
+	return k.generateAgent(name, false)
 }
 
 // ForceGenerateAgent creates a new key pair, overwriting any existing keys.
 func (k *Keystore) ForceGenerateAgent(name string) (ed25519.PublicKey, error) {
-	return k.generateAgent(name)
+	return k.generateAgent(name, true)
 }
 
-func (k *Keystore) generateAgent(name string) (ed25519.PublicKey, error) {
+func (k *Keystore) generateAgent(name string, force bool) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
@@ -117,22 +119,169 @@ func (k *Keystore) generateAgent(name string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("agent directory containment check: %w", err)
 	}
 
-	pub, priv, err := GenerateKeyPair()
+	var pub ed25519.PublicKey
+	err := withAgentLock(filepath.Join(parent, agentLockPrefix+name), func() error {
+		// Recheck after acquiring the cross-process lock. The first caller may
+		// have completed generation while this caller waited.
+		if err := k.validateContainment(dir); err != nil {
+			return fmt.Errorf("agent directory containment check: %w", err)
+		}
+		if err := k.recoverAgentTransaction(name); err != nil {
+			return err
+		}
+		if err := rejectAgentKeyPathCollisions(dir); err != nil {
+			return err
+		}
+		if !force && k.AgentExists(name) {
+			return fmt.Errorf("keys already exist for agent %q (use --force to overwrite)", name)
+		}
+
+		generatedPub, priv, err := GenerateKeyPair()
+		if err != nil {
+			return err
+		}
+
+		stageDir := k.agentStageDir(name)
+		if err := os.RemoveAll(stageDir); err != nil {
+			return fmt.Errorf("removing stale agent staging directory: %w", err)
+		}
+		if err := os.Mkdir(stageDir, dirPermission); err != nil {
+			return fmt.Errorf("creating agent staging directory: %w", err)
+		}
+		defer func() {
+			_ = os.RemoveAll(stageDir)
+		}()
+		if err := k.validateContainment(stageDir); err != nil {
+			return fmt.Errorf("agent staging directory containment check: %w", err)
+		}
+
+		writePair := k.writeAgentPair
+		if writePair == nil {
+			writePair = writeAgentKeyPair
+		}
+		if err := writePair(stageDir, generatedPub, priv); err != nil {
+			return err
+		}
+		if err := publishAgentDirectory(dir, stageDir, k.agentBackupDir(name)); err != nil {
+			return fmt.Errorf("publishing agent key pair: %w", err)
+		}
+		pub = generatedPub
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	privPath := filepath.Join(dir, privateKeyFile)
-	pubPath := filepath.Join(dir, publicKeyFile)
-
-	if err := SavePrivateKey(priv, privPath); err != nil {
-		return nil, fmt.Errorf("saving private key: %w", err)
-	}
-	if err := SavePublicKey(pub, pubPath); err != nil {
-		return nil, fmt.Errorf("saving public key: %w", err)
-	}
-
 	return pub, nil
+}
+
+func rejectAgentKeyPathCollisions(dir string) error {
+	for _, key := range []struct {
+		name  string
+		label string
+	}{
+		{name: privateKeyFile, label: "private"},
+		{name: publicKeyFile, label: "public"},
+	} {
+		info, err := os.Lstat(filepath.Join(dir, key.name))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("checking %s key path: %w", key.label, err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("saving %s key: target path is a directory", key.label)
+		}
+	}
+	return nil
+}
+
+func writeAgentKeyPair(dir string, pub ed25519.PublicKey, priv ed25519.PrivateKey) error {
+	if err := atomicWrite(filepath.Join(dir, privateKeyFile), []byte(EncodePrivateKey(priv)), 0o600); err != nil {
+		return fmt.Errorf("saving private key: %w", err)
+	}
+	if err := atomicWrite(filepath.Join(dir, publicKeyFile), []byte(EncodePublicKey(pub)), 0o600); err != nil {
+		return fmt.Errorf("saving public key: %w", err)
+	}
+	return nil
+}
+
+// keyPairCoherentIn reports whether dir holds a readable private key, a
+// readable public key, and a public key that is the one derived from that
+// private key. Recovery and the ordinary existence check both need this
+// question answered, about different directories, so it takes the directory
+// rather than an agent name.
+func keyPairCoherentIn(dir string) bool {
+	priv, err := LoadPrivateKeyFile(filepath.Join(dir, privateKeyFile))
+	if err != nil {
+		return false
+	}
+	pub, err := LoadPublicKeyFile(filepath.Join(dir, publicKeyFile))
+	if err != nil {
+		return false
+	}
+	derived, ok := priv.Public().(ed25519.PublicKey)
+	return ok && bytes.Equal(derived, pub)
+}
+
+func (k *Keystore) agentKeyPairExists(name string) bool {
+	return keyPairCoherentIn(k.agentDir(name))
+}
+
+func (k *Keystore) recoverAgentTransaction(name string) error {
+	dir := k.agentDir(name)
+	backupDir := k.agentBackupDir(name)
+	if _, err := os.Stat(backupDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking agent backup directory: %w", err)
+	}
+	if err := k.validateContainment(backupDir); err != nil {
+		return fmt.Errorf("agent backup directory containment check: %w", err)
+	}
+	if k.agentKeyPairExists(name) {
+		if err := os.RemoveAll(backupDir); err != nil {
+			return fmt.Errorf("removing committed agent backup: %w", err)
+		}
+		return nil
+	}
+	// Check the backup is a coherent pair BEFORE destroying anything. Recovery
+	// runs when the active directory is already incomplete, so the backup is the
+	// only remaining candidate; promoting one whose halves do not match would
+	// install a broken identity and take the evidence of the failure with it.
+	// Refusing leaves both directories in place for an operator to inspect,
+	// which is recoverable, where a silent bad promotion is not.
+	if !keyPairCoherentIn(backupDir) {
+		return fmt.Errorf("agent backup for %q is not a coherent key pair; leaving both directories in place for inspection", name)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("removing incomplete agent directory: %w", err)
+	}
+	if err := os.Rename(backupDir, dir); err != nil {
+		return fmt.Errorf("restoring agent backup: %w", err)
+	}
+	if err := k.validateContainment(dir); err != nil {
+		return fmt.Errorf("restored agent directory containment check: %w", err)
+	}
+	return nil
+}
+
+func (k *Keystore) recoverAgentTransactionForRead(name string) error {
+	backupDir := k.agentBackupDir(name)
+	if _, err := os.Lstat(backupDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking agent backup path: %w", err)
+	}
+	parent := filepath.Dir(k.agentDir(name))
+	if err := k.validateContainment(parent); err != nil {
+		return fmt.Errorf("agents directory containment check: %w", err)
+	}
+	return withAgentLock(filepath.Join(parent, agentLockPrefix+name), func() error {
+		return k.recoverAgentTransaction(name)
+	})
 }
 
 // LoadPrivateKey loads an agent's private key from the keystore.
@@ -140,11 +289,24 @@ func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(k.agentDir(name), privateKeyFile)
-	if err := k.validateContainment(path); err != nil {
-		return nil, fmt.Errorf("private key containment check: %w", err)
+	for range 2 {
+		if err := k.recoverAgentTransactionForRead(name); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(k.agentDir(name), privateKeyFile)
+		if err := k.validateContainment(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
+				continue
+			}
+			return nil, fmt.Errorf("private key containment check: %w", err)
+		}
+		priv, err := LoadPrivateKeyFile(path)
+		if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
+			continue
+		}
+		return priv, err
 	}
-	return LoadPrivateKeyFile(path)
+	return nil, fmt.Errorf("private key unavailable during concurrent key publication: %w", os.ErrNotExist)
 }
 
 // LoadPublicKey loads an agent's own public key from the keystore.
@@ -152,11 +314,29 @@ func (k *Keystore) LoadPublicKey(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(k.agentDir(name), publicKeyFile)
-	if err := k.validateContainment(path); err != nil {
-		return nil, fmt.Errorf("public key containment check: %w", err)
+	for range 2 {
+		if err := k.recoverAgentTransactionForRead(name); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(k.agentDir(name), publicKeyFile)
+		if err := k.validateContainment(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
+				continue
+			}
+			return nil, fmt.Errorf("public key containment check: %w", err)
+		}
+		pub, err := LoadPublicKeyFile(path)
+		if errors.Is(err, os.ErrNotExist) && k.agentBackupPending(name) {
+			continue
+		}
+		return pub, err
 	}
-	return LoadPublicKeyFile(path)
+	return nil, fmt.Errorf("public key unavailable during concurrent key publication: %w", os.ErrNotExist)
+}
+
+func (k *Keystore) agentBackupPending(name string) bool {
+	_, err := os.Lstat(k.agentBackupDir(name))
+	return err == nil
 }
 
 // TrustKey copies a public key file into trusted_keys/<name>.pub.
@@ -240,7 +420,7 @@ func (k *Keystore) ListAgents() ([]string, error) {
 
 	var agents []string
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), agentStagePrefix) && !strings.HasPrefix(e.Name(), agentBackupPrefix) {
 			agents = append(agents, e.Name())
 		}
 	}
@@ -272,6 +452,14 @@ func (k *Keystore) ListTrusted() ([]string, error) {
 
 func (k *Keystore) agentDir(name string) string {
 	return filepath.Join(k.baseDir, agentsSubdir, name)
+}
+
+func (k *Keystore) agentStageDir(name string) string {
+	return filepath.Join(k.baseDir, agentsSubdir, agentStagePrefix+name)
+}
+
+func (k *Keystore) agentBackupDir(name string) string {
+	return filepath.Join(k.baseDir, agentsSubdir, agentBackupPrefix+name)
 }
 
 // validateContainment resolves symlinks in path and verifies the result

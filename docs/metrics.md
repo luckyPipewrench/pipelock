@@ -176,7 +176,7 @@ metrics are both observability and enforcement context.
 | `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by session enforcement level transition (e.g. `elevated` → `high`, `high` → `critical`). These transitions feed adaptive enforcement decisions on later requests. |
 | `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
 | `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
-| `pipelock_adaptive_sessions_current` | gauge | `level` | Currently escalated sessions by enforcement level. |
+| `pipelock_adaptive_sessions_current` | gauge | `level` | Currently escalated sessions. Each logical session is counted once at its strongest effective global or destination-scoped level. |
 | `pipelock_session_auto_deescalation_total` | counter | `from`, `to` | Autonomous time-based session de-escalations. |
 
 ## Adaptive Enforcement Metrics

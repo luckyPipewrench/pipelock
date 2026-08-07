@@ -1171,14 +1171,15 @@ type SessionManager struct {
 	ipDomains       map[string][]domainEntry
 	ipBurstCooldown map[string]time.Time // per-IP burst cooldown timestamps
 
-	cfgPtr         atomic.Pointer[config.SessionProfiling]
-	adaptiveCfgPtr atomic.Pointer[config.AdaptiveEnforcement]
-	airlockCfgPtr  atomic.Pointer[config.Airlock]
-	metrics        *metrics.Metrics // nil-safe; used for gauge/counter updates
-	logger         *audit.Logger    // nil-safe; used for airlock de-escalation logging
-	done           chan struct{}
-	closed         sync.Once
-	maintenance    sync.Once
+	cfgPtr          atomic.Pointer[config.SessionProfiling]
+	adaptiveCfgPtr  atomic.Pointer[config.AdaptiveEnforcement]
+	airlockCfgPtr   atomic.Pointer[config.Airlock]
+	metrics         *metrics.Metrics // nil-safe; used for gauge/counter updates
+	unregisterGauge func()
+	logger          *audit.Logger // nil-safe; used for airlock de-escalation logging
+	done            chan struct{}
+	closed          sync.Once
+	maintenance     sync.Once
 
 	// Behavioral baseline: profile-then-lock analysis.
 	// nil when behavioral_baseline.enabled is false.
@@ -1210,6 +1211,9 @@ func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.Adaptiv
 			sm.airlockCfgPtr.Store(opts[0].AirlockCfg)
 		}
 		sm.logger = opts[0].Logger
+	}
+	if m != nil {
+		sm.unregisterGauge = m.RegisterAdaptiveSessionState(sm.AdaptiveSessionLevelCounts)
 	}
 
 	return sm
@@ -1622,7 +1626,54 @@ func (s *SessionState) recomputeScopedBlockAll(adaptiveCfg *config.AdaptiveEnfor
 func (sm *SessionManager) Close() {
 	sm.closed.Do(func() {
 		close(sm.done)
+		if sm.unregisterGauge != nil {
+			sm.unregisterGauge()
+		}
 	})
+}
+
+// AdaptiveSessionLevelCounts returns the current number of escalated adaptive
+// sessions by effective enforcement level. It is the authoritative source for
+// pipelock_adaptive_sessions_current: unlike transition accounting, this stays
+// correct when a session survives a reload or is recovered after metrics state
+// was lost. A session contributes once at its strongest live global-or-scoped
+// enforcement level, which matches the metric's "sessions" contract even when
+// several destination lanes are active concurrently.
+func (sm *SessionManager) AdaptiveSessionLevelCounts() map[string]float64 {
+	counts := make(map[string]float64)
+	if sm == nil {
+		return counts
+	}
+
+	// Snapshot session pointers under the manager lock, then release it before
+	// taking individual session locks. Several lifecycle paths acquire these
+	// locks in the opposite order, so holding sm.mu here would risk a scrape
+	// deadlock. Removed sessions remain valid Go objects; a concurrent eviction
+	// may make one scrape briefly stale, but the next scrape reconciles from the
+	// current map and cannot go negative.
+	sm.mu.RLock()
+	sessions := make([]*SessionState, 0, len(sm.sessions))
+	for _, sess := range sm.sessions {
+		sessions = append(sessions, sess)
+	}
+	sm.mu.RUnlock()
+	for _, sess := range sessions {
+		sess.mu.Lock()
+		level := 0
+		if sess.globalSignalsAuthoritative {
+			level = sess.escalationLevel
+		}
+		for _, scoped := range sess.scopes {
+			if scoped.escalationLevel > level {
+				level = scoped.escalationLevel
+			}
+		}
+		if level > 0 {
+			counts[session.EscalationLabel(level)]++
+		}
+		sess.mu.Unlock()
+	}
+	return counts
 }
 
 // Snapshot returns a sorted read-only snapshot of all sessions.

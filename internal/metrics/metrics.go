@@ -61,7 +61,7 @@ type Metrics struct {
 	sessionsActive           prometheus.Gauge
 	sessionsEvicted          prometheus.Counter
 	adaptiveUpgrades         *prometheus.CounterVec
-	adaptiveSessionsCurrent  *prometheus.GaugeVec
+	adaptiveSessionsCurrent  *adaptiveSessionGauge
 	sessionAutoDeescalations *prometheus.CounterVec
 	chainDetections          *prometheus.CounterVec
 

@@ -99,13 +99,11 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 	if err != nil {
 		return err
 	}
-	if opts.locationID != "" {
-		location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
-		if locationErr != nil {
-			return fmt.Errorf("resolve evidence location: %w", locationErr)
-		}
-		cleanDir = location.Dir
+	location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
+	if locationErr != nil {
+		return fmt.Errorf("resolve evidence location: %w", locationErr)
 	}
+	cleanDir = location.Dir
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
 		return err
@@ -248,13 +246,11 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
-	if opts.locationID != "" {
-		location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
-		if locationErr != nil {
-			return fmt.Errorf("resolve evidence location: %w", locationErr)
-		}
-		cleanDir = location.Dir
+	location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
+	if locationErr != nil {
+		return fmt.Errorf("resolve evidence location: %w", locationErr)
 	}
+	cleanDir = location.Dir
 	sessionID, err := resolveServeSession(cleanDir, opts.sessionID)
 	if err != nil {
 		return err

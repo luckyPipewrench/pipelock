@@ -983,6 +983,15 @@ func ExtractReceiptsFromSessionDirWithLimits(dir, sessionID string, maxEntriesRe
 	return receipts, result.Truncated, err
 }
 
+// ExtractReceiptsFromResolvedSessionDir reads an already-resolved evidence location.
+func ExtractReceiptsFromResolvedSessionDir(dir, sessionID string) ([]Receipt, error) {
+	result, err := recorder.QuerySessionResolved(filepath.Clean(dir), sessionID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("querying session receipts: %w", err)
+	}
+	return extractReceiptsFromEntries(result.Entries)
+}
+
 // evidenceReceiptEntryType is the recorder entry type for v2 evidence receipts.
 // Go's receipt-chain extraction is action-receipt based, so evidence_receipt is
 // a KNOWN operational type it skips rather than extracts (it is not a v1

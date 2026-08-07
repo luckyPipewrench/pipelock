@@ -412,6 +412,10 @@ func TestViewAndServeCmd_LocationSelector(t *testing.T) {
 	if !strings.Contains(stdout.String(), testActorAlpha) {
 		t.Fatalf("selected view missing actor %q", testActorAlpha)
 	}
+	stdout.Reset()
+	if err := runView(cmd, viewOptions{receiptDir: root}); err != nil {
+		t.Fatalf("runView implicit location: %v", err)
+	}
 
 	err := runServe(cmd, serveOptions{
 		receiptDir: root,
@@ -443,6 +447,25 @@ func TestViewAndServeCmd_LocationSelector(t *testing.T) {
 			err := tt.run()
 			if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
 				t.Fatalf("error = %v, want location resolution failure", err)
+			}
+		})
+	}
+
+	secondLocation := filepath.Join(root, "recorder-b", "run-b")
+	emitSingleSession(t, secondLocation, priv, 1)
+	for _, tt := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "view", run: func() error { return runView(cmd, viewOptions{receiptDir: root}) }},
+		{name: "serve", run: func() error {
+			return runServe(cmd, serveOptions{receiptDir: root, listen: "invalid-listen-address"})
+		}},
+	} {
+		t.Run(tt.name+" rejects ambiguous root", func(t *testing.T) {
+			err := tt.run()
+			if err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+				t.Fatalf("error = %v, want ambiguous-location failure", err)
 			}
 		})
 	}

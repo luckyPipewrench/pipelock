@@ -27,9 +27,12 @@ type EvidenceLocation struct {
 // absent.
 func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 	cleanRoot := filepath.Clean(root)
-	info, err := os.Stat(cleanRoot)
+	info, err := os.Lstat(cleanRoot)
 	if err != nil {
 		return nil, fmt.Errorf("stat evidence root: %w", err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refuse symlink as evidence root: %q", root)
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("evidence root %q is not a directory", root)
@@ -40,10 +43,14 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 		if walkErr != nil {
 			return fmt.Errorf("read evidence path %q: %w", path, walkErr)
 		}
-		if entry.Type()&fs.ModeSymlink != 0 {
+		entryInfo, infoErr := entry.Info()
+		if infoErr != nil {
+			return fmt.Errorf("stat evidence path %q: %w", path, infoErr)
+		}
+		if entryInfo.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("refuse symlink in evidence root: %q", path)
 		}
-		if !entry.IsDir() {
+		if !entryInfo.IsDir() {
 			return nil
 		}
 		hasEvidence, readErr := directoryHasEvidenceFiles(path)
@@ -80,10 +87,14 @@ func directoryHasEvidenceFiles(dir string) (bool, error) {
 		return false, err
 	}
 	for _, entry := range entries {
-		if entry.Type()&fs.ModeSymlink != 0 {
+		entryInfo, infoErr := entry.Info()
+		if infoErr != nil {
+			return false, infoErr
+		}
+		if entryInfo.Mode()&fs.ModeSymlink != 0 {
 			return false, fmt.Errorf("refuse symlink in evidence directory: %q", filepath.Join(dir, entry.Name()))
 		}
-		if entry.IsDir() {
+		if entryInfo.IsDir() {
 			continue
 		}
 		if _, _, ok := ParseEvidenceFilename(entry.Name()); ok {
@@ -146,6 +157,9 @@ func ResolveEvidenceLocation(root, locationID string) (EvidenceLocation, error) 
 func cleanEvidenceLocationID(locationID string) (string, error) {
 	if filepath.IsAbs(locationID) {
 		return "", errors.New("evidence location must be relative to the evidence root")
+	}
+	if locationID == "." {
+		return "", nil
 	}
 	clean := filepath.Clean(locationID)
 	if clean == "." || clean == "" || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {

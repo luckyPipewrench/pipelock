@@ -65,19 +65,18 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
 	}
 	clean := filepath.Clean(target)
-	if opts.locationID != "" {
-		info, statErr := os.Stat(clean)
-		if statErr != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", clean, statErr))
-		}
-		if !info.IsDir() {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires an evidence directory"))
-		}
+	info, statErr := os.Stat(clean)
+	if statErr != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", clean, statErr))
+	}
+	if info.IsDir() {
 		location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
 		if locationErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
 		clean = location.Dir
+	} else if opts.locationID != "" {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires an evidence directory"))
 	}
 	receipts, label, err := extractCompletenessReceipts(clean, opts.sessionID)
 	if err != nil {

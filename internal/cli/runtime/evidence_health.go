@@ -481,11 +481,14 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 	// session instead.
 	clean := filepath.Clean(dir)
 	wantSession := filepath.Base(sessionID)
-	location, resolveErr := recorder.ResolveEvidenceLocation(clean, "")
-	if resolveErr != nil {
-		if errors.Is(resolveErr, fs.ErrNotExist) {
+	if _, statErr := os.Stat(clean); statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
 			return receiptTail{}, errNoReceiptTail
 		}
+		return receiptTail{}, fmt.Errorf("stat evidence directory: %w", statErr)
+	}
+	location, resolveErr := recorder.ResolveEvidenceLocation(clean, "")
+	if resolveErr != nil {
 		return receiptTail{}, fmt.Errorf("resolve evidence location: %w", resolveErr)
 	}
 	clean = location.Dir

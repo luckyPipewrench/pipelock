@@ -851,6 +851,9 @@ func TestIndependent_DirModeUsesSelectedEvidenceLocation(t *testing.T) {
 	if !strings.Contains(stdout, "INDEPENDENT VERIFY OK") {
 		t.Fatalf("stdout missing success marker:\n%s", stdout)
 	}
+	if receipts, err := independentReceipts(root, independentOptions{asDir: true, sessionID: "proxy"}); err != nil || len(receipts) != 3 {
+		t.Fatalf("implicit location receipts=%d error=%v, want 3 receipts", len(receipts), err)
+	}
 
 	_, err := independentReceipts(root, independentOptions{
 		asDir:      true,
@@ -858,6 +861,19 @@ func TestIndependent_DirModeUsesSelectedEvidenceLocation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
 		t.Fatalf("unknown location error = %v, want resolution failure", err)
+	}
+	if _, err := independentReceipts(sessionPath, independentOptions{locationID: locationID}); err == nil || !strings.Contains(err.Error(), "--location requires --dir") {
+		t.Fatalf("file-mode location error = %v", err)
+	}
+	secondLocation := filepath.Join(root, "recorder-b", "run-b")
+	if err := os.MkdirAll(secondLocation, 0o750); err != nil {
+		t.Fatalf("create second location: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secondLocation, "evidence-proxy-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write second location: %v", err)
+	}
+	if _, err := independentReceipts(root, independentOptions{asDir: true, sessionID: "proxy"}); err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+		t.Fatalf("ambiguous root error = %v", err)
 	}
 }
 
@@ -2276,11 +2292,32 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 	if !strings.Contains(stdout, "signatures: verified") {
 		t.Errorf("expected signatures verified, got stdout=%q", stdout)
 	}
+	stdout, stderr, code = runRoot(t, "chain", "--dir", "--key", fix.keyHex, root)
+	if code != cliutil.ExitOK {
+		t.Fatalf("implicit location should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	nestedDir := filepath.Join(locationDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
+		t.Fatalf("create nested location: %v", err)
+	}
+	fix.writeEvidenceJSONL(t, filepath.Join(nestedDir, "evidence-proxy-0.jsonl"))
+	stdout, stderr, code = runRoot(t, "chain", "--dir", "--location", filepath.ToSlash(locationID), "--key", fix.keyHex, root)
+	if code != cliutil.ExitOK {
+		t.Fatalf("selected parent location should not be resolved twice, stdout=%q stderr=%q", stdout, stderr)
+	}
 
 	var out, errOut bytes.Buffer
 	err := runChain(&out, &errOut, root, chainOptions{asDir: true, locationID: "missing/run"})
 	if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
 		t.Fatalf("unknown location error = %v, want resolution failure", err)
+	}
+	err = runChain(&out, &errOut, filepath.Join(locationDir, "evidence-proxy-0.jsonl"), chainOptions{locationID: locationID})
+	if err == nil || !strings.Contains(err.Error(), "--location requires --dir") {
+		t.Fatalf("file-mode location error = %v", err)
+	}
+	err = runChain(&out, &errOut, root, chainOptions{asDir: true})
+	if err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+		t.Fatalf("ambiguous root error = %v", err)
 	}
 }
 

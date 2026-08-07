@@ -111,6 +111,26 @@ func TestResolveEvidenceLocation(t *testing.T) {
 	if _, err := ResolveEvidenceLocation(root, "../escape"); err == nil {
 		t.Fatal("ResolveEvidenceLocation accepted an escaping selector")
 	}
+	rootLocation, err := ResolveEvidenceLocation(root, ".")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation root selector: %v", err)
+	}
+	if rootLocation.ID != "" || rootLocation.Dir != root {
+		t.Fatalf("root location = %+v, want dir %q with empty ID", rootLocation, root)
+	}
+}
+
+func TestDiscoverEvidenceLocationsRejectsRootSymlink(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	writeDiscoveryShard(t, target)
+	root := filepath.Join(t.TempDir(), "evidence-link")
+	if err := os.Symlink(target, root); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := DiscoverEvidenceLocations(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("DiscoverEvidenceLocations root symlink error = %v", err)
+	}
 }
 
 // discoveryShardName is the evidence filename every discovery test writes. The

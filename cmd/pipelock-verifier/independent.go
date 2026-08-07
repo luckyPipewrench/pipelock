@@ -118,14 +118,14 @@ func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.B
 
 func independentReceipts(target string, opts independentOptions) ([]receipt.Receipt, error) {
 	if opts.asDir {
-		if opts.locationID != "" {
-			location, err := recorder.ResolveEvidenceLocation(target, opts.locationID)
-			if err != nil {
-				return nil, fmt.Errorf("resolve evidence location: %w", err)
-			}
-			target = location.Dir
+		location, err := recorder.ResolveEvidenceLocation(target, opts.locationID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve evidence location: %w", err)
 		}
-		return receipt.ExtractReceiptsFromSessionDir(target, opts.sessionID)
+		return receipt.ExtractReceiptsFromResolvedSessionDir(location.Dir, opts.sessionID)
+	}
+	if opts.locationID != "" {
+		return nil, fmt.Errorf("--location requires --dir")
 	}
 	return receipt.ExtractReceipts(target)
 }

@@ -1693,6 +1693,52 @@ func writeFleetReportFixtureSigned(t *testing.T, keyID string, pub ed25519.Publi
 	return pub, path
 }
 
+func TestReceiptCommandsRejectAmbiguousEvidenceLocations(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, rel := range []string{"recorder-a/run-a", "recorder-b/run-b"} {
+		dir := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	verify := VerifyReceiptCmd()
+	verify.SetArgs([]string{"--chain", root, "--allow-unpinned"})
+	if err := verify.Execute(); err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+		t.Fatalf("verify-receipt error = %v, want ambiguous-location failure", err)
+	}
+
+	transcript := TranscriptRootCmd()
+	transcript.SetArgs([]string{"--chain", root, "--key", strings.Repeat("a", 64)})
+	if err := transcript.Execute(); err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+		t.Fatalf("transcript-root error = %v, want ambiguous-location failure", err)
+	}
+}
+
+func TestReceiptCommandsRejectLocationWithoutChain(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	verify := VerifyReceiptCmd()
+	verify.SetArgs([]string{"--location", "run-a", "--allow-unpinned", path})
+	if err := verify.Execute(); err == nil || !strings.Contains(err.Error(), "--location requires --chain") {
+		t.Fatalf("verify-receipt error = %v", err)
+	}
+
+	transcript := TranscriptRootCmd()
+	transcript.SetArgs([]string{"--location", "run-a", "--key", strings.Repeat("a", 64), path})
+	if err := transcript.Execute(); err == nil || !strings.Contains(err.Error(), "--location requires --chain") {
+		t.Fatalf("transcript-root error = %v", err)
+	}
+}
+
 func testHexSHA256(seed string) string {
 	sum := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(sum[:])

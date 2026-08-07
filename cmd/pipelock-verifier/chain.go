@@ -96,13 +96,11 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 	var label string
 	if opts.asDir {
 		clean := filepath.Clean(target)
-		if opts.locationID != "" {
-			location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
-			if locationErr != nil {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
-			}
-			clean = location.Dir
+		location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
+		if locationErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
+		clean = location.Dir
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
 		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
 			return handleErr
@@ -113,6 +111,9 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		}
 		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	} else {
+		if opts.locationID != "" {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires --dir"))
+		}
 		clean := filepath.Clean(target)
 		info, statErr := os.Stat(clean)
 		if statErr != nil {
@@ -206,7 +207,7 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex str
 
 func runEvidenceChainFromDir(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
 	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
-		return contractreceipt.ExtractEvidenceReceiptsFromSessionDir(clean, opts.sessionID)
+		return contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(clean, opts.sessionID)
 	})
 }
 

@@ -55,7 +55,11 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 	if err != nil {
 		return nil, fmt.Errorf("resolve evidence location: %w", err)
 	}
-	dir = location.Dir
+	return QuerySessionResolved(location.Dir, sessionID, filter)
+}
+
+// QuerySessionResolved reads one already-resolved evidence location.
+func QuerySessionResolved(dir, sessionID string, filter *QueryFilter) (*QueryResult, error) {
 	dirEntries, dirTruncated, err := readDirectoryEntries(dir, maxDirectoryEntries(filter))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)

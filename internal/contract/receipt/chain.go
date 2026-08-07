@@ -209,7 +209,12 @@ func ExtractEvidenceReceiptsFromSessionDir(dir, sessionID string) ([]EvidenceRec
 	if resolveErr != nil {
 		return nil, fmt.Errorf("resolve evidence location: %w", resolveErr)
 	}
-	clean := location.Dir
+	return ExtractEvidenceReceiptsFromResolvedSessionDir(location.Dir, sessionID)
+}
+
+// ExtractEvidenceReceiptsFromResolvedSessionDir reads one already-resolved evidence location.
+func ExtractEvidenceReceiptsFromResolvedSessionDir(dir, sessionID string) ([]EvidenceReceipt, error) {
+	clean := filepath.Clean(dir)
 	entries, err := os.ReadDir(clean)
 	if err != nil {
 		return nil, fmt.Errorf("read evidence directory: %w", err)

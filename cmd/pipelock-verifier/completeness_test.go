@@ -455,6 +455,10 @@ func TestCompletenessCLILocationSelector(t *testing.T) {
 	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonBoundedClosed {
 		t.Fatalf("report=%s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
 	}
+	stdout, stderr, code = runRoot(t, "completeness", "--json", "--key", hex.EncodeToString(pub), root)
+	if code != cliutil.ExitOK {
+		t.Fatalf("implicit location code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 
 	var out, errOut bytes.Buffer
 	err = runCompleteness(&out, &errOut, root, completenessOptions{locationID: "missing/run"})
@@ -469,5 +473,16 @@ func TestCompletenessCLILocationSelector(t *testing.T) {
 	err = runCompleteness(&out, &errOut, filepath.Join(root, "absent"), completenessOptions{locationID: "recorder-a/run-a"})
 	if err == nil || !strings.Contains(err.Error(), "stat") {
 		t.Fatalf("missing target error = %v, want stat failure", err)
+	}
+	secondLocation := filepath.Join(root, "recorder-b", "run-b")
+	if err := os.MkdirAll(secondLocation, 0o750); err != nil {
+		t.Fatalf("create second location: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secondLocation, "evidence-proxy-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write second location: %v", err)
+	}
+	err = runCompleteness(&out, &errOut, root, completenessOptions{})
+	if err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
+		t.Fatalf("ambiguous root error = %v", err)
 	}
 }

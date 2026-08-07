@@ -207,7 +207,7 @@ func (s streamState) verifyRecorderEntry(rec recorder.Entry, lineNo int, previou
 	if !s.allowedVersions[rec.Version] || !hashSupportedVersion(rec.Version) {
 		return fmt.Errorf("%w (line=%d, seq=%d, version=%d)", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence, rec.Version)
 	}
-	if err := recorder.ValidateEntryNamespace(rec.Version, rec.ChainKind, rec.WriterInstanceID); err != nil {
+	if err := recorder.ValidateEntrySchema(rec); err != nil {
 		return fmt.Errorf("%w (line=%d, seq=%d): %w", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence, err)
 	}
 

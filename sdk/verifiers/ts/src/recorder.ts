@@ -41,12 +41,18 @@ export function readEntries(file: string): RecorderEntry[] {
       if (typeof entry.chain_kind !== "string" || entry.chain_kind === "") {
         throw new RuntimeError(`line ${i + 1}: v3 chain_kind required`);
       }
+      if (entry.chain_kind.includes("\0")) {
+        throw new RuntimeError(`line ${i + 1}: v3 chain_kind cannot contain NUL`);
+      }
       if (typeof entry.writer_instance_id !== "string" || entry.writer_instance_id === "") {
         throw new RuntimeError(`line ${i + 1}: v3 writer_instance_id required`);
       }
+      if (entry.writer_instance_id.includes("\0")) {
+        throw new RuntimeError(`line ${i + 1}: v3 writer_instance_id cannot contain NUL`);
+      }
     } else if (
-      (typeof entry.chain_kind === "string" && entry.chain_kind !== "") ||
-      (typeof entry.writer_instance_id === "string" && entry.writer_instance_id !== "")
+      legacyNamespaceFieldIsSet(entry.chain_kind) ||
+      legacyNamespaceFieldIsSet(entry.writer_instance_id)
     ) {
       throw new RuntimeError(
         `line ${i + 1}: legacy entry cannot carry v3 recorder namespace fields`,
@@ -55,6 +61,10 @@ export function readEntries(file: string): RecorderEntry[] {
     entries.push(entry);
   }
   return entries;
+}
+
+function legacyNamespaceFieldIsSet(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== "";
 }
 
 export function extractReceipts(file: string): Receipt[] {

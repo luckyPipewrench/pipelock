@@ -632,6 +632,43 @@ test("JSONL recorder reader rejects namespace fields on legacy entries", () => {
   }
 });
 
+test("JSONL recorder reader rejects malformed legacy namespace field types", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const [name, value] of [
+      ["object", "{}"],
+      ["array", "[]"],
+      ["number", "1"],
+      ["boolean", "true"],
+    ]) {
+      const file = join(dir, `${name}.jsonl`);
+      writeFileSync(
+        file,
+        `{"v":2,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":${value},"type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}\n`,
+        { mode: 0o600 },
+      );
+      assert.throws(() => extractReceipts(file), /legacy entry cannot carry/u);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL recorder reader rejects NUL in v3 namespace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "v3-nul.jsonl");
+  try {
+    writeFileSync(
+      file,
+      '{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"a\\u0000b","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}\n',
+      { mode: 0o600 },
+    );
+    assert.throws(() => extractReceipts(file), /cannot contain NUL/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder extraction rejects duplicate keys inside receipt detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   const file = join(dir, "duplicate-key.jsonl");

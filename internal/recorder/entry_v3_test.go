@@ -71,6 +71,42 @@ func TestComputeHashV3BindsNamespace(t *testing.T) {
 	}
 }
 
+func TestV3RejectsNullDelimiterCollision(t *testing.T) {
+	left := v3Entry()
+	left.ChainKind = "recorder"
+	left.WriterInstanceID = "a\x00b"
+	right := left
+	right.ChainKind = "recorder\x00a"
+	right.WriterInstanceID = "b"
+	if recorder.ComputeHash(left) != recorder.ComputeHash(right) {
+		t.Fatal("fixture does not reproduce the frozen v3 delimiter collision")
+	}
+	for _, entry := range []recorder.Entry{left, right} {
+		if err := recorder.ValidateEntrySchema(entry); err == nil || !strings.Contains(err.Error(), "cannot contain NUL") {
+			t.Fatalf("ValidateEntrySchema() error = %v, want NUL rejection", err)
+		}
+	}
+}
+
+func TestEntryVersionsCanShareChain(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tail, write int
+		want        bool
+	}{
+		{"v1_to_v2", 1, 2, true},
+		{"v2_to_v3", 2, 3, false},
+		{"v3_to_v2", 3, 2, false},
+		{"v3_to_v3", 3, 3, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recorder.EntryVersionsCanShareChain(tc.tail, tc.write); got != tc.want {
+				t.Fatalf("EntryVersionsCanShareChain(%d, %d) = %v, want %v", tc.tail, tc.write, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyChainV3RequiresNamespace(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

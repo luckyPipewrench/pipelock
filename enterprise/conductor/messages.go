@@ -1405,6 +1405,9 @@ func (c EvidenceChain) Validate(seqStart, seqEnd uint64) error {
 			return err
 		}
 	}
+	if err := recorder.ValidateEntryNamespace(c.EntryVersion, c.ChainKind, c.WriterInstanceID); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSequenceRange, err)
+	}
 	if err := validateIdentifier("chain.segment_id", c.SegmentID); err != nil {
 		return err
 	}

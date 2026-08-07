@@ -201,6 +201,24 @@ func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
 	}
 }
 
+func TestEvidenceChainRejectsVersionInappropriateNamespace(t *testing.T) {
+	legacy := testAuditBatch().Chain
+	legacy.EntryVersion = recorder.CurrentWriteEntryVersion
+	legacy.ChainKind = recorder.ChainKindRecorder
+	legacy.WriterInstanceID = "writer-a"
+	if err := legacy.Validate(legacy.SeqStart, legacy.SeqEnd); err == nil {
+		t.Fatal("EvidenceChain.Validate() accepted unhashed namespace on v2")
+	}
+
+	v3 := testAuditBatch().Chain
+	v3.EntryVersion = recorder.LatestEntryVersion
+	v3.ChainKind = ""
+	v3.WriterInstanceID = ""
+	if err := v3.Validate(v3.SeqStart, v3.SeqEnd); err == nil {
+		t.Fatal("EvidenceChain.Validate() accepted incomplete v3 namespace")
+	}
+}
+
 func TestAuditBatchEnvelope_DroppedAccounting(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		batch := testAuditBatch()

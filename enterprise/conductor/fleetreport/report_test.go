@@ -382,7 +382,7 @@ func TestVerifySegmentRejectsMalformedSegments(t *testing.T) {
 			entries := append([]recorder.Entry(nil), valid...)
 			entries[1].WriterInstanceID = "unexpected"
 			return entries
-		}(), "chain namespace mismatch"},
+		}(), "invalid recorder entry"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -396,6 +396,35 @@ func TestVerifySegmentRejectsMalformedSegments(t *testing.T) {
 			err := verifySegment("audit-1", chain, tc.entries)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("verifySegment() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifySegmentRejectsVersionInappropriateNamespace(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version int
+		kind    string
+		writer  string
+	}{
+		{"legacy_with_namespace", recorder.CurrentWriteEntryVersion, recorder.ChainKindRecorder, "writer-a"},
+		{"v3_without_namespace", recorder.LatestEntryVersion, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := recorder.Entry{
+				Version: tc.version, Sequence: 0, Timestamp: testWindowStart,
+				SessionID: "proxy", ChainKind: tc.kind, WriterInstanceID: tc.writer,
+				Type: "checkpoint", Transport: "recorder", Summary: "fixture",
+				PrevHash: recorder.GenesisHash,
+			}
+			entry.Hash = recorder.ComputeHash(entry)
+			chain := conductorcore.EvidenceChain{
+				EntryVersion: tc.version, ChainKind: tc.kind, WriterInstanceID: tc.writer,
+				SeqStart: 0, SeqEnd: 0, SegmentHeadHash: entry.Hash, SegmentTailHash: entry.Hash,
+			}
+			if err := verifySegment("audit-namespace", chain, []recorder.Entry{entry}); err == nil {
+				t.Fatal("verifySegment() accepted version-inappropriate namespace")
 			}
 		})
 	}

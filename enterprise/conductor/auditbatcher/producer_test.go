@@ -61,9 +61,9 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metrics := &transportMetricsRecorder{}
-	p := newTestProducer(t, q, metrics, priv)
-	p.ObserveRecorderEntry(recorder.Entry{Version: 1, Type: "action_receipt"})
+	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
+	const tail = "unsupported-v1-checkpoint"
+	p.ObserveRecorderEntry(recorder.Entry{Version: 1, Type: checkpointEntryType, Hash: tail})
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +71,35 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Pending != 0 || metrics.delivery["drop:invalid_checkpoint"] != 1 {
-		t.Fatalf("v1 segment pending=%d invalid drops=%d, want 0 and 1", stats.Pending, metrics.delivery["drop:invalid_checkpoint"])
+	if stats.Pending != 0 || p.previousSegmentTail != tail {
+		t.Fatalf("v1 segment pending=%d tail=%q, want 0 and %q", stats.Pending, p.previousSegmentTail, tail)
+	}
+}
+
+func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
+	const tail = "invalid-v2-namespace-checkpoint"
+	p.ObserveRecorderEntry(recorder.Entry{
+		Version: recorder.CurrentWriteEntryVersion, Type: checkpointEntryType,
+		ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "unhashed", Hash: tail,
+	})
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := q.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 0 || p.previousSegmentTail != tail {
+		t.Fatalf("invalid namespace pending=%d tail=%q, want 0 and %q", stats.Pending, p.previousSegmentTail, tail)
 	}
 }
 

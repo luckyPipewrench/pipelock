@@ -305,16 +305,19 @@ func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []
 	if entries[0].Hash != chain.SegmentHeadHash || entries[len(entries)-1].Hash != chain.SegmentTailHash {
 		return fmt.Errorf("fleet report: audit batch %s chain head/tail mismatch", batchID)
 	}
-	for i, entry := range entries {
+	for _, entry := range entries {
 		if !recorder.IsAcceptedEntryVersion(entry.Version) {
 			return fmt.Errorf("fleet report: audit batch %s seq %d unsupported recorder entry version %d", batchID, entry.Sequence, entry.Version)
+		}
+		if err := recorder.ValidateEntrySchema(entry); err != nil {
+			return fmt.Errorf("fleet report: audit batch %s seq %d invalid recorder entry: %w", batchID, entry.Sequence, err)
 		}
 		if entry.Version != chain.EntryVersion || entry.ChainKind != chain.ChainKind || entry.WriterInstanceID != chain.WriterInstanceID {
 			return fmt.Errorf("fleet report: audit batch %s seq %d chain namespace mismatch", batchID, entry.Sequence)
 		}
-		if i == 0 {
-			continue
-		}
+	}
+	for i := 1; i < len(entries); i++ {
+		entry := entries[i]
 		prev := entries[i-1]
 		if entry.Sequence != prev.Sequence+1 {
 			return fmt.Errorf("fleet report: audit batch %s seq gap at %d", batchID, entry.Sequence)

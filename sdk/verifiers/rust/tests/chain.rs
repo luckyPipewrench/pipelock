@@ -737,8 +737,8 @@ fn recorder_reader_accepts_namespaced_v3_entries() {
     let fixture = TempFixture(recorder_fixture_path("v3-valid"));
     let path = &fixture.0;
     let line = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
-    fs::write(&path, format!("{line}\n")).expect("write JSONL");
-    let receipts = extract_receipts(&path).expect("v3 entry should parse");
+    fs::write(path, format!("{line}\n")).expect("write JSONL");
+    let receipts = extract_receipts(path).expect("v3 entry should parse");
     assert!(receipts.is_empty());
 }
 
@@ -761,8 +761,8 @@ fn recorder_reader_rejects_v3_entries_without_complete_namespace() {
         let line = format!(
             r#"{{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s",{namespace}"type":"checkpoint","transport":"x","summary":"","detail":{{}},"prev_hash":"genesis","hash":"h"}}"#
         );
-        fs::write(&path, format!("{line}\n")).expect("write JSONL");
-        let err = extract_receipts(&path).expect_err("incomplete v3 namespace should reject");
+        fs::write(path, format!("{line}\n")).expect("write JSONL");
+        let err = extract_receipts(path).expect_err("incomplete v3 namespace should reject");
         assert!(err.to_string().contains(expected), "{err}");
     }
 }
@@ -775,6 +775,35 @@ fn recorder_reader_rejects_namespace_fields_on_legacy_entries() {
     fs::write(path, format!("{line}\n")).expect("write JSONL");
     let err = extract_receipts(path).expect_err("legacy namespace should reject");
     assert!(err.to_string().contains("legacy entry cannot carry"));
+}
+
+#[test]
+fn recorder_reader_rejects_malformed_legacy_namespace_types() {
+    for (name, value) in [
+        ("object", "{}"),
+        ("array", "[]"),
+        ("number", "1"),
+        ("boolean", "true"),
+    ] {
+        let fixture = TempFixture(recorder_fixture_path(name));
+        let path = &fixture.0;
+        let line = format!(
+            r#"{{"v":2,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":{value},"type":"checkpoint","transport":"x","summary":"","detail":{{}},"prev_hash":"genesis","hash":"h"}}"#
+        );
+        fs::write(path, format!("{line}\n")).expect("write JSONL");
+        let err = extract_receipts(path).expect_err("malformed legacy namespace should reject");
+        assert!(err.to_string().contains("legacy entry cannot carry"));
+    }
+}
+
+#[test]
+fn recorder_reader_rejects_nul_in_v3_namespace() {
+    let fixture = TempFixture(recorder_fixture_path("v3-nul"));
+    let path = &fixture.0;
+    let line = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"a\u0000b","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
+    fs::write(path, format!("{line}\n")).expect("write JSONL");
+    let err = extract_receipts(path).expect_err("NUL namespace should reject");
+    assert!(err.to_string().contains("cannot contain NUL"));
 }
 
 fn recorder_fixture_path(name: &str) -> std::path::PathBuf {

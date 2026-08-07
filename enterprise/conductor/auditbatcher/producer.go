@@ -182,6 +182,16 @@ func (p *Producer) run() {
 	var pending []recorder.Entry
 	for entry := range p.entries {
 		if !conductor.IsSupportedAuditEntryVersion(entry.Version) {
+			if entry.Type == checkpointEntryType {
+				p.previousSegmentTail = entry.Hash
+			}
+			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
+			continue
+		}
+		if err := recorder.ValidateEntrySchema(entry); err != nil {
+			if entry.Type == checkpointEntryType {
+				p.previousSegmentTail = entry.Hash
+			}
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}

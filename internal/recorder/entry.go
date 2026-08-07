@@ -85,12 +85,47 @@ func ValidateEntryNamespace(version int, chainKind, writerInstanceID string) err
 		if writerInstanceID == "" {
 			return errors.New("v3 writer_instance_id required")
 		}
+		if strings.ContainsRune(chainKind, '\x00') {
+			return errors.New("v3 chain_kind cannot contain NUL")
+		}
+		if strings.ContainsRune(writerInstanceID, '\x00') {
+			return errors.New("v3 writer_instance_id cannot contain NUL")
+		}
 		return nil
 	}
 	if chainKind != "" || writerInstanceID != "" {
 		return errors.New("legacy entry cannot carry v3 recorder namespace fields")
 	}
 	return nil
+}
+
+// ValidateEntrySchema rejects fields that the version's hash projection cannot
+// bind unambiguously. V3 retains the frozen null-delimited projection, so its
+// string fields cannot contain the delimiter.
+func ValidateEntrySchema(e Entry) error {
+	if err := ValidateEntryNamespace(e.Version, e.ChainKind, e.WriterInstanceID); err != nil {
+		return err
+	}
+	if !EntryVersionHasNamespace(e.Version) {
+		return nil
+	}
+	for name, value := range map[string]string{
+		"session_id": e.SessionID, "chain_kind": e.ChainKind,
+		"writer_instance_id": e.WriterInstanceID, "trace_id": e.TraceID,
+		"type": e.Type, "event_kind": e.EventKind, "transport": e.Transport,
+		"summary": e.Summary, "raw_ref": e.RawRef, "prev_hash": e.PrevHash,
+	} {
+		if strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("v3 %s cannot contain NUL", name)
+		}
+	}
+	return nil
+}
+
+// EntryVersionsCanShareChain reports whether a writer may resume a tail
+// without crossing between legacy and namespaced hash-chain families.
+func EntryVersionsCanShareChain(tailVersion, writeVersion int) bool {
+	return EntryVersionHasNamespace(tailVersion) == EntryVersionHasNamespace(writeVersion)
 }
 
 // Entry is a single evidence record in the hash chain.
@@ -275,7 +310,7 @@ func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
 		if !acceptedEntryVersions[e.Version] {
 			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2, 3)", e.Sequence, e.Version)
 		}
-		if err := ValidateEntryNamespace(e.Version, e.ChainKind, e.WriterInstanceID); err != nil {
+		if err := ValidateEntrySchema(e); err != nil {
 			return fmt.Errorf("entry seq %d: %w", e.Sequence, err)
 		}
 		if EntryVersionHasNamespace(e.Version) {
@@ -501,7 +536,7 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 		if !acceptedEntryVersions[e.Version] {
 			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, e.Version)
 		}
-		if err := ValidateEntryNamespace(e.Version, e.ChainKind, e.WriterInstanceID); err != nil {
+		if err := ValidateEntrySchema(e); err != nil {
 			return nil, false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
 		}
 		entries = append(entries, e)

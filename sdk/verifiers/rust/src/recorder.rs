@@ -40,14 +40,8 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         }
         if version == Some(3) {
             require_v3_namespace(&entry, index + 1)?;
-        } else if entry
-            .get("chain_kind")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-            || entry
-                .get("writer_instance_id")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| !value.is_empty())
+        } else if legacy_namespace_field_is_set(&entry, "chain_kind")
+            || legacy_namespace_field_is_set(&entry, "writer_instance_id")
         {
             return Err(VerifierError::Invalid(format!(
                 "line {}: legacy entry cannot carry v3 recorder namespace fields",
@@ -57,6 +51,14 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         entries.push(entry);
     }
     Ok(entries)
+}
+
+fn legacy_namespace_field_is_set(entry: &serde_json::Value, field: &str) -> bool {
+    match entry.get(field) {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::String(value)) => !value.is_empty(),
+        Some(_) => true,
+    }
 }
 
 pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
@@ -175,13 +177,14 @@ fn errors_unsupported(line: usize, version: Option<u64>) -> Result<()> {
 
 fn require_v3_namespace(entry: &serde_json::Value, line: usize) -> Result<()> {
     for field in ["chain_kind", "writer_instance_id"] {
-        if entry
+        let value = entry
             .get(field)
             .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
-        {
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| VerifierError::Runtime(format!("line {line}: v3 {field} required")))?;
+        if value.contains('\0') {
             return Err(VerifierError::Runtime(format!(
-                "line {line}: v3 {field} required"
+                "line {line}: v3 {field} cannot contain NUL"
             )));
         }
     }

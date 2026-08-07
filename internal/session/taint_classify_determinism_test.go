@@ -153,6 +153,14 @@ func TestClassifyMCPToolCall_ShellCommandOrderIsStable(t *testing.T) {
 			argsJSON:        `{"program":"git","argv":["push","origin","main"]}`,
 			wantSensitivity: session.SensitivityElevated,
 		},
+		{
+			// Two vector fields are two independent command candidates. A
+			// regression that flattened them back into one would spell a
+			// mutation out of tokens that were never one command.
+			name:            "separate vectors do not form one command",
+			argsJSON:        `{"args":["git"],"argv":["push"]}`,
+			wantSensitivity: session.SensitivityProtected,
+		},
 	}
 
 	for _, tt := range tests {

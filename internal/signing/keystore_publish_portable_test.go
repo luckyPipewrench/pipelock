@@ -67,6 +67,26 @@ func TestPublishAgentDirectoryPortable_ReplacesActivePair(t *testing.T) {
 	}
 }
 
+func TestPublishAgentDirectoryPortable_CheckpointsRecoveryAndPublication(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "agent")
+	stage := filepath.Join(root, ".stage")
+	backup := filepath.Join(root, ".backup")
+
+	portableKeyPair(t, target, "old")
+	portableKeyPair(t, stage, "new")
+
+	var checkpoints []string
+	if err := publishAgentDirectoryPortableWithSync(target, stage, backup, func(path string) {
+		checkpoints = append(checkpoints, path)
+	}); err != nil {
+		t.Fatalf("publishAgentDirectoryPortableWithSync: %v", err)
+	}
+	if len(checkpoints) != 2 || checkpoints[0] != root || checkpoints[1] != root {
+		t.Errorf("directory checkpoints = %q, want recovery and publication checkpoints for %q", checkpoints, root)
+	}
+}
+
 func TestPublishAgentDirectoryPortable_ClearsStaleBackup(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "agent")
@@ -99,7 +119,10 @@ func TestPublishAgentDirectoryPortable_RestoresPriorPairOnInstallFailure(t *test
 
 	portableKeyPair(t, target, "old")
 
-	err := publishAgentDirectoryPortable(target, stage, backup)
+	var checkpoints []string
+	err := publishAgentDirectoryPortableWithSync(target, stage, backup, func(path string) {
+		checkpoints = append(checkpoints, path)
+	})
 	if err == nil {
 		t.Fatal("publication succeeded with no staged directory")
 	}
@@ -111,6 +134,9 @@ func TestPublishAgentDirectoryPortable_RestoresPriorPairOnInstallFailure(t *test
 	}
 	if _, statErr := os.Stat(filepath.Join(target, publicKeyFile)); statErr != nil {
 		t.Errorf("restored pair is missing its public half: %v", statErr)
+	}
+	if len(checkpoints) != 2 || checkpoints[0] != root || checkpoints[1] != root {
+		t.Errorf("directory checkpoints = %q, want recovery and rollback checkpoints for %q", checkpoints, root)
 	}
 }
 

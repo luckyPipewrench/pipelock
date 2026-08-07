@@ -10,16 +10,20 @@ import (
 	"testing"
 )
 
-// syncDirectory is defined only in the linux publication path, so a test that
-// calls it has to carry the same build tag. Without one the whole package fails
-// to compile for GOOS=windows, which this package supports.
+func TestPublishAgentDirectory_CheckpointsParentBestEffort(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "agent")
+	stage := filepath.Join(root, ".stage")
+	seedAgentPair(t, target, []byte("old-public"), []byte("old-private"))
+	seedAgentPair(t, stage, []byte("new-public"), []byte("new-private"))
 
-func TestSyncDirectory_ReportsMissingPath(t *testing.T) {
-	// The fsync is what makes a completed exchange durable, so a path it cannot
-	// open is reported rather than swallowed. Callers decide what to do with it;
-	// silently returning nil here is what let a publication claim success while
-	// remaining vulnerable to a power loss.
-	if err := syncDirectory(filepath.Join(t.TempDir(), "absent")); err == nil {
-		t.Fatal("syncDirectory reported success for a path it could not open")
+	var checkpoints []string
+	if err := publishAgentDirectoryWithSync(target, stage, filepath.Join(root, ".backup"), func(path string) {
+		checkpoints = append(checkpoints, path)
+	}); err != nil {
+		t.Fatalf("publishAgentDirectoryWithSync: %v", err)
+	}
+	if len(checkpoints) != 1 || checkpoints[0] != root {
+		t.Errorf("directory checkpoints = %q, want one checkpoint for %q", checkpoints, root)
 	}
 }

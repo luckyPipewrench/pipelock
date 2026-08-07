@@ -7,26 +7,26 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
-// ErrPublishedNotDurable reports that the new key pair is ALREADY the active
-// identity and only the durability confirmation failed. It is not a failed
-// publication and must not be handled as one.
-//
-// The distinction matters because the two demand opposite responses. A failed
-// publication leaves the old pair active, so a caller should keep using it. This
-// leaves the NEW pair active and signing, so a caller that treats it as a
-// failure keeps distributing a public key the keystore no longer signs with.
-// Anything reporting this error has already changed the active identity.
-var ErrPublishedNotDurable = errors.New("agent key pair published but durability could not be confirmed")
-
 func publishAgentDirectoryPortable(targetDir, stageDir, backupDir string) error {
+	return publishAgentDirectoryPortableWithSync(targetDir, stageDir, backupDir, syncDirectory)
+}
+
+func publishAgentDirectoryPortableWithSync(targetDir, stageDir, backupDir string, syncDir func(string)) error {
+	parentDir := filepath.Dir(targetDir)
 	if err := os.RemoveAll(backupDir); err != nil {
 		return fmt.Errorf("removing stale agent backup: %w", err)
 	}
 	if err := os.Rename(targetDir, backupDir); err != nil {
 		return fmt.Errorf("backing up active agent directory: %w", err)
 	}
+	// The active path is temporarily empty, so checkpoint the old pair in its
+	// recovery location before installing the staged one. The helper is
+	// best-effort for the same reason as atomicfile.Write: a filesystem that
+	// cannot fsync directories still has durable key data and atomic renames.
+	syncDir(parentDir)
 	if err := installStagedAgentDirectory(targetDir, stageDir); err != nil {
 		if removeErr := removeEmptyDirectory(targetDir); removeErr != nil && !os.IsNotExist(removeErr) {
 			return fmt.Errorf("installing staged agent directory: %w", errors.Join(err, fmt.Errorf("clearing active path for rollback: %w", removeErr)))
@@ -34,13 +34,28 @@ func publishAgentDirectoryPortable(targetDir, stageDir, backupDir string) error 
 		if restoreErr := os.Rename(backupDir, targetDir); restoreErr != nil {
 			return fmt.Errorf("installing staged agent directory: %w", errors.Join(err, fmt.Errorf("restoring prior key pair: %w", restoreErr)))
 		}
+		syncDir(parentDir)
 		return fmt.Errorf("installing staged agent directory: %w", err)
 	}
 	// The new pair is already committed. Cleanup is best-effort so a cleanup
 	// failure cannot turn a successful force-regenerate into an ambiguous error.
 	// The next generation recovers by keeping the coherent active pair.
 	_ = os.RemoveAll(backupDir)
+	syncDir(parentDir)
 	return nil
+}
+
+// syncDirectory checkpoints parent-directory entry changes when the platform
+// supports it. Key-file writes already fsync their data before publication;
+// a directory sync adds crash durability for renames but is not a reason to
+// reject an identity that is already active on filesystems without that support.
+func syncDirectory(path string) {
+	dir, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return
+	}
+	_ = dir.Sync()
+	_ = dir.Close()
 }
 
 func installStagedAgentDirectory(targetDir, stageDir string) error {

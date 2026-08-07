@@ -202,12 +202,18 @@ func (p *Producer) run() {
 		}
 		if err := recorder.ValidateEntrySchema(entry); err != nil {
 			if recorder.ValidateEntryNamespace(entry.Version, entry.ChainKind, entry.WriterInstanceID) != nil {
-				for pendingKey, chainPending := range pending {
-					p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(chainPending))
-					delete(pending, pendingKey)
+				if entry.Version == 1 || entry.Version == 2 {
+					p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
+					delete(pending, key)
+					blocked[key] = true
+				} else {
+					for pendingKey, chainPending := range pending {
+						p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(chainPending))
+						delete(pending, pendingKey)
+					}
+					p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
+					blockedAll = true
 				}
-				p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
-				blockedAll = true
 			} else {
 				p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
 				delete(pending, key)
@@ -228,6 +234,9 @@ func (p *Producer) run() {
 		// enqueueSegment records its own drop accounting and metrics at
 		// each failure site, so the returned error is informational only.
 		_ = p.enqueueSegment(chainPending)
+		if p.previousSegmentTailFor(key) != entry.Hash {
+			blocked[key] = true
+		}
 		delete(pending, key)
 	}
 	for _, chainPending := range pending {

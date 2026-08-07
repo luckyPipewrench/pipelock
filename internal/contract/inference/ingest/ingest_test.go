@@ -64,9 +64,19 @@ func TestStreamTypesCaptureSummary(t *testing.T) {
 }
 
 func TestParseRecorderEntryRejectsExplicitNullV3ProjectedField(t *testing.T) {
-	line := []byte(`{"v":3,"seq":0,"ts":null,"session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}`)
-	if _, err := parseRecorderEntry(line); err == nil || !strings.Contains(err.Error(), "ts must be a string") {
-		t.Fatalf("parseRecorderEntry() error = %v, want v3 ts type error", err)
+	for _, tc := range []struct {
+		name string
+		line string
+		want string
+	}{
+		{"null", `{"v":3,"seq":0,"ts":null,"session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}`, "ts must be a string"},
+		{"missing", `{"v":3,"seq":0,"session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}`, "ts required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseRecorderEntry([]byte(tc.line)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseRecorderEntry() error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

@@ -74,7 +74,7 @@ func TestComputeHashV3BindsNamespace(t *testing.T) {
 }
 
 func TestReadEntriesV3RejectsExplicitNullProjectedStrings(t *testing.T) {
-	for _, field := range []string{"ts", "trace_id", "summary", "prev_hash"} {
+	for _, field := range []string{"ts", "session_id", "chain_kind", "writer_instance_id", "trace_id", "type", "event_kind", "transport", "summary", "raw_ref", "prev_hash"} {
 		t.Run(field, func(t *testing.T) {
 			e := v3Entry()
 			e.Hash = recorder.ComputeHash(e)
@@ -96,6 +96,27 @@ func TestReadEntriesV3RejectsExplicitNullProjectedStrings(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("missing_ts", func(t *testing.T) {
+		e := v3Entry()
+		e.Hash = recorder.ComputeHash(e)
+		encoded, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(encoded, &raw); err != nil {
+			t.Fatal(err)
+		}
+		delete(raw, "ts")
+		encoded, err = json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recorder.ReadEntriesFromReader(strings.NewReader(string(encoded) + "\n")); err == nil || !strings.Contains(err.Error(), "ts required") {
+			t.Fatalf("ReadEntriesFromReader() error = %v, want missing v3 ts error", err)
+		}
+	})
 }
 
 func TestV3RejectsNullDelimiterCollision(t *testing.T) {
@@ -111,6 +132,28 @@ func TestV3RejectsNullDelimiterCollision(t *testing.T) {
 	for _, entry := range []recorder.Entry{left, right} {
 		if err := recorder.ValidateEntrySchema(entry); err == nil || !strings.Contains(err.Error(), "cannot contain NUL") {
 			t.Fatalf("ValidateEntrySchema() error = %v, want NUL rejection", err)
+		}
+	}
+}
+
+func TestLegacyRejectsNullDelimiterCollision(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		left := v3Entry()
+		left.Version = version
+		left.ChainKind = ""
+		left.WriterInstanceID = ""
+		left.SessionID = "x\x00y"
+		left.TraceID = "z"
+		right := left
+		right.SessionID = "x"
+		right.TraceID = "y\x00z"
+		if recorder.ComputeHash(left) != recorder.ComputeHash(right) {
+			t.Fatalf("v%d fixture does not reproduce delimiter collision", version)
+		}
+		for _, entry := range []recorder.Entry{left, right} {
+			if err := recorder.ValidateEntrySchema(entry); err == nil || !strings.Contains(err.Error(), "cannot contain NUL") {
+				t.Fatalf("ValidateEntrySchema(v%d) error = %v, want NUL rejection", version, err)
+			}
 		}
 	}
 }

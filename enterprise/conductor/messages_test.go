@@ -211,6 +211,17 @@ func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("same_namespaced_chain_detects_fork", func(t *testing.T) {
+		first := testAuditBatch()
+		first.Chain = chain
+		second := first
+		second.PayloadSHA256 = testHash("20")
+		second.Chain.SegmentTailHash = testHash("21")
+		if !first.ForksWith(second) {
+			t.Fatal("ForksWith() = false for conflicting batches in the same v3 namespace")
+		}
+	})
 }
 
 func TestEvidenceChainRejectsVersionInappropriateNamespace(t *testing.T) {

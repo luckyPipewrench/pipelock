@@ -115,17 +115,21 @@ func ValidateEntrySchema(e Entry) error {
 	if err := ValidateEntryNamespace(e.Version, e.ChainKind, e.WriterInstanceID); err != nil {
 		return err
 	}
-	if !EntryVersionHasNamespace(e.Version) {
-		return nil
-	}
-	for name, value := range map[string]string{
-		"session_id": e.SessionID, "chain_kind": e.ChainKind,
-		"writer_instance_id": e.WriterInstanceID, "trace_id": e.TraceID,
-		"type": e.Type, "event_kind": e.EventKind, "transport": e.Transport,
+	fields := map[string]string{
+		"session_id": e.SessionID, "trace_id": e.TraceID,
+		"type": e.Type, "transport": e.Transport,
 		"summary": e.Summary, "raw_ref": e.RawRef, "prev_hash": e.PrevHash,
-	} {
+	}
+	if e.Version >= 2 {
+		fields["event_kind"] = e.EventKind
+	}
+	if EntryVersionHasNamespace(e.Version) {
+		fields["chain_kind"] = e.ChainKind
+		fields["writer_instance_id"] = e.WriterInstanceID
+	}
+	for name, value := range fields {
 		if strings.ContainsRune(value, '\x00') {
-			return fmt.Errorf("v3 %s cannot contain NUL", name)
+			return fmt.Errorf("v%d %s cannot contain NUL", e.Version, name)
 		}
 	}
 	return nil
@@ -141,8 +145,13 @@ func ValidateEntryJSONSchema(rawJSON []byte, version int) error {
 	if err := json.Unmarshal(rawJSON, &projected); err != nil {
 		return fmt.Errorf("parse v3 projected fields: %w", err)
 	}
+	required := map[string]bool{"ts": true, "session_id": true, "type": true, "transport": true, "summary": true, "prev_hash": true}
 	for _, field := range []string{"ts", "session_id", "chain_kind", "writer_instance_id", "trace_id", "type", "event_kind", "transport", "summary", "raw_ref", "prev_hash"} {
-		if value, ok := projected[field]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		value, ok := projected[field]
+		if !ok && required[field] {
+			return fmt.Errorf("v3 %s required", field)
+		}
+		if ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return fmt.Errorf("v3 %s must be a string", field)
 		}
 	}

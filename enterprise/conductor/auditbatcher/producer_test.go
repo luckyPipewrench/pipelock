@@ -70,6 +70,9 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	for _, entry := range checkpointSegment(2) {
 		p.ObserveRecorderEntry(entry)
 	}
+	for _, entry := range namespacedCheckpointSegment(0, "writer-a") {
+		p.ObserveRecorderEntry(entry)
+	}
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +80,8 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Pending != 0 || p.previousSegmentTail != "" {
-		t.Fatalf("v1 segment pending=%d tail=%q, want quarantined namespace with no accepted tail", stats.Pending, p.previousSegmentTail)
+	if stats.Pending != 1 || p.previousSegmentTail != "" {
+		t.Fatalf("v1 segment pending=%d tail=%q, want legacy quarantined and v3 pending", stats.Pending, p.previousSegmentTail)
 	}
 }
 
@@ -101,6 +104,9 @@ func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
 	for _, entry := range checkpointSegment(2) {
 		p.ObserveRecorderEntry(entry)
 	}
+	for _, entry := range namespacedCheckpointSegment(0, "writer-a") {
+		p.ObserveRecorderEntry(entry)
+	}
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +114,15 @@ func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Pending != 0 || p.previousSegmentTail != "" {
-		t.Fatalf("invalid namespace pending=%d tail=%q, want quarantined namespace with no accepted tail", stats.Pending, p.previousSegmentTail)
+	if stats.Pending != 1 || p.previousSegmentTail != "" {
+		t.Fatalf("invalid namespace pending=%d tail=%q, want legacy quarantined and v3 pending", stats.Pending, p.previousSegmentTail)
+	}
+	lease, err := q.Claim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lease.Batch.Envelope.Chain.WriterInstanceID; got != "writer-a" {
+		t.Fatalf("independent v3 writer = %q, want writer-a", got)
 	}
 }
 
@@ -401,11 +414,10 @@ func TestProducer_AdvancesChainTailOnDroppedSegment(t *testing.T) {
 	}
 }
 
-// TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint covers the
-// invalid-checkpoint drop path: the tail still advances (the recorder wrote
-// the checkpoint) and the drop metric carries the right reason. Nothing is
-// enqueued.
-func TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint(t *testing.T) {
+// TestProducer_QuarantinesInvalidCheckpoint covers the fail-closed boundary:
+// an invalid checkpoint cannot become a trusted tail, and later entries in the
+// same namespace cannot be emitted with stale continuity.
+func TestProducer_QuarantinesInvalidCheckpoint(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -416,25 +428,27 @@ func TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint(t *testing.T) 
 	}
 	metrics := &transportMetricsRecorder{}
 	p := newTestProducer(t, q, metrics, priv)
-	defer func() { _ = p.Close() }()
 
 	seg := checkpointSegment(0)
 	seg[1].Detail = recorder.CheckpointDetail{} // strip the checkpoint signature
-	if err := p.enqueueSegment(seg); err == nil {
-		t.Fatal("expected invalid checkpoint error")
+	for _, entry := range append(seg, checkpointSegment(2)...) {
+		p.ObserveRecorderEntry(entry)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if p.previousSegmentTail != "" {
 		t.Fatalf("tail advanced from invalid checkpoint: %q", p.previousSegmentTail)
 	}
-	if got := metrics.delivery["drop:invalid_checkpoint"]; got != 1 {
-		t.Fatalf("invalid_checkpoint drop metric = %d, want 1", got)
+	if got := metrics.delivery["drop:invalid_checkpoint"]; got != 2 {
+		t.Fatalf("invalid_checkpoint drop metric = %d, want 2", got)
 	}
 	stats, err := q.Stats()
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	if stats.Pending != 0 {
-		t.Fatalf("pending = %d, want 0 (nothing enqueued)", stats.Pending)
+		t.Fatalf("pending = %d, want 0 after namespace quarantine", stats.Pending)
 	}
 }
 

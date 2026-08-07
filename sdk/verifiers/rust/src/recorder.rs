@@ -38,10 +38,10 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         if version != Some(1) && version != Some(2) && version != Some(3) {
             errors_unsupported(index + 1, version)?;
         }
-        if version == Some(3) {
-            validate_v3_projected_strings(&entry, index + 1)?;
-        } else if legacy_namespace_field_is_set(&entry, "chain_kind")
-            || legacy_namespace_field_is_set(&entry, "writer_instance_id")
+        validate_projected_strings(&entry, index + 1, version.unwrap_or_default())?;
+        if version != Some(3)
+            && (legacy_namespace_field_is_set(&entry, "chain_kind")
+                || legacy_namespace_field_is_set(&entry, "writer_instance_id"))
         {
             return Err(VerifierError::Invalid(format!(
                 "line {}: legacy entry cannot carry v3 recorder namespace fields",
@@ -175,12 +175,10 @@ fn errors_unsupported(line: usize, version: Option<u64>) -> Result<()> {
     )))
 }
 
-fn validate_v3_projected_strings(entry: &serde_json::Value, line: usize) -> Result<()> {
-    for field in [
+fn validate_projected_strings(entry: &serde_json::Value, line: usize, version: u64) -> Result<()> {
+    let mut fields = vec![
         "ts",
         "session_id",
-        "chain_kind",
-        "writer_instance_id",
         "trace_id",
         "type",
         "event_kind",
@@ -188,24 +186,41 @@ fn validate_v3_projected_strings(entry: &serde_json::Value, line: usize) -> Resu
         "summary",
         "raw_ref",
         "prev_hash",
-    ] {
+    ];
+    if version == 3 {
+        fields.extend(["chain_kind", "writer_instance_id"]);
+    }
+    for field in fields {
+        let missing = entry.get(field).is_none();
         let value = match entry.get(field) {
             None => "",
             Some(value) => value.as_str().ok_or_else(|| {
                 VerifierError::Runtime(format!("line {line}: v3 {field} must be a string"))
             })?,
         };
-        if (field == "chain_kind" || field == "writer_instance_id") && value.is_empty() {
+        let required = version == 3
+            && matches!(
+                field,
+                "ts" | "session_id"
+                    | "chain_kind"
+                    | "writer_instance_id"
+                    | "type"
+                    | "transport"
+                    | "summary"
+                    | "prev_hash"
+            );
+        let namespace_required = field == "chain_kind" || field == "writer_instance_id";
+        if (required && missing) || (version == 3 && namespace_required && value.is_empty()) {
             return Err(VerifierError::Runtime(format!(
                 "line {line}: v3 {field} required"
             )));
         }
         if value.contains('\0') {
             return Err(VerifierError::Runtime(format!(
-                "line {line}: v3 {field} cannot contain NUL"
+                "line {line}: v{version} {field} cannot contain NUL"
             )));
         }
-        if field == "ts" {
+        if version == 3 && field == "ts" {
             crate::aarp::envelope::validate_timestamp(value, "recorder ts")
                 .map_err(|err| VerifierError::Runtime(format!("line {line}: {err}")))?;
         }

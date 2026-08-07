@@ -632,6 +632,23 @@ test("JSONL recorder reader rejects namespace fields on legacy entries", () => {
   }
 });
 
+test("JSONL recorder reader rejects NUL in legacy projected strings", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const version of [1, 2]) {
+      const file = join(dir, `v${version}-nul.jsonl`);
+      writeFileSync(
+        file,
+        `${JSON.stringify({ v: version, seq: 0, ts: "2026-08-07T00:00:00Z", session_id: "x\0y", type: "checkpoint", transport: "x", summary: "", detail: {}, prev_hash: "genesis", hash: "h" })}\n`,
+        { mode: 0o600 },
+      );
+      assert.throws(() => extractReceipts(file), /cannot contain NUL/u);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder reader rejects malformed legacy namespace field types", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   try {
@@ -734,9 +751,13 @@ test("JSONL recorder reader rejects non-string v3 projected fields", () => {
         v: 3,
         seq: 0,
         ts: "2026-08-07T00:00:00Z",
+        session_id: "s",
         chain_kind: "recorder",
         writer_instance_id: "writer-a",
         type: "checkpoint",
+        transport: "x",
+        summary: "",
+        prev_hash: "genesis",
       };
       entry[field] = 1;
       writeFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
@@ -751,16 +772,17 @@ test("JSONL recorder reader rejects null and malformed v3 timestamps", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   try {
     for (const [name, ts] of [
+      ["omitted", undefined],
       ["null", null],
       ["malformed", "not-a-time"],
     ]) {
       const file = join(dir, `v3-ts-${name}.jsonl`);
       writeFileSync(
         file,
-        `${JSON.stringify({ v: 3, seq: 0, ts, chain_kind: "recorder", writer_instance_id: "writer-a", type: "checkpoint" })}\n`,
+        `${JSON.stringify({ v: 3, seq: 0, ts, session_id: "s", chain_kind: "recorder", writer_instance_id: "writer-a", type: "checkpoint", transport: "x", summary: "", prev_hash: "genesis" })}\n`,
         { mode: 0o600 },
       );
-      assert.throws(() => extractReceipts(file), /recorder ts|ts must be a string/u);
+      assert.throws(() => extractReceipts(file), /ts required|recorder ts|ts must be a string/u);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

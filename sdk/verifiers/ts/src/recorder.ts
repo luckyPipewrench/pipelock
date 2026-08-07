@@ -38,11 +38,11 @@ export function readEntries(file: string): RecorderEntry[] {
         `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2, 3)`,
       );
     }
-    if (entry.v === 3) {
-      validateV3ProjectedStrings(entry, i + 1);
-    } else if (
-      legacyNamespaceFieldIsSet(entry.chain_kind) ||
-      legacyNamespaceFieldIsSet(entry.writer_instance_id)
+    validateProjectedStrings(entry, i + 1, entry.v);
+    if (
+      entry.v !== 3 &&
+      (legacyNamespaceFieldIsSet(entry.chain_kind) ||
+        legacyNamespaceFieldIsSet(entry.writer_instance_id))
     ) {
       throw new RuntimeError(
         `line ${i + 1}: legacy entry cannot carry v3 recorder namespace fields`,
@@ -53,12 +53,10 @@ export function readEntries(file: string): RecorderEntry[] {
   return entries;
 }
 
-function validateV3ProjectedStrings(entry: RecorderEntry, line: number): void {
-  for (const field of [
+function validateProjectedStrings(entry: RecorderEntry, line: number, version: number): void {
+  const fields: (keyof RecorderEntry)[] = [
     "ts",
     "session_id",
-    "chain_kind",
-    "writer_instance_id",
     "trace_id",
     "type",
     "event_kind",
@@ -66,21 +64,33 @@ function validateV3ProjectedStrings(entry: RecorderEntry, line: number): void {
     "summary",
     "raw_ref",
     "prev_hash",
-  ] as const) {
+  ];
+  if (version === 3) fields.push("chain_kind", "writer_instance_id");
+  for (const field of fields) {
     const value = entry[field];
     if (value !== undefined && typeof value !== "string") {
       throw new RuntimeError(`line ${line}: v3 ${field} must be a string`);
     }
-    if (
-      (field === "chain_kind" || field === "writer_instance_id") &&
-      (value === undefined || value === "")
-    ) {
+    const required =
+      version === 3 &&
+      [
+        "ts",
+        "session_id",
+        "chain_kind",
+        "writer_instance_id",
+        "type",
+        "transport",
+        "summary",
+        "prev_hash",
+      ].includes(field);
+    const namespaceRequired = field === "chain_kind" || field === "writer_instance_id";
+    if ((required && value === undefined) || (version === 3 && namespaceRequired && value === "")) {
       throw new RuntimeError(`line ${line}: v3 ${field} required`);
     }
     if (typeof value === "string" && value.includes("\0")) {
-      throw new RuntimeError(`line ${line}: v3 ${field} cannot contain NUL`);
+      throw new RuntimeError(`line ${line}: v${version} ${field} cannot contain NUL`);
     }
-    if (field === "ts" && typeof value === "string") {
+    if (version === 3 && field === "ts" && typeof value === "string") {
       try {
         validateTimestamp(value);
       } catch (err) {

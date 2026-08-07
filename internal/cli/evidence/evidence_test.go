@@ -391,6 +391,63 @@ func TestViewCmd_ExplicitSession(t *testing.T) {
 	}
 }
 
+func TestViewAndServeCmd_LocationSelector(t *testing.T) {
+	t.Parallel()
+	_, priv := genKey(t)
+	root := t.TempDir()
+	locationID := filepath.Join("recorder-a", "run-a")
+	locationDir := filepath.Join(root, locationID)
+	emitSingleSession(t, locationDir, priv, 1)
+
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := runView(cmd, viewOptions{
+		receiptDir: root,
+		locationID: filepath.ToSlash(locationID),
+	}); err != nil {
+		t.Fatalf("runView selected location: %v", err)
+	}
+	if !strings.Contains(stdout.String(), testActorAlpha) {
+		t.Fatalf("selected view missing actor %q", testActorAlpha)
+	}
+
+	err := runServe(cmd, serveOptions{
+		receiptDir: root,
+		locationID: filepath.ToSlash(locationID),
+		listen:     "invalid-listen-address",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--listen") {
+		t.Fatalf("runServe selected location error = %v, want post-selection listen failure", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "view",
+			run: func() error {
+				return runView(cmd, viewOptions{receiptDir: root, locationID: "missing/run"})
+			},
+		},
+		{
+			name: "serve",
+			run: func() error {
+				return runServe(cmd, serveOptions{receiptDir: root, locationID: "missing/run", listen: "invalid-listen-address"})
+			},
+		},
+	} {
+		t.Run(tt.name+" rejects unknown location", func(t *testing.T) {
+			err := tt.run()
+			if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
+				t.Fatalf("error = %v, want location resolution failure", err)
+			}
+		})
+	}
+}
+
 func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	t.Parallel()
 	_, priv := genKey(t)

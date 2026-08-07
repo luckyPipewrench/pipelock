@@ -821,6 +821,46 @@ func TestIndependent_DirModeUsesSessionReceipts(t *testing.T) {
 	}
 }
 
+func TestIndependent_DirModeUsesSelectedEvidenceLocation(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 3)
+	evidence, bundle, logPath := writeIndependentFixture(t, fix)
+	sessionPath := moveIndependentEvidenceToSessionFile(t, evidence)
+	root := t.TempDir()
+	locationID := filepath.Join("recorder-a", "run-a")
+	locationDir := filepath.Join(root, locationID)
+	if err := os.MkdirAll(locationDir, 0o750); err != nil {
+		t.Fatalf("create selected location: %v", err)
+	}
+	if err := os.Rename(sessionPath, filepath.Join(locationDir, filepath.Base(sessionPath))); err != nil {
+		t.Fatalf("move evidence into selected location: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t, "independent", root,
+		"--dir",
+		"--location", filepath.ToSlash(locationID),
+		"--session", "proxy",
+		"--bundle", bundle,
+		"--key", fix.keyHex,
+		"--local-log", logPath,
+		"--log-id", "verifier-test-log",
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "INDEPENDENT VERIFY OK") {
+		t.Fatalf("stdout missing success marker:\n%s", stdout)
+	}
+
+	_, err := independentReceipts(root, independentOptions{
+		asDir:      true,
+		locationID: "missing/run",
+	})
+	if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
+		t.Fatalf("unknown location error = %v, want resolution failure", err)
+	}
+}
+
 func TestIndependent_DirModeRejectsUnknownSession(t *testing.T) {
 	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
 	fix := newFixture(t, 3)
@@ -2209,6 +2249,38 @@ func TestChain_EvidenceV2DirHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "signatures: verified") {
 		t.Errorf("expected signatures verified, got stdout=%q", stdout)
+	}
+}
+
+func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 3)
+	root := t.TempDir()
+	locationID := filepath.Join("recorder-a", "run-a")
+	locationDir := filepath.Join(root, locationID)
+	if err := os.MkdirAll(locationDir, 0o750); err != nil {
+		t.Fatalf("create selected location: %v", err)
+	}
+	fix.writeEvidenceJSONL(t, filepath.Join(locationDir, "evidence-proxy-0.jsonl"))
+
+	stdout, stderr, code := runRoot(t,
+		"chain", "--dir",
+		"--location", filepath.ToSlash(locationID),
+		"--key", fix.keyHex,
+		"--expect-signer-id", v2SignerID,
+		root,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("selected location should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "signatures: verified") {
+		t.Errorf("expected signatures verified, got stdout=%q", stdout)
+	}
+
+	var out, errOut bytes.Buffer
+	err := runChain(&out, &errOut, root, chainOptions{asDir: true, locationID: "missing/run"})
+	if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
+		t.Fatalf("unknown location error = %v, want resolution failure", err)
 	}
 }
 

@@ -406,3 +406,68 @@ func TestCompletenessCLITranscriptRootAfterCloseDoesNotTripPostCloseGuard(t *tes
 		t.Fatalf("receipt_count=%d, want 2 action receipts with transcript_root ignored: %#v", report.ReceiptCount, report)
 	}
 }
+
+func TestCompletenessCLILocationSelector(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	locationID := filepath.Join("recorder-a", "run-a")
+	locationDir := filepath.Join(root, locationID)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:           true,
+		Dir:               locationDir,
+		MaxEntriesPerFile: 100,
+		FileMode:          0o600,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "policy-completeness-location",
+		Principal:  "user",
+		Actor:      "agent",
+	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := emitter.EmitSessionClose("normal"); err != nil {
+		t.Fatalf("EmitSessionClose: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t,
+		"completeness", "--json",
+		"--location", filepath.ToSlash(locationID),
+		"--key", hex.EncodeToString(pub),
+		root,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("selected location code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	report := parseCompletenessReport(t, stdout)
+	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonBoundedClosed {
+		t.Fatalf("report=%s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
+	}
+
+	var out, errOut bytes.Buffer
+	err = runCompleteness(&out, &errOut, root, completenessOptions{locationID: "missing/run"})
+	if err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
+		t.Fatalf("unknown location error = %v, want resolution failure", err)
+	}
+	selectedPath := filepath.Join(locationDir, "evidence-proxy-0.jsonl")
+	err = runCompleteness(&out, &errOut, selectedPath, completenessOptions{locationID: "recorder-a/run-a"})
+	if err == nil || !strings.Contains(err.Error(), "--location requires an evidence directory") {
+		t.Fatalf("file target error = %v, want directory requirement", err)
+	}
+	err = runCompleteness(&out, &errOut, filepath.Join(root, "absent"), completenessOptions{locationID: "recorder-a/run-a"})
+	if err == nil || !strings.Contains(err.Error(), "stat") {
+		t.Fatalf("missing target error = %v, want stat failure", err)
+	}
+}

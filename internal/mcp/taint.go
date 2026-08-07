@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,6 +65,7 @@ type taintDecision struct {
 	Authority           session.AuthorityKind
 	Result              session.PolicyDecisionResult
 	ActionRef           string
+	OverrideRefs        []string
 	RequiresReauth      bool
 	TaskOverrideApplied bool
 }
@@ -107,9 +109,10 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 	decision.Sensitivity = classified.Sensitivity
 	decision.ActionRef = classified.ActionRef
 	decision.ActionRef = mcpActionRef(toolName, decision.ActionRef)
+	decision.OverrideRefs = mcpOverrideRefs(toolName, classified.OverrideRefs, decision.ActionRef)
 	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
 		decision.Task = tp.TaskSnapshot()
-		if taintRuntimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.ActionRef) {
+		if taintRuntimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.OverrideRefs) {
 			decision.Result = session.PolicyDecisionResult{
 				Decision: session.PolicyAllow,
 				Reason:   "taint_runtime_task_override",
@@ -128,7 +131,7 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 			ClassificationConfident: classified.Confident,
 		},
 	)
-	if taintTrustOverrideApplies(taintCfg.TrustOverrides, decision.Risk, decision.ActionRef) {
+	if taintTrustOverrideApplies(taintCfg.TrustOverrides, decision.Risk, decision.OverrideRefs) {
 		decision.Result = session.PolicyDecisionResult{
 			Decision: session.PolicyAllow,
 			Reason:   "taint_trust_override",
@@ -173,12 +176,26 @@ func mcpActionRef(toolName, target string) string {
 	return strings.Join(parts, ":")
 }
 
-func taintTrustOverrideApplies(overrides []config.TaintTrustOverride, risk session.SessionRisk, actionRef string) bool {
+func mcpOverrideRefs(toolName string, targets []string, primary string) []string {
+	if len(targets) == 0 {
+		return []string{primary}
+	}
+	refs := make([]string, 0, len(targets))
+	for _, target := range targets {
+		ref := mcpActionRef(toolName, target)
+		if !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func taintTrustOverrideApplies(overrides []config.TaintTrustOverride, risk session.SessionRisk, actionRefs []string) bool {
 	for _, override := range overrides {
 		if !override.ExpiresAt.IsZero() && override.ExpiresAt.Before(time.Now().UTC()) {
 			continue
 		}
-		if !taintOverrideMatches(override, risk, actionRef) {
+		if !taintOverrideMatches(override, risk, actionRefs) {
 			continue
 		}
 		return true
@@ -186,10 +203,10 @@ func taintTrustOverrideApplies(overrides []config.TaintTrustOverride, risk sessi
 	return false
 }
 
-func taintOverrideMatches(override config.TaintTrustOverride, risk session.SessionRisk, actionRef string) bool {
+func taintOverrideMatches(override config.TaintTrustOverride, risk session.SessionRisk, actionRefs []string) bool {
 	switch override.Scope {
 	case taintScopeAction:
-		if override.ActionMatch == "" || !taintWildcardMatch(actionRef, override.ActionMatch) {
+		if override.ActionMatch == "" || !allTaintActionRefsMatch(actionRefs, override.ActionMatch) {
 			return false
 		}
 		if override.SourceMatch != "" && !taintRiskSourceMatches(risk, override.SourceMatch) {
@@ -200,7 +217,7 @@ func taintOverrideMatches(override config.TaintTrustOverride, risk session.Sessi
 		if override.SourceMatch == "" || !taintRiskSourceMatches(risk, override.SourceMatch) {
 			return false
 		}
-		if override.ActionMatch != "" && !taintWildcardMatch(actionRef, override.ActionMatch) {
+		if override.ActionMatch != "" && !allTaintActionRefsMatch(actionRefs, override.ActionMatch) {
 			return false
 		}
 		return true
@@ -209,7 +226,7 @@ func taintOverrideMatches(override config.TaintTrustOverride, risk session.Sessi
 	}
 }
 
-func taintRuntimeTrustOverrideApplies(overrides []session.TrustOverride, task session.TaskContext, risk session.SessionRisk, actionRef string) bool {
+func taintRuntimeTrustOverrideApplies(overrides []session.TrustOverride, task session.TaskContext, risk session.SessionRisk, actionRefs []string) bool {
 	now := time.Now().UTC()
 	for _, override := range overrides {
 		if override.Scope != taintScopeTask {
@@ -221,7 +238,7 @@ func taintRuntimeTrustOverrideApplies(overrides []session.TrustOverride, task se
 		if !override.ExpiresAt.IsZero() && override.ExpiresAt.Before(now) {
 			continue
 		}
-		if override.ActionMatch != "" && !taintWildcardMatch(actionRef, override.ActionMatch) {
+		if override.ActionMatch != "" && !allTaintActionRefsMatch(actionRefs, override.ActionMatch) {
 			continue
 		}
 		if override.SourceMatch != "" && !taintRiskSourceMatches(risk, override.SourceMatch) {
@@ -230,6 +247,18 @@ func taintRuntimeTrustOverrideApplies(overrides []session.TrustOverride, task se
 		return true
 	}
 	return false
+}
+
+func allTaintActionRefsMatch(actionRefs []string, pattern string) bool {
+	if len(actionRefs) == 0 {
+		return false
+	}
+	for _, actionRef := range actionRefs {
+		if !taintWildcardMatch(actionRef, pattern) {
+			return false
+		}
+	}
+	return true
 }
 
 func taintRiskSourceMatches(risk session.SessionRisk, pattern string) bool {

@@ -878,6 +878,14 @@ func TestExtractReceiptsFromSessionDirRejectsTruncatedQuery(t *testing.T) {
 	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("ExtractReceiptsFromSessionDir error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
+	location, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	_, err = ExtractReceiptsFromResolvedSessionDir(location, "proxy")
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ExtractReceiptsFromResolvedSessionDir error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
 }
 
 func TestExtractReceipts_RawJSONLIgnoresNonReceiptFile(t *testing.T) {
@@ -1587,6 +1595,17 @@ func TestExtractReceiptsFromSessionDir_NoMatch(t *testing.T) {
 	}
 	if len(receipts) != 0 {
 		t.Fatalf("expected 0 receipts, got %d", len(receipts))
+	}
+}
+
+func TestExtractReceiptsFromResolvedSessionDirRejectsInvalidLocation(t *testing.T) {
+	t.Parallel()
+	location := recorder.EvidenceLocation{}
+	if _, _, err := ExtractReceiptsFromResolvedSessionDirBounded(location, "proxy", 1); err == nil {
+		t.Fatal("bounded resolved extractor accepted an invalid location")
+	}
+	if _, err := ExtractReceiptsFromResolvedSessionDir(location, "proxy"); err == nil {
+		t.Fatal("resolved extractor accepted an invalid location")
 	}
 }
 

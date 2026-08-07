@@ -493,15 +493,6 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 	}
 	dirEntries, err := recorder.ReadEvidenceLocationEntries(location)
 	if err != nil {
-		// filepath.Glob, which this replaced, reported no matches and no error
-		// for a directory that does not exist, and a caller relies on that: an
-		// absent recorder directory means there is no tail yet, not a failure.
-		// Preserve exactly that case. Every other error (permission denied, for
-		// one) now surfaces instead of being silently reported as "no tail",
-		// which Glob could not distinguish.
-		if errors.Is(err, fs.ErrNotExist) {
-			return receiptTail{}, errNoReceiptTail
-		}
 		return receiptTail{}, err
 	}
 	files := make([]string, 0, len(dirEntries))

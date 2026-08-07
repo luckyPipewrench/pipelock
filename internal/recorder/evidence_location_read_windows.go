@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -19,45 +20,36 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 	if err := validateEvidenceLocation(location); err != nil {
 		return nil, err
 	}
-	current := filepath.Clean(location.Root)
-	parts := []string{""}
-	if location.ID != "" {
-		parts = strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator))
-	}
-	for i, part := range parts {
-		if part != "" {
-			current = filepath.Join(current, part)
-		}
-		info, err := os.Lstat(current)
-		if err != nil {
-			return nil, fmt.Errorf("inspect evidence location component: %w", err)
-		}
-		if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !info.IsDir() {
-			return nil, fmt.Errorf("refuse reparse point or non-directory in evidence location: %q", current)
-		}
-		if i+1 < len(parts) {
-			continue
-		}
-	}
-	pointer, err := windows.UTF16PtrFromString(current)
+	root := filepath.Clean(location.Root)
+	pointer, err := windows.UTF16PtrFromString(root)
 	if err != nil {
 		return nil, err
 	}
 	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open evidence location: %w", err)
+		return nil, fmt.Errorf("open evidence root: %w", err)
 	}
-	file := os.NewFile(uintptr(handle), current)
-	if file == nil {
+	current := os.NewFile(uintptr(handle), root)
+	if current == nil {
 		_ = windows.CloseHandle(handle)
-		return nil, errors.New("open evidence location: invalid handle")
+		return nil, errors.New("open evidence root: invalid handle")
 	}
-	info, err := file.Stat()
-	if err != nil || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !info.IsDir() {
-		_ = file.Close()
-		return nil, errors.New("opened evidence location is a reparse point or non-directory")
+	if err := validateWindowsHandle(current, true); err != nil {
+		_ = current.Close()
+		return nil, fmt.Errorf("validate evidence root: %w", err)
 	}
-	return file, nil
+	for _, part := range strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		next, openErr := openWindowsRelative(current, part, true, filepath.Join(root, filepath.FromSlash(location.ID)))
+		_ = current.Close()
+		if openErr != nil {
+			return nil, fmt.Errorf("open evidence location component %q: %w", part, openErr)
+		}
+		current = next
+	}
+	return current, nil
 }
 
 func openEvidenceLocationFile(location EvidenceLocation, name string) (*os.File, os.FileInfo, error) {
@@ -68,25 +60,93 @@ func openEvidenceLocationFile(location EvidenceLocation, name string) (*os.File,
 	if err != nil {
 		return nil, nil, err
 	}
-	_ = directory.Close()
-	path := filepath.Join(location.Dir, name)
-	pointer, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	defer func() { _ = directory.Close() }()
+	file, err := openWindowsRelative(directory, name, false, filepath.Join(location.Dir, name))
 	if err != nil {
 		return nil, nil, fmt.Errorf("open evidence file %q: %w", name, err)
 	}
-	file := os.NewFile(uintptr(handle), path)
-	if file == nil {
-		_ = windows.CloseHandle(handle)
-		return nil, nil, errors.New("open evidence file: invalid handle")
-	}
 	info, err := file.Stat()
-	if err != nil || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !info.Mode().IsRegular() {
+	if err != nil || !info.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, nil, errors.New("opened evidence file is a reparse point or non-regular")
+		return nil, nil, errors.New("opened evidence file is non-regular")
 	}
 	return file, info, nil
+}
+
+type windowsFileAttributeTagInfo struct {
+	FileAttributes uint32
+	ReparseTag     uint32
+}
+
+func validateWindowsHandle(file *os.File, wantDirectory bool) error {
+	var tagInfo windowsFileAttributeTagInfo
+	if err := windows.GetFileInformationByHandleEx(
+		windows.Handle(file.Fd()),
+		windows.FileAttributeTagInfo,
+		(*byte)(unsafe.Pointer(&tagInfo)),
+		uint32(unsafe.Sizeof(tagInfo)),
+	); err != nil {
+		return err
+	}
+	if tagInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return errors.New("opened evidence path is a reparse point")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if wantDirectory && !info.IsDir() {
+		return errors.New("opened evidence path is not a directory")
+	}
+	if !wantDirectory && !info.Mode().IsRegular() {
+		return errors.New("opened evidence path is not a regular file")
+	}
+	return nil
+}
+
+func openWindowsRelative(parent *os.File, name string, directory bool, displayPath string) (*os.File, error) {
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return nil, err
+	}
+	attributes := windows.OBJECT_ATTRIBUTES{
+		RootDirectory: windows.Handle(parent.Fd()),
+		ObjectName:    objectName,
+		Attributes:    windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+	}
+	attributes.Length = uint32(unsafe.Sizeof(attributes))
+	options := uint32(windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if directory {
+		options |= windows.FILE_DIRECTORY_FILE
+	} else {
+		options |= windows.FILE_NON_DIRECTORY_FILE
+	}
+	var handle windows.Handle
+	var status windows.IO_STATUS_BLOCK
+	err = windows.NtCreateFile(
+		&handle,
+		windows.FILE_GENERIC_READ,
+		&attributes,
+		&status,
+		nil,
+		0,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_OPEN,
+		options,
+		0,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), displayPath)
+	if file == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("open evidence path: invalid handle")
+	}
+	if err := validateWindowsHandle(file, directory); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }

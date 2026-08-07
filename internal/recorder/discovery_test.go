@@ -111,12 +111,39 @@ func TestResolveEvidenceLocation(t *testing.T) {
 	if _, err := ResolveEvidenceLocation(root, "../escape"); err == nil {
 		t.Fatal("ResolveEvidenceLocation accepted an escaping selector")
 	}
+	if _, err := ResolveEvidenceLocation(root, "missing/run"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("ResolveEvidenceLocation missing selector error = %v", err)
+	}
+	if _, err := ResolveEvidenceLocation(root, filepath.Join(string(filepath.Separator), "absolute")); err == nil {
+		t.Fatal("ResolveEvidenceLocation accepted an absolute selector")
+	}
 	rootLocation, err := ResolveEvidenceLocation(root, ".")
 	if err != nil {
 		t.Fatalf("ResolveEvidenceLocation root selector: %v", err)
 	}
 	if rootLocation.ID != "" || rootLocation.Dir != root {
 		t.Fatalf("root location = %+v, want dir %q with empty ID", rootLocation, root)
+	}
+}
+
+func TestResolveEvidenceLocationNormalizesRelativeRoot(t *testing.T) {
+	t.Parallel()
+	absRoot := t.TempDir()
+	writeDiscoveryShard(t, absRoot)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	relRoot, err := filepath.Rel(cwd, absRoot)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	location, err := ResolveEvidenceLocation(relRoot, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation relative root: %v", err)
+	}
+	if location.Root != absRoot || location.Dir != absRoot {
+		t.Fatalf("relative location = %+v, want absolute root %q", location, absRoot)
 	}
 }
 
@@ -130,6 +157,59 @@ func TestDiscoverEvidenceLocationsRejectsRootSymlink(t *testing.T) {
 	}
 	if _, err := DiscoverEvidenceLocations(root); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("DiscoverEvidenceLocations root symlink error = %v", err)
+	}
+}
+
+func TestDiscoverEvidenceLocationsRejectsMissingAndNonDirectoryRoots(t *testing.T) {
+	t.Parallel()
+	if _, err := DiscoverEvidenceLocations(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("DiscoverEvidenceLocations accepted a missing root")
+	}
+	path := filepath.Join(t.TempDir(), "evidence-file")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := DiscoverEvidenceLocations(path); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("DiscoverEvidenceLocations non-directory error = %v", err)
+	}
+}
+
+func TestEvidenceRawSidecarRecognition(t *testing.T) {
+	t.Parallel()
+	if !isEvidenceRawSidecar("evidence-proxy-0.raw.enc") {
+		t.Fatal("valid raw sidecar was not recognized")
+	}
+	for _, name := range []string{"evidence-proxy-0.jsonl", "unrelated.raw.enc", "evidence-proxy.raw.enc"} {
+		if isEvidenceRawSidecar(name) {
+			t.Fatalf("isEvidenceRawSidecar(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestDiscoverEvidenceLocationsFindsRawSidecarOnly(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "evidence-proxy-0.raw.enc"), []byte("encrypted"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	locations, err := DiscoverEvidenceLocations(root)
+	if err != nil {
+		t.Fatalf("DiscoverEvidenceLocations: %v", err)
+	}
+	if len(locations) != 1 || locations[0].ID != "" {
+		t.Fatalf("locations = %+v, want one root location", locations)
+	}
+}
+
+func TestResolveEvidenceLocationEmptyDirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	location, err := ResolveEvidenceLocation(root, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation empty directory: %v", err)
+	}
+	if location.Root != root || location.Dir != root || location.ID != "" {
+		t.Fatalf("empty directory location = %+v, want root %q", location, root)
 	}
 }
 

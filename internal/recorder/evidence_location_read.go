@@ -23,7 +23,7 @@ func validateEvidenceLocation(location EvidenceLocation) error {
 		if err != nil {
 			return fmt.Errorf("invalid evidence location ID: %w", err)
 		}
-		if cleanID != filepath.ToSlash(filepath.Clean(filepath.FromSlash(id))) {
+		if cleanID != id {
 			return errors.New("evidence location ID is not canonical")
 		}
 	}

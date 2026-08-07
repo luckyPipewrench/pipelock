@@ -397,6 +397,20 @@ func TestExtractEvidenceReceiptsFromSessionDir_Errors(t *testing.T) {
 	}
 }
 
+func TestExtractEvidenceReceiptsFromSessionDirRejectsTiedShardStarts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data := []byte(`{"type":"evidence_receipt","detail":null}` + "\n")
+	for _, name := range []string{"evidence-proxy-0.jsonl", "evidence-proxy-00.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if _, err := receipt.ExtractEvidenceReceiptsFromSessionDir(dir, "proxy"); err == nil {
+		t.Fatal("expected tied shard starts to fail closed")
+	}
+}
+
 func TestExtractEvidenceReceipts_Errors(t *testing.T) {
 	dir := t.TempDir()
 

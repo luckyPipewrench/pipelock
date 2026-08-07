@@ -502,3 +502,29 @@ func TestCompletenessCLILocationSelector(t *testing.T) {
 		t.Fatalf("ambiguous root error = %v", err)
 	}
 }
+
+func TestExtractCompletenessReceiptsResolvedLocationReplacementFailsClosed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := filepath.Join(root, "run")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	location, err := recorder.ResolveEvidenceLocation(root, "run")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if err := os.WriteFile(dir, []byte("not evidence"), 0o600); err != nil {
+		t.Fatalf("WriteFile replacement: %v", err)
+	}
+	_, _, err = extractCompletenessReceipts(dir, "proxy", &location)
+	if err == nil || !strings.Contains(err.Error(), "open evidence location component") {
+		t.Fatalf("extractCompletenessReceipts error = %v, want resolved-path refusal", err)
+	}
+}

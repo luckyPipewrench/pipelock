@@ -4,6 +4,8 @@
 package recorder
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +39,97 @@ func TestResolveEvidenceLocationRefusesEscapingID(t *testing.T) {
 				t.Fatalf("ResolveEvidenceLocation(%q) resolved outside the evidence root, want refusal", locationID)
 			}
 		})
+	}
+}
+
+func TestResolvedEvidenceLocationBoundedAndTailReads(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	name := "evidence-proxy-0.jsonl"
+	content := []byte("0123456789")
+	if err := os.WriteFile(filepath.Join(root, name), content, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "evidence-proxy-1.jsonl"), []byte("second"), 0o600); err != nil {
+		t.Fatalf("WriteFile second shard: %v", err)
+	}
+	location, err := ResolveEvidenceLocation(root, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+
+	entries, truncated, err := readEvidenceLocationDirectoryEntries(location, 1)
+	if err != nil {
+		t.Fatalf("readEvidenceLocationDirectoryEntries bounded: %v", err)
+	}
+	if len(entries) != 1 || !truncated {
+		t.Fatalf("bounded directory entries = %d, truncated=%v; want 1, true", len(entries), truncated)
+	}
+	entries, truncated, err = readEvidenceLocationDirectoryEntries(location, 0)
+	if err != nil {
+		t.Fatalf("readEvidenceLocationDirectoryEntries unbounded: %v", err)
+	}
+	if len(entries) != 2 || truncated {
+		t.Fatalf("unbounded directory entries = %d, truncated=%v; want 2, false", len(entries), truncated)
+	}
+
+	whole, err := ReadEvidenceLocationFileBounded(location, name, 0)
+	if err != nil {
+		t.Fatalf("ReadEvidenceLocationFileBounded default: %v", err)
+	}
+	if !bytes.Equal(whole, content) {
+		t.Fatalf("bounded read = %q, want %q", whole, content)
+	}
+	if _, err := ReadEvidenceLocationFileBounded(location, name, 5); !errors.Is(err, ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("small bounded read error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+
+	tail, omitted, err := ReadEvidenceLocationFileTail(location, name, 4)
+	if err != nil {
+		t.Fatalf("ReadEvidenceLocationFileTail partial: %v", err)
+	}
+	if string(tail) != "6789" || !omitted {
+		t.Fatalf("partial tail = %q, omitted=%v; want 6789, true", tail, omitted)
+	}
+	tail, omitted, err = ReadEvidenceLocationFileTail(location, name, 20)
+	if err != nil {
+		t.Fatalf("ReadEvidenceLocationFileTail whole: %v", err)
+	}
+	if !bytes.Equal(tail, content) || omitted {
+		t.Fatalf("whole tail = %q, omitted=%v; want %q, false", tail, omitted, content)
+	}
+	if _, _, err := ReadEvidenceLocationFileTail(location, name, 0); err == nil {
+		t.Fatal("ReadEvidenceLocationFileTail accepted a non-positive limit")
+	}
+	if _, err := ReadEvidenceLocationFileBounded(location, "../escape", 20); err == nil {
+		t.Fatal("ReadEvidenceLocationFileBounded accepted a non-base filename")
+	}
+	if _, _, err := ReadEvidenceLocationFileTail(location, "../escape", 20); err == nil {
+		t.Fatal("ReadEvidenceLocationFileTail accepted a non-base filename")
+	}
+}
+
+func TestResolvedEvidenceLocationRejectsInvalidDescriptors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeDiscoveryShard(t, root)
+	writeDiscoveryShard(t, filepath.Join(root, "other"))
+	if err := os.Mkdir(filepath.Join(root, "run"), 0o750); err != nil {
+		t.Fatalf("Mkdir run: %v", err)
+	}
+	tests := []EvidenceLocation{
+		{},
+		{Root: root, ID: "run", Dir: root},
+		{Root: root, ID: "../escape", Dir: filepath.Join(root, "..", "escape")},
+		{Root: root, ID: "run/../other", Dir: filepath.Join(root, "other")},
+	}
+	for _, location := range tests {
+		if _, err := ReadEvidenceLocationEntries(location); err == nil {
+			t.Fatalf("ReadEvidenceLocationEntries(%+v) accepted invalid descriptor", location)
+		}
+		if _, _, _, err := readEntriesAtEvidenceLocation(location, discoveryShardName, entryReadLimits{}); err == nil {
+			t.Fatalf("readEntriesAtEvidenceLocation(%+v) accepted invalid descriptor", location)
+		}
 	}
 }
 

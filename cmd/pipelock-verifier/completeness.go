@@ -112,18 +112,20 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 }
 
 func extractCompletenessReceipts(clean, sessionID string, resolvedLocation *recorder.EvidenceLocation) ([]actionreceipt.Receipt, string, error) {
+	if resolvedLocation != nil {
+		receipts, err := actionreceipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+		if err != nil {
+			return nil, "", fmt.Errorf("extract receipts: %w", err)
+		}
+		return receipts, fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID), nil
+	}
+
 	info, err := os.Stat(clean)
 	if err != nil {
 		return nil, "", fmt.Errorf("stat %q: %w", clean, err)
 	}
 	if info.IsDir() {
-		var receipts []actionreceipt.Receipt
-		var extractErr error
-		if resolvedLocation != nil {
-			receipts, extractErr = actionreceipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-		} else {
-			receipts, extractErr = actionreceipt.ExtractReceiptsFromSessionDir(clean, sessionID)
-		}
+		receipts, extractErr := actionreceipt.ExtractReceiptsFromSessionDir(clean, sessionID)
 		if extractErr != nil {
 			return nil, "", fmt.Errorf("extract receipts: %w", extractErr)
 		}

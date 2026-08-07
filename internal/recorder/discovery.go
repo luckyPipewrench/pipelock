@@ -27,7 +27,10 @@ type EvidenceLocation struct {
 // unreadable path or symlink fails closed so missing evidence cannot look
 // absent.
 func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
-	cleanRoot := filepath.Clean(root)
+	cleanRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return nil, fmt.Errorf("resolve evidence root: %w", err)
+	}
 	info, err := os.Lstat(cleanRoot)
 	if err != nil {
 		return nil, fmt.Errorf("stat evidence root: %w", err)
@@ -139,7 +142,11 @@ func ResolveEvidenceLocation(root, locationID string) (EvidenceLocation, error) 
 		return EvidenceLocation{}, fmt.Errorf("evidence location %q not found", locationID)
 	}
 	if len(locations) == 0 {
-		return EvidenceLocation{Root: filepath.Clean(root), Dir: filepath.Clean(root)}, nil
+		cleanRoot, absErr := filepath.Abs(filepath.Clean(root))
+		if absErr != nil {
+			return EvidenceLocation{}, fmt.Errorf("resolve evidence root: %w", absErr)
+		}
+		return EvidenceLocation{Root: cleanRoot, Dir: cleanRoot}, nil
 	}
 	if len(locations) == 1 {
 		return locations[0], nil

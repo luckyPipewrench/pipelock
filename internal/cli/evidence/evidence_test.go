@@ -530,6 +530,20 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	}
 }
 
+func TestResolveServeSessionErrors(t *testing.T) {
+	t.Parallel()
+	if _, err := resolveServeSession(filepath.Join(t.TempDir(), "missing"), ""); err == nil || !strings.Contains(err.Error(), "resolve evidence location") {
+		t.Fatalf("missing directory error = %v", err)
+	}
+	empty := resolveTestEvidenceLocation(t, t.TempDir())
+	if _, err := resolveServeSessionResolved(empty, "missing"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing explicit session error = %v", err)
+	}
+	if _, err := resolveServeSessionResolved(empty, ""); err == nil || !strings.Contains(err.Error(), "no sessions") {
+		t.Fatalf("empty location error = %v", err)
+	}
+}
+
 func assertEvidenceServeSecurityHeaders(t *testing.T, headers http.Header) {
 	t.Helper()
 	if got := headers.Get("Content-Security-Policy"); got != evidenceServeCSP {

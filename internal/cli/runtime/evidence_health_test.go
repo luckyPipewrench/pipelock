@@ -454,6 +454,9 @@ func TestEvidenceHealthParserHelpersRejectMalformedInputs(t *testing.T) {
 	if _, err := readLastReceiptTail(filepath.Join(dir, "missing-dir"), transcriptRootSessionID); !errors.Is(err, errNoReceiptTail) {
 		t.Fatalf("readLastReceiptTail missing dir err = %v, want errNoReceiptTail", err)
 	}
+	if _, err := readLastReceiptTail("\x00", transcriptRootSessionID); err == nil || errors.Is(err, errNoReceiptTail) {
+		t.Fatalf("readLastReceiptTail invalid path err = %v, want surfaced stat failure", err)
+	}
 }
 
 func TestReadLastReceiptTailFromFileLargeTailWindow(t *testing.T) {

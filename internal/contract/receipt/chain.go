@@ -229,8 +229,7 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLoc
 	// directory, and the two sibling scanners in this change already
 	// precompute the same way.
 	type shard struct {
-		path     string
-		base     string
+		name     string
 		seqStart uint64
 	}
 	shards := make([]shard, 0)
@@ -244,8 +243,7 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLoc
 			continue
 		}
 		shards = append(shards, shard{
-			path:     name,
-			base:     name,
+			name:     name,
 			seqStart: seqStart,
 		})
 	}
@@ -256,11 +254,11 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLoc
 		if shards[i].seqStart != shards[j].seqStart {
 			return shards[i].seqStart < shards[j].seqStart
 		}
-		return shards[i].base < shards[j].base
+		return shards[i].name < shards[j].name
 	})
 	files := make([]string, 0, len(shards))
 	for _, s := range shards {
-		files = append(files, s.path)
+		files = append(files, s.name)
 	}
 
 	// Refuse an ambiguous shard set rather than concatenating receipts in an

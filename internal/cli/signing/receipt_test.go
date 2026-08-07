@@ -1001,6 +1001,34 @@ func buildRestartChainDir(t *testing.T, counts ...int) (string, ed25519.PublicKe
 	return dir, pub
 }
 
+func copyEvidenceFiles(t *testing.T, source, target string) {
+	t.Helper()
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", target, err)
+	}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", source, err)
+	}
+	sourceRoot, err := os.OpenRoot(source)
+	if err != nil {
+		t.Fatalf("OpenRoot(%q): %v", source, err)
+	}
+	defer func() { _ = sourceRoot.Close() }()
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		raw, readErr := sourceRoot.ReadFile(entry.Name())
+		if readErr != nil {
+			t.Fatalf("ReadFile(%q): %v", entry.Name(), readErr)
+		}
+		if writeErr := os.WriteFile(filepath.Join(target, entry.Name()), raw, 0o600); writeErr != nil {
+			t.Fatalf("WriteFile(%q): %v", entry.Name(), writeErr)
+		}
+	}
+}
+
 func TestVerifyReceiptCmd_ChainValid(t *testing.T) {
 	t.Parallel()
 
@@ -1716,6 +1744,68 @@ func TestReceiptCommandsRejectAmbiguousEvidenceLocations(t *testing.T) {
 	transcript.SetArgs([]string{"--chain", root, "--key", strings.Repeat("a", 64)})
 	if err := transcript.Execute(); err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
 		t.Fatalf("transcript-root error = %v, want ambiguous-location failure", err)
+	}
+}
+
+func TestReceiptCommandsSelectEvidenceLocation(t *testing.T) {
+	t.Parallel()
+	source, pub := buildRestartChainDir(t, 1)
+	root := t.TempDir()
+	selectedID := "recorder-a/run-a"
+	copyEvidenceFiles(t, source, filepath.Join(root, filepath.FromSlash(selectedID)))
+	copyEvidenceFiles(t, source, filepath.Join(root, "recorder-b", "run-b"))
+	keyHex := hex.EncodeToString(pub)
+
+	verify := VerifyReceiptCmd()
+	var verifyOut bytes.Buffer
+	verify.SetOut(&verifyOut)
+	verify.SetArgs([]string{"--chain", root, "--location", selectedID, "--key", keyHex})
+	if err := verify.Execute(); err != nil {
+		t.Fatalf("verify-receipt selected location: %v", err)
+	}
+	if !strings.Contains(verifyOut.String(), "CHAIN VALID") {
+		t.Fatalf("verify-receipt output = %q, want CHAIN VALID", verifyOut.String())
+	}
+	cleanReport := filepath.Join(t.TempDir(), "clean-report.json")
+	verifyClean := VerifyReceiptCmd()
+	verifyClean.SetArgs([]string{"--chain", root, "--location", selectedID, "--key", keyHex, "--clean-report", cleanReport})
+	if err := verifyClean.Execute(); err != nil {
+		t.Fatalf("verify-receipt selected location clean report: %v", err)
+	}
+	if _, err := os.Stat(cleanReport); err != nil {
+		t.Fatalf("clean report was not written: %v", err)
+	}
+
+	transcript := TranscriptRootCmd()
+	var transcriptOut bytes.Buffer
+	transcript.SetOut(&transcriptOut)
+	transcript.SetArgs([]string{"--chain", root, "--location", selectedID, "--key", keyHex})
+	if err := transcript.Execute(); err != nil {
+		t.Fatalf("transcript-root selected location: %v", err)
+	}
+	if !strings.Contains(transcriptOut.String(), "Transcript Root") {
+		t.Fatalf("transcript-root output = %q, want transcript root", transcriptOut.String())
+	}
+
+	unknownVerify := VerifyReceiptCmd()
+	unknownVerify.SetArgs([]string{"--chain", root, "--location", "missing/run", "--key", keyHex})
+	if err := unknownVerify.Execute(); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("verify-receipt unknown location error = %v, want not found", err)
+	}
+	unknownTranscript := TranscriptRootCmd()
+	unknownTranscript.SetArgs([]string{"--chain", root, "--location", "missing/run", "--key", keyHex})
+	if err := unknownTranscript.Execute(); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("transcript-root unknown location error = %v, want not found", err)
+	}
+}
+
+func TestVerifyReceiptCmdFleetReportRejectsLocation(t *testing.T) {
+	t.Parallel()
+	_, path := writeFleetReportFixture(t)
+	cmd := VerifyReceiptCmd()
+	cmd.SetArgs([]string{"--fleet-report", "--location", "run-a", path})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--location requires --chain") {
+		t.Fatalf("fleet report location error = %v, want --location conflict", err)
 	}
 }
 

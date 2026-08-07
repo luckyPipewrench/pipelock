@@ -1002,11 +1002,14 @@ func extractReceiptsFromResolvedSessionDirWithLimits(location recorder.EvidenceL
 
 // ExtractReceiptsFromResolvedSessionDir reads an already-resolved evidence location.
 func ExtractReceiptsFromResolvedSessionDir(location recorder.EvidenceLocation, sessionID string) ([]Receipt, error) {
-	result, err := recorder.QuerySessionResolved(location, sessionID, nil)
+	receipts, truncated, err := extractReceiptsFromResolvedSessionDirWithLimits(location, sessionID, 0, 0)
 	if err != nil {
-		return nil, fmt.Errorf("querying session receipts: %w", err)
+		return nil, err
 	}
-	return extractReceiptsFromEntries(result.Entries)
+	if truncated {
+		return nil, fmt.Errorf("%w: evidence session %s exceeded bounded read limits", recorder.ErrEvidenceReadLimitExceeded, sessionID)
+	}
+	return receipts, nil
 }
 
 // evidenceReceiptEntryType is the recorder entry type for v2 evidence receipts.

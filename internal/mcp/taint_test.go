@@ -511,14 +511,14 @@ func TestEvaluateMCPTaint_TrustOverrideUsesControllingTarget(t *testing.T) {
 			args:        `{"path":"/srv/prod/db.conf","archive_path":"/srv/prod/archive.conf"}`,
 			actionMatch: "mcp:write_file:/srv/prod/db.conf",
 			want:        session.PolicyAsk,
-			wantRef:     "mcp:write_file:/srv/prod/archive.conf",
+			wantRef:     "mcp:write_file:/srv/prod/archive.conf, mcp:write_file:/srv/prod/db.conf",
 		},
 		{
 			name:        "wildcard can cover every equally protected target",
 			args:        `{"path":"/srv/prod/db.conf","archive_path":"/srv/prod/archive.conf"}`,
 			actionMatch: "mcp:write_file:/srv/prod/*",
 			want:        session.PolicyAllow,
-			wantRef:     "mcp:write_file:/srv/prod/archive.conf",
+			wantRef:     "mcp:write_file:/srv/prod/archive.conf, mcp:write_file:/srv/prod/db.conf",
 		},
 	}
 
@@ -550,6 +550,59 @@ func TestEvaluateMCPTaint_TrustOverrideUsesControllingTarget(t *testing.T) {
 			}
 			if decision.ActionRef != tt.wantRef {
 				t.Fatalf("action ref = %q, want %q", decision.ActionRef, tt.wantRef)
+			}
+		})
+	}
+}
+
+func TestEvaluateMCPTaint_ReportedActionRefIncludesEveryTarget(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	decision := evaluateMCPTaint(
+		MCPProxyOpts{TaintCfg: &cfg.Taint},
+		"fetch",
+		`{"trusted_url":"https://trusted.vendor.example/","metadata_url":"http://169.254.169.254/latest/meta-data/"}`,
+	)
+	const want = "mcp:fetch:http://169.254.169.254/latest/meta-data/, mcp:fetch:https://trusted.vendor.example/"
+	if decision.ActionRef != want {
+		t.Fatalf("reported action ref = %q, want %q", decision.ActionRef, want)
+	}
+}
+
+func TestMCPReportedActionRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		refs    []string
+		primary string
+		want    string
+	}{
+		{
+			name:    "single target remains byte identical",
+			refs:    []string{"mcp:fetch:https://trusted.vendor.example/"},
+			primary: "mcp:fetch:https://trusted.vendor.example/",
+			want:    "mcp:fetch:https://trusted.vendor.example/",
+		},
+		{
+			name:    "missing target retains the legacy tool reference",
+			primary: "mcp:shell",
+			want:    "mcp:shell",
+		},
+		{
+			name:    "multiple targets stay visible",
+			refs:    []string{"mcp:fetch:http://169.254.169.254/latest/meta-data/", "mcp:fetch:https://trusted.vendor.example/"},
+			primary: "mcp:fetch:http://169.254.169.254/latest/meta-data/",
+			want:    "mcp:fetch:http://169.254.169.254/latest/meta-data/, mcp:fetch:https://trusted.vendor.example/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := mcpReportedActionRef(tt.refs, tt.primary); got != tt.want {
+				t.Fatalf("reported action ref = %q, want %q", got, tt.want)
 			}
 		})
 	}

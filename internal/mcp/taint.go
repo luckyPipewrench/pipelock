@@ -110,6 +110,7 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 	decision.ActionRef = classified.ActionRef
 	decision.ActionRef = mcpActionRef(toolName, decision.ActionRef)
 	decision.OverrideRefs = mcpOverrideRefs(toolName, classified.OverrideRefs, decision.ActionRef)
+	decision.ActionRef = mcpReportedActionRef(decision.OverrideRefs, decision.ActionRef)
 	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
 		decision.Task = tp.TaskSnapshot()
 		if taintRuntimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.OverrideRefs) {
@@ -188,6 +189,16 @@ func mcpOverrideRefs(toolName string, targets []string, primary string) []string
 		}
 	}
 	return refs
+}
+
+// mcpReportedActionRef is a reporting value. Override matching uses
+// OverrideRefs, so a multi-target call cannot make one lexical candidate look
+// like the entire action to an audit reader or approver.
+func mcpReportedActionRef(refs []string, primary string) string {
+	if len(refs) <= 1 {
+		return primary
+	}
+	return strings.Join(refs, ", ")
 }
 
 func taintTrustOverrideApplies(overrides []config.TaintTrustOverride, risk session.SessionRisk, actionRefs []string) bool {

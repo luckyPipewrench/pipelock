@@ -191,8 +191,7 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	}
 
 	if looksLikeShellTool(name) || category == "exec" {
-		command := strings.Join(args, " ")
-		if isMutatingShellCommand(command) {
+		if command := firstMutatingMCPCommand(argsJSON); command != "" {
 			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 		}
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
@@ -222,8 +221,7 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	}
 
 	if hasExecIntent(argsJSON) {
-		command := strings.Join(args, " ")
-		if isMutatingShellCommand(command) {
+		if command := firstMutatingMCPCommand(argsJSON); command != "" {
 			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 		}
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
@@ -234,6 +232,102 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		sensitivity = SensitivityProtected
 	}
 	return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: false}
+}
+
+// firstMutatingMCPCommand scans only declared command-bearing fields. It keeps
+// each vector separate, so values from unrelated fields cannot manufacture a
+// shell pattern merely by landing next to each other in a flattened string.
+func firstMutatingMCPCommand(raw string) string {
+	for _, command := range extractMCPCommands(raw) {
+		if isMutatingShellCommand(command) {
+			return command
+		}
+	}
+	return ""
+}
+
+// extractMCPCommands returns one synthetic command line for each declared
+// command vector. Object keys are used only to recognize a field's role; they
+// never become command text. A command/cmd/script/shell field is combined with
+// sibling args/argv vectors, which preserves the argument-vector boundary while
+// recognizing commands that split their executable and arguments across fields.
+func extractMCPCommands(raw string) []string {
+	decoded, ok := decodeJSONValue(raw)
+	if !ok {
+		return nil
+	}
+
+	var commands []string
+	var walk func(any)
+	walk = func(value any) {
+		switch tv := value.(type) {
+		case []any:
+			for _, item := range tv {
+				walk(item)
+			}
+		case map[string]any:
+			var bases, vectors []string
+			for _, key := range slices.Sorted(maps.Keys(tv)) {
+				switch mcpCommandFieldRole(key) {
+				case mcpCommandBase:
+					bases = append(bases, commandFieldVectors(tv[key])...)
+				case mcpCommandArgs:
+					vectors = append(vectors, commandFieldVectors(tv[key])...)
+				default:
+					walk(tv[key])
+				}
+			}
+			for _, base := range bases {
+				commands = append(commands, base)
+				for _, vector := range vectors {
+					commands = append(commands, strings.TrimSpace(base+" "+vector))
+				}
+			}
+			commands = append(commands, vectors...)
+		}
+	}
+	walk(decoded)
+	return commands
+}
+
+type mcpCommandRole uint8
+
+const (
+	mcpCommandNone mcpCommandRole = iota
+	mcpCommandBase
+	mcpCommandArgs
+)
+
+func mcpCommandFieldRole(key string) mcpCommandRole {
+	for _, token := range splitArgumentKey(key) {
+		switch token {
+		case "command", "cmd", "script", "shell":
+			return mcpCommandBase
+		case "args", "argv":
+			return mcpCommandArgs
+		}
+	}
+	return mcpCommandNone
+}
+
+func commandFieldVectors(value any) []string {
+	var values []string
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case string:
+			values = append(values, typed)
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(value)
+	if len(values) == 0 {
+		return nil
+	}
+	return []string{strings.Join(values, " ")}
 }
 
 type mcpActionTargets struct {

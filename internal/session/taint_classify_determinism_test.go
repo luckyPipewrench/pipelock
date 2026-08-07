@@ -105,12 +105,24 @@ func TestClassifyMCPToolCall_ShellCommandOrderIsStable(t *testing.T) {
 
 	const argsJSON = `{"x":"git","push":"origin main"}`
 
-	firstClass, firstSensitivity, _ := session.ClassifyMCPToolCall("shell", argsJSON, nil, nil)
-	for run := 1; run < classifyRuns; run++ {
+	// Pinned, not taken from the first run. Using run zero as the oracle
+	// would let a deterministic regression that changes the verdict pass,
+	// because every later run would agree with the new wrong answer.
+	//
+	// Sorted keys emit push, origin main, x, git, which spells no mutating
+	// pattern, so this is a non-mutating exec and sensitivity stays
+	// protected. Unsorted, the value git can land before the key push and
+	// form "git push", which flips sensitivity to elevated.
+	const (
+		wantClass       = session.ActionClassExec
+		wantSensitivity = session.SensitivityProtected
+	)
+
+	for run := range classifyRuns {
 		class, sensitivity, _ := session.ClassifyMCPToolCall("shell", argsJSON, nil, nil)
-		if class != firstClass || sensitivity != firstSensitivity {
+		if class != wantClass || sensitivity != wantSensitivity {
 			t.Fatalf("run %d: class/sensitivity = %v/%v, want %v/%v on every run",
-				run, class, sensitivity, firstClass, firstSensitivity)
+				run, class, sensitivity, wantClass, wantSensitivity)
 		}
 	}
 }

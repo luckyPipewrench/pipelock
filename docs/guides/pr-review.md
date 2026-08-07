@@ -7,7 +7,7 @@ Manual-trigger AI security review for pull requests. Comment `/review` on any PR
 | Command | Model | Use When |
 |---------|-------|----------|
 | `/review` | Efficient (default: gpt-5.6-luna, low reasoning) | Quick check, most PRs |
-| `/review deep` | Balanced (default: gpt-5.6-terra, xhigh reasoning) | Ten-part adversarial static-diff review |
+| `/review deep` | Balanced (default: gpt-5.6-terra, xhigh reasoning) | Adversarial static-diff review (findings-first) |
 
 ## What It Reviews
 
@@ -24,9 +24,15 @@ The reviewer is tuned for Pipelock's security model. It flags:
 
 It ignores style nits and generic suggestions. `/review deep` separately checks
 production states, failure direction, blast radius, approach, sibling patterns,
-test vacuity, predecessor fixes, self-produced artifacts, and availability. Its
-comment identifies the review as static and diff-only: it does not claim to
-have run tests, searched omitted repository context, or replaced CodeQL and CI.
+test vacuity, predecessor fixes, self-produced artifacts, availability, and
+honest convergence. A fixed scope banner says that no tests or repository-wide
+search ran; the review does not replace CodeQL or CI.
+The ten questions are an internal checklist; the posted comment is a concise,
+findings-first report rather than ten narrated sections. It uses `Findings` and
+`Audit coverage` headings and targets fewer than 1,200 words without dropping
+independently material findings. The workflow validates that shape before
+posting, retries one malformed response for correction, and fails closed if the
+replacement still violates the contract.
 
 ## Setup
 

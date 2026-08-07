@@ -125,7 +125,26 @@ class ModelRoutingTest(unittest.TestCase):
             with self.subTest(section=section):
                 self.assertIn(section, pr_review.PROMPT_DEEP)
         self.assertIn("static pull-request diff", pr_review.PROMPT_DEEP)
-        self.assertIn("neutralization was not executed", pr_review.PROMPT_DEEP)
+        self.assertIn("You cannot run code", pr_review.PROMPT_DEEP)
+
+    def test_deep_prompt_declares_compact_output_contract(self) -> None:
+        self.assertIn("Evaluate all ten questions below before answering", pr_review.PROMPT_DEEP)
+        self.assertIn("internal review", pr_review.PROMPT_DEEP)
+        self.assertIn("not ten required output sections", pr_review.PROMPT_DEEP)
+        self.assertIn("Lead with `## Findings`", pr_review.PROMPT_DEEP)
+        self.assertIn("exactly one compact `## Audit coverage` paragraph", pr_review.PROMPT_DEEP)
+        self.assertIn("`NOT PROVEN:` clause", pr_review.PROMPT_DEEP)
+        self.assertIn("Do not emit ten headings", pr_review.PROMPT_DEEP)
+        self.assertIn("fewer than 1,200 words", pr_review.PROMPT_DEEP)
+        self.assertIn("Never omit or merge independently material", pr_review.PROMPT_DEEP)
+        self.assertIn("at most three sentences", pr_review.PROMPT_DEEP)
+        self.assertIn("The `## Audit coverage` paragraph is still required", pr_review.PROMPT_DEEP)
+        self.assertNotIn("Answer all ten sections", pr_review.PROMPT_DEEP)
+        self.assertNotIn("even when a section has no finding", pr_review.PROMPT_DEEP)
+        self.assertIn(
+            "No material security or correctness issues found in the supplied static diff.",
+            pr_review.PROMPT_DEEP,
+        )
 
     def test_deep_mode_routes_to_adversarial_prompt_and_larger_diff(self) -> None:
         self.assertIs(pr_review.prompt_for_mode("deep"), pr_review.PROMPT_DEEP)
@@ -300,8 +319,69 @@ class CallLLMTest(unittest.TestCase):
                 pr_review.call_llm("diff", "default", "system")
 
 
+class DeepReviewValidationTest(unittest.TestCase):
+    valid_clean = (
+        "## Findings\n\n"
+        + pr_review.DEEP_REVIEW_CLEAN_FINDINGS
+        + "\n\n## Audit coverage\n\nAll ten questions were checked."
+    )
+
+    def test_accepts_compact_clean_review(self) -> None:
+        self.assertEqual(pr_review.validate_deep_review(self.valid_clean), [])
+
+    def test_rejects_malformed_sections_and_finding_heading(self) -> None:
+        malformed = (
+            "## Audit coverage\n\nChecked.\n\n"
+            "## Findings\n\n### Finding without severity\nDetails."
+        )
+        errors = pr_review.validate_deep_review(malformed)
+        self.assertIn("response must start with ## Findings", errors)
+        self.assertIn("## Audit coverage must follow ## Findings", errors)
+
+    def test_rejects_material_finding_without_compact_fields(self) -> None:
+        malformed = (
+            "## Findings\n\n### 1. medium — script.py/main\nWhy: Risk.\n"
+            "\n## Audit coverage\n\nChecked."
+        )
+        errors = pr_review.validate_deep_review(malformed)
+        self.assertIn("each material finding must include a non-empty Check: line", errors)
+        self.assertIn("each material finding must include a non-empty Fix: line", errors)
+
+    def test_rejects_over_limit_review(self) -> None:
+        review = self.valid_clean + "\n" + "word " * pr_review.DEEP_REVIEW_MAX_WORDS
+        self.assertTrue(
+            any("must be fewer than" in error for error in pr_review.validate_deep_review(review))
+        )
+
+    def test_invalid_deep_review_gets_one_correction_retry(self) -> None:
+        with mock.patch.object(
+            pr_review,
+            "call_llm",
+            side_effect=["invalid", self.valid_clean],
+        ) as call_llm:
+            review = pr_review.call_review("diff", "deep", pr_review.PROMPT_DEEP)
+
+        self.assertEqual(review, self.valid_clean)
+        self.assertEqual(call_llm.call_count, 2)
+        self.assertIn("previous response was not published", call_llm.call_args.args[2])
+
+    def test_second_invalid_deep_review_fails_closed(self) -> None:
+        with mock.patch.object(
+            pr_review,
+            "call_llm",
+            return_value="invalid",
+        ) as call_llm, self.assertRaisesRegex(
+            pr_review.LLMReviewError,
+            "violated output contract after one correction retry",
+        ):
+            pr_review.call_review("diff", "deep", pr_review.PROMPT_DEEP)
+
+        self.assertEqual(call_llm.call_count, 2)
+
+
 class MainFlowTest(unittest.TestCase):
     def test_deep_comment_exposes_static_review_scope(self) -> None:
+        review_result = DeepReviewValidationTest.valid_clean
         with mock.patch.dict(
             pr_review.os.environ,
             {
@@ -314,10 +394,10 @@ class MainFlowTest(unittest.TestCase):
         ), mock.patch.object(
             pr_review, "get_pr_diff", return_value="diff --git a/a b/a"
         ), mock.patch.object(
-            pr_review, "call_llm", return_value="review result"
+            pr_review, "call_llm", return_value=review_result
         ) as call_llm, mock.patch.object(
             pr_review, "post_comment"
-        ) as post_comment:
+        ) as post_comment, mock.patch("builtins.print") as output:
             pr_review.main()
 
         call_llm.assert_called_once_with(
@@ -328,7 +408,8 @@ class MainFlowTest(unittest.TestCase):
         self.assertEqual((repo, pr_number, token), ("owner/repo", "42", "test-token"))
         self.assertIn("**Scope:** Static diff review", body)
         self.assertIn("no tests or repository-wide search were executed", body)
-        self.assertIn("review result", body)
+        self.assertIn(pr_review.DEEP_REVIEW_CLEAN_FINDINGS, body)
+        output.assert_any_call(f"Deep review output: {len(review_result.split())} words")
 
 
 class StatsSafetyTest(unittest.TestCase):

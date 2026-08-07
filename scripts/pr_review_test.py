@@ -130,10 +130,8 @@ class ModelRoutingTest(unittest.TestCase):
     def test_deep_mode_routes_to_adversarial_prompt_and_larger_diff(self) -> None:
         self.assertIs(pr_review.prompt_for_mode("deep"), pr_review.PROMPT_DEEP)
         self.assertIs(pr_review.prompt_for_mode("default"), pr_review.PROMPT_SECURITY)
-        self.assertGreater(
-            pr_review.diff_limit_for_mode("deep"),
-            pr_review.diff_limit_for_mode("default"),
-        )
+        self.assertEqual(pr_review.diff_limit_for_mode("default"), 100_000)
+        self.assertEqual(pr_review.diff_limit_for_mode("deep"), 200_000)
 
     def test_deep_review_uses_xhigh_reasoning(self) -> None:
         self.assertEqual(pr_review.DEEP_REASONING_EFFORT, "xhigh")
@@ -300,6 +298,37 @@ class CallLLMTest(unittest.TestCase):
                 "No LLM API configured",
             ):
                 pr_review.call_llm("diff", "default", "system")
+
+
+class MainFlowTest(unittest.TestCase):
+    def test_deep_comment_exposes_static_review_scope(self) -> None:
+        with mock.patch.dict(
+            pr_review.os.environ,
+            {
+                "GITHUB_TOKEN": "test-token",
+                "REPO": "owner/repo",
+                "PR_NUMBER": "42",
+                "REVIEW_MODE": "deep",
+            },
+            clear=True,
+        ), mock.patch.object(
+            pr_review, "get_pr_diff", return_value="diff --git a/a b/a"
+        ), mock.patch.object(
+            pr_review, "call_llm", return_value="review result"
+        ) as call_llm, mock.patch.object(
+            pr_review, "post_comment"
+        ) as post_comment:
+            pr_review.main()
+
+        call_llm.assert_called_once_with(
+            "diff --git a/a b/a", "deep", pr_review.PROMPT_DEEP
+        )
+        post_comment.assert_called_once()
+        repo, pr_number, token, body = post_comment.call_args.args
+        self.assertEqual((repo, pr_number, token), ("owner/repo", "42", "test-token"))
+        self.assertIn("**Scope:** Static diff review", body)
+        self.assertIn("no tests or repository-wide search were executed", body)
+        self.assertIn("review result", body)
 
 
 class StatsSafetyTest(unittest.TestCase):

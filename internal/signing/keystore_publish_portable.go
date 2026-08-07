@@ -9,6 +9,17 @@ import (
 	"os"
 )
 
+// ErrPublishedNotDurable reports that the new key pair is ALREADY the active
+// identity and only the durability confirmation failed. It is not a failed
+// publication and must not be handled as one.
+//
+// The distinction matters because the two demand opposite responses. A failed
+// publication leaves the old pair active, so a caller should keep using it. This
+// leaves the NEW pair active and signing, so a caller that treats it as a
+// failure keeps distributing a public key the keystore no longer signs with.
+// Anything reporting this error has already changed the active identity.
+var ErrPublishedNotDurable = errors.New("agent key pair published but durability could not be confirmed")
+
 func publishAgentDirectoryPortable(targetDir, stageDir, backupDir string) error {
 	if err := os.RemoveAll(backupDir); err != nil {
 		return fmt.Errorf("removing stale agent backup: %w", err)

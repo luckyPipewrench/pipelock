@@ -21,7 +21,13 @@ func publishAgentDirectory(targetDir, stageDir, backupDir string) error {
 		}
 		return fmt.Errorf("exchanging staged and active agent directories: %w", err)
 	}
-	return syncDirectory(filepath.Dir(targetDir))
+	// The exchange has already happened. Whatever the sync does, the new pair is
+	// live from here on, so a sync failure cannot be reported as a failed
+	// publication.
+	if err := syncDirectory(filepath.Dir(targetDir)); err != nil {
+		return fmt.Errorf("%w: %w", ErrPublishedNotDurable, err)
+	}
+	return nil
 }
 
 // syncDirectory fsyncs the parent directory so the rename that just swapped the

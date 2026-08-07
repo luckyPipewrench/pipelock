@@ -148,7 +148,16 @@ func (k *Keystore) generateAgent(name string, force bool) (ed25519.PublicKey, er
 		if err := os.Mkdir(stageDir, dirPermission); err != nil {
 			return fmt.Errorf("creating agent staging directory: %w", err)
 		}
-		defer func() { _ = os.RemoveAll(stageDir) }()
+		// After a successful exchange stageDir holds the PREVIOUS key pair, not
+		// the staged one. Clearing it is right on every path except the one
+		// where the exchange already committed, which preserves it instead.
+		exchangeCommitted := false
+		defer func() {
+			if exchangeCommitted {
+				return
+			}
+			_ = os.RemoveAll(stageDir)
+		}()
 		if err := k.validateContainment(stageDir); err != nil {
 			return fmt.Errorf("agent staging directory containment check: %w", err)
 		}
@@ -161,7 +170,24 @@ func (k *Keystore) generateAgent(name string, force bool) (ed25519.PublicKey, er
 			return err
 		}
 		if err := publishAgentDirectory(dir, stageDir, k.agentBackupDir(name)); err != nil {
-			return fmt.Errorf("publishing agent key pair: %w", err)
+			if !errors.Is(err, ErrPublishedNotDurable) {
+				return fmt.Errorf("publishing agent key pair: %w", err)
+			}
+			// The exchange committed, so the new pair is already the active
+			// identity and the old one now sits in stageDir. Deleting it here
+			// would discard the only recoverable copy at the exact moment
+			// durability is in doubt, so move it where recovery looks. Recovery
+			// drops a backup once the active pair verifies as coherent, so this
+			// cannot resurrect the old identity; it only keeps it reachable.
+			exchangeCommitted = true
+			backupDir := k.agentBackupDir(name)
+			if rmErr := os.RemoveAll(backupDir); rmErr != nil {
+				return fmt.Errorf("agent %q key pair is now active but its durability is unconfirmed, and the prior pair could not be preserved: %w", name, errors.Join(err, rmErr))
+			}
+			if mvErr := os.Rename(stageDir, backupDir); mvErr != nil {
+				return fmt.Errorf("agent %q key pair is now active but its durability is unconfirmed, and the prior pair could not be preserved: %w", name, errors.Join(err, mvErr))
+			}
+			return fmt.Errorf("agent %q key pair is now the active identity but its durability is unconfirmed; reload the key before distributing it, and the prior pair is retained for recovery: %w", name, err)
 		}
 		pub = generatedPub
 		return nil

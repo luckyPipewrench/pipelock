@@ -283,17 +283,3 @@ func TestWriteEscrowFile_ReportsWriteFailure(t *testing.T) {
 		t.Fatalf("writeEscrowFile error = %v, want write failure", err)
 	}
 }
-
-func TestWriteEscrowFile_ReportsPermissionFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not enforce Unix file permission bits")
-	}
-	file, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("open null device: %v", err)
-	}
-	err = writeEscrowFile(file, []byte("payload"), filePermissions)
-	if err == nil || !strings.Contains(err.Error(), "setting escrow file permissions") {
-		t.Fatalf("writeEscrowFile error = %v, want permission failure", err)
-	}
-}

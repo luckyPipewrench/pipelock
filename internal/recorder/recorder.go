@@ -908,12 +908,9 @@ func (r *Recorder) writeEscrowPayloadWithReaderAndWriter(
 }
 
 func writeEscrowFile(file *os.File, payload []byte, mode os.FileMode) error {
-	if n, err := file.Write(payload); err != nil {
+	if _, err := file.Write(payload); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("writing escrow file: %w", err)
-	} else if n != len(payload) {
-		_ = file.Close()
-		return fmt.Errorf("writing escrow file: %w", io.ErrShortWrite)
 	}
 	if err := file.Chmod(mode); err != nil {
 		_ = file.Close()

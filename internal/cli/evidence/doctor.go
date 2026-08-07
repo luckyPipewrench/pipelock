@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -109,6 +110,7 @@ type evidenceDoctor struct {
 }
 
 func doctorCmd() *cobra.Command {
+	var prometheusTextfile string
 	cmd := &cobra.Command{
 		Use:   "doctor DIR",
 		Short: "Detect structural damage in a flight-recorder evidence directory",
@@ -122,9 +124,16 @@ can use it in CI.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runEvidenceDoctor(args[0])
 			if err != nil {
+				if writeErr := writeEvidenceCorpusMetric(prometheusTextfile, false); writeErr != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, writeErr)
+				}
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
 			printEvidenceDoctorReport(cmd, report)
+			healthy := !report.Damaged() && report.Conclusive()
+			if err := writeEvidenceCorpusMetric(prometheusTextfile, healthy); err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+			}
 			if report.Damaged() {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor found structural damage"))
 			}
@@ -136,7 +145,48 @@ can use it in CI.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&prometheusTextfile, "prometheus-textfile", "", "write the corpus-integrity result in Prometheus textfile format")
 	return cmd
+}
+
+// writeEvidenceCorpusMetric publishes the result of a whole-corpus audit for a
+// Prometheus textfile collector. It deliberately lives on the doctor command,
+// outside every proxy process: another writer's damaged historical branch must
+// alert operators without becoming an in-band request gate.
+func writeEvidenceCorpusMetric(path string, healthy bool) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	value := 0
+	if healthy {
+		value = 1
+	}
+	data := fmt.Sprintf("# HELP pipelock_evidence_corpus_integrity_ok One when the most recent complete whole-corpus evidence audit found no structural damage.\n# TYPE pipelock_evidence_corpus_integrity_ok gauge\npipelock_evidence_corpus_integrity_ok %d\n# HELP pipelock_evidence_corpus_last_audit_timestamp_seconds Unix timestamp of the most recent whole-corpus evidence audit.\n# TYPE pipelock_evidence_corpus_last_audit_timestamp_seconds gauge\npipelock_evidence_corpus_last_audit_timestamp_seconds %d\n", value, time.Now().Unix())
+	cleanPath := filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o750); err != nil {
+		return fmt.Errorf("creating Prometheus textfile directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(cleanPath), ".pipelock-evidence-corpus-*.prom")
+	if err != nil {
+		return fmt.Errorf("creating Prometheus textfile: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.WriteString(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing Prometheus textfile: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting Prometheus textfile mode: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing Prometheus textfile: %w", err)
+	}
+	if err := os.Rename(tmpName, cleanPath); err != nil {
+		return fmt.Errorf("installing Prometheus textfile: %w", err)
+	}
+	return nil
 }
 
 func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {

@@ -4,6 +4,7 @@
 package setup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,6 +22,9 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("PIPELOCK_CONFIG", cfgPath); err != nil {
 		panic(err)
 	}
+	evidenceAuditorUserConfigDir = func() (string, error) { return filepath.Join(dir, "user-config"), nil }
+	evidenceAuditorExecutable = func() (string, error) { return "/usr/bin/pipelock", nil }
+	evidenceAuditorSystemctl = func(_ context.Context, _ systemctlOp) error { return nil }
 
 	code := m.Run()
 	_ = os.RemoveAll(dir)

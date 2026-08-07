@@ -276,10 +276,15 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		metrics.EvidenceRequirementRecorderEnabled: true,
 		metrics.EvidenceRequirementEmitterHealthy:  ok && !snap.InitErr,
 		metrics.EvidenceRequirementDurabilityGate:  cfg.FlightRecorder.RequireReceipts,
-		metrics.EvidenceRequirementHeartbeats:      cfg.FlightRecorder.HeartbeatIntervalDuration() > 0,
-		metrics.EvidenceRequirementAnchoringFresh:  false,
-		metrics.EvidenceRequirementCPCActive:       false,
-		metrics.EvidenceRequirementSelfAuditOK:     h.selfAuditOK.Load(),
+		// This is an observation, not a statement about the configured cadence.
+		// A fresh process remains pending (false) until its first heartbeat is
+		// recorded. No runtime alert consumes this deprecated diagnostic
+		// requirement, so cold start cannot page solely because its first timer
+		// tick has not happened yet.
+		metrics.EvidenceRequirementHeartbeats:     snap.HeartbeatObserved,
+		metrics.EvidenceRequirementAnchoringFresh: false,
+		metrics.EvidenceRequirementCPCActive:      false,
+		metrics.EvidenceRequirementSelfAuditOK:    h.selfAuditOK.Load(),
 	}
 	anchor := h.anchorSnapshot()
 	autoAnchor := h.metrics.EvidenceAutoAnchorStatsSnapshot()

@@ -46,12 +46,14 @@ type MetricsSink interface {
 // HealthSnapshot is a nil-safe, mutex-consistent read of the live receipt
 // emitter chain state for observability and self-audit consumers.
 type HealthSnapshot struct {
-	InitErr     bool
-	ChainSeq    uint64
-	PrevHash    string
-	LastEmit    time.Time
-	RootEmitted bool
-	RunNonce    string
+	InitErr           bool
+	ChainSeq          uint64
+	PrevHash          string
+	LastEmit          time.Time
+	LastHeartbeat     time.Time
+	HeartbeatObserved bool
+	RootEmitted       bool
+	RunNonce          string
 }
 
 // Emit-failure reason labels. Closed domain to keep metric cardinality bounded.
@@ -106,6 +108,7 @@ type Emitter struct {
 	openErr       error     // sticky error for a written session_open whose durability confirmation failed
 	openNonce     string
 	heartbeatBeat uint64
+	lastHeartbeat time.Time
 
 	// heartbeatSeconds is the configured heartbeat cadence (seconds) recorded
 	// in the session_open record's Open.HeartbeatSeconds so a witness reading
@@ -247,12 +250,14 @@ func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	return HealthSnapshot{
-		InitErr:     e.initErr != nil,
-		ChainSeq:    e.chainSeq,
-		PrevHash:    e.chainPrevHash,
-		LastEmit:    e.chainEnd,
-		RootEmitted: e.rootEmitted,
-		RunNonce:    e.runNonce,
+		InitErr:           e.initErr != nil,
+		ChainSeq:          e.chainSeq,
+		PrevHash:          e.chainPrevHash,
+		LastEmit:          e.chainEnd,
+		LastHeartbeat:     e.lastHeartbeat,
+		HeartbeatObserved: !e.lastHeartbeat.IsZero(),
+		RootEmitted:       e.rootEmitted,
+		RunNonce:          e.runNonce,
 	}, true
 }
 
@@ -703,6 +708,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 	if closeControl {
 		e.closeEmitted = true
+	}
+	if sessionControl != nil && sessionControl.Kind == SessionControlHeartbeat {
+		e.lastHeartbeat = ar.Timestamp
 	}
 
 	// Notify the observer (if any) AFTER the receipt is durably recorded, so a

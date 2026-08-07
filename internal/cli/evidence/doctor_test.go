@@ -678,6 +678,70 @@ func TestEvidenceDoctorCommandExitPaths(t *testing.T) {
 	})
 }
 
+func TestEvidenceDoctorPrometheusTextfileReportsWholeCorpusResult(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		seed       func(t *testing.T, dir string)
+		wantExitOK bool
+		wantMetric string
+	}{
+		{
+			name:       "empty corpus is healthy",
+			wantExitOK: true,
+			wantMetric: "pipelock_evidence_corpus_integrity_ok 1",
+		},
+		{
+			name: "populated single writer corpus is healthy",
+			seed: func(t *testing.T, dir string) {
+				t.Helper()
+				writeDoctorEntries(t, dir, "evidence-proxy-0.jsonl", doctorEntryPlan{
+					{session: "proxy", seq: 0, prev: recorder.GenesisHash},
+					{session: "proxy", seq: 1},
+				})
+			},
+			wantExitOK: true,
+			wantMetric: "pipelock_evidence_corpus_integrity_ok 1",
+		},
+		{
+			name: "damaged corpus is unhealthy",
+			seed: func(t *testing.T, dir string) {
+				t.Helper()
+				writeDoctorEntries(t, dir, "evidence-proxy-0.jsonl", doctorEntryPlan{
+					{session: "proxy", seq: 0, prev: recorder.GenesisHash},
+					{session: "proxy", seq: 0, prev: recorder.GenesisHash},
+				})
+			},
+			wantMetric: "pipelock_evidence_corpus_integrity_ok 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.seed != nil {
+				tt.seed(t, dir)
+			}
+			metricPath := filepath.Join(t.TempDir(), "textfile", "evidence.prom")
+			cmd := Cmd()
+			cmd.SetOut(new(bytes.Buffer))
+			cmd.SetErr(new(bytes.Buffer))
+			cmd.SetArgs([]string{"doctor", dir, "--prometheus-textfile", metricPath})
+			err := cmd.Execute()
+			if (err == nil) != tt.wantExitOK {
+				t.Fatalf("doctor error = %v, want success=%v", err, tt.wantExitOK)
+			}
+			data, readErr := os.ReadFile(filepath.Clean(metricPath))
+			if readErr != nil {
+				t.Fatalf("reading rendered metric: %v", readErr)
+			}
+			if !strings.Contains(string(data), tt.wantMetric) {
+				t.Fatalf("rendered metric missing %q:\n%s", tt.wantMetric, data)
+			}
+		})
+	}
+}
+
 // TestEvidenceDoctorDetectsTamperedEntry is the guard for the doctor's core
 // promise. Operators reach for it to tell fork damage apart from tampering, so
 // it must recompute each entry's hash rather than trusting the stored field. An

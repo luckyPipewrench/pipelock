@@ -15,6 +15,24 @@ and forensic replay.
 
 **On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` is configured, and because `sign_checkpoints` defaults to `true` a signing key is required alongside it unless you opt into an unsigned recorder with `sign_checkpoints: false`. Without a `dir` the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
 
+## Whole-Corpus Auditor
+
+On Linux, `pipelock init` installs and enables the user-systemd
+`pipelock-evidence-corpus-auditor.timer`. Every 15 minutes it runs
+`pipelock evidence doctor` across the configured recorder directory and writes
+`pipelock_evidence_corpus_integrity_ok` plus its audit timestamp in Prometheus
+textfile format. The generated alert rule is
+`PipelockEvidenceCorpusIntegrityFailed` under
+`$XDG_CONFIG_HOME/pipelock/prometheus/rules/`.
+
+Point the Prometheus node-exporter textfile collector at
+`$XDG_CONFIG_HOME/pipelock/prometheus/textfile/` and include the generated rule
+directory in Prometheus `rule_files`. The alert fires for damage, an incomplete
+scan, a stale audit, or no metric. Stop evidence export for investigation; the
+auditor never gates proxy requests. A process-local `require_receipts` failure can
+still stop that process's own mediated actions, but a different writer's
+historical damage cannot.
+
 ## What Gets Recorded
 
 The recorder captures two categories of evidence:
@@ -316,7 +334,7 @@ V2 inserts `event_kind` after `type`. V3 inserts `chain_kind` and
 `writer_instance_id` after `session_id`. The recorder continues writing v2
 during the reader-first compatibility window.
 
-The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory; run `pipelock evidence doctor DIR` when a verifier reports a `prev_hash` mismatch to surface the structural damage for investigation. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
+The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory. The whole-corpus auditor installed by `pipelock init` detects the resulting damage; run `pipelock evidence doctor DIR` manually when investigating its alert. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
 
 To verify a chain:
 

@@ -58,6 +58,30 @@ func TestEvidenceHealthSeparatesLiveStateFromAELCapability(t *testing.T) {
 	}
 }
 
+func TestEvidenceHealthHeartbeatRequirementUsesObservedReceipt(t *testing.T) {
+	h, _, e, _ := newEvidenceHealthTestMonitor(t, nil)
+	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+
+	before, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable before first heartbeat")
+	}
+	if before.Requirements[metrics.EvidenceRequirementHeartbeats] {
+		t.Fatal("heartbeats requirement is true before any heartbeat was recorded")
+	}
+
+	if err := e.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat: %v", err)
+	}
+	after, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable after heartbeat")
+	}
+	if !after.Requirements[metrics.EvidenceRequirementHeartbeats] {
+		t.Fatal("heartbeats requirement is false after a successful heartbeat")
+	}
+}
+
 func TestEvidenceHealthSelfAuditDurabilityInvariantLatchesAndEmits(t *testing.T) {
 	t.Run("positive_divergence", func(t *testing.T) {
 		h, m, e, _ := newEvidenceHealthTestMonitor(t, func(cfg *config.Config) {

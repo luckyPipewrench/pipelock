@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -41,6 +42,7 @@ const defaultConfigSubdir = "pipelock"
 type initResult struct {
 	Discover *initDiscoverResult `json:"discover"`
 	Setup    *initSetupResult    `json:"setup"`
+	Auditor  *initAuditorResult  `json:"evidence_corpus_auditor,omitempty"`
 	Verify   *initVerifyResult   `json:"verify,omitempty"`
 	Canary   *initCanaryResult   `json:"canary,omitempty"`
 }
@@ -58,6 +60,13 @@ type initSetupResult struct {
 	Preset         string `json:"preset"`
 	Written        bool   `json:"written"`
 	SkippedExsting bool   `json:"skipped_existing,omitempty"`
+}
+
+type initAuditorResult struct {
+	ServicePath string `json:"service_path"`
+	TimerPath   string `json:"timer_path"`
+	AlertPath   string `json:"alert_path"`
+	MetricPath  string `json:"metric_path"`
 }
 
 type initVerifyResult struct {
@@ -250,6 +259,34 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 			if !opts.jsonOutput {
 				_, _ = fmt.Fprintf(w, "  Config written to: %s\n", configPath)
 				_, _ = fmt.Fprintf(w, "  Preset: %s\n\n", opts.preset)
+			}
+		}
+	}
+	if !opts.dryRun && runtime.GOOS == "linux" {
+		auditorRecorderDir := cfg.FlightRecorder.Dir
+		installAuditor := result.Setup.Written
+		if result.Setup.SkippedExsting {
+			// Preserve init's historic no-op behavior for an arbitrary existing
+			// config. A previously generated, valid config is enough to repair a
+			// missing managed auditor on rerun without rewriting the config.
+			if existing, loadErr := config.Load(configPath); loadErr == nil && existing.FlightRecorder.Dir != "" {
+				auditorRecorderDir = existing.FlightRecorder.Dir
+				installAuditor = true
+			}
+		}
+		if installAuditor {
+			installed, installErr := installEvidenceCorpusAuditor(cmd.Context(), auditorRecorderDir)
+			if installErr != nil {
+				return cliutil.ExitCodeError(initExitError, fmt.Errorf("installing evidence corpus auditor: %w", installErr))
+			}
+			result.Auditor = &initAuditorResult{
+				ServicePath: installed.ServicePath,
+				TimerPath:   installed.TimerPath,
+				AlertPath:   installed.AlertPath,
+				MetricPath:  installed.MetricPath,
+			}
+			if !opts.jsonOutput {
+				_, _ = fmt.Fprintf(w, "  Evidence corpus auditor timer installed: %s\n\n", installed.TimerPath)
 			}
 		}
 	}

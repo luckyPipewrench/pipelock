@@ -67,7 +67,9 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 		segment[i].Version = 1
 		p.ObserveRecorderEntry(segment[i])
 	}
-	tail := segment[1].Hash
+	for _, entry := range checkpointSegment(2) {
+		p.ObserveRecorderEntry(entry)
+	}
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +77,8 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Pending != 0 || p.previousSegmentTail != tail {
-		t.Fatalf("v1 segment pending=%d tail=%q, want 0 and %q", stats.Pending, p.previousSegmentTail, tail)
+	if stats.Pending != 0 || p.previousSegmentTail != "" {
+		t.Fatalf("v1 segment pending=%d tail=%q, want quarantined namespace with no accepted tail", stats.Pending, p.previousSegmentTail)
 	}
 }
 
@@ -96,7 +98,9 @@ func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
 		segment[i].WriterInstanceID = "unhashed"
 		p.ObserveRecorderEntry(segment[i])
 	}
-	tail := segment[1].Hash
+	for _, entry := range checkpointSegment(2) {
+		p.ObserveRecorderEntry(entry)
+	}
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -104,8 +108,8 @@ func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Pending != 0 || p.previousSegmentTail != tail {
-		t.Fatalf("invalid namespace pending=%d tail=%q, want 0 and %q", stats.Pending, p.previousSegmentTail, tail)
+	if stats.Pending != 0 || p.previousSegmentTail != "" {
+		t.Fatalf("invalid namespace pending=%d tail=%q, want quarantined namespace with no accepted tail", stats.Pending, p.previousSegmentTail)
 	}
 }
 
@@ -419,8 +423,8 @@ func TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint(t *testing.T) 
 	if err := p.enqueueSegment(seg); err == nil {
 		t.Fatal("expected invalid checkpoint error")
 	}
-	if p.previousSegmentTail != seg[1].Hash {
-		t.Fatalf("tail not advanced on invalid checkpoint: %q", p.previousSegmentTail)
+	if p.previousSegmentTail != "" {
+		t.Fatalf("tail advanced from invalid checkpoint: %q", p.previousSegmentTail)
 	}
 	if got := metrics.delivery["drop:invalid_checkpoint"]; got != 1 {
 		t.Fatalf("invalid_checkpoint drop metric = %d, want 1", got)
@@ -453,8 +457,8 @@ func TestProducer_AdvancesTailOnMixedNamespaceRejection(t *testing.T) {
 		t.Fatal("mixed namespace segment accepted")
 	}
 	key := recorderNamespaceKey(seg[1])
-	if got := p.previousSegmentTailFor(key); got != seg[1].Hash {
-		t.Fatalf("tail after mixed namespace rejection = %q, want %q", got, seg[1].Hash)
+	if got := p.previousSegmentTailFor(key); got != "" {
+		t.Fatalf("tail advanced after mixed namespace rejection: %q", got)
 	}
 }
 

@@ -205,6 +205,10 @@ fn validate_v3_projected_strings(entry: &serde_json::Value, line: usize) -> Resu
                 "line {line}: v3 {field} cannot contain NUL"
             )));
         }
+        if field == "ts" {
+            crate::aarp::envelope::validate_timestamp(value, "recorder ts")
+                .map_err(|err| VerifierError::Runtime(format!("line {line}: {err}")))?;
+        }
     }
     Ok(())
 }

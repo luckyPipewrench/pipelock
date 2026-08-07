@@ -733,6 +733,7 @@ test("JSONL recorder reader rejects non-string v3 projected fields", () => {
       const entry: Record<string, unknown> = {
         v: 3,
         seq: 0,
+        ts: "2026-08-07T00:00:00Z",
         chain_kind: "recorder",
         writer_instance_id: "writer-a",
         type: "checkpoint",
@@ -740,6 +741,26 @@ test("JSONL recorder reader rejects non-string v3 projected fields", () => {
       entry[field] = 1;
       writeFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
       assert.throws(() => extractReceipts(file), new RegExp(`${field} must be a string`, "u"));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL recorder reader rejects null and malformed v3 timestamps", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const [name, ts] of [
+      ["null", null],
+      ["malformed", "not-a-time"],
+    ]) {
+      const file = join(dir, `v3-ts-${name}.jsonl`);
+      writeFileSync(
+        file,
+        `${JSON.stringify({ v: 3, seq: 0, ts, chain_kind: "recorder", writer_instance_id: "writer-a", type: "checkpoint" })}\n`,
+        { mode: 0o600 },
+      );
+      assert.throws(() => extractReceipts(file), /recorder ts|ts must be a string/u);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt, RecorderEntry } from "./types.js";
 import { validateV1Receipt } from "./strict.js";
+import { validateTimestamp } from "./aarp/numbers.js";
 import { InvalidError, RuntimeError, decodeUTF8, parseJSON, rejectDuplicateKeys } from "./util.js";
 
 const actionReceiptType = "action_receipt";
@@ -78,6 +79,13 @@ function validateV3ProjectedStrings(entry: RecorderEntry, line: number): void {
     }
     if (typeof value === "string" && value.includes("\0")) {
       throw new RuntimeError(`line ${line}: v3 ${field} cannot contain NUL`);
+    }
+    if (field === "ts" && typeof value === "string") {
+      try {
+        validateTimestamp(value);
+      } catch (err) {
+        throw new RuntimeError(`line ${line}: recorder ts ${(err as Error).message}`);
+      }
     }
   }
 }

@@ -182,20 +182,37 @@ func (p *Producer) Close() error {
 func (p *Producer) run() {
 	defer close(p.done)
 	pending := make(map[string][]recorder.Entry)
+	blocked := make(map[string]bool)
+	blockedAll := false
 	for entry := range p.entries {
 		key := recorderNamespaceKey(entry)
-		if !conductor.IsSupportedAuditEntryVersion(entry.Version) {
-			if entry.Type == checkpointEntryType {
-				p.setPreviousSegmentTail(key, entry.Hash)
-			}
+		if blockedAll || blocked[key] {
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
-		if err := recorder.ValidateEntrySchema(entry); err != nil {
-			if entry.Type == checkpointEntryType {
-				p.setPreviousSegmentTail(key, entry.Hash)
+		if !conductor.IsSupportedAuditEntryVersion(entry.Version) {
+			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
+			delete(pending, key)
+			if entry.Version == 1 || entry.Version == 2 {
+				blocked[key] = true
+			} else {
+				blockedAll = true
 			}
-			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
+			continue
+		}
+		if err := recorder.ValidateEntrySchema(entry); err != nil {
+			if recorder.ValidateEntryNamespace(entry.Version, entry.ChainKind, entry.WriterInstanceID) != nil {
+				for pendingKey, chainPending := range pending {
+					p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(chainPending))
+					delete(pending, pendingKey)
+				}
+				p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
+				blockedAll = true
+			} else {
+				p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
+				delete(pending, key)
+				blocked[key] = true
+			}
 			continue
 		}
 		chainPending := pending[key]
@@ -233,8 +250,6 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	// drop path left the tail un-advanced, the next segment would claim
 	// continuity across a checkpoint the recorder actually wrote, and a
 	// verifier replaying the local recorder file would reject the chain.
-	key := recorderNamespaceKey(checkpoint)
-	defer func() { p.setPreviousSegmentTail(key, checkpoint.Hash) }()
 	if !homogeneousRecorderNamespace(entries) {
 		droppedActions := droppedActionReceiptCount(entries)
 		p.drop(producerDropInvalidCheckpoint, droppedActions)
@@ -246,6 +261,8 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 		p.drop(producerDropInvalidCheckpoint, droppedActions)
 		return fmt.Errorf("%s: %w", producerDropInvalidCheckpoint, err)
 	}
+	key := recorderNamespaceKey(checkpoint)
+	defer func() { p.setPreviousSegmentTail(key, checkpoint.Hash) }()
 	payload, err := marshalEntriesJSONL(entries)
 	if err != nil {
 		p.drop(producerDropEnqueueError, droppedActions)

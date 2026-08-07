@@ -178,6 +178,9 @@ func parseRecorderEntry(line []byte) (recorder.Entry, error) {
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return recorder.Entry{}, err
 	}
+	if err := recorder.ValidateEntryJSONSchema(line, raw.Version); err != nil {
+		return recorder.Entry{}, err
+	}
 
 	detail := json.RawMessage("null")
 	if raw.Detail != nil && string(raw.Detail) != "null" {

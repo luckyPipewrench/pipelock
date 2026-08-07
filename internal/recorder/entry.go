@@ -131,6 +131,24 @@ func ValidateEntrySchema(e Entry) error {
 	return nil
 }
 
+// ValidateEntryJSONSchema rejects raw JSON representations that typed Go
+// decoding would otherwise collapse into the same zero value.
+func ValidateEntryJSONSchema(rawJSON []byte, version int) error {
+	if version != 3 {
+		return nil
+	}
+	var projected map[string]json.RawMessage
+	if err := json.Unmarshal(rawJSON, &projected); err != nil {
+		return fmt.Errorf("parse v3 projected fields: %w", err)
+	}
+	for _, field := range []string{"ts", "session_id", "chain_kind", "writer_instance_id", "trace_id", "type", "event_kind", "transport", "summary", "raw_ref", "prev_hash"} {
+		if value, ok := projected[field]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("v3 %s must be a string", field)
+		}
+	}
+	return nil
+}
+
 // EntryVersionsCanShareChain reports whether a writer may resume a tail
 // without crossing between legacy and namespaced hash-chain families.
 func EntryVersionsCanShareChain(tailVersion, writeVersion int) bool {
@@ -518,16 +536,8 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
 			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
-		if raw.Version == 3 {
-			var projected map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(trimmed), &projected); err != nil {
-				return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry fields: %w", lineNum, err)
-			}
-			for _, field := range []string{"ts", "session_id", "chain_kind", "writer_instance_id", "trace_id", "type", "event_kind", "transport", "summary", "raw_ref", "prev_hash"} {
-				if value, ok := projected[field]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-					return nil, false, bytesRead, fmt.Errorf("line %d: v3 %s must be a string", lineNum, field)
-				}
-			}
+		if err := ValidateEntryJSONSchema([]byte(trimmed), raw.Version); err != nil {
+			return nil, false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
 		}
 		e := Entry{
 			Version:          raw.Version,

@@ -844,15 +844,38 @@ fn recorder_reader_rejects_non_string_v3_projected_fields() {
         let fixture = TempFixture(recorder_fixture_path(&format!("v3-type-{field}")));
         let path = &fixture.0;
         let mut entry = serde_json::json!({
-            "v": 3, "seq": 0, "chain_kind": "recorder", "writer_instance_id": "writer-a",
+            "v": 3, "seq": 0, "ts": "2026-08-07T00:00:00Z", "chain_kind": "recorder", "writer_instance_id": "writer-a",
             "type": "checkpoint"
         });
         entry[field] = serde_json::json!(1);
         fs::write(path, format!("{}\n", entry)).expect("write JSONL");
         let err = extract_receipts(path).expect_err("non-string projected field should reject");
-        assert!(err
-            .to_string()
-            .contains(&format!("{field} must be a string")));
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("{field} must be a string")),
+            "field {field}: {message}"
+        );
+    }
+}
+
+#[test]
+fn recorder_reader_rejects_null_and_malformed_v3_timestamps() {
+    for (name, timestamp) in [
+        ("null", serde_json::Value::Null),
+        ("malformed", serde_json::json!("not-a-time")),
+    ] {
+        let fixture = TempFixture(recorder_fixture_path(&format!("v3-ts-{name}")));
+        let path = &fixture.0;
+        let entry = serde_json::json!({
+            "v": 3, "seq": 0, "ts": timestamp, "chain_kind": "recorder",
+            "writer_instance_id": "writer-a", "type": "checkpoint"
+        });
+        fs::write(path, format!("{}\n", entry)).expect("write JSONL");
+        let err = extract_receipts(path).expect_err("invalid timestamp should reject");
+        assert!(
+            err.to_string().contains("timestamp")
+                || err.to_string().contains("ts must be a string")
+        );
     }
 }
 

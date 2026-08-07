@@ -1747,8 +1747,9 @@ func TestAdaptiveSessionGauge_PreservesNegativeFallbackAndAggregatesSources(t *t
 		}
 	}
 
-	// Removing an older manager must not erase the newer manager's source.
-	// This is the replacement-manager close ordering used during reloads.
+	// Removing one independently registered source must not erase another.
+	// This exercises registration ownership; proxy reload retains its one active
+	// session manager and reconfigures it in place.
 	removeOne()
 	body = scrape()
 	for _, want := range []string{

@@ -1206,14 +1206,14 @@ func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.Adaptiv
 	}
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
-	if m != nil {
-		sm.unregisterGauge = m.RegisterAdaptiveSessionState(sm.AdaptiveSessionLevelCounts)
-	}
 	if len(opts) > 0 {
 		if opts[0].AirlockCfg != nil {
 			sm.airlockCfgPtr.Store(opts[0].AirlockCfg)
 		}
 		sm.logger = opts[0].Logger
+	}
+	if m != nil {
+		sm.unregisterGauge = m.RegisterAdaptiveSessionState(sm.AdaptiveSessionLevelCounts)
 	}
 
 	return sm

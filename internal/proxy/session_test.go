@@ -1982,17 +1982,17 @@ func TestSessionManager_SweepNilMetrics(t *testing.T) {
 	}
 }
 
-// TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement verifies that
-// when a session de-escalates to level 0, the sweep emits the deescalation
-// counter but does NOT call SetAdaptiveSessionLevel for the "normal" label
-// (the to > 0 guard prevents incrementing a gauge for un-escalated sessions).
+// TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement verifies that a
+// live-state elevation followed by time-based recovery emits the deescalation
+// counter, keeps the observed elevated label at zero, and does not increment
+// the normal label.
 func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 	cfg := testSessionConfig()
 	m := metrics.New()
 	blockAllTrue := true
 	adaptiveCfg := &config.AdaptiveEnforcement{
 		Enabled:             true,
-		EscalationThreshold: 5.0,
+		EscalationThreshold: 3.0,
 		Levels: config.EscalationLevels{
 			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
 		},
@@ -2000,13 +2000,22 @@ func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 	sm := NewSessionManager(cfg, adaptiveCfg, m)
 	defer sm.Close()
 
-	// Single session at level 1 (elevated), will recover to level 0 (normal).
+	// Drive an actual adaptive signal and scrape while it is elevated. This
+	// registers the label via the authoritative live-state source, rather than
+	// through the legacy transition-delta compatibility lane.
 	sess := sm.GetOrCreate("to-zero-client")
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, decide.EscalationParams{
+		Threshold: adaptiveCfg.EscalationThreshold,
+		Metrics:   m,
+		Session:   "to-zero-client",
+	})
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("elevated gauge before recovery = %.0f, want 1 from live session state", got)
+	}
+
+	// Advance this live elevation beyond the recovery interval.
 	sess.mu.Lock()
-	sess.escalationLevel = 1
 	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
-	sess.currentThreshold = 10.0
-	sess.threatScore = 5.0
 	sess.mu.Unlock()
 
 	sm.sweepDeescalation()
@@ -2021,10 +2030,8 @@ func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 		t.Errorf("expected deescalation counter %q", wantCounter)
 	}
 
-	// The session was restored at an elevated level (as happens after a stale
-	// metric registry/reload) without a matching prior gauge increment. The
-	// gauge must be derived from the live session state rather than driven
-	// negative by this recovery transition.
+	// The gauge is derived from the now-recovered live session state rather than
+	// from the recovery transition delta.
 	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
 		t.Fatalf("elevated gauge after recovery = %.0f, want 0 from live session state", got)
 	}
@@ -2151,9 +2158,9 @@ func TestSessionManager_CloseFencesRetainedRecorderGauge(t *testing.T) {
 	sm.Close()
 
 	// WebSocket and intercepted tunnel lifetimes can retain a recorder after a
-	// reload closes its manager. Enforcement continues from that retained state,
-	// but its transition must not revive a current-session gauge owned by the
-	// retired manager.
+	// reload disables session profiling and closes its manager. Enforcement
+	// continues from that retained state, but its transition must not revive a
+	// current-session gauge owned by the retired manager.
 	params := decide.EscalationParams{Threshold: 3, Metrics: m, Session: "retained-transport-client"}
 	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
 	if !sess.IsEscalated() {

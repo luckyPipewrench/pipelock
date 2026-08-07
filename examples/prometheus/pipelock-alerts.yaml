@@ -85,16 +85,17 @@ groups:
       # --- Session Profiling ---
 
       - alert: PipelockSessionEscalation
-        expr: increase(pipelock_session_escalations_total{to="block"}[5m]) > 0
+        expr: increase(pipelock_session_escalations_total{to=~"high|critical"}[5m]) > 0
         for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "Session threat score reached block level on {{ $labels.instance }}"
+          summary: "Session threat score reached high/critical level on {{ $labels.instance }}"
           description: >-
-            A session's threat score escalated from {{ $labels.from }} to block
-            due to sustained anomalous behavior. In v1 this is an observability
-            event; enforcement behavior is not automatically changed.
+            A session's threat score escalated from {{ $labels.from }} to
+            {{ $labels.to }} due to sustained anomalous behavior. Adaptive
+            enforcement can automatically upgrade later requests according to
+            the configured actions for this level.
 
       - alert: PipelockHighAnomalyRate
         expr: rate(pipelock_session_anomalies_total[10m]) > 1

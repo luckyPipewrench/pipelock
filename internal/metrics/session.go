@@ -124,7 +124,8 @@ func (g *adaptiveSessionGauge) registerSource(source func() map[string]float64) 
 	g.authoritative = true
 	// A session manager source is authoritative. Discard prior transition
 	// deltas and never resume them on this registry: long-lived transports may
-	// retain a retired manager's recorder after reload and emit stale deltas.
+	// retain a recorder after a reload disables session profiling and emit stale
+	// deltas.
 	g.fallback = make(map[string]float64)
 	g.mu.Unlock()
 
@@ -250,10 +251,10 @@ func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
 }
 
 // RegisterAdaptiveSessionState adds source to the authoritative current
-// adaptive-session gauge. Sources are summed, because independently created
-// session managers may share one Metrics registry. The returned function
-// unregisters only this source, so a manager that closes after a replacement
-// cannot clear the replacement.
+// adaptive-session gauge. Sources are summed for independently created session
+// managers that intentionally share one Metrics registry. The returned function
+// unregisters only its own source. The proxy runtime itself maintains one active
+// session manager and reconfigures it in place across enabled-to-enabled reloads.
 func (m *Metrics) RegisterAdaptiveSessionState(source func() map[string]float64) func() {
 	if m == nil || source == nil {
 		return func() {}

@@ -5,6 +5,7 @@ package evidence
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -608,6 +609,10 @@ func parseDoctorEvidenceName(name, suffix string) (string, uint64, bool) {
 	rest := strings.TrimPrefix(name, "evidence-")
 	rest = strings.TrimSuffix(rest, suffix)
 	lastDash := strings.LastIndex(rest, "-")
+	if tokenStart := strings.LastIndex(rest, "-raw-"); suffix == ".raw.enc" && tokenStart >= 0 && isDoctorEscrowNameToken(rest[tokenStart+len("-raw-"):]) {
+		rest = rest[:tokenStart]
+		lastDash = strings.LastIndex(rest, "-")
+	}
 	if lastDash < 0 {
 		return "", 0, false
 	}
@@ -620,6 +625,14 @@ func parseDoctorEvidenceName(name, suffix string) (string, uint64, bool) {
 		return "", 0, false
 	}
 	return sessionID, seq, true
+}
+
+func isDoctorEscrowNameToken(token string) bool {
+	if len(token) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(token)
+	return err == nil
 }
 
 func uniquePrevHashes(refs []doctorEntryRef) map[string]struct{} {

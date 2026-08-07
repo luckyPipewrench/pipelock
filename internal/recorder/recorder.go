@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -41,6 +42,10 @@ const (
 
 	// x25519KeySize is the expected size of an X25519 public key in bytes.
 	x25519KeySize = 32
+
+	// escrowNameTokenBytes keeps collision retries astronomically unlikely while
+	// os.O_EXCL remains the authoritative no-overwrite guard.
+	escrowNameTokenBytes = 16
 
 	// recorderTypeReceipt is the entry type for action receipts. These get
 	// selective field redaction (target/pattern only) instead of full detail
@@ -843,19 +848,62 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	payload = append(payload, ephPub[:]...)
 	payload = append(payload, sealed...)
 
-	// filepath.Base as defense-in-depth: session ID is already validated
-	// for path separators in Record(), but belt-and-suspenders for filenames.
-	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", filepath.Base(r.sessionID), r.seq)
-	escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
+	return r.writeEscrowPayload(payload)
+}
 
-	if err := os.WriteFile(escrowPath, payload, r.cfg.FileMode); err != nil {
-		return "", fmt.Errorf("writing escrow file: %w", err)
-	}
-	if err := os.Chmod(escrowPath, r.cfg.FileMode); err != nil {
-		return "", fmt.Errorf("setting escrow file permissions: %w", err)
-	}
+func (r *Recorder) writeEscrowPayload(payload []byte) (string, error) {
+	for {
+		var token [escrowNameTokenBytes]byte
+		if _, err := io.ReadFull(rand.Reader, token[:]); err != nil {
+			return "", fmt.Errorf("generating escrow filename token: %w", err)
+		}
 
-	return escrowPath, nil
+		// filepath.Base is defense-in-depth: Record already rejects separators.
+		// The token distinguishes concurrent recorders that share a session and
+		// sequence. O_EXCL is still required because randomness alone never
+		// proves an existing payload will be preserved.
+		escrowName := fmt.Sprintf("evidence-%s-%d-raw-%s.raw.enc", filepath.Base(r.sessionID), r.seq, hex.EncodeToString(token[:]))
+		escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
+		root, err := os.OpenRoot(filepath.Clean(r.cfg.Dir))
+		if err != nil {
+			return "", fmt.Errorf("opening evidence directory: %w", err)
+		}
+		file, openErr := root.OpenFile(escrowName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, r.cfg.FileMode)
+		closeErr := root.Close()
+		if openErr != nil {
+			if errors.Is(openErr, fs.ErrExist) {
+				continue
+			}
+			return "", fmt.Errorf("creating escrow file: %w", openErr)
+		}
+		if closeErr != nil {
+			_ = file.Close()
+			return "", fmt.Errorf("closing evidence directory: %w", closeErr)
+		}
+
+		if err := writeEscrowFile(file, payload, r.cfg.FileMode); err != nil {
+			return "", err
+		}
+		return escrowPath, nil
+	}
+}
+
+func writeEscrowFile(file *os.File, payload []byte, mode os.FileMode) error {
+	if n, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("writing escrow file: %w", err)
+	} else if n != len(payload) {
+		_ = file.Close()
+		return fmt.Errorf("writing escrow file: %w", io.ErrShortWrite)
+	}
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("setting escrow file permissions: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing escrow file: %w", err)
+	}
+	return nil
 }
 
 func (r *Recorder) resumeSessionLocked(sessionID string) error {

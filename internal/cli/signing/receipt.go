@@ -379,15 +379,6 @@ func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []strin
 	return verifyChainDetailed(out, path, receipts, trustedKeys, opts)
 }
 
-func verifyChainFromSessionDirDetailed(out io.Writer, dir, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
-	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
-	if err != nil {
-		return fmt.Errorf("extracting session receipts: %w", err)
-	}
-	label := fmt.Sprintf("%s (session %s)", dir, sessionID)
-	return verifyChainDetailed(out, label, receipts, trustedKeys, opts)
-}
-
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, dir, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(dir, sessionID)
 	if err != nil {

@@ -845,10 +845,32 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 		prev    envelope.Envelope
 		rawPrev string
 	)
+	// Read every value, not just the first. Header.Get returns only the
+	// first, so a sequence like ["", "not a dictionary ((("] would read as
+	// empty and take the no-prior-envelope path, silently reclassifying a
+	// malformed mediation header as an absent one and skipping the block
+	// below. A genuinely absent header is still the legitimate first-hop
+	// case; a header that is PRESENT but empty or repeated is ambiguous
+	// about which envelope governs this chain, so it fails closed.
+	priorHeader := envelope.HeaderName
+	var priorValues []string
 	if len(via) > 0 {
-		rawPrev = via[0].Header.Get(envelope.HeaderName)
+		priorValues = via[0].Header.Values(priorHeader)
 	} else {
-		rawPrev = req.Header.Get(envelope.HeaderName)
+		priorValues = req.Header.Values(priorHeader)
+	}
+	if len(priorValues) > 1 {
+		return newRedirectEnvelopeBlockedRequest(
+			fmt.Errorf("prior envelope header repeated %d times", len(priorValues)),
+		)
+	}
+	if len(priorValues) == 1 {
+		rawPrev = priorValues[0]
+		if strings.TrimSpace(rawPrev) == "" {
+			return newRedirectEnvelopeBlockedRequest(
+				errors.New("prior envelope header present but empty"),
+			)
+		}
 	}
 	if rawPrev != "" {
 		parsed, parseErr := envelope.Parse(rawPrev)

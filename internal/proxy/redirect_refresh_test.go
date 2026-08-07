@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -322,6 +323,20 @@ func TestCheckRedirect_DropsAuthorityOnRedirect(t *testing.T) {
 				t.Fatalf("inject previous envelope: %v", err)
 			}
 
+			// Prove authority actually crossed the serialized boundary
+			// before asserting the redirect removed it. Without this, an
+			// emitter that silently dropped authority would make the
+			// removal assertion below pass even with the carry-over
+			// restored, so the test would prove nothing about redirects.
+			injected, err := envelope.Parse(original.Header.Get(envelope.HeaderName))
+			if err != nil {
+				t.Fatalf("parse injected envelope: %v", err)
+			}
+			if injected.AuthorityKind != tt.authorityKind || injected.AuthorityRef != tt.authorityRef {
+				t.Fatalf("injected authority = %q/%q, want %q/%q",
+					injected.AuthorityKind, injected.AuthorityRef, tt.authorityKind, tt.authorityRef)
+			}
+
 			redirected := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://redirected.example/final", nil)
 			if err := p.refreshEnvelopeForRedirect(redirected, []*http.Request{original}, p.cfgPtr.Load()); err != nil {
 				t.Fatalf("refreshEnvelopeForRedirect: %v", err)
@@ -333,6 +348,13 @@ func TestCheckRedirect_DropsAuthorityOnRedirect(t *testing.T) {
 			}
 			if refreshed.AuthorityKind != "" || refreshed.AuthorityRef != "" {
 				t.Fatalf("redirected authority = %q/%q, want empty", refreshed.AuthorityKind, refreshed.AuthorityRef)
+			}
+			// The redirect switched POST to GET, so the action must be
+			// recomputed from the new method rather than carried over.
+			// Preserving "write" here would misreport the hop.
+			if wantAction := string(receipt.ClassifyHTTP(http.MethodGet)); refreshed.Action != wantAction {
+				t.Fatalf("refreshed Action = %q, want %q recomputed from the redirected method",
+					refreshed.Action, wantAction)
 			}
 			if refreshed.Actor != prev.Actor || refreshed.ActorAuth != prev.ActorAuth ||
 				refreshed.ReceiptID != prev.ReceiptID || refreshed.SessionTaint != prev.SessionTaint ||
@@ -353,9 +375,18 @@ func TestCheckRedirect_MalformedPriorEnvelopeBlocks(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
+		// extra values are Added after raw, so the header carries more
+		// than one value. Header.Get reads only the first, so without a
+		// Values-based read a malformed later value reads as absent and
+		// skips the block entirely.
+		extra []string
 	}{
 		{name: "invalid structured field", raw: "not a valid dictionary ((("},
 		{name: "missing required verdict", raw: "v=1, act=\"read\", rid=\"01961f3a-7b2c-7000-8000-000000000023\", ts=1"},
+		{name: "present but empty", raw: ""},
+		{name: "present but whitespace only", raw: "   "},
+		{name: "empty then malformed", raw: "", extra: []string{"not a valid dictionary ((("}},
+		{name: "valid then malformed", raw: "v=1", extra: []string{"not a valid dictionary ((("}},
 	}
 
 	for _, tt := range tests {
@@ -365,6 +396,9 @@ func TestCheckRedirect_MalformedPriorEnvelopeBlocks(t *testing.T) {
 			p := newSigningProxyForTest(t)
 			original := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://origin.example/start", nil)
 			original.Header.Set(envelope.HeaderName, tt.raw)
+			for _, value := range tt.extra {
+				original.Header.Add(envelope.HeaderName, value)
+			}
 			redirected := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://redirected.example/final", nil)
 
 			err := p.refreshEnvelopeForRedirect(redirected, []*http.Request{original}, p.cfgPtr.Load())

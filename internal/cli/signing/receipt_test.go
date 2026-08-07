@@ -1750,10 +1750,12 @@ func TestReceiptCommandsRejectAmbiguousEvidenceLocations(t *testing.T) {
 func TestReceiptCommandsSelectEvidenceLocation(t *testing.T) {
 	t.Parallel()
 	source, pub := buildRestartChainDir(t, 1)
+	otherSource, _ := buildRestartChainDir(t, 1)
 	root := t.TempDir()
 	selectedID := "recorder-a/run-a"
+	otherID := "recorder-b/run-b"
 	copyEvidenceFiles(t, source, filepath.Join(root, filepath.FromSlash(selectedID)))
-	copyEvidenceFiles(t, source, filepath.Join(root, "recorder-b", "run-b"))
+	copyEvidenceFiles(t, otherSource, filepath.Join(root, filepath.FromSlash(otherID)))
 	keyHex := hex.EncodeToString(pub)
 
 	verify := VerifyReceiptCmd()
@@ -1785,6 +1787,17 @@ func TestReceiptCommandsSelectEvidenceLocation(t *testing.T) {
 	}
 	if !strings.Contains(transcriptOut.String(), "Transcript Root") {
 		t.Fatalf("transcript-root output = %q, want transcript root", transcriptOut.String())
+	}
+
+	wrongVerify := VerifyReceiptCmd()
+	wrongVerify.SetArgs([]string{"--chain", root, "--location", otherID, "--key", keyHex})
+	if err := wrongVerify.Execute(); err == nil {
+		t.Fatal("verify-receipt accepted the other location with the selected location's key")
+	}
+	wrongTranscript := TranscriptRootCmd()
+	wrongTranscript.SetArgs([]string{"--chain", root, "--location", otherID, "--key", keyHex})
+	if err := wrongTranscript.Execute(); err == nil {
+		t.Fatal("transcript-root accepted the other location with the selected location's key")
 	}
 
 	unknownVerify := VerifyReceiptCmd()

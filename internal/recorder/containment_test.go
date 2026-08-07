@@ -117,19 +117,24 @@ func TestResolvedEvidenceLocationRejectsInvalidDescriptors(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "run"), 0o750); err != nil {
 		t.Fatalf("Mkdir run: %v", err)
 	}
-	tests := []EvidenceLocation{
-		{},
-		{Root: root, ID: "run", Dir: root},
-		{Root: root, ID: "../escape", Dir: filepath.Join(root, "..", "escape")},
-		{Root: root, ID: "run/../other", Dir: filepath.Join(root, "other")},
+	tests := []struct {
+		name     string
+		location EvidenceLocation
+	}{
+		{name: "empty descriptor"},
+		{name: "directory does not match ID", location: EvidenceLocation{Root: root, ID: "run", Dir: root}},
+		{name: "ID escapes root", location: EvidenceLocation{Root: root, ID: "../escape", Dir: filepath.Join(root, "..", "escape")}},
+		{name: "ID is not clean", location: EvidenceLocation{Root: root, ID: "run/../other", Dir: filepath.Join(root, "other")}},
 	}
-	for _, location := range tests {
-		if _, err := ReadEvidenceLocationEntries(location); err == nil {
-			t.Fatalf("ReadEvidenceLocationEntries(%+v) accepted invalid descriptor", location)
-		}
-		if _, _, _, err := readEntriesAtEvidenceLocation(location, discoveryShardName, entryReadLimits{}); err == nil {
-			t.Fatalf("readEntriesAtEvidenceLocation(%+v) accepted invalid descriptor", location)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ReadEvidenceLocationEntries(tt.location); err == nil {
+				t.Fatalf("ReadEvidenceLocationEntries(%+v) accepted invalid descriptor", tt.location)
+			}
+			if _, _, _, err := readEntriesAtEvidenceLocation(tt.location, discoveryShardName, entryReadLimits{}); err == nil {
+				t.Fatalf("readEntriesAtEvidenceLocation(%+v) accepted invalid descriptor", tt.location)
+			}
+		})
 	}
 }
 

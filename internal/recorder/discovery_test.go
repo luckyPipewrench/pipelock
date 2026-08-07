@@ -160,6 +160,20 @@ func TestDiscoverEvidenceLocationsRejectsRootSymlink(t *testing.T) {
 	}
 }
 
+func TestDiscoverEvidenceLocationsRejectsSymlinkedRootAncestor(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	writeDiscoveryShard(t, filepath.Join(target, "run"))
+	link := filepath.Join(t.TempDir(), "evidence-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	root := filepath.Join(link, "run")
+	if _, err := DiscoverEvidenceLocations(root); err == nil || !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), link) {
+		t.Fatalf("DiscoverEvidenceLocations symlinked ancestor error = %v, want rejection at %q", err, link)
+	}
+}
+
 func TestDiscoverEvidenceLocationsRejectsMissingAndNonDirectoryRoots(t *testing.T) {
 	t.Parallel()
 	if _, err := DiscoverEvidenceLocations(filepath.Join(t.TempDir(), "missing")); err == nil {

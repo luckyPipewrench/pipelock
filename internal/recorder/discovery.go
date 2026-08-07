@@ -31,12 +31,9 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve evidence root: %w", err)
 	}
-	info, err := os.Lstat(cleanRoot)
+	info, err := validateEvidenceRootComponents(cleanRoot)
 	if err != nil {
-		return nil, fmt.Errorf("stat evidence root: %w", err)
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refuse symlink as evidence root: %q", root)
+		return nil, err
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("evidence root %q is not a directory", root)
@@ -83,6 +80,35 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 	}
 	sort.Slice(locations, func(i, j int) bool { return locations[i].ID < locations[j].ID })
 	return locations, nil
+}
+
+// validateEvidenceRootComponents checks from the filesystem root down so a
+// symlinked ancestor is rejected before any descendant under its target is
+// inspected.
+func validateEvidenceRootComponents(cleanRoot string) (fs.FileInfo, error) {
+	components := make([]string, 0)
+	for component := cleanRoot; ; component = filepath.Dir(component) {
+		components = append(components, component)
+		if parent := filepath.Dir(component); parent == component {
+			break
+		}
+	}
+
+	var rootInfo fs.FileInfo
+	for i := len(components) - 1; i >= 0; i-- {
+		component := components[i]
+		info, err := os.Lstat(component)
+		if err != nil {
+			return nil, fmt.Errorf("stat evidence root component %q: %w", component, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refuse symlink in evidence root path: %q", component)
+		}
+		if component == cleanRoot {
+			rootInfo = info
+		}
+	}
+	return rootInfo, nil
 }
 
 func directoryHasEvidenceFiles(dir string) (bool, error) {

@@ -7,11 +7,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type recordingWriter struct {
@@ -172,5 +174,66 @@ func TestWriteEntryDataRejectsBufferedRemainder(t *testing.T) {
 	}
 	if writer.Buffered() != len("incomplete prior record") {
 		t.Fatalf("buffered bytes = %d, want prior bytes preserved", writer.Buffered())
+	}
+}
+
+func TestWriteEntryBoundedMatchesReaderLineLimit(t *testing.T) {
+	makeEntry := func(t *testing.T, size int) Entry {
+		t.Helper()
+		e := Entry{
+			Version:   EntryVersion,
+			Timestamp: time.Unix(0, 0).UTC(),
+			SessionID: "line-limit",
+			Type:      "action_receipt",
+			PrevHash:  GenesisHash,
+		}
+		e.Hash = ComputeHash(e)
+		base, err := json.Marshal(e)
+		if err != nil {
+			t.Fatalf("marshal base entry: %v", err)
+		}
+		if size < len(base) {
+			t.Fatalf("requested size %d is below base entry size %d", size, len(base))
+		}
+		e.Summary = strings.Repeat("x", size-len(base))
+		e.Hash = ComputeHash(e)
+		data, err := json.Marshal(e)
+		if err != nil {
+			t.Fatalf("marshal sized entry: %v", err)
+		}
+		if len(data) != size {
+			t.Fatalf("serialized entry size = %d, want %d", len(data), size)
+		}
+		return e
+	}
+
+	dir := t.TempDir()
+	r, err := New(Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	maxEntry := makeEntry(t, MaxEntryLineBytes)
+	if err := r.writeEntryBounded(maxEntry, false); err != nil {
+		t.Fatalf("write maximum reader-compatible entry: %v", err)
+	}
+	if err := r.file.Close(); err != nil {
+		t.Fatalf("close evidence file: %v", err)
+	}
+	entries, err := ReadEntries(filepath.Join(dir, "evidence-line-limit-0.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadEntries maximum reader-compatible entry: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ReadEntries returned %d entries, want 1", len(entries))
+	}
+
+	overDir := t.TempDir()
+	over, err := New(Config{Enabled: true, Dir: overDir, CheckpointInterval: 1000}, nil, nil)
+	if err != nil {
+		t.Fatalf("New oversized recorder: %v", err)
+	}
+	err = over.writeEntryBounded(makeEntry(t, MaxEntryLineBytes+1), false)
+	if !errors.Is(err, ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("write oversized entry error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
 }

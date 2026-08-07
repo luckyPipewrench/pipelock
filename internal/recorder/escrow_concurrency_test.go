@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 
 func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 	dir := t.TempDir()
-	publicKey, _, err := box.GenerateKey(rand.Reader)
+	publicKey, privateKey, err := box.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
@@ -39,18 +40,24 @@ func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 	paths := make(chan string, recorderCount)
 	errs := make(chan error, recorderCount)
 	var wg sync.WaitGroup
-	for _, rec := range recorders {
+	wantByPath := make(map[string][]byte, recorderCount)
+	var wantMu sync.Mutex
+	for i, rec := range recorders {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
 			<-start
-			path, writeErr := rec.writeEscrow([]byte("raw payload"))
+			want := []byte("raw payload " + strconv.Itoa(i))
+			path, writeErr := rec.writeEscrow(want)
 			if writeErr != nil {
 				errs <- writeErr
 				return
 			}
+			wantMu.Lock()
+			wantByPath[path] = want
+			wantMu.Unlock()
 			paths <- path
-		}()
+		}(i)
 	}
 	close(start)
 	wg.Wait()
@@ -68,8 +75,30 @@ func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 		t.Fatalf("unique escrow paths = %d, want %d", len(written), recorderCount)
 	}
 	for path := range written {
-		if _, statErr := os.Stat(path); statErr != nil {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
 			t.Fatalf("escrow sidecar %q: %v", path, statErr)
+		}
+		if got := info.Mode().Perm(); got != filePermissions {
+			t.Fatalf("escrow sidecar %q mode = %04o, want %04o", path, got, filePermissions)
+		}
+		payload, readErr := os.ReadFile(filepath.Clean(path))
+		if readErr != nil {
+			t.Fatalf("read escrow sidecar %q: %v", path, readErr)
+		}
+		if len(payload) < x25519KeySize+24+box.Overhead {
+			t.Fatalf("escrow sidecar %q is too short", path)
+		}
+		var ephemeralPublic [x25519KeySize]byte
+		copy(ephemeralPublic[:], payload[:x25519KeySize])
+		var nonce [24]byte
+		copy(nonce[:], payload[x25519KeySize:x25519KeySize+len(nonce)])
+		got, ok := box.Open(nil, payload[x25519KeySize+len(nonce):], &nonce, &ephemeralPublic, privateKey)
+		if !ok {
+			t.Fatalf("decrypt escrow sidecar %q", path)
+		}
+		if !bytes.Equal(got, wantByPath[path]) {
+			t.Fatalf("decrypted escrow sidecar %q = %q, want %q", path, got, wantByPath[path])
 		}
 	}
 	// Every sidecar must still be recognizable as one, so the new token in the
@@ -80,6 +109,30 @@ func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 	}
 	if len(sidecars) != recorderCount {
 		t.Fatalf("discoverable sidecars = %d, want %d", len(sidecars), recorderCount)
+	}
+}
+
+func TestWriteEscrow_AlwaysUsesOwnerOnlyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	publicKey, _, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec := &Recorder{
+		cfg:       Config{Dir: dir, FileMode: 0o660},
+		escrowPub: publicKey,
+		sessionID: "proxy",
+	}
+	path, err := rec.writeEscrow([]byte("sensitive raw payload"))
+	if err != nil {
+		t.Fatalf("writeEscrow: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != filePermissions {
+		t.Fatalf("escrow mode = %04o, want %04o", got, filePermissions)
 	}
 }
 

@@ -886,7 +886,7 @@ func (r *Recorder) writeEscrowPayloadWithReaderAndWriter(
 		// proves an existing payload will be preserved.
 		escrowName := fmt.Sprintf("evidence-%s-%d-raw-%s.raw.enc", filepath.Base(r.sessionID), r.seq, hex.EncodeToString(token[:]))
 		escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
-		file, openErr := root.OpenFile(escrowName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, r.cfg.FileMode)
+		file, openErr := root.OpenFile(escrowName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePermissions)
 		if openErr != nil {
 			if errors.Is(openErr, fs.ErrExist) {
 				continue
@@ -894,7 +894,7 @@ func (r *Recorder) writeEscrowPayloadWithReaderAndWriter(
 			return "", fmt.Errorf("creating escrow file: %w", openErr)
 		}
 
-		if err := writeFile(file, payload, r.cfg.FileMode); err != nil {
+		if err := writeFile(file, payload, filePermissions); err != nil {
 			_ = file.Close()
 			removeErr := root.Remove(escrowName)
 			if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
@@ -1201,7 +1201,10 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 	if err != nil {
 		return fmt.Errorf("marshaling entry: %w", err)
 	}
-	lineBytes := int64(len(data) + 1)
+	if len(data) > MaxEntryLineBytes {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
+	}
+	lineBytes := int64(len(data)) + int64(len("\n"))
 	if err := r.ensureEntryCapacityLocked(e.SessionID, e.Sequence, lineBytes); err != nil {
 		return err
 	}
@@ -1209,6 +1212,9 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 }
 
 func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
+	if len(data) > MaxEntryLineBytes {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
+	}
 	if r.writer.Buffered() != 0 {
 		return errors.New("recorder: evidence writer buffer is not empty before record")
 	}

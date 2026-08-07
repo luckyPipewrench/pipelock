@@ -5,10 +5,12 @@ package session
 
 import (
 	"encoding/json"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -302,9 +304,17 @@ func flattenJSONStrings(raw string) []string {
 				walk(item)
 			}
 		case map[string]any:
-			for key, value := range tv {
+			// Sorted, not map order. Callers take the FIRST path-like,
+			// URL-like or secret-like entry out of this slice and use it
+			// as the action reference, which an operator's trust override
+			// is then matched against. Go does not specify map iteration
+			// order, so ranging tv directly can make the selection vary
+			// between runs when a tool call carries distinct candidates,
+			// causing the same call to match an override on one run and
+			// miss it on the next.
+			for _, key := range slices.Sorted(maps.Keys(tv)) {
 				out = append(out, key)
-				walk(value)
+				walk(tv[key])
 			}
 		}
 	}

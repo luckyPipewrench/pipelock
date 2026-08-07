@@ -1544,6 +1544,24 @@ func TestExtractReceiptsFromSessionDir_HappyPath(t *testing.T) {
 	if len(receipts) != 2 {
 		t.Fatalf("expected 2 receipts, got %d", len(receipts))
 	}
+	location, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	resolved, err := ExtractReceiptsFromResolvedSessionDir(location, "proxy")
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromResolvedSessionDir: %v", err)
+	}
+	if len(resolved) != len(receipts) {
+		t.Fatalf("resolved receipt count = %d, want %d", len(resolved), len(receipts))
+	}
+	bounded, truncated, err := ExtractReceiptsFromResolvedSessionDirBounded(location, "proxy", 1)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromResolvedSessionDirBounded: %v", err)
+	}
+	if !truncated || len(bounded) != 1 {
+		t.Fatalf("bounded receipts = %d, truncated=%v; want 1, true", len(bounded), truncated)
+	}
 }
 
 func TestExtractReceiptsFromSessionDir_NoMatch(t *testing.T) {

@@ -185,6 +185,14 @@ func TestWriteEntryDataRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+func TestEnsureEntryCapacityRejectsOversizedWireLine(t *testing.T) {
+	r := &Recorder{}
+	err := r.ensureEntryCapacityLocked("line-limit", 0, int64(MaxEntryLineBytes+len("\n")+1))
+	if !errors.Is(err, ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("ensureEntryCapacityLocked oversized line error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
 func TestWriteEntryBoundedMatchesReaderLineLimit(t *testing.T) {
 	makeEntry := func(t *testing.T, size int) Entry {
 		t.Helper()

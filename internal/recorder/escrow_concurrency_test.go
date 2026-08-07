@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -200,5 +201,99 @@ func TestWriteEscrowPayload_RemovesIncompleteSidecar(t *testing.T) {
 	name := "evidence-proxy-42-raw-" + hex.EncodeToString(token) + ".raw.enc"
 	if _, statErr := os.Stat(filepath.Join(dir, name)); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Fatalf("incomplete escrow sidecar remains after failure: %v", statErr)
+	}
+}
+
+func TestWriteEscrowPayload_ReportsDirectoryAndEntropyFailures(t *testing.T) {
+	t.Run("missing evidence directory", func(t *testing.T) {
+		rec := &Recorder{cfg: Config{Dir: filepath.Join(t.TempDir(), "missing")}}
+		_, err := rec.writeEscrowPayloadWithReader([]byte("payload"), bytes.NewReader(make([]byte, escrowNameTokenBytes)))
+		if err == nil || !strings.Contains(err.Error(), "opening evidence directory") {
+			t.Fatalf("writeEscrowPayloadWithReader error = %v, want evidence directory failure", err)
+		}
+	})
+
+	t.Run("filename entropy failure", func(t *testing.T) {
+		rec := &Recorder{cfg: Config{Dir: t.TempDir()}}
+		_, err := rec.writeEscrowPayloadWithReader([]byte("payload"), errorReader{})
+		if err == nil || !strings.Contains(err.Error(), "generating escrow filename token") {
+			t.Fatalf("writeEscrowPayloadWithReader error = %v, want filename entropy failure", err)
+		}
+	})
+}
+
+func TestWriteEscrowPayload_ReportsCreateFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix directory write bits")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, dirPermissions&^0o200); err != nil {
+		t.Fatalf("remove evidence directory write permission: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, dirPermissions) })
+	rec := &Recorder{cfg: Config{Dir: dir}, sessionID: "proxy"}
+	_, err := rec.writeEscrowPayloadWithReader([]byte("payload"), bytes.NewReader(make([]byte, escrowNameTokenBytes)))
+	if err == nil || !strings.Contains(err.Error(), "creating escrow file") {
+		t.Fatalf("writeEscrowPayloadWithReader error = %v, want create failure", err)
+	}
+}
+
+func TestWriteEscrowPayload_ReportsCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	token := bytes.Repeat([]byte{0x31}, escrowNameTokenBytes)
+	name := "evidence-proxy-0-raw-" + hex.EncodeToString(token) + ".raw.enc"
+	wantErr := errors.New("injected write failure")
+	rec := &Recorder{cfg: Config{Dir: dir}, sessionID: "proxy"}
+
+	_, err := rec.writeEscrowPayloadWithReaderAndWriter(
+		[]byte("payload"),
+		bytes.NewReader(token),
+		func(file *os.File, _ []byte, _ os.FileMode) error {
+			if closeErr := file.Close(); closeErr != nil {
+				return closeErr
+			}
+			path := filepath.Join(dir, name)
+			if removeErr := os.Remove(path); removeErr != nil {
+				return removeErr
+			}
+			if mkdirErr := os.Mkdir(path, dirPermissions); mkdirErr != nil {
+				return mkdirErr
+			}
+			if childErr := os.WriteFile(filepath.Join(path, "child"), []byte("occupied"), filePermissions); childErr != nil {
+				return childErr
+			}
+			return wantErr
+		},
+	)
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "removing incomplete escrow file") {
+		t.Fatalf("writeEscrowPayload error = %v, want joined write and cleanup failures", err)
+	}
+}
+
+func TestWriteEscrowFile_ReportsWriteFailure(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "closed-escrow-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close before write: %v", err)
+	}
+	err = writeEscrowFile(file, []byte("payload"), filePermissions)
+	if err == nil || !strings.Contains(err.Error(), "writing escrow file") {
+		t.Fatalf("writeEscrowFile error = %v, want write failure", err)
+	}
+}
+
+func TestWriteEscrowFile_ReportsPermissionFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix file permission bits")
+	}
+	file, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open null device: %v", err)
+	}
+	err = writeEscrowFile(file, []byte("payload"), filePermissions)
+	if err == nil || !strings.Contains(err.Error(), "setting escrow file permissions") {
+		t.Fatalf("writeEscrowFile error = %v, want permission failure", err)
 	}
 }

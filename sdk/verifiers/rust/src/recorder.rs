@@ -39,7 +39,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
             errors_unsupported(index + 1, version)?;
         }
         if version == Some(3) {
-            require_v3_namespace(&entry, index + 1)?;
+            validate_v3_projected_strings(&entry, index + 1)?;
         } else if legacy_namespace_field_is_set(&entry, "chain_kind")
             || legacy_namespace_field_is_set(&entry, "writer_instance_id")
         {
@@ -175,13 +175,31 @@ fn errors_unsupported(line: usize, version: Option<u64>) -> Result<()> {
     )))
 }
 
-fn require_v3_namespace(entry: &serde_json::Value, line: usize) -> Result<()> {
-    for field in ["chain_kind", "writer_instance_id"] {
-        let value = entry
-            .get(field)
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| VerifierError::Runtime(format!("line {line}: v3 {field} required")))?;
+fn validate_v3_projected_strings(entry: &serde_json::Value, line: usize) -> Result<()> {
+    for field in [
+        "ts",
+        "session_id",
+        "chain_kind",
+        "writer_instance_id",
+        "trace_id",
+        "type",
+        "event_kind",
+        "transport",
+        "summary",
+        "raw_ref",
+        "prev_hash",
+    ] {
+        let value = match entry.get(field) {
+            None => "",
+            Some(value) => value.as_str().ok_or_else(|| {
+                VerifierError::Runtime(format!("line {line}: v3 {field} must be a string"))
+            })?,
+        };
+        if (field == "chain_kind" || field == "writer_instance_id") && value.is_empty() {
+            return Err(VerifierError::Runtime(format!(
+                "line {line}: v3 {field} required"
+            )));
+        }
         if value.contains('\0') {
             return Err(VerifierError::Runtime(format!(
                 "line {line}: v3 {field} cannot contain NUL"

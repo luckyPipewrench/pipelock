@@ -1382,7 +1382,11 @@ func (a AuditBatchEnvelope) ForksWith(other AuditBatchEnvelope) bool {
 	if a.SeqEnd < other.SeqStart || other.SeqEnd < a.SeqStart {
 		return false
 	}
-	return a.PayloadSHA256 != other.PayloadSHA256 || a.Chain.SegmentTailHash != other.Chain.SegmentTailHash
+	return a.PayloadSHA256 != other.PayloadSHA256 ||
+		a.Chain.SegmentTailHash != other.Chain.SegmentTailHash ||
+		a.Chain.EntryVersion != other.Chain.EntryVersion ||
+		a.Chain.ChainKind != other.Chain.ChainKind ||
+		a.Chain.WriterInstanceID != other.Chain.WriterInstanceID
 }
 
 // IsSupportedAuditEntryVersion reports whether audit transport accepts version.

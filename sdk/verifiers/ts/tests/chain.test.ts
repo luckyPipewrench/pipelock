@@ -654,16 +654,93 @@ test("JSONL recorder reader rejects malformed legacy namespace field types", () 
   }
 });
 
-test("JSONL recorder reader rejects NUL in v3 namespace", () => {
+test("JSONL recorder reader rejects NUL in every v3 projected string", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
-  const file = join(dir, "v3-nul.jsonl");
   try {
-    writeFileSync(
-      file,
-      '{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"a\\u0000b","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}\n',
-      { mode: 0o600 },
-    );
-    assert.throws(() => extractReceipts(file), /cannot contain NUL/u);
+    for (const field of [
+      "ts",
+      "session_id",
+      "chain_kind",
+      "writer_instance_id",
+      "trace_id",
+      "type",
+      "event_kind",
+      "transport",
+      "summary",
+      "raw_ref",
+      "prev_hash",
+    ]) {
+      const file = join(dir, `v3-nul-${field}.jsonl`);
+      const entry: Record<string, unknown> = {
+        v: 3,
+        seq: 0,
+        ts: "2026-08-07T00:00:00Z",
+        session_id: "s",
+        chain_kind: "recorder",
+        writer_instance_id: "writer-a",
+        type: "checkpoint",
+        transport: "x",
+        summary: "",
+        detail: {},
+        prev_hash: "genesis",
+        hash: "h",
+      };
+      entry[field] = "a\0b";
+      writeFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+      assert.throws(() => extractReceipts(file), new RegExp(`${field} cannot contain NUL`, "u"));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL recorder reader rejects v3 delimiter-collision pair", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "v3-collision.jsonl");
+  try {
+    const base = {
+      v: 3,
+      seq: 0,
+      ts: "2026-08-07T00:00:00Z",
+      session_id: "s",
+      chain_kind: "recorder",
+      writer_instance_id: "writer-a",
+      type: "z",
+      transport: "x",
+      summary: "",
+      detail: {},
+      prev_hash: "genesis",
+      hash: "h",
+    };
+    const colliding = [
+      { ...base, trace_id: "x\0y", type: "z" },
+      { ...base, trace_id: "x", type: "y\0z" },
+    ];
+    writeFileSync(file, `${colliding.map((entry) => JSON.stringify(entry)).join("\n")}\n`, {
+      mode: 0o600,
+    });
+    assert.throws(() => extractReceipts(file), /trace_id cannot contain NUL/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL recorder reader rejects non-string v3 projected fields", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const field of ["ts", "session_id", "trace_id", "type", "prev_hash"]) {
+      const file = join(dir, `v3-type-${field}.jsonl`);
+      const entry: Record<string, unknown> = {
+        v: 3,
+        seq: 0,
+        chain_kind: "recorder",
+        writer_instance_id: "writer-a",
+        type: "checkpoint",
+      };
+      entry[field] = 1;
+      writeFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+      assert.throws(() => extractReceipts(file), new RegExp(`${field} must be a string`, "u"));
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

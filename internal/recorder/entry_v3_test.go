@@ -15,9 +15,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
+const v3EntryVersion = 3
+
 func v3Entry() recorder.Entry {
 	return recorder.Entry{
-		Version:          recorder.LatestEntryVersion,
+		Version:          v3EntryVersion,
 		Sequence:         7,
 		Timestamp:        time.Date(2026, 8, 7, 12, 34, 56, 789, time.UTC),
 		SessionID:        "proxy",

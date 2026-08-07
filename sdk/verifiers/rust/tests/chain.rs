@@ -797,13 +797,63 @@ fn recorder_reader_rejects_malformed_legacy_namespace_types() {
 }
 
 #[test]
-fn recorder_reader_rejects_nul_in_v3_namespace() {
-    let fixture = TempFixture(recorder_fixture_path("v3-nul"));
+fn recorder_reader_rejects_nul_in_every_v3_projected_string() {
+    for field in [
+        "ts",
+        "session_id",
+        "chain_kind",
+        "writer_instance_id",
+        "trace_id",
+        "type",
+        "event_kind",
+        "transport",
+        "summary",
+        "raw_ref",
+        "prev_hash",
+    ] {
+        let fixture = TempFixture(recorder_fixture_path(&format!("v3-nul-{field}")));
+        let path = &fixture.0;
+        let mut entry = serde_json::json!({
+            "v": 3, "seq": 0, "ts": "2026-08-07T00:00:00Z", "session_id": "s",
+            "chain_kind": "recorder", "writer_instance_id": "writer-a", "type": "checkpoint",
+            "transport": "x", "summary": "", "detail": {}, "prev_hash": "genesis", "hash": "h"
+        });
+        entry[field] = serde_json::Value::String("a\0b".to_string());
+        fs::write(path, format!("{}\n", entry)).expect("write JSONL");
+        let err = extract_receipts(path).expect_err("NUL projected field should reject");
+        assert!(err
+            .to_string()
+            .contains(&format!("{field} cannot contain NUL")));
+    }
+}
+
+#[test]
+fn recorder_reader_rejects_v3_delimiter_collision_pair() {
+    let fixture = TempFixture(recorder_fixture_path("v3-collision"));
     let path = &fixture.0;
-    let line = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"a\u0000b","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
-    fs::write(path, format!("{line}\n")).expect("write JSONL");
-    let err = extract_receipts(path).expect_err("NUL namespace should reject");
-    assert!(err.to_string().contains("cannot contain NUL"));
+    let first = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","trace_id":"x\u0000y","type":"z","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
+    let second = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","trace_id":"x","type":"y\u0000z","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
+    fs::write(path, format!("{first}\n{second}\n")).expect("write JSONL");
+    let err = extract_receipts(path).expect_err("delimiter collision should reject");
+    assert!(err.to_string().contains("trace_id cannot contain NUL"));
+}
+
+#[test]
+fn recorder_reader_rejects_non_string_v3_projected_fields() {
+    for field in ["ts", "session_id", "trace_id", "type", "prev_hash"] {
+        let fixture = TempFixture(recorder_fixture_path(&format!("v3-type-{field}")));
+        let path = &fixture.0;
+        let mut entry = serde_json::json!({
+            "v": 3, "seq": 0, "chain_kind": "recorder", "writer_instance_id": "writer-a",
+            "type": "checkpoint"
+        });
+        entry[field] = serde_json::json!(1);
+        fs::write(path, format!("{}\n", entry)).expect("write JSONL");
+        let err = extract_receipts(path).expect_err("non-string projected field should reject");
+        assert!(err
+            .to_string()
+            .contains(&format!("{field} must be a string")));
+    }
 }
 
 fn recorder_fixture_path(name: &str) -> std::path::PathBuf {

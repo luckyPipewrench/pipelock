@@ -38,18 +38,7 @@ export function readEntries(file: string): RecorderEntry[] {
       );
     }
     if (entry.v === 3) {
-      if (typeof entry.chain_kind !== "string" || entry.chain_kind === "") {
-        throw new RuntimeError(`line ${i + 1}: v3 chain_kind required`);
-      }
-      if (entry.chain_kind.includes("\0")) {
-        throw new RuntimeError(`line ${i + 1}: v3 chain_kind cannot contain NUL`);
-      }
-      if (typeof entry.writer_instance_id !== "string" || entry.writer_instance_id === "") {
-        throw new RuntimeError(`line ${i + 1}: v3 writer_instance_id required`);
-      }
-      if (entry.writer_instance_id.includes("\0")) {
-        throw new RuntimeError(`line ${i + 1}: v3 writer_instance_id cannot contain NUL`);
-      }
+      validateV3ProjectedStrings(entry, i + 1);
     } else if (
       legacyNamespaceFieldIsSet(entry.chain_kind) ||
       legacyNamespaceFieldIsSet(entry.writer_instance_id)
@@ -61,6 +50,36 @@ export function readEntries(file: string): RecorderEntry[] {
     entries.push(entry);
   }
   return entries;
+}
+
+function validateV3ProjectedStrings(entry: RecorderEntry, line: number): void {
+  for (const field of [
+    "ts",
+    "session_id",
+    "chain_kind",
+    "writer_instance_id",
+    "trace_id",
+    "type",
+    "event_kind",
+    "transport",
+    "summary",
+    "raw_ref",
+    "prev_hash",
+  ] as const) {
+    const value = entry[field];
+    if (value !== undefined && typeof value !== "string") {
+      throw new RuntimeError(`line ${line}: v3 ${field} must be a string`);
+    }
+    if (
+      (field === "chain_kind" || field === "writer_instance_id") &&
+      (value === undefined || value === "")
+    ) {
+      throw new RuntimeError(`line ${line}: v3 ${field} required`);
+    }
+    if (typeof value === "string" && value.includes("\0")) {
+      throw new RuntimeError(`line ${line}: v3 ${field} cannot contain NUL`);
+    }
+  }
 }
 
 function legacyNamespaceFieldIsSet(value: unknown): boolean {

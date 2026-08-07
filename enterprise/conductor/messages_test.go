@@ -191,13 +191,23 @@ func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
 		})
 	}
 
-	first := testAuditBatch()
-	first.Chain = chain
-	second := first
-	second.PayloadSHA256 = testHash("20")
-	second.Chain.WriterInstanceID = "writer-b"
-	if !first.ForksWith(second) {
-		t.Fatal("ForksWith() = false after follower-controlled namespace change")
+	for _, tc := range []struct {
+		name string
+		edit func(*EvidenceChain)
+	}{
+		{"entry_version", func(c *EvidenceChain) { c.EntryVersion = recorder.CurrentWriteEntryVersion }},
+		{"chain_kind", func(c *EvidenceChain) { c.ChainKind = "import" }},
+		{"writer_instance_id", func(c *EvidenceChain) { c.WriterInstanceID = "writer-b" }},
+	} {
+		t.Run("fork_"+tc.name, func(t *testing.T) {
+			first := testAuditBatch()
+			first.Chain = chain
+			second := first
+			tc.edit(&second.Chain)
+			if !first.ForksWith(second) {
+				t.Fatalf("ForksWith() = false after %s change", tc.name)
+			}
+		})
 	}
 }
 

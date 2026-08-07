@@ -60,7 +60,15 @@ func defaultEntryReadLimits() entryReadLimits {
 // and VerifyChain will load. New writes always use EntryVersion; v1 entries
 // keep verifying via computeHashV1 so the chain integrity guarantee survives
 // the schema bump.
-var acceptedEntryVersions = map[int]bool{1: true, 2: true, 3: true}
+var acceptedEntryVersionList = []int{1, 2, 3}
+
+var acceptedEntryVersions = func() map[int]bool {
+	versions := make(map[int]bool, len(acceptedEntryVersionList))
+	for _, version := range acceptedEntryVersionList {
+		versions[version] = true
+	}
+	return versions
+}()
 
 // GenesisHash is the PrevHash of the first entry in a chain.
 const GenesisHash = "genesis"
@@ -71,7 +79,7 @@ func IsAcceptedEntryVersion(version int) bool {
 }
 
 // AcceptedEntryVersions returns the recorder schema versions readers accept.
-func AcceptedEntryVersions() []int { return []int{1, 2, 3} }
+func AcceptedEntryVersions() []int { return append([]int(nil), acceptedEntryVersionList...) }
 
 // EntryVersionHasNamespace reports whether version binds a recorder namespace.
 func EntryVersionHasNamespace(version int) bool { return version == 3 }

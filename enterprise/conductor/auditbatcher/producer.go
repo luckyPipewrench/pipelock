@@ -302,7 +302,7 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 			EntryVersion:           entries[0].Version,
 			ChainKind:              entries[0].ChainKind,
 			WriterInstanceID:       entries[0].WriterInstanceID,
-			SegmentID:              segmentID(entries[0].SessionID, entries[0].Sequence, checkpoint.Sequence),
+			SegmentID:              segmentID(entries[0], checkpoint.Sequence),
 			SeqStart:               entries[0].Sequence,
 			SeqEnd:                 checkpoint.Sequence,
 			PreviousSegmentTail:    p.previousSegmentTail,
@@ -457,11 +457,16 @@ func ed25519SignatureString(hexSig string) string {
 	return conductor.SignaturePrefixEd25519 + hexSig
 }
 
-func segmentID(sessionID string, start, end uint64) string {
+func segmentID(entry recorder.Entry, end uint64) string {
+	sessionID := entry.SessionID
 	if sessionID == "" {
 		sessionID = "recorder"
 	}
-	return fmt.Sprintf("segment-%s-%020d-%020d", safeSegmentPart(sessionID), start, end)
+	prefix := "segment-" + safeSegmentPart(sessionID)
+	if recorder.EntryVersionHasNamespace(entry.Version) {
+		prefix += "-" + safeSegmentPart(entry.ChainKind) + "-" + safeSegmentPart(entry.WriterInstanceID)
+	}
+	return fmt.Sprintf("%s-%020d-%020d", prefix, entry.Sequence, end)
 }
 
 func safeSegmentPart(s string) string {

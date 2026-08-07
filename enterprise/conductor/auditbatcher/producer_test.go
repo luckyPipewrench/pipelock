@@ -558,8 +558,15 @@ func TestProducerHelpers(t *testing.T) {
 	if got := ed25519SignatureString("abc"); got != "ed25519:abc" {
 		t.Fatalf("unprefixed signature = %q", got)
 	}
-	if got := segmentID("", 1, 2); got != "segment-recorder-00000000000000000001-00000000000000000002" {
+	if got := segmentID(recorder.Entry{Sequence: 1}, 2); got != "segment-recorder-00000000000000000001-00000000000000000002" {
 		t.Fatalf("segmentID(empty) = %q", got)
+	}
+	entry := recorder.Entry{
+		Version: recorder.LatestEntryVersion, SessionID: "proxy", Sequence: 1,
+		ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "writer-a",
+	}
+	if got := segmentID(entry, 2); got != "segment-proxy-recorder-writer-a-00000000000000000001-00000000000000000002" {
+		t.Fatalf("segmentID(v3) = %q", got)
 	}
 	if got := safeSegmentPart("a/b:c"); got != "abc" {
 		t.Fatalf("safeSegmentPart() = %q", got)

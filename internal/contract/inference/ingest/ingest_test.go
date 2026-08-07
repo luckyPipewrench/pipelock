@@ -232,9 +232,33 @@ func TestStreamSchemaVersionGating(t *testing.T) {
 		requireOneErrorIs(t, errs, ErrUnsupportedSchemaVersion)
 	})
 
+	t.Run("v3 requires chain kind", func(t *testing.T) {
+		rec := testEntry(t, recorder.LatestEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
+		rec.ChainKind = ""
+		rec.Hash = recorder.ComputeHash(rec)
+
+		entries, errs := collectStream(t, mustJSONLines(t, rec), StreamOptions{})
+
+		if len(entries) != 0 {
+			t.Fatalf("entries len = %d, want 0", len(entries))
+		}
+		requireOneErrorIs(t, errs, ErrUnsupportedSchemaVersion)
+	})
+
 	t.Run("legacy entries reject unhashed chain namespace", func(t *testing.T) {
 		rec := testEntry(t, recorder.CurrentWriteEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 2})
 		rec.ChainKind = recorder.ChainKindRecorder
+		rec.Hash = recorder.ComputeHash(rec)
+		entries, errs := collectStream(t, mustJSONLines(t, rec), StreamOptions{})
+		if len(entries) != 0 {
+			t.Fatalf("entries len = %d, want 0", len(entries))
+		}
+		requireOneErrorIs(t, errs, ErrUnsupportedSchemaVersion)
+	})
+
+	t.Run("legacy entries reject unhashed writer namespace", func(t *testing.T) {
+		rec := testEntry(t, recorder.CurrentWriteEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 2})
+		rec.WriterInstanceID = "writer-a"
 		rec.Hash = recorder.ComputeHash(rec)
 		entries, errs := collectStream(t, mustJSONLines(t, rec), StreamOptions{})
 		if len(entries) != 0 {

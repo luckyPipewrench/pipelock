@@ -121,10 +121,15 @@ func TestComputeHash_FieldChange(t *testing.T) {
 }
 
 func TestIsAcceptedEntryVersion(t *testing.T) {
-	for _, version := range []int{1, 2, recorder.LatestEntryVersion} {
+	versions := recorder.AcceptedEntryVersions()
+	for _, version := range versions {
 		if !recorder.IsAcceptedEntryVersion(version) {
 			t.Fatalf("IsAcceptedEntryVersion(%d) = false, want true", version)
 		}
+	}
+	versions[0] = 99
+	if recorder.IsAcceptedEntryVersion(99) || !recorder.IsAcceptedEntryVersion(1) {
+		t.Fatal("AcceptedEntryVersions exposed mutable internal version state")
 	}
 	for _, version := range []int{0, 99} {
 		if recorder.IsAcceptedEntryVersion(version) {

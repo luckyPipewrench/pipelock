@@ -428,6 +428,25 @@ func TestVerifySegmentRejectsVersionInappropriateNamespace(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("valid_v3_namespace_mismatch", func(t *testing.T) {
+		entry := recorder.Entry{
+			Version: recorder.LatestEntryVersion, Sequence: 0, Timestamp: testWindowStart,
+			SessionID: "proxy", ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "writer-a",
+			Type: "checkpoint", Transport: "recorder", Summary: "fixture",
+			PrevHash: recorder.GenesisHash,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		chain := conductorcore.EvidenceChain{
+			EntryVersion: recorder.LatestEntryVersion, ChainKind: recorder.ChainKindRecorder,
+			WriterInstanceID: "writer-b", SeqStart: 0, SeqEnd: 0,
+			SegmentHeadHash: entry.Hash, SegmentTailHash: entry.Hash,
+		}
+		err := verifySegment("audit-namespace", chain, []recorder.Entry{entry})
+		if err == nil || !strings.Contains(err.Error(), "chain namespace mismatch") {
+			t.Fatalf("verifySegment() error = %v, want chain namespace mismatch", err)
+		}
+	})
 }
 
 func TestValueOrUnspecified(t *testing.T) {

@@ -5,11 +5,14 @@ package session
 
 import (
 	"encoding/json"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -24,10 +27,11 @@ type ClassificationOptions struct {
 // came from a concrete method/tool/path signal instead of a low-confidence
 // fallback.
 type ActionClassification struct {
-	Class       ActionClass
-	Sensitivity ActionSensitivity
-	ActionRef   string
-	Confident   bool
+	Class        ActionClass
+	Sensitivity  ActionSensitivity
+	ActionRef    string
+	OverrideRefs []string
+	Confident    bool
 }
 
 // ClassifyURLSource maps a URL to a taint level using host-based trust rules.
@@ -164,59 +168,257 @@ func ClassifyMCPToolCall(toolName, argsJSON string, protectedPatterns, elevatedP
 func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns, elevatedPatterns []string, opts ClassificationOptions) ActionClassification {
 	name := strings.ToLower(toolName)
 	args := flattenJSONStrings(argsJSON)
-	targetPath := firstPathLikeValue(args)
+	legacyPath := firstPathLikeValue(args)
+	legacyURL := firstURLLikeValue(args)
+	targets, parsed := extractMCPActionTargets(argsJSON)
+	if !parsed {
+		// Malformed arguments have no trustworthy key/value structure. Keep the
+		// legacy first-match behavior rather than guessing roles from raw text.
+		targets.refs = compactNonEmpty(legacyPath)
+		if !looksLikeURL(legacyPath) {
+			targets.paths = compactNonEmpty(legacyPath)
+		}
+		targets.urls = compactNonEmpty(legacyURL)
+	}
+	pathClass := classifyMCPPathTargets(targets.refs, legacyPath, protectedPatterns, elevatedPatterns, opts)
+	targetPath := pathClass.ActionRef
+	targetURL := compatibleFirstTarget(targets.urls, legacyURL)
 	category := chains.ClassifyTool(toolName, argsJSON, nil)
 
-	if secretPath := firstSecretPath(args); secretPath != "" {
-		return ActionClassification{Class: ActionClassSecret, Sensitivity: SensitivityProtected, ActionRef: secretPath, Confident: true}
+	secretTargets := secretPaths(targets.paths)
+	if secretPath := compatibleFirstTarget(secretTargets, firstSecretPath(args)); secretPath != "" {
+		return ActionClassification{Class: ActionClassSecret, Sensitivity: SensitivityProtected, ActionRef: secretPath, OverrideRefs: secretTargets, Confident: true}
 	}
 
 	if looksLikeShellTool(name) || category == "exec" {
 		command := strings.Join(args, " ")
 		if isMutatingShellCommand(command) {
-			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, Confident: true}
+			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 		}
-		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, Confident: true}
+		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
 	if category == "persist" {
-		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, Confident: true}
+		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
 	if looksLikeWriteTool(name) || category == "write" || hasWriteIntent(argsJSON) {
-		pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
-		return ActionClassification{Class: ActionClassWrite, Sensitivity: pathClass.Sensitivity, ActionRef: targetPath, Confident: pathClass.Confident}
+		return ActionClassification{Class: ActionClassWrite, Sensitivity: pathClass.Sensitivity, ActionRef: pathClass.ActionRef, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
 	}
 
 	if looksLikePublishTool(name, argsJSON) || hasMutatingNetworkIntent(argsJSON) {
-		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: firstURLLikeValue(args), Confident: true}
+		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
 	if looksLikeBrowseTool(name) || category == "network" {
 		if hasMutatingNetworkIntent(argsJSON) {
-			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: firstURLLikeValue(args), Confident: true}
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 		}
-		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: firstURLLikeValue(args), Confident: true}
+		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
 	if looksLikeReadTool(name) || category == "read" || category == "list" {
-		pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
-		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, Confident: pathClass.Confident}
+		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
 	}
 
 	if hasExecIntent(argsJSON) {
 		command := strings.Join(args, " ")
 		if isMutatingShellCommand(command) {
-			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, Confident: true}
+			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 		}
-		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, Confident: true}
+		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
 	sensitivity := SensitivityNormal
 	if opts.FailSafe {
 		sensitivity = SensitivityProtected
 	}
-	return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, Confident: false}
+	return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: false}
+}
+
+type mcpActionTargets struct {
+	refs  []string
+	paths []string
+	urls  []string
+}
+
+type mcpArgumentRole uint8
+
+const (
+	mcpArgumentUnknown mcpArgumentRole = iota
+	mcpArgumentTarget
+)
+
+// extractMCPActionTargets keeps argument roles attached while walking JSON.
+// Target-like keys admit path values containing spaces. Unknown keys admit
+// only standalone path/URL values so an attacker cannot evade classification
+// merely by renaming a parameter. Keys can expand recognition, never suppress
+// it, because the calling agent controls them.
+func extractMCPActionTargets(raw string) (mcpActionTargets, bool) {
+	decoded, ok := decodeJSONValue(raw)
+	if !ok {
+		return mcpActionTargets{}, false
+	}
+
+	var targets mcpActionTargets
+	var walk func(any, mcpArgumentRole)
+	walk = func(value any, inheritedRole mcpArgumentRole) {
+		switch tv := value.(type) {
+		case string:
+			if looksLikeURL(tv) {
+				if inheritedRole == mcpArgumentTarget || isStandaloneArgumentValue(tv) {
+					targets.refs = append(targets.refs, tv)
+					targets.urls = append(targets.urls, tv)
+				}
+				return
+			}
+			if looksLikePath(tv) && (inheritedRole == mcpArgumentTarget || isStandaloneArgumentValue(tv)) {
+				targets.refs = append(targets.refs, tv)
+				targets.paths = append(targets.paths, tv)
+			}
+		case []any:
+			for _, item := range tv {
+				walk(item, inheritedRole)
+			}
+		case map[string]any:
+			for _, key := range slices.Sorted(maps.Keys(tv)) {
+				role := mcpArgumentRoleForKey(key)
+				if role == mcpArgumentUnknown {
+					role = inheritedRole
+				}
+				walk(tv[key], role)
+			}
+		}
+	}
+	walk(decoded, mcpArgumentUnknown)
+	return targets, true
+}
+
+func mcpArgumentRoleForKey(key string) mcpArgumentRole {
+	tokens := splitArgumentKey(key)
+	for _, token := range tokens {
+		switch token {
+		case "path", "paths", "file", "files", "filename", "filenames", "filepath", "filepaths",
+			"target", "targets", "dest", "destination", "src", "source", "uri", "uris", "url", "urls":
+			return mcpArgumentTarget
+		}
+	}
+	return mcpArgumentUnknown
+}
+
+func splitArgumentKey(key string) []string {
+	var words []string
+	var word []rune
+	flush := func() {
+		if len(word) == 0 {
+			return
+		}
+		words = append(words, strings.ToLower(string(word)))
+		word = word[:0]
+	}
+	var previous rune
+	for _, current := range key {
+		if !unicode.IsLetter(current) && !unicode.IsDigit(current) {
+			flush()
+			previous = 0
+			continue
+		}
+		if len(word) > 0 && unicode.IsUpper(current) && (unicode.IsLower(previous) || unicode.IsDigit(previous)) {
+			flush()
+		}
+		word = append(word, current)
+		previous = current
+	}
+	flush()
+	return words
+}
+
+func isStandaloneArgumentValue(value string) bool {
+	if strings.TrimSpace(value) != value {
+		return false
+	}
+	if len(strings.Fields(value)) == 1 {
+		return true
+	}
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") ||
+		strings.HasPrefix(value, "../") || strings.HasPrefix(value, "~/") ||
+		strings.HasPrefix(value, `\\`) {
+		return true
+	}
+	return len(value) >= 3 && unicode.IsLetter(rune(value[0])) && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
+}
+
+func looksLikeURL(value string) bool {
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+func compactNonEmpty(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return []string{value}
+}
+
+func secretPaths(paths []string) []string {
+	var secrets []string
+	for _, targetPath := range paths {
+		if looksLikeSecretPath(targetPath) {
+			secrets = append(secrets, targetPath)
+		}
+	}
+	return secrets
+}
+
+func compatibleFirstTarget(candidates []string, legacy string) string {
+	for _, candidate := range candidates {
+		if candidate == legacy {
+			return legacy
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+func classifyMCPPathTargets(candidates []string, legacy string, protectedPatterns, elevatedPatterns []string, opts ClassificationOptions) ActionClassification {
+	if len(candidates) == 0 {
+		classified := ClassifyPathSensitivityWithConfidence("", protectedPatterns, elevatedPatterns, opts)
+		classified.ActionRef = ""
+		return classified
+	}
+
+	mostSensitive := SensitivityNormal
+	for _, candidate := range candidates {
+		sensitivity := ClassifyPathSensitivity(candidate, protectedPatterns, elevatedPatterns)
+		if sensitivity > mostSensitive {
+			mostSensitive = sensitivity
+		}
+	}
+
+	if legacy != "" && ClassifyPathSensitivity(legacy, protectedPatterns, elevatedPatterns) == mostSensitive {
+		for _, candidate := range candidates {
+			if candidate == legacy {
+				return ActionClassification{Sensitivity: mostSensitive, ActionRef: legacy, OverrideRefs: targetsWithSensitivity(candidates, mostSensitive, protectedPatterns, elevatedPatterns), Confident: true}
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		if ClassifyPathSensitivity(candidate, protectedPatterns, elevatedPatterns) == mostSensitive {
+			return ActionClassification{Sensitivity: mostSensitive, ActionRef: candidate, OverrideRefs: targetsWithSensitivity(candidates, mostSensitive, protectedPatterns, elevatedPatterns), Confident: true}
+		}
+	}
+	return ActionClassification{Sensitivity: mostSensitive, Confident: true}
+}
+
+func targetsWithSensitivity(candidates []string, sensitivity ActionSensitivity, protectedPatterns, elevatedPatterns []string) []string {
+	var matches []string
+	for _, candidate := range candidates {
+		if ClassifyPathSensitivity(candidate, protectedPatterns, elevatedPatterns) == sensitivity {
+			matches = append(matches, candidate)
+		}
+	}
+	return matches
 }
 
 func classifyShellSensitivity(command, targetPath string, protectedPatterns, elevatedPatterns []string) ActionSensitivity {
@@ -302,9 +504,17 @@ func flattenJSONStrings(raw string) []string {
 				walk(item)
 			}
 		case map[string]any:
-			for key, value := range tv {
+			// Sorted, not map order. Callers take the FIRST path-like,
+			// URL-like or secret-like entry out of this slice and use it
+			// as the action reference, which an operator's trust override
+			// is then matched against. Go does not specify map iteration
+			// order, so ranging tv directly can make the selection vary
+			// between runs when a tool call carries distinct candidates,
+			// causing the same call to match an override on one run and
+			// miss it on the next.
+			for _, key := range slices.Sorted(maps.Keys(tv)) {
 				out = append(out, key)
-				walk(value)
+				walk(tv[key])
 			}
 		}
 	}

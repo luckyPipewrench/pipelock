@@ -482,6 +482,79 @@ func TestEvaluateMCPTaint_TrustOverrideHonorsScope(t *testing.T) {
 	}
 }
 
+func TestEvaluateMCPTaint_TrustOverrideUsesControllingTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		args        string
+		actionMatch string
+		want        session.PolicyDecision
+		wantRef     string
+	}{
+		{
+			name:        "legacy benign target cannot override protected target",
+			args:        `{"path":"/srv/prod/db.conf","archive_path":"/tmp/notes.txt"}`,
+			actionMatch: "mcp:write_file:/tmp/notes.txt",
+			want:        session.PolicyAsk,
+			wantRef:     "mcp:write_file:/srv/prod/db.conf",
+		},
+		{
+			name:        "controlling protected target can be overridden explicitly",
+			args:        `{"path":"/srv/prod/db.conf","archive_path":"/tmp/notes.txt"}`,
+			actionMatch: "mcp:write_file:/srv/prod/db.conf",
+			want:        session.PolicyAllow,
+			wantRef:     "mcp:write_file:/srv/prod/db.conf",
+		},
+		{
+			name:        "override must cover every equally protected target",
+			args:        `{"path":"/srv/prod/db.conf","archive_path":"/srv/prod/archive.conf"}`,
+			actionMatch: "mcp:write_file:/srv/prod/db.conf",
+			want:        session.PolicyAsk,
+			wantRef:     "mcp:write_file:/srv/prod/archive.conf",
+		},
+		{
+			name:        "wildcard can cover every equally protected target",
+			args:        `{"path":"/srv/prod/db.conf","archive_path":"/srv/prod/archive.conf"}`,
+			actionMatch: "mcp:write_file:/srv/prod/*",
+			want:        session.PolicyAllow,
+			wantRef:     "mcp:write_file:/srv/prod/archive.conf",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config.Defaults()
+			cfg.Taint.ProtectedPaths = []string{"/srv/prod/*"}
+			cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+				Scope:       "action",
+				ActionMatch: tt.actionMatch,
+				ExpiresAt:   nowPlusHour(t),
+			}}
+			rec := &taintRecorder{
+				risk: session.SessionRisk{
+					Level:        session.TaintExternalUntrusted,
+					Contaminated: true,
+				},
+			}
+
+			decision := evaluateMCPTaint(
+				MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint},
+				"write_file",
+				tt.args,
+			)
+			if decision.Result.Decision != tt.want {
+				t.Fatalf("decision = %v, want %v (action ref %q)", decision.Result.Decision, tt.want, decision.ActionRef)
+			}
+			if decision.ActionRef != tt.wantRef {
+				t.Fatalf("action ref = %q, want %q", decision.ActionRef, tt.wantRef)
+			}
+		})
+	}
+}
+
 func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 	t.Parallel()
 

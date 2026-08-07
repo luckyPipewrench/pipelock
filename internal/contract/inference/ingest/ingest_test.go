@@ -17,6 +17,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
+const (
+	v2EntryVersion = 2
+	v3EntryVersion = 3
+)
+
 func TestStreamTypesCaptureSummary(t *testing.T) {
 	rec := testEntry(t, recorder.EntryVersion, 1, recorder.GenesisHash, capture.EntryTypeCapture, capture.CaptureSummary{
 		CaptureSchemaVersion: capture.CaptureSchemaV1,
@@ -233,7 +238,7 @@ func TestStreamSchemaVersionGating(t *testing.T) {
 	})
 
 	t.Run("v3 requires chain kind", func(t *testing.T) {
-		rec := testEntry(t, recorder.LatestEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
+		rec := testEntry(t, v3EntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
 		rec.ChainKind = ""
 		rec.Hash = recorder.ComputeHash(rec)
 
@@ -257,7 +262,7 @@ func TestStreamSchemaVersionGating(t *testing.T) {
 	})
 
 	t.Run("legacy entries reject unhashed writer namespace", func(t *testing.T) {
-		rec := testEntry(t, recorder.CurrentWriteEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 2})
+		rec := testEntry(t, v2EntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 2})
 		rec.WriterInstanceID = "writer-a"
 		rec.Hash = recorder.ComputeHash(rec)
 		entries, errs := collectStream(t, mustJSONLines(t, rec), StreamOptions{})

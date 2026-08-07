@@ -2021,6 +2021,17 @@ func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 		t.Errorf("expected deescalation counter %q", wantCounter)
 	}
 
+	// The session was restored at an elevated level (as happens after a stale
+	// metric registry/reload) without a matching prior gauge increment. The
+	// gauge must be derived from the live session state rather than driven
+	// negative by this recovery transition.
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Fatalf("elevated gauge after recovery = %.0f, want 0 from live session state", got)
+	}
+	if !scrapeMetric(t, m, `pipelock_adaptive_sessions_current{level="`+testLevelElevated+`"} 0`) {
+		t.Fatal("recovered elevated label disappeared; GaugeVec-compatible scrape must expose zero")
+	}
+
 	// The "normal" level gauge should NOT have been incremented (to > 0 guard).
 	// Gather raw metrics and check that "normal" label does not appear in
 	// pipelock_adaptive_sessions_current.
@@ -2039,6 +2050,117 @@ func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestSessionManager_AdaptiveGaugeDerivesFromLiveState proves the gauge follows
+// the session manager rather than the history of metric transition calls. It
+// covers the shared HTTP/MCP scoped transition helper as well as the legacy
+// session-wide lane.
+func TestSessionManager_AdaptiveGaugeDerivesFromLiveState(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:                   true,
+		DecayPerCleanRequest:      0.5,
+		CleanRequestsToDeescalate: 1,
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("adaptive-gauge-client")
+	params := decide.EscalationParams{Threshold: 3, Metrics: m, Session: "adaptive-gauge-client"}
+
+	// Legacy/global HTTP lane: a real escalation emits its event counter and
+	// the state-derived gauge becomes 1.
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("global escalation gauge = %.0f, want 1", got)
+	}
+	recordCleanForAdaptiveScope(sess, "", adaptiveCfg, true, adaptiveRecoveryContext{metrics: m})
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Fatalf("global recovery gauge = %.0f, want 0", got)
+	}
+
+	// Destination-scoped lanes are the shared HTTP/MCP path. They must count
+	// independently while active and return to an explicit zero on recovery.
+	scope := adaptiveScopeForHost("metrics.vendor.example")
+	scopedSess := sm.GetOrCreate("adaptive-gauge-scoped-client")
+	scopedParams := decide.EscalationParams{Threshold: 3, Metrics: m, Session: "adaptive-gauge-scoped-client"}
+	recordAdaptiveSignalForScope(scopedSess, scope, session.SignalBlock, adaptiveCfg, scopedParams)
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("scoped escalation gauge = %.0f, want 1", got)
+	}
+	recordCleanForAdaptiveScope(scopedSess, scope, adaptiveCfg, true, adaptiveRecoveryContext{scope: scope, metrics: m})
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Fatalf("scoped recovery gauge = %.0f, want 0", got)
+	}
+
+	// Reload retains this manager and its live session state; reset then removes
+	// it. Neither path may depend on a paired historical gauge delta.
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
+	sm.UpdateConfig(cfg, adaptiveCfg, nil)
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("reload-preserved gauge = %.0f, want 1", got)
+	}
+	if reset, skipped := sm.ResetAllIdentitySessions(); reset != 2 || skipped != 0 {
+		t.Fatalf("ResetAllIdentitySessions = reset %d skipped %d, want 2/0", reset, skipped)
+	}
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Fatalf("reset gauge = %.0f, want 0", got)
+	}
+
+	if !scrapeMetric(t, m, `pipelock_session_escalations_total{from="normal",to="elevated"} 3`) {
+		t.Fatal("escalation counter lost transition semantics")
+	}
+	if !scrapeMetric(t, m, `pipelock_session_auto_deescalation_total{from="elevated",to="normal"} 2`) {
+		t.Fatal("de-escalation counter lost transition semantics")
+	}
+}
+
+func TestSessionManager_AdaptiveGaugeCountsOneStrongestLevelPerSession(t *testing.T) {
+	m := metrics.New()
+	sm := NewSessionManager(testSessionConfig(), nil, m)
+	defer sm.Close()
+
+	// A single logical session can have several destination lanes active. The
+	// metric is explicitly a session count, so it exposes that session once at
+	// its strongest effective enforcement level rather than once per lane.
+	sess := sm.GetOrCreate("multi-scope-gauge-client")
+	sess.mu.Lock()
+	sess.getOrCreateScopeLocked(adaptiveScopeForHost("first.vendor.example")).escalationLevel = 1
+	sess.getOrCreateScopeLocked(adaptiveScopeForHost("second.vendor.example")).escalationLevel = 2
+	sess.mu.Unlock()
+
+	if got := sm.AdaptiveSessionLevelCounts(); len(got) != 1 || got[testLevelHigh] != 1 {
+		t.Fatalf("AdaptiveSessionLevelCounts = %#v, want one high session", got)
+	}
+	if !scrapeMetric(t, m, `pipelock_adaptive_sessions_current{level="`+testLevelHigh+`"} 1`) {
+		t.Fatal("strongest active scoped level was not exposed")
+	}
+	if scrapeMetric(t, m, `pipelock_adaptive_sessions_current{level="`+testLevelElevated+`"} 1`) {
+		t.Fatal("one multi-scope session was counted once per active lane")
+	}
+}
+
+func TestSessionManager_CloseFencesRetainedRecorderGauge(t *testing.T) {
+	m := metrics.New()
+	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: true, EscalationThreshold: 3}
+	sm := NewSessionManager(testSessionConfig(), adaptiveCfg, m)
+	sess := sm.GetOrCreate("retained-transport-client")
+	sm.Close()
+
+	// WebSocket and intercepted tunnel lifetimes can retain a recorder after a
+	// reload closes its manager. Enforcement continues from that retained state,
+	// but its transition must not revive a current-session gauge owned by the
+	// retired manager.
+	params := decide.EscalationParams{Threshold: 3, Metrics: m, Session: "retained-transport-client"}
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
+	if !sess.IsEscalated() {
+		t.Fatal("retained recorder did not preserve its enforcement state")
+	}
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Fatalf("retired recorder repopulated elevated gauge = %.0f, want 0", got)
 	}
 }
 

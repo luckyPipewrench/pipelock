@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -79,7 +80,7 @@ func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 		if statErr != nil {
 			t.Fatalf("escrow sidecar %q: %v", path, statErr)
 		}
-		if got := info.Mode().Perm(); got != filePermissions {
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != filePermissions {
 			t.Fatalf("escrow sidecar %q mode = %04o, want %04o", path, got, filePermissions)
 		}
 		payload, readErr := os.ReadFile(filepath.Clean(path))
@@ -113,6 +114,9 @@ func TestWriteEscrow_ConcurrentRecordersKeepEveryPayload(t *testing.T) {
 }
 
 func TestWriteEscrow_AlwaysUsesOwnerOnlyPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix owner/group permission bits")
+	}
 	dir := t.TempDir()
 	publicKey, _, err := box.GenerateKey(rand.Reader)
 	if err != nil {

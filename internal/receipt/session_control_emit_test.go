@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -456,6 +457,9 @@ func TestEmitter_KeyRotationSessionCloseUsesSegmentLocalCount(t *testing.T) {
 
 func TestEmitter_EmitSessionClosePersistFailureCanRetryToDetectableGap(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot portably rename an active evidence directory")
+	}
 
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)
@@ -534,6 +538,9 @@ func TestEmitter_EmitSessionClosePersistFailureCanRetryToDetectableGap(t *testin
 
 func TestEmitter_EmitSessionOpenPersistFailureCanRetryToDetectableGap(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot portably rename an active evidence directory")
+	}
 
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)

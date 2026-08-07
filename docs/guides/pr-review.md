@@ -30,7 +30,9 @@ search ran; the review does not replace CodeQL or CI.
 The ten questions are an internal checklist; the posted comment is a concise,
 findings-first report rather than ten narrated sections. It uses `Findings` and
 `Audit coverage` headings and targets fewer than 1,200 words without dropping
-independently material findings.
+independently material findings. The workflow validates that shape before
+posting, retries one malformed response for correction, and fails closed if the
+replacement still violates the contract.
 
 ## Setup
 

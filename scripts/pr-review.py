@@ -52,6 +52,10 @@ DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEEP_LLM_TIMEOUT_SECONDS = 300
 FAST_REASONING_EFFORT = "low"
 DEEP_REASONING_EFFORT = "xhigh"
+DEEP_REVIEW_MAX_WORDS = 1_200
+DEEP_REVIEW_CLEAN_FINDINGS = (
+    "No material security or correctness issues found in the supplied static diff."
+)
 
 
 class LLMReviewError(RuntimeError):
@@ -104,8 +108,8 @@ Always inspect for integer/allocation overflow, partial writes, cleanup after fa
 Output contract (strict):
 - Lead with `## Findings`.
 - Report only concrete material findings, ordered by severity. For each finding,
-  include severity, file/function, why it matters, a short reproduction or
-  falsification plan, and a concrete fix. Put `NOT PROVEN:` inline when a
+  use a heading in the exact form `### N. severity — file/function`, followed
+  by compact `Why:`, `Check:`, and `Fix:` lines. Put `NOT PROVEN:` inline when a
   finding depends on evidence absent from the diff.
 - After the findings, add exactly one compact `## Audit coverage` paragraph.
   In at most three sentences, group the checks that produced no additional
@@ -288,6 +292,86 @@ def prompt_for_mode(mode: str) -> str:
         "tests": PROMPT_TESTS,
         "docs": PROMPT_DOCS,
     }.get(mode, PROMPT_SECURITY)
+
+
+def validate_deep_review(review: str) -> list[str]:
+    """Return structural errors that make a deep review unsafe to publish."""
+    errors: list[str] = []
+    stripped = review.strip()
+    if not stripped.startswith("## Findings"):
+        errors.append("response must start with ## Findings")
+    if stripped.count("## Findings") != 1:
+        errors.append("response must contain exactly one ## Findings heading")
+    if stripped.count("## Audit coverage") != 1:
+        errors.append("response must contain exactly one ## Audit coverage heading")
+
+    findings_at = stripped.find("## Findings")
+    audit_at = stripped.find("## Audit coverage")
+    if findings_at >= 0 and audit_at >= 0 and findings_at < audit_at:
+        findings = stripped[findings_at + len("## Findings") : audit_at].strip()
+        audit = stripped[audit_at + len("## Audit coverage") :].strip()
+        if not findings:
+            errors.append("Findings section must not be empty")
+        elif DEEP_REVIEW_CLEAN_FINDINGS in findings:
+            if findings != DEEP_REVIEW_CLEAN_FINDINGS:
+                errors.append("clean Findings section must contain only the exact clean sentence")
+        else:
+            heading_lines = re.findall(r"^###\s+.+$", findings, flags=re.MULTILINE)
+            headings = re.findall(
+                r"^###\s+(\d+)\.\s+(high|medium|low)\s+—\s+\S.+$",
+                findings,
+                flags=re.IGNORECASE | re.MULTILINE,
+            )
+            if not headings or len(headings) != len(heading_lines):
+                errors.append("every material finding must use the required numbered severity heading")
+            elif [number for number, _ in headings] != [
+                str(index) for index in range(1, len(headings) + 1)
+            ]:
+                errors.append("material finding headings must be numbered consecutively from 1")
+            for block in re.split(r"^###\s+.+$", findings, flags=re.MULTILINE)[1:]:
+                for label in ("Why:", "Check:", "Fix:"):
+                    if not re.search(rf"(?m)^{re.escape(label)}\s+\S", block):
+                        errors.append(f"each material finding must include a non-empty {label} line")
+        if not audit:
+            errors.append("Audit coverage section must not be empty")
+    elif findings_at >= 0 and audit_at >= 0:
+        errors.append("## Audit coverage must follow ## Findings")
+
+    word_count = len(stripped.split())
+    if word_count >= DEEP_REVIEW_MAX_WORDS:
+        errors.append(
+            f"response has {word_count} words; must be fewer than {DEEP_REVIEW_MAX_WORDS}"
+        )
+    return errors
+
+
+def deep_correction_prompt(errors: list[str]) -> str:
+    """Return a stricter replacement prompt after an invalid deep response."""
+    reasons = "; ".join(errors)
+    return (
+        PROMPT_DEEP
+        + "\n\nYour previous response was not published because: "
+        + reasons
+        + ". Return a complete replacement that satisfies the output contract. "
+        + "Preserve every independently material finding while compressing its wording."
+    )
+
+
+def call_review(diff: str, mode: str, system_prompt: str) -> str:
+    """Call the reviewer and fail closed on malformed deep-review output."""
+    review = call_llm(diff, mode, system_prompt)
+    if mode != "deep":
+        return review
+
+    errors = validate_deep_review(review)
+    if not errors:
+        return review
+
+    review = call_llm(diff, mode, deep_correction_prompt(errors))
+    errors = validate_deep_review(review)
+    if errors:
+        raise LLMReviewError("deep review violated output contract after one correction retry")
+    return review
 
 
 def diff_limit_for_mode(mode: str) -> int:
@@ -558,7 +642,7 @@ def main() -> None:
     system_prompt = prompt_for_mode(mode)
 
     try:
-        review = call_llm(diff, mode, system_prompt)
+        review = call_review(diff, mode, system_prompt)
     except (requests.RequestException, LLMReviewError) as e:
         post_comment(repo, pr_number, token, f"**AI Review Error:** {e}")
         sys.exit(1)

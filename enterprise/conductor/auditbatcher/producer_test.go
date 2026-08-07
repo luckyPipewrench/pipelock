@@ -62,8 +62,12 @@ func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
-	const tail = "unsupported-v1-checkpoint"
-	p.ObserveRecorderEntry(recorder.Entry{Version: 1, Type: checkpointEntryType, Hash: tail})
+	segment := checkpointSegment(0)
+	for i := range segment {
+		segment[i].Version = 1
+		p.ObserveRecorderEntry(segment[i])
+	}
+	tail := segment[1].Hash
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +90,13 @@ func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
-	const tail = "invalid-v2-namespace-checkpoint"
-	p.ObserveRecorderEntry(recorder.Entry{
-		Version: recorder.CurrentWriteEntryVersion, Type: checkpointEntryType,
-		ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "unhashed", Hash: tail,
-	})
+	segment := checkpointSegment(0)
+	for i := range segment {
+		segment[i].ChainKind = recorder.ChainKindRecorder
+		segment[i].WriterInstanceID = "unhashed"
+		p.ObserveRecorderEntry(segment[i])
+	}
+	tail := segment[1].Hash
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -446,8 +452,48 @@ func TestProducer_AdvancesTailOnMixedNamespaceRejection(t *testing.T) {
 	if err := p.enqueueSegment(seg); err == nil {
 		t.Fatal("mixed namespace segment accepted")
 	}
-	if p.previousSegmentTail != seg[1].Hash {
-		t.Fatalf("tail after mixed namespace rejection = %q, want %q", p.previousSegmentTail, seg[1].Hash)
+	key := recorderNamespaceKey(seg[1])
+	if got := p.previousSegmentTailFor(key); got != seg[1].Hash {
+		t.Fatalf("tail after mixed namespace rejection = %q, want %q", got, seg[1].Hash)
+	}
+}
+
+func TestProducer_IsolatesInterleavedV3Namespaces(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
+
+	firstA := namespacedCheckpointSegment(0, "writer-a")
+	firstB := namespacedCheckpointSegment(0, "writer-b")
+	for _, entry := range []recorder.Entry{firstA[0], firstB[0], firstA[1], firstB[1]} {
+		p.ObserveRecorderEntry(entry)
+	}
+	secondA := namespacedCheckpointSegment(2, "writer-a")
+	secondB := namespacedCheckpointSegment(2, "writer-b")
+	for _, entry := range append(secondA, secondB...) {
+		p.ObserveRecorderEntry(entry)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantPrevious := []string{"", "", firstA[1].Hash, firstB[1].Hash}
+	wantWriters := []string{"writer-a", "writer-b", "writer-a", "writer-b"}
+	for i := range wantPrevious {
+		lease, err := q.Claim()
+		if err != nil {
+			t.Fatalf("Claim batch %d: %v", i, err)
+		}
+		chain := lease.Batch.Envelope.Chain
+		if chain.WriterInstanceID != wantWriters[i] || chain.PreviousSegmentTail != wantPrevious[i] {
+			t.Fatalf("batch %d writer/tail = %q/%q, want %q/%q", i, chain.WriterInstanceID, chain.PreviousSegmentTail, wantWriters[i], wantPrevious[i])
+		}
 	}
 }
 
@@ -565,7 +611,7 @@ func TestProducerHelpers(t *testing.T) {
 		Version: recorder.LatestEntryVersion, SessionID: "proxy", Sequence: 1,
 		ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "writer-a",
 	}
-	if got := segmentID(entry, 2); got != "segment-proxy-recorder-writer-a-00000000000000000001-00000000000000000002" {
+	if got := segmentID(entry, 2); got != "segment-proxy-840f4f71315f14ee-00000000000000000001-00000000000000000002" {
 		t.Fatalf("segmentID(v3) = %q", got)
 	}
 	if got := safeSegmentPart("a/b:c"); got != "abc" {
@@ -622,6 +668,16 @@ func checkpointSegment(start uint64) []recorder.Entry {
 		},
 	}
 	return []recorder.Entry{reg, cp}
+}
+
+func namespacedCheckpointSegment(start uint64, writer string) []recorder.Entry {
+	segment := checkpointSegment(start)
+	for i := range segment {
+		segment[i].Version = 3
+		segment[i].ChainKind = recorder.ChainKindRecorder
+		segment[i].WriterInstanceID = writer
+	}
+	return segment
 }
 
 func segmentHashHex(seed string) string {

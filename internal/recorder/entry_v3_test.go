@@ -73,6 +73,31 @@ func TestComputeHashV3BindsNamespace(t *testing.T) {
 	}
 }
 
+func TestReadEntriesV3RejectsExplicitNullProjectedStrings(t *testing.T) {
+	for _, field := range []string{"ts", "trace_id", "summary", "prev_hash"} {
+		t.Run(field, func(t *testing.T) {
+			e := v3Entry()
+			e.Hash = recorder.ComputeHash(e)
+			encoded, err := json.Marshal(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(encoded, &raw); err != nil {
+				t.Fatal(err)
+			}
+			raw[field] = nil
+			encoded, err = json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := recorder.ReadEntriesFromReader(strings.NewReader(string(encoded) + "\n")); err == nil || !strings.Contains(err.Error(), field+" must be a string") {
+				t.Fatalf("ReadEntriesFromReader() error = %v, want %s type error", err, field)
+			}
+		})
+	}
+}
+
 func TestV3RejectsNullDelimiterCollision(t *testing.T) {
 	left := v3Entry()
 	left.ChainKind = "recorder"

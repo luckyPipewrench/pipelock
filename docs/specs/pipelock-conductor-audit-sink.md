@@ -331,7 +331,9 @@ follower keys are resolved first by exact org/fleet/instance and key ID.
 Accepted audit batches are written to a local SQLite raw-evidence store with
 idempotency on `(org, fleet, instance,
 batch_id)` and fork rejection on overlapping sequence ranges with divergent
-payload or segment-tail hashes. The storage directory is sensitive
+payload or segment-tail hashes within the same recorder chain namespace.
+Independent v3 writer namespaces may reuse sequence ranges without forming a
+fork. The storage directory is sensitive
 operator-controlled state. The MVP exposes
 `GET /api/v1/conductor/audit/batches` as an operator/admin metadata query
 endpoint; it requires audit-query authorization and at least `org_id`, returns
@@ -703,8 +705,8 @@ Conductor must:
 - Enforce created skew: default 60s, configurable max 300s with warning.
 - Verify schema version intersection.
 - Verify sequence range monotonicity.
-- Detect overlapping sequence ranges with different hashes as a compromise
-  indicator.
+- Detect overlapping sequence ranges with different hashes in the same recorder
+  chain namespace as a compromise indicator.
 - Verify v2 recorder entry hashes.
 - Verify checkpoint signature with enrolled receipt/checkpoint public key.
 - Stitch segment rotation using previous segment tail and current segment head.

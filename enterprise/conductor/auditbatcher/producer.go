@@ -62,6 +62,7 @@ type Producer struct {
 	dropMu               sync.Mutex
 	dropped              map[string]uint64
 	previousSegmentTail  string
+	previousSegmentTails map[string]string
 	emitAppliedState     bool
 	appliedStateProvider func() (conductor.FollowerAppliedState, bool)
 }
@@ -137,6 +138,7 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 		entries:              make(chan recorder.Entry, cfg.BufferSize),
 		done:                 make(chan struct{}),
 		dropped:              map[string]uint64{},
+		previousSegmentTails: map[string]string{},
 		emitAppliedState:     cfg.EmitAppliedState,
 		appliedStateProvider: cfg.AppliedStateProvider,
 	}
@@ -179,37 +181,40 @@ func (p *Producer) Close() error {
 
 func (p *Producer) run() {
 	defer close(p.done)
-	var pending []recorder.Entry
+	pending := make(map[string][]recorder.Entry)
 	for entry := range p.entries {
+		key := recorderNamespaceKey(entry)
 		if !conductor.IsSupportedAuditEntryVersion(entry.Version) {
 			if entry.Type == checkpointEntryType {
-				p.previousSegmentTail = entry.Hash
+				p.setPreviousSegmentTail(key, entry.Hash)
 			}
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
 		if err := recorder.ValidateEntrySchema(entry); err != nil {
 			if entry.Type == checkpointEntryType {
-				p.previousSegmentTail = entry.Hash
+				p.setPreviousSegmentTail(key, entry.Hash)
 			}
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
-		if len(pending) > 0 && entry.Sequence != pending[len(pending)-1].Sequence+1 {
-			p.drop(producerDropSequenceGap, droppedActionReceiptCount(pending))
-			pending = nil
+		chainPending := pending[key]
+		if len(chainPending) > 0 && entry.Sequence != chainPending[len(chainPending)-1].Sequence+1 {
+			p.drop(producerDropSequenceGap, droppedActionReceiptCount(chainPending))
+			chainPending = nil
 		}
-		pending = append(pending, entry)
+		chainPending = append(chainPending, entry)
+		pending[key] = chainPending
 		if entry.Type != checkpointEntryType {
 			continue
 		}
 		// enqueueSegment records its own drop accounting and metrics at
 		// each failure site, so the returned error is informational only.
-		_ = p.enqueueSegment(pending)
-		pending = nil
+		_ = p.enqueueSegment(chainPending)
+		delete(pending, key)
 	}
-	if len(pending) > 0 {
-		p.drop(producerDropShutdownPartial, droppedActionReceiptCount(pending))
+	for _, chainPending := range pending {
+		p.drop(producerDropShutdownPartial, droppedActionReceiptCount(chainPending))
 	}
 }
 
@@ -228,7 +233,8 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	// drop path left the tail un-advanced, the next segment would claim
 	// continuity across a checkpoint the recorder actually wrote, and a
 	// verifier replaying the local recorder file would reject the chain.
-	defer func() { p.previousSegmentTail = checkpoint.Hash }()
+	key := recorderNamespaceKey(checkpoint)
+	defer func() { p.setPreviousSegmentTail(key, checkpoint.Hash) }()
 	if !homogeneousRecorderNamespace(entries) {
 		droppedActions := droppedActionReceiptCount(entries)
 		p.drop(producerDropInvalidCheckpoint, droppedActions)
@@ -250,7 +256,7 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 		return fmt.Errorf("%s: payload=%d max=%d", producerDropPayloadTooLarge, len(payload), conductor.MaxAuditPayloadBytes)
 	}
 	includedDrops := p.droppedAccounting()
-	envelope := p.envelope(entries, checkpoint, cp, payload, includedDrops)
+	envelope := p.envelope(entries, checkpoint, cp, payload, includedDrops, p.previousSegmentTailFor(key))
 	signed, err := SignEnvelope(envelope, p.auditSignerKeyID, p.auditSigner)
 	if err != nil {
 		p.drop(producerDropEnqueueError, droppedActions)
@@ -282,7 +288,7 @@ func homogeneousRecorderNamespace(entries []recorder.Entry) bool {
 	return true
 }
 
-func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte, dropped conductor.DroppedAccounting) conductor.AuditBatchEnvelope {
+func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte, dropped conductor.DroppedAccounting, previousSegmentTail string) conductor.AuditBatchEnvelope {
 	sum := sha256.Sum256(payload)
 	env := conductor.AuditBatchEnvelope{
 		SchemaVersion:      conductor.SchemaVersion,
@@ -305,7 +311,7 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 			SegmentID:              segmentID(entries[0], checkpoint.Sequence),
 			SeqStart:               entries[0].Sequence,
 			SeqEnd:                 checkpoint.Sequence,
-			PreviousSegmentTail:    p.previousSegmentTail,
+			PreviousSegmentTail:    previousSegmentTail,
 			SegmentHeadHash:        entries[0].Hash,
 			SegmentTailHash:        checkpoint.Hash,
 			CheckpointSeq:          checkpoint.Sequence,
@@ -330,6 +336,28 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 		}
 	}
 	return env
+}
+
+func recorderNamespaceKey(entry recorder.Entry) string {
+	if entry.Version == 1 || entry.Version == 2 {
+		return "legacy"
+	}
+	return fmt.Sprintf("v%d\x00%s\x00%s", entry.Version, entry.ChainKind, entry.WriterInstanceID)
+}
+
+func (p *Producer) previousSegmentTailFor(key string) string {
+	if key == "legacy" {
+		return p.previousSegmentTail
+	}
+	return p.previousSegmentTails[key]
+}
+
+func (p *Producer) setPreviousSegmentTail(key, tail string) {
+	if key == "legacy" {
+		p.previousSegmentTail = tail
+		return
+	}
+	p.previousSegmentTails[key] = tail
 }
 
 func (p *Producer) nextBatchID() string {
@@ -464,7 +492,8 @@ func segmentID(entry recorder.Entry, end uint64) string {
 	}
 	prefix := "segment-" + safeSegmentPart(sessionID)
 	if recorder.EntryVersionHasNamespace(entry.Version) {
-		prefix += "-" + safeSegmentPart(entry.ChainKind) + "-" + safeSegmentPart(entry.WriterInstanceID)
+		namespace := sha256.Sum256([]byte(sessionID + "\x00" + entry.ChainKind + "\x00" + entry.WriterInstanceID))
+		prefix += "-" + hex.EncodeToString(namespace[:8])
 	}
 	return fmt.Sprintf("%s-%020d-%020d", prefix, entry.Sequence, end)
 }

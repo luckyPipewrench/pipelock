@@ -199,13 +199,15 @@ func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
 		{"chain_kind", func(c *EvidenceChain) { c.ChainKind = "import" }},
 		{"writer_instance_id", func(c *EvidenceChain) { c.WriterInstanceID = "writer-b" }},
 	} {
-		t.Run("fork_"+tc.name, func(t *testing.T) {
+		t.Run("separate_chain_"+tc.name, func(t *testing.T) {
 			first := testAuditBatch()
 			first.Chain = chain
 			second := first
 			tc.edit(&second.Chain)
-			if !first.ForksWith(second) {
-				t.Fatalf("ForksWith() = false after %s change", tc.name)
+			second.PayloadSHA256 = testHash("20")
+			second.Chain.SegmentTailHash = testHash("21")
+			if first.ForksWith(second) {
+				t.Fatalf("ForksWith() = true across separate %s identity", tc.name)
 			}
 		})
 	}

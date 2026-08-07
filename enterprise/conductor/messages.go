@@ -1379,14 +1379,25 @@ func (a AuditBatchEnvelope) ForksWith(other AuditBatchEnvelope) bool {
 	if a.OrgID != other.OrgID || a.FleetID != other.FleetID || a.InstanceID != other.InstanceID {
 		return false
 	}
+	if !auditChainIdentityEqual(a.Chain, other.Chain) {
+		return false
+	}
 	if a.SeqEnd < other.SeqStart || other.SeqEnd < a.SeqStart {
 		return false
 	}
-	return a.PayloadSHA256 != other.PayloadSHA256 ||
-		a.Chain.SegmentTailHash != other.Chain.SegmentTailHash ||
-		a.Chain.EntryVersion != other.Chain.EntryVersion ||
-		a.Chain.ChainKind != other.Chain.ChainKind ||
-		a.Chain.WriterInstanceID != other.Chain.WriterInstanceID
+	return a.PayloadSHA256 != other.PayloadSHA256 || a.Chain.SegmentTailHash != other.Chain.SegmentTailHash
+}
+
+func auditChainIdentityEqual(a, b EvidenceChain) bool {
+	aNamespaced := recorder.EntryVersionHasNamespace(a.EntryVersion)
+	bNamespaced := recorder.EntryVersionHasNamespace(b.EntryVersion)
+	if aNamespaced != bNamespaced {
+		return false
+	}
+	if !aNamespaced {
+		return true
+	}
+	return a.EntryVersion == b.EntryVersion && a.ChainKind == b.ChainKind && a.WriterInstanceID == b.WriterInstanceID
 }
 
 // IsSupportedAuditEntryVersion reports whether audit transport accepts version.

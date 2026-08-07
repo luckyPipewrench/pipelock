@@ -62,12 +62,10 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 			id = filepath.ToSlash(rel)
 		}
 		locations = append(locations, EvidenceLocation{ID: id, Dir: path})
-		// Keep walking below a root-level location to preserve support for a
-		// legacy flat layout alongside nested locations.
-		if path == cleanRoot {
-			return nil
-		}
-		return filepath.SkipDir
+		// A directory containing evidence is a location, not a chain boundary.
+		// Descendants can hold independent evidence files and must be discovered
+		// so a reader never mistakes a partial traversal for complete evidence.
+		return nil
 	})
 	if err != nil {
 		return nil, err

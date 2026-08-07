@@ -45,6 +45,15 @@ func TestDiscoverEvidenceLocations(t *testing.T) {
 			wantIDs: []string{"unexpected/deep/run"},
 		},
 		{
+			name: "nested location below evidence location is found",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				writeDiscoveryShard(t, root)
+				writeDiscoveryShard(t, filepath.Join(root, "nested"))
+			},
+			wantIDs: []string{"", "nested"},
+		},
+		{
 			name: "symlink is refused",
 			setup: func(t *testing.T, root string) {
 				t.Helper()

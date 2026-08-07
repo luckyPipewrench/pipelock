@@ -5,13 +5,22 @@ package recorder
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+type shortWriteWriter struct{}
+
+func (shortWriteWriter) Write(data []byte) (int, error) {
+	return len(data) - 1, nil
+}
 
 // TestConcurrentRecordersEmitParseableLines proves a record and its newline
 // reach the evidence file together.
@@ -104,5 +113,13 @@ func TestConcurrentRecordersEmitParseableLines(t *testing.T) {
 	// recorded entries. Falling below it means a merged line swallowed records.
 	if floor := writers * entriesPerWriter; lines < floor {
 		t.Fatalf("parsed %d lines, want at least %d: a merged line loses more than one record", lines, floor)
+	}
+}
+
+func TestWriteEntryDataRejectsPartialLineWrite(t *testing.T) {
+	r := &Recorder{writer: bufio.NewWriterSize(shortWriteWriter{}, 1)}
+	err := r.writeEntryData(bytes.Repeat([]byte("x"), 32), Entry{}, false)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeEntryData partial write error = %v, want io.ErrShortWrite", err)
 	}
 }

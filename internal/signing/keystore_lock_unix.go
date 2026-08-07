@@ -1,7 +1,14 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build unix
+//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+
+// Deliberately not the "unix" meta-tag. Go matches that for aix and hurd as
+// well, and golang.org/x/sys/unix defines Flock for neither, so the build tag
+// was wider than the symbol it depends on and the package failed to compile
+// wherever the two disagreed. This lists exactly the platforms that have
+// Flock. GOOS=ios and GOOS=android are covered by darwin and linux, and
+// GOOS=illumos by solaris, because Go satisfies those tags too.
 
 package signing
 

@@ -38,12 +38,12 @@ func TestWriteFileUnderDirSyncFailures(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(dir, "bundle.json")); !os.IsNotExist(statErr) {
 			t.Fatalf("published bundle stat err = %v, want not exist", statErr)
 		}
-		temps, globErr := filepath.Glob(filepath.Join(dir, ".anchor-state-*.tmp"))
-		if globErr != nil {
-			t.Fatalf("glob temp files: %v", globErr)
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			t.Fatalf("read receipt directory: %v", readErr)
 		}
-		if len(temps) != 0 {
-			t.Fatalf("temporary files after sync failure = %v, want none", temps)
+		if len(entries) != 0 {
+			t.Fatalf("entries after sync failure = %v, want none", entries)
 		}
 	})
 
@@ -156,6 +156,41 @@ func TestWriteFileUnderDirSyncFailures(t *testing.T) {
 			t.Fatalf("directory sync calls after leaf failure = %d, want 3", syncCalls)
 		}
 	})
+
+	t.Run("first_directory_sync_error_wins", func(t *testing.T) {
+		dir := t.TempDir()
+		rootFD, err := openAnchorDir(dir)
+		if err != nil {
+			t.Fatalf("openAnchorDir: %v", err)
+		}
+		defer func() { _ = unix.Close(rootFD) }()
+
+		leafSyncErr := errors.New("injected leaf directory sync failure")
+		parentSyncErr := errors.New("injected parent directory sync failure")
+		syncCalls := 0
+		err = writeFileUnderDirWithSync(rootFD, filepath.Join("one", "two", "bundle.json"), []byte("bundle"), func(file *os.File) error {
+			return file.Sync()
+		}, func(fd int) error {
+			syncCalls++
+			switch syncCalls {
+			case 1:
+				return leafSyncErr
+			case 2:
+				return parentSyncErr
+			default:
+				return unix.Fsync(fd)
+			}
+		})
+		if !errors.Is(err, leafSyncErr) {
+			t.Fatalf("writeFileUnderDirWithSync error = %v, want leaf directory sync failure", err)
+		}
+		if errors.Is(err, parentSyncErr) {
+			t.Fatalf("writeFileUnderDirWithSync error = %v, want first sync error only", err)
+		}
+		if syncCalls != 3 {
+			t.Fatalf("directory sync calls = %d, want 3", syncCalls)
+		}
+	})
 }
 
 func TestWriteStateMarkerFileSyncsReceiptRoot(t *testing.T) {
@@ -201,4 +236,27 @@ func TestWriteStateMarkerFileSyncsReceiptRoot(t *testing.T) {
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatalf("published marker after root sync failure: %v", statErr)
 	}
+
+	t.Run("write_error_wins_over_root_sync_error", func(t *testing.T) {
+		failureDir := t.TempDir()
+		if writeErr := writeStateMarkerFileWithSync(failureDir, marker, append(data, '\n'), unix.Fsync); writeErr != nil {
+			t.Fatalf("write initial marker: %v", writeErr)
+		}
+
+		rootSyncErr := errors.New("injected receipt root sync failure")
+		rootSyncCalled := false
+		err := writeStateMarkerFileWithSync(failureDir, marker, append(data, '\n'), func(int) error {
+			rootSyncCalled = true
+			return rootSyncErr
+		})
+		if !rootSyncCalled {
+			t.Fatal("receipt root sync was not called after write failure")
+		}
+		if !errors.Is(err, errStateMarkerExists) {
+			t.Fatalf("writeStateMarkerFileWithSync error = %v, want existing marker error", err)
+		}
+		if errors.Is(err, rootSyncErr) {
+			t.Fatalf("writeStateMarkerFileWithSync error = %v, must not include root sync error", err)
+		}
+	})
 }

@@ -26,6 +26,7 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -79,6 +80,18 @@ type controlKeySpec struct {
 	inline  string
 	file    string
 	purpose signing.KeyPurpose
+}
+
+type serveHandler struct {
+	*controlplane.Handler
+	auditStore *controlplane.SQLiteAuditStore
+}
+
+func (h *serveHandler) Close() error {
+	if h == nil || h.auditStore == nil {
+		return nil
+	}
+	return h.auditStore.Close()
 }
 
 func Cmd() *cobra.Command {
@@ -174,6 +187,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = handler.Close() }()
 	serverCert, err := tlsfile.LoadX509KeyPair(opts.tlsCert, opts.tlsKey)
 	if err != nil {
 		return fmt.Errorf("load Conductor server TLS identity: %w", err)
@@ -258,7 +272,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	return firstErr
 }
 
-func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, http.Handler, *tls.Config, error) {
+func buildServeHandler(ctx context.Context, opts serveOptions) (*serveHandler, http.Handler, *tls.Config, error) {
 	if strings.TrimSpace(opts.storageDir) == "" {
 		return nil, nil, nil, errors.New("--storage-dir is required")
 	}
@@ -353,6 +367,12 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	keepAuditStore := false
+	defer func() {
+		if !keepAuditStore {
+			_ = auditStore.Close()
+		}
+	}()
 	if opts.auditRetention > 0 {
 		result, err := auditStore.PruneAuditBatchesBefore(ctx, time.Now().UTC().Add(-opts.auditRetention))
 		if err != nil {
@@ -374,6 +394,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		return nil, nil, nil, err
 	}
 	m := metrics.New()
+	m.RegisterInfo(cliutil.Version)
 	m.RecordConductorPolicyHashStatusCounts(store.PolicyHashStatusCounts())
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:              store,
@@ -409,7 +430,8 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, err
 	}
-	return handler, handler.ProbeHandler(), tlsConfig, nil
+	keepAuditStore = true
+	return &serveHandler{Handler: handler, auditStore: auditStore}, handler.ProbeHandler(), tlsConfig, nil
 }
 
 func conductorRequestLogger(w io.Writer) *slog.Logger {

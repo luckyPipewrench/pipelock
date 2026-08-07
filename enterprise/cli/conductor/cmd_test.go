@@ -27,6 +27,7 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -71,7 +72,7 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		t.Fatalf("WriteFile(ca): %v", err)
 	}
 
-	handler, probeHandler, tlsConfig, err := buildServeHandler(context.Background(), serveOptions{
+	opts := serveOptions{
 		listen:              defaultListen,
 		storageDir:          filepath.Join(dir, "store"),
 		conductorID:         "conductor-test",
@@ -91,10 +92,16 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		tlsCert:  filepath.Join(dir, "server.pem"),
 		tlsKey:   filepath.Join(dir, "server.key"),
 		clientCA: caPath,
-	})
+	}
+	handler, probeHandler, tlsConfig, err := buildServeHandler(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("buildServeHandler() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := handler.Close(); err != nil {
+			t.Errorf("close initial audit store: %v", err)
+		}
+	})
 	if tlsConfig.ClientAuth != tls.RequireAndVerifyClientCert || tlsConfig.MinVersion != tls.VersionTLS13 {
 		t.Fatalf("TLS config = %+v", tlsConfig)
 	}
@@ -129,6 +136,38 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	}
 	if !strings.Contains(metricsBody, `pipelock_conductor_policy_bundle_policy_hash_status_count{status="unknown_unverified"} 0`) {
 		t.Fatalf("metrics body missing policy hash status gauge:\n%s", metricsBody)
+	}
+	if !strings.Contains(metricsBody, `pipelock_info{version="`+cliutil.Version+`"} 1`) {
+		t.Fatalf("metrics body missing build info for version %q:\n%s", cliutil.Version, metricsBody)
+	}
+
+	// A restarted Conductor gets a new registry. Rebuilding from the same
+	// options must expose one info series, not panic from duplicate registration
+	// or omit the version on the replacement probe handler.
+	if err := handler.Close(); err != nil {
+		t.Fatalf("close initial audit store: %v", err)
+	}
+	if _, err := handler.auditStore.ListAuditBatches(context.Background(), controlplane.AuditBatchQuery{OrgID: "org-main"}); err == nil {
+		t.Fatal("initial audit store remained usable after Close")
+	}
+	rebuiltHandler, rebuiltProbeHandler, _, err := buildServeHandler(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("rebuild serve handler: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := rebuiltHandler.Close(); err != nil {
+			t.Errorf("close rebuilt audit store: %v", err)
+		}
+	})
+	w = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.MetricsPath, nil)
+	rebuiltProbeHandler.ServeHTTP(w, req)
+	metricsBody = w.Body.String()
+	if got := strings.Count(metricsBody, "pipelock_info{"); got != 1 {
+		t.Fatalf("rebuilt metrics info family count = %d, want 1:\n%s", got, metricsBody)
+	}
+	if !strings.Contains(metricsBody, `pipelock_info{version="`+cliutil.Version+`"} 1`) {
+		t.Fatalf("rebuilt metrics body missing build info for version %q:\n%s", cliutil.Version, metricsBody)
 	}
 }
 
@@ -208,6 +247,11 @@ func TestBuildServeHandlerFleetSkewOverrideUsesAdminCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildServeHandler: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := handler.Close(); err != nil {
+			t.Errorf("close audit store: %v", err)
+		}
+	})
 
 	keyPath, _ := writePolicyKeyFile(t, dir, wantPurposeFlag, "policy-key-override")
 	cfgPath := writeFile(t, dir, "policy.yaml", testConfigYAML)
@@ -276,7 +320,7 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(token): %v", err)
 	}
-	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+	validHandler, _, _, err := buildServeHandler(context.Background(), serveOptions{
 		storageDir:          filepath.Join(dir, "store"),
 		followerTrustDomain: defaultTrustDomain,
 		tlsCert:             "server.pem",
@@ -372,6 +416,11 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildServeHandler(no trusted audit keys) error = %v, want nil", err)
 	}
+	t.Cleanup(func() {
+		if err := validHandler.Close(); err != nil {
+			t.Errorf("close audit store: %v", err)
+		}
+	})
 }
 
 func TestBuildServeHandlerRejectsNegativeAuditRetention(t *testing.T) {
@@ -459,6 +508,11 @@ func TestBuildServeHandlerPrunesAuditRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildServeHandler(retention) error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := handler.Close(); err != nil {
+			t.Errorf("close audit store: %v", err)
+		}
+	})
 	if handler == nil {
 		t.Fatal("buildServeHandler(retention) handler = nil")
 	}

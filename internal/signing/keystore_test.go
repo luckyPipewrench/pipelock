@@ -5,10 +5,13 @@ package signing
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -62,6 +65,275 @@ func TestKeystoreForceGenerateAgent(t *testing.T) {
 	// Keys should be different (crypto/rand).
 	if bytes.Equal(pub1, pub2) {
 		t.Fatal("forced regeneration produced identical key")
+	}
+}
+
+func TestKeystoreGenerateAgentConcurrentFirstUse(t *testing.T) {
+	const callers = 32
+	ks := NewKeystore(t.TempDir())
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	for range callers {
+		go func() {
+			ready.Done()
+			<-start
+			_, err := ks.GenerateAgent("shared")
+			results <- err
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	successes := 0
+	for range callers {
+		err := <-results
+		if err == nil {
+			successes++
+			continue
+		}
+		if !strings.Contains(err.Error(), `keys already exist for agent "shared"`) {
+			t.Fatalf("losing GenerateAgent() error = %v, want existing-keys error", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful GenerateAgent() calls = %d, want exactly 1", successes)
+	}
+	assertStoredAgentPairCoherent(t, ks)
+}
+
+func TestKeystoreForceGenerateAgentConcurrent(t *testing.T) {
+	const callers = 16
+	ks := NewKeystore(t.TempDir())
+	if _, err := ks.GenerateAgent("shared"); err != nil {
+		t.Fatalf("initial GenerateAgent(): %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	for range callers {
+		go func() {
+			ready.Done()
+			<-start
+			_, err := ks.ForceGenerateAgent("shared")
+			results <- err
+		}()
+	}
+	ready.Wait()
+	close(start)
+	for range callers {
+		if err := <-results; err != nil {
+			t.Fatalf("ForceGenerateAgent() error: %v", err)
+		}
+	}
+	assertStoredAgentPairCoherent(t, ks)
+}
+
+func TestKeystoreForceGenerateAgentFailedPairWriteKeepsPriorPair(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+	oldPub, err := ks.GenerateAgent("shared")
+	if err != nil {
+		t.Fatalf("initial GenerateAgent(): %v", err)
+	}
+	oldPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("initial LoadPrivateKey(): %v", err)
+	}
+
+	errInjected := errors.New("injected public-key write failure")
+	ks.writeAgentPair = func(dir string, _ ed25519.PublicKey, priv ed25519.PrivateKey) error {
+		if err := atomicWrite(filepath.Join(dir, privateKeyFile), []byte(EncodePrivateKey(priv)), 0o600); err != nil {
+			return err
+		}
+		return errInjected
+	}
+	if _, err := ks.ForceGenerateAgent("shared"); !errors.Is(err, errInjected) {
+		t.Fatalf("ForceGenerateAgent() error = %v, want injected failure", err)
+	}
+
+	gotPub, err := ks.LoadPublicKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPublicKey() after failed force: %v", err)
+	}
+	gotPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPrivateKey() after failed force: %v", err)
+	}
+	if !bytes.Equal(gotPub, oldPub) || !bytes.Equal(gotPriv, oldPriv) {
+		t.Fatal("failed force generation changed the published key pair")
+	}
+	assertStoredAgentPairCoherent(t, ks)
+	if _, err := os.Stat(ks.agentStageDir("shared")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging directory remains after failed write: %v", err)
+	}
+}
+
+func TestKeystoreGenerateAgentRecoversInterruptedForcePublish(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+	wantPub, err := ks.GenerateAgent("shared")
+	if err != nil {
+		t.Fatalf("initial GenerateAgent(): %v", err)
+	}
+	wantPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("initial LoadPrivateKey(): %v", err)
+	}
+
+	// Reproduce interruption after the portable publisher moved the coherent
+	// old directory aside but before it installed the coherent staged pair.
+	if err := os.Rename(ks.agentDir("shared"), ks.agentBackupDir("shared")); err != nil {
+		t.Fatalf("simulate interrupted publish: %v", err)
+	}
+	if err := os.Mkdir(ks.agentDir("shared"), dirPermission); err != nil {
+		t.Fatalf("recreate empty active directory: %v", err)
+	}
+	if _, err := ks.GenerateAgent("shared"); err == nil || !strings.Contains(err.Error(), "keys already exist") {
+		t.Fatalf("GenerateAgent() error = %v, want recovered existing-keys error", err)
+	}
+
+	gotPub, err := ks.LoadPublicKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPublicKey() after recovery: %v", err)
+	}
+	gotPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPrivateKey() after recovery: %v", err)
+	}
+	if !bytes.Equal(gotPub, wantPub) || !bytes.Equal(gotPriv, wantPriv) {
+		t.Fatal("interrupted publish recovery did not restore the prior coherent pair")
+	}
+	assertStoredAgentPairCoherent(t, ks)
+}
+
+func TestKeystoreLoadRecoversInterruptedForcePublish(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+	wantPub, err := ks.GenerateAgent("shared")
+	if err != nil {
+		t.Fatalf("initial GenerateAgent(): %v", err)
+	}
+	wantPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("initial LoadPrivateKey(): %v", err)
+	}
+	if err := os.Rename(ks.agentDir("shared"), ks.agentBackupDir("shared")); err != nil {
+		t.Fatalf("simulate interrupted publish: %v", err)
+	}
+
+	gotPriv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPrivateKey() recovery: %v", err)
+	}
+	gotPub, err := ks.LoadPublicKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPublicKey() recovery: %v", err)
+	}
+	if !bytes.Equal(gotPub, wantPub) || !bytes.Equal(gotPriv, wantPriv) {
+		t.Fatal("load recovery did not restore the prior coherent pair")
+	}
+	assertStoredAgentPairCoherent(t, ks)
+}
+
+func TestInstallStagedAgentDirectoryReplacesConcurrentEmptyPreflight(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "active")
+	stage := filepath.Join(parent, "stage")
+	if err := os.Mkdir(target, dirPermission); err != nil {
+		t.Fatalf("create concurrent empty target: %v", err)
+	}
+	if err := os.Mkdir(stage, dirPermission); err != nil {
+		t.Fatalf("create stage: %v", err)
+	}
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(): %v", err)
+	}
+	if err := writeAgentKeyPair(stage, pub, priv); err != nil {
+		t.Fatalf("writeAgentKeyPair(): %v", err)
+	}
+
+	if err := installStagedAgentDirectory(target, stage); err != nil {
+		t.Fatalf("installStagedAgentDirectory(): %v", err)
+	}
+	loadedPriv, err := LoadPrivateKeyFile(filepath.Join(target, privateKeyFile))
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile(): %v", err)
+	}
+	loadedPub, err := LoadPublicKeyFile(filepath.Join(target, publicKeyFile))
+	if err != nil {
+		t.Fatalf("LoadPublicKeyFile(): %v", err)
+	}
+	message := []byte("portable publish")
+	if !ed25519.Verify(loadedPub, message, ed25519.Sign(loadedPriv, message)) {
+		t.Fatal("installed portable key pair is incoherent")
+	}
+}
+
+func TestKeystoreGenerateAgentRejectsTransactionSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege")
+	}
+	for _, tc := range []struct {
+		name string
+		path func(*Keystore) string
+	}{
+		{name: "backup", path: func(ks *Keystore) string { return ks.agentBackupDir("shared") }},
+		{name: "lock", path: func(ks *Keystore) string {
+			return filepath.Join(ks.baseDir, agentsSubdir, agentLockPrefix+"shared")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			outside := t.TempDir()
+			ks := NewKeystore(base)
+			if _, err := ks.GenerateAgent("shared"); err != nil {
+				t.Fatalf("initial GenerateAgent(): %v", err)
+			}
+			outsideFile := filepath.Join(outside, "sentinel")
+			if err := os.WriteFile(outsideFile, []byte("unchanged"), 0o600); err != nil {
+				t.Fatalf("write outside sentinel: %v", err)
+			}
+			transactionPath := tc.path(ks)
+			if err := os.Remove(transactionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("remove prior transaction path: %v", err)
+			}
+			if err := os.Symlink(outsideFile, transactionPath); err != nil {
+				t.Fatalf("create transaction symlink: %v", err)
+			}
+			if _, err := ks.ForceGenerateAgent("shared"); err == nil {
+				t.Fatal("ForceGenerateAgent() accepted transaction symlink")
+			}
+			got, err := os.ReadFile(filepath.Clean(outsideFile))
+			if err != nil {
+				t.Fatalf("read outside sentinel: %v", err)
+			}
+			if string(got) != "unchanged" {
+				t.Fatalf("outside sentinel changed: %q", got)
+			}
+			if err := os.Remove(transactionPath); err != nil {
+				t.Fatalf("remove transaction symlink: %v", err)
+			}
+			assertStoredAgentPairCoherent(t, ks)
+		})
+	}
+}
+
+func assertStoredAgentPairCoherent(t *testing.T, ks *Keystore) {
+	t.Helper()
+	priv, err := ks.LoadPrivateKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPrivateKey(%q): %v", "shared", err)
+	}
+	pub, err := ks.LoadPublicKey("shared")
+	if err != nil {
+		t.Fatalf("LoadPublicKey(%q): %v", "shared", err)
+	}
+	message := []byte("atomic keystore pair verification")
+	sig := ed25519.Sign(priv, message)
+	if !ed25519.Verify(pub, message, sig) {
+		t.Fatal("stored public key does not verify a signature from the stored private key")
 	}
 }
 
@@ -282,6 +554,15 @@ func TestKeystoreDirectoryPermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm&0o700 != 0o700 || perm&0o027 != 0 {
 		t.Errorf("agent dir permissions = %04o, want owner rwx with no group-write/world access", perm)
+	}
+	for _, name := range []string{privateKeyFile, publicKeyFile} {
+		info, err := os.Stat(filepath.Join(ks.agentDir("test"), name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s permissions = %04o, want 0600", name, got)
+		}
 	}
 }
 

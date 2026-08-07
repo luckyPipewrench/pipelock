@@ -1717,6 +1717,73 @@ func TestSetAdaptiveSessionLevel_NilSafe(t *testing.T) {
 	m.SetAdaptiveSessionLevel("elevated", 1)
 }
 
+func TestAdaptiveSessionGauge_PreservesNegativeFallbackAndAggregatesSources(t *testing.T) {
+	m := New()
+	m.SetAdaptiveSessionLevel("elevated", -1)
+
+	scrape := func() string {
+		w := httptest.NewRecorder()
+		m.PrometheusHandler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+		return w.Body.String()
+	}
+	if body := scrape(); !strings.Contains(body, `pipelock_adaptive_sessions_current{level="elevated"} -1`) {
+		t.Fatalf("negative fallback gauge was hidden:\n%s", body)
+	}
+
+	removeOne := m.RegisterAdaptiveSessionState(func() map[string]float64 {
+		return map[string]float64{"elevated": 1}
+	})
+	removeTwo := m.RegisterAdaptiveSessionState(func() map[string]float64 {
+		return map[string]float64{"elevated": 2, "high": 1}
+	})
+
+	body := scrape()
+	for _, want := range []string{
+		`pipelock_adaptive_sessions_current{level="elevated"} 3`,
+		`pipelock_adaptive_sessions_current{level="high"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("source aggregation missing %q:\n%s", want, body)
+		}
+	}
+
+	// Removing one independently registered source must not erase another.
+	// This exercises registration ownership; proxy reload retains its one active
+	// session manager and reconfigures it in place.
+	removeOne()
+	body = scrape()
+	for _, want := range []string{
+		`pipelock_adaptive_sessions_current{level="elevated"} 2`,
+		`pipelock_adaptive_sessions_current{level="high"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("newer source was erased after older unregister, missing %q:\n%s", want, body)
+		}
+	}
+
+	// When the last authoritative source goes away, discarded transition
+	// history must not reappear. Previously observed labels stay as explicit
+	// zero series, matching GaugeVec's initialized-label behavior.
+	removeTwo()
+	body = scrape()
+	for _, want := range []string{
+		`pipelock_adaptive_sessions_current{level="elevated"} 0`,
+		`pipelock_adaptive_sessions_current{level="high"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("last-source zero state missing %q:\n%s", want, body)
+		}
+	}
+
+	// A registry that has hosted an authoritative source must never resume
+	// transition accounting. Long-lived transports can retain a retired
+	// manager's recorder and emit a stale transition after reload.
+	m.SetAdaptiveSessionLevel("elevated", 1)
+	if body = scrape(); !strings.Contains(body, `pipelock_adaptive_sessions_current{level="elevated"} 0`) {
+		t.Fatalf("retired source repopulated transition fallback:\n%s", body)
+	}
+}
+
 func TestRecordFileSentryFinding(t *testing.T) {
 	m := New()
 	m.RecordFileSentryFinding("Anthropic API Key", "critical", true)

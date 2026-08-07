@@ -33,6 +33,10 @@ func writeBundleFileUnderDir(root, rel string, data []byte) error {
 }
 
 func writeStateMarkerFile(cleanDir string, marker StateMarker, data []byte) error {
+	return writeStateMarkerFileWithSync(cleanDir, marker, data, unix.Fsync)
+}
+
+func writeStateMarkerFileWithSync(cleanDir string, marker StateMarker, data []byte, syncRoot func(int) error) error {
 	if err := os.MkdirAll(cleanDir, dirPermissions); err != nil {
 		return fmt.Errorf("create anchor-state directory: %w", err)
 	}
@@ -56,7 +60,15 @@ func writeStateMarkerFile(cleanDir string, marker StateMarker, data []byte) erro
 	if err != nil {
 		return err
 	}
-	return writeStateMarkerAt(indexFD, name, data, false)
+	writeErr := writeStateMarkerAt(indexFD, name, data, false)
+	rootSyncErr := syncRoot(rootFD)
+	if writeErr != nil {
+		return writeErr
+	}
+	if rootSyncErr != nil {
+		return fmt.Errorf("sync anchor-state parent directory: %w", rootSyncErr)
+	}
+	return nil
 }
 
 func writeLatestStateMarkerFile(cleanDir string, data []byte) error {
@@ -214,10 +226,27 @@ func (r *stateMarkerIndexReader) LoadStateMarker(name string) (StateMarker, bool
 }
 
 func writeFileUnderDir(rootFD int, rel string, data []byte) error {
+	return writeFileUnderDirWithSync(rootFD, rel, data, func(file *os.File) error {
+		return file.Sync()
+	}, unix.Fsync)
+}
+
+func writeFileUnderDirWithSync(
+	rootFD int,
+	rel string,
+	data []byte,
+	syncFile func(*os.File) error,
+	syncDir func(int) error,
+) error {
 	cleanRel := filepath.Clean(rel)
 	parts := strings.Split(cleanRel, string(filepath.Separator))
 	dirFD := rootFD
-	closeDir := false
+	openedDirFDs := make([]int, 0, len(parts)-1)
+	defer func() {
+		for i := len(openedDirFDs) - 1; i >= 0; i-- {
+			_ = unix.Close(openedDirFDs[i])
+		}
+	}()
 	for _, part := range parts[:len(parts)-1] {
 		if part == "" || part == "." || part == ".." {
 			return fmt.Errorf("anchor bundle path must stay under receipt directory")
@@ -229,14 +258,8 @@ func writeFileUnderDir(rootFD int, rel string, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("open anchor bundle directory: %w", err)
 		}
-		if closeDir {
-			_ = unix.Close(dirFD)
-		}
 		dirFD = nextFD
-		closeDir = true
-	}
-	if closeDir {
-		defer func() { _ = unix.Close(dirFD) }()
+		openedDirFDs = append(openedDirFDs, nextFD)
 	}
 	name := parts[len(parts)-1]
 	if name == "" || name == "." || name == ".." {
@@ -274,14 +297,32 @@ func writeFileUnderDir(rootFD int, rel string, data []byte) error {
 		_ = file.Close()
 		return fmt.Errorf("chmod anchor bundle: %w", err)
 	}
+	if err := syncFile(file); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync anchor bundle: %w", err)
+	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close anchor bundle: %w", err)
 	}
 	if err := unix.Renameat(dirFD, tempName, dirFD, name); err != nil {
 		return fmt.Errorf("rename anchor bundle: %w", err)
 	}
-	if err := unix.Fsync(dirFD); err != nil {
-		return fmt.Errorf("sync anchor bundle directory: %w", err)
+	// Sync from the leaf back through root. The leaf fsync persists the renamed
+	// bundle entry; each parent fsync persists a child directory that may have
+	// been created above. Sync all levels even after one fails so a failure at
+	// one layer does not prevent best-effort durability at the others.
+	var firstSyncErr error
+	for i := len(openedDirFDs); i >= 0; i-- {
+		fd := rootFD
+		if i > 0 {
+			fd = openedDirFDs[i-1]
+		}
+		if err := syncDir(fd); err != nil && firstSyncErr == nil {
+			firstSyncErr = err
+		}
+	}
+	if firstSyncErr != nil {
+		return fmt.Errorf("sync anchor bundle directory: %w", firstSyncErr)
 	}
 	return nil
 }

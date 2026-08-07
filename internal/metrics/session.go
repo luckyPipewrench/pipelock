@@ -3,7 +3,139 @@
 
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"sort"
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// adaptiveSessionGauge is a state-backed collector for the current adaptive
+// enforcement levels. Transition deltas are inherently lossy across reloads
+// and restored session state: a later de-escalation can otherwise decrement a
+// fresh registry below zero. Session managers therefore supply current state
+// at scrape time. The fallback is retained for metrics-only callers that do
+// not have a SessionManager.
+type adaptiveSessionGauge struct {
+	desc *prometheus.Desc
+
+	mu            sync.RWMutex
+	sources       map[uint64]*adaptiveSessionSource
+	sourceID      uint64
+	authoritative bool
+	fallback      map[string]float64
+	// observed retains labels that this process has already exposed. GaugeVec
+	// keeps an initialized label at zero after its value is decremented, and
+	// alerting/dashboards may distinguish that from an absent time series.
+	observed map[string]struct{}
+}
+
+type adaptiveSessionSource struct {
+	mu      sync.RWMutex
+	active  bool
+	collect func() map[string]float64
+}
+
+func (s *adaptiveSessionSource) values() map[string]float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.active {
+		return nil
+	}
+	return s.collect()
+}
+
+func (s *adaptiveSessionSource) deactivate() {
+	s.mu.Lock()
+	s.active = false
+	s.mu.Unlock()
+}
+
+func newAdaptiveSessionGauge() *adaptiveSessionGauge {
+	return &adaptiveSessionGauge{
+		desc: prometheus.NewDesc(
+			"pipelock_adaptive_sessions_current",
+			"Currently escalated sessions by effective enforcement level.",
+			[]string{"level"}, nil,
+		),
+		sources:  make(map[uint64]*adaptiveSessionSource),
+		fallback: make(map[string]float64),
+		observed: make(map[string]struct{}),
+	}
+}
+
+func (g *adaptiveSessionGauge) Describe(ch chan<- *prometheus.Desc) {
+	ch <- g.desc
+}
+
+func (g *adaptiveSessionGauge) Collect(ch chan<- prometheus.Metric) {
+	g.mu.RLock()
+	sources := make([]*adaptiveSessionSource, 0, len(g.sources))
+	for _, source := range g.sources {
+		sources = append(sources, source)
+	}
+	values := make(map[string]float64, len(g.fallback)+len(g.observed))
+	for level := range g.observed {
+		values[level] = 0
+	}
+	if !g.authoritative {
+		for level, value := range g.fallback {
+			values[level] = value
+		}
+	}
+	g.mu.RUnlock()
+	for _, source := range sources {
+		for level, value := range source.values() {
+			values[level] += value
+			g.mu.Lock()
+			g.observed[level] = struct{}{}
+			g.mu.Unlock()
+		}
+	}
+
+	levels := make([]string, 0, len(values))
+	for level := range values {
+		levels = append(levels, level)
+	}
+	sort.Strings(levels)
+	for _, level := range levels {
+		metric, err := prometheus.NewConstMetric(g.desc, prometheus.GaugeValue, values[level], level)
+		if err == nil {
+			ch <- metric
+		}
+	}
+}
+
+func (g *adaptiveSessionGauge) add(level string, delta float64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.observed[level] = struct{}{}
+	if !g.authoritative {
+		g.fallback[level] += delta
+	}
+}
+
+func (g *adaptiveSessionGauge) registerSource(source func() map[string]float64) func() {
+	registered := &adaptiveSessionSource{active: true, collect: source}
+	g.mu.Lock()
+	g.sourceID++
+	id := g.sourceID
+	g.sources[id] = registered
+	g.authoritative = true
+	// A session manager source is authoritative. Discard prior transition
+	// deltas and never resume them on this registry: long-lived transports may
+	// retain a recorder after a reload disables session profiling and emit stale
+	// deltas.
+	g.fallback = make(map[string]float64)
+	g.mu.Unlock()
+
+	return func() {
+		registered.deactivate()
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		delete(g.sources, id)
+	}
+}
 
 // registerSessionMetrics builds and registers session anomaly/escalation
 // counters, the active/evicted session lifecycle metrics, adaptive
@@ -41,11 +173,7 @@ func (m *Metrics) registerSessionMetrics(reg *prometheus.Registry) {
 		Help:      "Requests where adaptive enforcement upgraded the action (e.g. warn→block).",
 	}, []string{"from_action", "to_action", "level"})
 
-	m.adaptiveSessionsCurrent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "pipelock",
-		Name:      "adaptive_sessions_current",
-		Help:      "Currently escalated sessions by enforcement level.",
-	}, []string{"level"})
+	m.adaptiveSessionsCurrent = newAdaptiveSessionGauge()
 
 	m.sessionAutoDeescalations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pipelock_session_auto_deescalation_total",
@@ -112,13 +240,26 @@ func (m *Metrics) RecordAdaptiveUpgrade(fromAction, toAction, level string) {
 	m.adaptiveUpgrades.WithLabelValues(fromAction, toAction, level).Inc()
 }
 
-// SetAdaptiveSessionLevel adjusts the gauge tracking currently escalated sessions
-// at the given level by delta (positive to increment, negative to decrement).
+// SetAdaptiveSessionLevel adjusts the fallback gauge for callers without a
+// SessionManager. A registered SessionManager state source overrides these
+// deltas at scrape time.
 func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
 	if m == nil {
 		return
 	}
-	m.adaptiveSessionsCurrent.WithLabelValues(level).Add(delta)
+	m.adaptiveSessionsCurrent.add(level, delta)
+}
+
+// RegisterAdaptiveSessionState adds source to the authoritative current
+// adaptive-session gauge. Sources are summed for independently created session
+// managers that intentionally share one Metrics registry. The returned function
+// unregisters only its own source. The proxy runtime itself maintains one active
+// session manager and reconfigures it in place across enabled-to-enabled reloads.
+func (m *Metrics) RegisterAdaptiveSessionState(source func() map[string]float64) func() {
+	if m == nil || source == nil {
+		return func() {}
+	}
+	return m.adaptiveSessionsCurrent.registerSource(source)
 }
 
 // RecordSessionAutoDeescalation increments the auto-deescalation counter for

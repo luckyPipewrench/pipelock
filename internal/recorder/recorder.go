@@ -860,6 +860,14 @@ func (r *Recorder) writeEscrowPayload(payload []byte) (string, error) {
 }
 
 func (r *Recorder) writeEscrowPayloadWithReader(payload []byte, tokenReader io.Reader) (string, error) {
+	return r.writeEscrowPayloadWithReaderAndWriter(payload, tokenReader, writeEscrowFile)
+}
+
+func (r *Recorder) writeEscrowPayloadWithReaderAndWriter(
+	payload []byte,
+	tokenReader io.Reader,
+	writeFile func(*os.File, []byte, os.FileMode) error,
+) (string, error) {
 	root, err := os.OpenRoot(filepath.Clean(r.cfg.Dir))
 	if err != nil {
 		return "", fmt.Errorf("opening evidence directory: %w", err)
@@ -886,7 +894,12 @@ func (r *Recorder) writeEscrowPayloadWithReader(payload []byte, tokenReader io.R
 			return "", fmt.Errorf("creating escrow file: %w", openErr)
 		}
 
-		if err := writeEscrowFile(file, payload, r.cfg.FileMode); err != nil {
+		if err := writeFile(file, payload, r.cfg.FileMode); err != nil {
+			_ = file.Close()
+			removeErr := root.Remove(escrowName)
+			if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+				return "", errors.Join(err, fmt.Errorf("removing incomplete escrow file: %w", removeErr))
+			}
 			return "", err
 		}
 		return escrowPath, nil
@@ -1196,6 +1209,10 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 }
 
 func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
+	if r.writer.Buffered() != 0 {
+		return errors.New("recorder: evidence writer buffer is not empty before record")
+	}
+
 	// Emit the record and its terminating newline as ONE write. Concurrent
 	// recorder processes append to a shared file under a shared lock, so two
 	// writes leave a window in which another process can append between the
@@ -1223,8 +1240,8 @@ func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
 }
 
 func (r *Recorder) ensureEntryCapacityLocked(sessionID string, seq uint64, lineBytes int64) error {
-	if lineBytes > MaxEvidenceReadFileBytes {
-		return fmt.Errorf("%w: serialized evidence entry exceeds %d bytes", ErrEvidenceReadLimitExceeded, MaxEvidenceReadFileBytes)
+	if lineBytes > int64(MaxEntryLineBytes+len("\n")) {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
 	}
 	if err := r.ensureFile(sessionID, seq); err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)

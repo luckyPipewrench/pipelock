@@ -7,8 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,10 +14,13 @@ import (
 	"testing"
 )
 
-type shortWriteWriter struct{}
+type recordingWriter struct {
+	writes [][]byte
+}
 
-func (shortWriteWriter) Write(data []byte) (int, error) {
-	return len(data) - 1, nil
+func (w *recordingWriter) Write(data []byte) (int, error) {
+	w.writes = append(w.writes, bytes.Clone(data))
+	return len(data), nil
 }
 
 // TestConcurrentRecordersEmitParseableLines proves a record and its newline
@@ -48,6 +49,20 @@ func TestConcurrentRecordersEmitParseableLines(t *testing.T) {
 		rec, err := New(Config{Enabled: true, Dir: dir, CheckpointInterval: 1_000_000}, nil, nil)
 		if err != nil {
 			t.Fatalf("New: %v", err)
+		}
+		// Open every recorder on the same shard before writes begin. Letting the
+		// first Record call perform resume would mix cold-start chain races into
+		// this test and could put each recorder on a different shard, proving
+		// neither side of the append-atomicity contract.
+		rec.mu.Lock()
+		rec.sessionID = "proxy"
+		rec.seq = 0
+		rec.prevHash = GenesisHash
+		rec.firstSeqInSpan = 0
+		openErr := rec.ensureFile("proxy", 0)
+		rec.mu.Unlock()
+		if openErr != nil {
+			t.Fatalf("open shared evidence shard: %v", openErr)
 		}
 		t.Cleanup(func() { _ = rec.Close() })
 		recs = append(recs, rec)
@@ -109,17 +124,53 @@ func TestConcurrentRecordersEmitParseableLines(t *testing.T) {
 			t.Fatalf("scanning %q: %v", shard, scanErr)
 		}
 	}
-	// Each recorder also writes its own genesis entry, so the floor is the
-	// recorded entries. Falling below it means a merged line swallowed records.
+	// Each recorder also writes a closing checkpoint, so the recorded entries are
+	// a floor rather than an exact count. Falling below it means a merged line
+	// swallowed records.
 	if floor := writers * entriesPerWriter; lines < floor {
 		t.Fatalf("parsed %d lines, want at least %d: a merged line loses more than one record", lines, floor)
 	}
 }
 
-func TestWriteEntryDataRejectsPartialLineWrite(t *testing.T) {
-	r := &Recorder{writer: bufio.NewWriterSize(shortWriteWriter{}, 1)}
-	err := r.writeEntryData(bytes.Repeat([]byte("x"), 32), Entry{}, false)
-	if !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("writeEntryData partial write error = %v, want io.ErrShortWrite", err)
+// TestWriteEntryDataUsesOneUnderlyingWrite is the deterministic guard for the
+// atomicity property TestConcurrentRecordersEmitParseableLines can only observe
+// probabilistically. A one-byte buffer forces bufio straight past its buffer, so
+// a record written separately from its newline reaches the file as two writes
+// and reopens the interleaving window. Partial-write rejection is covered by
+// TestWriteEntryData_ReturnsShortWrite.
+func TestWriteEntryDataUsesOneUnderlyingWrite(t *testing.T) {
+	underlying := &recordingWriter{}
+	r := &Recorder{writer: bufio.NewWriterSize(underlying, 1)}
+	data := bytes.Repeat([]byte("x"), 32)
+	if err := r.writeEntryData(data, Entry{}, false); err != nil {
+		t.Fatalf("writeEntryData: %v", err)
+	}
+
+	want := append(bytes.Clone(data), '\n')
+	if len(underlying.writes) != 1 {
+		t.Fatalf("underlying writes = %d, want exactly one record-plus-newline write", len(underlying.writes))
+	}
+	if !bytes.Equal(underlying.writes[0], want) {
+		t.Fatalf("underlying write = %q, want %q", underlying.writes[0], want)
+	}
+}
+
+func TestWriteEntryDataRejectsBufferedRemainder(t *testing.T) {
+	underlying := &recordingWriter{}
+	writer := bufio.NewWriterSize(underlying, 64)
+	if _, err := writer.WriteString("incomplete prior record"); err != nil {
+		t.Fatalf("preload writer: %v", err)
+	}
+	r := &Recorder{writer: writer}
+
+	err := r.writeEntryData([]byte(`{"next":"record"}`), Entry{}, false)
+	if err == nil || !strings.Contains(err.Error(), "buffer is not empty") {
+		t.Fatalf("writeEntryData error = %v, want non-empty-buffer refusal", err)
+	}
+	if len(underlying.writes) != 0 {
+		t.Fatalf("underlying writes = %d, want none after fail-closed refusal", len(underlying.writes))
+	}
+	if writer.Buffered() != len("incomplete prior record") {
+		t.Fatalf("buffered bytes = %d, want prior bytes preserved", writer.Buffered())
 	}
 }

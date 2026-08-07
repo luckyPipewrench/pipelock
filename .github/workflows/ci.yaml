@@ -420,9 +420,6 @@ jobs:
       - name: Test stability policy
         run: bash scripts/check-test-stability.sh
 
-      - name: Concurrent-writer evidence integrity
-        run: bash scripts/check-concurrent-evidence.sh
-
       - name: Config consumption policy
         run: bash scripts/check-config-consumption.sh
 

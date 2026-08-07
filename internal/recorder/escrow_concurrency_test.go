@@ -112,3 +112,36 @@ func TestWriteEscrowPayload_RefusesUnboundedCollisionRetries(t *testing.T) {
 		t.Fatalf("existing sidecar changed to %q", data)
 	}
 }
+
+func TestWriteEscrowPayload_RemovesIncompleteSidecar(t *testing.T) {
+	dir := t.TempDir()
+	token := bytes.Repeat([]byte{0x24}, escrowNameTokenBytes)
+	rec := &Recorder{
+		cfg:       Config{Dir: dir, FileMode: filePermissions},
+		sessionID: "proxy",
+		seq:       42,
+	}
+	wantErr := errors.New("injected escrow write failure")
+
+	_, err := rec.writeEscrowPayloadWithReaderAndWriter(
+		[]byte("payload"),
+		bytes.NewReader(token),
+		func(file *os.File, _ []byte, _ os.FileMode) error {
+			if _, writeErr := file.Write([]byte("partial")); writeErr != nil {
+				return writeErr
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				return closeErr
+			}
+			return wantErr
+		},
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("writeEscrowPayload error = %v, want injected failure", err)
+	}
+
+	name := "evidence-proxy-42-raw-" + hex.EncodeToString(token) + ".raw.enc"
+	if _, statErr := os.Stat(filepath.Join(dir, name)); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("incomplete escrow sidecar remains after failure: %v", statErr)
+	}
+}

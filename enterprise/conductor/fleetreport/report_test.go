@@ -378,10 +378,22 @@ func TestVerifySegmentRejectsMalformedSegments(t *testing.T) {
 			entries[1].PrevHash = recorder.GenesisHash
 			return entries
 		}(), "chain link mismatch"},
+		{"namespace", 10, 11, first.Hash, second.Hash, func() []recorder.Entry {
+			entries := append([]recorder.Entry(nil), valid...)
+			entries[1].WriterInstanceID = "unexpected"
+			return entries
+		}(), "chain namespace mismatch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := verifySegment("audit-1", tc.start, tc.end, tc.head, tc.tail, tc.entries)
+			chain := conductorcore.EvidenceChain{
+				EntryVersion:    recorder.CurrentWriteEntryVersion,
+				SeqStart:        tc.start,
+				SeqEnd:          tc.end,
+				SegmentHeadHash: tc.head,
+				SegmentTailHash: tc.tail,
+			}
+			err := verifySegment("audit-1", chain, tc.entries)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("verifySegment() error = %v, want %q", err, tc.want)
 			}

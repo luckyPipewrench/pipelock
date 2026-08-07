@@ -181,7 +181,7 @@ func (p *Producer) run() {
 	defer close(p.done)
 	var pending []recorder.Entry
 	for entry := range p.entries {
-		if entry.Version != recorder.EntryVersion {
+		if !recorder.IsAcceptedEntryVersion(entry.Version) {
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
@@ -210,6 +210,11 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	checkpoint := entries[len(entries)-1]
 	if checkpoint.Type != checkpointEntryType {
 		return nil
+	}
+	if !homogeneousRecorderNamespace(entries) {
+		droppedActions := droppedActionReceiptCount(entries)
+		p.drop(producerDropInvalidCheckpoint, droppedActions)
+		return fmt.Errorf("%s: recorder entry version or namespace changed within segment", producerDropInvalidCheckpoint)
 	}
 	// The recorder committed this checkpoint to its local hash chain before
 	// we observed it, so advance the chain tail unconditionally - even on a
@@ -255,6 +260,19 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	return nil
 }
 
+func homogeneousRecorderNamespace(entries []recorder.Entry) bool {
+	if len(entries) == 0 {
+		return true
+	}
+	first := entries[0]
+	for _, entry := range entries[1:] {
+		if entry.Version != first.Version || entry.ChainKind != first.ChainKind || entry.WriterInstanceID != first.WriterInstanceID {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte, dropped conductor.DroppedAccounting) conductor.AuditBatchEnvelope {
 	sum := sha256.Sum256(payload)
 	env := conductor.AuditBatchEnvelope{
@@ -263,7 +281,7 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 		OrgID:              p.orgID,
 		FleetID:            p.fleetID,
 		InstanceID:         p.instanceID,
-		AuditSchemaVersion: recorder.EntryVersion,
+		AuditSchemaVersion: entries[0].Version,
 		EmittedAt:          p.now().UTC(),
 		SeqStart:           entries[0].Sequence,
 		SeqEnd:             checkpoint.Sequence,
@@ -272,7 +290,9 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 		PayloadBytes:       uint64(len(payload)),
 		Dropped:            dropped,
 		Chain: conductor.EvidenceChain{
-			EntryVersion:           recorder.EntryVersion,
+			EntryVersion:           entries[0].Version,
+			ChainKind:              entries[0].ChainKind,
+			WriterInstanceID:       entries[0].WriterInstanceID,
 			SegmentID:              segmentID(entries[0].SessionID, entries[0].Sequence, checkpoint.Sequence),
 			SeqStart:               entries[0].Sequence,
 			SeqEnd:                 checkpoint.Sequence,

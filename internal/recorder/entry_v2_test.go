@@ -281,7 +281,7 @@ func TestReadEntries_RejectsUnknownVersionInRange(t *testing.T) {
 	if !strings.Contains(err.Error(), v2UnsupportedVersionFence) {
 		t.Errorf("error = %q, want substring %q", err.Error(), v2UnsupportedVersionFence)
 	}
-	if !strings.Contains(err.Error(), "accepted: 1, 2") {
+	if !strings.Contains(err.Error(), "accepted: 1, 2, 3") {
 		t.Errorf("error = %q, want accepted-range hint", err.Error())
 	}
 }

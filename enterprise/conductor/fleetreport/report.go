@@ -116,7 +116,7 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		if uint64(len(entries)) != ev.Envelope.EventCount {
 			return Result{}, fmt.Errorf("fleet report: audit batch %s event count=%d want %d", ev.Envelope.BatchID, len(entries), ev.Envelope.EventCount)
 		}
-		if err := verifySegment(ev.Envelope.BatchID, ev.Envelope.SeqStart, ev.Envelope.SeqEnd, ev.Envelope.Chain.SegmentHeadHash, ev.Envelope.Chain.SegmentTailHash, entries); err != nil {
+		if err := verifySegment(ev.Envelope.BatchID, ev.Envelope.Chain, entries); err != nil {
 			return Result{}, err
 		}
 		if err := agg.addBatch(ev, entries, auditKey); err != nil {
@@ -295,19 +295,22 @@ func decodeReceiptDetail(detail any) (receipt.Receipt, error) {
 	return receipt.Unmarshal(raw)
 }
 
-func verifySegment(batchID string, seqStart, seqEnd uint64, headHash, tailHash string, entries []recorder.Entry) error {
+func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []recorder.Entry) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("fleet report: audit batch %s has empty payload", batchID)
 	}
-	if entries[0].Sequence != seqStart || entries[len(entries)-1].Sequence != seqEnd {
+	if entries[0].Sequence != chain.SeqStart || entries[len(entries)-1].Sequence != chain.SeqEnd {
 		return fmt.Errorf("fleet report: audit batch %s sequence range mismatch", batchID)
 	}
-	if entries[0].Hash != headHash || entries[len(entries)-1].Hash != tailHash {
+	if entries[0].Hash != chain.SegmentHeadHash || entries[len(entries)-1].Hash != chain.SegmentTailHash {
 		return fmt.Errorf("fleet report: audit batch %s chain head/tail mismatch", batchID)
 	}
 	for i, entry := range entries {
 		if !recorder.IsAcceptedEntryVersion(entry.Version) {
 			return fmt.Errorf("fleet report: audit batch %s seq %d unsupported recorder entry version %d", batchID, entry.Sequence, entry.Version)
+		}
+		if entry.Version != chain.EntryVersion || entry.ChainKind != chain.ChainKind || entry.WriterInstanceID != chain.WriterInstanceID {
+			return fmt.Errorf("fleet report: audit batch %s seq %d chain namespace mismatch", batchID, entry.Sequence)
 		}
 		if i == 0 {
 			continue

@@ -290,10 +290,12 @@ Fields:
 
 | Field | Description |
 |-------|-------------|
-| `v` | Schema version. Readers must reject unknown versions. |
+| `v` | Schema version. This release writes v2 and reads v1, v2, and v3. Readers reject other versions. |
 | `seq` | Monotonically increasing sequence number within the session. |
 | `ts` | RFC 3339 timestamp with nanosecond precision. |
 | `session_id` | Proxy session identifier. |
+| `chain_kind` | v3 chain namespace kind. Omitted from v1 and v2 records. |
+| `writer_instance_id` | v3 per-process namespace claim. Omitted from v1 and v2 records. This field separates cooperating writers; it does not authenticate the writer. |
 | `type` | Entry type: `decision`, `checkpoint`. |
 | `transport` | Proxy transport: `fetch`, `forward`, `connect`, `websocket`, `mcp-stdio`, `mcp-http`. |
 | `summary` | One-line human-readable description. |
@@ -304,11 +306,15 @@ Fields:
 
 ## Hash Chain
 
-The hash covers all entry fields joined with null-byte separators:
+Each schema version has a frozen field projection joined with null-byte separators. V1 uses:
 
 ```
 SHA256(v \0 seq \0 ts \0 session_id \0 trace_id \0 type \0 transport \0 summary \0 detail_json \0 raw_ref \0 prev_hash)
 ```
+
+V2 inserts `event_kind` after `type`. V3 inserts `chain_kind` and
+`writer_instance_id` after `session_id`. The recorder continues writing v2
+during the reader-first compatibility window.
 
 The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory; run `pipelock evidence doctor DIR` when a verifier reports a `prev_hash` mismatch to surface the structural damage for investigation. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
 

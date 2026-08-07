@@ -582,6 +582,41 @@ test("malformed JSONL raises an error", () => {
   }
 });
 
+test("JSONL recorder reader accepts namespaced v3 entries", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "v3.jsonl");
+  try {
+    writeFileSync(
+      file,
+      '{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}\n',
+      { mode: 0o600 },
+    );
+    assert.equal(extractReceipts(file).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL recorder reader rejects v3 entries without a complete namespace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const [name, namespace] of [
+      ["missing-kind", '"writer_instance_id":"writer-a",'],
+      ["missing-writer", '"chain_kind":"recorder",'],
+    ]) {
+      const file = join(dir, `${name}.jsonl`);
+      writeFileSync(
+        file,
+        `{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s",${namespace}"type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}\n`,
+        { mode: 0o600 },
+      );
+      assert.throws(() => extractReceipts(file), /v3 (chain_kind|writer_instance_id) required/u);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder extraction rejects duplicate keys inside receipt detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   const file = join(dir, "duplicate-key.jsonl");

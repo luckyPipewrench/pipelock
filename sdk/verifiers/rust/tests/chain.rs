@@ -724,6 +724,52 @@ fn recorder_extraction_rejects_duplicate_keys_inside_receipt_detail() {
     assert!(err.to_string().contains("duplicate object key"));
 }
 
+#[test]
+fn recorder_reader_accepts_namespaced_v3_entries() {
+    let path = recorder_fixture_path("v3-valid");
+    let line = r#"{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","detail":{},"prev_hash":"genesis","hash":"h"}"#;
+    fs::write(&path, format!("{line}\n")).expect("write JSONL");
+    let receipts = extract_receipts(&path).expect("v3 entry should parse");
+    let _ = fs::remove_file(&path);
+    assert!(receipts.is_empty());
+}
+
+#[test]
+fn recorder_reader_rejects_v3_entries_without_complete_namespace() {
+    for (name, namespace, expected) in [
+        (
+            "v3-missing-kind",
+            r#""writer_instance_id":"writer-a","#,
+            "chain_kind required",
+        ),
+        (
+            "v3-missing-writer",
+            r#""chain_kind":"recorder","#,
+            "writer_instance_id required",
+        ),
+    ] {
+        let path = recorder_fixture_path(name);
+        let line = format!(
+            r#"{{"v":3,"seq":0,"ts":"2026-08-07T00:00:00Z","session_id":"s",{namespace}"type":"checkpoint","transport":"x","summary":"","detail":{{}},"prev_hash":"genesis","hash":"h"}}"#
+        );
+        fs::write(&path, format!("{line}\n")).expect("write JSONL");
+        let err = extract_receipts(&path).expect_err("incomplete v3 namespace should reject");
+        let _ = fs::remove_file(&path);
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
+fn recorder_fixture_path(name: &str) -> std::path::PathBuf {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "pipelock-rs-verifier-{name}-{}-{suffix}.jsonl",
+        std::process::id()
+    ))
+}
+
 fn build_evidence_chain(count: usize) -> Vec<Value> {
     let root = common::repo_root();
     let base: Value =

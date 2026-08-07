@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"gopkg.in/yaml.v3"
 )
@@ -162,6 +163,41 @@ func TestAuditBatchEnvelope_ValidateV2ChainAndForkDetection(t *testing.T) {
 	nonOverlap.SeqEnd = batch.SeqEnd + 10
 	if batch.ForksWith(nonOverlap) {
 		t.Fatal("ForksWith() = true for non-overlapping seq range")
+	}
+}
+
+func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
+	chain := testAuditBatch().Chain
+	chain.EntryVersion = recorder.LatestEntryVersion
+	chain.ChainKind = recorder.ChainKindRecorder
+	chain.WriterInstanceID = "writer-a"
+	if err := chain.Validate(10, 20); err != nil {
+		t.Fatalf("Validate(v3) = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		edit func(*EvidenceChain)
+	}{
+		{"missing_chain_kind", func(c *EvidenceChain) { c.ChainKind = "" }},
+		{"missing_writer_instance_id", func(c *EvidenceChain) { c.WriterInstanceID = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := chain
+			tc.edit(&invalid)
+			if err := invalid.Validate(10, 20); !errors.Is(err, ErrMissingField) {
+				t.Fatalf("Validate() = %v, want ErrMissingField", err)
+			}
+		})
+	}
+
+	first := testAuditBatch()
+	first.Chain = chain
+	second := first
+	second.PayloadSHA256 = testHash("20")
+	second.Chain.WriterInstanceID = "writer-b"
+	if !first.ForksWith(second) {
+		t.Fatal("ForksWith() = false after follower-controlled namespace change")
 	}
 }
 
@@ -1752,7 +1788,7 @@ func TestEvidenceChain_ValidateErrors(t *testing.T) {
 		edit func(*EvidenceChain)
 		want error
 	}{
-		{"wrong_entry_version", func(c *EvidenceChain) { c.EntryVersion = 3 }, ErrInvalidSequenceRange},
+		{"wrong_entry_version", func(c *EvidenceChain) { c.EntryVersion = 4 }, ErrInvalidSequenceRange},
 		{"missing_segment", func(c *EvidenceChain) { c.SegmentID = "" }, ErrMissingField},
 		{"seq_mismatch", func(c *EvidenceChain) { c.SeqStart++ }, ErrInvalidSequenceRange},
 		{"bad_hash", func(c *EvidenceChain) { c.CheckpointHash = "bad" }, ErrInvalidHash},

@@ -491,7 +491,12 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 		return Entry{}, fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
 	}
 
-	e.Version = EntryVersion
+	e.Version = CurrentWriteEntryVersion
+	// Namespace fields are authenticated only by the v3 projection. Strip any
+	// caller-supplied values while this binary emits v2 so unhashed metadata
+	// cannot leak into the evidence file or an enterprise audit envelope.
+	e.ChainKind = ""
+	e.WriterInstanceID = ""
 	e.Sequence = r.seq
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
@@ -681,7 +686,7 @@ func (r *Recorder) checkpointLocked() error {
 
 	// Build the checkpoint entry
 	e := Entry{
-		Version:   EntryVersion,
+		Version:   CurrentWriteEntryVersion,
 		Sequence:  r.seq,
 		Timestamp: time.Now().UTC(),
 		SessionID: r.sessionID,
@@ -972,6 +977,16 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 			return fmt.Errorf(
 				"evidence file %s: tail entry seq %d belongs to session %q, not %q; refusing to adopt a foreign chain head",
 				candidate.base, last.Sequence, last.SessionID, wantSession)
+		}
+
+		// Reader support may lead writer support during a rolling upgrade. Never
+		// append the current writer format to a tail produced by another format:
+		// that transition would make the entire shard unverifiable. Refuse the
+		// write so an operator can preserve the existing evidence intact.
+		if last.Version != CurrentWriteEntryVersion {
+			return fmt.Errorf(
+				"evidence file %s: tail entry seq %d uses version %d, current writer uses version %d; refusing to mix recorder versions",
+				candidate.base, last.Sequence, last.Version, CurrentWriteEntryVersion)
 		}
 
 		// A uint64 at its maximum wraps to zero on increment, which would

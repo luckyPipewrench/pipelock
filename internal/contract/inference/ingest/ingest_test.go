@@ -197,9 +197,9 @@ func TestStreamDetectsHashChainBreaks(t *testing.T) {
 }
 
 func TestStreamSchemaVersionGating(t *testing.T) {
-	t.Run("zero options allow v1 and current recorder versions", func(t *testing.T) {
+	t.Run("zero options allow mixed legacy recorder versions", func(t *testing.T) {
 		v1 := testEntry(t, 1, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 1})
-		v2 := testEntry(t, recorder.EntryVersion, 2, v1.Hash, "checkpoint", map[string]any{"version": recorder.EntryVersion})
+		v2 := testEntry(t, 2, 2, v1.Hash, "checkpoint", map[string]any{"version": 2})
 
 		entries, errs := collectStream(t, mustJSONLines(t, v1, v2), StreamOptions{})
 
@@ -209,6 +209,40 @@ func TestStreamSchemaVersionGating(t *testing.T) {
 		if len(entries) != 2 {
 			t.Fatalf("entries len = %d, want 2", len(entries))
 		}
+	})
+
+	t.Run("zero options allow a namespaced v3 stream", func(t *testing.T) {
+		v3 := testEntry(t, recorder.LatestEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
+		entries, errs := collectStream(t, mustJSONLines(t, v3), StreamOptions{})
+		if len(errs) != 0 || len(entries) != 1 {
+			t.Fatalf("entries = %d, errs = %v, want one v3 entry", len(entries), errs)
+		}
+	})
+
+	t.Run("v3 requires complete chain namespace", func(t *testing.T) {
+		rec := testEntry(t, recorder.LatestEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
+		rec.WriterInstanceID = ""
+		rec.Hash = recorder.ComputeHash(rec)
+
+		entries, errs := collectStream(t, mustJSONLines(t, rec), StreamOptions{})
+
+		if len(entries) != 0 {
+			t.Fatalf("entries len = %d, want 0", len(entries))
+		}
+		requireOneErrorIs(t, errs, ErrUnsupportedSchemaVersion)
+	})
+
+	t.Run("v3 namespace cannot change within a stream", func(t *testing.T) {
+		first := testEntry(t, recorder.LatestEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
+		second := testEntry(t, recorder.LatestEntryVersion, 2, first.Hash, "checkpoint", map[string]any{"version": 3})
+		second.WriterInstanceID = "writer-other"
+		second.Hash = recorder.ComputeHash(second)
+
+		entries, errs := collectStream(t, mustJSONLines(t, first, second), StreamOptions{})
+		if len(entries) != 1 {
+			t.Fatalf("entries len = %d, want 1", len(entries))
+		}
+		requireOneErrorIs(t, errs, ErrHashChainBroken)
 	})
 
 	t.Run("explicit allow list rejects omitted recorder versions", func(t *testing.T) {
@@ -286,6 +320,10 @@ func testEntry(t *testing.T, version int, seq int, prevHash, entryType string, d
 		Summary:   "test entry",
 		Detail:    detail,
 		PrevHash:  prevHash,
+	}
+	if version == recorder.LatestEntryVersion {
+		rec.ChainKind = recorder.ChainKindRecorder
+		rec.WriterInstanceID = "writer-test"
 	}
 	rec.Hash = recorder.ComputeHash(rec)
 	return rec

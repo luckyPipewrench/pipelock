@@ -43,7 +43,7 @@ type StreamOptions struct {
 	EscrowPrivateKey []byte
 
 	// AllowSchemaVersion gates recorder.Entry.Version. The zero value allows
-	// recorder v1 and the current recorder.EntryVersion.
+	// recorder v1 plus every recorder version understood by this reader.
 	AllowSchemaVersion []int
 }
 
@@ -88,7 +88,8 @@ func newStreamState(opts StreamOptions) streamState {
 	}
 	if len(opts.AllowSchemaVersion) == 0 {
 		state.allowedVersions[1] = true
-		state.allowedVersions[recorder.EntryVersion] = true
+		state.allowedVersions[2] = true
+		state.allowedVersions[recorder.LatestEntryVersion] = true
 		return state
 	}
 	for _, version := range opts.AllowSchemaVersion {
@@ -106,6 +107,9 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 		lineNo       int
 		previousHash string
 		seenEntry    bool
+		chainVersion int
+		chainKind    string
+		writerID     string
 	)
 
 	for scanner.Scan() {
@@ -120,6 +124,18 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 		if err := s.verifyRecorderEntry(rec, lineNo, previousHash, seenEntry); err != nil {
 			errs <- err
 			return
+		}
+		if seenEntry {
+			if (rec.Version == recorder.LatestEntryVersion) != (chainVersion == recorder.LatestEntryVersion) {
+				errs <- fmt.Errorf("%w (line=%d, seq=%d): recorder namespace version changed", ErrHashChainBroken, lineNo, rec.Sequence)
+				return
+			}
+			if rec.Version == recorder.LatestEntryVersion && (rec.ChainKind != chainKind || rec.WriterInstanceID != writerID) {
+				errs <- fmt.Errorf("%w (line=%d, seq=%d): recorder chain namespace changed", ErrHashChainBroken, lineNo, rec.Sequence)
+				return
+			}
+		} else {
+			chainVersion, chainKind, writerID = rec.Version, rec.ChainKind, rec.WriterInstanceID
 		}
 		previousHash = rec.Hash
 		seenEntry = true
@@ -140,19 +156,21 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 }
 
 type rawRecorderEntry struct {
-	Version   int             `json:"v"`
-	Sequence  uint64          `json:"seq"`
-	Timestamp time.Time       `json:"ts"`
-	SessionID string          `json:"session_id"`
-	TraceID   string          `json:"trace_id,omitempty"`
-	Type      string          `json:"type"`
-	EventKind string          `json:"event_kind,omitempty"`
-	Transport string          `json:"transport"`
-	Summary   string          `json:"summary"`
-	Detail    json.RawMessage `json:"detail"`
-	RawRef    string          `json:"raw_ref,omitempty"`
-	PrevHash  string          `json:"prev_hash"`
-	Hash      string          `json:"hash"`
+	Version          int             `json:"v"`
+	Sequence         uint64          `json:"seq"`
+	Timestamp        time.Time       `json:"ts"`
+	SessionID        string          `json:"session_id"`
+	ChainKind        string          `json:"chain_kind,omitempty"`
+	WriterInstanceID string          `json:"writer_instance_id,omitempty"`
+	TraceID          string          `json:"trace_id,omitempty"`
+	Type             string          `json:"type"`
+	EventKind        string          `json:"event_kind,omitempty"`
+	Transport        string          `json:"transport"`
+	Summary          string          `json:"summary"`
+	Detail           json.RawMessage `json:"detail"`
+	RawRef           string          `json:"raw_ref,omitempty"`
+	PrevHash         string          `json:"prev_hash"`
+	Hash             string          `json:"hash"`
 }
 
 func parseRecorderEntry(line []byte) (recorder.Entry, error) {
@@ -167,25 +185,32 @@ func parseRecorderEntry(line []byte) (recorder.Entry, error) {
 	}
 
 	return recorder.Entry{
-		Version:   raw.Version,
-		Sequence:  raw.Sequence,
-		Timestamp: raw.Timestamp,
-		SessionID: raw.SessionID,
-		TraceID:   raw.TraceID,
-		Type:      raw.Type,
-		EventKind: raw.EventKind,
-		Transport: raw.Transport,
-		Summary:   raw.Summary,
-		Detail:    detail,
-		RawRef:    raw.RawRef,
-		PrevHash:  raw.PrevHash,
-		Hash:      raw.Hash,
+		Version:          raw.Version,
+		Sequence:         raw.Sequence,
+		Timestamp:        raw.Timestamp,
+		SessionID:        raw.SessionID,
+		ChainKind:        raw.ChainKind,
+		WriterInstanceID: raw.WriterInstanceID,
+		TraceID:          raw.TraceID,
+		Type:             raw.Type,
+		EventKind:        raw.EventKind,
+		Transport:        raw.Transport,
+		Summary:          raw.Summary,
+		Detail:           detail,
+		RawRef:           raw.RawRef,
+		PrevHash:         raw.PrevHash,
+		Hash:             raw.Hash,
 	}, nil
 }
 
 func (s streamState) verifyRecorderEntry(rec recorder.Entry, lineNo int, previousHash string, seenEntry bool) error {
 	if !s.allowedVersions[rec.Version] || !hashSupportedVersion(rec.Version) {
 		return fmt.Errorf("%w (line=%d, seq=%d, version=%d)", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence, rec.Version)
+	}
+	if rec.Version == recorder.LatestEntryVersion {
+		if rec.ChainKind == "" || rec.WriterInstanceID == "" {
+			return fmt.Errorf("%w (line=%d, seq=%d): v3 chain namespace incomplete", ErrUnsupportedSchemaVersion, lineNo, rec.Sequence)
+		}
 	}
 
 	computedHash := recorder.ComputeHash(rec)

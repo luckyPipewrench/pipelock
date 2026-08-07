@@ -25,6 +25,29 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
+func TestHomogeneousRecorderNamespace(t *testing.T) {
+	base := recorder.Entry{Version: recorder.LatestEntryVersion, ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "writer-a"}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*recorder.Entry)
+	}{
+		{"version", func(e *recorder.Entry) { e.Version = recorder.CurrentWriteEntryVersion }},
+		{"chain_kind", func(e *recorder.Entry) { e.ChainKind = "receipt" }},
+		{"writer_instance_id", func(e *recorder.Entry) { e.WriterInstanceID = "writer-b" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := base
+			tc.mutate(&changed)
+			if homogeneousRecorderNamespace([]recorder.Entry{base, changed}) {
+				t.Fatalf("homogeneousRecorderNamespace() = true after %s change", tc.name)
+			}
+		})
+	}
+	if !homogeneousRecorderNamespace([]recorder.Entry{base, base}) {
+		t.Fatal("homogeneousRecorderNamespace() = false for identical namespace")
+	}
+}
+
 func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 	auditPub, auditPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {

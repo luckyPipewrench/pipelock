@@ -137,6 +137,8 @@ export interface RecorderEntry {
   seq?: number;
   ts?: string;
   session_id?: string;
+  chain_kind?: string;
+  writer_instance_id?: string;
   type?: string;
   detail?: unknown;
 }

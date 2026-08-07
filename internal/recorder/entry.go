@@ -23,10 +23,20 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
-// EntryVersion is the current schema version for new writes. Readers MUST
-// reject versions outside acceptedEntryVersions; v1 chains continue to
-// verify with the v1 hash projection so pre-upgrade audit logs stay valid.
-const EntryVersion = 2
+const (
+	// CurrentWriteEntryVersion is the schema version emitted by the recorder.
+	// Keep this at v2 during the reader-first rollout.
+	CurrentWriteEntryVersion = 2
+	// LatestEntryVersion is the newest schema version understood by readers.
+	LatestEntryVersion = 3
+	// EntryVersion is retained for source compatibility. New code must choose
+	// CurrentWriteEntryVersion or LatestEntryVersion according to its role.
+	EntryVersion = CurrentWriteEntryVersion
+
+	// ChainKindRecorder identifies the outer recorder hash chain. It is bound
+	// into v3 hashes with WriterInstanceID to form the chain namespace.
+	ChainKindRecorder = "recorder"
+)
 
 // MaxEntryLineBytes is the maximum JSONL line payload accepted by recorder
 // entry readers.
@@ -50,7 +60,7 @@ func defaultEntryReadLimits() entryReadLimits {
 // and VerifyChain will load. New writes always use EntryVersion; v1 entries
 // keep verifying via computeHashV1 so the chain integrity guarantee survives
 // the schema bump.
-var acceptedEntryVersions = map[int]bool{1: true, 2: true}
+var acceptedEntryVersions = map[int]bool{1: true, 2: true, 3: true}
 
 // GenesisHash is the PrevHash of the first entry in a chain.
 const GenesisHash = "genesis"
@@ -71,20 +81,25 @@ func IsAcceptedEntryVersion(version int) bool {
 // classification debt) drive their behavior off this field; the recorder
 // itself only stamps it through and binds it into the v2 chain hash.
 type Entry struct {
-	Version   int             `json:"v"`
-	Sequence  uint64          `json:"seq"`
-	Timestamp time.Time       `json:"ts"`
-	SessionID string          `json:"session_id"`
-	TraceID   string          `json:"trace_id,omitempty"`
-	Type      string          `json:"type"`
-	EventKind string          `json:"event_kind,omitempty"`
-	Transport string          `json:"transport"`
-	Summary   string          `json:"summary"`
-	Detail    any             `json:"detail"`
-	RawDetail json.RawMessage `json:"-"`
-	RawRef    string          `json:"raw_ref,omitempty"`
-	PrevHash  string          `json:"prev_hash"`
-	Hash      string          `json:"hash"`
+	Version   int       `json:"v"`
+	Sequence  uint64    `json:"seq"`
+	Timestamp time.Time `json:"ts"`
+	SessionID string    `json:"session_id"`
+	ChainKind string    `json:"chain_kind,omitempty"`
+	// WriterInstanceID is an unauthenticated per-process namespace claim. It
+	// prevents cooperating writers from accidentally sharing sequence space;
+	// checkpoint and receipt signatures remain the authenticity boundary.
+	WriterInstanceID string          `json:"writer_instance_id,omitempty"`
+	TraceID          string          `json:"trace_id,omitempty"`
+	Type             string          `json:"type"`
+	EventKind        string          `json:"event_kind,omitempty"`
+	Transport        string          `json:"transport"`
+	Summary          string          `json:"summary"`
+	Detail           any             `json:"detail"`
+	RawDetail        json.RawMessage `json:"-"`
+	RawRef           string          `json:"raw_ref,omitempty"`
+	PrevHash         string          `json:"prev_hash"`
+	Hash             string          `json:"hash"`
 }
 
 // CheckpointDetail is the structured payload for checkpoint entries.
@@ -110,6 +125,8 @@ func ComputeHash(e Entry) string {
 		return computeHashV1(e)
 	case 2:
 		return computeHashV2(e)
+	case 3:
+		return computeHashV3(e)
 	default:
 		return ""
 	}
@@ -180,6 +197,38 @@ func computeHashV2(e Entry) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// computeHashV3 is the frozen v3 canonical projection. It extends v2 by
+// inserting ChainKind and WriterInstanceID after SessionID. These fields form
+// the per-writer chain namespace and must never be removed or reordered.
+func computeHashV3(e Entry) string {
+	detailJSON := detailJSONForHash(e)
+
+	h := sha256.New()
+	fields := []string{
+		strconv.Itoa(e.Version),
+		strconv.FormatUint(e.Sequence, 10),
+		e.Timestamp.UTC().Format(time.RFC3339Nano),
+		e.SessionID,
+		e.ChainKind,
+		e.WriterInstanceID,
+		e.TraceID,
+		e.Type,
+		e.EventKind,
+		e.Transport,
+		e.Summary,
+		string(detailJSON),
+		e.RawRef,
+		e.PrevHash,
+	}
+	for i, f := range fields {
+		if i > 0 {
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte(f))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
 func detailJSONForHash(e Entry) []byte {
 	if e.RawDetail != nil {
 		return e.RawDetail
@@ -198,9 +247,33 @@ func detailJSONForHash(e Entry) []byte {
 // across the version boundary.
 // If pubKey is provided, checkpoint entry signatures are also verified.
 func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
+	var v3ChainKind, v3WriterInstanceID string
 	for i, e := range entries {
 		if !acceptedEntryVersions[e.Version] {
-			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2)", e.Sequence, e.Version)
+			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2, 3)", e.Sequence, e.Version)
+		}
+		if e.Version == LatestEntryVersion {
+			if e.ChainKind == "" {
+				return fmt.Errorf("entry seq %d: v3 chain_kind required", e.Sequence)
+			}
+			if e.WriterInstanceID == "" {
+				return fmt.Errorf("entry seq %d: v3 writer_instance_id required", e.Sequence)
+			}
+			if i > 0 && entries[i-1].Version != LatestEntryVersion {
+				return fmt.Errorf("entry seq %d: v3 chain cannot continue a legacy recorder namespace", e.Sequence)
+			}
+			if v3ChainKind == "" {
+				v3ChainKind, v3WriterInstanceID = e.ChainKind, e.WriterInstanceID
+			} else if e.ChainKind != v3ChainKind || e.WriterInstanceID != v3WriterInstanceID {
+				return fmt.Errorf("entry seq %d: v3 chain namespace changed", e.Sequence)
+			}
+		} else {
+			if e.ChainKind != "" || e.WriterInstanceID != "" {
+				return fmt.Errorf("entry seq %d: legacy entry cannot carry v3 recorder namespace fields", e.Sequence)
+			}
+			if v3ChainKind != "" {
+				return fmt.Errorf("entry seq %d: legacy entry cannot continue a v3 recorder namespace", e.Sequence)
+			}
 		}
 		computed := ComputeHash(e)
 		if computed != e.Hash {
@@ -365,36 +438,40 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 		}
 
 		var raw struct {
-			Version   int             `json:"v"`
-			Sequence  uint64          `json:"seq"`
-			Timestamp time.Time       `json:"ts"`
-			SessionID string          `json:"session_id"`
-			TraceID   string          `json:"trace_id,omitempty"`
-			Type      string          `json:"type"`
-			EventKind string          `json:"event_kind,omitempty"`
-			Transport string          `json:"transport"`
-			Summary   string          `json:"summary"`
-			Detail    json.RawMessage `json:"detail"`
-			RawRef    string          `json:"raw_ref,omitempty"`
-			PrevHash  string          `json:"prev_hash"`
-			Hash      string          `json:"hash"`
+			Version          int             `json:"v"`
+			Sequence         uint64          `json:"seq"`
+			Timestamp        time.Time       `json:"ts"`
+			SessionID        string          `json:"session_id"`
+			ChainKind        string          `json:"chain_kind,omitempty"`
+			WriterInstanceID string          `json:"writer_instance_id,omitempty"`
+			TraceID          string          `json:"trace_id,omitempty"`
+			Type             string          `json:"type"`
+			EventKind        string          `json:"event_kind,omitempty"`
+			Transport        string          `json:"transport"`
+			Summary          string          `json:"summary"`
+			Detail           json.RawMessage `json:"detail"`
+			RawRef           string          `json:"raw_ref,omitempty"`
+			PrevHash         string          `json:"prev_hash"`
+			Hash             string          `json:"hash"`
 		}
 		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
 			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 		e := Entry{
-			Version:   raw.Version,
-			Sequence:  raw.Sequence,
-			Timestamp: raw.Timestamp,
-			SessionID: raw.SessionID,
-			TraceID:   raw.TraceID,
-			Type:      raw.Type,
-			EventKind: raw.EventKind,
-			Transport: raw.Transport,
-			Summary:   raw.Summary,
-			RawRef:    raw.RawRef,
-			PrevHash:  raw.PrevHash,
-			Hash:      raw.Hash,
+			Version:          raw.Version,
+			Sequence:         raw.Sequence,
+			Timestamp:        raw.Timestamp,
+			SessionID:        raw.SessionID,
+			ChainKind:        raw.ChainKind,
+			WriterInstanceID: raw.WriterInstanceID,
+			TraceID:          raw.TraceID,
+			Type:             raw.Type,
+			EventKind:        raw.EventKind,
+			Transport:        raw.Transport,
+			Summary:          raw.Summary,
+			RawRef:           raw.RawRef,
+			PrevHash:         raw.PrevHash,
+			Hash:             raw.Hash,
 		}
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
@@ -405,7 +482,17 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {
-			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
+			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, e.Version)
+		}
+		if e.Version == LatestEntryVersion {
+			if e.ChainKind == "" {
+				return nil, false, bytesRead, fmt.Errorf("line %d: v3 chain_kind required", lineNum)
+			}
+			if e.WriterInstanceID == "" {
+				return nil, false, bytesRead, fmt.Errorf("line %d: v3 writer_instance_id required", lineNum)
+			}
+		} else if e.ChainKind != "" || e.WriterInstanceID != "" {
+			return nil, false, bytesRead, fmt.Errorf("line %d: legacy entry cannot carry v3 recorder namespace fields", lineNum)
 		}
 		entries = append(entries, e)
 		if errors.Is(err, io.EOF) {

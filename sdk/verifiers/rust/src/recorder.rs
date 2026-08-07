@@ -35,8 +35,11 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         reject_duplicate_keys(line)
             .map_err(|err| VerifierError::Invalid(format!("line {}: {}", index + 1, err)))?;
         let version = entry.get("v").and_then(serde_json::Value::as_u64);
-        if version != Some(1) && version != Some(2) {
+        if version != Some(1) && version != Some(2) && version != Some(3) {
             errors_unsupported(index + 1, version)?;
+        }
+        if version == Some(3) {
+            require_v3_namespace(&entry, index + 1)?;
         }
         entries.push(entry);
     }
@@ -152,9 +155,24 @@ fn seq_start(path: &Path) -> Result<u64> {
 
 fn errors_unsupported(line: usize, version: Option<u64>) -> Result<()> {
     Err(VerifierError::Runtime(format!(
-        "line {line}: unsupported entry version {} (accepted: 1, 2)",
+        "line {line}: unsupported entry version {} (accepted: 1, 2, 3)",
         version.map_or_else(|| "null".to_string(), |value| value.to_string())
     )))
+}
+
+fn require_v3_namespace(entry: &serde_json::Value, line: usize) -> Result<()> {
+    for field in ["chain_kind", "writer_instance_id"] {
+        if entry
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(VerifierError::Runtime(format!(
+                "line {line}: v3 {field} required"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn display_path(path: &Path) -> String {

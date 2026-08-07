@@ -419,6 +419,58 @@ func TestRecorder_ResumeRefusesShardWhoseEntriesBelongToAnotherSession(t *testin
 	}
 }
 
+// A reader-capable v2 writer must not append to a v3 tail during rollback. The
+// resulting v3-to-v2 transition is invalid, so refusing before the write keeps
+// the existing evidence verifiable and makes the operator-visible failure local.
+//
+// Neutralization: drop the last.Version check in resumeSessionLocked and this
+// fails because Record appends a v2 entry to the v3 shard.
+func TestRecorder_ResumeRefusesTailFromDifferentEntryVersion(t *testing.T) {
+	dir := t.TempDir()
+	entry := recorder.Entry{
+		Version:          recorder.LatestEntryVersion,
+		Sequence:         0,
+		Timestamp:        time.Unix(1712345678, 0).UTC(),
+		SessionID:        "rollback",
+		ChainKind:        recorder.ChainKindRecorder,
+		WriterInstanceID: "writer-before-rollback",
+		Type:             testType,
+		Transport:        testTransport,
+		Summary:          "v3 tail",
+		Detail:           map[string]string{"safe": "value"},
+		PrevHash:         recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "evidence-rollback-0.jsonl")
+	if err := os.WriteFile(path, append(line, '\n'), filePermissions); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := newResumeRecorder(t, dir)
+	err = rec.Record(recorder.Entry{
+		SessionID: "rollback",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "must not cross the version boundary",
+		Detail:    map[string]string{"safe": "value"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to mix recorder versions") {
+		t.Fatalf("Record() error = %v, want version-mismatch refusal", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.TrimSpace(string(data)), "\n") + 1; got != 1 {
+		t.Fatalf("shard contains %d entries after refused resume, want 1", got)
+	}
+}
+
 // The candidate scan has two I/O error branches. Both must surface the wrapped
 // directory-read context rather than being mistaken for an empty directory,
 // which would resume at genesis and fork the chain.

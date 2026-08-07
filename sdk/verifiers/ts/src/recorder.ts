@@ -32,10 +32,18 @@ export function readEntries(file: string): RecorderEntry[] {
     if (line === "") continue;
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
     rejectDuplicateKeys(line);
-    if (entry.v !== 1 && entry.v !== 2) {
+    if (entry.v !== 1 && entry.v !== 2 && entry.v !== 3) {
       throw new RuntimeError(
-        `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2)`,
+        `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2, 3)`,
       );
+    }
+    if (entry.v === 3) {
+      if (typeof entry.chain_kind !== "string" || entry.chain_kind === "") {
+        throw new RuntimeError(`line ${i + 1}: v3 chain_kind required`);
+      }
+      if (typeof entry.writer_instance_id !== "string" || entry.writer_instance_id === "") {
+        throw new RuntimeError(`line ${i + 1}: v3 writer_instance_id required`);
+      }
     }
     entries.push(entry);
   }

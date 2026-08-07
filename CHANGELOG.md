@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Recorder readers accept the v3 outer-chain namespace fields
+  `chain_kind` and `writer_instance_id`. The recorder continues to emit v2
+  entries during the compatibility window.
+
 ## [3.3.0] - 2026-07-30
 
 ### Breaking Changes / Upgrade Notes

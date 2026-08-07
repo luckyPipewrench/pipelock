@@ -121,7 +121,7 @@ func TestComputeHash_FieldChange(t *testing.T) {
 }
 
 func TestIsAcceptedEntryVersion(t *testing.T) {
-	for _, version := range []int{1, recorder.EntryVersion} {
+	for _, version := range []int{1, 2, recorder.LatestEntryVersion} {
 		if !recorder.IsAcceptedEntryVersion(version) {
 			t.Fatalf("IsAcceptedEntryVersion(%d) = false, want true", version)
 		}

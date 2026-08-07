@@ -55,12 +55,12 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 	if err != nil {
 		return nil, fmt.Errorf("resolve evidence location: %w", err)
 	}
-	return QuerySessionResolved(location.Dir, sessionID, filter)
+	return QuerySessionResolved(location, sessionID, filter)
 }
 
 // QuerySessionResolved reads one already-resolved evidence location.
-func QuerySessionResolved(dir, sessionID string, filter *QueryFilter) (*QueryResult, error) {
-	dirEntries, dirTruncated, err := readDirectoryEntries(dir, maxDirectoryEntries(filter))
+func QuerySessionResolved(location EvidenceLocation, sessionID string, filter *QueryFilter) (*QueryResult, error) {
+	dirEntries, dirTruncated, err := readEvidenceLocationDirectoryEntries(location, maxDirectoryEntries(filter))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
@@ -73,7 +73,7 @@ func QuerySessionResolved(dir, sessionID string, filter *QueryFilter) (*QueryRes
 		name := de.Name()
 		fileSessionID, ok := evidenceFileSessionID(name)
 		if ok && fileSessionID == sessionID {
-			files = append(files, filepath.Join(dir, name))
+			files = append(files, name)
 		}
 	}
 
@@ -112,7 +112,7 @@ func QuerySessionResolved(dir, sessionID string, filter *QueryFilter) (*QueryRes
 			maxBytes = remaining
 		}
 
-		entries, truncated, bytesRead, err := readEntries(f, entryReadLimits{MaxEntries: maxEntries, MaxBytes: maxBytes})
+		entries, truncated, bytesRead, err := readEntriesAtEvidenceLocation(location, f, entryReadLimits{MaxEntries: maxEntries, MaxBytes: maxBytes})
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
 		}
@@ -171,7 +171,12 @@ func ListSessionsBoundedResult(dir string, maxEntries int) (SessionListResult, e
 	if err != nil {
 		return SessionListResult{}, fmt.Errorf("resolve evidence location: %w", err)
 	}
-	dirEntries, truncated, err := readDirectoryEntries(location.Dir, maxEntries)
+	return ListSessionsBoundedResultResolved(location, maxEntries)
+}
+
+// ListSessionsBoundedResultResolved lists sessions in one already-resolved evidence location.
+func ListSessionsBoundedResultResolved(location EvidenceLocation, maxEntries int) (SessionListResult, error) {
+	dirEntries, truncated, err := readEvidenceLocationDirectoryEntries(location, maxEntries)
 	if err != nil {
 		return SessionListResult{}, fmt.Errorf("reading evidence directory: %w", err)
 	}

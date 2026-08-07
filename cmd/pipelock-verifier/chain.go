@@ -102,10 +102,10 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		}
 		clean = location.Dir
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
-		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
+		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, keyHex, opts); handled || handleErr != nil {
 			return handleErr
 		}
-		receipts, extractErr := actionreceipt.ExtractReceiptsFromSessionDir(clean, opts.sessionID)
+		receipts, extractErr := actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
 		if extractErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
 		}
@@ -205,9 +205,9 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex str
 	})
 }
 
-func runEvidenceChainFromDir(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
+func runEvidenceChainFromDir(stdout, stderr io.Writer, location recorder.EvidenceLocation, label, keyHex string, opts chainOptions) (bool, error) {
 	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
-		return contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(clean, opts.sessionID)
+		return contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, opts.sessionID)
 	})
 }
 

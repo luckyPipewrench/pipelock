@@ -1828,6 +1828,38 @@ func TestChain_DirMode(t *testing.T) {
 	}
 }
 
+func TestChain_DirModeSelectedParentWithNestedLocation(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	root := t.TempDir()
+	locationID := filepath.Join("recorder-a", "run-a")
+	locationDir := filepath.Join(root, locationID)
+	fix.writePacketDir(t, locationDir, nil)
+	if err := os.Rename(
+		filepath.Join(locationDir, "evidence.jsonl"),
+		filepath.Join(locationDir, "evidence-proxy-0.jsonl"),
+	); err != nil {
+		t.Fatalf("rename selected evidence: %v", err)
+	}
+	nestedDir := filepath.Join(locationDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
+		t.Fatalf("create nested location: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "evidence-other-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write nested evidence: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t,
+		"chain", "--dir",
+		"--location", filepath.ToSlash(locationID),
+		"--key", fix.keyHex,
+		root,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("selected parent code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestChain_WithExplicitKey(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)

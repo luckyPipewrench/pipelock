@@ -969,6 +969,11 @@ func ExtractReceiptsFromSessionDirBounded(dir, sessionID string, maxEntriesRead 
 	return ExtractReceiptsFromSessionDirWithLimits(dir, sessionID, maxEntriesRead, 0)
 }
 
+// ExtractReceiptsFromResolvedSessionDirBounded reads one already-resolved evidence location with an entry ceiling.
+func ExtractReceiptsFromResolvedSessionDirBounded(location recorder.EvidenceLocation, sessionID string, maxEntriesRead int) ([]Receipt, bool, error) {
+	return extractReceiptsFromResolvedSessionDirWithLimits(location, sessionID, maxEntriesRead, 0)
+}
+
 // ExtractReceiptsFromSessionDirWithLimits reads action receipts for a session
 // with hard ceilings on parsed recorder entries and evidence directory entries.
 func ExtractReceiptsFromSessionDirWithLimits(dir, sessionID string, maxEntriesRead, maxDirectoryEntries int) ([]Receipt, bool, error) {
@@ -983,9 +988,21 @@ func ExtractReceiptsFromSessionDirWithLimits(dir, sessionID string, maxEntriesRe
 	return receipts, result.Truncated, err
 }
 
+func extractReceiptsFromResolvedSessionDirWithLimits(location recorder.EvidenceLocation, sessionID string, maxEntriesRead, maxDirectoryEntries int) ([]Receipt, bool, error) {
+	result, err := recorder.QuerySessionResolved(location, sessionID, &recorder.QueryFilter{
+		MaxEntriesRead:      maxEntriesRead,
+		MaxDirectoryEntries: maxDirectoryEntries,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("querying session receipts: %w", err)
+	}
+	receipts, err := extractReceiptsFromEntries(result.Entries)
+	return receipts, result.Truncated, err
+}
+
 // ExtractReceiptsFromResolvedSessionDir reads an already-resolved evidence location.
-func ExtractReceiptsFromResolvedSessionDir(dir, sessionID string) ([]Receipt, error) {
-	result, err := recorder.QuerySessionResolved(filepath.Clean(dir), sessionID, nil)
+func ExtractReceiptsFromResolvedSessionDir(location recorder.EvidenceLocation, sessionID string) ([]Receipt, error) {
+	result, err := recorder.QuerySessionResolved(location, sessionID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("querying session receipts: %w", err)
 	}

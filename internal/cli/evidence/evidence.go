@@ -103,16 +103,15 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
 	}
-	cleanDir = location.Dir
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
 		return err
 	}
-	sessionID, err := resolveSession(cmd, cleanDir, opts.sessionID)
+	sessionID, err := resolveSession(cmd, location, opts.sessionID)
 	if err != nil {
 		return err
 	}
-	html, err := renderSessionHTML(cleanDir, sessionID, trusted, opts.title)
+	html, err := renderSessionHTML(location, sessionID, trusted, opts.title)
 	if err != nil {
 		return err
 	}
@@ -250,8 +249,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
 	}
-	cleanDir = location.Dir
-	sessionID, err := resolveServeSession(cleanDir, opts.sessionID)
+	sessionID, err := resolveServeSessionResolved(location, opts.sessionID)
 	if err != nil {
 		return err
 	}
@@ -262,7 +260,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	defer func() { _ = ln.Close() }()
 
 	srv := &http.Server{
-		Handler:           evidenceServeHandler(cleanDir, sessionID),
+		Handler:           evidenceServeHandler(location, sessionID),
 		ReadHeaderTimeout: evidenceServeReadHeaderTimeout,
 		ReadTimeout:       evidenceServeReadTimeout,
 		WriteTimeout:      evidenceServeWriteTimeout,
@@ -293,7 +291,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	}
 }
 
-func evidenceServeHandler(dir, sessionID string) http.Handler {
+func evidenceServeHandler(location recorder.EvidenceLocation, sessionID string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", evidenceServeCSP)
 		w.Header().Set("Cache-Control", "no-store")
@@ -307,7 +305,7 @@ func evidenceServeHandler(dir, sessionID string) http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		html, err := renderSessionHTML(dir, sessionID, nil, "Pipelock Evidence Report")
+		html, err := renderSessionHTML(location, sessionID, nil, "Pipelock Evidence Report")
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "evidence serve: render evidence report: %v\n", err)
 			http.Error(w, "render evidence report", http.StatusInternalServerError)
@@ -320,13 +318,13 @@ func evidenceServeHandler(dir, sessionID string) http.Handler {
 }
 
 func renderSessionHTML(
-	dir string,
+	location recorder.EvidenceLocation,
 	sessionID string,
 	trusted map[string]evidenceview.TrustedKey,
 	title string,
 ) ([]byte, error) {
-	receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirBounded(
-		dir, sessionID, evidenceview.DashboardReceiptReadLimit,
+	receipts, readLimited, err := receipt.ExtractReceiptsFromResolvedSessionDirBounded(
+		location, sessionID, evidenceview.DashboardReceiptReadLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("reading receipts for session %q: %w", sessionID, err)
@@ -416,11 +414,12 @@ func validateReceiptDir(dir string) (string, error) {
 // use it. Otherwise list sessions: if exactly one, use it; if multiple,
 // pick the first alphabetically and print a note that multi-agent console
 // is available in Pro.
-func resolveSession(cmd *cobra.Command, dir, explicit string) (string, error) {
-	sessions, err := recorder.ListSessions(dir)
+func resolveSession(cmd *cobra.Command, location recorder.EvidenceLocation, explicit string) (string, error) {
+	sessionsResult, err := recorder.ListSessionsBoundedResultResolved(location, 0)
 	if err != nil {
 		return "", fmt.Errorf("listing sessions: %w", err)
 	}
+	sessions := sessionsResult.Sessions
 	if explicit != "" {
 		// Verify the requested session actually exists rather than silently
 		// rendering an empty report for a typo'd or nonexistent session ID.
@@ -429,10 +428,10 @@ func resolveSession(cmd *cobra.Command, dir, explicit string) (string, error) {
 				return explicit, nil
 			}
 		}
-		return "", fmt.Errorf("session %q not found in %q", explicit, dir)
+		return "", fmt.Errorf("session %q not found in %q", explicit, location.Dir)
 	}
 	if len(sessions) == 0 {
-		return "", fmt.Errorf("no sessions found in %q", dir)
+		return "", fmt.Errorf("no sessions found in %q", location.Dir)
 	}
 	if len(sessions) == 1 {
 		return sessions[0], nil
@@ -447,27 +446,36 @@ func resolveSession(cmd *cobra.Command, dir, explicit string) (string, error) {
 }
 
 func resolveServeSession(dir, explicit string) (string, error) {
-	sessions, err := recorder.ListSessions(dir)
+	location, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		return "", fmt.Errorf("resolve evidence location: %w", err)
+	}
+	return resolveServeSessionResolved(location, explicit)
+}
+
+func resolveServeSessionResolved(location recorder.EvidenceLocation, explicit string) (string, error) {
+	sessionsResult, err := recorder.ListSessionsBoundedResultResolved(location, 0)
 	if err != nil {
 		return "", fmt.Errorf("listing sessions: %w", err)
 	}
+	sessions := sessionsResult.Sessions
 	if explicit != "" {
 		for _, s := range sessions {
 			if s == explicit {
 				return explicit, nil
 			}
 		}
-		return "", fmt.Errorf("session %q not found in %q", explicit, dir)
+		return "", fmt.Errorf("session %q not found in %q", explicit, location.Dir)
 	}
 	if len(sessions) == 0 {
-		return "", fmt.Errorf("no sessions found in %q", dir)
+		return "", fmt.Errorf("no sessions found in %q", location.Dir)
 	}
 	if len(sessions) == 1 {
 		return sessions[0], nil
 	}
 	return "", fmt.Errorf(
 		"%d sessions found in %q; pass --session <id> to bind exactly one session",
-		len(sessions), dir,
+		len(sessions), location.Dir,
 	)
 }
 

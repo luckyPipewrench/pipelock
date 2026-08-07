@@ -491,8 +491,7 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 	if resolveErr != nil {
 		return receiptTail{}, fmt.Errorf("resolve evidence location: %w", resolveErr)
 	}
-	clean = location.Dir
-	dirEntries, err := os.ReadDir(clean)
+	dirEntries, err := recorder.ReadEvidenceLocationEntries(location)
 	if err != nil {
 		// filepath.Glob, which this replaced, reported no matches and no error
 		// for a directory that does not exist, and a caller relies on that: an
@@ -514,7 +513,7 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 		if !ok || parsedSession != wantSession {
 			continue
 		}
-		files = append(files, filepath.Join(clean, de.Name()))
+		files = append(files, de.Name())
 	}
 	// Total order, for the same reason as the recorder's candidate sort:
 	// sort.Slice is not stable and a non-numeric trailing segment parses to 0,
@@ -533,7 +532,7 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 		return receiptTail{}, err
 	}
 	for i := len(files) - 1; i >= 0; i-- {
-		tail, err := readLastReceiptTailFromFile(files[i])
+		tail, err := readLastReceiptTailFromFile(location, files[i])
 		if err == nil {
 			return tail, nil
 		}
@@ -544,29 +543,12 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 	return receiptTail{}, errNoReceiptTail
 }
 
-func readLastReceiptTailFromFile(path string) (receiptTail, error) {
-	f, err := os.Open(filepath.Clean(path))
+func readLastReceiptTailFromFile(location recorder.EvidenceLocation, name string) (receiptTail, error) {
+	data, truncated, err := recorder.ReadEvidenceLocationFileTail(location, name, maxTailReadBytes)
 	if err != nil {
 		return receiptTail{}, err
 	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return receiptTail{}, err
-	}
-	size := info.Size()
-	start := int64(0)
-	if size > maxTailReadBytes {
-		start = size - maxTailReadBytes
-	}
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return receiptTail{}, err
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return receiptTail{}, err
-	}
-	if start > 0 {
+	if truncated {
 		if idx := bytes.IndexByte(data, '\n'); idx >= 0 && idx+1 < len(data) {
 			data = data[idx+1:]
 		}

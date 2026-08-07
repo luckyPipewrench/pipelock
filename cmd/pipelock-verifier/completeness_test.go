@@ -459,6 +459,22 @@ func TestCompletenessCLILocationSelector(t *testing.T) {
 	if code != cliutil.ExitOK {
 		t.Fatalf("implicit location code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	nestedDir := filepath.Join(locationDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
+		t.Fatalf("create nested location: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "evidence-other-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write nested evidence: %v", err)
+	}
+	stdout, stderr, code = runRoot(t,
+		"completeness", "--json",
+		"--location", filepath.ToSlash(locationID),
+		"--key", hex.EncodeToString(pub),
+		root,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("selected parent code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 
 	var out, errOut bytes.Buffer
 	err = runCompleteness(&out, &errOut, root, completenessOptions{locationID: "missing/run"})

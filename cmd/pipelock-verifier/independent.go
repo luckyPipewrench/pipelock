@@ -122,7 +122,7 @@ func independentReceipts(target string, opts independentOptions) ([]receipt.Rece
 		if err != nil {
 			return nil, fmt.Errorf("resolve evidence location: %w", err)
 		}
-		return receipt.ExtractReceiptsFromResolvedSessionDir(location.Dir, opts.sessionID)
+		return receipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
 	}
 	if opts.locationID != "" {
 		return nil, fmt.Errorf("--location requires --dir")

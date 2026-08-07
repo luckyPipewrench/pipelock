@@ -209,13 +209,13 @@ func ExtractEvidenceReceiptsFromSessionDir(dir, sessionID string) ([]EvidenceRec
 	if resolveErr != nil {
 		return nil, fmt.Errorf("resolve evidence location: %w", resolveErr)
 	}
-	return ExtractEvidenceReceiptsFromResolvedSessionDir(location.Dir, sessionID)
+	return ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
 }
 
 // ExtractEvidenceReceiptsFromResolvedSessionDir reads one already-resolved evidence location.
-func ExtractEvidenceReceiptsFromResolvedSessionDir(dir, sessionID string) ([]EvidenceReceipt, error) {
-	clean := filepath.Clean(dir)
-	entries, err := os.ReadDir(clean)
+func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLocation, sessionID string) ([]EvidenceReceipt, error) {
+	clean := filepath.Clean(location.Dir)
+	entries, err := recorder.ReadEvidenceLocationEntries(location)
 	if err != nil {
 		return nil, fmt.Errorf("read evidence directory: %w", err)
 	}
@@ -244,7 +244,7 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(dir, sessionID string) ([]Evi
 			continue
 		}
 		shards = append(shards, shard{
-			path:     filepath.Join(clean, name),
+			path:     name,
 			base:     name,
 			seqStart: seqStart,
 		})
@@ -273,11 +273,18 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(dir, sessionID string) ([]Evi
 
 	var out []EvidenceReceipt
 	for _, file := range files {
-		receipts, readErr := ExtractEvidenceReceipts(file)
+		data, readErr := recorder.ReadEvidenceLocationFileBounded(location, file, recorder.MaxEvidenceReadFileBytes)
+		if readErr == nil {
+			receipts, parseErr := extractEvidenceReceiptsFromBytes(data, filepath.Join(clean, file))
+			if parseErr != nil {
+				readErr = parseErr
+			} else {
+				out = append(out, receipts...)
+			}
+		}
 		if readErr != nil {
 			return nil, fmt.Errorf("read %s: %w", filepath.Base(file), readErr)
 		}
-		out = append(out, receipts...)
 	}
 	return out, nil
 }

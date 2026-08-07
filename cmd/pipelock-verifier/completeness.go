@@ -65,6 +65,7 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
 	}
 	clean := filepath.Clean(target)
+	var resolvedLocation *recorder.EvidenceLocation
 	info, statErr := os.Stat(clean)
 	if statErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", clean, statErr))
@@ -75,10 +76,11 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
 		clean = location.Dir
+		resolvedLocation = &location
 	} else if opts.locationID != "" {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires an evidence directory"))
 	}
-	receipts, label, err := extractCompletenessReceipts(clean, opts.sessionID)
+	receipts, label, err := extractCompletenessReceipts(clean, opts.sessionID, resolvedLocation)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
@@ -109,13 +111,19 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 	return nil
 }
 
-func extractCompletenessReceipts(clean, sessionID string) ([]actionreceipt.Receipt, string, error) {
+func extractCompletenessReceipts(clean, sessionID string, resolvedLocation *recorder.EvidenceLocation) ([]actionreceipt.Receipt, string, error) {
 	info, err := os.Stat(clean)
 	if err != nil {
 		return nil, "", fmt.Errorf("stat %q: %w", clean, err)
 	}
 	if info.IsDir() {
-		receipts, extractErr := actionreceipt.ExtractReceiptsFromSessionDir(clean, sessionID)
+		var receipts []actionreceipt.Receipt
+		var extractErr error
+		if resolvedLocation != nil {
+			receipts, extractErr = actionreceipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+		} else {
+			receipts, extractErr = actionreceipt.ExtractReceiptsFromSessionDir(clean, sessionID)
+		}
 		if extractErr != nil {
 			return nil, "", fmt.Errorf("extract receipts: %w", extractErr)
 		}

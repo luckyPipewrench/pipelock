@@ -17,8 +17,9 @@ import (
 // operator-supplied evidence root. ID is empty for the legacy flat layout and
 // otherwise is a slash-separated path relative to the root.
 type EvidenceLocation struct {
-	ID  string
-	Dir string
+	Root string
+	ID   string
+	Dir  string
 }
 
 // DiscoverEvidenceLocations finds evidence-file directories under root without
@@ -68,7 +69,7 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 		if rel != "." {
 			id = filepath.ToSlash(rel)
 		}
-		locations = append(locations, EvidenceLocation{ID: id, Dir: path})
+		locations = append(locations, EvidenceLocation{Root: cleanRoot, ID: id, Dir: path})
 		// A directory containing evidence is a location, not a chain boundary.
 		// Descendants can hold independent evidence files and must be discovered
 		// so a reader never mistakes a partial traversal for complete evidence.
@@ -138,7 +139,7 @@ func ResolveEvidenceLocation(root, locationID string) (EvidenceLocation, error) 
 		return EvidenceLocation{}, fmt.Errorf("evidence location %q not found", locationID)
 	}
 	if len(locations) == 0 {
-		return EvidenceLocation{Dir: filepath.Clean(root)}, nil
+		return EvidenceLocation{Root: filepath.Clean(root), Dir: filepath.Clean(root)}, nil
 	}
 	if len(locations) == 1 {
 		return locations[0], nil

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,6 +95,7 @@ type doctorChainRef struct {
 
 type evidenceDoctor struct {
 	dir           string
+	location      recorder.EvidenceLocation
 	filesRead     int
 	findings      []evidenceDoctorFinding
 	truncated     bool
@@ -162,12 +162,13 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 		}, nil
 	}
 	if len(locations) == 0 {
-		locations = []recorder.EvidenceLocation{{Dir: cleanDir}}
+		locations = []recorder.EvidenceLocation{{Root: cleanDir, Dir: cleanDir}}
 	}
 	report := evidenceDoctorReport{Dir: cleanDir}
 	for _, location := range locations {
 		d := &evidenceDoctor{
 			dir:          location.Dir,
+			location:     location,
 			sidecarFiles: make(map[string]struct{}),
 			receiptRefs:  make(map[string][]doctorChainRef),
 			escrowRefs:   make(map[string][]doctorEntryRef),
@@ -183,7 +184,7 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 }
 
 func (d *evidenceDoctor) scan() {
-	dirEntries, skipped, err := readEvidenceDoctorDir(d.dir)
+	dirEntries, skipped, err := readEvidenceDoctorDir(d.location)
 	if err != nil {
 		d.addFinding("directory_read_error", "read evidence directory: "+err.Error())
 		return
@@ -204,7 +205,7 @@ func (d *evidenceDoctor) scan() {
 		name := entry.Name()
 		switch {
 		case isDoctorEvidenceJSONL(name):
-			jsonlFiles = append(jsonlFiles, filepath.Join(d.dir, name))
+			jsonlFiles = append(jsonlFiles, name)
 		case isDoctorRawSidecar(name):
 			d.sidecarFiles[name] = struct{}{}
 		}
@@ -226,49 +227,38 @@ func (d *evidenceDoctor) scan() {
 	d.detectReceiptDamage()
 }
 
-func readEvidenceDoctorDir(dir string) ([]os.DirEntry, int, error) {
-	directory, err := os.Open(filepath.Clean(dir))
+func readEvidenceDoctorDir(location recorder.EvidenceLocation) ([]os.DirEntry, int, error) {
+	dirEntries, err := recorder.ReadEvidenceLocationEntries(location)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer func() { _ = directory.Close() }()
-
 	out := make([]os.DirEntry, 0)
 	skipped := 0
-	for {
-		dirEntries, readErr := directory.ReadDir(128)
-		for _, de := range dirEntries {
-			if de.IsDir() {
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		if isDoctorEvidenceJSONL(name) || isDoctorRawSidecar(name) {
+			if len(out) >= maxEvidenceDoctorFiles {
+				skipped++
 				continue
 			}
-			name := de.Name()
-			if isDoctorEvidenceJSONL(name) || isDoctorRawSidecar(name) {
-				if len(out) >= maxEvidenceDoctorFiles {
-					skipped++
-					continue
-				}
-				out = append(out, de)
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return nil, 0, readErr
+			out = append(out, de)
 		}
 	}
 	return out, skipped, nil
 }
 
-func (d *evidenceDoctor) scanJSONL(path string) {
-	data, err := recorder.ReadEvidenceFileBounded(path, recorder.MaxEvidenceReadFileBytes)
+func (d *evidenceDoctor) scanJSONL(name string) {
+	data, err := recorder.ReadEvidenceLocationFileBounded(d.location, name, recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
-		d.addFinding("file_read_error", fmt.Sprintf("%s: %v", filepath.Base(path), err))
+		d.addFinding("file_read_error", fmt.Sprintf("%s: %v", name, err))
 		return
 	}
 	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
-		d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", filepath.Base(path), err))
+		d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", name, err))
 		return
 	}
 	d.filesRead++
@@ -277,7 +267,7 @@ func (d *evidenceDoctor) scanJSONL(path string) {
 		// Report it rather than letting it contribute nothing: an emptied or
 		// truncated shard produces no refs, so every downstream linkage check
 		// would silently pass over it.
-		d.addFinding("empty_evidence_file", fmt.Sprintf("%s: contains no entries", filepath.Base(path)))
+		d.addFinding("empty_evidence_file", fmt.Sprintf("%s: contains no entries", name))
 		return
 	}
 	for _, entry := range entries {
@@ -290,11 +280,11 @@ func (d *evidenceDoctor) scanJSONL(path string) {
 		if computed != entry.Hash {
 			d.addFinding("entry_hash_mismatch", fmt.Sprintf(
 				"%s seq %d: stored hash %s does not match contents (computed %s)",
-				filepath.Base(path), entry.Sequence, shortDoctorHash(entry.Hash), shortDoctorHash(computed)))
+				name, entry.Sequence, shortDoctorHash(entry.Hash), shortDoctorHash(computed)))
 		}
 		ref := doctorEntryRef{
 			Session: entry.SessionID,
-			File:    filepath.Base(path),
+			File:    name,
 			Seq:     entry.Sequence,
 			// Linkage is checked against the recomputed hash so a tampered
 			// record cannot present a self-consistent chain.
@@ -306,7 +296,7 @@ func (d *evidenceDoctor) scanJSONL(path string) {
 		if entry.RawRef != "" {
 			d.escrowRefs[entry.RawRef] = append(d.escrowRefs[entry.RawRef], ref)
 		}
-		d.scanReceiptEntry(path, entry)
+		d.scanReceiptEntry(name, entry)
 	}
 }
 

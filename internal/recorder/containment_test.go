@@ -6,6 +6,7 @@ package recorder
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +65,76 @@ func TestDiscoverEvidenceLocationsFailsClosedOnUnreadableDir(t *testing.T) {
 
 	if _, err := DiscoverEvidenceLocations(root); err == nil {
 		t.Fatal("DiscoverEvidenceLocations() succeeded over an unreadable directory, want a surfaced error so missing evidence cannot look absent")
+	}
+}
+
+func TestResolvedEvidenceLocationRejectsDirectorySwap(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	locationDir := filepath.Join(root, "recorder-a", "run-a")
+	writeDiscoveryShard(t, locationDir)
+	location, err := ResolveEvidenceLocation(root, "recorder-a/run-a")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	original := locationDir + "-original"
+	if err := os.Rename(locationDir, original); err != nil {
+		t.Fatalf("move selected location: %v", err)
+	}
+	external := t.TempDir()
+	writeDiscoveryShard(t, external)
+	if err := os.Symlink(external, locationDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ReadEvidenceLocationEntries(location); err == nil {
+		t.Fatal("resolved location followed a substituted directory symlink")
+	}
+}
+
+func TestResolvedEvidenceLocationRejectsRootSwap(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "evidence")
+	writeDiscoveryShard(t, root)
+	location, err := ResolveEvidenceLocation(root, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	if err := os.Rename(root, root+"-original"); err != nil {
+		t.Fatalf("move evidence root: %v", err)
+	}
+	external := t.TempDir()
+	writeDiscoveryShard(t, external)
+	if err := os.Symlink(external, root); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ReadEvidenceLocationEntries(location); err == nil {
+		t.Fatal("resolved location followed a substituted root symlink")
+	}
+}
+
+func TestResolvedEvidenceLocationRejectsFileSwap(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeDiscoveryShard(t, root)
+	location, err := ResolveEvidenceLocation(root, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	shard := filepath.Join(root, discoveryShardName)
+	if err := os.Remove(shard); err != nil {
+		t.Fatalf("remove evidence shard: %v", err)
+	}
+	external := filepath.Join(t.TempDir(), "external.jsonl")
+	if err := os.WriteFile(external, []byte("outside\n"), 0o600); err != nil {
+		t.Fatalf("write external evidence: %v", err)
+	}
+	if err := os.Symlink(external, shard); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ReadEvidenceLocationFileBounded(location, discoveryShardName, 1024); err == nil {
+		t.Fatal("resolved location followed a substituted evidence-file symlink")
+	} else if strings.Contains(err.Error(), "outside") {
+		t.Fatalf("error exposed substituted evidence contents: %v", err)
 	}
 }

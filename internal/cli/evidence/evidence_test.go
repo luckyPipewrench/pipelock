@@ -46,6 +46,15 @@ type serveListenCapture struct {
 	bytes.Buffer
 }
 
+func resolveTestEvidenceLocation(t *testing.T, dir string) recorder.EvidenceLocation {
+	t.Helper()
+	location, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation(%q): %v", dir, err)
+	}
+	return location
+}
+
 func newServeListenCapture() *serveListenCapture {
 	return &serveListenCapture{ch: make(chan string, 1)}
 }
@@ -425,6 +434,23 @@ func TestViewAndServeCmd_LocationSelector(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--listen") {
 		t.Fatalf("runServe selected location error = %v, want post-selection listen failure", err)
 	}
+	nestedDir := filepath.Join(locationDir, "nested")
+	emitSingleSession(t, nestedDir, priv, 1)
+	stdout.Reset()
+	if err := runView(cmd, viewOptions{
+		receiptDir: root,
+		locationID: filepath.ToSlash(locationID),
+	}); err != nil {
+		t.Fatalf("runView selected parent with nested location: %v", err)
+	}
+	err = runServe(cmd, serveOptions{
+		receiptDir: root,
+		locationID: filepath.ToSlash(locationID),
+		listen:     "invalid-listen-address",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--listen") {
+		t.Fatalf("runServe selected parent with nested location error = %v, want post-selection listen failure", err)
+	}
 
 	for _, tt := range []struct {
 		name string
@@ -480,7 +506,7 @@ func TestServeCmd_ExplicitSessionServesBoundReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveServeSession: %v", err)
 	}
-	handler := evidenceServeHandler(dir, sessionID)
+	handler := evidenceServeHandler(resolveTestEvidenceLocation(t, dir), sessionID)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
@@ -594,7 +620,7 @@ func TestServeCmd_MixedActorSessionFailsClosed(t *testing.T) {
 		return testActorBravo, "https://api.vendor.example/" + testBravoTargetSecret
 	})
 
-	handler := evidenceServeHandler(dir, "shared")
+	handler := evidenceServeHandler(resolveTestEvidenceLocation(t, dir), "shared")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if rec.Code != http.StatusInternalServerError {
@@ -657,7 +683,7 @@ func TestServeCmd_NoEndpointCanSwitchBoundSession(t *testing.T) {
 	_, priv := genKey(t)
 	dir := emitMultiSessionDir(t, priv)
 
-	handler := evidenceServeHandler(dir, "bravo")
+	handler := evidenceServeHandler(resolveTestEvidenceLocation(t, dir), "bravo")
 	for _, target := range []string{"/", "/?session=alpha", "/?agent=agent-alpha"} {
 		t.Run(target, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -693,7 +719,7 @@ func TestServeCmd_NonGETRootReturnsMethodNotAllowed(t *testing.T) {
 	dir := t.TempDir()
 	writeEvidenceSession(t, dir, priv, "alpha", testActorAlpha, 1)
 
-	handler := evidenceServeHandler(dir, "alpha")
+	handler := evidenceServeHandler(resolveTestEvidenceLocation(t, dir), "alpha")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil))
 	if rec.Code != http.StatusMethodNotAllowed {

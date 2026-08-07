@@ -135,9 +135,9 @@ Examples:
 				}
 				chainDir = location.Dir
 				if cleanReport == "" {
-					return verifyChainFromResolvedSessionDirDetailed(out, chainDir, sessionID, trustedKeys, verifyOpts)
+					return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, verifyOpts)
 				}
-				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(chainDir, sessionID)
+				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 				if extractErr != nil {
 					return fmt.Errorf("extracting session receipts: %w", extractErr)
 				}
@@ -379,12 +379,12 @@ func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []strin
 	return verifyChainDetailed(out, path, receipts, trustedKeys, opts)
 }
 
-func verifyChainFromResolvedSessionDirDetailed(out io.Writer, dir, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
-	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(dir, sessionID)
+func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
+	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 	if err != nil {
 		return fmt.Errorf("extracting session receipts: %w", err)
 	}
-	label := fmt.Sprintf("%s (session %s)", dir, sessionID)
+	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
 	return verifyChainDetailed(out, label, receipts, trustedKeys, opts)
 }
 
@@ -876,7 +876,7 @@ Examples:
 					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
 				}
 				chainDir = location.Dir
-				receipts, err = receipt.ExtractReceiptsFromResolvedSessionDir(chainDir, sessionID)
+				receipts, err = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 				if err != nil {
 					return fmt.Errorf("extracting session receipts: %w", err)
 				}

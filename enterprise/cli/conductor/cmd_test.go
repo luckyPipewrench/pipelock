@@ -27,6 +27,7 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -71,7 +72,7 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		t.Fatalf("WriteFile(ca): %v", err)
 	}
 
-	handler, probeHandler, tlsConfig, err := buildServeHandler(context.Background(), serveOptions{
+	opts := serveOptions{
 		listen:              defaultListen,
 		storageDir:          filepath.Join(dir, "store"),
 		conductorID:         "conductor-test",
@@ -91,7 +92,8 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		tlsCert:  filepath.Join(dir, "server.pem"),
 		tlsKey:   filepath.Join(dir, "server.key"),
 		clientCA: caPath,
-	})
+	}
+	handler, probeHandler, tlsConfig, err := buildServeHandler(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("buildServeHandler() error = %v", err)
 	}
@@ -129,6 +131,23 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	}
 	if !strings.Contains(metricsBody, `pipelock_conductor_policy_bundle_policy_hash_status_count{status="unknown_unverified"} 0`) {
 		t.Fatalf("metrics body missing policy hash status gauge:\n%s", metricsBody)
+	}
+	if !strings.Contains(metricsBody, `pipelock_info{version="`+cliutil.Version+`"} 1`) {
+		t.Fatalf("metrics body missing build info for version %q:\n%s", cliutil.Version, metricsBody)
+	}
+
+	// A restarted Conductor gets a new registry. Rebuilding from the same
+	// options must expose one info series, not panic from duplicate registration
+	// or omit the version on the replacement probe handler.
+	_, rebuiltProbeHandler, _, err := buildServeHandler(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("rebuild serve handler: %v", err)
+	}
+	w = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.MetricsPath, nil)
+	rebuiltProbeHandler.ServeHTTP(w, req)
+	if got := strings.Count(w.Body.String(), `pipelock_info{version="`+cliutil.Version+`"} 1`); got != 1 {
+		t.Fatalf("rebuilt metrics info series count = %d, want 1:\n%s", got, w.Body.String())
 	}
 }
 

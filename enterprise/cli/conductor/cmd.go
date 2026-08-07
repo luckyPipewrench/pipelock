@@ -26,6 +26,7 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -374,6 +375,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		return nil, nil, nil, err
 	}
 	m := metrics.New()
+	m.RegisterInfo(cliutil.Version)
 	m.RecordConductorPolicyHashStatusCounts(store.PolicyHashStatusCounts())
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:              store,

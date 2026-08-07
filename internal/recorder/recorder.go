@@ -1228,8 +1228,7 @@ func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
 	// than the buffer is written straight through and the newline follows
 	// separately. Records are permitted up to the evidence file limit, so the
 	// window is reachable in normal operation.
-	line := make([]byte, 0, len(data)+1)
-	line = append(line, data...)
+	line := append([]byte(nil), data...)
 	line = append(line, '\n')
 	if n, err := r.writer.Write(line); err != nil {
 		return err

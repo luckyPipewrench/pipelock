@@ -177,6 +177,14 @@ func TestWriteEntryDataRejectsBufferedRemainder(t *testing.T) {
 	}
 }
 
+func TestWriteEntryDataRejectsOversizedPayload(t *testing.T) {
+	r := &Recorder{writer: bufio.NewWriter(&recordingWriter{})}
+	err := r.writeEntryData(bytes.Repeat([]byte("x"), MaxEntryLineBytes+1), Entry{}, false)
+	if !errors.Is(err, ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("writeEntryData oversized payload error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+}
+
 func TestWriteEntryBoundedMatchesReaderLineLimit(t *testing.T) {
 	makeEntry := func(t *testing.T, size int) Entry {
 		t.Helper()

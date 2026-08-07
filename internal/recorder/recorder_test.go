@@ -1350,7 +1350,7 @@ func TestRecorder_RecordRejectsSingleEntryOverReadCap(t *testing.T) {
 	}
 }
 
-func TestRecorder_RecordRejectsSingleEntryOverLineCap(t *testing.T) {
+func TestRecorder_RecordRecoversAfterClearlyOversizedEntry(t *testing.T) {
 	dir := t.TempDir()
 	rec, err := recorder.New(recorder.Config{
 		Enabled:            true,
@@ -1366,7 +1366,7 @@ func TestRecorder_RecordRejectsSingleEntryOverLineCap(t *testing.T) {
 		SessionID: "overlong-entry",
 		Type:      testType,
 		Transport: testTransport,
-		Summary:   strings.Repeat("x", recorder.MaxEntryLineBytes),
+		Summary:   strings.Repeat("x", recorder.MaxEntryLineBytes+1),
 	})
 	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("Record overlong entry error = %v, want ErrEvidenceReadLimitExceeded", err)

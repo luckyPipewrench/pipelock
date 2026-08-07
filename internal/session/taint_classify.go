@@ -268,7 +268,16 @@ func extractMCPCommands(raw string) []string {
 		case map[string]any:
 			var bases, vectors []string
 			for _, key := range slices.Sorted(maps.Keys(tv)) {
-				switch mcpCommandFieldRole(key) {
+				role := mcpCommandFieldRole(key)
+				if role != mcpCommandNone {
+					// A recognized field can still hold a nested container,
+					// for example {"command":{"cmd":"git","argv":[...]}}.
+					// commandFieldVectors only collects strings, so without
+					// this the whole subtree would go unscanned and a real
+					// command would never reach the matcher.
+					walk(tv[key])
+				}
+				switch role {
 				case mcpCommandBase:
 					bases = append(bases, commandFieldVectors(tv[key])...)
 				case mcpCommandArgs:
@@ -301,7 +310,10 @@ const (
 func mcpCommandFieldRole(key string) mcpCommandRole {
 	for _, token := range splitArgumentKey(key) {
 		switch token {
-		case "command", "cmd", "script", "shell":
+		// Keep this set aligned with hasExecIntent. A field that marks a call
+		// as an exec but is not recognized here would have its command go
+		// unscanned, which is how "program" was missed.
+		case "command", "cmd", "script", "shell", "program":
 			return mcpCommandBase
 		case "args", "argv":
 			return mcpCommandArgs

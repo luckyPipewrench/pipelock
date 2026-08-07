@@ -138,6 +138,21 @@ func TestClassifyMCPToolCall_ShellCommandOrderIsStable(t *testing.T) {
 			argsJSON:        `{"command":"status","argv":[1,2,{"push":"origin"}]}`,
 			wantSensitivity: session.SensitivityProtected,
 		},
+		{
+			// A recognized field can hold a nested container. Without a
+			// recursive walk into it the command never reaches the matcher
+			// and a real mutation is scanned as if it were absent.
+			name:            "nested container under a recognized field is scanned",
+			argsJSON:        `{"command":{"cmd":"git","argv":["push","origin","main"]}}`,
+			wantSensitivity: session.SensitivityElevated,
+		},
+		{
+			// program marks an exec in hasExecIntent, so extraction has to
+			// recognize it too or its command goes unscanned.
+			name:            "program field is a command base",
+			argsJSON:        `{"program":"git","argv":["push","origin","main"]}`,
+			wantSensitivity: session.SensitivityElevated,
+		},
 	}
 
 	for _, tt := range tests {

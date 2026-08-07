@@ -378,8 +378,11 @@ When `raw_escrow: true`, the unredacted detail is preserved in an encrypted side
 Raw escrow writes an encrypted sidecar file alongside each evidence entry:
 
 ```
-evidence-abc123-42.raw.enc
+evidence-abc123-42-raw-4b6f5a8c9d0e1f23456789abcdef0123.raw.enc
 ```
+
+The final 32-hex-character token is generated for each payload. It keeps
+sidecars distinct when multiple recorder processes share a session and sequence.
 
 The sidecar is encrypted with X25519 NaCl box using an ephemeral key pair. The format is:
 

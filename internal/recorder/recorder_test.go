@@ -1350,6 +1350,38 @@ func TestRecorder_RecordRejectsSingleEntryOverReadCap(t *testing.T) {
 	}
 }
 
+func TestRecorder_RecordRecoversAfterClearlyOversizedEntry(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	err = rec.Record(recorder.Entry{
+		SessionID: "overlong-entry",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   strings.Repeat("x", recorder.MaxEntryLineBytes+1),
+	})
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("Record overlong entry error = %v, want ErrEvidenceReadLimitExceeded", err)
+	}
+
+	if err := rec.Record(recorder.Entry{
+		SessionID: "overlong-entry",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "small entry after rejected overlong entry",
+	}); err != nil {
+		t.Fatalf("Record after rejected overlong entry: %v", err)
+	}
+}
+
 func TestRecorder_RecordRotatesBeforeEvidenceReadCap(t *testing.T) {
 	dir := t.TempDir()
 	rec, err := recorder.New(recorder.Config{
@@ -1362,12 +1394,12 @@ func TestRecorder_RecordRotatesBeforeEvidenceReadCap(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	for i := range 2 {
+	for i := range 10 {
 		if err := rec.Record(recorder.Entry{
 			SessionID: "byte-rotation",
 			Type:      testType,
 			Transport: testTransport,
-			Summary:   strings.Repeat("x", 5<<20),
+			Summary:   strings.Repeat("x", 900<<10),
 			Detail:    map[string]string{"idx": fmt.Sprintf("%d", i)},
 		}); err != nil {
 			t.Fatalf("Record(%d): %v", i, err)

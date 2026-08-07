@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -456,6 +457,9 @@ func TestEmitter_KeyRotationSessionCloseUsesSegmentLocalCount(t *testing.T) {
 
 func TestEmitter_EmitSessionClosePersistFailureCanRetryToDetectableGap(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot portably rename an active evidence directory")
+	}
 
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)
@@ -487,13 +491,13 @@ func TestEmitter_EmitSessionClosePersistFailureCanRetryToDetectableGap(t *testin
 	}); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	closeEscrowPath := filepath.Join(dir, "evidence-proxy-2.raw.enc")
-	if err := os.Mkdir(closeEscrowPath, 0o750); err != nil {
-		t.Fatalf("mkdir close escrow collision: %v", err)
+	blockedDir := dir + "-blocked"
+	if err := os.Rename(dir, blockedDir); err != nil {
+		t.Fatalf("hide evidence directory: %v", err)
 	}
 	closeErr := e.EmitSessionClose("probe")
-	if err := os.Remove(closeEscrowPath); err != nil {
-		t.Fatalf("remove close escrow collision: %v", err)
+	if err := os.Rename(blockedDir, dir); err != nil {
+		t.Fatalf("restore evidence directory: %v", err)
 	}
 	if closeErr == nil {
 		t.Fatal("EmitSessionClose unexpectedly succeeded")
@@ -534,6 +538,9 @@ func TestEmitter_EmitSessionClosePersistFailureCanRetryToDetectableGap(t *testin
 
 func TestEmitter_EmitSessionOpenPersistFailureCanRetryToDetectableGap(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot portably rename an active evidence directory")
+	}
 
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)
@@ -553,13 +560,13 @@ func TestEmitter_EmitSessionOpenPersistFailureCanRetryToDetectableGap(t *testing
 	}
 	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
 
-	openEscrowPath := filepath.Join(dir, "evidence-proxy-0.raw.enc")
-	if err := os.Mkdir(openEscrowPath, 0o750); err != nil {
-		t.Fatalf("mkdir open escrow collision: %v", err)
+	blockedDir := dir + "-blocked"
+	if err := os.Rename(dir, blockedDir); err != nil {
+		t.Fatalf("hide evidence directory: %v", err)
 	}
 	openErr := e.EmitSessionOpen()
-	if err := os.Remove(openEscrowPath); err != nil {
-		t.Fatalf("remove open escrow collision: %v", err)
+	if err := os.Rename(blockedDir, dir); err != nil {
+		t.Fatalf("restore evidence directory: %v", err)
 	}
 	if openErr == nil {
 		t.Fatal("EmitSessionOpen unexpectedly succeeded")

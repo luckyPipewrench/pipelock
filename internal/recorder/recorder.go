@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -41,6 +42,14 @@ const (
 
 	// x25519KeySize is the expected size of an X25519 public key in bytes.
 	x25519KeySize = 32
+
+	// escrowNameTokenBytes keeps collision retries astronomically unlikely while
+	// os.O_EXCL remains the authoritative no-overwrite guard.
+	escrowNameTokenBytes = 16
+	// maxEscrowNameAttempts turns repeated name collisions into a recorded error
+	// instead of an unbounded
+	// retry loop. O_EXCL still prevents every overwrite on every attempt.
+	maxEscrowNameAttempts = 16
 
 	// recorderTypeReceipt is the entry type for action receipts. These get
 	// selective field redaction (target/pattern only) instead of full detail
@@ -843,19 +852,74 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	payload = append(payload, ephPub[:]...)
 	payload = append(payload, sealed...)
 
-	// filepath.Base as defense-in-depth: session ID is already validated
-	// for path separators in Record(), but belt-and-suspenders for filenames.
-	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", filepath.Base(r.sessionID), r.seq)
-	escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
+	return r.writeEscrowPayload(payload)
+}
 
-	if err := os.WriteFile(escrowPath, payload, r.cfg.FileMode); err != nil {
-		return "", fmt.Errorf("writing escrow file: %w", err)
-	}
-	if err := os.Chmod(escrowPath, r.cfg.FileMode); err != nil {
-		return "", fmt.Errorf("setting escrow file permissions: %w", err)
-	}
+func (r *Recorder) writeEscrowPayload(payload []byte) (string, error) {
+	return r.writeEscrowPayloadWithReader(payload, rand.Reader)
+}
 
-	return escrowPath, nil
+func (r *Recorder) writeEscrowPayloadWithReader(payload []byte, tokenReader io.Reader) (string, error) {
+	return r.writeEscrowPayloadWithReaderAndWriter(payload, tokenReader, writeEscrowFile)
+}
+
+func (r *Recorder) writeEscrowPayloadWithReaderAndWriter(
+	payload []byte,
+	tokenReader io.Reader,
+	writeFile func(*os.File, []byte, os.FileMode) error,
+) (string, error) {
+	root, err := os.OpenRoot(filepath.Clean(r.cfg.Dir))
+	if err != nil {
+		return "", fmt.Errorf("opening evidence directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
+	for range maxEscrowNameAttempts {
+		var token [escrowNameTokenBytes]byte
+		if _, err := io.ReadFull(tokenReader, token[:]); err != nil {
+			return "", fmt.Errorf("generating escrow filename token: %w", err)
+		}
+
+		// filepath.Base is defense-in-depth: Record already rejects separators.
+		// The token distinguishes concurrent recorders that share a session and
+		// sequence. O_EXCL is still required because randomness alone never
+		// proves an existing payload will be preserved.
+		escrowName := fmt.Sprintf("evidence-%s-%d-raw-%s.raw.enc", filepath.Base(r.sessionID), r.seq, hex.EncodeToString(token[:]))
+		escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
+		file, openErr := root.OpenFile(escrowName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePermissions)
+		if openErr != nil {
+			if errors.Is(openErr, fs.ErrExist) {
+				continue
+			}
+			return "", fmt.Errorf("creating escrow file: %w", openErr)
+		}
+
+		if err := writeFile(file, payload, filePermissions); err != nil {
+			_ = file.Close()
+			removeErr := root.Remove(escrowName)
+			if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+				return "", errors.Join(err, fmt.Errorf("removing incomplete escrow file: %w", removeErr))
+			}
+			return "", err
+		}
+		return escrowPath, nil
+	}
+	return "", fmt.Errorf("creating unique escrow filename after %d attempts: %w", maxEscrowNameAttempts, fs.ErrExist)
+}
+
+func writeEscrowFile(file *os.File, payload []byte, mode os.FileMode) error {
+	if _, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("writing escrow file: %w", err)
+	}
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("setting escrow file permissions: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing escrow file: %w", err)
+	}
+	return nil
 }
 
 func (r *Recorder) resumeSessionLocked(sessionID string) error {
@@ -1134,7 +1198,10 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 	if err != nil {
 		return fmt.Errorf("marshaling entry: %w", err)
 	}
-	lineBytes := int64(len(data) + 1)
+	if len(data) > MaxEntryLineBytes {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
+	}
+	lineBytes := int64(len(data)) + int64(len("\n"))
 	if err := r.ensureEntryCapacityLocked(e.SessionID, e.Sequence, lineBytes); err != nil {
 		return err
 	}
@@ -1142,14 +1209,27 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 }
 
 func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
-	if n, err := r.writer.Write(data); err != nil {
-		return err
-	} else if n != len(data) {
-		return io.ErrShortWrite
+	if len(data) > MaxEntryLineBytes {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
 	}
-	if n, err := r.writer.Write([]byte("\n")); err != nil {
+	if r.writer.Buffered() != 0 {
+		return errors.New("recorder: evidence writer buffer is not empty before record")
+	}
+
+	// Emit the record and its terminating newline as ONE write. Concurrent
+	// recorder processes append to a shared file under a shared lock, so two
+	// writes leave a window in which another process can append between the
+	// record and its newline, producing a physical line holding two records
+	// and destroying both. Buffering hid this for records under the buffer
+	// size, because the pair coalesced into a single flush; a record larger
+	// than the buffer is written straight through and the newline follows
+	// separately. Records are permitted up to the evidence file limit, so the
+	// window is reachable in normal operation.
+	line := append([]byte(nil), data...)
+	line = append(line, '\n')
+	if n, err := r.writer.Write(line); err != nil {
 		return err
-	} else if n != 1 {
+	} else if n != len(line) {
 		return io.ErrShortWrite
 	}
 	if err := r.writer.Flush(); err != nil {
@@ -1162,8 +1242,8 @@ func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
 }
 
 func (r *Recorder) ensureEntryCapacityLocked(sessionID string, seq uint64, lineBytes int64) error {
-	if lineBytes > MaxEvidenceReadFileBytes {
-		return fmt.Errorf("%w: serialized evidence entry exceeds %d bytes", ErrEvidenceReadLimitExceeded, MaxEvidenceReadFileBytes)
+	if lineBytes > int64(MaxEntryLineBytes+len("\n")) {
+		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
 	}
 	if err := r.ensureFile(sessionID, seq); err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)

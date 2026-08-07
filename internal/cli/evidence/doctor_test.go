@@ -48,6 +48,64 @@ func TestEvidenceDoctorCleanDirectory(t *testing.T) {
 	}
 }
 
+func TestParseDoctorEvidenceName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		filename    string
+		suffix      string
+		wantSession string
+		wantSeq     uint64
+		wantOK      bool
+	}{
+		{
+			name:        "legacy raw sidecar",
+			filename:    "evidence-proxy-42.raw.enc",
+			suffix:      ".raw.enc",
+			wantSession: "proxy",
+			wantSeq:     42,
+			wantOK:      true,
+		},
+		{
+			name:        "unique raw sidecar",
+			filename:    "evidence-proxy-42-raw-4b6f5a8c9d0e1f23456789abcdef0123.raw.enc",
+			suffix:      ".raw.enc",
+			wantSession: "proxy",
+			wantSeq:     42,
+			wantOK:      true,
+		},
+		{
+			name:     "unique token is raw only",
+			filename: "evidence-proxy-42-raw-4b6f5a8c9d0e1f23456789abcdef0123.jsonl",
+			suffix:   ".jsonl",
+			wantOK:   false,
+		},
+		{
+			name:     "short raw token is not accepted",
+			filename: "evidence-proxy-42-raw-4b6f.raw.enc",
+			suffix:   ".raw.enc",
+			wantOK:   false,
+		},
+		{
+			name:     "non-hex raw token is not accepted",
+			filename: "evidence-proxy-42-raw-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.raw.enc",
+			suffix:   ".raw.enc",
+			wantOK:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotSession, gotSeq, gotOK := parseDoctorEvidenceName(tt.filename, tt.suffix)
+			if gotSession != tt.wantSession || gotSeq != tt.wantSeq || gotOK != tt.wantOK {
+				t.Fatalf("parseDoctorEvidenceName(%q, %q) = (%q, %d, %v), want (%q, %d, %v)",
+					tt.filename, tt.suffix, gotSession, gotSeq, gotOK, tt.wantSession, tt.wantSeq, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestEvidenceDoctorDamageFindings(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

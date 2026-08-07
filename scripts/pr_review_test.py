@@ -125,7 +125,26 @@ class ModelRoutingTest(unittest.TestCase):
             with self.subTest(section=section):
                 self.assertIn(section, pr_review.PROMPT_DEEP)
         self.assertIn("static pull-request diff", pr_review.PROMPT_DEEP)
-        self.assertIn("neutralization was not executed", pr_review.PROMPT_DEEP)
+        self.assertIn("You cannot run code", pr_review.PROMPT_DEEP)
+
+    def test_deep_prompt_declares_compact_output_contract(self) -> None:
+        self.assertIn("Evaluate all ten questions below before answering", pr_review.PROMPT_DEEP)
+        self.assertIn("internal review", pr_review.PROMPT_DEEP)
+        self.assertIn("not ten required output sections", pr_review.PROMPT_DEEP)
+        self.assertIn("Lead with `## Findings`", pr_review.PROMPT_DEEP)
+        self.assertIn("exactly one compact `## Audit coverage` paragraph", pr_review.PROMPT_DEEP)
+        self.assertIn("`NOT PROVEN:` clause", pr_review.PROMPT_DEEP)
+        self.assertIn("Do not emit ten headings", pr_review.PROMPT_DEEP)
+        self.assertIn("fewer than 1,200 words", pr_review.PROMPT_DEEP)
+        self.assertIn("Never omit or merge independently material", pr_review.PROMPT_DEEP)
+        self.assertIn("at most three sentences", pr_review.PROMPT_DEEP)
+        self.assertIn("The `## Audit coverage` paragraph is still required", pr_review.PROMPT_DEEP)
+        self.assertNotIn("Answer all ten sections", pr_review.PROMPT_DEEP)
+        self.assertNotIn("even when a section has no finding", pr_review.PROMPT_DEEP)
+        self.assertIn(
+            "No material security or correctness issues found in the supplied static diff.",
+            pr_review.PROMPT_DEEP,
+        )
 
     def test_deep_mode_routes_to_adversarial_prompt_and_larger_diff(self) -> None:
         self.assertIs(pr_review.prompt_for_mode("deep"), pr_review.PROMPT_DEEP)
@@ -317,7 +336,7 @@ class MainFlowTest(unittest.TestCase):
             pr_review, "call_llm", return_value="review result"
         ) as call_llm, mock.patch.object(
             pr_review, "post_comment"
-        ) as post_comment:
+        ) as post_comment, mock.patch("builtins.print") as output:
             pr_review.main()
 
         call_llm.assert_called_once_with(
@@ -329,6 +348,7 @@ class MainFlowTest(unittest.TestCase):
         self.assertIn("**Scope:** Static diff review", body)
         self.assertIn("no tests or repository-wide search were executed", body)
         self.assertIn("review result", body)
+        output.assert_any_call("Deep review output: 2 words")
 
 
 class StatsSafetyTest(unittest.TestCase):

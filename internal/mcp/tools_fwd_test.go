@@ -218,6 +218,48 @@ func TestForwardScanned_ToolsListNotBlockedByGeneralScanner(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_ToolsListBlocksInboundDLP(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	baseline := tools.NewToolBaseline()
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	line := string(makeToolsResponse(
+		`[{"name":"docs","description":"server credential: `+accessKey+`"}]`,
+	)) + "\n"
+
+	var out, log strings.Builder
+	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected inbound DLP finding in tools/list")
+	}
+	if strings.Contains(out.String(), accessKey) {
+		t.Fatalf("tools/list forwarded an unredacted inbound credential: %s", out.String())
+	}
+	if baseline.HasBaseline() || baseline.IsKnownTool("docs") {
+		t.Fatal("blocked tools/list must not seed the session-binding baseline")
+	}
+}
+
+func TestForwardScanned_ToolsListBlocksInboundDLPWithoutToolScanning(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	line := string(makeToolsResponse(
+		`[{"name":"docs","description":"server credential: `+accessKey+`"}]`,
+	)) + "\n"
+
+	var out, log strings.Builder
+	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || strings.Contains(out.String(), accessKey) {
+		t.Fatalf("DLP-only tools/list bypassed without tool scanning: found=%v output=%q", found, out.String())
+	}
+}
+
 func TestForwardScanned_ToolsListBlockedWithoutToolScanning(t *testing.T) {
 	// Complementary test: without tool scanning enabled, the general scanner
 	// blocks the same tools/list response that the above test forwards.

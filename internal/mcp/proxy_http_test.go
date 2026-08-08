@@ -3719,11 +3719,20 @@ func TestHTTPListener_SSEUpstream_MultipleEvents(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
 
-	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(jsonToolsCallEcho)) //nolint:gosec,noctx // test
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("Close response body: %v", err)
+		}
+	}()
 
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Errorf("Content-Type = %q, want text/event-stream prefix", ct)
@@ -3944,6 +3953,33 @@ func TestHTTPListener_SSEUpstream_BlocksInjection(t *testing.T) {
 	}
 	if bytes.Contains(respBody, []byte("IGNORE ALL PREVIOUS INSTRUCTIONS")) {
 		t.Errorf("injection content leaked through to client: %s", respBody)
+	}
+}
+
+func TestHTTPListener_SSEUpstream_BlocksInboundDLP(t *testing.T) {
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	dirty := makeResponse(1, "server credential: "+accessKey)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + dirty + "\n\n"))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerWithAction(t, config.ActionBlock)
+	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
+
+	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(jsonToolsCallEcho)) //nolint:gosec,noctx // test
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(respBody, []byte(`"code":-32000`)) {
+		t.Errorf("expected inbound DLP block (code -32000), got: %s", respBody)
+	}
+	if bytes.Contains(respBody, []byte(accessKey)) {
+		t.Errorf("inbound credential leaked through streamable HTTP: %s", respBody)
 	}
 }
 

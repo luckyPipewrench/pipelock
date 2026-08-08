@@ -411,6 +411,83 @@ func TestForwardScanned_BlockAction_EmitsReceipt(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_InboundDLPBlockEmitsReceipt(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := makeResponse(42, "upstream credential: "+accessKey)
+	var out, log bytes.Buffer
+	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`42`))
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(response+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		tracker,
+		MCPProxyOpts{Scanner: sc, ReceiptEmitter: emitter, Transport: transportMCPStdio},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || strings.Contains(out.String(), accessKey) {
+		t.Fatalf("inbound DLP was not blocked: found=%v output=%q", found, out.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if err := receipt.VerifyWithKey(receipts[0], pubHex); err != nil {
+		t.Fatalf("VerifyWithKey: %v", err)
+	}
+	got := receipts[0].ActionRecord
+	if got.Verdict != config.ActionBlock || got.Layer != "mcp_response_scan" || got.Pattern != "AWS Access ID" {
+		t.Fatalf("receipt verdict/layer/pattern = %q/%q/%q, want block/mcp_response_scan/AWS Access ID", got.Verdict, got.Layer, got.Pattern)
+	}
+}
+
+func TestForwardScanned_InboundDLPWarnReceiptRequirement(t *testing.T) {
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := makeResponse(42, "upstream credential: "+accessKey) + "\n"
+
+	for _, tt := range []struct {
+		name            string
+		requireReceipts bool
+		wantForward     bool
+	}{
+		{name: "optional", wantForward: true},
+		{name: "required", requireReceipts: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := testScannerWithAction(t, config.ActionWarn)
+			var out, log bytes.Buffer
+			found, err := ForwardScanned(
+				transport.NewStdioReader(strings.NewReader(response)),
+				transport.NewStdioWriter(&out),
+				&log,
+				nil,
+				MCPProxyOpts{Scanner: sc, Transport: transportMCPStdio, RequireReceipts: tt.requireReceipts},
+			)
+			if err != nil {
+				t.Fatalf("ForwardScanned: %v", err)
+			}
+			if !found {
+				t.Fatal("expected inbound DLP finding")
+			}
+			forwarded := strings.Contains(out.String(), accessKey)
+			if forwarded != tt.wantForward {
+				t.Fatalf("forwarded=%v, want %v; output=%q", forwarded, tt.wantForward, out.String())
+			}
+			if tt.requireReceipts && !strings.Contains(out.String(), "receipt emission failed") {
+				t.Fatalf("required receipt failure must block, output=%q", out.String())
+			}
+		})
+	}
+}
+
 func TestForwardScanned_ToolPoisonBlockEmitsReceipt(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
 	var out, log bytes.Buffer
@@ -1298,6 +1375,46 @@ func TestForwardScanned_AskStrip(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "operator chose strip") {
 		t.Errorf("expected 'operator chose strip' in log, got: %s", log.String())
+	}
+}
+
+func TestForwardScanned_AskStripBlocksInboundDLP(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionAsk)
+	approver := testApproverForMCP(t, "s\n")
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := makeResponse(42, "server credential: "+accessKey)
+	var out, log bytes.Buffer
+
+	found, err := fwdScanned(strings.NewReader(response+"\n"), &out, &log, sc, approver, nil)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected inbound DLP finding")
+	}
+	if strings.Contains(out.String(), accessKey) {
+		t.Fatalf("ask-strip forwarded the unredacted inbound credential: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "inbound DLP finding cannot be safely stripped") {
+		t.Fatalf("ask-strip must block inbound DLP without a redactor: %s", out.String())
+	}
+}
+
+func TestForwardScanned_StripBlocksInboundDLP(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionStrip)
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := makeResponse(42, "server credential: "+accessKey)
+	var out, log bytes.Buffer
+
+	found, err := fwdScanned(strings.NewReader(response+"\n"), &out, &log, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || strings.Contains(out.String(), accessKey) {
+		t.Fatalf("strip forwarded an unredacted inbound credential: found=%v output=%q", found, out.String())
+	}
+	if !strings.Contains(out.String(), "inbound DLP finding cannot be safely stripped") {
+		t.Fatalf("strip must block inbound DLP without a redactor: %s", out.String())
 	}
 }
 

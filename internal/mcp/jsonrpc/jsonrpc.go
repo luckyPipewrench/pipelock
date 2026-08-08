@@ -61,18 +61,23 @@ type RPCResponse struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
-// ScanScopeResponseInjection names the MCP response prompt-injection scanner.
-const ScanScopeResponseInjection = "response_injection"
+const (
+	// ScanScopeResponseInjection names the MCP response prompt-injection scanner.
+	ScanScopeResponseInjection = "response_injection"
+	// ScanScopeResponseDLP names the MCP response inbound text-DLP scanner.
+	ScanScopeResponseDLP = "response_dlp"
+)
 
 // ScanVerdict describes the outcome of scanning a single MCP response for MCP
-// response prompt-injection only. Clean means no response-injection finding in
-// the scanned response text; it does not mean DLP, secrets, tool policy, or
-// input scanning ran.
+// response content. Clean means neither prompt-injection nor enforceable
+// inbound DLP was found in the scanned response text; it does not mean tool
+// policy or input scanning ran.
 //
 // Three states:
-//   - Clean:     Clean=true, Scanned names the response-injection scope.
+//   - Clean:     Clean=true, Scanned names the response scopes.
 //   - Error:     Clean=false, Error set (parse/protocol failure). Not injection.
-//   - Injection: Clean=false, Error empty, Matches and Action set.
+//   - Finding:   Clean=false, Error empty, Matches and/or DLPMatches and
+//     Action set.
 type ScanVerdict struct {
 	Line  int             `json:"line"`
 	ID    json.RawMessage `json:"id"`
@@ -83,7 +88,11 @@ type ScanVerdict struct {
 	Scanned []string                `json:"scanned,omitempty"`
 	Action  string                  `json:"action,omitempty"`
 	Matches []scanner.ResponseMatch `json:"matches,omitempty"`
-	Error   string                  `json:"error,omitempty"`
+	// DLPMatches contains enforceable inbound text-DLP findings. It is additive
+	// to the long-standing injection Matches field so existing JSON consumers
+	// retain their response-injection contract.
+	DLPMatches []scanner.TextDLPMatch `json:"dlp_matches,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 // ExtractStringsResult is the bounded recursive extraction result. Truncated is

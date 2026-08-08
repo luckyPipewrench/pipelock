@@ -137,11 +137,33 @@ func TestBuildMCPExplainReport_IncludesResponseInjectionScope(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildMCPExplainReport: %v", err)
 			}
-			want := []string{jsonrpc.ScanScopeResponseInjection}
+			want := []string{jsonrpc.ScanScopeResponseInjection, jsonrpc.ScanScopeResponseDLP}
 			if !slices.Equal(report.Scanned, want) {
 				t.Fatalf("scanned = %+v, want %+v", report.Scanned, want)
 			}
 		})
+	}
+}
+
+func TestBuildMCPExplainReport_InboundDLPNamesFindingWithoutSuppressRemediation(t *testing.T) {
+	cfg := config.Defaults()
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + accessKey + `"}]}}`
+	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(response))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
+	if report.Allowed || report.Action != config.ActionBlock {
+		t.Fatalf("inbound DLP report must block: %+v", report)
+	}
+	if !slices.Contains(report.Patterns, "AWS Access ID") {
+		t.Fatalf("inbound DLP report must name AWS Access ID: %+v", report)
+	}
+	if report.Remediation != nil {
+		t.Fatalf("inbound DLP must not offer an ineffective response-scan suppress entry: %+v", report.Remediation)
+	}
+	if !strings.Contains(strings.Join(report.Notes, " "), "cannot be suppressed") {
+		t.Fatalf("inbound DLP report must explain the unavailable suppress path: %+v", report.Notes)
 	}
 }
 

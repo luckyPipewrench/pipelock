@@ -167,8 +167,10 @@ effect.
 
 `--json` emits the same report as a structured object (`scanned`,
 `scanner`, `patterns`, and a `remediation.suppress_entries` array) for scripting.
-The `scanned` field is `["response_injection"]`, including on clean reports, so
-scripts do not treat `allowed: true` as a full DLP/secret/tool-policy verdict.
+The `scanned` field is `["response_injection", "response_dlp"]`, including on
+clean reports. The DLP scope covers generic inbound credential patterns and
+intentionally skips agent-owned environment and file-secret matching; scripts
+must not treat `allowed: true` as a tool-policy verdict.
 
 ## Security model
 

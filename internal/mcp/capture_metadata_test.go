@@ -36,6 +36,54 @@ func (o *mcpCaptureMetadataObserver) ObserveDLPVerdict(_ context.Context, rec *c
 	o.got <- *rec
 }
 
+type mcpResponseCaptureObserver struct {
+	capture.NopObserver
+	got chan capture.ResponseVerdictRecord
+}
+
+func (o *mcpResponseCaptureObserver) ObserveResponseVerdict(_ context.Context, rec *capture.ResponseVerdictRecord) {
+	o.got <- *rec
+}
+
+func TestForwardScanned_CapturesInboundDLPWithEffectiveAction(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	obs := &mcpResponseCaptureObserver{got: make(chan capture.ResponseVerdictRecord, 1)}
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := makeResponse(1, "server credential: "+accessKey) + "\n"
+	var out bytes.Buffer
+
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(response)),
+		transport.NewStdioWriter(&out),
+		io.Discard,
+		nil,
+		MCPProxyOpts{Scanner: sc, CaptureObs: obs, Transport: transportMCPStdio},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || !strings.Contains(out.String(), accessKey) {
+		t.Fatalf("warn action must forward the inbound DLP response: found=%v out=%q", found, out.String())
+	}
+
+	select {
+	case rec := <-obs.got:
+		if rec.EffectiveAction != config.ActionWarn {
+			t.Fatalf("effective action = %q, want warn", rec.EffectiveAction)
+		}
+		if len(rec.RawFindings) == 0 {
+			t.Fatal("expected DLP capture finding")
+		}
+		for _, finding := range rec.RawFindings {
+			if finding.Kind != capture.KindDLP || finding.Action != config.ActionWarn {
+				t.Fatalf("DLP capture finding = %+v, want kind=dlp action=warn", finding)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected inbound DLP response capture record")
+	}
+}
+
 func TestCaptureMetadata_MCPHTTPInputTransport(t *testing.T) {
 	t.Parallel()
 

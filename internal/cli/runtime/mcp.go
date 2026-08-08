@@ -482,8 +482,9 @@ func validateMCPDeferSurface(surface string, cfg *config.Config) error {
 	return deferred.ValidateAction(surface, config.ActionDefer)
 }
 
-// ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
-var ErrInjectionDetected = errors.New("prompt injection detected")
+// ErrInjectionDetected is returned when pipelock mcp scan detects an MCP
+// response security finding.
+var ErrInjectionDetected = errors.New("MCP response security finding detected")
 
 // safeWriter wraps an io.Writer with a mutex for concurrent use.
 // Used to synchronize file sentry goroutines and RunProxy stderr output.
@@ -533,7 +534,7 @@ func McpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "MCP (Model Context Protocol) security scanning",
-		Long: `Scan MCP JSON-RPC 2.0 responses for prompt injection before they reach the agent.
+		Long: `Scan MCP JSON-RPC 2.0 responses for prompt injection and inbound generic credentials before they reach the agent.
 
 Examples:
   mcp-server | pipelock mcp scan

@@ -240,6 +240,44 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	}
 }
 
+func TestRunWSProxy_BlocksInboundDLPResponse(t *testing.T) {
+	responseSent := make(chan struct{})
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	dirty := []byte(makeResponse(1, "server credential: "+accessKey))
+	srv := wsRespondServer(t, dirty, responseSent)
+	defer srv.Close()
+
+	sc := testScannerWithAction(t, config.ActionBlock)
+	pr, pw := io.Pipe()
+	var stdout, stderr lockedHTTPBuffer
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var proxyErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
+	}()
+
+	_, _ = pw.Write([]byte(jsonToolsCallEcho + "\n"))
+	waitForResponse(t, responseSent)
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains("MCP response security finding") && stderr.contains("inbound DLP detected")
+	}, "inbound DLP WS response blocked and logged")
+	_ = pw.Close()
+
+	wg.Wait()
+	if proxyErr != nil {
+		t.Fatalf("RunWSProxy: %v", proxyErr)
+	}
+	if stdout.contains(accessKey) {
+		t.Fatalf("inbound credential leaked through WS: %s", stdout.String())
+	}
+}
+
 func TestRunWSProxy_MCPResponseTrustReasoningWarnsSecurityAnalysis(t *testing.T) {
 	responseSent := make(chan struct{})
 	response := []byte(makeResponse(1, reasoningPromptInjectionAnalysis))

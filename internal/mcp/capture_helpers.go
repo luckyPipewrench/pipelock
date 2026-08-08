@@ -72,6 +72,12 @@ func captureSessionIDOriginal(transport string) string {
 
 // dlpMatchesToFindings converts scanner.TextDLPMatch slice to capture findings.
 func dlpMatchesToFindings(matches []scanner.TextDLPMatch) []capture.Finding {
+	return dlpMatchesToFindingsWithAction(matches, config.ActionBlock)
+}
+
+// dlpMatchesToFindingsWithAction converts scanner.TextDLPMatch slice to capture
+// findings and records the action ultimately taken at this response surface.
+func dlpMatchesToFindingsWithAction(matches []scanner.TextDLPMatch, action string) []capture.Finding {
 	if len(matches) == 0 {
 		return nil
 	}
@@ -82,7 +88,7 @@ func dlpMatchesToFindings(matches []scanner.TextDLPMatch) []capture.Finding {
 			PatternName: m.PatternName,
 			Severity:    m.Severity,
 			Encoded:     m.Encoded,
-			Action:      config.ActionBlock,
+			Action:      action,
 		}
 	}
 	return findings

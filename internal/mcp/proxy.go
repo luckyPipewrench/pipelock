@@ -128,8 +128,8 @@ func isRequest(msg []byte) bool {
 }
 
 // ForwardScanned reads JSON-RPC 2.0 messages from reader, scans each for prompt
-// injection, and forwards to writer based on the scanner's configured action
-// (warn, block, strip). Scan verdicts are logged to logW.
+// injection and enforceable inbound DLP, and forwards to writer based on the
+// scanner's configured action (warn, block, strip). Scan verdicts are logged to logW.
 // When toolCfg is non-nil, tool descriptions in tools/list responses are scanned
 // for poisoning and tracked for drift (rug pull) detection. Tool scanning runs
 // independently of general response scanning so a "block" tool action is never
@@ -140,7 +140,7 @@ func isRequest(msg []byte) bool {
 // and the effective action may be upgraded based on session escalation level.
 // When ks is non-nil, the kill switch is checked on each message so activation
 // mid-stream terminates already-open sessions immediately.
-// Returns true if any injection was detected.
+// Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
 	sc := opts.scanner()
 	approver := opts.Approver
@@ -398,13 +398,53 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// purpose-built poisoning patterns instead. When tool scanning
 		// identifies a message as tools/list, skip the general scan entirely.
 		isToolsList := false
+		var toolResult tools.ToolScanResult
+		toolInventoryResolved := false
+		resolveToolInventory := func(decision string) {
+			if decision == "" {
+				return
+			}
+			if manager := opts.deferManager(); manager != nil {
+				manager.ResolveToolInventory(captureSessionID(opts.Transport), decision)
+			}
+			toolInventoryResolved = true
+		}
+		// Commit tool names only after the exact response that carried them is
+		// allowed through. A blocked tools/list must not become a trusted
+		// session-binding baseline merely because tool scanning runs before the
+		// response scanner.
+		commitToolInventory := func() {
+			if !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 {
+				return
+			}
+
+			decision := ""
+			if !toolCfg.Baseline.HasBaseline() {
+				// An MCP tools/list inventory is not an A2A capability source;
+				// SetKnownTools leaves the A2A method inventory untouched.
+				toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
+			} else {
+				added := toolCfg.Baseline.CheckNewTools(toolResult.ToolNames)
+				for _, name := range added {
+					_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
+				}
+				if len(added) > 0 {
+					decision = config.ActionBlock
+				} else {
+					decision = config.ActionAllow
+				}
+			}
+			if !toolInventoryResolved {
+				resolveToolInventory(decision)
+			}
+		}
 		// toolPoisonDetected tracks whether a tool-poisoning finding was raised
 		// for this message (even in warn mode). A message that raised a
 		// tool-poison near-miss signal must not also apply RecordClean: the
 		// same message cannot both raise and decay the session threat score.
 		toolPoisonDetected := false
 		if toolCfg != nil {
-			toolResult := tools.ScanTools(line, sc, toolCfg)
+			toolResult = tools.ScanTools(line, sc, toolCfg)
 			isToolsList = toolResult.IsToolsList
 			// Provenance: verify tool signatures BEFORE updating session binding
 			// baseline. A blocked tools/list must not seed known tools.
@@ -441,31 +481,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 				}
 			}
-			// Session binding: capture tool names from tools/list responses.
-			// Runs after provenance so blocked responses don't poison the baseline.
-			toolInventoryDecision := ""
-			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
-				// Do NOT seed the A2A method inventory from tools/list: a
-				// tools/list response is an MCP tool inventory, not an A2A
-				// capability source, so an MCP tool named "SendMessage" would
-				// otherwise authorize the A2A SendMessage method (a cross-
-				// protocol namespace collision). A2A binding stays fail-closed
-				// until seeded from a validated A2A capability source.
-				hadBaseline := toolCfg.Baseline.HasBaseline()
-				if !hadBaseline {
-					toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
-				} else {
-					added := toolCfg.Baseline.CheckNewTools(toolResult.ToolNames)
-					for _, name := range added {
-						_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
-					}
-					if len(added) > 0 {
-						toolInventoryDecision = config.ActionBlock
-					} else {
-						toolInventoryDecision = config.ActionAllow
-					}
-				}
-			}
 			// Capture: record tools/list scan verdict.
 			if toolResult.IsToolsList {
 				toolCaptureAction := config.ActionAllow
@@ -491,12 +506,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				})
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
-				toolInventoryDecision = config.ActionBlock
-			}
-			if toolInventoryDecision != "" {
-				if manager := opts.deferManager(); manager != nil {
-					manager.ResolveToolInventory(captureSessionID(opts.Transport), toolInventoryDecision)
-				}
+				resolveToolInventory(config.ActionBlock)
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
@@ -576,6 +586,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					metrics:    m,
 				}, opts.warnContext()))
 			}
+			commitToolInventory()
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
@@ -605,7 +616,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			continue
 		}
 
-		// Injection detected.
+		// Prompt injection and inbound DLP share response-action enforcement.
+		// Inbound DLP deliberately skips agent-owned env/file secret values;
+		// only generic/enforceable credential findings reach this branch.
 		foundInjection = true
 		action := verdict.Action
 		if action == "" {
@@ -613,6 +626,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		originalAction := action
 		names := matchNames(verdict.Matches)
+		for _, match := range verdict.DLPMatches {
+			names = append(names, match.PatternName)
+		}
 		patterns := strings.Join(names, ", ")
 		trustClass := responseScanTrustClass(respScanOpts)
 		serverName := opts.ServerName
@@ -626,8 +642,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		escalationDriven := action != originalAction
 
-		_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection detected (%s), server=%s trust=%s action=%s\n",
-			lineNum, patterns, serverName, trustClass, action)
+		findingKind := "injection"
+		if len(verdict.Matches) == 0 {
+			findingKind = "inbound DLP"
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s detected (%s), server=%s trust=%s action=%s\n",
+			lineNum, findingKind, patterns, serverName, trustClass, action)
 
 		effectiveAction := action
 		var outbound []byte
@@ -640,13 +660,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if escalationDriven {
 				outbound = blockSessionDenyResponse(verdict.ID, session.EscalationLabel(rec.EscalationLevel()))
 			} else {
-				outbound = blockResponseReason(verdict.ID, fmt.Sprintf("prompt injection detected in MCP response (server=%s pattern=%s trust=%s)", serverName, firstNonEmptyPattern(names), trustClass))
+				outbound = blockResponseReason(verdict.ID, fmt.Sprintf("MCP response security finding (server=%s pattern=%s trust=%s)", serverName, firstNonEmptyPattern(names), trustClass))
 			}
 		case config.ActionAsk:
 			if approver == nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
 				effectiveAction = config.ActionBlock
-				outbound = blockResponse(verdict.ID)
+				outbound = blockResponseForFinding(verdict)
 				writeContext = "writing block response"
 			} else {
 				preview := ""
@@ -655,7 +675,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				d := approver.Ask(&hitl.Request{
 					URL:      "mcp-response",
-					Reason:   fmt.Sprintf("prompt injection detected: %s", strings.Join(names, ", ")),
+					Reason:   fmt.Sprintf("%s: %s", responseFindingLabel(verdict), strings.Join(names, ", ")),
 					Patterns: names,
 					Preview:  preview,
 				})
@@ -668,27 +688,43 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					observeMCPResponseTaint(taintOpts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
-					effectiveAction = actualAction
-					outbound = msg
-					writeContext = "writing strip/block response"
-					if actualAction == config.ActionStrip {
-						observeMCPResponseTaint(taintOpts, true)
+					if len(verdict.DLPMatches) > 0 {
+						// The injection stripper has no lossless DLP rewrite for arbitrary
+						// JSON-RPC result shapes. Never forward an unredacted credential.
+						effectiveAction = config.ActionBlock
+						outbound = blockResponseReason(verdict.ID, "inbound DLP finding cannot be safely stripped")
+						writeContext = "writing block response"
+					} else {
+						actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
+						effectiveAction = actualAction
+						outbound = msg
+						writeContext = "writing strip/block response"
+						if actualAction == config.ActionStrip {
+							observeMCPResponseTaint(taintOpts, true)
+						}
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
 					effectiveAction = config.ActionBlock
-					outbound = blockResponse(verdict.ID)
+					outbound = blockResponseForFinding(verdict)
 					writeContext = "writing block response"
 				}
 			}
 		case config.ActionStrip:
-			actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
-			effectiveAction = actualAction
-			outbound = msg
-			writeContext = "writing strip/block response"
-			if actualAction == config.ActionStrip {
-				observeMCPResponseTaint(taintOpts, true)
+			if len(verdict.DLPMatches) > 0 {
+				// The injection stripper has no lossless DLP rewrite for arbitrary
+				// JSON-RPC result shapes. Never forward an unredacted credential.
+				effectiveAction = config.ActionBlock
+				outbound = blockResponseReason(verdict.ID, "inbound DLP finding cannot be safely stripped")
+				writeContext = "writing block response"
+			} else {
+				actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
+				effectiveAction = actualAction
+				outbound = msg
+				writeContext = "writing strip/block response"
+				if actualAction == config.ActionStrip {
+					observeMCPResponseTaint(taintOpts, true)
+				}
 			}
 		default: // warn
 			outbound = line
@@ -749,6 +785,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 		}
+		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
+			commitToolInventory()
+		} else {
+			resolveToolInventory(config.ActionBlock)
+		}
 		if err := writer.WriteMessage(outbound); err != nil {
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
@@ -784,7 +825,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			Request: capture.CaptureRequest{
 				RPCID: captureRPCID(verdict.ID),
 			},
-			RawFindings:     responseMatchesToFindings(verdict.Matches, effectiveAction),
+			RawFindings:     append(responseMatchesToFindings(verdict.Matches, effectiveAction), dlpMatchesToFindingsWithAction(verdict.DLPMatches, effectiveAction)...),
 			EffectiveAction: effectiveAction,
 			Outcome:         captureOutcome(effectiveAction, false),
 		})
@@ -910,6 +951,23 @@ func (o MCPProxyOpts) withResponseTimeout(r transport.MessageReader) transport.M
 // operators debugging MCP do not chase a scanner false positive.
 func blockResponse(id json.RawMessage) []byte {
 	return blockResponseReason(id, "prompt injection detected in MCP response")
+}
+
+func responseFindingLabel(verdict jsonrpc.ScanVerdict) string {
+	if len(verdict.DLPMatches) == 0 {
+		return "prompt injection detected"
+	}
+	if len(verdict.Matches) == 0 {
+		return "inbound DLP detected"
+	}
+	return "prompt injection and inbound DLP detected"
+}
+
+func blockResponseForFinding(verdict jsonrpc.ScanVerdict) []byte {
+	if len(verdict.DLPMatches) > 0 {
+		return blockResponseReason(verdict.ID, "MCP response security finding")
+	}
+	return blockResponse(verdict.ID)
 }
 
 func firstNonEmptyPattern(names []string) string {

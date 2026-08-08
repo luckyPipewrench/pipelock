@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package mcp provides scanning of MCP (Model Context Protocol) JSON-RPC 2.0
-// responses for prompt injection. It extracts text content from tool result
-// blocks and runs them through scanner.ScanResponse for pattern matching.
+// responses for prompt injection and inbound generic credentials. It extracts
+// text content from tool result blocks and runs the response and inbound-DLP
+// scanners for pattern matching.
 package mcp
 
 import (
@@ -49,10 +50,11 @@ type ResponseScanOptions struct {
 }
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
-// content for prompt injection. Parse errors produce a verdict with Clean=false
-// and the Error field set. Both result content and error messages are scanned.
-// Server notifications (method+params, no id) are also scanned.
-// Batch responses (JSON arrays) are detected and each element scanned individually.
+// content for prompt injection and enforceable inbound DLP. Parse errors produce
+// a verdict with Clean=false and the Error field set. Both result content and
+// error messages are scanned. Server notifications (method+params, no id) are
+// also scanned. Batch responses (JSON arrays) are detected and each element
+// scanned individually.
 func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	return ScanResponseOpts(line, sc, ResponseScanOptions{})
 }
@@ -150,15 +152,17 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 
 	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
-	if result.Clean {
+	dlpMatches := scanner.EnforceableInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
+	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
 	return jsonrpc.ScanVerdict{
-		ID:      rpc.ID,
-		Clean:   false,
-		Action:  responseScanAction(sc, opts),
-		Matches: result.Matches,
+		ID:         rpc.ID,
+		Clean:      false,
+		Action:     responseScanAction(sc, opts),
+		Matches:    result.Matches,
+		DLPMatches: dlpMatches,
 	}
 }
 
@@ -213,9 +217,11 @@ func isToolsListResponse(line []byte) bool {
 // scanToolsListNonToolFields scans a tools/list response for injection in
 // non-tool fields (error, params, and any sibling keys in result besides "tools").
 // Tool descriptions are scanned separately by the dedicated tool scanning
-// subsystem (internal/mcp/tools), so we skip result.tools to avoid FPs from
-// instructional text. However, a malicious server can inject into sibling fields
-// like result.note or result.cursor, so those must be scanned.
+// subsystem (internal/mcp/tools), so injection scanning skips result.tools to
+// avoid FPs from instructional text. Inbound DLP still scans result.tools:
+// credential patterns do not share that instructional-text false-positive class.
+// A malicious server can also inject into sibling fields like result.note or
+// result.cursor, so those remain in both scan inputs.
 func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
 	trimmed := bytes.TrimSpace(line)
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
@@ -239,7 +245,7 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 		}
 	}
 
-	var text string
+	var text, toolText string
 
 	// Scan non-"tools" sibling fields in the result object.
 	// A malicious server can include extra fields alongside tools[].
@@ -249,12 +255,18 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 		if json.Unmarshal(rpc.Result, &resultMap) == nil {
 			keys := make([]string, 0, len(resultMap))
 			for k := range resultMap {
-				if k != "tools" {
-					keys = append(keys, k)
-				}
+				keys = append(keys, k)
 			}
 			sort.Strings(keys)
 			for _, key := range keys {
+				if key == "tools" {
+					extracted := jsonrpc.ExtractTextResult(resultMap[key])
+					if extracted.Truncated {
+						return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+					}
+					toolText = extracted.Text
+					continue
+				}
 				siblingText := jsonrpc.ExtractTextResult(resultMap[key])
 				if siblingText.Truncated {
 					return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
@@ -312,20 +324,30 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 		}
 	}
 
-	if text == "" {
+	dlpText := text
+	if toolText != "" {
+		if dlpText != "" {
+			dlpText += "\n"
+		}
+		dlpText += toolText
+	}
+
+	if text == "" && dlpText == "" {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
 	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
-	if result.Clean {
+	dlpMatches := scanner.EnforceableInboundTextDLPMatches(dlpText, sc.ScanTextForDLPInbound(context.Background(), dlpText).Matches)
+	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
 	return jsonrpc.ScanVerdict{
-		ID:      rpc.ID,
-		Clean:   false,
-		Action:  responseScanAction(sc, opts),
-		Matches: result.Matches,
+		ID:         rpc.ID,
+		Clean:      false,
+		Action:     responseScanAction(sc, opts),
+		Matches:    result.Matches,
+		DLPMatches: dlpMatches,
 	}
 }
 
@@ -344,6 +366,7 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 	}
 
 	var allMatches []scanner.ResponseMatch
+	var allDLPMatches []scanner.TextDLPMatch
 	var firstID json.RawMessage
 	var action string
 	var hasError bool
@@ -362,6 +385,7 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 		}
 		if !v.Clean && v.Error == "" {
 			allMatches = append(allMatches, v.Matches...)
+			allDLPMatches = append(allDLPMatches, v.DLPMatches...)
 			if action == "" {
 				action = v.Action
 			}
@@ -371,24 +395,25 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 	if hasError {
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}
 	}
-	if len(allMatches) == 0 {
+	if len(allMatches) == 0 && len(allDLPMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}
 	}
 	return jsonrpc.ScanVerdict{
-		ID: firstID, Clean: false, Action: action, Matches: allMatches,
+		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches,
 	}
 }
 
-// ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans
-// each for prompt injection, and writes results to w. In text mode, only
-// errors and detections are written (clean lines are silent). In JSON mode,
-// every scanned line produces an output object. Returns true if any injection
-// was detected. Parse errors are reported but do not count as injection.
+// ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans each
+// for prompt injection and enforceable inbound DLP, and writes results to w. In
+// text mode, only errors and detections are written (clean lines are silent). In
+// JSON mode, every scanned line produces an output object. Returns true if any
+// security finding was detected. Parse errors are reported but do not count as a
+// finding.
 func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
 	lineScanner := bufio.NewScanner(r)
 	lineScanner.Buffer(make([]byte, 0, 64*1024), transport.MaxLineSize)
 
-	foundInjection := false
+	foundFinding := false
 	lineNum := 0
 
 	for lineScanner.Scan() {
@@ -400,37 +425,37 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 
 		verdict := ScanResponse([]byte(line), sc)
 		verdict.Line = lineNum
-		verdict.Scanned = scanVerdictScope()
+		verdict.Scanned = scanVerdictScopes()
 
 		if !verdict.Clean && verdict.Error == "" {
-			foundInjection = true
+			foundFinding = true
 		}
 
 		if jsonOutput {
 			data, err := json.Marshal(verdict)
 			if err != nil {
-				return foundInjection, fmt.Errorf("marshaling verdict: %w", err)
+				return foundFinding, fmt.Errorf("marshaling verdict: %w", err)
 			}
 			data = append(data, '\n')
 			if _, err := w.Write(data); err != nil {
-				return foundInjection, fmt.Errorf("writing verdict: %w", err)
+				return foundFinding, fmt.Errorf("writing verdict: %w", err)
 			}
 		} else {
 			if err := writeTextVerdict(w, verdict); err != nil {
-				return foundInjection, err
+				return foundFinding, err
 			}
 		}
 	}
 
 	if err := lineScanner.Err(); err != nil {
-		return foundInjection, fmt.Errorf("reading input: %w", err)
+		return foundFinding, fmt.Errorf("reading input: %w", err)
 	}
 
-	return foundInjection, nil
+	return foundFinding, nil
 }
 
-func scanVerdictScope() []string {
-	return []string{jsonrpc.ScanScopeResponseInjection}
+func scanVerdictScopes() []string {
+	return []string{jsonrpc.ScanScopeResponseInjection, jsonrpc.ScanScopeResponseDLP}
 }
 
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.
@@ -619,11 +644,21 @@ func writeTextVerdict(w io.Writer, v jsonrpc.ScanVerdict) error {
 		return err
 	}
 
-	names := make([]string, 0, len(v.Matches))
+	names := make([]string, 0, len(v.Matches)+len(v.DLPMatches))
 	for _, m := range v.Matches {
 		names = append(names, m.PatternName)
 	}
-	_, err := fmt.Fprintf(w, "line %d: [INJECTION] %s (action: %s)\n", v.Line, strings.Join(names, ", "), v.Action) //nolint:gosec // G705: CLI output, not web
+	for _, m := range v.DLPMatches {
+		names = append(names, m.PatternName)
+	}
+	kind := "INJECTION"
+	if len(v.DLPMatches) > 0 {
+		kind = "DLP"
+		if len(v.Matches) > 0 {
+			kind = "SECURITY FINDING"
+		}
+	}
+	_, err := io.WriteString(w, fmt.Sprintf("line %d: [%s] %s (action: %s)\n", v.Line, kind, strings.Join(names, ", "), v.Action))
 	return err
 }
 

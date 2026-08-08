@@ -652,8 +652,8 @@ func TestMcpProxyCmd_EmitsSignedReceipts_StdioSubprocess(t *testing.T) {
 		t.Fatalf("stderr missing receipt status line:\n%s", stderr)
 	}
 
-	if !stdoutHasInjectionBlock(stdout) {
-		t.Fatalf("stdout missing MCP injection block response:\n%s", stdout)
+	if !stdoutHasSecurityFindingBlock(stdout) {
+		t.Fatalf("stdout missing MCP security-finding block response:\n%s", stdout)
 	}
 
 	receipts := loadActionReceipts(t, evidenceDir)
@@ -701,8 +701,8 @@ func TestMcpProxyCmd_FlightRecorderDisabled_NoReceipts(t *testing.T) {
 		t.Fatalf("run mcp proxy command: %v\nstderr:\n%s", err, stderr)
 	}
 
-	if !stdoutHasInjectionBlock(stdout) {
-		t.Fatalf("stdout missing MCP injection block response:\n%s", stdout)
+	if !stdoutHasSecurityFindingBlock(stdout) {
+		t.Fatalf("stdout missing MCP security-finding block response:\n%s", stdout)
 	}
 
 	if strings.Contains(stderr, "Receipts: enabled") {
@@ -798,8 +798,8 @@ func TestMcpProxyCmd_EmitsSignedReceipts_HTTPUpstream(t *testing.T) {
 	if !strings.Contains(stderr, "Receipts: enabled (action receipts signed)") {
 		t.Fatalf("stderr missing receipt status line:\n%s", stderr)
 	}
-	if !stdoutHasInjectionBlock(stdout) {
-		t.Fatalf("stdout missing MCP injection block response:\n%s", stdout)
+	if !stdoutHasSecurityFindingBlock(stdout) {
+		t.Fatalf("stdout missing MCP security-finding block response:\n%s", stdout)
 	}
 
 	receipts := loadActionReceipts(t, evidenceDir)
@@ -1452,7 +1452,7 @@ mcp_tool_policy:
 	return configPath
 }
 
-func stdoutHasInjectionBlock(stdout string) bool {
+func stdoutHasSecurityFindingBlock(stdout string) bool {
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		if line == "" {
 			continue
@@ -1466,7 +1466,7 @@ func stdoutHasInjectionBlock(stdout string) bool {
 		if err := json.Unmarshal([]byte(line), &response); err != nil {
 			continue
 		}
-		if response.Error.Code == -32000 && strings.Contains(response.Error.Message, "prompt injection") {
+		if response.Error.Code == -32000 && strings.Contains(response.Error.Message, "MCP response security finding") {
 			return true
 		}
 	}

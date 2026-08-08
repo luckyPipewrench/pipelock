@@ -5545,7 +5545,7 @@ func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
 	}
 	select {
 	case captureRecord := <-obs.got:
-		if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || len(captureRecord.RawFindings) == 0 || captureRecord.RawFindings[0].Kind != capture.KindDLP {
+		if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || len(captureRecord.RawFindings) == 0 || captureRecord.RawFindings[0].Kind != capture.KindDLP || captureRecord.RawFindings[0].Action != config.ActionBlock {
 			t.Fatalf("redirect DLP capture = %+v", captureRecord)
 		}
 	case <-time.After(testWarnContextTimeout):

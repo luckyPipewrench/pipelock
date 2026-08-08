@@ -806,6 +806,29 @@ test("JSONL recorder reader rejects null and malformed v3 timestamps", () => {
   }
 });
 
+test("JSONL recorder reader rejects invalid v3 sequences", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const [name, seqField] of [
+      ["missing", ""],
+      ["null", '"seq":null,'],
+      ["negative", '"seq":-1,'],
+      ["fractional", '"seq":1.5,'],
+      ["overflow", '"seq":18446744073709551616,'],
+    ]) {
+      const file = join(dir, `v3-seq-${name}.jsonl`);
+      writeFileSync(
+        file,
+        `{"v":3,${seqField}"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","prev_hash":"genesis"}\n`,
+        { mode: 0o600 },
+      );
+      assert.throws(() => extractReceipts(file), /v3 seq|exceeds cross-language exact range/u);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder extraction rejects duplicate keys inside receipt detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   const file = join(dir, "duplicate-key.jsonl");

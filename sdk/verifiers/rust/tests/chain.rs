@@ -917,6 +917,35 @@ fn recorder_reader_rejects_null_and_malformed_v3_timestamps() {
     }
 }
 
+#[test]
+fn recorder_reader_rejects_invalid_v3_sequences() {
+    for (name, seq) in [
+        ("missing", None),
+        ("null", Some("null")),
+        ("negative", Some("-1")),
+        ("fractional", Some("1.5")),
+        ("overflow", Some("18446744073709551616")),
+    ] {
+        let fixture = TempFixture(recorder_fixture_path(&format!("v3-seq-{name}")));
+        let path = &fixture.0;
+        let seq_field = seq.map_or_else(String::new, |value| format!(r#""seq":{value},"#));
+        let line = format!(
+            r#"{{"v":3,{seq_field}"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","prev_hash":"genesis"}}"#
+        );
+        fs::write(path, format!("{line}\n")).expect("write JSONL");
+        let err = extract_receipts(path).expect_err("invalid v3 seq should reject");
+        assert!(
+            err.to_string().contains("seq")
+                || (name == "overflow"
+                    && (err.to_string().contains("number out of range")
+                        || err
+                            .to_string()
+                            .contains("exceeds cross-language exact range"))),
+            "{name}: {err}"
+        );
+    }
+}
+
 fn recorder_fixture_path(name: &str) -> std::path::PathBuf {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)

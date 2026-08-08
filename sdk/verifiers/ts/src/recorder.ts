@@ -6,6 +6,7 @@ import * as path from "node:path";
 import type { Receipt, RecorderEntry } from "./types.js";
 import { validateV1Receipt } from "./strict.js";
 import { validateTimestamp } from "./aarp/numbers.js";
+import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { InvalidError, RuntimeError, decodeUTF8, parseJSON, rejectDuplicateKeys } from "./util.js";
 
 const actionReceiptType = "action_receipt";
@@ -38,6 +39,7 @@ export function readEntries(file: string): RecorderEntry[] {
         `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2, 3)`,
       );
     }
+    if (entry.v === 3) validateV3Sequence(line, i + 1);
     validateProjectedStrings(entry, i + 1, entry.v);
     if (
       entry.v !== 3 &&
@@ -51,6 +53,17 @@ export function readEntries(file: string): RecorderEntry[] {
     entries.push(entry);
   }
   return entries;
+}
+
+function validateV3Sequence(rawLine: string, line: number): void {
+  const raw = parseJSONStrict(rawLine) as Record<string, unknown>;
+  const seq = raw.seq;
+  if (!(seq instanceof RawNumber) || !/^(?:0|[1-9][0-9]*)$/u.test(seq.literal)) {
+    throw new RuntimeError(`line ${line}: v3 seq must be an unsigned 64-bit integer`);
+  }
+  if (BigInt(seq.literal) > 18446744073709551615n) {
+    throw new RuntimeError(`line ${line}: v3 seq must be an unsigned 64-bit integer`);
+  }
 }
 
 function validateProjectedStrings(entry: RecorderEntry, line: number, version: number): void {

@@ -638,8 +638,8 @@ metadata-only batch summaries. It does not export raw payload bytes.
 
 ## Audit Batch Schema
 
-Conductor-bound batches require recorder v2 entries. v1 entries are not accepted for
-Conductor-bound ingestion because v2 binds `event_kind` into the chain hash.
+Conductor-bound batches accept recorder v2 and v3 entries. v1 entries are not
+accepted because v2 and later bind `event_kind` into the chain hash.
 
 ```json
 {

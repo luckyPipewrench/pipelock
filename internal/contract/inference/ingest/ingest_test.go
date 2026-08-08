@@ -314,6 +314,18 @@ func TestStreamSchemaVersionGating(t *testing.T) {
 		requireOneErrorIs(t, errs, ErrHashChainBroken)
 	})
 
+	t.Run("v3 session cannot change within a stream", func(t *testing.T) {
+		first := testEntry(t, v3EntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 3})
+		second := testEntry(t, v3EntryVersion, 2, first.Hash, "checkpoint", map[string]any{"version": 3})
+		second.SessionID = "session-other"
+		second.Hash = recorder.ComputeHash(second)
+		entries, errs := collectStream(t, mustJSONLines(t, first, second), StreamOptions{})
+		if len(entries) != 1 {
+			t.Fatalf("entries len = %d, want 1", len(entries))
+		}
+		requireOneErrorIs(t, errs, ErrHashChainBroken)
+	})
+
 	t.Run("legacy stream cannot transition to v3", func(t *testing.T) {
 		legacy := testEntry(t, recorder.CurrentWriteEntryVersion, 1, recorder.GenesisHash, "checkpoint", map[string]any{"version": 2})
 		v3 := testEntry(t, recorder.LatestEntryVersion, 2, legacy.Hash, "checkpoint", map[string]any{"version": 3})

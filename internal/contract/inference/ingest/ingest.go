@@ -108,6 +108,7 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 		previousHash string
 		seenEntry    bool
 		chainVersion int
+		sessionID    string
 		chainKind    string
 		writerID     string
 	)
@@ -130,12 +131,12 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 				errs <- fmt.Errorf("%w (line=%d, seq=%d): recorder namespace version changed", ErrHashChainBroken, lineNo, rec.Sequence)
 				return
 			}
-			if recorder.EntryVersionHasNamespace(rec.Version) && (rec.ChainKind != chainKind || rec.WriterInstanceID != writerID) {
+			if recorder.EntryVersionHasNamespace(rec.Version) && (rec.SessionID != sessionID || rec.ChainKind != chainKind || rec.WriterInstanceID != writerID) {
 				errs <- fmt.Errorf("%w (line=%d, seq=%d): recorder chain namespace changed", ErrHashChainBroken, lineNo, rec.Sequence)
 				return
 			}
 		} else {
-			chainVersion, chainKind, writerID = rec.Version, rec.ChainKind, rec.WriterInstanceID
+			chainVersion, sessionID, chainKind, writerID = rec.Version, rec.SessionID, rec.ChainKind, rec.WriterInstanceID
 		}
 		previousHash = rec.Hash
 		seenEntry = true

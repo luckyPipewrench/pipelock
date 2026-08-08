@@ -145,6 +145,17 @@ func ValidateEntryJSONSchema(rawJSON []byte, version int) error {
 	if err := json.Unmarshal(rawJSON, &projected); err != nil {
 		return fmt.Errorf("parse v3 projected fields: %w", err)
 	}
+	seq, ok := projected["seq"]
+	if !ok {
+		return errors.New("v3 seq required")
+	}
+	seqText := string(bytes.TrimSpace(seq))
+	if seqText == "" || strings.Trim(seqText, "0123456789") != "" {
+		return errors.New("v3 seq must be an unsigned integer")
+	}
+	if _, err := strconv.ParseUint(seqText, 10, 64); err != nil {
+		return errors.New("v3 seq must be an unsigned 64-bit integer")
+	}
 	required := map[string]bool{"ts": true, "session_id": true, "type": true, "transport": true, "summary": true, "prev_hash": true}
 	for _, field := range []string{"ts", "session_id", "chain_kind", "writer_instance_id", "trace_id", "type", "event_kind", "transport", "summary", "raw_ref", "prev_hash"} {
 		value, ok := projected[field]
@@ -341,7 +352,7 @@ func detailJSONForHash(e Entry) []byte {
 // across the version boundary.
 // If pubKey is provided, checkpoint entry signatures are also verified.
 func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
-	var v3ChainKind, v3WriterInstanceID string
+	var v3SessionID, v3ChainKind, v3WriterInstanceID string
 	for i, e := range entries {
 		if !acceptedEntryVersions[e.Version] {
 			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2, 3)", e.Sequence, e.Version)
@@ -354,8 +365,8 @@ func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
 				return fmt.Errorf("entry seq %d: v3 chain cannot continue a legacy recorder namespace", e.Sequence)
 			}
 			if v3ChainKind == "" {
-				v3ChainKind, v3WriterInstanceID = e.ChainKind, e.WriterInstanceID
-			} else if e.ChainKind != v3ChainKind || e.WriterInstanceID != v3WriterInstanceID {
+				v3SessionID, v3ChainKind, v3WriterInstanceID = e.SessionID, e.ChainKind, e.WriterInstanceID
+			} else if e.SessionID != v3SessionID || e.ChainKind != v3ChainKind || e.WriterInstanceID != v3WriterInstanceID {
 				return fmt.Errorf("entry seq %d: v3 chain namespace changed", e.Sequence)
 			}
 		} else {

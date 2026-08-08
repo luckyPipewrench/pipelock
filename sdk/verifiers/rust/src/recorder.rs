@@ -39,6 +39,17 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
             errors_unsupported(index + 1, version)?;
         }
         validate_projected_strings(&entry, index + 1, version.unwrap_or_default())?;
+        if version == Some(3)
+            && entry
+                .get("seq")
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
+        {
+            return Err(VerifierError::Runtime(format!(
+                "line {}: v3 seq must be an unsigned 64-bit integer",
+                index + 1
+            )));
+        }
         if version != Some(3)
             && (legacy_namespace_field_is_set(&entry, "chain_kind")
                 || legacy_namespace_field_is_set(&entry, "writer_instance_id"))

@@ -119,6 +119,50 @@ func TestReadEntriesV3RejectsExplicitNullProjectedStrings(t *testing.T) {
 	})
 }
 
+func TestReadEntriesV3RejectsInvalidSequenceRepresentations(t *testing.T) {
+	for _, seq := range []string{"null", "-1", "1.5", "18446744073709551616"} {
+		t.Run(seq, func(t *testing.T) {
+			e := v3Entry()
+			encoded, err := json.Marshal(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &raw); err != nil {
+				t.Fatal(err)
+			}
+			raw["seq"] = json.RawMessage(seq)
+			encoded, err = json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := recorder.ReadEntriesFromReader(strings.NewReader(string(encoded) + "\n")); err == nil || !strings.Contains(err.Error(), "seq") {
+				t.Fatalf("ReadEntriesFromReader() error = %v, want seq rejection", err)
+			}
+		})
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		e := v3Entry()
+		encoded, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &raw); err != nil {
+			t.Fatal(err)
+		}
+		delete(raw, "seq")
+		encoded, err = json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recorder.ReadEntriesFromReader(strings.NewReader(string(encoded) + "\n")); err == nil || !strings.Contains(err.Error(), "seq required") {
+			t.Fatalf("ReadEntriesFromReader() error = %v, want missing seq rejection", err)
+		}
+	})
+}
+
 func TestV3RejectsNullDelimiterCollision(t *testing.T) {
 	left := v3Entry()
 	left.ChainKind = "recorder"
@@ -231,6 +275,7 @@ func TestVerifyChainRejectsNamespaceTransitions(t *testing.T) {
 	}{
 		{"writer_change", func(e *recorder.Entry) { e.WriterInstanceID = "writer-b" }, "namespace changed"},
 		{"kind_change", func(e *recorder.Entry) { e.ChainKind = "receipt" }, "namespace changed"},
+		{"session_change", func(e *recorder.Entry) { e.SessionID = "session-b" }, "namespace changed"},
 		{"legacy_after_v3", func(e *recorder.Entry) {
 			e.Version = recorder.CurrentWriteEntryVersion
 			e.ChainKind = ""

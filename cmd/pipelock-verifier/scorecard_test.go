@@ -70,6 +70,36 @@ func TestScorecardCompletenessNeverRendersGreen(t *testing.T) {
 	}
 }
 
+func TestEmitScorecardDistinguishesCompletenessReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason completeness.Reason
+	}{
+		{name: "bounded closed", reason: completeness.ReasonBoundedClosed},
+		{name: "abnormal end", reason: completeness.ReasonAbnormalEnd},
+	}
+	lines := make(map[completeness.Reason]string, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var human bytes.Buffer
+			emitScorecard(&human, scorecard{
+				Completeness: scorecardCompletenessLine{
+					Status: completeness.StatusLimited,
+					Reason: tt.reason,
+				},
+			})
+			line := scorecardLine(t, human.String(), "Completeness:")
+			if !strings.Contains(line, "reason="+string(tt.reason)) {
+				t.Fatalf("Completeness line does not surface reason %q: %s", tt.reason, line)
+			}
+			lines[tt.reason] = line
+		})
+	}
+	if lines[completeness.ReasonBoundedClosed] == lines[completeness.ReasonAbnormalEnd] {
+		t.Fatalf("bounded and abnormal completeness lines are identical: %s", lines[completeness.ReasonBoundedClosed])
+	}
+}
+
 func TestNewActionScorecardStatusMapping(t *testing.T) {
 	report := completeness.Report{
 		Status:       completeness.StatusLimited,

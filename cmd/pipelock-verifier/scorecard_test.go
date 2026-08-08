@@ -42,7 +42,7 @@ func TestScorecardCompletenessNeverRendersGreen(t *testing.T) {
 			}
 			var human bytes.Buffer
 			emitScorecard(&human, sc)
-			completenessLine := scorecardLine(t, human.String(), "Completeness:")
+			completenessLine := scorecardLine(t, human.String())
 			for _, green := range []string{"COMPLETE", "PASS", " OK"} {
 				if strings.Contains(completenessLine, green) {
 					t.Fatalf("Completeness line rendered green token %q for status %s:\n%s", green, status, human.String())
@@ -67,6 +67,36 @@ func TestScorecardCompletenessNeverRendersGreen(t *testing.T) {
 				t.Fatalf("JSON completeness.status rendered green: %q", decoded.Completeness.Status)
 			}
 		})
+	}
+}
+
+func TestEmitScorecardDistinguishesCompletenessReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason completeness.Reason
+	}{
+		{name: "bounded closed", reason: completeness.ReasonBoundedClosed},
+		{name: "abnormal end", reason: completeness.ReasonAbnormalEnd},
+	}
+	lines := make(map[completeness.Reason]string, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var human bytes.Buffer
+			emitScorecard(&human, scorecard{
+				Completeness: scorecardCompletenessLine{
+					Status: completeness.StatusLimited,
+					Reason: tt.reason,
+				},
+			})
+			line := scorecardLine(t, human.String())
+			if !strings.Contains(line, "reason="+string(tt.reason)) {
+				t.Fatalf("Completeness line does not surface reason %q: %s", tt.reason, line)
+			}
+			lines[tt.reason] = line
+		})
+	}
+	if lines[completeness.ReasonBoundedClosed] == lines[completeness.ReasonAbnormalEnd] {
+		t.Fatalf("bounded and abnormal completeness lines are identical: %s", lines[completeness.ReasonBoundedClosed])
 	}
 }
 
@@ -182,13 +212,13 @@ func TestNewActionScorecardStatusMapping(t *testing.T) {
 	}
 }
 
-func scorecardLine(t *testing.T, out, prefix string) string {
+func scorecardLine(t *testing.T, out string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, prefix) {
+		if strings.HasPrefix(line, "Completeness:") {
 			return line
 		}
 	}
-	t.Fatalf("scorecard output missing %q line:\n%s", prefix, out)
+	t.Fatalf("scorecard output missing Completeness line:\n%s", out)
 	return ""
 }

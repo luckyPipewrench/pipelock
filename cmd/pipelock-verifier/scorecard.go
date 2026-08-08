@@ -120,8 +120,9 @@ func emitScorecard(out io.Writer, sc scorecard) {
 		_, _ = fmt.Fprintf(out, " limits=%q", strings.Join(sc.Anchored.Limits, " | "))
 	}
 	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintf(out, "Completeness: %s receipts=%d gaps=%d covered_window=%d..%d heartbeat=%s exclusions=%q\n",
+	_, _ = fmt.Fprintf(out, "Completeness: %s reason=%s receipts=%d gaps=%d covered_window=%d..%d heartbeat=%s exclusions=%q\n",
 		sc.Completeness.Status,
+		sc.Completeness.Reason,
 		sc.Completeness.ReceiptCount,
 		sc.Completeness.GapCount,
 		sc.Completeness.CoveredWindowStart,

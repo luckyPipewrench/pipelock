@@ -528,3 +528,98 @@ func TestExtractCompletenessReceiptsResolvedLocationReplacementFailsClosed(t *te
 		t.Fatalf("extractCompletenessReceipts error = %v, want resolved-path refusal", err)
 	}
 }
+
+// writeChainRecorderJSONL wraps v1 receipts in recorder entries. The chain
+// command attempts v2 evidence extraction first and FAILS CLOSED on an unknown
+// entry shape, so a bare receipt-per-line file (which writeCompletenessJSONL
+// produces, and which the completeness command reads happily) aborts with a
+// config error before the v1 path is ever reached.
+func writeChainRecorderJSONL(t *testing.T, receipts []receipt.Receipt) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	var buf bytes.Buffer
+	prev := recorder.GenesisHash
+	base := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
+	for i, r := range receipts {
+		entry := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  uint64(i),
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			SessionID: "proxy",
+			Type:      "action_receipt",
+			Detail:    r,
+			PrevHash:  prev,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshal recorder entry: %v", err)
+		}
+		prev = entry.Hash
+		_, _ = buf.Write(line)
+		_ = buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write recorder jsonl: %v", err)
+	}
+	return path
+}
+
+// TestChainCLIShowsCompletenessReasonForATailDroppedChain proves the PATH, not
+// the formatter. The sibling unit test hands emitScorecard a reason and checks
+// it prints; that cannot fail if the analyzer stopped classifying a missing
+// close, or if the chain command stopped feeding the analyzer's reason into the
+// scorecard. This drives the real command over two real chains that differ only
+// by the presence of session_close.
+//
+// The distinction matters because integrity and completeness answer different
+// questions here. Dropping the tail leaves a valid prefix, so the chain still
+// verifies and still exits 0, which is correct. What an operator needs is to see
+// that the run ended abnormally rather than bounded, and both map to LIMITED, so
+// the status alone cannot carry it.
+func TestChainCLIShowsCompletenessReasonForATailDroppedChain(t *testing.T) {
+	t.Parallel()
+	const (
+		runNonce  = "run-chain-reason"
+		openNonce = "open-chain-reason"
+	)
+
+	closedFixture := newCompletenessFixture(t)
+	actionID := "action-chain-reason"
+	closedPath := writeChainRecorderJSONL(t, []receipt.Receipt{
+		closedFixture.open(runNonce, openNonce),
+		closedFixture.intent(runNonce, actionID),
+		closedFixture.outcome(runNonce, actionID),
+		closedFixture.close(runNonce, openNonce),
+	})
+
+	// Same shape, with the close dropped: the tail-drop this guards against.
+	openFixture := newCompletenessFixture(t)
+	droppedPath := writeChainRecorderJSONL(t, []receipt.Receipt{
+		openFixture.open(runNonce, openNonce),
+		openFixture.intent(runNonce, actionID),
+		openFixture.outcome(runNonce, actionID),
+	})
+
+	closedOut, stderr, code := runRoot(t, "chain", "--key", closedFixture.keyHex, closedPath)
+	if code != cliutil.ExitOK {
+		t.Fatalf("closed chain should verify: code=%d stdout=%q stderr=%q", code, closedOut, stderr)
+	}
+	droppedOut, stderr, code := runRoot(t, "chain", "--key", openFixture.keyHex, droppedPath)
+	if code != cliutil.ExitOK {
+		t.Fatalf("a tail-dropped chain is a valid prefix and must still verify: code=%d stderr=%q", code, stderr)
+	}
+
+	if !strings.Contains(closedOut, "reason="+string(completeness.ReasonBoundedClosed)) {
+		t.Fatalf("closed chain output does not report bounded_closed:\n%s", closedOut)
+	}
+	if !strings.Contains(droppedOut, "reason="+string(completeness.ReasonAbnormalEnd)) {
+		t.Fatalf("tail-dropped chain output does not report abnormal_end:\n%s", droppedOut)
+	}
+
+	closedLine := scorecardLine(t, closedOut)
+	droppedLine := scorecardLine(t, droppedOut)
+	if closedLine == droppedLine {
+		t.Fatalf("a bounded chain and a tail-dropped one print the same completeness line: %s", closedLine)
+	}
+}

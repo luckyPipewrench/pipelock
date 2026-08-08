@@ -154,6 +154,52 @@ while IFS= read -r workflow; do
 	fi
 done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 
+note "release audit: checking verifier workflow trigger contract"
+
+verifier_workflow=".github/workflows/verifiers.yaml"
+extract_verifier_paths() {
+	local event="$1"
+	awk -v event="$event" '
+		$0 == "  " event ":" { in_event = 1; next }
+		in_event && /^  [A-Za-z_]+:/ { exit }
+		in_event && /^    paths:/ { in_paths = 1; next }
+		in_paths && /^      - / {
+			line = $0
+			sub(/^      - /, "", line)
+			gsub(/^\047|\047$/, "", line)
+			print line
+			next
+		}
+		in_paths { exit }
+	' "$verifier_workflow"
+}
+
+push_paths="$(extract_verifier_paths push)"
+pull_request_paths="$(extract_verifier_paths pull_request)"
+if [[ -z "$push_paths" || -z "$pull_request_paths" ]]; then
+	fail "$verifier_workflow must define non-empty push.paths and pull_request.paths"
+elif [[ "$push_paths" != "$pull_request_paths" ]]; then
+	fail "$verifier_workflow push.paths and pull_request.paths must remain identical"
+fi
+
+required_verifier_paths=(
+	'go.mod'
+	'go.sum'
+	'cmd/pipelock/**'
+	'cmd/pipelock-verifier/**'
+	'internal/**'
+	'docs/specs/**'
+	'sdk/verifiers/**'
+	'sdk/audit-packet/**'
+	'sdk/conformance/**'
+	'.github/workflows/verifiers.yaml'
+)
+for required_path in "${required_verifier_paths[@]}"; do
+	if ! grep -Fxq -- "$required_path" <<<"$push_paths"; then
+		fail "$verifier_workflow trigger contract is missing $required_path"
+	fi
+done
+
 note "release audit: checking secret-bearing comment workflows"
 
 while IFS= read -r workflow; do

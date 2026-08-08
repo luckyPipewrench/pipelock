@@ -164,12 +164,36 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		}
 		// require_receipts reloads freely, but it only has a live emitter to
 		// gate on when one was built at Start (the recorder is restart-only).
-		// Enabling it without one fails every request closed with
-		// receipt_emission_failed. Warn loudly; the value still applies so the
-		// posture is honest (fail-closed), but restart with a configured
-		// recorder is the real fix.
+		// Enabling it without one fails EVERY request closed with
+		// receipt_emission_failed - a total egress black-hole from a config
+		// edit. NewServer already refuses to start in exactly that state
+		// (server.go, "instead of as an all-403 outage at runtime"); honouring
+		// it on reload produced the outage startup exists to prevent, so the
+		// enable is ignored here and joins its restart-only recorder siblings.
+		//
+		// This is not a downgrade. No emitter means no receipt is written
+		// either way, so the alternative is not "receipts enforced" but "no
+		// traffic at all"; the reachable outcomes are unreceipted traffic or
+		// none. Restarting with a configured recorder is what actually grants
+		// the operator's intent, and the startup guard then enforces it hard.
+		//
+		// Scoped to the ENABLE transition. An already-required posture whose
+		// emitter went unhealthy at runtime stays required (fail-closed is
+		// correct there and preserving it is not a downgrade), and the normal
+		// case - enabling with a live emitter - still reloads freely.
 		if newCfg.FlightRecorder.RequireReceipts && !s.liveReceiptEmitterReady() {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts is enabled but no healthy live signed receipt emitter exists — every request will fail closed with receipt_emission_failed. Configure flight_recorder.dir + signing_key_path, fix any receipt-chain resume error, and restart.\n")
+			if oldCfg.FlightRecorder.RequireReceipts {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts is enabled but no healthy live signed receipt emitter exists — every request will fail closed with receipt_emission_failed. Configure flight_recorder.dir + signing_key_path, fix any receipt-chain resume error, and restart.\n")
+			} else {
+				attemptedHash := newCfg.Hash()
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts cannot be enabled at runtime without a healthy live signed receipt emitter — the recorder is built at startup, so every request would fail closed with receipt_emission_failed. Ignoring (restart required). Configure flight_recorder.dir + signing_key_path, fix any receipt-chain resume error, and restart.\n")
+				// Surface to the audit channel as well as stderr: an operator
+				// who asked for receipt enforcement and did not get it must be
+				// able to see that from a monitoring tool, not only from a
+				// process's stderr.
+				s.logger.LogConfigReload("ignored", "require_receipts enable without live receipt emitter restart-only", attemptedHash)
+				newCfg.FlightRecorder.RequireReceipts = oldCfg.FlightRecorder.RequireReceipts
+			}
 		}
 		// Block file_sentry changes via reload. The watcher is built
 		// once at Start from the startup snapshot; reloading would

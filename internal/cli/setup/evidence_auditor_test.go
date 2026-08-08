@@ -69,6 +69,25 @@ func TestEvidenceCorpusAuditorRenderersQuotePathsAndRemainOutOfBand(t *testing.T
 	}
 }
 
+// TestEvidenceCorpusAuditorAlertRemediationNamesAShippedSurface keeps the
+// annotation honest. It previously told the operator to "stop evidence export",
+// and Pipelock ships no evidence-export surface to stop: `pipelock evidence`
+// offers view, expire, serve, verify-cert and doctor, so the instruction was
+// advisory against whatever external workflow the operator had built. A
+// remediation that names a control the product does not have teaches operators
+// the alert is not worth reading. The remediation must point at something that
+// actually exists, and `evidence doctor` is the command this same file's
+// service unit already runs.
+func TestEvidenceCorpusAuditorAlertRemediationNamesAShippedSurface(t *testing.T) {
+	alert := renderEvidenceCorpusAuditorAlert()
+	if strings.Contains(alert, "evidence export") {
+		t.Fatalf("corpus alert instructs an evidence-export control that does not ship:\n%s", alert)
+	}
+	if !strings.Contains(alert, "evidence doctor") {
+		t.Fatalf("corpus alert remediation names no shipped investigation command:\n%s", alert)
+	}
+}
+
 func TestEvidenceCorpusAuditorRerunRepairsManagedTimerButRefusesUnmanagedFile(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "pipelock.yaml")

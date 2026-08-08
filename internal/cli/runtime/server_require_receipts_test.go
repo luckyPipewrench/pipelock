@@ -320,3 +320,131 @@ func tamperLastActionReceipt(t *testing.T, dir string) {
 	}
 	t.Fatal("no action_receipt entry found")
 }
+
+// newRequireReceiptsReloadServer builds a server whose recorder state matches
+// withEmitter, so a reload can be exercised against both the live-emitter and
+// no-emitter cases. The no-emitter server is the realistic operator shape: the
+// process started without a configured recorder, and the edited config that
+// arrives at reload names a dir and key (which config validation requires
+// before require_receipts is accepted at all) while the restart-only recorder
+// itself is still absent.
+func newRequireReceiptsReloadServer(t *testing.T, withEmitter bool) (*Server, *syncBuffer) {
+	t.Helper()
+	lines := []string{"mode: balanced", "flight_recorder:"}
+	if withEmitter {
+		recorderDir := t.TempDir()
+		keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+		_, priv, err := signing.GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("generate signing key: %v", err)
+		}
+		if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+			t.Fatalf("save signing key: %v", err)
+		}
+		lines = append(lines,
+			"  enabled: true",
+			"  dir: "+strconv.Quote(recorderDir),
+			"  signing_key_path: "+strconv.Quote(keyPath),
+		)
+	} else {
+		lines = append(lines, "  enabled: false")
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join(append(lines, ""), "\n"))
+	stderr := &syncBuffer{}
+	s, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: stderr})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { s.cleanup() })
+	if ready := s.liveReceiptEmitterReady(); ready != withEmitter {
+		t.Fatalf("liveReceiptEmitterReady() = %v, want %v", ready, withEmitter)
+	}
+	return s, stderr
+}
+
+// TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored pins the
+// reload half of the startup guard. NewServer REFUSES to boot when
+// require_receipts is set with no live signed emitter, precisely so the
+// misconfiguration does not surface as an all-403 outage at runtime. Honouring
+// the same change on reload produced that outage from a config edit, because
+// the recorder is restart-only and cannot be built mid-flight. The enable is
+// ignored, warned, and recorded on the audit channel instead.
+func TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored(t *testing.T) {
+	s, stderr := newRequireReceiptsReloadServer(t, false)
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.FlightRecorder.RequireReceipts = true
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts was enabled by reload with no live emitter: every request would fail closed with receipt_emission_failed")
+	}
+	if !stderr.contains("require_receipts cannot be enabled at runtime") {
+		t.Fatal("no stderr warning explaining the ignored require_receipts enable")
+	}
+	if !stderr.contains("restart required") {
+		t.Fatal("warning does not tell the operator that a restart is the fix")
+	}
+}
+
+// TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies keeps the
+// carve-out honest. require_receipts is deliberately reloadable among the
+// restart-only recorder fields, and the guard above must not regress that
+// normal case: with a live emitter the enable still takes effect.
+func TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies(t *testing.T) {
+	s, stderr := newRequireReceiptsReloadServer(t, true)
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.FlightRecorder.RequireReceipts = true
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts enable was ignored despite a live signed emitter")
+	}
+	if stderr.contains("require_receipts cannot be enabled at runtime") {
+		t.Fatal("emitted the no-emitter warning while an emitter was live")
+	}
+}
+
+// TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy covers the
+// direction the guard must NOT take. An already-required posture whose emitter
+// is not live stays required: preserving fail-closed is correct there, and
+// clearing it would be a silent downgrade of a control the operator already
+// had in force. Only the enable transition is ignored.
+func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) {
+	// Reach the state the way production does. The startup guard means an
+	// already-required posture always began with a healthy emitter, so start
+	// with one, enable require_receipts, then drop the emitter to model it
+	// going unhealthy at runtime.
+	s, stderr := newRequireReceiptsReloadServer(t, true)
+
+	enable := s.proxy.CurrentConfig().Clone()
+	enable.FlightRecorder.RequireReceipts = true
+	if err := s.Reload(enable); err != nil {
+		t.Fatalf("Reload enabling require_receipts: %v", err)
+	}
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("setup failed: require_receipts not in force before the emitter was dropped")
+	}
+	s.proxy.ReceiptEmitterPtr().Store(nil)
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.ScanAPI.ConnectionLimit = 7
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("an already-required receipt posture was cleared by reload: silent downgrade of a live control")
+	}
+	if stderr.contains("cannot be enabled at runtime") {
+		t.Fatal("treated an unchanged require_receipts as an enable transition")
+	}
+	if !stderr.contains("no healthy live signed receipt emitter exists") {
+		t.Fatal("no warning that the required posture has no emitter behind it")
+	}
+}

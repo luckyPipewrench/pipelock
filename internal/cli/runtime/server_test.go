@@ -3330,8 +3330,14 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	if live.FlightRecorder.SigningKeyPath != oldCfg.FlightRecorder.SigningKeyPath {
 		t.Fatalf("signing key path = %q, want %q", live.FlightRecorder.SigningKeyPath, oldCfg.FlightRecorder.SigningKeyPath)
 	}
-	if !live.FlightRecorder.RequireReceipts {
-		t.Fatal("flight_recorder.require_receipts reload change was not applied")
+	// require_receipts is the reloadable exception among the restart-only
+	// recorder fields, but only when a live signed emitter exists to enforce
+	// it. This server has none, so the enable is ignored rather than turning
+	// the process into an all-403 black-hole from a config edit. The applied
+	// case is covered by
+	// TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies.
+	if live.FlightRecorder.RequireReceipts {
+		t.Fatal("flight_recorder.require_receipts was enabled by reload with no live emitter")
 	}
 	if !reflect.DeepEqual(live.Conductor, oldCfg.Conductor) {
 		t.Fatalf("conductor settings not preserved: %+v", live.Conductor)

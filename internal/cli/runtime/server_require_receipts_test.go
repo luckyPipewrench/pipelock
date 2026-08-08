@@ -374,6 +374,7 @@ func TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored(t *testing.T
 
 	newCfg := s.proxy.CurrentConfig().Clone()
 	newCfg.FlightRecorder.RequireReceipts = true
+	newCfg.FetchProxy.Monitoring.MaxURLLength = 4321
 	if err := s.Reload(newCfg); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
@@ -386,6 +387,9 @@ func TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored(t *testing.T
 	}
 	if !stderr.contains("restart required") {
 		t.Fatal("warning does not tell the operator that a restart is the fix")
+	}
+	if got := s.proxy.CurrentConfig().FetchProxy.Monitoring.MaxURLLength; got != 4321 {
+		t.Fatalf("ignored require_receipts enable blocked an unrelated hot-reloadable change: max_url_length = %d, want 4321", got)
 	}
 }
 
@@ -556,6 +560,7 @@ func TestServer_Reload_RequireReceiptsDowngradeIsRejected(t *testing.T) {
 	}
 
 	off := s.proxy.CurrentConfig().Clone()
+	off.FlightRecorder.Enabled = false
 	off.FlightRecorder.RequireReceipts = false
 	// A second, unrelated and genuinely hot-reloadable change proves the whole
 	// reload was rejected rather than the one field being quietly preserved.
@@ -573,5 +578,21 @@ func TestServer_Reload_RequireReceiptsDowngradeIsRejected(t *testing.T) {
 	}
 	if s.proxy.CurrentConfig().FetchProxy.Monitoring.MaxURLLength == 4321 {
 		t.Fatal("rejected reload still published its other changes")
+	}
+	if !s.proxy.CurrentConfig().FlightRecorder.Enabled {
+		t.Fatal("rejected whole-recorder disable changed the live recorder state")
+	}
+
+	// Positive control for the unrelated field above: with the required
+	// posture preserved, the exact same max_url_length edit must apply. Without
+	// this probe, the rejection assertion could pass merely because the field
+	// was itself restart-only or otherwise ignored by reload.
+	allowed := s.proxy.CurrentConfig().Clone()
+	allowed.FetchProxy.Monitoring.MaxURLLength = 4321
+	if err := s.Reload(allowed); err != nil {
+		t.Fatalf("Reload preserving require_receipts: %v", err)
+	}
+	if got := s.proxy.CurrentConfig().FetchProxy.Monitoring.MaxURLLength; got != 4321 {
+		t.Fatalf("positive-control max_url_length reload = %d, want 4321", got)
 	}
 }

@@ -5,6 +5,7 @@ package evidence
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,19 @@ func TestEvidenceDoctorWritesCorpusMetricOnEveryOutcome(t *testing.T) {
 			},
 			wantCode:  cliutil.ExitOK,
 			wantGauge: "pipelock_evidence_corpus_integrity_ok 1",
+		},
+		{
+			// A scan that could not cover the whole directory must publish
+			// unhealthy. Absence of findings over a partial view is not
+			// evidence of an intact chain, so a truncated scan reporting 1
+			// would be the one reading an alert cannot distinguish from real
+			// health.
+			name: "incomplete scan reports unhealthy",
+			seed: func(t *testing.T, dir string) {
+				seedTruncatingCorpus(t, dir)
+			},
+			wantCode:  cliutil.ExitGeneral,
+			wantGauge: "pipelock_evidence_corpus_integrity_ok 0",
 		},
 		{
 			name: "damaged corpus reports unhealthy and still exits nonzero",
@@ -184,5 +198,17 @@ func TestEvidenceDoctorWithoutTextfileFlagWritesNothing(t *testing.T) {
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("clean corpus without the flag failed: %v", err)
+	}
+}
+
+// seedTruncatingCorpus writes more evidence files than the doctor will read,
+// which is the only way a scan becomes inconclusive.
+func seedTruncatingCorpus(t *testing.T, dir string) {
+	t.Helper()
+	for i := range maxEvidenceDoctorFiles + 1 {
+		name := filepath.Join(dir, fmt.Sprintf("evidence-proxy-%d.jsonl", i))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatalf("seed evidence file %d: %v", i, err)
+		}
 	}
 }

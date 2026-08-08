@@ -59,6 +59,19 @@ class PayloadTest(unittest.TestCase):
             pr_review.DEEP_MAX_COMPLETION_TOKENS,
         )
 
+    def test_deep_completion_budget_leaves_room_beside_reasoning(self) -> None:
+        # max_completion_tokens is shared between reasoning and visible output.
+        # A deep review at xhigh effort has consumed 25000 reasoning tokens on a
+        # single large diff and returned finish_reason=length with an empty body,
+        # so the ceiling has to stay well clear of that. Raising it cannot cause
+        # sprawl, because an over-long response is rejected by
+        # DEEP_REVIEW_MAX_WORDS.
+        self.assertGreaterEqual(pr_review.DEEP_MAX_COMPLETION_TOKENS, 50_000)
+        self.assertGreater(
+            pr_review.DEEP_MAX_COMPLETION_TOKENS,
+            pr_review.DEFAULT_MAX_COMPLETION_TOKENS,
+        )
+
     def test_prefixed_gpt5_models_omit_temperature(self) -> None:
         payload = pr_review.build_llm_payload("openai/gpt-5.5", "system", "diff")
         self.assertNotIn("temperature", payload)

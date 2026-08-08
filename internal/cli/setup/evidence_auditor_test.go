@@ -7,11 +7,16 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestInitCmdInstallsEvidenceCorpusAuditorWithRenderedConsumer(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("init installs the auditor only on linux")
+	}
+
 	home := t.TempDir()
 	configPath := filepath.Join(home, "cfg", "pipelock.yaml")
 	cmd := InitCmd()

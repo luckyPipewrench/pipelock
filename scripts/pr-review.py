@@ -47,7 +47,13 @@ DEFAULT_MODEL_FAST = "gpt-5.6-luna"
 DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_MAX_COMPLETION_TOKENS = 8192
-DEEP_MAX_COMPLETION_TOKENS = 25000
+# max_completion_tokens is a SHARED budget for reasoning and visible output, so
+# it has to leave room for both. At xhigh effort on a large diff, reasoning alone
+# consumed the entire 25000 this used to be, and the request came back with
+# finish_reason=length and an empty body: reasoning=25000, completion=25000, no
+# review. Raising the ceiling cannot produce a sprawling review, because
+# DEEP_REVIEW_MAX_WORDS below rejects an over-long response outright.
+DEEP_MAX_COMPLETION_TOKENS = 64000
 DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEEP_LLM_TIMEOUT_SECONDS = 300
 FAST_REASONING_EFFORT = "low"

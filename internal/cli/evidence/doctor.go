@@ -176,7 +176,7 @@ func writeEvidenceCorpusMetric(path string, healthy bool) error {
 		_ = tmp.Close()
 		return fmt.Errorf("writing Prometheus textfile: %w", err)
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("setting Prometheus textfile mode: %w", err)
 	}

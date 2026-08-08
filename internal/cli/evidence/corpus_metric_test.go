@@ -60,13 +60,16 @@ func TestWriteEvidenceCorpusMetricRendersBothGauges(t *testing.T) {
 				t.Fatalf("audit timestamp = %d, want >= %d", stamp, before)
 			}
 
-			// A node exporter running as another user must be able to read it.
+			// Owner-only, matching the repository's file convention. A
+			// collector that cannot read the file produces no series, and the
+			// alert's absent() clauses turn that into a firing alert rather
+			// than a silent gap, so a restrictive mode stays observable.
 			info, err := os.Stat(path)
 			if err != nil {
 				t.Fatalf("stat metric file: %v", err)
 			}
-			if perm := info.Mode().Perm(); perm != 0o644 {
-				t.Fatalf("metric file mode = %04o, want 0644", perm)
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Fatalf("metric file mode = %04o, want 0600", perm)
 			}
 		})
 	}

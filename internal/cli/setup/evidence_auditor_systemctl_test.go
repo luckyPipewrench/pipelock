@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -41,7 +42,10 @@ func TestSystemctlCommandBuildsOnlyPermittedOperations(t *testing.T) {
 			if err != nil {
 				t.Fatalf("systemctlCommand(%q): %v", tt.op, err)
 			}
-			if strings.Join(cmd.Args, " ") != strings.Join(tt.wantArgs, " ") {
+			// Element-wise. A joined comparison makes {"enable", "--now"}
+			// and {"enable --now"} look identical, which is the difference
+			// between two arguments and one.
+			if !slices.Equal(cmd.Args, tt.wantArgs) {
 				t.Fatalf("args = %q, want %q", cmd.Args, tt.wantArgs)
 			}
 		})
@@ -80,8 +84,8 @@ func TestEvidenceAuditorSystemctlReportsCommandFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "Failed to enable unit") {
 		t.Fatalf("error = %v, want the combined output included", err)
 	}
-	if len(seen) == 0 || seen[0] != "systemctl" {
-		t.Fatalf("ran %q, want a systemctl invocation", seen)
+	if want := []string{"systemctl", "--user", "enable", "--now", evidenceCorpusAuditorTimer}; !slices.Equal(seen, want) {
+		t.Fatalf("ran %q, want %q", seen, want)
 	}
 }
 
@@ -100,8 +104,8 @@ func TestEvidenceAuditorSystemctlSucceedsForPermittedOperation(t *testing.T) {
 	if err := runSystemctlOp(context.Background(), systemctlDaemonReload); err != nil {
 		t.Fatalf("daemon-reload: %v", err)
 	}
-	if strings.Join(seen, " ") != "systemctl --user daemon-reload" {
-		t.Fatalf("ran %q, want a systemctl --user daemon-reload invocation", seen)
+	if want := []string{"systemctl", "--user", "daemon-reload"}; !slices.Equal(seen, want) {
+		t.Fatalf("ran %q, want %q", seen, want)
 	}
 }
 

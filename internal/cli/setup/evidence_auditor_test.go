@@ -83,8 +83,18 @@ func TestEvidenceCorpusAuditorAlertRemediationNamesAShippedSurface(t *testing.T)
 	if strings.Contains(alert, "evidence export") {
 		t.Fatalf("corpus alert instructs an evidence-export control that does not ship:\n%s", alert)
 	}
-	if !strings.Contains(alert, "evidence doctor") {
-		t.Fatalf("corpus alert remediation names no shipped investigation command:\n%s", alert)
+	// The full command, not the bare phrase: `evidence doctor` alone would still
+	// match a remediation that named no binary or omitted the required
+	// directory argument, which is the same half-usable instruction this
+	// annotation was rewritten to stop giving.
+	if !strings.Contains(alert, "pipelock evidence doctor DIR") {
+		t.Fatalf("corpus alert remediation is not the runnable command:\n%s", alert)
+	}
+	// The other half of the remediation: damage to the corpus says something
+	// about evidence already handed out, and an operator who is not told that
+	// has no reason to revisit it.
+	if !strings.Contains(alert, "unverified") {
+		t.Fatalf("corpus alert does not tell operators to treat already-published evidence as unverified:\n%s", alert)
 	}
 }
 

@@ -328,9 +328,29 @@ func tamperLastActionReceipt(t *testing.T, dir string) {
 // arrives at reload names a dir and key (which config validation requires
 // before require_receipts is accepted at all) while the restart-only recorder
 // itself is still absent.
-func newRequireReceiptsReloadServer(t *testing.T, withEmitter bool) (*Server, *syncBuffer) {
+// newRequireReceiptsReloadServer builds a recorder-backed server for the cases
+// that do not inspect the audit channel. The no-recorder shape is only needed by
+// the ignored-enable test, which reads the audit log and uses the WithAudit form.
+func newRequireReceiptsReloadServer(t *testing.T) (*Server, *syncBuffer) {
 	t.Helper()
-	lines := []string{"mode: balanced", "flight_recorder:"}
+	s, stderr, _ := newRequireReceiptsReloadServerWithAudit(t, true)
+	return s, stderr
+}
+
+// newRequireReceiptsReloadServerWithAudit also returns the path the audit
+// channel writes to, so a test can assert the event an operator's monitoring
+// tool would see rather than only the process stderr.
+func newRequireReceiptsReloadServerWithAudit(t *testing.T, withEmitter bool) (*Server, *syncBuffer, string) {
+	t.Helper()
+	auditLog := filepath.Join(t.TempDir(), "audit.jsonl")
+	lines := []string{
+		"mode: balanced",
+		"logging:",
+		"  format: json",
+		"  output: file",
+		"  file: " + strconv.Quote(auditLog),
+		"flight_recorder:",
+	}
 	if withEmitter {
 		recorderDir := t.TempDir()
 		keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
@@ -359,7 +379,7 @@ func newRequireReceiptsReloadServer(t *testing.T, withEmitter bool) (*Server, *s
 	if ready := s.liveReceiptEmitterReady(); ready != withEmitter {
 		t.Fatalf("liveReceiptEmitterReady() = %v, want %v", ready, withEmitter)
 	}
-	return s, stderr
+	return s, stderr, auditLog
 }
 
 // TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored pins the
@@ -370,7 +390,7 @@ func newRequireReceiptsReloadServer(t *testing.T, withEmitter bool) (*Server, *s
 // the recorder is restart-only and cannot be built mid-flight. The enable is
 // ignored, warned, and recorded on the audit channel instead.
 func TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored(t *testing.T) {
-	s, stderr := newRequireReceiptsReloadServer(t, false)
+	s, stderr, auditLog := newRequireReceiptsReloadServerWithAudit(t, false)
 
 	newCfg := s.proxy.CurrentConfig().Clone()
 	newCfg.FlightRecorder.RequireReceipts = true
@@ -391,6 +411,19 @@ func TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored(t *testing.T
 	if got := s.proxy.CurrentConfig().FetchProxy.Monitoring.MaxURLLength; got != 4321 {
 		t.Fatalf("ignored require_receipts enable blocked an unrelated hot-reloadable change: max_url_length = %d, want 4321", got)
 	}
+	// stderr alone is not the contract. An operator who asked for receipt
+	// enforcement and did not get it has to be able to see that from a
+	// monitoring tool, so the audit event is the load-bearing signal and a
+	// regression that drops the LogConfigReload call must fail here.
+	audit, readErr := os.ReadFile(filepath.Clean(auditLog))
+	if readErr != nil {
+		t.Fatalf("read audit log: %v", readErr)
+	}
+	if !strings.Contains(string(audit), `"event":"config_reload"`) ||
+		!strings.Contains(string(audit), `"status":"ignored"`) ||
+		!strings.Contains(string(audit), "require_receipts enable without live receipt emitter") {
+		t.Fatalf("audit log did not record the ignored require_receipts enable:\n%s", audit)
+	}
 }
 
 // TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies keeps the
@@ -398,7 +431,7 @@ func TestServer_Reload_RequireReceiptsEnableWithoutEmitterIsIgnored(t *testing.T
 // restart-only recorder fields, and the guard above must not regress that
 // normal case: with a live emitter the enable still takes effect.
 func TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies(t *testing.T) {
-	s, stderr := newRequireReceiptsReloadServer(t, true)
+	s, stderr := newRequireReceiptsReloadServer(t)
 
 	newCfg := s.proxy.CurrentConfig().Clone()
 	newCfg.FlightRecorder.RequireReceipts = true
@@ -420,7 +453,7 @@ func TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies(t *testing.T)
 // unhealthy emitter must not make a legitimate enable look structurally
 // impossible when the already-bound recorder and signing key can rebuild it.
 func TestServer_Reload_RequireReceiptsEnableWithUnhealthyEmitterRecovers(t *testing.T) {
-	s, stderr := newRequireReceiptsReloadServer(t, true)
+	s, stderr := newRequireReceiptsReloadServer(t)
 	oldEmitter := s.liveReceiptEmitter()
 	oldEmitter.MarkUnhealthy(errors.New("forced runtime receipt failure"))
 	if s.liveReceiptEmitterReady() {
@@ -448,24 +481,47 @@ func TestServer_Reload_RequireReceiptsEnableWithUnhealthyEmitterRecovers(t *test
 }
 
 func TestServer_Reload_RequireReceiptsRecoveryFailureKeepsOldPosture(t *testing.T) {
-	s, _ := newRequireReceiptsReloadServer(t, true)
+	// The old posture has to be the SECURITY-SENSITIVE one, which means
+	// receipts already required. Starting from the default (not required) only
+	// proves a failed recovery does not ENABLE receipts, and would still pass if
+	// a failed rebuild cleared an active fail-closed requirement or published
+	// the rest of the candidate config.
+	s, _ := newRequireReceiptsReloadServer(t)
+
+	enable := s.proxy.CurrentConfig().Clone()
+	enable.FlightRecorder.RequireReceipts = true
+	if err := s.Reload(enable); err != nil {
+		t.Fatalf("Reload enabling require_receipts: %v", err)
+	}
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("setup failed: require_receipts not in force before recovery was broken")
+	}
+	liveAnchor := s.proxy.CurrentConfig().FlightRecorder.Anchor.Interval
+
 	oldEmitter := s.liveReceiptEmitter()
 	oldEmitter.MarkUnhealthy(errors.New("forced runtime receipt failure"))
 	if err := os.Remove(s.proxy.CurrentConfig().FlightRecorder.SigningKeyPath); err != nil {
 		t.Fatalf("remove signing key: %v", err)
 	}
 
+	// Receipts stay required across this reload; only an unrelated field moves.
+	// Anchor.Interval is the field that also sets the dedupe bypass, without
+	// which a Clone shares its Hash() with the live config and the reload is
+	// skipped outright.
 	newCfg := s.proxy.CurrentConfig().Clone()
-	newCfg.FlightRecorder.RequireReceipts = true
+	newCfg.FlightRecorder.Anchor.Interval = "2h"
 	if err := s.Reload(newCfg); err == nil {
 		t.Fatal("Reload recovered an unhealthy emitter after its signing key was removed")
 	}
 
-	if s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
-		t.Fatal("failed emitter recovery applied require_receipts")
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("failed emitter recovery cleared an active fail-closed requirement")
 	}
 	if s.liveReceiptEmitter() != oldEmitter {
 		t.Fatal("failed emitter recovery replaced the old runtime emitter")
+	}
+	if got := s.proxy.CurrentConfig().FlightRecorder.Anchor.Interval; got != liveAnchor {
+		t.Fatalf("rejected reload published its unrelated changes: anchor interval = %q, want %q", got, liveAnchor)
 	}
 }
 
@@ -479,7 +535,7 @@ func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) 
 	// already-required posture always began with a healthy emitter, so start
 	// with one, enable require_receipts, then mark the emitter unhealthy the
 	// same way a required heartbeat failure does in production.
-	s, stderr := newRequireReceiptsReloadServer(t, true)
+	s, stderr := newRequireReceiptsReloadServer(t)
 
 	enable := s.proxy.CurrentConfig().Clone()
 	enable.FlightRecorder.RequireReceipts = true
@@ -495,6 +551,13 @@ func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) 
 		t.Fatal("runtime-unhealthy emitter reported ready")
 	}
 
+	// Clone copies rawBytes, so this candidate shares its Hash() with the live
+	// config and the 2s dedupe would skip it outright. It survives only because
+	// changing Anchor.Interval sets the flightRecorderAnchorChanged bypass. That
+	// dependency is load-bearing and invisible: if the bypass ever stops
+	// covering anchor changes, Reload returns nil early, every assertion below
+	// runs against an unchanged live config, and this test keeps passing while
+	// testing nothing.
 	newCfg := s.proxy.CurrentConfig().Clone()
 	newCfg.FlightRecorder.Anchor.Interval = "2h"
 	if err := s.Reload(newCfg); err != nil {

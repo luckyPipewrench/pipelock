@@ -161,6 +161,17 @@ func TestRequiredModeTeardowns_SNIRequireTLSParentGating(t *testing.T) {
 	inForce.ForwardProxy.SNIVerification = &yes
 	inForce.ForwardProxy.SNIRequireTLS = &yes
 
+	// The direct teardown, and the shape an operator is most likely to write:
+	// SNI verification stays on and only sni_require_tls is switched off. This
+	// is the transition that was silently applying before the contract was
+	// listed, so it is the one that most needs pinning.
+	flagOff := inForce.Clone()
+	flagOff.ForwardProxy.SNIRequireTLS = &no
+	torn := requiredModeTeardowns(inForce, flagOff)
+	if len(torn) != 1 || torn[0] != "forward_proxy.sni_require_tls" {
+		t.Fatalf("clearing sni_require_tls under live verification reported %v, want exactly forward_proxy.sni_require_tls", torn)
+	}
+
 	// Parent off while the flag stays true: still a teardown.
 	parentOff := inForce.Clone()
 	parentOff.ForwardProxy.SNIVerification = &no

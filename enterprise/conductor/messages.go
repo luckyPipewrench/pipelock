@@ -403,6 +403,7 @@ type StreamSwitchAuthorization struct {
 
 type EvidenceChain struct {
 	EntryVersion           int    `json:"entry_version"`
+	SessionID              string `json:"session_id,omitempty"`
 	ChainKind              string `json:"chain_kind,omitempty"`
 	WriterInstanceID       string `json:"writer_instance_id,omitempty"`
 	SegmentID              string `json:"segment_id"`
@@ -1397,7 +1398,7 @@ func auditChainIdentityEqual(a, b EvidenceChain) bool {
 	if !aNamespaced {
 		return true
 	}
-	return a.EntryVersion == b.EntryVersion && a.ChainKind == b.ChainKind && a.WriterInstanceID == b.WriterInstanceID
+	return a.EntryVersion == b.EntryVersion && a.SessionID == b.SessionID && a.ChainKind == b.ChainKind && a.WriterInstanceID == b.WriterInstanceID
 }
 
 // IsSupportedAuditEntryVersion reports whether audit transport accepts version.
@@ -1413,6 +1414,9 @@ func (c EvidenceChain) Validate(seqStart, seqEnd uint64) error {
 		return fmt.Errorf("%w: entry_version=%d", ErrInvalidSequenceRange, c.EntryVersion)
 	}
 	if recorder.EntryVersionHasNamespace(c.EntryVersion) {
+		if err := validateIdentifier("chain.session_id", c.SessionID); err != nil {
+			return err
+		}
 		if err := validateIdentifier("chain.chain_kind", c.ChainKind); err != nil {
 			return err
 		}

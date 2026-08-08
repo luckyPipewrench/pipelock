@@ -307,7 +307,7 @@ func homogeneousRecorderNamespace(entries []recorder.Entry) bool {
 	}
 	first := entries[0]
 	for _, entry := range entries[1:] {
-		if entry.Version != first.Version || entry.ChainKind != first.ChainKind || entry.WriterInstanceID != first.WriterInstanceID {
+		if entry.Version != first.Version || entry.SessionID != first.SessionID || entry.ChainKind != first.ChainKind || entry.WriterInstanceID != first.WriterInstanceID {
 			return false
 		}
 	}
@@ -332,6 +332,7 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 		Dropped:            dropped,
 		Chain: conductor.EvidenceChain{
 			EntryVersion:           entries[0].Version,
+			SessionID:              entries[0].SessionID,
 			ChainKind:              entries[0].ChainKind,
 			WriterInstanceID:       entries[0].WriterInstanceID,
 			SegmentID:              segmentID(entries[0], checkpoint.Sequence),
@@ -368,7 +369,7 @@ func recorderNamespaceKey(entry recorder.Entry) string {
 	if entry.Version == 1 || entry.Version == 2 {
 		return "legacy"
 	}
-	return fmt.Sprintf("v%d\x00%s\x00%s", entry.Version, entry.ChainKind, entry.WriterInstanceID)
+	return fmt.Sprintf("v%d\x00%s\x00%s\x00%s", entry.Version, entry.SessionID, entry.ChainKind, entry.WriterInstanceID)
 }
 
 func (p *Producer) previousSegmentTailFor(key string) string {

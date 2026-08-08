@@ -708,8 +708,9 @@ Conductor must:
 - Detect overlapping sequence ranges with different hashes in the same recorder
   chain namespace as a compromise indicator.
 - Accept v2 and v3 recorder audit entries and verify each version with its own
-  hash projection. V3 entries require `chain_kind` and `writer_instance_id`,
-  which define the namespace used for continuity and fork detection.
+  hash projection. V3 entries require `session_id`, `chain_kind`, and
+  `writer_instance_id`, which together define the chain identity used for
+  continuity and fork detection.
 - Verify checkpoint signature with enrolled receipt/checkpoint public key.
 - Stitch segment rotation using previous segment tail and current segment head.
 - DLP-scan payload contents before storage.

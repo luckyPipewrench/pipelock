@@ -794,6 +794,21 @@ fn recorder_reader_rejects_nul_in_legacy_projected_strings() {
 }
 
 #[test]
+fn recorder_reader_preserves_legacy_null_compatibility() {
+    for version in [1, 2] {
+        let fixture = TempFixture(recorder_fixture_path(&format!("v{version}-null")));
+        let path = &fixture.0;
+        let entry = serde_json::json!({
+            "v": version, "seq": 0, "ts": "2026-08-07T00:00:00Z", "session_id": "s",
+            "trace_id": null, "type": "checkpoint", "transport": "x", "summary": "",
+            "detail": {}, "prev_hash": "genesis", "hash": "h"
+        });
+        fs::write(path, format!("{}\n", entry)).expect("write JSONL");
+        extract_receipts(path).expect("legacy null should remain accepted");
+    }
+}
+
+#[test]
 fn recorder_reader_rejects_malformed_legacy_namespace_types() {
     for (name, value) in [
         ("object", "{}"),

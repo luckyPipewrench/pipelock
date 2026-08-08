@@ -169,6 +169,7 @@ func TestAuditBatchEnvelope_ValidateV2ChainAndForkDetection(t *testing.T) {
 func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
 	chain := testAuditBatch().Chain
 	chain.EntryVersion = recorder.LatestEntryVersion
+	chain.SessionID = "session-a"
 	chain.ChainKind = recorder.ChainKindRecorder
 	chain.WriterInstanceID = "writer-a"
 	if err := chain.Validate(10, 20); err != nil {
@@ -196,6 +197,7 @@ func TestEvidenceChainAcceptsNamespacedV3AndForksPerWriter(t *testing.T) {
 		edit func(*EvidenceChain)
 	}{
 		{"entry_version", func(c *EvidenceChain) { c.EntryVersion = recorder.CurrentWriteEntryVersion }},
+		{"session_id", func(c *EvidenceChain) { c.SessionID = "session-b" }},
 		{"chain_kind", func(c *EvidenceChain) { c.ChainKind = "import" }},
 		{"writer_instance_id", func(c *EvidenceChain) { c.WriterInstanceID = "writer-b" }},
 	} {

@@ -194,9 +194,15 @@ fn validate_projected_strings(entry: &serde_json::Value, line: usize, version: u
         let missing = entry.get(field).is_none();
         let value = match entry.get(field) {
             None => "",
-            Some(value) => value.as_str().ok_or_else(|| {
-                VerifierError::Runtime(format!("line {line}: v3 {field} must be a string"))
-            })?,
+            Some(value) => match value.as_str() {
+                Some(value) => value,
+                None if version != 3 => continue,
+                None => {
+                    return Err(VerifierError::Runtime(format!(
+                        "line {line}: v3 {field} must be a string"
+                    )))
+                }
+            },
         };
         let required = version == 3
             && matches!(

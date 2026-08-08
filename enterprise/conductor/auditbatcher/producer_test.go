@@ -26,12 +26,13 @@ import (
 )
 
 func TestHomogeneousRecorderNamespace(t *testing.T) {
-	base := recorder.Entry{Version: recorder.LatestEntryVersion, ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "writer-a"}
+	base := recorder.Entry{Version: recorder.LatestEntryVersion, SessionID: "session-a", ChainKind: recorder.ChainKindRecorder, WriterInstanceID: "writer-a"}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*recorder.Entry)
 	}{
 		{"version", func(e *recorder.Entry) { e.Version = recorder.CurrentWriteEntryVersion }},
+		{"session_id", func(e *recorder.Entry) { e.SessionID = "session-b" }},
 		{"chain_kind", func(e *recorder.Entry) { e.ChainKind = "receipt" }},
 		{"writer_instance_id", func(e *recorder.Entry) { e.WriterInstanceID = "writer-b" }},
 	} {
@@ -511,6 +512,42 @@ func TestProducer_IsolatesInterleavedV3Namespaces(t *testing.T) {
 		chain := lease.Batch.Envelope.Chain
 		if chain.WriterInstanceID != wantWriters[i] || chain.PreviousSegmentTail != wantPrevious[i] {
 			t.Fatalf("batch %d writer/tail = %q/%q, want %q/%q", i, chain.WriterInstanceID, chain.PreviousSegmentTail, wantWriters[i], wantPrevious[i])
+		}
+	}
+}
+
+func TestProducer_IsolatesInterleavedV3Sessions(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
+
+	first := namespacedCheckpointSegment(0, "writer-a")
+	second := namespacedCheckpointSegment(0, "writer-a")
+	for i := range first {
+		first[i].SessionID = "session-a"
+		second[i].SessionID = "session-b"
+	}
+	for _, entry := range []recorder.Entry{first[0], second[0], first[1], second[1]} {
+		p.ObserveRecorderEntry(entry)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, wantSession := range []string{"session-a", "session-b"} {
+		lease, err := q.Claim()
+		if err != nil {
+			t.Fatalf("Claim batch %d: %v", i, err)
+		}
+		chain := lease.Batch.Envelope.Chain
+		if chain.SessionID != wantSession || chain.PreviousSegmentTail != "" {
+			t.Fatalf("batch %d session/tail = %q/%q, want %q/empty", i, chain.SessionID, chain.PreviousSegmentTail, wantSession)
 		}
 	}
 }

@@ -312,7 +312,9 @@ func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []
 		if err := recorder.ValidateEntrySchema(entry); err != nil {
 			return fmt.Errorf("fleet report: audit batch %s seq %d invalid recorder entry: %w", batchID, entry.Sequence, err)
 		}
-		if entry.Version != chain.EntryVersion || entry.ChainKind != chain.ChainKind || entry.WriterInstanceID != chain.WriterInstanceID {
+		if entry.Version != chain.EntryVersion ||
+			(recorder.EntryVersionHasNamespace(entry.Version) && entry.SessionID != chain.SessionID) ||
+			entry.ChainKind != chain.ChainKind || entry.WriterInstanceID != chain.WriterInstanceID {
 			return fmt.Errorf("fleet report: audit batch %s seq %d chain namespace mismatch", batchID, entry.Sequence)
 		}
 	}

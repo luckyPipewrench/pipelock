@@ -69,6 +69,7 @@ function validateProjectedStrings(entry: RecorderEntry, line: number, version: n
   for (const field of fields) {
     const value = entry[field];
     if (value !== undefined && typeof value !== "string") {
+      if (version !== 3) continue;
       throw new RuntimeError(`line ${line}: v3 ${field} must be a string`);
     }
     const required =

@@ -649,6 +649,23 @@ test("JSONL recorder reader rejects NUL in legacy projected strings", () => {
   }
 });
 
+test("JSONL recorder reader preserves legacy null compatibility", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  try {
+    for (const version of [1, 2]) {
+      const file = join(dir, `v${version}-null.jsonl`);
+      writeFileSync(
+        file,
+        `${JSON.stringify({ v: version, seq: 0, ts: "2026-08-07T00:00:00Z", session_id: "s", trace_id: null, type: "checkpoint", transport: "x", summary: "", detail: {}, prev_hash: "genesis", hash: "h" })}\n`,
+        { mode: 0o600 },
+      );
+      assert.doesNotThrow(() => extractReceipts(file));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder reader rejects malformed legacy namespace field types", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   try {

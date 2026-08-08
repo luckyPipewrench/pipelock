@@ -365,3 +365,43 @@ func TestValidateReload_QueryEntropyParamExclusionsMalformedOrDuplicateNoPanic(t
 	}()
 	_ = ValidateReload(old, updated)
 }
+
+// TestValidateReload_RequireReceiptsDisabled pins the warning that ARMS the
+// existing downgrade rejection. reloadDowngradeRejectReason already named
+// flight_recorder.require_receipts in the reason it reports, but no warning was
+// ever emitted for the field, so hasRejectableDowngradeWarning never saw one and
+// a plain balanced-mode reload cleared an active fail-closed receipt requirement
+// silently. Only the true -> false transition is a downgrade: enabling it, and
+// leaving it alone in either state, must stay quiet so an unrelated reload is
+// not rejected.
+func TestValidateReload_RequireReceiptsDisabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		old  bool
+		next bool
+		want bool
+	}{
+		{name: "disabled is a downgrade", old: true, next: false, want: true},
+		{name: "enabling is not", old: false, next: true},
+		{name: "unchanged on", old: true, next: true},
+		{name: "unchanged off", old: false, next: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := Defaults()
+			old.FlightRecorder.RequireReceipts = tc.old
+			updated := Defaults()
+			updated.FlightRecorder.RequireReceipts = tc.next
+			got := false
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field == "flight_recorder.require_receipts" {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("require_receipts downgrade warning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

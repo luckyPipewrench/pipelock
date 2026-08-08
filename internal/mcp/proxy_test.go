@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -281,6 +282,17 @@ func receiptsByVerdict(receipts []receipt.Receipt, verdict string) []receipt.Rec
 		}
 	}
 	return out
+}
+
+func assertBlockedRedirectDLPEvidence(t *testing.T, captureRecord capture.ResponseVerdictRecord, receipts []receipt.Receipt) {
+	t.Helper()
+	if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || len(captureRecord.RawFindings) == 0 || captureRecord.RawFindings[0].Kind != capture.KindDLP || captureRecord.RawFindings[0].Action != config.ActionBlock {
+		t.Fatalf("redirect DLP capture = %+v", captureRecord)
+	}
+	blockReceipts := receiptsByVerdict(receipts, config.ActionBlock)
+	if len(blockReceipts) == 0 || blockReceipts[0].ActionRecord.Layer != mcpReceiptLayerResponse || blockReceipts[0].ActionRecord.Pattern != "AWS Access ID" {
+		t.Fatalf("redirect DLP receipt = %+v", blockReceipts)
+	}
 }
 
 // --- ForwardScanned tests ---

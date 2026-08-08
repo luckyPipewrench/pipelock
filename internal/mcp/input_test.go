@@ -2084,21 +2084,16 @@ func TestForwardScannedInput_PolicyRedirectOutputDLP(t *testing.T) {
 	if !strings.Contains(logW.String(), "DLP match in handler output") {
 		t.Errorf("expected 'DLP match in handler output' in log, got: %s", logW.String())
 	}
+	var captureRecord capture.ResponseVerdictRecord
 	select {
-	case captureRecord := <-obs.got:
-		if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || len(captureRecord.RawFindings) == 0 || captureRecord.RawFindings[0].Kind != capture.KindDLP || captureRecord.RawFindings[0].Action != config.ActionBlock {
-			t.Fatalf("redirect DLP capture = %+v", captureRecord)
-		}
+	case captureRecord = <-obs.got:
 	case <-time.After(testWarnContextTimeout):
 		t.Fatal("expected redirect-output DLP capture")
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
-	blockReceipts := receiptsByVerdict(readActionReceipts(t, dir), config.ActionBlock)
-	if len(blockReceipts) == 0 || blockReceipts[0].ActionRecord.Layer != mcpReceiptLayerResponse || blockReceipts[0].ActionRecord.Pattern != "AWS Access ID" {
-		t.Fatalf("redirect DLP receipt = %+v", blockReceipts)
-	}
+	assertBlockedRedirectDLPEvidence(t, captureRecord, readActionReceipts(t, dir))
 }
 
 func TestForwardScannedInput_PolicyRedirectOutputClean(t *testing.T) {

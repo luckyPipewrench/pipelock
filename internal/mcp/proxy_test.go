@@ -284,14 +284,30 @@ func receiptsByVerdict(receipts []receipt.Receipt, verdict string) []receipt.Rec
 	return out
 }
 
-func assertBlockedRedirectDLPEvidence(t *testing.T, captureRecord capture.ResponseVerdictRecord, receipts []receipt.Receipt) {
+func assertBlockedDLPEvidence(t *testing.T, captureRecord capture.ResponseVerdictRecord, receipts []receipt.Receipt, expectedLayer string) {
 	t.Helper()
-	if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || len(captureRecord.RawFindings) == 0 || captureRecord.RawFindings[0].Kind != capture.KindDLP || captureRecord.RawFindings[0].Action != config.ActionBlock {
-		t.Fatalf("redirect DLP capture = %+v", captureRecord)
+	dlpBlocked := false
+	for _, finding := range captureRecord.RawFindings {
+		if finding.Kind == capture.KindDLP && finding.Action == config.ActionBlock {
+			dlpBlocked = true
+			break
+		}
+	}
+	if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || !dlpBlocked {
+		t.Fatalf("redirect DLP capture metadata: outcome=%q action=%q findings=%d dlp_blocked=%t", captureRecord.Outcome, captureRecord.EffectiveAction, len(captureRecord.RawFindings), dlpBlocked)
 	}
 	blockReceipts := receiptsByVerdict(receipts, config.ActionBlock)
-	if len(blockReceipts) == 0 || blockReceipts[0].ActionRecord.Layer != mcpReceiptLayerResponse || blockReceipts[0].ActionRecord.Pattern != "AWS Access ID" {
-		t.Fatalf("redirect DLP receipt = %+v", blockReceipts)
+	responseReceipt := false
+	receiptMetadata := make([]string, 0, len(blockReceipts))
+	for _, blockReceipt := range blockReceipts {
+		receiptMetadata = append(receiptMetadata, blockReceipt.ActionRecord.Layer+":"+blockReceipt.ActionRecord.Pattern)
+		if blockReceipt.ActionRecord.Layer == expectedLayer && blockReceipt.ActionRecord.Pattern == "AWS Access ID" {
+			responseReceipt = true
+			break
+		}
+	}
+	if !responseReceipt {
+		t.Fatalf("redirect DLP receipt metadata: blocked_receipts=%d response_aws_receipt=%t records=%q", len(blockReceipts), responseReceipt, receiptMetadata)
 	}
 }
 

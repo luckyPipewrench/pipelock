@@ -3967,7 +3967,11 @@ func TestHTTPListener_SSEUpstream_BlocksInboundDLP(t *testing.T) {
 	defer upstream.Close()
 
 	sc := testScannerWithAction(t, config.ActionBlock)
-	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
+	obs := &mcpResponseCaptureObserver{got: make(chan capture.ResponseVerdictRecord, 1)}
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner: sc, CaptureObs: obs, ReceiptEmitter: emitter, Transport: transportMCPHTTP,
+	})
 
 	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(jsonToolsCallEcho)) //nolint:gosec,noctx // test
 	if err != nil {
@@ -3982,6 +3986,16 @@ func TestHTTPListener_SSEUpstream_BlocksInboundDLP(t *testing.T) {
 	if bytes.Contains(respBody, []byte(accessKey)) {
 		t.Errorf("inbound credential leaked through streamable HTTP: %s", respBody)
 	}
+	var captureRecord capture.ResponseVerdictRecord
+	select {
+	case captureRecord = <-obs.got:
+	case <-time.After(testWarnContextTimeout):
+		t.Fatal("expected SSE inbound-DLP capture")
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	assertBlockedDLPEvidence(t, captureRecord, readActionReceipts(t, dir), "mcp_response_scan")
 }
 
 // TestHTTPListener_SSEUpstream_ScanErrorReturns502 covers the fail-closed
@@ -5552,7 +5566,7 @@ func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
-	assertBlockedRedirectDLPEvidence(t, captureRecord, readActionReceipts(t, dir))
+	assertBlockedDLPEvidence(t, captureRecord, readActionReceipts(t, dir), mcpReceiptLayerResponse)
 }
 
 func TestScanHTTPInput_RedirectOutputWarnPreservesWarnContext(t *testing.T) {

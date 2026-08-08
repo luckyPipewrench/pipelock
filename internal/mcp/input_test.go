@@ -2093,7 +2093,7 @@ func TestForwardScannedInput_PolicyRedirectOutputDLP(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
-	assertBlockedRedirectDLPEvidence(t, captureRecord, readActionReceipts(t, dir))
+	assertBlockedDLPEvidence(t, captureRecord, readActionReceipts(t, dir), mcpReceiptLayerResponse)
 }
 
 func TestForwardScannedInput_PolicyRedirectOutputClean(t *testing.T) {

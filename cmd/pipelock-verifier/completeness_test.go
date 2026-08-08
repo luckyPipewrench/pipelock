@@ -617,8 +617,8 @@ func TestChainCLIShowsCompletenessReasonForATailDroppedChain(t *testing.T) {
 		t.Fatalf("tail-dropped chain output does not report abnormal_end:\n%s", droppedOut)
 	}
 
-	closedLine := scorecardLine(t, closedOut, "Completeness:")
-	droppedLine := scorecardLine(t, droppedOut, "Completeness:")
+	closedLine := scorecardLine(t, closedOut)
+	droppedLine := scorecardLine(t, droppedOut)
 	if closedLine == droppedLine {
 		t.Fatalf("a bounded chain and a tail-dropped one print the same completeness line: %s", closedLine)
 	}

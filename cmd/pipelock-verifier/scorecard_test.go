@@ -42,7 +42,7 @@ func TestScorecardCompletenessNeverRendersGreen(t *testing.T) {
 			}
 			var human bytes.Buffer
 			emitScorecard(&human, sc)
-			completenessLine := scorecardLine(t, human.String(), "Completeness:")
+			completenessLine := scorecardLine(t, human.String())
 			for _, green := range []string{"COMPLETE", "PASS", " OK"} {
 				if strings.Contains(completenessLine, green) {
 					t.Fatalf("Completeness line rendered green token %q for status %s:\n%s", green, status, human.String())
@@ -88,7 +88,7 @@ func TestEmitScorecardDistinguishesCompletenessReasons(t *testing.T) {
 					Reason: tt.reason,
 				},
 			})
-			line := scorecardLine(t, human.String(), "Completeness:")
+			line := scorecardLine(t, human.String())
 			if !strings.Contains(line, "reason="+string(tt.reason)) {
 				t.Fatalf("Completeness line does not surface reason %q: %s", tt.reason, line)
 			}
@@ -212,13 +212,13 @@ func TestNewActionScorecardStatusMapping(t *testing.T) {
 	}
 }
 
-func scorecardLine(t *testing.T, out, prefix string) string {
+func scorecardLine(t *testing.T, out string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, prefix) {
+		if strings.HasPrefix(line, "Completeness:") {
 			return line
 		}
 	}
-	t.Fatalf("scorecard output missing %q line:\n%s", prefix, out)
+	t.Fatalf("scorecard output missing Completeness line:\n%s", out)
 	return ""
 }

@@ -826,6 +826,11 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.MCPBinaryIntegrity.ManifestPath = "/etc/pipelock/mcp-integrity.json"
 	oldCfg.MCPBinaryIntegrity.RequireSignature = true
 	oldCfg.MCPBinaryIntegrity.TrustedSigner = "follower-release"
+	// Non-default values for the remaining inputs, so the whole-struct
+	// comparison below can actually detect them being cleared. Left at their
+	// zero values they would compare equal either way and prove nothing.
+	oldCfg.MCPBinaryIntegrity.SignaturePath = "/etc/pipelock/mcp-integrity.json.sig"
+	oldCfg.MCPBinaryIntegrity.Keystore = "/var/lib/pipelock/mcp-keystore"
 	oldCfg.MediationEnvelope.VerifyInbound.Enabled = true
 	oldCfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{
 		KeyID:     "follower-mediator",
@@ -935,9 +940,11 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 		{"license_require_intermediate", live.LicenseRequireIntermediateResolved},
 		{"forward_proxy.sni_require_tls", live.ForwardProxy.SNIVerificationEnabled() && live.ForwardProxy.SNIRequireTLSEnabled()},
 	} {
-		if !required.got {
-			t.Fatalf("enforcement-only conductor bundle cleared follower-local %s", required.name)
-		}
+		t.Run(required.name, func(t *testing.T) {
+			if !required.got {
+				t.Fatalf("enforcement-only conductor bundle cleared follower-local %s", required.name)
+			}
+		})
 	}
 	// The booleans above are necessary and not sufficient. Each one gates a
 	// check whose MEANING comes from local trust material, so a bundle that
@@ -948,11 +955,12 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 		t.Fatalf("a2a trusted agent card keys = %+v, want preserved %+v",
 			live.A2AScanning.TrustedAgentCardKeys, oldCfg.A2AScanning.TrustedAgentCardKeys)
 	}
-	if live.MCPBinaryIntegrity.ManifestPath != oldCfg.MCPBinaryIntegrity.ManifestPath ||
-		live.MCPBinaryIntegrity.TrustedSigner != oldCfg.MCPBinaryIntegrity.TrustedSigner {
-		t.Fatalf("mcp binary integrity trust material = %q/%q, want preserved %q/%q",
-			live.MCPBinaryIntegrity.ManifestPath, live.MCPBinaryIntegrity.TrustedSigner,
-			oldCfg.MCPBinaryIntegrity.ManifestPath, oldCfg.MCPBinaryIntegrity.TrustedSigner)
+	// Whole struct, not a chosen pair of fields: naming two inputs leaves a
+	// reload free to clear SignaturePath or Keystore while the assertion still
+	// passes, which is the same subset problem this block was added to fix.
+	if !reflect.DeepEqual(live.MCPBinaryIntegrity, oldCfg.MCPBinaryIntegrity) {
+		t.Fatalf("mcp binary integrity = %+v, want preserved %+v",
+			live.MCPBinaryIntegrity, oldCfg.MCPBinaryIntegrity)
 	}
 	if !reflect.DeepEqual(live.MediationEnvelope.VerifyInbound, oldCfg.MediationEnvelope.VerifyInbound) {
 		t.Fatalf("mediation inbound verification = %+v, want preserved %+v",

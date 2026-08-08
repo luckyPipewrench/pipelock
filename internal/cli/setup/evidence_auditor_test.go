@@ -93,7 +93,7 @@ func TestEvidenceCorpusAuditorAlertRemediationNamesAShippedSurface(t *testing.T)
 	// The other half of the remediation: damage to the corpus says something
 	// about evidence already handed out, and an operator who is not told that
 	// has no reason to revisit it.
-	if !strings.Contains(alert, "unverified") {
+	if !strings.Contains(alert, "Treat this corpus as unverified for any evidence already published or handed to an auditor") {
 		t.Fatalf("corpus alert does not tell operators to treat already-published evidence as unverified:\n%s", alert)
 	}
 }

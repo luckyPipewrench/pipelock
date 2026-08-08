@@ -410,6 +410,61 @@ func TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies(t *testing.T)
 	}
 }
 
+// TestServer_Reload_RequireReceiptsEnableWithUnhealthyEmitterRecovers covers
+// the ordering boundary between Server.Reload and proxy.Reload. The guard runs
+// before proxy.Reload stages its receipt-emitter replacement, so a currently
+// unhealthy emitter must not make a legitimate enable look structurally
+// impossible when the already-bound recorder and signing key can rebuild it.
+func TestServer_Reload_RequireReceiptsEnableWithUnhealthyEmitterRecovers(t *testing.T) {
+	s, stderr := newRequireReceiptsReloadServer(t, true)
+	oldEmitter := s.liveReceiptEmitter()
+	oldEmitter.MarkUnhealthy(errors.New("forced runtime receipt failure"))
+	if s.liveReceiptEmitterReady() {
+		t.Fatal("runtime-unhealthy emitter reported ready")
+	}
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.FlightRecorder.RequireReceipts = true
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts enable was ignored even though reload could rebuild the emitter")
+	}
+	if !s.liveReceiptEmitterReady() {
+		t.Fatal("reload applied require_receipts without a healthy rebuilt emitter")
+	}
+	if s.liveReceiptEmitter() == oldEmitter {
+		t.Fatal("reload reused the runtime-unhealthy receipt emitter")
+	}
+	if stderr.contains("cannot be enabled at runtime") {
+		t.Fatal("treated a recoverable emitter failure as a restart-only enable")
+	}
+}
+
+func TestServer_Reload_RequireReceiptsRecoveryFailureKeepsOldPosture(t *testing.T) {
+	s, _ := newRequireReceiptsReloadServer(t, true)
+	oldEmitter := s.liveReceiptEmitter()
+	oldEmitter.MarkUnhealthy(errors.New("forced runtime receipt failure"))
+	if err := os.Remove(s.proxy.CurrentConfig().FlightRecorder.SigningKeyPath); err != nil {
+		t.Fatalf("remove signing key: %v", err)
+	}
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.FlightRecorder.RequireReceipts = true
+	if err := s.Reload(newCfg); err == nil {
+		t.Fatal("Reload recovered an unhealthy emitter after its signing key was removed")
+	}
+
+	if s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("failed emitter recovery applied require_receipts")
+	}
+	if s.liveReceiptEmitter() != oldEmitter {
+		t.Fatal("failed emitter recovery replaced the old runtime emitter")
+	}
+}
+
 // TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy covers the
 // direction the guard must NOT take. An already-required posture whose emitter
 // is not live stays required: preserving fail-closed is correct there, and
@@ -418,8 +473,8 @@ func TestServer_Reload_RequireReceiptsEnableWithLiveEmitterApplies(t *testing.T)
 func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) {
 	// Reach the state the way production does. The startup guard means an
 	// already-required posture always began with a healthy emitter, so start
-	// with one, enable require_receipts, then drop the emitter to model it
-	// going unhealthy at runtime.
+	// with one, enable require_receipts, then mark the emitter unhealthy the
+	// same way a required heartbeat failure does in production.
 	s, stderr := newRequireReceiptsReloadServer(t, true)
 
 	enable := s.proxy.CurrentConfig().Clone()
@@ -430,10 +485,14 @@ func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) 
 	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
 		t.Fatal("setup failed: require_receipts not in force before the emitter was dropped")
 	}
-	s.proxy.ReceiptEmitterPtr().Store(nil)
+	oldEmitter := s.liveReceiptEmitter()
+	oldEmitter.MarkUnhealthy(errors.New("forced required heartbeat failure"))
+	if s.liveReceiptEmitterReady() {
+		t.Fatal("runtime-unhealthy emitter reported ready")
+	}
 
 	newCfg := s.proxy.CurrentConfig().Clone()
-	newCfg.ScanAPI.ConnectionLimit = 7
+	newCfg.FlightRecorder.Anchor.Interval = "2h"
 	if err := s.Reload(newCfg); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
@@ -441,10 +500,16 @@ func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) 
 	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
 		t.Fatal("an already-required receipt posture was cleared by reload: silent downgrade of a live control")
 	}
+	if !s.liveReceiptEmitterReady() {
+		t.Fatal("reload preserved require_receipts without recovering the unhealthy emitter")
+	}
+	if s.liveReceiptEmitter() == oldEmitter {
+		t.Fatal("reload reused the runtime-unhealthy receipt emitter")
+	}
 	if stderr.contains("cannot be enabled at runtime") {
 		t.Fatal("treated an unchanged require_receipts as an enable transition")
 	}
-	if !stderr.contains("no healthy live signed receipt emitter exists") {
-		t.Fatal("no warning that the required posture has no emitter behind it")
+	if !stderr.contains("current signed receipt emitter is unhealthy") {
+		t.Fatal("no warning that the required posture entered reload unhealthy")
 	}
 }

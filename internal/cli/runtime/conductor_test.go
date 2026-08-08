@@ -812,6 +812,7 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.AddressProtection.Enabled = true
 	oldCfg.AddressProtection.Action = config.ActionBlock
 	oldCfg.AddressProtection.UnknownAction = config.ActionBlock
+	oldCfg.FlightRecorder.RequireReceipts = true
 	oldCfg.FileSentry.Enabled = true
 	oldCfg.FileSentry.Action = config.ActionBlock
 	oldCfg.FileSentry.WatchPaths = []config.WatchPath{{Path: "/tmp/pipelock-watch"}}
@@ -901,6 +902,9 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	}
 	if live.Emit.Syslog.Address != oldCfg.Emit.Syslog.Address {
 		t.Fatalf("emit.syslog.address = %q, want preserved %q", live.Emit.Syslog.Address, oldCfg.Emit.Syslog.Address)
+	}
+	if !live.FlightRecorder.RequireReceipts {
+		t.Fatal("enforcement-only conductor bundle cleared follower-local require_receipts")
 	}
 	if !reflect.DeepEqual(live.Sandbox, oldCfg.Sandbox) {
 		t.Fatalf("sandbox config = %+v, want preserved %+v", live.Sandbox, oldCfg.Sandbox)

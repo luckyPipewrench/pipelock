@@ -44,7 +44,7 @@ func (s *Server) liveReceiptEmitter() *receipt.Emitter {
 }
 
 func receiptEmitterReady(e *receipt.Emitter) bool {
-	return e != nil && e.InitError() == nil
+	return e != nil && e.InitError() == nil && e.HealthError() == nil
 }
 
 func (s *Server) liveReceiptEmitterReady() bool {

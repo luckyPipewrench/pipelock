@@ -118,12 +118,11 @@ Two operational notes:
   `pipelock mcp proxy` **refuse to start** in that state rather than serve an
   all-blocked proxy. `require_receipts` is hot-reloadable, but because the
   recorder is built once at startup, enabling it via reload without a live
-  emitter is **ignored** — the change is warned about on stderr and on the audit
-  channel, and joins the restart-only recorder fields, so a config edit cannot
-  turn a running process into an all-blocked proxy. Restart with a recorder
-  configured to actually use it. An already-required posture whose emitter later
-  goes unhealthy stays required: that stays fail-closed and is warned about, not
-  cleared.
+  emitter is **ignored**. Pipelock writes a warning to stderr and the audit
+  channel, then keeps the previous setting. Restart with a configured recorder
+  to enable receipt enforcement. If an emitter fails after receipts are already
+  required, reload tries to rebuild it from the bound recorder and key. A failed
+  rebuild rejects the reload and keeps the existing fail-closed setting.
 - **An allowed request that is later blocked carries two receipts.** The
   pre-egress allow receipt attests the egress *decision*; if response scanning
   then blocks the reply, a block receipt is emitted under the **same

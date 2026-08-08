@@ -1347,7 +1347,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	// recorder's outer hash chain provides tamper-evidence across restarts.
 	resumeSeq, resumePrev := p.v2EmitterPtr.Load().ChainState()
 	currentKeyHex := fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey))
-	if current := p.receiptEmitterPtr.Load(); current != nil && current.InitError() == nil && current.SignerKeyHex() == currentKeyHex {
+	if current := p.receiptEmitterPtr.Load(); current != nil && current.InitError() == nil && current.HealthError() == nil && current.SignerKeyHex() == currentKeyHex {
 		v2 := p.v2EmitterPtr.Load()
 		if v2 == nil {
 			v2 = proxydecision.NewEmitter(proxydecision.EmitterConfig{

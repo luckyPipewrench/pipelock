@@ -51,8 +51,8 @@ response_scanning:
 	cmd.SetArgs([]string{"scan", "--config", configPath, "--json"})
 
 	err := cmd.Execute()
-	if !errors.Is(err, ErrInjectionDetected) {
-		t.Fatalf("Execute error = %v, want ErrInjectionDetected", err)
+	if !errors.Is(err, ErrMCPResponseSecurityFinding) {
+		t.Fatalf("Execute error = %v, want ErrMCPResponseSecurityFinding", err)
 	}
 	if !strings.Contains(stderr.String(), runtimeconfig.ResponseScanningMCPDisabledWarning) {
 		t.Fatalf("stderr missing mandatory-scanning fallback warning:\n%s", stderr.String())

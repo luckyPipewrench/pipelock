@@ -208,9 +208,9 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 	}
 
 	report.Scanner = explainMCPResponseScanner
-	report.Action = verdict.Action
+	report.Action = effectiveMCPExplainAction(verdict)
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
-	report.Allowed = verdict.Action == config.ActionWarn
+	report.Allowed = report.Action == config.ActionWarn
 	if !report.Allowed && len(verdict.DLPMatches) == 0 {
 		report.Remediation = mcpExplainRemediationFor(report.Patterns, serverName)
 	}
@@ -226,6 +226,16 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 				"Re-run with --server-name <name> matching how the proxy is launched.")
 	}
 	return report, nil
+}
+
+// effectiveMCPExplainAction matches inbound DLP enforcement: stripping a
+// response cannot safely remove every credential representation, so strip
+// becomes a block when DLP matched.
+func effectiveMCPExplainAction(verdict jsonrpc.ScanVerdict) string {
+	if len(verdict.DLPMatches) > 0 && verdict.Action == config.ActionStrip {
+		return config.ActionBlock
+	}
+	return verdict.Action
 }
 
 // dedupeMCPResponsePatternNames returns the unique blocking response and DLP

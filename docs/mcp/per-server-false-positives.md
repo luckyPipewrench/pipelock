@@ -12,7 +12,8 @@ stable identity, add a response-suppression entry scoped to it, and use the
 copy-pasteable.
 
 The core property: **each suppression here is scoped to one named server's
-response-injection patterns only.** It never touches DLP, request (tool
+response-injection patterns only.** There is deliberately no DLP suppression
+entry. It never touches DLP, request (tool
 argument) scanning, tool scanning, SSRF, or tool policy, and it never affects a
 different server. Suppression drops an already-detected match for the scoped
 target; it never changes what the scanner inspects.
@@ -109,19 +110,20 @@ pipelock explain mcp-response [--config <file>] [--server-name <name>] [--json]
 ```
 
 `explain mcp-response` reads a single JSON-RPC 2.0 MCP response from **stdin**,
-scans it for MCP response prompt-injection with the same response scanner the MCP
-proxy uses, and for a block prints the scanner, the blocking pattern name(s), and
-the exact `suppress:` entry to add (rule + path + reason) plus a caution. It
-performs no network access. It does not run DLP, secret scanning, tool policy, or
-input scanning.
+scans it for response prompt injection and generic inbound credentials with the
+same response scanner the MCP proxy uses, and for an injection-only block prints
+the scanner, the blocking pattern name(s), and the exact `suppress:` entry to add
+(rule + path + reason) plus a caution. It performs no network access. Inbound DLP
+intentionally skips agent-owned environment and file-secret values, and a DLP
+finding has no suppression entry. It does not run tool policy or input scanning.
 
 Exit codes:
 
 | Exit | Meaning |
 |---|---|
-| `0` | Clean for MCP response prompt-injection - the response was not blocked by this scanner. |
+| `0` | Clean for MCP response prompt injection and generic inbound credentials. |
 | `2` | Invalid response - the input was not a parseable JSON-RPC line. |
-| `3` | Blocked - the response was blocked; the remediation block names the suppress entry. |
+| `3` | Blocked - an injection finding includes a suppress remediation; an inbound DLP finding has none. |
 
 ### Worked example
 
@@ -195,7 +197,7 @@ So:
   scanning, SSRF, or tool policy - only the named response-injection pattern, and
   only for the one target `mcp://<server-name>/response`. There is no path by
   which a response `suppress:` entry weakens those other layers or another
-  server.
+  server. There is no per-server DLP suppression entry.
 
 ### Adaptive-enforcement airlock recovery (local subprocess sessions)
 

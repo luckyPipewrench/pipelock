@@ -59,16 +59,27 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	return ScanResponseOpts(line, sc, ResponseScanOptions{})
 }
 
+// ScanResponseInjection parses an MCP response and scans only for prompt
+// injection. Callers that separately scan outbound DLP with a contextual warn
+// hook use this to avoid emitting an unscoped duplicate DLP warning.
+func ScanResponseInjection(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
+	return scanResponseOpts(line, sc, ResponseScanOptions{}, false)
+}
+
 // ScanResponseOpts is ScanResponse with per-server suppression context. The
 // stdio MCP forwarding path passes the server's Target and the operator's
 // Suppress rules so a response-scan false positive can be remediated for one
 // server without a global config change. ScanResponse delegates here with an
 // empty options value (no suppression).
 func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	return scanResponseOpts(line, sc, opts, true)
+}
+
+func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) jsonrpc.ScanVerdict {
 	trimmed := bytes.TrimSpace(line)
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		return scanBatch(trimmed, sc, opts)
+		return scanBatch(trimmed, sc, opts, includeDLP)
 	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
@@ -152,7 +163,10 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 
 	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
-	dlpMatches := scanner.EnforceableInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
+	var dlpMatches []scanner.TextDLPMatch
+	if includeDLP {
+		dlpMatches = scanner.EnforceableInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
+	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
@@ -355,7 +369,7 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 // Returns a combined verdict aggregating matches from all elements. The
 // suppression options apply to every element so a per-server suppress rule
 // covers batched responses too.
-func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) jsonrpc.ScanVerdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
@@ -373,7 +387,7 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 	var firstError string
 
 	for _, elem := range batch {
-		v := ScanResponseOpts(elem, sc, opts)
+		v := scanResponseOpts(elem, sc, opts, includeDLP)
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}

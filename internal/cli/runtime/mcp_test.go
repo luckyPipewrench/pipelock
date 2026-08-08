@@ -1466,7 +1466,9 @@ func stdoutHasSecurityFindingBlock(stdout string) bool {
 		if err := json.Unmarshal([]byte(line), &response); err != nil {
 			continue
 		}
-		if response.Error.Code == -32000 && strings.Contains(response.Error.Message, "MCP response security finding") {
+		if response.Error.Code == -32000 &&
+			(strings.Contains(response.Error.Message, "MCP response security finding") ||
+				strings.Contains(response.Error.Message, "prompt injection detected in MCP response")) {
 			return true
 		}
 	}

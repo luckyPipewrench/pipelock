@@ -482,9 +482,13 @@ func validateMCPDeferSurface(surface string, cfg *config.Config) error {
 	return deferred.ValidateAction(surface, config.ActionDefer)
 }
 
-// ErrInjectionDetected is returned when pipelock mcp scan detects an MCP
-// response security finding.
-var ErrInjectionDetected = errors.New("MCP response security finding detected")
+// ErrMCPResponseSecurityFinding is returned when pipelock mcp scan detects an
+// MCP response security finding.
+var ErrMCPResponseSecurityFinding = errors.New("MCP response security finding detected")
+
+// ErrInjectionDetected is kept for compatibility. Deprecated: use
+// ErrMCPResponseSecurityFinding.
+var ErrInjectionDetected = ErrMCPResponseSecurityFinding
 
 // safeWriter wraps an io.Writer with a mutex for concurrent use.
 // Used to synchronize file sentry goroutines and RunProxy stderr output.
@@ -553,16 +557,19 @@ func mcpScanCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan",
-		Short: "Scan MCP responses from stdin for response prompt-injection only",
+		Short: "Scan MCP responses from stdin for prompt injection and inbound credentials",
 		Long: `Reads newline-delimited MCP JSON-RPC 2.0 responses from stdin and scans
-text content blocks for response prompt-injection patterns.
+text content blocks for response prompt-injection patterns and generic inbound
+credential findings.
 
-This command does not perform DLP or secret scanning. For bidirectional MCP
-protection, use pipelock mcp proxy: responses are scanned for prompt injection
+Inbound DLP scanning intentionally skips agent-owned environment and file-secret
+values: receiving those values in an MCP response is not an exfiltration event.
+For bidirectional MCP protection, use pipelock mcp proxy: responses are scanned
 before forwarding, and requests are scanned for DLP leaks and injection in tool
 arguments.
 
-Exit code 0 if all responses are clean, 1 if any injection is detected.
+Exit code 0 if all responses are clean, 1 if any response security finding
+(prompt injection or generic inbound credential) is detected.
 In text mode, only findings are printed. In JSON mode, every line produces a verdict.
 
 Examples:
@@ -606,7 +613,7 @@ Examples:
 				return err
 			}
 			if found {
-				return ErrInjectionDetected
+				return ErrMCPResponseSecurityFinding
 			}
 
 			return nil

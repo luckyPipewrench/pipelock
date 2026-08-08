@@ -885,7 +885,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// Scan redirect handler output for prompt injection AND DLP before
 			// sending to client. Handler output is untrusted - it could contain
 			// secrets or injection payloads.
-			scanVerdict := ScanResponse(redirectResult.Response, sc)
+			scanVerdict := ScanResponseInjection(redirectResult.Response, sc)
 			wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
 			if wc.Transport == "" {
 				wc.Transport = transportMCPHTTP

@@ -260,6 +260,38 @@ func TestForwardScanned_ToolsListBlocksInboundDLPWithoutToolScanning(t *testing.
 	}
 }
 
+func TestForwardScanned_ToolsListWriteFailureDoesNotSeedFreshBaseline(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	baseline := tools.NewToolBaseline()
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
+	line := string(makeToolsResponse(`[{"name":"docs","description":"safe documentation"}]`)) + "\n"
+
+	_, err := fwdScanned(strings.NewReader(line), &errWriter{limit: 0}, &strings.Builder{}, sc, nil, toolCfg)
+	if err == nil {
+		t.Fatal("expected downstream write error")
+	}
+	if baseline.HasBaseline() || baseline.IsKnownTool("docs") {
+		t.Fatal("failed clean tools/list write must not seed the session-binding baseline")
+	}
+}
+
+func TestForwardScanned_ToolsListWarnWriteFailureDoesNotAlterExistingBaseline(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	baseline := tools.NewToolBaseline()
+	baseline.SetKnownTools([]string{"existing"})
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"new-tool","description":"safe documentation"}],"note":"server credential: ` + accessKey + `"}}` + "\n"
+
+	_, err := fwdScanned(strings.NewReader(line), &errWriter{limit: 0}, &strings.Builder{}, sc, nil, toolCfg)
+	if err == nil {
+		t.Fatal("expected downstream write error")
+	}
+	if !baseline.IsKnownTool("existing") || baseline.IsKnownTool("new-tool") {
+		t.Fatal("failed warned tools/list write must not alter the existing session-binding baseline")
+	}
+}
+
 func TestForwardScanned_ToolsListBlockedWithoutToolScanning(t *testing.T) {
 	// Complementary test: without tool scanning enabled, the general scanner
 	// blocks the same tools/list response that the above test forwards.

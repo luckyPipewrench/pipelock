@@ -586,10 +586,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					metrics:    m,
 				}, opts.warnContext()))
 			}
-			commitToolInventory()
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
+			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
 			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
 			continue
@@ -642,12 +642,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		escalationDriven := action != originalAction
 
-		findingKind := "injection"
-		if len(verdict.Matches) == 0 {
-			findingKind = "inbound DLP"
-		}
-		_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s detected (%s), server=%s trust=%s action=%s\n",
-			lineNum, findingKind, patterns, serverName, trustClass, action)
+		_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s (%s), server=%s trust=%s action=%s\n",
+			lineNum, responseFindingLabel(verdict), patterns, serverName, trustClass, action)
 
 		effectiveAction := action
 		var outbound []byte
@@ -660,7 +656,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if escalationDriven {
 				outbound = blockSessionDenyResponse(verdict.ID, session.EscalationLabel(rec.EscalationLevel()))
 			} else {
-				outbound = blockResponseReason(verdict.ID, fmt.Sprintf("MCP response security finding (server=%s pattern=%s trust=%s)", serverName, firstNonEmptyPattern(names), trustClass))
+				outbound = blockResponseReason(verdict.ID, responseFindingBlockReason(verdict, serverName, firstNonEmptyPattern(names), trustClass))
 			}
 		case config.ActionAsk:
 			if approver == nil {
@@ -785,13 +781,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 		}
-		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
-			commitToolInventory()
-		} else {
+		if effectiveAction != config.ActionWarn && effectiveAction != config.ActionAllow {
 			resolveToolInventory(config.ActionBlock)
 		}
 		if err := writer.WriteMessage(outbound); err != nil {
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
+		}
+		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
+			commitToolInventory()
 		}
 		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 
@@ -961,6 +958,13 @@ func responseFindingLabel(verdict jsonrpc.ScanVerdict) string {
 		return "inbound DLP detected"
 	}
 	return "prompt injection and inbound DLP detected"
+}
+
+func responseFindingBlockReason(verdict jsonrpc.ScanVerdict, serverName, pattern, trustClass string) string {
+	if len(verdict.DLPMatches) > 0 {
+		return fmt.Sprintf("MCP response security finding (server=%s pattern=%s trust=%s)", serverName, pattern, trustClass)
+	}
+	return fmt.Sprintf("prompt injection detected in MCP response (server=%s pattern=%s trust=%s)", serverName, pattern, trustClass)
 }
 
 func blockResponseForFinding(verdict jsonrpc.ScanVerdict) []byte {

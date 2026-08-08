@@ -1094,7 +1094,7 @@ func ForwardScannedInput(
 			if result.Success {
 				// Scan redirect handler output for prompt injection AND DLP before
 				// sending to client. Handler output is untrusted.
-				scanVerdict := ScanResponse(result.Response, sc)
+				scanVerdict := ScanResponseInjection(result.Response, sc)
 				stdioWarnCtxMeta := scanner.DLPWarnContextFromCtx(stdioInputCtx)
 				stdioWarnCtxMeta.Transport = transportMCPStdio
 				stdioWarnCtxMeta.Method = mcpWarnMethod

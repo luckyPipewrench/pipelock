@@ -167,6 +167,27 @@ func TestBuildMCPExplainReport_InboundDLPNamesFindingWithoutSuppressRemediation(
 	}
 }
 
+func TestBuildMCPExplainReport_InboundDLPStripBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Action = config.ActionStrip
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + accessKey + `"}]}}`
+
+	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(response))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
+	if report.Action != config.ActionBlock || report.Allowed {
+		t.Fatalf("DLP strip report must truthfully block: %+v", report)
+	}
+	if report.Remediation != nil {
+		t.Fatalf("inbound DLP must not offer a suppress remediation: %+v", report.Remediation)
+	}
+	if !strings.Contains(strings.Join(report.Notes, " "), "cannot be suppressed") {
+		t.Fatalf("inbound DLP report must explain the unavailable suppress path: %+v", report.Notes)
+	}
+}
+
 func TestBuildMCPExplainReport_InvalidJSONIsParseError(t *testing.T) {
 	cfg := config.Defaults()
 	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte("not json at all"))

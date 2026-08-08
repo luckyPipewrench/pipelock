@@ -47,8 +47,11 @@ func TestMCPScanCmdInjectionReturnsExitError(t *testing.T) {
 	cmd.SetErr(&stderr)
 
 	err := cmd.Execute()
-	if !errors.Is(err, ErrInjectionDetected) {
-		t.Fatalf("mcp scan injection err = %v, want ErrInjectionDetected\nstderr:\n%s", err, stderr.String())
+	if !errors.Is(err, ErrMCPResponseSecurityFinding) {
+		t.Fatalf("mcp scan injection err = %v, want ErrMCPResponseSecurityFinding\nstderr:\n%s", err, stderr.String())
+	}
+	if !errors.Is(ErrInjectionDetected, ErrMCPResponseSecurityFinding) {
+		t.Fatal("deprecated ErrInjectionDetected must resolve to ErrMCPResponseSecurityFinding")
 	}
 	if !strings.Contains(out.String(), "[INJECTION]") {
 		t.Fatalf("injection scan output = %q, want text finding", out.String())

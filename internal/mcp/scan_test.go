@@ -696,12 +696,17 @@ func TestScanStream_JSONOutputClean(t *testing.T) {
 	if output == "" {
 		t.Fatal("expected JSON output for clean response")
 	}
-	var verdict jsonrpc.ScanVerdict
-	if err := json.Unmarshal([]byte(output), &verdict); err != nil {
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &wire); err != nil {
 		t.Fatalf("clean verdict not valid JSON: %v\noutput: %s", err, output)
 	}
-	if !verdict.Clean {
-		t.Fatal("expected clean=true in JSON verdict")
+	var clean bool
+	if err := json.Unmarshal(wire["clean"], &clean); err != nil || !clean {
+		t.Fatalf("clean field = %s, want true (err=%v)", wire["clean"], err)
+	}
+	assertJSONWireScanned(t, wire)
+	if _, ok := wire["dlp_matches"]; ok {
+		t.Fatalf("clean JSON verdict unexpectedly includes dlp_matches: %s", output)
 	}
 }
 
@@ -769,14 +774,36 @@ func TestScanStream_JSONOutputPlaintextCredentialProducesInboundDLPVerdict(t *te
 	if !found {
 		t.Fatal("credential-shaped response must produce an inbound DLP finding")
 	}
-	var verdict jsonrpc.ScanVerdict
-	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &verdict); err != nil {
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &wire); err != nil {
 		t.Fatalf("verdict JSON: %v\noutput: %s", err, buf.String())
 	}
-	if verdict.Clean || len(verdict.DLPMatches) == 0 {
-		t.Fatalf("credential-shaped response must be an inbound DLP verdict: %+v", verdict)
+	var clean bool
+	if err := json.Unmarshal(wire["clean"], &clean); err != nil || clean {
+		t.Fatalf("clean field = %s, want false (err=%v)", wire["clean"], err)
 	}
-	assertScanScope(t, verdict.Scanned)
+	dlpMatches, ok := wire["dlp_matches"]
+	if !ok {
+		t.Fatalf("credential-shaped response must use exact dlp_matches key: %s", buf.String())
+	}
+	var matches []json.RawMessage
+	if err := json.Unmarshal(dlpMatches, &matches); err != nil || len(matches) == 0 {
+		t.Fatalf("dlp_matches = %s, want non-empty array (err=%v)", dlpMatches, err)
+	}
+	assertJSONWireScanned(t, wire)
+}
+
+func assertJSONWireScanned(t *testing.T, wire map[string]json.RawMessage) {
+	t.Helper()
+	raw, ok := wire["scanned"]
+	if !ok {
+		t.Fatal("JSON verdict missing scanned")
+	}
+	var scanned []string
+	if err := json.Unmarshal(raw, &scanned); err != nil {
+		t.Fatalf("decode scanned = %s: %v", raw, err)
+	}
+	assertScanScope(t, scanned)
 }
 
 func TestScanStream_TextOutputLabelsInboundDLP(t *testing.T) {

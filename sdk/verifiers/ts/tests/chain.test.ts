@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import * as ed25519 from "@noble/ed25519";
 import { canonicalizeBytes } from "../src/aarp/canonical.js";
 import { canonicalizeActionRecord } from "../src/canonical.js";
-import { extractReceipts } from "../src/recorder.js";
+import { extractReceipts, readEntries } from "../src/recorder.js";
 import { computeSessionOpenGenesis, receiptHash, verifyChain } from "../src/chain.js";
 import {
   loadRotationEndorsementFile,
@@ -838,7 +838,9 @@ test("JSONL recorder reader preserves maximum uint64 v3 sequence", () => {
       '{"v":3,"seq":18446744073709551615,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","prev_hash":"genesis"}\n',
       { mode: 0o600 },
     );
-    assert.doesNotThrow(() => extractReceipts(file));
+    const entries = readEntries(file);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.seq, "18446744073709551615");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

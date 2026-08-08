@@ -114,7 +114,13 @@ func TestChain_ExpectedHeadJSONField(t *testing.T) {
 	if code != cliutil.ExitOK {
 		t.Fatalf("json chain should verify: %s", unpinned)
 	}
-	if !strings.Contains(unpinned, `"head_verified": false`) {
+	var unpinnedReport struct {
+		HeadVerified *bool `json:"head_verified"`
+	}
+	if err := json.Unmarshal([]byte(unpinned), &unpinnedReport); err != nil {
+		t.Fatalf("decode json verdict: %v", err)
+	}
+	if unpinnedReport.HeadVerified == nil || *unpinnedReport.HeadVerified {
 		t.Fatalf("json = %q, want head_verified false with no expected head", unpinned)
 	}
 
@@ -122,7 +128,13 @@ func TestChain_ExpectedHeadJSONField(t *testing.T) {
 	if code != cliutil.ExitOK {
 		t.Fatalf("json chain with head should verify: %s", pinned)
 	}
-	if !strings.Contains(pinned, `"head_verified": true`) {
+	var pinnedReport struct {
+		HeadVerified *bool `json:"head_verified"`
+	}
+	if err := json.Unmarshal([]byte(pinned), &pinnedReport); err != nil {
+		t.Fatalf("decode json verdict: %v", err)
+	}
+	if pinnedReport.HeadVerified == nil || !*pinnedReport.HeadVerified {
 		t.Fatalf("json = %q, want head_verified true", pinned)
 	}
 }

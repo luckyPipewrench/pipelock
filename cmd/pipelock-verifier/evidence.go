@@ -24,13 +24,15 @@ type evidenceBindingOptions struct {
 	expectContractHash string
 	expectManifestHash string
 	expectPayloadKind  string
+	expectHeadHash     string
 }
 
 func (opts evidenceBindingOptions) anySet() bool {
 	return opts.expectSignerKeyID != "" ||
 		opts.expectContractHash != "" ||
 		opts.expectManifestHash != "" ||
-		opts.expectPayloadKind != ""
+		opts.expectPayloadKind != "" ||
+		opts.expectHeadHash != ""
 }
 
 func (opts evidenceBindingOptions) chainVerifyOptions(keyHex string) (contractreceipt.ChainVerifyOptions, error) {
@@ -44,7 +46,49 @@ func (opts evidenceBindingOptions) chainVerifyOptions(keyHex string) (contractre
 		ExpectContractHash: opts.expectContractHash,
 		ExpectManifestHash: opts.expectManifestHash,
 		ExpectPayloadKind:  contractreceipt.PayloadKind(opts.expectPayloadKind),
+		ExpectHeadHash:     opts.expectHeadHash,
 	}, nil
+}
+
+// checkBindings applies every Expect* binding to one receipt.
+//
+// It is a separate method because the receipt command verifies an UNPINNED
+// receipt on its own branch, which returns before verifyEvidenceReceipt is
+// reached. Every binding therefore used to be skipped whenever --key was
+// omitted: `--allow-unpinned --expect-signer-id WRONG` exited 0 with no error
+// and no warning, so an operator who pinned an expectation and got silence had
+// no way to tell it had never been compared. A binding that silently does
+// nothing is worse than one that is absent, because the operator believes the
+// check happened.
+//
+// These are checks on the receipt's own declared fields, so none of them needs
+// a trusted key and all of them are meaningful without one. Pinning provenance
+// is a separate question, and the unpinned banner already reports that.
+func (opts evidenceBindingOptions) checkBindings(r contractreceipt.EvidenceReceipt) error {
+	if opts.expectSignerKeyID != "" && r.Signature.SignerKeyID != opts.expectSignerKeyID {
+		return fmt.Errorf("signer_key_id %q does not match expected %q", r.Signature.SignerKeyID, opts.expectSignerKeyID)
+	}
+	if opts.expectPayloadKind != "" && r.PayloadKind != contractreceipt.PayloadKind(opts.expectPayloadKind) {
+		return fmt.Errorf("payload_kind %q does not match expected %q", r.PayloadKind, opts.expectPayloadKind)
+	}
+	if opts.expectContractHash != "" && r.ContractHash != opts.expectContractHash {
+		return fmt.Errorf("contract_hash does not match expected")
+	}
+	if opts.expectManifestHash != "" && r.ActiveManifestHash != opts.expectManifestHash {
+		return fmt.Errorf("active_manifest_hash does not match expected")
+	}
+	// One receipt has no trailing entries to drop, so the head binds identity
+	// rather than completeness: the file has to be the receipt the caller meant.
+	if opts.expectHeadHash != "" {
+		h, err := contractreceipt.ReceiptHash(r)
+		if err != nil {
+			return err
+		}
+		if h != opts.expectHeadHash {
+			return fmt.Errorf("receipt hash %s does not match expected head %s", h, opts.expectHeadHash)
+		}
+	}
+	return nil
 }
 
 func decodePinnedEvidenceKey(keyHex string) (ed25519.PublicKey, error) {
@@ -97,17 +141,8 @@ func verifyEvidenceReceipt(r contractreceipt.EvidenceReceipt, keyHex string, opt
 	if err != nil {
 		return false, err
 	}
-	if opts.expectSignerKeyID != "" && r.Signature.SignerKeyID != opts.expectSignerKeyID {
-		return false, fmt.Errorf("signer_key_id %q does not match expected %q", r.Signature.SignerKeyID, opts.expectSignerKeyID)
-	}
-	if opts.expectPayloadKind != "" && r.PayloadKind != contractreceipt.PayloadKind(opts.expectPayloadKind) {
-		return false, fmt.Errorf("payload_kind %q does not match expected %q", r.PayloadKind, opts.expectPayloadKind)
-	}
-	if opts.expectContractHash != "" && r.ContractHash != opts.expectContractHash {
-		return false, fmt.Errorf("contract_hash does not match expected")
-	}
-	if opts.expectManifestHash != "" && r.ActiveManifestHash != opts.expectManifestHash {
-		return false, fmt.Errorf("active_manifest_hash does not match expected")
+	if err := opts.checkBindings(r); err != nil {
+		return false, err
 	}
 	if chainOpts.PinnedKey == nil {
 		if err := r.Validate(); err != nil {

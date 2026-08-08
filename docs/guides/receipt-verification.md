@@ -497,6 +497,12 @@ pipelock-verifier chain evidence-proxy-0.jsonl \
   --expect-payload-kind shadow_delta \
   --expect-contract sha256:...
 
+# Verify an EvidenceReceipt v2 chain against a known head, which is the only
+# check that detects entries dropped from the end
+pipelock-verifier chain evidence-proxy-0.jsonl \
+  --key receipt-signing.pub \
+  --expect-head 8f84164e084b32e25d3cd4ca0421599ab6fbbda52d839457acf0894ee6f467ee
+
 # Verify an Audit Packet with a signer key obtained outside the packet
 pipelock-verifier audit-packet ./audit-packet --key ./trusted-signing-key.pub
 ```
@@ -505,6 +511,17 @@ For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public
 key. Without `--key`, the verifier can check structure, hash linkage, sequence
 monotonicity, and signer-id consistency, but it reports signatures as not
 checked because v2 receipts do not embed public keys.
+
+**A valid chain is not a complete chain.** Structure, linkage, sequence, and
+signatures are all satisfied by any prefix of a chain, so a file with its
+trailing entries removed still verifies. The verifier reports this as
+`completeness: not proven` and returns `head_verified: false` in `--json`
+output. Pass `--expect-head` with the receipt hash of the entry the chain should
+end on to close it: a truncated or forked chain is then rejected, and the report
+reads `completeness: head verified`. Source that hash from trusted context
+outside the chain, such as a signed checkpoint or an anchored root. A head read
+from the same directory proves nothing on its own, because anyone able to remove
+entries can rewrite an unsigned value stored beside them.
 
 The standalone binary reads the same Audit Packet v0 schema and receipt signing
 conventions as the in-tree `pipelock verify-receipt` subcommand, plus the

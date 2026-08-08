@@ -75,6 +75,42 @@ type ChainVerifyOptions struct {
 	// ExpectPayloadKind, when non-empty, requires every receipt's
 	// payload_kind to match (e.g. shadow_delta).
 	ExpectPayloadKind PayloadKind
+	// ExpectHeadHash, when non-empty, requires the chain tip (the
+	// ReceiptHash of the final receipt) to equal this value. It is the only
+	// option here that can detect OMISSION.
+	//
+	// Every other check in this type is satisfied by any valid PREFIX of a
+	// chain: linkage proves the receipts present form a sequence starting at
+	// genesis, so dropping every entry after some point leaves a chain that
+	// still verifies. Omission is the failure mode that matters most for
+	// evidence, because the dropped entries are exactly the ones a bad actor
+	// wants gone, and it is precisely the case a prefix check cannot see.
+	//
+	// For one accepted v2 receipt chain, pinning the head is sufficient under
+	// SHA-256 collision and second-preimage resistance: ReceiptHash covers the
+	// full canonical final receipt, whose chain_prev_hash recursively commits to
+	// every prior receipt back to genesis. A separate expected count or sequence
+	// range therefore cannot distinguish another valid prefix that the pinned
+	// head would accept.
+	//
+	// This commitment is only to the v2 receipt slice being verified. It does
+	// not cover recorder entry types skipped during extraction, authenticate a
+	// session label, or join independent genesis chains across process restarts.
+	// Those require whole-recorder verification and trusted session/segment
+	// metadata in addition to this option.
+	//
+	// The expected head must be authenticated independently of the chain bytes
+	// it validates (for example by a pinned-key signed checkpoint, an anchored
+	// root, a transparency-log inclusion proof, or an authenticated manifest).
+	// It may be stored in the same directory if its authentication is verified
+	// and its presence is required; an unsigned sibling value that an attacker
+	// can rewrite or delete with the chain proves nothing.
+	//
+	// Opt-in by construction: unset means structure-only verification, exactly
+	// as before, so existing callers and the other-language verifiers are
+	// unaffected. A caller that HAS trusted head context and omits this is
+	// choosing not to check completeness.
+	ExpectHeadHash string
 }
 
 // ChainResult describes the outcome of v2 evidence-chain verification.
@@ -88,6 +124,12 @@ type ChainResult struct {
 	// signature verified against it. When false, the verdict reflects
 	// self-consistency, not provenance.
 	SignaturesVerified bool `json:"signatures_verified"`
+	// HeadVerified is true only when ExpectHeadHash was supplied and matched.
+	// When false, the verdict covers the receipts PRESENT and says nothing
+	// about whether later ones were dropped, so a consumer must not report
+	// this chain as complete. It exists so "valid" cannot be read as
+	// "nothing is missing" by a caller that never pinned a head.
+	HeadVerified bool `json:"head_verified"`
 	// SignerKeyID is the common signer_key_id shared by every receipt.
 	SignerKeyID string `json:"signer_key_id,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -170,12 +212,25 @@ func VerifyChain(receipts []EvidenceReceipt, opts ChainVerifyOptions) ChainResul
 		tipHash = h
 	}
 
+	finalSeq := receipts[len(receipts)-1].ChainSeq
+
+	// Completeness, and the only check here that a valid prefix cannot pass.
+	// Deliberately last: a chain that is internally broken should report the
+	// broken link at its sequence rather than a head mismatch, which is the
+	// downstream symptom rather than the cause.
+	if opts.ExpectHeadHash != "" && tipHash != opts.ExpectHeadHash {
+		return brokenChain(finalSeq,
+			"chain head %s does not match expected %s: the chain is truncated, forked, or from a different session",
+			tipHash, opts.ExpectHeadHash)
+	}
+
 	return ChainResult{
 		Valid:              true,
 		ReceiptCount:       uint64(len(receipts)),
-		FinalSeq:           receipts[len(receipts)-1].ChainSeq,
+		FinalSeq:           finalSeq,
 		RootHash:           tipHash,
 		SignaturesVerified: opts.PinnedKey != nil,
+		HeadVerified:       opts.ExpectHeadHash != "",
 		SignerKeyID:        signerID,
 	}
 }

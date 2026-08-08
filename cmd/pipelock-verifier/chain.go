@@ -63,6 +63,7 @@ key.`,
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
 	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
+	cmd.Flags().StringVar(&opts.expectHeadHash, "expect-head", "", "EvidenceReceipt v2: require the chain tip to equal this receipt hash, which is the only check that detects dropped trailing entries; source it from trusted context outside the chain")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single file")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
@@ -80,6 +81,7 @@ type chainReport struct {
 	FinalSeq           uint64     `json:"final_seq"`
 	RootHash           string     `json:"root_hash,omitempty"`
 	SignaturesVerified bool       `json:"signatures_verified"`
+	HeadVerified       bool       `json:"head_verified"`
 	Unpinned           bool       `json:"unpinned,omitempty"`
 	SignerKeyID        string     `json:"signer_key_id,omitempty"`
 	Error              string     `json:"error,omitempty"`
@@ -225,6 +227,7 @@ func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []cont
 		FinalSeq:           res.FinalSeq,
 		RootHash:           res.RootHash,
 		SignaturesVerified: res.SignaturesVerified,
+		HeadVerified:       res.HeadVerified,
 		Unpinned:           res.Valid && !res.SignaturesVerified,
 		SignerKeyID:        res.SignerKeyID,
 		Error:              res.Error,

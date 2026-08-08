@@ -51,6 +51,7 @@ required unless --allow-unpinned is used for structural checks only.`,
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
 	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
+	cmd.Flags().StringVar(&opts.expectHeadHash, "expect-head", "", "EvidenceReceipt v2: require this receipt's hash to equal the given value")
 	cmd.Flags().StringVar(&opts.recheckSource, "recheck-source", "", "EvidenceReceipt v2 spans: source file containing the normalized/redacted source view input")
 	cmd.Flags().IntVar(&opts.recheckSpanIndex, "recheck-span-index", 0, "EvidenceReceipt v2 spans: source_spans index to recheck")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
@@ -188,6 +189,15 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 			report.Error = err.Error()
 			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("validate evidence receipt: %w", err))
+		}
+		// The Expect* bindings apply here too. This branch returns before
+		// verifyEvidenceReceipt runs, so without this an expectation passed
+		// alongside --allow-unpinned was accepted and never compared.
+		if err := opts.checkBindings(r); err != nil {
+			report.Valid = false
+			report.Error = err.Error()
+			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify evidence receipt: %w", err))
 		}
 		if opts.recheckSource != "" {
 			result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)

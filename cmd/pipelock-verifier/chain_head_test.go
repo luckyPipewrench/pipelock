@@ -4,6 +4,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -122,5 +124,38 @@ func TestChain_ExpectedHeadJSONField(t *testing.T) {
 	}
 	if !strings.Contains(pinned, `"head_verified": true`) {
 		t.Fatalf("json = %q, want head_verified true", pinned)
+	}
+}
+
+// TestReceipt_ExpectedHeadBindsASingleReceipt covers the single-receipt half of
+// the shared expect-head option. There is no omission to detect in one receipt,
+// so this binds identity: the file has to be the receipt the caller expected.
+// The option reaches this command through the shared evidenceBindingOptions, and
+// an option that is plumbed but unread is an inert security knob, so a mismatch
+// must be rejected rather than passed over.
+func TestReceipt_ExpectedHeadBindsASingleReceipt(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	data, marshalErr := json.Marshal(fix.receipts[0])
+	if marshalErr != nil {
+		t.Fatalf("marshal receipt: %v", marshalErr)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
+	}
+	tip := evidenceTipHash(t, fix)
+
+	stdout, stderr, code := runRoot(t, "receipt", "--key", fix.keyHex, "--expect-head", tip, path)
+	if code != cliutil.ExitOK {
+		t.Fatalf("receipt with its own hash should verify, stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	_, stderr, code = runRoot(t, "receipt", "--key", fix.keyHex, "--expect-head", strings.Repeat("0", 64), path)
+	if code == cliutil.ExitOK {
+		t.Fatalf("receipt verified against a head hash it does not have, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "does not match expected head") {
+		t.Fatalf("stderr = %q, want the expected-head mismatch named", stderr)
 	}
 }

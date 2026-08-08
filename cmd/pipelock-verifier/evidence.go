@@ -112,6 +112,21 @@ func verifyEvidenceReceipt(r contractreceipt.EvidenceReceipt, keyHex string, opt
 	if opts.expectManifestHash != "" && r.ActiveManifestHash != opts.expectManifestHash {
 		return false, fmt.Errorf("active_manifest_hash does not match expected")
 	}
+	// Single-receipt binding for the same option the chain path uses. The field
+	// reaches here through the shared evidenceBindingOptions, so leaving it
+	// unread would make a plumbed security option silently do nothing the moment
+	// anyone exposed it on this command: an operator would pin a head, see no
+	// error, and believe it had been checked. There is no omission to detect in
+	// one receipt, so this binds identity rather than completeness.
+	if opts.expectHeadHash != "" {
+		h, hashErr := contractreceipt.ReceiptHash(r)
+		if hashErr != nil {
+			return false, hashErr
+		}
+		if h != opts.expectHeadHash {
+			return false, fmt.Errorf("receipt hash %s does not match expected head %s", h, opts.expectHeadHash)
+		}
+	}
 	if chainOpts.PinnedKey == nil {
 		if err := r.Validate(); err != nil {
 			return false, err

@@ -190,6 +190,15 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("validate evidence receipt: %w", err))
 		}
+		// The Expect* bindings apply here too. This branch returns before
+		// verifyEvidenceReceipt runs, so without this an expectation passed
+		// alongside --allow-unpinned was accepted and never compared.
+		if err := opts.checkBindings(r); err != nil {
+			report.Valid = false
+			report.Error = err.Error()
+			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify evidence receipt: %w", err))
+		}
 		if opts.recheckSource != "" {
 			result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)
 			// No key was supplied on this path, so the producer is

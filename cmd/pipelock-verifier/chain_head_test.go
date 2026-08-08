@@ -159,3 +159,58 @@ func TestReceipt_ExpectedHeadBindsASingleReceipt(t *testing.T) {
 		t.Fatalf("stderr = %q, want the expected-head mismatch named", stderr)
 	}
 }
+
+// TestReceipt_UnpinnedStillAppliesTheExpectBindings covers the path a pinned
+// test cannot reach. The receipt command verifies an unpinned receipt on its own
+// branch, which returned before the binding checks were reached, so every
+// Expect* flag was accepted and never compared when --key was omitted: the
+// command exited 0 with no error and no warning. An operator who pinned an
+// expectation and got silence had no way to tell the check never ran, which is
+// worse than the flag not existing.
+//
+// These bindings read the receipt's own declared fields, so none of them needs a
+// trusted key. Provenance is a separate question and the unpinned banner already
+// reports it.
+func TestReceipt_UnpinnedStillAppliesTheExpectBindings(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	data, marshalErr := json.Marshal(fix.receipts[0])
+	if marshalErr != nil {
+		t.Fatalf("marshal receipt: %v", marshalErr)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		flag   string
+		value  string
+		wantIn string
+	}{
+		{"expect_head", "--expect-head", strings.Repeat("0", 64), "does not match expected head"},
+		{"expect_signer_id", "--expect-signer-id", "not-the-signer", "signer_key_id"},
+		{"expect_contract", "--expect-contract", "sha256:not-the-contract", "contract_hash"},
+		{"expect_payload_kind", "--expect-payload-kind", "not_a_payload_kind", "payload_kind"},
+		{"expect_manifest", "--expect-manifest", "sha256:not-the-manifest", "active_manifest_hash"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, stderr, code := runRoot(t, "receipt", "--allow-unpinned", tc.flag, tc.value, path)
+			if code == cliutil.ExitOK {
+				t.Fatalf("%s mismatch accepted on the unpinned path, stderr=%q", tc.flag, stderr)
+			}
+			if !strings.Contains(stderr, tc.wantIn) {
+				t.Fatalf("stderr = %q, want it to name %s", stderr, tc.wantIn)
+			}
+		})
+	}
+
+	// The matching case must still pass, or the bindings would be refusing
+	// legitimate input rather than catching a mismatch.
+	stdout, stderr, code := runRoot(t, "receipt", "--allow-unpinned", "--expect-head", evidenceTipHash(t, fix), path)
+	if code != cliutil.ExitOK {
+		t.Fatalf("matching unpinned expected head rejected, stdout=%q stderr=%q", stdout, stderr)
+	}
+}

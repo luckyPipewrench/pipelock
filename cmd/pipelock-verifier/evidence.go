@@ -24,13 +24,15 @@ type evidenceBindingOptions struct {
 	expectContractHash string
 	expectManifestHash string
 	expectPayloadKind  string
+	expectHeadHash     string
 }
 
 func (opts evidenceBindingOptions) anySet() bool {
 	return opts.expectSignerKeyID != "" ||
 		opts.expectContractHash != "" ||
 		opts.expectManifestHash != "" ||
-		opts.expectPayloadKind != ""
+		opts.expectPayloadKind != "" ||
+		opts.expectHeadHash != ""
 }
 
 func (opts evidenceBindingOptions) chainVerifyOptions(keyHex string) (contractreceipt.ChainVerifyOptions, error) {
@@ -44,6 +46,7 @@ func (opts evidenceBindingOptions) chainVerifyOptions(keyHex string) (contractre
 		ExpectContractHash: opts.expectContractHash,
 		ExpectManifestHash: opts.expectManifestHash,
 		ExpectPayloadKind:  contractreceipt.PayloadKind(opts.expectPayloadKind),
+		ExpectHeadHash:     opts.expectHeadHash,
 	}, nil
 }
 

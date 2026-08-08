@@ -94,6 +94,19 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 			} else {
 				_, _ = fmt.Fprintln(stdout, "  signatures: not checked (self-consistency only; pass --key for provenance)")
 			}
+			// Completeness is reported, never enforced by default. Every other
+			// check passes on any valid PREFIX of a chain, so a VALID verdict
+			// alone cannot tell an operator that nothing was dropped from the
+			// end. Saying so is the point: an unstated limit reads as a
+			// guarantee. Unlike the unpinned-signature case this does not gate
+			// validity, because no head is available to pin until an external
+			// anchor ships, and failing every existing chain by default would
+			// be an outage rather than a safeguard.
+			if r.HeadVerified {
+				_, _ = fmt.Fprintln(stdout, "  completeness: head verified (no trailing entries dropped)")
+			} else {
+				_, _ = fmt.Fprintln(stdout, "  completeness: not proven (a truncated chain also verifies; pass --expect-head with a trusted head hash)")
+			}
 		}
 		if r.Scorecard != nil {
 			emitScorecard(stdout, *r.Scorecard)

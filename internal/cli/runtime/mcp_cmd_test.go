@@ -6,6 +6,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -55,6 +56,34 @@ func TestMCPScanCmdInjectionReturnsExitError(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "[INJECTION]") {
 		t.Fatalf("injection scan output = %q, want text finding", out.String())
+	}
+}
+
+func TestMCPScanCmdInboundDLPReturnsSecurityFindingJSON(t *testing.T) {
+	cmd := mcpScanCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--json"})
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	cmd.SetIn(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"credential: ` + accessKey + `"}]}}` + "\n"))
+	var out, stderr bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrMCPResponseSecurityFinding) {
+		t.Fatalf("mcp scan inbound DLP err = %v, want ErrMCPResponseSecurityFinding\nstderr:\n%s", err, stderr.String())
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &wire); err != nil {
+		t.Fatalf("decode JSON output: %v\noutput: %s", err, out.String())
+	}
+	rawMatches, ok := wire["dlp_matches"]
+	if !ok {
+		t.Fatalf("JSON output missing dlp_matches: %s", out.String())
+	}
+	var matches []json.RawMessage
+	if err := json.Unmarshal(rawMatches, &matches); err != nil || len(matches) == 0 {
+		t.Fatalf("dlp_matches = %s, want non-empty array (err=%v)", rawMatches, err)
 	}
 }
 

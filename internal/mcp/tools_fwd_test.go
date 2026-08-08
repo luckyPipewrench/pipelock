@@ -243,6 +243,26 @@ func TestForwardScanned_ToolsListBlocksInboundDLP(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_ToolsListWarnInboundDLPCommitsBaselineAfterForward(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	baseline := tools.NewToolBaseline()
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
+	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	line := string(makeToolsResponse(`[{"name":"docs","description":"server credential: `+accessKey+`"}]`)) + "\n"
+
+	var out, log strings.Builder
+	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || !strings.Contains(out.String(), accessKey) {
+		t.Fatalf("warn inbound DLP must forward tools/list: found=%v output=%q", found, out.String())
+	}
+	if !baseline.HasBaseline() || !baseline.IsKnownTool("docs") {
+		t.Fatal("successfully forwarded warned tools/list must commit its tool baseline")
+	}
+}
+
 func TestForwardScanned_ToolsListBlocksInboundDLPWithoutToolScanning(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionBlock)
 	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"

@@ -35,6 +35,7 @@ const (
 	mcpReceiptLayerDoW           = "mcp_denial_of_wallet"
 	mcpReceiptLayerInput         = "mcp_input_scanning"
 	mcpReceiptLayerPolicy        = "mcp_tool_policy"
+	mcpReceiptLayerResponse      = "mcp_response_scanning"
 	mcpReceiptLayerRedaction     = "mcp_input_redaction"
 	mcpReceiptLayerSessionBind   = "mcp_session_binding"
 	mcpReceiptLayerTaint         = "mcp_tool_taint"

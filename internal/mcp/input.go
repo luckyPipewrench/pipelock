@@ -593,6 +593,9 @@ func ForwardScannedInput(
 		receiptResolutionSource := ""
 		receiptSessionID := ""
 		receiptSessionIDOriginal := ""
+		receiptLayerOverride := ""
+		receiptPatternOverride := ""
+		receiptSeverityOverride := ""
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			if verdict.Method != methodToolsCall && receiptVerdict == config.ActionAllow && !opts.requireReceipts() {
@@ -601,6 +604,9 @@ func ForwardScannedInput(
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			layer, pattern, severity := pickAttribution(eval)
+			if receiptLayerOverride != "" {
+				layer, pattern, severity = receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride
+			}
 			requireReceipts := opts.requireReceipts()
 			receiptOpts := mcpToolReceiptOpts{
 				Emitter:           receiptEmitter,
@@ -1104,6 +1110,13 @@ func ForwardScannedInput(
 				}
 				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, stdioWarnCtxMeta)
 				dlpResult := sc.ScanTextForDLP(stdioWarnCtx, string(result.Response))
+				finalResponseVerdict := scanVerdict
+				finalResponseVerdict.DLPMatches = append(finalResponseVerdict.DLPMatches, dlpResult.Matches...)
+				finalResponseVerdict.Clean = scanVerdict.Clean && dlpResult.Clean
+				responseAction := config.ActionRedirect
+				if !finalResponseVerdict.Clean {
+					responseAction = config.ActionBlock
+				}
 				// Capture: record redirect output scan verdict.
 				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_redirect_output",
@@ -1116,10 +1129,15 @@ func ForwardScannedInput(
 					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 					TransformKind:     capture.TransformRedirectOutput,
 					WirePayload:       result.Response,
-					RawFindings:       responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
-					EffectiveAction:   config.ActionBlock,
-					Outcome:           captureOutcome(config.ActionBlock, scanVerdict.Clean),
+					RawFindings:       append(responseMatchesToFindings(finalResponseVerdict.Matches, responseAction), dlpMatchesToFindingsWithAction(finalResponseVerdict.DLPMatches, responseAction)...),
+					EffectiveAction:   responseAction,
+					Outcome:           captureOutcome(responseAction, finalResponseVerdict.Clean),
 				})
+				if !finalResponseVerdict.Clean {
+					effectiveAction = config.ActionBlock
+					receiptLayerOverride = mcpReceiptLayerResponse
+					receiptPatternOverride, receiptSeverityOverride = redirectResponseAttribution(finalResponseVerdict)
+				}
 				if !scanVerdict.Clean {
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (injection detected in handler output)\n", lineNum)
 					blockedCh <- BlockedRequest{

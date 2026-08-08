@@ -111,6 +111,16 @@ func responseMatchesToFindings(matches []scanner.ResponseMatch, action string) [
 	return findings
 }
 
+func redirectResponseAttribution(verdict jsonrpc.ScanVerdict) (pattern, severity string) {
+	if len(verdict.Matches) > 0 {
+		return verdict.Matches[0].PatternName, config.SeverityHigh
+	}
+	if len(verdict.DLPMatches) > 0 {
+		return verdict.DLPMatches[0].PatternName, firstNonEmpty(verdict.DLPMatches[0].Severity, config.SeverityHigh)
+	}
+	return "", ""
+}
+
 // urlFindingsToCapture converts scanner.Result URL findings to capture findings.
 func urlFindingsToCapture(findings []scanner.Result) []capture.Finding {
 	if len(findings) == 0 {

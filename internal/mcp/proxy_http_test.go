@@ -28,6 +28,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
@@ -5527,7 +5528,9 @@ func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
 	})
 
 	var logBuf bytes.Buffer
-	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
+	obs := &mcpResponseCaptureObserver{got: make(chan capture.ResponseVerdictRecord, 1)}
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg, CaptureObs: obs, ReceiptEmitter: emitter, Transport: transportMCPHTTP})
 	if blocked == nil {
 		t.Fatal("expected redirect output DLP to be blocked")
 	}
@@ -5539,6 +5542,21 @@ func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
 	}
 	if blocked.SyntheticResponse != nil {
 		t.Error("expected nil SyntheticResponse for DLP-blocked redirect")
+	}
+	select {
+	case captureRecord := <-obs.got:
+		if captureRecord.Outcome != capture.OutcomeBlocked || captureRecord.EffectiveAction != config.ActionBlock || len(captureRecord.RawFindings) == 0 || captureRecord.RawFindings[0].Kind != capture.KindDLP {
+			t.Fatalf("redirect DLP capture = %+v", captureRecord)
+		}
+	case <-time.After(testWarnContextTimeout):
+		t.Fatal("expected redirect-output DLP capture")
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	blockReceipts := receiptsByVerdict(readActionReceipts(t, dir), config.ActionBlock)
+	if len(blockReceipts) == 0 || blockReceipts[0].ActionRecord.Layer != mcpReceiptLayerResponse || blockReceipts[0].ActionRecord.Pattern != "AWS Access ID" {
+		t.Fatalf("redirect DLP receipt = %+v", blockReceipts)
 	}
 }
 

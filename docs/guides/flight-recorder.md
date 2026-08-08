@@ -26,10 +26,13 @@ textfile format. The generated alert rule is
 `$XDG_CONFIG_HOME/pipelock/prometheus/rules/`.
 
 Point the Prometheus node-exporter textfile collector at
-`$XDG_CONFIG_HOME/pipelock/prometheus/textfile/` and include the generated rule
-directory in Prometheus `rule_files`. The alert fires for damage, an incomplete
-scan, a stale audit, or no metric. Stop evidence export for investigation; the
-auditor never gates proxy requests. A process-local `require_receipts` failure can
+`$XDG_CONFIG_HOME/pipelock/prometheus/textfile/`, and add a rule-file GLOB such
+as `$XDG_CONFIG_HOME/pipelock/prometheus/rules/*` to Prometheus `rule_files`.
+`rule_files` accepts file paths and globs, not directories, so naming the
+directory alone loads no rules and the alert never fires. The alert fires for
+damage, an incomplete scan, a stale audit, or no metric. Stop evidence export for
+investigation; the auditor never gates proxy requests. A process-local
+`require_receipts` failure can
 still stop that process's own mediated actions, but a different writer's
 historical damage cannot.
 

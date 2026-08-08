@@ -6,6 +6,7 @@ package evidence
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -64,12 +65,18 @@ func TestWriteEvidenceCorpusMetricRendersBothGauges(t *testing.T) {
 			// collector that cannot read the file produces no series, and the
 			// alert's absent() clauses turn that into a firing alert rather
 			// than a silent gap, so a restrictive mode stays observable.
-			info, err := os.Stat(path)
-			if err != nil {
-				t.Fatalf("stat metric file: %v", err)
-			}
-			if perm := info.Mode().Perm(); perm != 0o600 {
-				t.Fatalf("metric file mode = %04o, want 0600", perm)
+			//
+			// POSIX-only: Windows honours just the 0o200 write bit from a Go
+			// file mode, so asserting the full permission set there would fail
+			// on a correct implementation.
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatalf("stat metric file: %v", err)
+				}
+				if perm := info.Mode().Perm(); perm != 0o600 {
+					t.Fatalf("metric file mode = %04o, want 0600", perm)
+				}
 			}
 		})
 	}

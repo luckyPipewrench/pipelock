@@ -33,13 +33,16 @@ export function readEntries(file: string): RecorderEntry[] {
     const line = lines[i]?.trim() ?? "";
     if (line === "") continue;
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
-    rejectDuplicateKeys(line);
     if (entry.v !== 1 && entry.v !== 2 && entry.v !== 3) {
       throw new RuntimeError(
         `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2, 3)`,
       );
     }
-    if (entry.v === 3) validateV3Sequence(line, i + 1);
+    if (entry.v === 3) {
+      entry.seq = validateV3Sequence(line, i + 1);
+    } else {
+      rejectDuplicateKeys(line);
+    }
     validateProjectedStrings(entry, i + 1, entry.v);
     if (
       entry.v !== 3 &&
@@ -55,7 +58,7 @@ export function readEntries(file: string): RecorderEntry[] {
   return entries;
 }
 
-function validateV3Sequence(rawLine: string, line: number): void {
+function validateV3Sequence(rawLine: string, line: number): string {
   const raw = parseJSONStrict(rawLine) as Record<string, unknown>;
   const seq = raw.seq;
   if (!(seq instanceof RawNumber) || !/^(?:0|[1-9][0-9]*)$/u.test(seq.literal)) {
@@ -64,6 +67,7 @@ function validateV3Sequence(rawLine: string, line: number): void {
   if (BigInt(seq.literal) > 18446744073709551615n) {
     throw new RuntimeError(`line ${line}: v3 seq must be an unsigned 64-bit integer`);
   }
+  return seq.literal;
 }
 
 function validateProjectedStrings(entry: RecorderEntry, line: number, version: number): void {

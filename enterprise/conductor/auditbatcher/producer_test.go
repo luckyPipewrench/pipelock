@@ -53,6 +53,21 @@ func TestHomogeneousRecorderNamespace(t *testing.T) {
 	}
 }
 
+func TestRecorderNamespaceLimit(t *testing.T) {
+	known := make(map[string]struct{})
+	for i := 0; i < maxActiveRecorderNamespaces; i++ {
+		if !admitRecorderNamespace(known, fmt.Sprintf("v3-%d", i)) {
+			t.Fatalf("namespace %d rejected below limit", i)
+		}
+	}
+	if admitRecorderNamespace(known, "overflow") {
+		t.Fatal("namespace above limit accepted")
+	}
+	if !admitRecorderNamespace(known, "v3-0") {
+		t.Fatal("known namespace rejected at limit")
+	}
+}
+
 func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -127,6 +142,37 @@ func TestProducerRejectsLegacyNamespaceBeforeEnvelope(t *testing.T) {
 	}
 }
 
+func TestProducerQuarantinesOnlyInvalidV3Namespace(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestProducer(t, q, &transportMetricsRecorder{}, priv)
+	invalid := namespacedCheckpointSegment(0, "writer-bad")
+	for i := range invalid {
+		invalid[i].WriterInstanceID = ""
+		invalid[i].Hash = recorder.ComputeHash(invalid[i])
+		p.ObserveRecorderEntry(invalid[i])
+	}
+	for _, entry := range namespacedCheckpointSegment(0, "writer-good") {
+		p.ObserveRecorderEntry(entry)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := q.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 1 {
+		t.Fatalf("pending = %d, want independent valid namespace queued", stats.Pending)
+	}
+}
+
 func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 	auditPub, auditPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -179,6 +225,9 @@ func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 	batch := lease.Batch
+	if batch.Envelope.Chain.SessionID != "" {
+		t.Fatalf("v2 chain session_id = %q, want omitted for wire compatibility", batch.Envelope.Chain.SessionID)
+	}
 	if err := batch.Envelope.VerifySignatures(func(id string) (conductor.SignatureKey, error) {
 		if id != "audit-key-1" {
 			return conductor.SignatureKey{}, errors.New("unknown key")

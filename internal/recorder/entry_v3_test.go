@@ -161,6 +161,23 @@ func TestReadEntriesV3RejectsInvalidSequenceRepresentations(t *testing.T) {
 			t.Fatalf("ReadEntriesFromReader() error = %v, want missing seq rejection", err)
 		}
 	})
+
+	t.Run("max uint64", func(t *testing.T) {
+		e := v3Entry()
+		e.Sequence = ^uint64(0)
+		e.Hash = recorder.ComputeHash(e)
+		encoded, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := recorder.ReadEntriesFromReader(strings.NewReader(string(encoded) + "\n"))
+		if err != nil {
+			t.Fatalf("ReadEntriesFromReader() error = %v", err)
+		}
+		if len(entries) != 1 || entries[0].Sequence != e.Sequence {
+			t.Fatalf("decoded sequence = %d, want %d", entries[0].Sequence, e.Sequence)
+		}
+	})
 }
 
 func TestV3RejectsNullDelimiterCollision(t *testing.T) {

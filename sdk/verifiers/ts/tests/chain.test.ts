@@ -829,6 +829,21 @@ test("JSONL recorder reader rejects invalid v3 sequences", () => {
   }
 });
 
+test("JSONL recorder reader preserves maximum uint64 v3 sequence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "v3-seq-max.jsonl");
+  try {
+    writeFileSync(
+      file,
+      '{"v":3,"seq":18446744073709551615,"ts":"2026-08-07T00:00:00Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"writer-a","type":"checkpoint","transport":"x","summary":"","prev_hash":"genesis"}\n',
+      { mode: 0o600 },
+    );
+    assert.doesNotThrow(() => extractReceipts(file));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JSONL recorder extraction rejects duplicate keys inside receipt detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   const file = join(dir, "duplicate-key.jsonl");

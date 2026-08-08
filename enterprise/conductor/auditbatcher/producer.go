@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	defaultProducerBuffer = 4096
+	defaultProducerBuffer       = 4096
+	maxActiveRecorderNamespaces = 1024
 
 	actionReceiptEntryType = "action_receipt"
 	checkpointEntryType    = "checkpoint"
@@ -183,21 +184,21 @@ func (p *Producer) run() {
 	defer close(p.done)
 	pending := make(map[string][]recorder.Entry)
 	blocked := make(map[string]bool)
-	blockedAll := false
+	knownNamespaces := make(map[string]struct{})
 	for entry := range p.entries {
 		key := recorderNamespaceKey(entry)
-		if blockedAll || blocked[key] {
+		if !admitRecorderNamespace(knownNamespaces, key) {
+			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
+			continue
+		}
+		if blocked[key] {
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
 		if !conductor.IsSupportedAuditEntryVersion(entry.Version) {
 			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
 			delete(pending, key)
-			if entry.Version == 1 || entry.Version == 2 {
-				blocked[key] = true
-			} else {
-				blockedAll = true
-			}
+			blocked[key] = true
 			continue
 		}
 		if err := recorder.ValidateEntrySchema(entry); err != nil {
@@ -207,12 +208,9 @@ func (p *Producer) run() {
 					delete(pending, key)
 					blocked[key] = true
 				} else {
-					for pendingKey, chainPending := range pending {
-						p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(chainPending))
-						delete(pending, pendingKey)
-					}
-					p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
-					blockedAll = true
+					p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
+					delete(pending, key)
+					blocked[key] = true
 				}
 			} else {
 				p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount(append(pending[key], entry)))
@@ -242,6 +240,20 @@ func (p *Producer) run() {
 	for _, chainPending := range pending {
 		p.drop(producerDropShutdownPartial, droppedActionReceiptCount(chainPending))
 	}
+}
+
+func admitRecorderNamespace(known map[string]struct{}, key string) bool {
+	if key == "legacy" {
+		return true
+	}
+	if _, ok := known[key]; ok {
+		return true
+	}
+	if len(known) >= maxActiveRecorderNamespaces {
+		return false
+	}
+	known[key] = struct{}{}
+	return true
 }
 
 func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
@@ -332,7 +344,7 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 		Dropped:            dropped,
 		Chain: conductor.EvidenceChain{
 			EntryVersion:           entries[0].Version,
-			SessionID:              entries[0].SessionID,
+			SessionID:              namespacedSessionID(entries[0]),
 			ChainKind:              entries[0].ChainKind,
 			WriterInstanceID:       entries[0].WriterInstanceID,
 			SegmentID:              segmentID(entries[0], checkpoint.Sequence),
@@ -370,6 +382,13 @@ func recorderNamespaceKey(entry recorder.Entry) string {
 		return "legacy"
 	}
 	return fmt.Sprintf("v%d\x00%s\x00%s\x00%s", entry.Version, entry.SessionID, entry.ChainKind, entry.WriterInstanceID)
+}
+
+func namespacedSessionID(entry recorder.Entry) string {
+	if recorder.EntryVersionHasNamespace(entry.Version) {
+		return entry.SessionID
+	}
+	return ""
 }
 
 func (p *Producer) previousSegmentTailFor(key string) string {

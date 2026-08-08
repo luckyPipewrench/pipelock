@@ -134,7 +134,7 @@ export interface ShieldSummary {
 
 export interface RecorderEntry {
   v?: number;
-  seq?: number;
+  seq?: number | string;
   ts?: string;
   session_id?: string;
   chain_kind?: string;

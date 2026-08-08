@@ -138,23 +138,25 @@ func TestV3RejectsNullDelimiterCollision(t *testing.T) {
 
 func TestLegacyRejectsNullDelimiterCollision(t *testing.T) {
 	for _, version := range []int{1, 2} {
-		left := v3Entry()
-		left.Version = version
-		left.ChainKind = ""
-		left.WriterInstanceID = ""
-		left.SessionID = "x\x00y"
-		left.TraceID = "z"
-		right := left
-		right.SessionID = "x"
-		right.TraceID = "y\x00z"
-		if recorder.ComputeHash(left) != recorder.ComputeHash(right) {
-			t.Fatalf("v%d fixture does not reproduce delimiter collision", version)
-		}
-		for _, entry := range []recorder.Entry{left, right} {
-			if err := recorder.ValidateEntrySchema(entry); err == nil || !strings.Contains(err.Error(), "cannot contain NUL") {
-				t.Fatalf("ValidateEntrySchema(v%d) error = %v, want NUL rejection", version, err)
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			left := v3Entry()
+			left.Version = version
+			left.ChainKind = ""
+			left.WriterInstanceID = ""
+			left.SessionID = "x\x00y"
+			left.TraceID = "z"
+			right := left
+			right.SessionID = "x"
+			right.TraceID = "y\x00z"
+			if recorder.ComputeHash(left) != recorder.ComputeHash(right) {
+				t.Fatalf("fixture does not reproduce delimiter collision")
 			}
-		}
+			for _, entry := range []recorder.Entry{left, right} {
+				if err := recorder.ValidateEntrySchema(entry); err == nil || !strings.Contains(err.Error(), "cannot contain NUL") {
+					t.Fatalf("ValidateEntrySchema() error = %v, want NUL rejection", err)
+				}
+			}
+		})
 	}
 }
 

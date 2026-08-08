@@ -3220,7 +3220,11 @@ func TestReloadDowngradeRejectReason(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := reloadDowngradeRejectReason(tt.cfg(), tt.warns)
+			// Same config on both sides: this table exercises the
+			// warning-driven path, so no required contract is torn down and
+			// the direct requiredModeTeardowns check must stay quiet.
+			c := tt.cfg()
+			got := reloadDowngradeRejectReason(c, c, tt.warns)
 			if tt.wantIn == "" {
 				if got != "" {
 					t.Fatalf("reject reason = %q, want empty", got)

@@ -432,7 +432,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// Block downgrades from strict mode and from explicit "required"
 		// security contracts. A required evidence/signature mode should not
 		// keep forwarding under a warning-only weakening reload.
-		if reason := reloadDowngradeRejectReason(oldCfg, warnings); reason != "" {
+		if reason := reloadDowngradeRejectReason(oldCfg, newCfg, warnings); reason != "" {
 			rejectErr := fmt.Errorf("rejected: security downgrade from %s", reason)
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
@@ -672,8 +672,62 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 	return reasons
 }
 
-func reloadDowngradeRejectReason(oldCfg *config.Config, warnings []config.ReloadWarning) string {
-	if oldCfg == nil || len(warnings) == 0 {
+// requiredModeTeardowns reports the "required" security contracts that this
+// reload turns OFF, comparing the old and candidate configs DIRECTLY.
+//
+// It exists because the rejection below is otherwise reachable only through
+// warning emission, in a different package, that nobody is forced to write. That
+// coupling is what let a reload silently clear an active
+// flight_recorder.require_receipts: reloadDowngradeRejectReason already NAMED
+// the field in the reason it reports, and the field was in the required list
+// below, but config.ValidateReload emitted no ReloadWarning for it, so
+// hasRejectableDowngradeWarning never saw one and the whole gate was
+// unreachable outside strict mode. Everything about it read as coverage in
+// review. It checked nothing.
+//
+// Every field here is protected by a warning TODAY, so this is defence in depth
+// rather than a live hole: it is what makes the next required contract added to
+// the list fail closed by default instead of silently depending on an author
+// remembering a second edit. Direct comparison cannot be forgotten.
+//
+// Runs AFTER the restart-only preservation earlier in Reload, so newCfg already
+// holds the effective candidate values. A field preserved as restart-only (the
+// license require-intermediate set) therefore compares equal and never fires.
+func requiredModeTeardowns(oldCfg, newCfg *config.Config) []string {
+	if oldCfg == nil || newCfg == nil {
+		return nil
+	}
+	var torn []string
+	tornDown := func(field string, oldRequired, newRequired bool) {
+		if oldRequired && !newRequired {
+			torn = append(torn, field)
+		}
+	}
+	tornDown("flight_recorder.require_receipts",
+		oldCfg.FlightRecorder.RequireReceipts, newCfg.FlightRecorder.RequireReceipts)
+	tornDown("license_require_intermediate",
+		oldCfg.LicenseRequireIntermediateResolved, newCfg.LicenseRequireIntermediateResolved)
+	tornDown("a2a_scanning.require_signed_agent_cards",
+		oldCfg.A2AScanning.Enabled && oldCfg.A2AScanning.RequireSignedAgentCards,
+		newCfg.A2AScanning.Enabled && newCfg.A2AScanning.RequireSignedAgentCards)
+	tornDown("mcp_binary_integrity.require_signature",
+		oldCfg.MCPBinaryIntegrity.Enabled && oldCfg.MCPBinaryIntegrity.RequireSignature,
+		newCfg.MCPBinaryIntegrity.Enabled && newCfg.MCPBinaryIntegrity.RequireSignature)
+	tornDown("mediation_envelope.verify_inbound.enabled",
+		oldCfg.MediationEnvelope.VerifyInbound.Enabled, newCfg.MediationEnvelope.VerifyInbound.Enabled)
+	return torn
+}
+
+func reloadDowngradeRejectReason(oldCfg, newCfg *config.Config, warnings []config.ReloadWarning) string {
+	if oldCfg == nil {
+		return ""
+	}
+	// Independent of warning emission: a required contract being torn down is
+	// itself the rejection, whether or not anyone wrote a warning for it.
+	if torn := requiredModeTeardowns(oldCfg, newCfg); len(torn) > 0 {
+		return "required security mode (" + strings.Join(torn, ", ") + ")"
+	}
+	if len(warnings) == 0 {
 		return ""
 	}
 	if oldCfg.Mode == config.ModeStrict {

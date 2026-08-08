@@ -513,3 +513,65 @@ func TestServer_Reload_RequireReceiptsStaysOnWhenEmitterUnhealthy(t *testing.T) 
 		t.Fatal("no warning that the required posture entered reload unhealthy")
 	}
 }
+
+// TestServer_Reload_RequireReceiptsDowngradeIsRejected closes the opposite
+// direction from the enable guard. reloadDowngradeRejectReason already NAMED
+// flight_recorder.require_receipts in its "required security mode" reason, but
+// nothing emitted a ReloadWarning for the field, so hasRejectableDowngradeWarning
+// never saw one and the rejection could not fire outside strict mode. A plain
+// balanced-mode reload therefore cleared an active fail-closed receipt
+// requirement silently, with no error and no warning: a guard that read as
+// coverage and checked nothing. The whole reload must be rejected and the live
+// posture preserved, which is how every sibling security toggle already behaves.
+func TestServer_Reload_RequireReceiptsDowngradeIsRejected(t *testing.T) {
+	// Start with the requirement already in force from the config file. That is
+	// the production shape, and it avoids enabling it via a first reload: two
+	// reloads in a row share the synthetic "defaults" config hash here, so the
+	// second would be swallowed by the reload dedupe and prove nothing.
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("save signing key: %v", err)
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  require_receipts: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"",
+	}, "\n"))
+	s, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { s.cleanup() })
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("setup failed: require_receipts not in force before the downgrade")
+	}
+
+	off := s.proxy.CurrentConfig().Clone()
+	off.FlightRecorder.RequireReceipts = false
+	// A second, unrelated and genuinely hot-reloadable change proves the whole
+	// reload was rejected rather than the one field being quietly preserved.
+	off.FetchProxy.Monitoring.MaxURLLength = 4321
+
+	reloadErr := s.Reload(off)
+	if reloadErr == nil {
+		t.Fatal("reload silently cleared an active fail-closed receipt requirement")
+	}
+	if !strings.Contains(reloadErr.Error(), "require_receipts") {
+		t.Fatalf("rejection = %q, want it to name flight_recorder.require_receipts", reloadErr)
+	}
+	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts was cleared despite the reload being rejected")
+	}
+	if s.proxy.CurrentConfig().FetchProxy.Monitoring.MaxURLLength == 4321 {
+		t.Fatal("rejected reload still published its other changes")
+	}
+}

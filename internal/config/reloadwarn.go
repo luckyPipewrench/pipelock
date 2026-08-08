@@ -322,6 +322,19 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "A2A Agent Card drift detection disabled",
 		})
 	}
+	// Turning off fail-closed receipt enforcement is a security downgrade and
+	// belongs with the other "required" contracts. reloadDowngradeRejectReason
+	// already NAMES flight_recorder.require_receipts in the reason it reports,
+	// but nothing emitted a warning for it, so hasRejectableDowngradeWarning
+	// never saw one and the rejection could not fire outside strict mode: a
+	// plain reload silently cleared an active requirement. Emitting the warning
+	// is what arms the existing gate.
+	if old.FlightRecorder.RequireReceipts && !updated.FlightRecorder.RequireReceipts {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "flight_recorder.require_receipts",
+			Message: "fail-closed receipt enforcement disabled",
+		})
+	}
 	// Signature-verification downgrades only matter while A2A scanning is on; if
 	// it is being disabled the top-level "A2A scanning disabled" warning covers it.
 	if updated.A2AScanning.Enabled {

@@ -86,14 +86,25 @@ type ChainVerifyOptions struct {
 	// evidence, because the dropped entries are exactly the ones a bad actor
 	// wants gone, and it is precisely the case a prefix check cannot see.
 	//
-	// Pinning the head closes that, and pinning the head alone is sufficient:
-	// because this is a hash chain, a matching tip determines every entry back
-	// to genesis, so no separate expected-count or sequence-range option is
-	// needed. The head hash must come from trusted context OUTSIDE the chain
-	// (a signed checkpoint, an anchored root, a transparency-log inclusion
-	// proof, or an authenticated manifest) — reading it from the same file
-	// proves nothing, since an attacker who truncates the chain can rewrite a
-	// head recorded beside it.
+	// For one accepted v2 receipt chain, pinning the head is sufficient under
+	// SHA-256 collision and second-preimage resistance: ReceiptHash covers the
+	// full canonical final receipt, whose chain_prev_hash recursively commits to
+	// every prior receipt back to genesis. A separate expected count or sequence
+	// range therefore cannot distinguish another valid prefix that the pinned
+	// head would accept.
+	//
+	// This commitment is only to the v2 receipt slice being verified. It does
+	// not cover recorder entry types skipped during extraction, authenticate a
+	// session label, or join independent genesis chains across process restarts.
+	// Those require whole-recorder verification and trusted session/segment
+	// metadata in addition to this option.
+	//
+	// The expected head must be authenticated independently of the chain bytes
+	// it validates (for example by a pinned-key signed checkpoint, an anchored
+	// root, a transparency-log inclusion proof, or an authenticated manifest).
+	// It may be stored in the same directory if its authentication is verified
+	// and its presence is required; an unsigned sibling value that an attacker
+	// can rewrite or delete with the chain proves nothing.
 	//
 	// Opt-in by construction: unset means structure-only verification, exactly
 	// as before, so existing callers and the other-language verifiers are

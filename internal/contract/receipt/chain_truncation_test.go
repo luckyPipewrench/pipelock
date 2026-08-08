@@ -4,6 +4,7 @@
 package receipt_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -119,4 +120,41 @@ func TestVerifyChain_BrokenLinkReportsTheLinkNotTheHead(t *testing.T) {
 	if res.BrokenAtSeq != 2 {
 		t.Fatalf("broken_at_seq = %d, want 2 (the broken link, not the head)", res.BrokenAtSeq)
 	}
+	if !strings.Contains(res.Error, "chain_prev_hash mismatch") {
+		t.Fatalf("error = %q, want the broken-link cause rather than signature or head mismatch", res.Error)
+	}
+}
+
+func TestVerifyChain_ExpectedHeadBoundaryOrdering(t *testing.T) {
+	t.Parallel()
+	priv, pub := testKey(t, 12)
+	chain := buildChain(t, priv, 3)
+	tip := chainTip(t, chain)
+
+	t.Run("empty chain", func(t *testing.T) {
+		res := receipt.VerifyChain(nil, receipt.ChainVerifyOptions{PinnedKey: pub, ExpectHeadHash: tip})
+		if res.Valid || res.HeadVerified || res.Error != "empty chain" {
+			t.Fatalf("empty result = %#v, want invalid unverified empty-chain error", res)
+		}
+	})
+
+	t.Run("single receipt", func(t *testing.T) {
+		singleTip := chainTip(t, chain[:1])
+		res := receipt.VerifyChain(chain[:1], receipt.ChainVerifyOptions{PinnedKey: pub, ExpectHeadHash: singleTip})
+		if !res.Valid || !res.HeadVerified || res.ReceiptCount != 1 || res.FinalSeq != 0 {
+			t.Fatalf("single result = %#v, want valid head-verified one-receipt chain", res)
+		}
+	})
+
+	t.Run("final signature failure precedes head", func(t *testing.T) {
+		broken := append([]receipt.EvidenceReceipt(nil), chain...)
+		broken[len(broken)-1].Signature.Signature = "ed25519:" + strings.Repeat("0", 128)
+		res := receipt.VerifyChain(broken, receipt.ChainVerifyOptions{PinnedKey: pub, ExpectHeadHash: tip})
+		if res.Valid || res.HeadVerified {
+			t.Fatalf("bad final signature result = %#v, want invalid and head unverified", res)
+		}
+		if res.BrokenAtSeq != 2 || !strings.Contains(res.Error, "signature") {
+			t.Fatalf("bad final signature result = %#v, want signature failure at seq 2 before head comparison", res)
+		}
+	})
 }

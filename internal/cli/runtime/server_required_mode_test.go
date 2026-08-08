@@ -91,10 +91,13 @@ func TestReloadDowngradeRejectReason_RequiredTeardownWithoutWarnings(t *testing.
 }
 
 // TestRequiredModeTeardowns_ParentDisableCountsAsTeardown covers the shape that
-// makes a naive field-by-field comparison wrong. Three of these contracts are
-// only in force while a parent is enabled, so switching the PARENT off tears the
-// contract down just as surely as clearing the flag, while leaving the flag
-// itself set to true. Comparing the flag alone would miss it.
+// makes a naive field-by-field comparison wrong. A2A card signatures and MCP
+// binary signatures are only in force while their parent is enabled, so
+// switching the PARENT off tears the contract down just as surely as clearing
+// the flag, while leaving the flag itself set to true. Comparing the flag alone
+// would miss it. flight_recorder.require_receipts also requires its parent, but
+// that parent is restart-only and has already been preserved before this helper
+// runs, so its direct flag comparison is against equal effective parents.
 func TestRequiredModeTeardowns_ParentDisableCountsAsTeardown(t *testing.T) {
 	t.Parallel()
 	oldCfg := config.Defaults()

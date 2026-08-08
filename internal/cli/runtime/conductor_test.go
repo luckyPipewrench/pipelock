@@ -801,6 +801,12 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.MCPSessionBinding.Enabled = true
 	oldCfg.A2AScanning.Enabled = true
 	oldCfg.A2AScanning.Action = config.ActionBlock
+	oldCfg.A2AScanning.RequireSignedAgentCards = true
+	oldCfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{
+		KeyID:          "follower-agent-card",
+		PublicKey:      hex.EncodeToString(signer.pub),
+		AllowedOrigins: []string{"https://agent.vendor.example"},
+	}}
 	oldCfg.ToolChainDetection.Enabled = true
 	oldCfg.CrossRequestDetection.Enabled = true
 	oldCfg.CrossRequestDetection.Action = config.ActionBlock
@@ -813,6 +819,18 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.AddressProtection.Action = config.ActionBlock
 	oldCfg.AddressProtection.UnknownAction = config.ActionBlock
 	oldCfg.FlightRecorder.RequireReceipts = true
+	oldCfg.MCPBinaryIntegrity.Enabled = true
+	oldCfg.MCPBinaryIntegrity.ManifestPath = "/etc/pipelock/mcp-integrity.json"
+	oldCfg.MCPBinaryIntegrity.RequireSignature = true
+	oldCfg.MCPBinaryIntegrity.TrustedSigner = "follower-release"
+	oldCfg.MediationEnvelope.VerifyInbound.Enabled = true
+	oldCfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{
+		KeyID:     "follower-mediator",
+		PublicKey: hex.EncodeToString(signer.pub),
+	}}
+	requireIntermediate := true
+	oldCfg.LicenseRequireIntermediate = &requireIntermediate
+	oldCfg.LicenseRequireIntermediateResolved = true
 	oldCfg.FileSentry.Enabled = true
 	oldCfg.FileSentry.Action = config.ActionBlock
 	oldCfg.FileSentry.WatchPaths = []config.WatchPath{{Path: "/tmp/pipelock-watch"}}
@@ -903,8 +921,19 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	if live.Emit.Syslog.Address != oldCfg.Emit.Syslog.Address {
 		t.Fatalf("emit.syslog.address = %q, want preserved %q", live.Emit.Syslog.Address, oldCfg.Emit.Syslog.Address)
 	}
-	if !live.FlightRecorder.RequireReceipts {
-		t.Fatal("enforcement-only conductor bundle cleared follower-local require_receipts")
+	for _, required := range []struct {
+		name string
+		got  bool
+	}{
+		{"flight_recorder.require_receipts", live.FlightRecorder.RequireReceipts},
+		{"a2a_scanning.require_signed_agent_cards", live.A2AScanning.Enabled && live.A2AScanning.RequireSignedAgentCards},
+		{"mcp_binary_integrity.require_signature", live.MCPBinaryIntegrity.Enabled && live.MCPBinaryIntegrity.RequireSignature},
+		{"mediation_envelope.verify_inbound.enabled", live.MediationEnvelope.VerifyInbound.Enabled},
+		{"license_require_intermediate", live.LicenseRequireIntermediateResolved},
+	} {
+		if !required.got {
+			t.Fatalf("enforcement-only conductor bundle cleared follower-local %s", required.name)
+		}
 	}
 	if !reflect.DeepEqual(live.Sandbox, oldCfg.Sandbox) {
 		t.Fatalf("sandbox config = %+v, want preserved %+v", live.Sandbox, oldCfg.Sandbox)

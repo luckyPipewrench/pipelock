@@ -715,6 +715,16 @@ func requiredModeTeardowns(oldCfg, newCfg *config.Config) []string {
 		newCfg.MCPBinaryIntegrity.Enabled && newCfg.MCPBinaryIntegrity.RequireSignature)
 	tornDown("mediation_envelope.verify_inbound.enabled",
 		oldCfg.MediationEnvelope.VerifyInbound.Enabled, newCfg.MediationEnvelope.VerifyInbound.Enabled)
+	// sni_require_tls refuses to splice an opaque CONNECT tunnel when the
+	// client sends no TLS or a ClientHello with no SNI extension. Such a tunnel
+	// bypasses DLP entirely, so switching it off hands the agent a one-tunnel
+	// exfiltration channel. It was absent from the pre-existing required list
+	// this helper was seeded from, and a balanced reload silently applied the
+	// teardown. Parent-gated: forward.go only consults it inside the SNI
+	// verification branch, so verification being off means it was never in force.
+	tornDown("forward_proxy.sni_require_tls",
+		oldCfg.ForwardProxy.SNIVerificationEnabled() && oldCfg.ForwardProxy.SNIRequireTLSEnabled(),
+		newCfg.ForwardProxy.SNIVerificationEnabled() && newCfg.ForwardProxy.SNIRequireTLSEnabled())
 	return torn
 }
 

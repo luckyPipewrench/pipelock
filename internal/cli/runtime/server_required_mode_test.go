@@ -60,6 +60,20 @@ func TestReloadDowngradeRejectReason_RequiredTeardownWithoutWarnings(t *testing.
 			on:     func(c *config.Config) { c.MediationEnvelope.VerifyInbound.Enabled = true },
 			wantIn: "mediation_envelope.verify_inbound.enabled",
 		},
+		{
+			// sni_require_tls refuses to splice an opaque CONNECT tunnel: a
+			// non-TLS payload or a ClientHello with no SNI extension bypasses
+			// DLP entirely, which is a one-tunnel exfiltration channel. Turning
+			// it off is therefore a required-contract teardown, and it silently
+			// applied on a balanced reload before it was listed here.
+			name: "forward_proxy_sni_require_tls",
+			on: func(c *config.Config) {
+				enabled := true
+				c.ForwardProxy.SNIVerification = &enabled
+				c.ForwardProxy.SNIRequireTLS = &enabled
+			},
+			wantIn: "forward_proxy.sni_require_tls",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -130,5 +144,37 @@ func TestRequiredModeTeardowns_ParentDisableCountsAsTeardown(t *testing.T) {
 	staleNew.A2AScanning.RequireSignedAgentCards = false
 	if torn := requiredModeTeardowns(staleOld, staleNew); len(torn) > 0 {
 		t.Fatalf("clearing a stale require flag under a disabled parent reported a teardown: %v", torn)
+	}
+}
+
+// TestRequiredModeTeardowns_SNIRequireTLSParentGating covers the same
+// parent-gated shape for sni_require_tls, whose parent is SNI verification
+// rather than an `enabled` field: forward.go consults sni_require_tls only
+// inside the verification branch, so with verification off the flag was never
+// in force and clearing it tears nothing down, while turning verification off
+// while both were on IS a teardown.
+func TestRequiredModeTeardowns_SNIRequireTLSParentGating(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+
+	inForce := config.Defaults()
+	inForce.ForwardProxy.SNIVerification = &yes
+	inForce.ForwardProxy.SNIRequireTLS = &yes
+
+	// Parent off while the flag stays true: still a teardown.
+	parentOff := inForce.Clone()
+	parentOff.ForwardProxy.SNIVerification = &no
+	if torn := requiredModeTeardowns(inForce, parentOff); len(torn) == 0 {
+		t.Fatal("disabling SNI verification while sni_require_tls stayed true reported no teardown")
+	}
+
+	// Never in force: parent already off, clearing the flag changes nothing.
+	staleOld := config.Defaults()
+	staleOld.ForwardProxy.SNIVerification = &no
+	staleOld.ForwardProxy.SNIRequireTLS = &yes
+	staleNew := staleOld.Clone()
+	staleNew.ForwardProxy.SNIRequireTLS = &no
+	if torn := requiredModeTeardowns(staleOld, staleNew); len(torn) > 0 {
+		t.Fatalf("clearing sni_require_tls under disabled verification reported a teardown: %v", torn)
 	}
 }

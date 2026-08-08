@@ -239,8 +239,8 @@ forward_proxy:
 | `enabled` | `false` | **Yes** | Enable CONNECT tunnel proxy |
 | `max_tunnel_seconds` | `300` | No | CONNECT setup/dial deadline before the tunnel is established |
 | `idle_timeout_seconds` | `120` | No | Kill established tunnels after this much inactivity |
-| `sni_verification` | `true` | No | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
-| `sni_require_tls` | `false` | No | Require the tunnel to begin with a TLS ClientHello carrying SNI. Official security profiles enable it. This prevents raw/no-SNI protocol smuggling but does not decrypt or scan the tunnel body. Requires `sni_verification: true`. |
+| `sni_verification` | `true` | **To disable while `sni_require_tls` is on** | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
+| `sni_require_tls` | `false` | **To disable** | Require the tunnel to begin with a TLS ClientHello carrying SNI. Enabling it hot-reloads; **disabling it at runtime is rejected as a security downgrade** (restart to disable), because dropping it re-opens an unscanned opaque tunnel. Official security profiles enable it. This prevents raw/no-SNI protocol smuggling but does not decrypt or scan the tunnel body. Requires `sni_verification: true`. |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
 
 ## TLS Interception

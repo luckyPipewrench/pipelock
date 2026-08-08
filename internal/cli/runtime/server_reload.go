@@ -685,10 +685,17 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 // unreachable outside strict mode. Everything about it read as coverage in
 // review. It checked nothing.
 //
-// Every field here is protected by a warning TODAY, so this is defence in depth
-// rather than a live hole: it is what makes the next required contract added to
-// the list fail closed by default instead of silently depending on an author
-// remembering a second edit. Direct comparison cannot be forgotten.
+// It is not only defence in depth. It was written as such, on the belief that
+// every contract already had a warning, and then re-deriving the list from the
+// schema turned up forward_proxy.sni_require_tls, which had none and was
+// therefore a live silent downgrade. The lesson is in the mechanism: this list
+// was first seeded by COPYING the required list below, so it inherited that
+// list's blind spot exactly. Add to it by re-deriving from the schema, never by
+// copying an existing list.
+//
+// The value of comparing directly is that it cannot be forgotten. A contract
+// added here fails closed on its own transition, with no second edit in a second
+// package to remember.
 //
 // Runs AFTER the restart-only preservation earlier in Reload, so newCfg already
 // holds the effective candidate values. A field preserved as restart-only (the
@@ -747,6 +754,13 @@ func reloadDowngradeRejectReason(oldCfg, newCfg *config.Config, warnings []confi
 		return ""
 	}
 
+	// Fallback path: some OTHER non-advisory downgrade is in play, and this
+	// reports which required contracts are in force to explain why it is
+	// refused. It deliberately lists what is ACTIVE, not what was torn down —
+	// requiredModeTeardowns above owns teardown detection and has already
+	// returned by the time any contract here is being dismantled. Do not treat
+	// this as the authoritative contract list; it is shorter, and seeding a new
+	// list from it is what hid forward_proxy.sni_require_tls.
 	var required []string
 	if oldCfg.FlightRecorder.RequireReceipts {
 		required = append(required, "flight_recorder.require_receipts")

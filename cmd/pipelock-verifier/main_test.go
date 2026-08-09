@@ -25,6 +25,7 @@ import (
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
@@ -572,12 +573,24 @@ func TestAuditPacket_RejectsEmptyChain(t *testing.T) {
 	fix := newFixture(t, 0)
 	pkt := fix.writePacketDir(t, t.TempDir(), nil)
 
-	_, stderr, code := runRoot(t, "audit-packet", "--key", fix.keyHex, pkt)
+	stdout, stderr, code := runRoot(t, "audit-packet", "--json", "--key", fix.keyHex, pkt)
 	if code == cliutil.ExitOK {
 		t.Fatalf("empty audit-packet chain should fail, stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "empty chain") {
-		t.Fatalf("expected empty-chain error, got %q", stderr)
+	var report auditPacketReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "empty chain") {
+		t.Fatalf("expected empty-chain error, got report errors %q and stderr %q", report.Errors, stderr)
+	}
+	if report.LifecycleAssessment != lifecycleAssessed ||
+		report.LifecycleStatus != completeness.StatusUnverified ||
+		report.LifecycleReason != completeness.ReasonNoReceipts {
+		t.Fatalf("empty-chain lifecycle = assessment %q, status %q, reason %q; "+
+			"want assessed/%s/%s to match the TypeScript verifier",
+			report.LifecycleAssessment, report.LifecycleStatus, report.LifecycleReason,
+			completeness.StatusUnverified, completeness.ReasonNoReceipts)
 	}
 }
 

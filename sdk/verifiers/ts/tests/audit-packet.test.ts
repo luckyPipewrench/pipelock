@@ -245,6 +245,9 @@ test("audit packet rejects an empty chain", async () => {
   assert.equal(report.valid, false);
   assert.equal(report.chain_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("empty chain")));
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "UNVERIFIED");
+  assert.equal(report.lifecycle_reason, "no_receipts");
 });
 
 test("literal signer key wins over a same-named cwd file", () => {

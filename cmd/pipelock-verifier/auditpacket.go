@@ -346,13 +346,17 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 	if err != nil {
 		return receipt.ChainResult{}, nil, fmt.Errorf("extract receipts: %w", err)
 	}
-	if len(receipts) == 0 {
-		return receipt.ChainResult{}, nil, errors.New("empty chain")
-	}
 	keyHex := strings.TrimSpace(signerOverride)
 	resolvedKey, err := resolveSignerKey(keyHex)
 	if err != nil {
 		return receipt.ChainResult{}, nil, fmt.Errorf("resolve signer key: %w", err)
+	}
+	if len(receipts) == 0 {
+		// Empty evidence is a completed, failed chain verification rather than
+		// an inability to run verification. Keep it invalid while allowing the
+		// lifecycle analyzer to report UNVERIFIED/no_receipts, matching the
+		// TypeScript verifier's assessment contract.
+		return receipt.ChainResult{Valid: false, Error: "empty chain"}, receipts, nil
 	}
 	return receipt.VerifyChain(receipts, resolvedKey), receipts, nil
 }

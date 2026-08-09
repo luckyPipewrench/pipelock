@@ -519,7 +519,7 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 		ChainMatcher:               buildBlockChainMatcher(),
 		listenerStateTokenRequired: boolPtr(true),
 	})
-	post := func(t *testing.T, token, body string) (*http.Response, []byte) {
+	post := func(t *testing.T, token, body string) (http.Header, []byte) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 		if err != nil {
@@ -538,11 +538,11 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadAll(POST): %v", err)
 		}
-		return resp, payload
+		return resp.Header, payload
 	}
 
-	setupResp, _ := post(t, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	token := setupResp.Header.Get(listenerSessionTokenHeader)
+	setupHeaders, _ := post(t, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	token := setupHeaders.Get(listenerSessionTokenHeader)
 	if token == "" {
 		t.Fatalf("initialize response missing %s", listenerSessionTokenHeader)
 	}
@@ -634,7 +634,7 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 		ChainMatcher:               buildBlockChainMatcher(),
 		listenerStateTokenRequired: boolPtr(true),
 	})
-	initialize := func(t *testing.T, token string) (*http.Response, []byte) {
+	initialize := func(t *testing.T, token string) (int, http.Header, []byte) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 		if err != nil {
@@ -653,14 +653,14 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadAll(initialize): %v", err)
 		}
-		return resp, payload
+		return resp.StatusCode, resp.Header, payload
 	}
 
-	first, firstBody := initialize(t, "")
-	if first.StatusCode != http.StatusOK {
-		t.Fatalf("first initialize status = %d, body=%s", first.StatusCode, firstBody)
+	firstStatus, firstHeaders, firstBody := initialize(t, "")
+	if firstStatus != http.StatusOK {
+		t.Fatalf("first initialize status = %d, body=%s", firstStatus, firstBody)
 	}
-	oldToken := first.Header.Get(listenerSessionTokenHeader)
+	oldToken := firstHeaders.Get(listenerSessionTokenHeader)
 	if oldToken == "" {
 		t.Fatalf("first initialize missing %s", listenerSessionTokenHeader)
 	}
@@ -678,11 +678,11 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 		t.Fatalf("DELETE status = %d, want 200", deleteResp.StatusCode)
 	}
 
-	restarted, restartedBody := initialize(t, oldToken)
-	if restarted.StatusCode != http.StatusOK {
-		t.Fatalf("stale-token initialize status = %d, want 200; body=%s", restarted.StatusCode, restartedBody)
+	restartedStatus, restartedHeaders, restartedBody := initialize(t, oldToken)
+	if restartedStatus != http.StatusOK {
+		t.Fatalf("stale-token initialize status = %d, want 200; body=%s", restartedStatus, restartedBody)
 	}
-	if newToken := restarted.Header.Get(listenerSessionTokenHeader); newToken == "" || newToken == oldToken {
+	if newToken := restartedHeaders.Get(listenerSessionTokenHeader); newToken == "" || newToken == oldToken {
 		t.Fatalf("stale-token initialize issued %q, want a new %s", newToken, listenerSessionTokenHeader)
 	}
 	if got := upstreamCalls.Load(); got != 2 {

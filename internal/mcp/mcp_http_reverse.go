@@ -1000,7 +1000,7 @@ func RunHTTPListenerProxy(
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: listener session token generation failed: %v\n", stateErr)
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusServiceUnavailable)
-					_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("Pipelock session setup unavailable")))
+					_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock session setup unavailable")))
 					return false
 				}
 				setClientState(state)
@@ -1380,7 +1380,7 @@ func RunHTTPListenerProxy(
 			if !listenerClients.admitSetup(clientState) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("Pipelock session setup unavailable")))
+				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock session setup unavailable")))
 				return
 			}
 			w.Header().Set(listenerSessionTokenHeader, clientState.token)
@@ -1666,10 +1666,10 @@ func validMCPListenerSessionToken(values []string) bool {
 		return false
 	}
 	for i := range len(token) {
-		if !((token[i] >= 'A' && token[i] <= 'Z') ||
-			(token[i] >= 'a' && token[i] <= 'z') ||
-			(token[i] >= '0' && token[i] <= '9') ||
-			token[i] == '-' || token[i] == '_') {
+		if (token[i] < 'A' || token[i] > 'Z') &&
+			(token[i] < 'a' || token[i] > 'z') &&
+			(token[i] < '0' || token[i] > '9') &&
+			token[i] != '-' && token[i] != '_' {
 			return false
 		}
 	}

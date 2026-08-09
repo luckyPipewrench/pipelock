@@ -66,10 +66,10 @@ func validPipelockSessionToken(token string) bool {
 		return false
 	}
 	for i := range len(token) {
-		if !((token[i] >= 'A' && token[i] <= 'Z') ||
-			(token[i] >= 'a' && token[i] <= 'z') ||
-			(token[i] >= '0' && token[i] <= '9') ||
-			token[i] == '-' || token[i] == '_') {
+		if (token[i] < 'A' || token[i] > 'Z') &&
+			(token[i] < 'a' || token[i] > 'z') &&
+			(token[i] < '0' || token[i] > '9') &&
+			token[i] != '-' && token[i] != '_' {
 			return false
 		}
 	}

@@ -254,6 +254,8 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			AdaptiveCfg:    adaptiveCfg,
 			RequestBodyCfg: &config.RequestBodyScanning{Enabled: true, ScanHeaders: true},
 		})
+		tokenA := listenerSetupToken(t, baseURL)
+		tokenB := listenerSetupToken(t, baseURL)
 
 		secret := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
 		first, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
@@ -261,6 +263,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			t.Fatalf("NewRequest(first): %v", err)
 		}
 		first.Header.Set("Content-Type", "application/json")
+		first.Header.Set(listenerSessionTokenHeader, tokenA)
 		first.Header.Set("Mcp-Session-Id", "adaptive-client-a")
 		first.Header.Set("Authorization", "Bearer "+secret)
 		firstResp, err := http.DefaultClient.Do(first) //nolint:gosec // listener integration test
@@ -274,6 +277,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			t.Fatalf("NewRequest(second): %v", err)
 		}
 		second.Header.Set("Content-Type", "application/json")
+		second.Header.Set(listenerSessionTokenHeader, tokenB)
 		second.Header.Set("Mcp-Session-Id", "adaptive-client-b")
 		secondResp, err := http.DefaultClient.Do(second) //nolint:gosec // listener integration test
 		if err != nil {
@@ -287,8 +291,8 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		if strings.Contains(string(secondBody), adaptiveBlockedReason) {
 			t.Fatalf("second client inherited first client escalation: %s", secondBody)
 		}
-		if got := upstreamCalls.Load(); got != 1 {
-			t.Fatalf("upstream calls = %d, want 1 after isolated adaptive escalation", got)
+		if got := upstreamCalls.Load(); got != 3 {
+			t.Fatalf("upstream calls = %d, want 3 after two setup calls and isolated adaptive escalation", got)
 		}
 	})
 
@@ -314,13 +318,16 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			Store:    &listenerDiagnosisStore{},
 			TaintCfg: &config.TaintConfig{Enabled: true, Policy: config.ModeStrict},
 		})
-		post := func(t *testing.T, sessionID, body string) string {
+		tokenA := listenerSetupToken(t, baseURL)
+		tokenB := listenerSetupToken(t, baseURL)
+		post := func(t *testing.T, token, sessionID, body string) string {
 			t.Helper()
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 			if err != nil {
 				t.Fatalf("NewRequest: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(listenerSessionTokenHeader, token)
 			req.Header.Set("Mcp-Session-Id", sessionID)
 			resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
 			if err != nil {
@@ -334,13 +341,13 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			return string(payload)
 		}
 
-		post(t, "taint-client-a", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-		second := post(t, "taint-client-b", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+		post(t, tokenA, "taint-client-a", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+		second := post(t, tokenB, "taint-client-b", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 		if strings.Contains(second, "mutating_exec_after_untrusted_external_exposure") {
 			t.Fatalf("second client inherited first client taint: %s", second)
 		}
-		if got := upstreamCalls.Load(); got != 2 {
-			t.Fatalf("upstream calls = %d, want 2 after isolated taint state", got)
+		if got := upstreamCalls.Load(); got != 4 {
+			t.Fatalf("upstream calls = %d, want 4 after two setup calls and isolated taint state", got)
 		}
 	})
 

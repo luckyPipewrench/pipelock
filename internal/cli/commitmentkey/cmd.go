@@ -134,6 +134,7 @@ func retireCmd() *cobra.Command {
 	var keyID string
 	var epoch uint64
 	var acceptLoss bool
+	var allowUnaudited bool
 	cmd := &cobra.Command{
 		Use:   "retire",
 		Short: "Destroy a verify-only key with explicit loss acceptance",
@@ -141,6 +142,11 @@ func retireCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
 			if err := requireFlags(cmd, "key-id", "epoch"); err != nil {
+				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return err
+			}
+			if acceptLoss && !allowUnaudited {
+				err := errors.New("--allow-unaudited is required to retire without a durable audit sink")
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
 				return err
 			}
@@ -154,7 +160,7 @@ func retireCmd() *cobra.Command {
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
 				return err
 			}
-			emitAudit(cmd, "retire", "succeeded", keyID, epoch, nil, "operator_accept_loss")
+			emitAudit(cmd, "retire", "succeeded", keyID, epoch, nil, "operator_accept_loss,operator_allow_unaudited")
 			return writeJSON(cmd, metadata)
 		},
 	}
@@ -162,6 +168,7 @@ func retireCmd() *cobra.Command {
 	cmd.Flags().StringVar(&keyID, "key-id", "", "opaque key ID to destroy")
 	cmd.Flags().Uint64Var(&epoch, "epoch", 0, "key epoch to destroy")
 	cmd.Flags().BoolVar(&acceptLoss, "accept-loss", false, "acknowledge permanent loss of access to retained evidence and destroy the key")
+	cmd.Flags().BoolVar(&allowUnaudited, "allow-unaudited", false, "break-glass acknowledgement that this command cannot verify durable lifecycle evidence")
 	return cmd
 }
 

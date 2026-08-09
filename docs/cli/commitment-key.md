@@ -46,7 +46,8 @@ pipelock commitment-key retire \
   --config /etc/pipelock/pipelock.yaml \
   --key-id ck_0123456789abcdef0123456789abcdef \
   --epoch 1 \
-  --accept-loss
+  --accept-loss \
+  --allow-unaudited
 ```
 
 Backups and restores are validated, atomic, and written with `0600` mode. Both
@@ -66,31 +67,35 @@ pipelock commitment-key restore \
 named key ID and epoch. The private transformed view is read from stdin by
 default; use `--view-file` only with an owner-owned regular file whose parent
 directories are not group/world-writable. The view is never accepted in argv
-or written to audit output. Pass the receipt's typed recipe with `--recipe-json`;
+or written to lifecycle telemetry. Pass the receipt's typed recipe with `--recipe-json`;
 omitting it selects the empty v1 recipe. Unknown recipe fields, unsupported
 operations, trailing JSON, and commitment mismatches fail closed. Every
 lifecycle storage operation emits a structured `commitment_key_lifecycle`
-audit event to stderr.
+telemetry event to stderr.
 
-## Audit capture
+## Lifecycle telemetry
 
 This command runs before a Pipelock server and its flight recorder necessarily
 exist, so it deliberately does **not** reuse the flight-recorder directory as
-an audit file. Reusing it would make a separate command compete with the
+a telemetry file. Reusing it would make a separate command compete with the
 running recorder for the same evidence chain and writer lock.
 
 Instead, every command that reaches its lifecycle handler emits exactly one
-newline-delimited JSON `commitment_key_lifecycle` event to standard error after
+newline-delimited JSON `commitment_key_lifecycle` telemetry event to standard error after
 the operation attempt: successful operations report `outcome: "succeeded"`;
 refused or failed operations report `outcome: "denied"` and a reason. Missing
 required lifecycle flags are handled inside that handler so they are recorded
 as denials too. The event contains only the operation, outcome, key ID and
-epoch when known, timestamp, reason, and the explicit loss authorization when
-applicable. It never contains key material or the private view supplied to
+epoch when known, timestamp, reason, and the explicit loss and unaudited
+break-glass authorizations when applicable. It never contains key material or the private view supplied to
 `test`.
 
-Standard error is a handoff, not a durable or tamper-evident audit trail on
-its own. Run lifecycle commands through an owner-managed persistent collector
+Standard error is lifecycle telemetry, not a durable or tamper-evident audit
+trail on its own. `retire` therefore fails closed unless
+`--allow-unaudited` explicitly acknowledges the break-glass operation. That
+flag is required even when standard error is redirected to a collector because
+this command cannot verify a collector's persistence or acknowledgement. Run
+lifecycle commands through an owner-managed persistent collector
 (for example, a service-manager journal or a centrally managed audit system)
 and retain records whose `event_type` is `commitment_key_lifecycle`. If that
 collector writes a local file, its owner must create and protect the file with

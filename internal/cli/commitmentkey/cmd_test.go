@@ -116,7 +116,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	}
 	assertAudit(t, stderr, "test", "succeeded")
 
-	stdout, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--accept-loss")
+	stdout, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--accept-loss", "--allow-unaudited")
 	if err != nil {
 		t.Fatalf("retire with explicit loss acceptance: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("retired metadata = %+v, want only epoch 2", got)
 	}
 	assertAudit(t, stderr, "retire", "succeeded")
-	assertAuditAuthorization(t, stderr, "operator_accept_loss")
+	assertAuditAuthorization(t, stderr, "operator_accept_loss,operator_allow_unaudited")
 	assertNoKeyMaterial(t, stdout, stderr)
 }
 
@@ -184,20 +184,24 @@ func TestCommandDenialBranches(t *testing.T) {
 	metadata := mustLoadMetadata(t, path)
 
 	for _, test := range []struct {
-		name      string
-		operation string
-		args      []string
-		wantAudit bool
+		name          string
+		operation     string
+		args          []string
+		wantAudit     bool
+		wantErr       string
+		wantAuditText string
 	}{
 		{name: "initialize rerun", operation: "initialize", args: []string{"initialize", "--keyring", path}, wantAudit: true},
 		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
 		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
 		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1"}, wantAudit: true},
-		{name: "retire missing required flag", operation: "retire", args: []string{"retire", "--keyring", path, "--epoch", "1"}, wantAudit: true},
-		{name: "backup missing required flag", operation: "backup", args: []string{"backup", "--keyring", path}, wantAudit: true},
-		{name: "restore missing required flag", operation: "restore", args: []string{"restore", "--keyring", path}, wantAudit: true},
+		{name: "retire missing required flags before keyring access", operation: "retire", args: []string{"retire", "--keyring", filepath.Join(dir, "missing.json"), "--accept-loss", "--allow-unaudited"}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch" not set`, wantAuditText: `required flag(s) "key-id, epoch" not set`},
+		{name: "retire requires explicit unaudited break glass", operation: "retire", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--accept-loss"}, wantAudit: true, wantErr: "--allow-unaudited is required to retire without a durable audit sink", wantAuditText: "--allow-unaudited is required to retire without a durable audit sink"},
+		{name: "backup missing required flag before keyring access", operation: "backup", args: []string{"backup", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true, wantErr: `required flag(s) "out" not set`, wantAuditText: `required flag(s) "out" not set`},
+		{name: "restore missing required flag before keyring access", operation: "restore", args: []string{"restore", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true, wantErr: `required flag(s) "from" not set`, wantAuditText: `required flag(s) "from" not set`},
 		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
-		{name: "test missing required flag", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true},
+		{name: "test missing required flag before keyring access", operation: "test", args: []string{"test", "--keyring", filepath.Join(dir, "missing.json"), "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true, wantErr: `required flag(s) "commitment" not set`, wantAuditText: `required flag(s) "commitment" not set`},
+		{name: "test reports every missing required flag", operation: "test", args: []string{"test", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch, source-id, commitment" not set`, wantAuditText: `required flag(s) "key-id, epoch, source-id, commitment" not set`},
 		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
 		{name: "missing path selector", operation: "inspect", args: []string{"inspect"}, wantAudit: true},
 		{name: "initialize missing path selector", operation: "initialize", args: []string{"initialize"}, wantAudit: true},
@@ -213,10 +217,20 @@ func TestCommandDenialBranches(t *testing.T) {
 			if err == nil {
 				t.Fatal("command succeeded")
 			}
+			if test.wantErr != "" && err.Error() != test.wantErr {
+				t.Fatalf("command error = %q, want %q", err, test.wantErr)
+			}
 			if test.wantAudit {
 				assertAudit(t, stderr, test.operation, "denied")
 			}
+			if test.wantAuditText != "" {
+				assertAuditReason(t, stderr, test.wantAuditText)
+			}
 		})
+	}
+
+	if got := mustLoadMetadata(t, path); len(got.Keys) != 1 || got.ActiveID != metadata.ActiveID {
+		t.Fatalf("retire without unaudited break glass changed keyring: %+v", got)
 	}
 
 	if _, _, err := execute(t, "backup", "--keyring", path, "--out", backup); err != nil {
@@ -445,6 +459,14 @@ func assertAuditAuthorization(t *testing.T, raw, authorization string) {
 	event := decodeAudit(t, raw)
 	if event.Authorization != authorization {
 		t.Fatalf("audit authorization = %q, want %q", event.Authorization, authorization)
+	}
+}
+
+func assertAuditReason(t *testing.T, raw, reason string) {
+	t.Helper()
+	event := decodeAudit(t, raw)
+	if event.Reason != reason {
+		t.Fatalf("audit reason = %q, want %q", event.Reason, reason)
 	}
 }
 

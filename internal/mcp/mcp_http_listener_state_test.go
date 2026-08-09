@@ -301,6 +301,45 @@ func TestMCPListenerClientStates_LegacySessionReuse(t *testing.T) {
 	}
 }
 
+func TestMCPListenerClientStates_LegacyAdmissionEvictsOldest(t *testing.T) {
+	store := &listenerStateBoundedStore{}
+	states := newMCPListenerClientStates(store)
+	var oldest *mcpListenerClientState
+	for i := range maxMCPListenerClients {
+		state := newMCPListenerClientState("", fmt.Sprintf("legacy-key-%d", i))
+		if i == 0 {
+			oldest = state
+		}
+		state.lastAccessed = uint64(i + 1)
+		states.clients[state.key] = state
+		store.GetOrCreate(state.key)
+	}
+
+	admitted := states.stateForLegacySession("replacement")
+	if admitted.recorder == nil {
+		t.Fatal("legacy admission did not attach a recorder")
+	}
+	if got := len(states.clients); got != maxMCPListenerClients {
+		t.Fatalf("legacy client entries = %d, want %d", got, maxMCPListenerClients)
+	}
+	if _, ok := store.deleted["legacy-key-0"]; !ok {
+		t.Fatal("legacy admission did not delete the oldest recorder")
+	}
+	if !oldest.revoked.Load() {
+		t.Fatal("legacy admission did not revoke the oldest state")
+	}
+}
+
+func TestMCPListenerSessionTokenIsGenerated(t *testing.T) {
+	token, err := newMCPListenerSessionToken()
+	if err != nil {
+		t.Fatalf("newMCPListenerSessionToken: %v", err)
+	}
+	if !validMCPListenerSessionToken([]string{token}) {
+		t.Fatalf("generated invalid listener session token %q", token)
+	}
+}
+
 func TestListenerHasStatefulControls_ToolBindingFields(t *testing.T) {
 	for _, tc := range []struct {
 		name string

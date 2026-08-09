@@ -630,6 +630,95 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 	}
 }
 
+func TestHTTPListenerDiagnosis_DeletePreventsInFlightGETSSEWrite(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	const lateMessage = `{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"late-after-delete"}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			close(started)
+			<-release
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", lateMessage)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+		}
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                    testScannerForHTTP(t),
+		InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+		ChainMatcher:               buildBlockChainMatcher(),
+		listenerStateTokenRequired: boolPtr(true),
+	})
+	token := listenerSetupToken(t, baseURL)
+
+	type responseResult struct {
+		status int
+		body   string
+		err    error
+	}
+	result := make(chan responseResult, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+		if err != nil {
+			result <- responseResult{err: err}
+			return
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set(listenerSessionTokenHeader, token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			result <- responseResult{err: err}
+			return
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		result <- responseResult{status: resp.StatusCode, body: string(body), err: readErr}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("GET stream did not reach upstream")
+	}
+	deleteReq, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(DELETE): %v", err)
+	}
+	deleteReq.Header.Set(listenerSessionTokenHeader, token)
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("DELETE listener: %v", err)
+	}
+	_ = deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200", deleteResp.StatusCode)
+	}
+	close(release)
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("GET stream: %v", got.err)
+		}
+		if strings.Contains(got.body, "late-after-delete") {
+			t.Fatalf("deleted state emitted late SSE event: status=%d body=%s", got.status, got.body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GET stream did not finish after release")
+	}
+}
+
 // TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain proves an evicted or
 // deleted client can recover by running the allowed setup flow. A stale token
 // must deny stateful work, but it cannot make initialize permanently unusable.

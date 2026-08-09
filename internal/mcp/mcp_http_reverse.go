@@ -845,7 +845,8 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), streamWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
+			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter}
+			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}

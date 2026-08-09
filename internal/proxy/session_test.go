@@ -980,6 +980,10 @@ func TestSessionManager_AsStore(t *testing.T) {
 	if rec != direct {
 		t.Error("store.GetOrCreate and sm.GetOrCreate should return the same session for the same key")
 	}
+	store.Delete("test-key")
+	if got := sm.Len(); got != 0 {
+		t.Fatalf("store.Delete left %d sessions, want 0", got)
+	}
 }
 
 // TestProxy_SessionStore_Enabled verifies that SessionStore returns a non-nil

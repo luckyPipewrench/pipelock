@@ -193,7 +193,11 @@ func TestCommandDenialBranches(t *testing.T) {
 		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
 		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
 		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1"}, wantAudit: true},
+		{name: "retire missing required flag", operation: "retire", args: []string{"retire", "--keyring", path, "--epoch", "1"}, wantAudit: true},
+		{name: "backup missing required flag", operation: "backup", args: []string{"backup", "--keyring", path}, wantAudit: true},
+		{name: "restore missing required flag", operation: "restore", args: []string{"restore", "--keyring", path}, wantAudit: true},
 		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test missing required flag", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true},
 		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
 		{name: "missing path selector", operation: "inspect", args: []string{"inspect"}, wantAudit: true},
 		{name: "initialize missing path selector", operation: "initialize", args: []string{"initialize"}, wantAudit: true},
@@ -446,12 +450,20 @@ func assertAuditAuthorization(t *testing.T, raw, authorization string) {
 
 func decodeAudit(t *testing.T, raw string) auditEvent {
 	t.Helper()
-	var event auditEvent
-	lines := strings.Split(strings.TrimSpace(raw), "\n")
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
-		t.Fatalf("decode audit %q: %v", raw, err)
+	var events []auditEvent
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		var event auditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.EventType == "commitment_key_lifecycle" {
+			events = append(events, event)
+		}
 	}
-	return event
+	if len(events) != 1 {
+		t.Fatalf("audit capture has %d commitment_key_lifecycle events, want exactly 1: %q", len(events), raw)
+	}
+	return events[0]
 }
 
 func assertNoKeyMaterial(t *testing.T, outputs ...string) {

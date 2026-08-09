@@ -72,6 +72,35 @@ operations, trailing JSON, and commitment mismatches fail closed. Every
 lifecycle storage operation emits a structured `commitment_key_lifecycle`
 audit event to stderr.
 
+## Audit capture
+
+This command runs before a Pipelock server and its flight recorder necessarily
+exist, so it deliberately does **not** reuse the flight-recorder directory as
+an audit file. Reusing it would make a separate command compete with the
+running recorder for the same evidence chain and writer lock.
+
+Instead, every command that reaches its lifecycle handler emits exactly one
+newline-delimited JSON `commitment_key_lifecycle` event to standard error after
+the operation attempt: successful operations report `outcome: "succeeded"`;
+refused or failed operations report `outcome: "denied"` and a reason. Missing
+required lifecycle flags are handled inside that handler so they are recorded
+as denials too. The event contains only the operation, outcome, key ID and
+epoch when known, timestamp, reason, and the explicit loss authorization when
+applicable. It never contains key material or the private view supplied to
+`test`.
+
+Standard error is a handoff, not a durable or tamper-evident audit trail on
+its own. Run lifecycle commands through an owner-managed persistent collector
+(for example, a service-manager journal or a centrally managed audit system)
+and retain records whose `event_type` is `commitment_key_lifecycle`. If that
+collector writes a local file, its owner must create and protect the file with
+`0600` permissions; Pipelock cannot make shell redirection or a collector's
+storage durable from inside this pre-runtime command.
+
+This is intentionally an explicit caller responsibility until a dedicated
+evidence producer can own a signed audit sink end to end. Do not treat an
+uncollected terminal transcript as lifecycle evidence.
+
 On Unix, keyring, backup, restore, view, and lock paths are opened relative to
 validated directory descriptors; final symlinks are refused, opened files must
 be owned by the effective user with exact `0600` mode, and each parent must be

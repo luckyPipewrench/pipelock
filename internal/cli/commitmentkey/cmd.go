@@ -140,6 +140,10 @@ func retireCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
+			if err := requireFlags(cmd, "key-id", "epoch"); err != nil {
+				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return err
+			}
 			path, err := flags.resolve()
 			if err != nil {
 				emitAudit(cmd, "retire", "denied", keyID, epoch, err)
@@ -158,8 +162,6 @@ func retireCmd() *cobra.Command {
 	cmd.Flags().StringVar(&keyID, "key-id", "", "opaque key ID to destroy")
 	cmd.Flags().Uint64Var(&epoch, "epoch", 0, "key epoch to destroy")
 	cmd.Flags().BoolVar(&acceptLoss, "accept-loss", false, "acknowledge permanent loss of access to retained evidence and destroy the key")
-	_ = cmd.MarkFlagRequired("key-id")
-	_ = cmd.MarkFlagRequired("epoch")
 	return cmd
 }
 
@@ -172,6 +174,10 @@ func backupCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
+			if err := requireFlags(cmd, "out"); err != nil {
+				emitAudit(cmd, "backup", "denied", "", 0, err)
+				return err
+			}
 			path, err := flags.resolve()
 			if err != nil {
 				emitAudit(cmd, "backup", "denied", "", 0, err)
@@ -188,7 +194,6 @@ func backupCmd() *cobra.Command {
 	}
 	flags.bind(cmd)
 	cmd.Flags().StringVar(&out, "out", "", "new backup file path")
-	_ = cmd.MarkFlagRequired("out")
 	return cmd
 }
 
@@ -201,6 +206,10 @@ func restoreCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
+			if err := requireFlags(cmd, "from"); err != nil {
+				emitAudit(cmd, "restore", "denied", "", 0, err)
+				return err
+			}
 			path, err := flags.resolve()
 			if err != nil {
 				emitAudit(cmd, "restore", "denied", "", 0, err)
@@ -217,7 +226,6 @@ func restoreCmd() *cobra.Command {
 	}
 	flags.bind(cmd)
 	cmd.Flags().StringVar(&from, "from", "", "backup file path")
-	_ = cmd.MarkFlagRequired("from")
 	return cmd
 }
 
@@ -231,6 +239,10 @@ func testCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
+			if err := requireFlags(cmd, "key-id", "epoch", "source-id", "commitment"); err != nil {
+				emitAudit(cmd, "test", "denied", keyID, epoch, err)
+				return err
+			}
 			keyring, err := flags.load()
 			if err != nil {
 				emitAudit(cmd, "test", "denied", keyID, epoch, err)
@@ -278,9 +290,6 @@ func testCmd() *cobra.Command {
 	cmd.Flags().StringVar(&viewFile, "view-file", "-", "read the complete transformed view from this 0600 file, or - for stdin")
 	cmd.Flags().StringVar(&want, "commitment", "", "expected hmac-sha256 commitment")
 	cmd.Flags().StringVar(&recipeJSON, "recipe-json", "", "PR 3 typed recipe JSON; defaults to the empty v1 recipe")
-	for _, name := range []string{"key-id", "epoch", "source-id", "commitment"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
 	return cmd
 }
 
@@ -344,6 +353,19 @@ func (f pathFlags) load() (*domkey.Keyring, error) {
 		return nil, err
 	}
 	return domkey.Load(path)
+}
+
+func requireFlags(cmd *cobra.Command, names ...string) error {
+	var missing []string
+	for _, name := range names {
+		if !cmd.Flags().Changed(name) {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("required flag(s) %q not set", strings.Join(missing, ", "))
 }
 
 func readView(cmd *cobra.Command, path string) (string, error) {

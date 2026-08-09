@@ -33,6 +33,16 @@ const findingsChanSize = 64
 // surfaced via the watcher's error callback so it is visible, not silent.
 const maxFileSize = 10 * 1024 * 1024 // 10MB
 
+// ErrNoWatchPaths marks an Arm failure where no directory remains watched.
+// Runtimes must not interpret best-effort as permission to start with this
+// condition, because file sentry would provide no coverage at all.
+var ErrNoWatchPaths = errors.New("filesentry: no watch paths armed")
+
+// ErrRequiredWatchPath marks an Arm failure for a required watch root or one
+// of its descendants. Runtimes can use errors.Is to keep required coverage
+// fail-closed even when other file sentry paths use best-effort behavior.
+var ErrRequiredWatchPath = errors.New("filesentry: required watch coverage unavailable")
+
 // fsWatcher implements Watcher using fsnotify for cross-platform file watching.
 type fsWatcher struct {
 	cfg      *config.FileSentry
@@ -50,11 +60,17 @@ type fsWatcher struct {
 	timers   map[string]*time.Timer // per-path debounce timers
 	pidSnap  map[string]bool        // per-path agent attribution snapshot at event time
 	closed   bool
-	// degradedPaths records configured watch_paths whose Arm() install failed
-	// when the path was not marked required:true. Populated by Arm() and
-	// exposed via DegradedPaths() so health endpoints can surface "armed but
-	// degraded" without lying about coverage.
+	// watchedPaths prevents duplicate fsnotify registrations when configured
+	// roots overlap or Arm is called more than once.
+	watchedPaths map[string]struct{}
+	// degradedPaths records every configured root or descendant subtree that
+	// Arm could not monitor. Populated by Arm() and exposed via DegradedPaths()
+	// so health endpoints can surface "armed but degraded" without lying about
+	// coverage.
 	degradedPaths []DegradedPath
+	// addWatch is the fsnotify registration seam. It is only replaced by tests
+	// to deterministically exercise per-subtree watch-install failures.
+	addWatch func(string) error
 }
 
 // DegradedPath records a configured watch_paths entry whose install failed
@@ -64,6 +80,31 @@ type fsWatcher struct {
 type DegradedPath struct {
 	Path  string
 	Error string
+}
+
+type skippedSubtree struct {
+	path  string
+	cause error
+}
+
+func (s skippedSubtree) err() error {
+	return fmt.Errorf("cannot monitor subtree %q: %w", s.path, s.cause)
+}
+
+type recursiveAddResult struct {
+	added   int
+	skipped []skippedSubtree
+}
+
+func (r recursiveAddResult) err() error {
+	if len(r.skipped) == 0 {
+		return nil
+	}
+	errs := make([]error, 0, len(r.skipped))
+	for _, skipped := range r.skipped {
+		errs = append(errs, skipped.err())
+	}
+	return errors.Join(errs...)
 }
 
 // NewWatcher creates a file watcher that monitors configured directories for
@@ -77,15 +118,17 @@ func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage, onError func
 		return nil, fmt.Errorf("filesentry: create watcher: %w", err)
 	}
 	return &fsWatcher{
-		cfg:      cfg,
-		scanner:  sc,
-		lineage:  lin,
-		watcher:  w,
-		findings: make(chan Finding, findingsChanSize),
-		overflow: make(chan Finding, 1),
-		timers:   make(map[string]*time.Timer),
-		pidSnap:  make(map[string]bool),
-		onError:  onError,
+		cfg:          cfg,
+		scanner:      sc,
+		lineage:      lin,
+		watcher:      w,
+		findings:     make(chan Finding, findingsChanSize),
+		overflow:     make(chan Finding, 1),
+		timers:       make(map[string]*time.Timer),
+		pidSnap:      make(map[string]bool),
+		watchedPaths: make(map[string]struct{}),
+		onError:      onError,
+		addWatch:     w.Add,
 	}, nil
 }
 
@@ -110,55 +153,77 @@ func (w *fsWatcher) effectiveMaxFileSize() int64 {
 // Call this before launching the child process to ensure no writes
 // are missed during the startup window.
 //
-// Per-path failure semantics:
-//   - WatchPath.Required=true: install failure aborts Arm with a wrapped error.
-//     Use for paths whose monitoring is part of the security boundary.
-//   - WatchPath.Required=false (default): install failure is recorded as a
-//     degraded path (visible via DegradedPaths) and reported through the
-//     optional onError callback, but Arm continues installing the remaining
-//     paths. This lets a missing or transiently-inaccessible aux path stop
-//     crash-looping the proxy when the primary watch is still healthy.
-//
-// Required:false matches the operator expectation that an optional watch
-// path that "happens to be unreadable today" should not crash-loop the
-// proxy. Operators who want hard-fail behavior for a specific path opt in
-// with required:true on that entry.
+// Any skipped root or descendant is reported individually through
+// DegradedPaths and the optional error callback. In best_effort mode, Arm
+// keeps every accessible sibling armed. Strict mode (the default) returns an
+// error after completing the walk, so a partial watch set cannot be mistaken
+// for complete coverage. required:true remains a per-root override that
+// rejects degradation even when best_effort is selected.
 func (w *fsWatcher) Arm() error {
 	w.mu.Lock()
 	w.degradedPaths = w.degradedPaths[:0]
 	w.mu.Unlock()
+	var armErrs []error
+	requiredFailed := false
+	seenRoots := make(map[string]struct{}, len(w.cfg.WatchPaths))
 	for _, wp := range w.cfg.WatchPaths {
 		abs, err := filepath.Abs(wp.Path)
 		if err != nil {
-			if wp.Required {
-				return fmt.Errorf("filesentry: resolve path %q: %w", wp.Path, err)
-			}
 			w.recordDegraded(wp.Path, err)
+			armErr := fmt.Errorf("resolve watch root %q: %w", wp.Path, err)
+			if wp.Required {
+				requiredFailed = true
+				armErr = fmt.Errorf("%w: %w", ErrRequiredWatchPath, armErr)
+			}
+			armErrs = append(armErrs, armErr)
 			continue
 		}
-		if err := w.addRecursive(abs); err != nil {
-			if wp.Required {
-				return fmt.Errorf("filesentry: watch %q: %w", abs, err)
-			}
-			w.recordDegraded(wp.Path, err)
+		if _, duplicate := seenRoots[abs]; duplicate {
 			continue
 		}
+		seenRoots[abs] = struct{}{}
+
+		result := w.addRecursiveDetailed(abs)
+		for _, skipped := range result.skipped {
+			w.recordDegraded(skipped.path, skipped.cause)
+			armErr := skipped.err()
+			if wp.Required {
+				armErr = fmt.Errorf("%w: %w", ErrRequiredWatchPath, armErr)
+			}
+			armErrs = append(armErrs, armErr)
+		}
+		if wp.Required && len(result.skipped) > 0 {
+			// required:true overrides the global best-effort setting.
+			requiredFailed = true
+		}
+	}
+
+	w.mu.Lock()
+	armed := len(w.watchedPaths)
+	w.mu.Unlock()
+	if armed == 0 {
+		if len(armErrs) == 0 {
+			return ErrNoWatchPaths
+		}
+		return fmt.Errorf("%w: %w", ErrNoWatchPaths, errors.Join(armErrs...))
+	}
+	if len(armErrs) > 0 && (!w.cfg.BestEffort || requiredFailed) {
+		return fmt.Errorf("filesentry: incomplete watch coverage: %w", errors.Join(armErrs...))
 	}
 	return nil
 }
 
-// recordDegraded captures a non-required Arm-time install failure for later
-// visibility through DegradedPaths() and the optional onError callback.
+// recordDegraded captures an Arm-time subtree failure for later visibility
+// through DegradedPaths() and the optional onError callback.
 func (w *fsWatcher) recordDegraded(path string, cause error) {
 	w.mu.Lock()
 	w.degradedPaths = append(w.degradedPaths, DegradedPath{Path: path, Error: cause.Error()})
 	w.mu.Unlock()
-	w.logError(fmt.Errorf("filesentry: watch %q failed (degraded, required:false): %w", path, cause))
+	w.logError(fmt.Errorf("filesentry: watch subtree %q failed (coverage degraded): %w", path, cause))
 }
 
-// DegradedPaths returns watch_paths entries whose Arm() install failed and
-// whose entry was not marked required:true. Returned slice is a copy safe
-// for concurrent inspection from a health endpoint.
+// DegradedPaths returns root or descendant subtrees that Arm() could not
+// monitor. Returned slice is a copy safe for concurrent health inspection.
 func (w *fsWatcher) DegradedPaths() []DegradedPath {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -255,21 +320,36 @@ func (w *fsWatcher) Close() error {
 // subdirectory. Files themselves don't need watches - directory watches
 // catch all file events within them.
 func (w *fsWatcher) addRecursive(root string) error {
-	// Verify root exists and is a directory. WalkDir silently returns nil
-	// for nonexistent paths, which would leave us watching nothing.
-	// Files are rejected - inotify watches directories, not individual files.
-	info, err := os.Stat(root)
+	return w.addRecursiveDetailed(root).err()
+}
+
+// addRecursiveDetailed adds every accessible directory beneath root and
+// records every inaccessible subtree instead of abandoning the first sibling
+// failure. Symlinks are never followed: a child symlink could leave the
+// configured tree, while a root symlink has no trustworthy direct watch root.
+func (w *fsWatcher) addRecursiveDetailed(root string) recursiveAddResult {
+	result := recursiveAddResult{}
+	info, err := os.Lstat(root)
 	if err != nil {
-		return fmt.Errorf("watch root: %w", err)
+		result.skipped = append(result.skipped, skippedSubtree{path: root, cause: fmt.Errorf("watch root: %w", err)})
+		return result
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		result.skipped = append(result.skipped, skippedSubtree{path: root, cause: errors.New("watch root must not be a symlink")})
+		return result
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("watch root %q is a file, not a directory", root)
+		result.skipped = append(result.skipped, skippedSubtree{path: root, cause: fmt.Errorf("watch root %q is a file, not a directory", root)})
+		return result
 	}
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// Fail closed: permission errors on watched subdirectories mean
-			// we can't monitor them. Return the error so Arm() fails.
-			return fmt.Errorf("inaccessible path %q: %w", path, err)
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			result.skipped = append(result.skipped, skippedSubtree{path: path, cause: fmt.Errorf("inaccessible path: %w", walkErr)})
+			return filepath.SkipDir
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
 		}
 		if !d.IsDir() {
 			return nil
@@ -277,8 +357,33 @@ func (w *fsWatcher) addRecursive(root string) error {
 		if w.isIgnored(path) {
 			return filepath.SkipDir
 		}
-		return w.watcher.Add(path)
+		if added, addErr := w.addDirectory(path); addErr != nil {
+			result.skipped = append(result.skipped, skippedSubtree{path: path, cause: addErr})
+			return filepath.SkipDir
+		} else if added {
+			result.added++
+		}
+		return nil
 	})
+	if walkErr != nil {
+		result.skipped = append(result.skipped, skippedSubtree{path: root, cause: fmt.Errorf("walk root: %w", walkErr)})
+	}
+	return result
+}
+
+// addDirectory installs one watch once. The mutex protects the duplicate set
+// against Arm and runtime directory-creation handling overlapping.
+func (w *fsWatcher) addDirectory(path string) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.watchedPaths[path]; ok {
+		return false, nil
+	}
+	if err := w.addWatch(path); err != nil {
+		return false, err
+	}
+	w.watchedPaths[path] = struct{}{}
+	return true, nil
 }
 
 // handleEvent processes a single fsnotify event.

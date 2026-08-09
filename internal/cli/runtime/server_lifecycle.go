@@ -57,7 +57,7 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 
 	if err := watcher.Arm(); err != nil {
 		_ = watcher.Close()
-		if cfg.FileSentry.BestEffort {
+		if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(err) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", err)
 			return func() {}, nil
 		}
@@ -83,25 +83,27 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		}
 	}()
 
-	// Report the count of paths that actually ARMED, not the configured count.
-	// A non-required watch_path that failed to install is recorded in
-	// DegradedPaths() and is NOT being watched; printing the configured count
-	// would falsely assure the operator that every path is covered.
+	// Report skipped subtrees explicitly. A recursive root can have multiple
+	// inaccessible descendants, so subtracting DegradedPaths from configured
+	// roots would invent an inaccurate count.
 	configuredPaths := len(cfg.FileSentry.WatchPaths)
 	degradedPaths := len(watcher.DegradedPaths())
-	armedPaths := configuredPaths - degradedPaths
 	if degradedPaths > 0 {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d of %d path(s) (action=%s; %d degraded/unarmed)\n",
-			armedPaths, configuredPaths, cfg.FileSentry.Action, degradedPaths)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d configured path(s) (action=%s; %d skipped/unarmed subtree(s))\n",
+			configuredPaths, cfg.FileSentry.Action, degradedPaths)
 	} else {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s) (action=%s)\n",
-			armedPaths, cfg.FileSentry.Action)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d configured path(s) (action=%s)\n",
+			configuredPaths, cfg.FileSentry.Action)
 	}
 
 	return func() {
 		_ = watcher.Close()
 		waitConsumer()
 	}, nil
+}
+
+func fileSentryArmErrorMustFailClosed(err error) bool {
+	return errors.Is(err, filesentry.ErrNoWatchPaths) || errors.Is(err, filesentry.ErrRequiredWatchPath)
 }
 
 // startupSummaryLine renders the one-line startup diagnostic. fetchAddr is the

@@ -1605,7 +1605,7 @@ Key-free evidence capture:
 				if watcher != nil {
 					if armErr := watcher.Arm(); armErr != nil {
 						_ = watcher.Close()
-						if cfg.FileSentry.BestEffort {
+						if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(armErr) {
 							_, _ = fmt.Fprintf(logW, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", armErr)
 							watcher = nil
 						} else {
@@ -1637,8 +1637,15 @@ Key-free evidence capture:
 						_ = watcher.Close()
 						waitConsumer()
 					}()
-					_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s) (action=%s)\n",
-						len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action)
+					configuredPaths := len(cfg.FileSentry.WatchPaths)
+					degradedPaths := len(watcher.DegradedPaths())
+					if degradedPaths > 0 {
+						_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d configured path(s) (action=%s; %d skipped/unarmed subtree(s))\n",
+							configuredPaths, cfg.FileSentry.Action, degradedPaths)
+					} else {
+						_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d configured path(s) (action=%s)\n",
+							configuredPaths, cfg.FileSentry.Action)
+					}
 
 					// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
 					// Starts the file sentry event loop AFTER the child PID is registered,

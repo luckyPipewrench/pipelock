@@ -5050,19 +5050,14 @@ func TestHTTPListener_ToolPoisoningBlock(t *testing.T) {
 	}
 
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, toolCfg, nil)
+	token := listenerSetupToken(t, baseURL)
 
 	body := jsonToolsList
-	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // test
-
-	respBody, _ := io.ReadAll(resp.Body)
+	_, respBody := listenerPost(t, baseURL, token, body)
 	var rpc struct {
 		Error struct{ Code int } `json:"error"`
 	}
-	if json.Unmarshal(respBody, &rpc) != nil || rpc.Error.Code != -32000 {
+	if json.Unmarshal([]byte(respBody), &rpc) != nil || rpc.Error.Code != -32000 {
 		t.Errorf("expected tool poisoning block (code -32000), got: %s", respBody)
 	}
 }

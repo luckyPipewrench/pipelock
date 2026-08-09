@@ -121,6 +121,18 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogConfigReload("ignored", "conductor settings restart-only", attemptedHash)
 			newCfg.Conductor = oldCfg.Conductor
 		}
+		// The contract loader owns the roster root, active-store watcher, and
+		// enforcement mode. Proxy.Reload would otherwise rebuild and publish a
+		// loader from this new block, allowing a config reload to replace the
+		// root of trust after the gate has already enforced a contract. Keep the
+		// full block atomic and restart-only: its values are coupled loader inputs,
+		// not independently reloadable tuning knobs.
+		if oldCfg.LearnLock != newCfg.LearnLock {
+			attemptedHash := newCfg.Hash()
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: learn_lock settings changed — contract loader trust and watcher require restart, ignoring")
+			s.logger.LogConfigReload("ignored", "learn_lock settings restart-only", attemptedHash)
+			newCfg.LearnLock = oldCfg.LearnLock
+		}
 		if oldCfg.EvidenceProvenance != newCfg.EvidenceProvenance {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: evidence_provenance.commitment_keyring_path changed — keyring is loaded at startup, ignoring (restart required)\n")
 			newCfg.EvidenceProvenance = oldCfg.EvidenceProvenance

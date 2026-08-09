@@ -66,6 +66,25 @@ func TestLearnLock_EffectiveMinimumSignaturesDefaultsToOne(t *testing.T) {
 	}
 }
 
+func TestValidateReload_LearnLockTrustAnchorChangeWarns(t *testing.T) {
+	old := Defaults()
+	old.LearnLock = LearnLock{
+		Enabled:               true,
+		Mode:                  LockModeLive,
+		StoreDir:              "/var/lib/pipelock/contracts",
+		RosterPath:            "/etc/pipelock/roster.json",
+		Environment:           LearnLockEnvironment{ID: "production"},
+		PinnedRootFingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		MinimumSignatures:     1,
+	}
+	updated := old.Clone()
+	updated.LearnLock.PinnedRootFingerprint = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+
+	if !hasReloadWarning(ValidateReload(old, updated), "learn_lock") {
+		t.Fatal("pinned root fingerprint change did not produce learn_lock restart warning")
+	}
+}
+
 func TestValidate_LearnLockDisabledIgnoresOtherFields(t *testing.T) {
 	// When Enabled is false, no other field is required. This is important
 	// for the v2.3 → v2.4 upgrade path: an existing config without

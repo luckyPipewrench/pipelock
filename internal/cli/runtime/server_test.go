@@ -26,8 +26,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -3369,6 +3372,118 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		if !buf.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+func TestServer_Reload_PreservesLearnLockTrustAnchor(t *testing.T) {
+	// Establish a real, already-successful lock run. The first loader trusts
+	// fixture A and permits only its destination. A later config reload must
+	// not be able to replace that trust anchor with fixture B.
+	fixtureA := contractruntimetest.NewFixture(t)
+	storeA := t.TempDir()
+	env := contractruntimetest.Env()
+	contractruntimetest.WriteSignedActiveStore(t, fixtureA, storeA, contractruntimetest.ActiveStoreOptions{
+		Generation:  1,
+		PriorHash:   "sha256:genesis",
+		Environment: env,
+		Rules: []contract.Rule{
+			contractruntimetest.HTTPEnforceRule("allow-a", "api-a.example.test", "/v1/chat", http.MethodPost),
+		},
+	})
+	fixtureB := contractruntimetest.NewFixture(t)
+	storeB := t.TempDir()
+	contractruntimetest.WriteSignedActiveStore(t, fixtureB, storeB, contractruntimetest.ActiveStoreOptions{
+		Generation:  1,
+		PriorHash:   "sha256:genesis",
+		Environment: env,
+		Rules: []contract.Rule{
+			contractruntimetest.HTTPEnforceRule("allow-b", "api-b.example.test", "/v1/chat", http.MethodPost),
+		},
+	})
+
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"learn_lock:",
+		"  enabled: true",
+		"  mode: live",
+		"  store_dir: " + strconv.Quote(storeA),
+		"  roster_path: " + strconv.Quote(fixtureA.RosterPath()),
+		"  environment:",
+		"    id: " + strconv.Quote(env.ID),
+		"    tenant: \"\"",
+		"    deployment_id: \"\"",
+		"  pinned_root_fingerprint: " + strconv.Quote(fixtureA.RootFingerprint()),
+		"  minimum_signatures: 1",
+		"",
+	}, "\n"))
+	s, _ := newTestServer(t, func(opts *ServerOpts) { opts.ConfigFile = cfgPath })
+	first := s.proxy.CurrentConfig().Clone()
+	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
+	assertLearnLockVerdict(t, s, "http://api-a.example.test/v1/chat", config.ActionAllow)
+
+	// Field removal must not clear a loader that has already made a successful
+	// decision. Current code rejects this malformed direct Reload input; the
+	// restart-only preservation path may instead accept it after restoring the
+	// live value. In either case, the gate must remain on the original anchor.
+	removed := s.proxy.CurrentConfig().Clone()
+	removed.LearnLock.PinnedRootFingerprint = ""
+	s.lastReloadAt = time.Time{} // exercise a real later reload, not dedup.
+	_ = s.Reload(removed)
+	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
+
+	// An unrelated reload and an identical reload must retain the established
+	// trust anchor and its gate decision.
+	unrelated := s.proxy.CurrentConfig().Clone()
+	unrelated.Logging.IncludeAllowed = !unrelated.Logging.IncludeAllowed
+	s.lastReloadAt = time.Time{} // exercise a real later reload, not dedup.
+	if err := s.Reload(unrelated); err != nil {
+		t.Fatalf("unrelated reload: %v", err)
+	}
+	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
+	if err := s.Reload(s.proxy.CurrentConfig().Clone()); err != nil {
+		t.Fatalf("unchanged reload: %v", err)
+	}
+	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
+	assertLearnLockVerdict(t, s, "http://api-a.example.test/v1/chat", config.ActionAllow)
+
+	// This is the exploit-shaped case: the new pair is internally valid, but
+	// would replace the root of trust and make a previously denied destination
+	// pass the live contract gate without a restart.
+	rotated := s.proxy.CurrentConfig().Clone()
+	rotated.LearnLock.StoreDir = storeB
+	rotated.LearnLock.RosterPath = fixtureB.RosterPath()
+	rotated.LearnLock.PinnedRootFingerprint = fixtureB.RootFingerprint()
+	s.lastReloadAt = time.Time{} // exercise a real later reload, not dedup.
+	if err := s.Reload(rotated); err != nil {
+		t.Fatalf("trust-anchor-changing reload: %v", err)
+	}
+	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
+	assertLearnLockVerdict(t, s, "http://api-a.example.test/v1/chat", config.ActionAllow)
+
+	live := s.proxy.CurrentConfig().LearnLock
+	if live != first.LearnLock {
+		t.Fatalf("learn_lock after reload = %+v, want startup trust anchor %+v", live, first.LearnLock)
+	}
+}
+
+// Both directions matter. A guard that pins the trust anchor so hard that the
+// originally permitted destination stops working would get the control switched
+// off, which costs as much as the fail-open it prevents.
+func assertLearnLockVerdict(t *testing.T, s *Server, target string, want string) {
+	t.Helper()
+	out, err := proxy.EvaluateGate(proxy.ContractGateInput{
+		Loader:         s.proxy.ContractLoaderPtr().Load(),
+		Agent:          "agent-a",
+		URL:            target,
+		Method:         http.MethodPost,
+		ScannerVerdict: config.ActionAllow,
+		Transport:      proxy.TransportForward,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateGate(%q): %v", target, err)
+	}
+	if out.Verdict != want {
+		t.Fatalf("gate verdict for %q = %q, want %q (reason=%q source=%q)", target, out.Verdict, want, out.Reason, out.WinningSource)
 	}
 }
 

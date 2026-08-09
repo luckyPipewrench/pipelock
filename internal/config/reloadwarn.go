@@ -685,6 +685,17 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// The learn-lock block constructs one coupled runtime: its trust root,
+	// roster, active-store watcher, environment binding, signature threshold,
+	// and enforcement mode must all agree. Server reload preserves this block
+	// from the running configuration rather than rebuilding that runtime.
+	if old.LearnLock != updated.LearnLock {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "learn_lock",
+			Message: "learn_lock config changes require restart — ignored on reload",
+		})
+	}
+
 	// Sandbox config is startup-only. Warn if any sandbox fields changed
 	// so operators know the reload had no effect on the running sandbox.
 	if sandboxChanged(old, updated) {

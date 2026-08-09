@@ -1492,3 +1492,60 @@ func TestHTTPClient_ClosingSSEReader_DoubleRead(t *testing.T) {
 		t.Errorf("expected io.EOF on third read, got %v", err)
 	}
 }
+
+// The client learns a Pipelock-issued token from a response and replays it on
+// later requests. A malformed token must be refused rather than stored, because
+// a stored bad token would be sent to the listener on every subsequent request
+// and fail there instead of here, where the cause is visible.
+func TestHTTPClient_PipelockSessionTokenValidation(t *testing.T) {
+	t.Parallel()
+
+	valid := strings.Repeat("A", 43)
+	for _, tc := range []struct {
+		name    string
+		token   string
+		wantErr bool
+	}{
+		{"valid token is stored", valid, false},
+		{"short token refused", strings.Repeat("A", 42), true},
+		{"long token refused", strings.Repeat("A", 44), true},
+		{"illegal character refused", strings.Repeat("A", 42) + "!", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var seen []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen = append(seen, r.Header.Get(pipelockSessionTokenHeader))
+				w.Header().Set(pipelockSessionTokenHeader, tc.token)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			}))
+			defer srv.Close()
+
+			c := NewHTTPClient(srv.URL, nil)
+			_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+			if tc.wantErr {
+				if !errors.Is(err, ErrInvalidPipelockSessionToken) {
+					t.Fatalf("err = %v, want ErrInvalidPipelockSessionToken", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SendMessage: %v", err)
+			}
+			// A second call must carry the learned token.
+			if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)); err != nil {
+				t.Fatalf("second SendMessage: %v", err)
+			}
+			if len(seen) != 2 {
+				t.Fatalf("requests seen = %d, want 2", len(seen))
+			}
+			if seen[0] != "" {
+				t.Fatalf("first request carried a token before one was issued: %q", seen[0])
+			}
+			if seen[1] != tc.token {
+				t.Fatalf("second request token = %q, want %q", seen[1], tc.token)
+			}
+		})
+	}
+}

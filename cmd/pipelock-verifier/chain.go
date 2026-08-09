@@ -127,12 +127,15 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%q is a directory; pass --dir to verify a session directory", target))
 		}
 		label = clean
-		isBareV1, detectErr := isBareActionReceiptJSONL(clean)
+		isBareV1, bareData, detectErr := isBareActionReceiptJSONL(clean)
 		if detectErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
 		}
 		if isBareV1 {
-			receipts, extractErr := actionreceipt.ExtractReceipts(clean)
+			// Verify the exact bytes the routing decision was made on. Reopening
+			// the path here would let a file replaced between the two reads be
+			// verified under a decision taken about different evidence.
+			receipts, extractErr := actionreceipt.ExtractReceiptsBytes(bareData)
 			if extractErr != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
 			}
@@ -153,10 +156,12 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 // treating malformed or mixed input as an action chain. Recorder-backed v1 and
 // all v2 input keep the v2-first route below, which preserves its strict
 // recorder validation before the v1 fallback.
-func isBareActionReceiptJSONL(path string) (bool, error) {
+// It returns the bytes it classified so the caller can verify those exact bytes
+// rather than reopening the path.
+func isBareActionReceiptJSONL(path string) (bool, []byte, error) {
 	data, err := readVerifierFile(path)
 	if err != nil {
-		return false, fmt.Errorf("read evidence file: %w", err)
+		return false, nil, fmt.Errorf("read evidence file: %w", err)
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
@@ -168,14 +173,18 @@ func isBareActionReceiptJSONL(path string) (bool, error) {
 		}
 		r, unmarshalErr := actionreceipt.Unmarshal(raw)
 		if unmarshalErr != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
-			return false, nil
+			return false, nil, nil
 		}
 		found = true
 	}
+	// Defensive only while readVerifierFile's total-size bound stays below this
+	// scanner's per-line bound: a single line cannot exceed the line limit when
+	// the whole file is already capped lower. It is kept so that raising the
+	// reader's cap cannot silently turn an oversized line into a parse attempt.
 	if err := scanner.Err(); err != nil {
-		return false, fmt.Errorf("scan evidence file: %w", err)
+		return false, nil, fmt.Errorf("scan evidence file: %w", err)
 	}
-	return found, nil
+	return found, data, nil
 }
 
 func verifyActionChain(stdout, stderr io.Writer, label string, receipts []actionreceipt.Receipt, keyHex string, opts chainOptions) error {

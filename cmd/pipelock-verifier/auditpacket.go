@@ -30,6 +30,14 @@ const (
 	statusSkipped = "skipped"
 )
 
+// Stable values for the lifecycle_assessment field.
+const (
+	lifecycleAssessed          = "assessed"
+	lifecycleNotAssessed       = "not_assessed"
+	lifecycleReasonOffline     = "offline mode skips chain re-verification"
+	lifecycleReasonChainFailed = "chain re-verification did not complete"
+)
+
 // auditPacketOptions holds resolved CLI flags for the audit-packet command.
 type auditPacketOptions struct {
 	signerKey   string
@@ -101,6 +109,14 @@ type auditPacketReport struct {
 	CrossCheck      string              `json:"cross_check"`
 	LifecycleStatus completeness.Status `json:"lifecycle_status,omitempty"`
 	LifecycleReason completeness.Reason `json:"lifecycle_reason,omitempty"`
+	// LifecycleAssessment states whether completeness was evaluated at all, and
+	// is always emitted. An absent LifecycleStatus alone cannot carry this: it
+	// is equally produced by offline mode, by a chain re-verification that
+	// failed before the analysis could run, and by an older report that had no
+	// lifecycle field. A consumer that cannot tell those apart will read the
+	// same silence as a passing lifecycle.
+	LifecycleAssessment       string `json:"lifecycle_assessment"`
+	LifecycleAssessmentReason string `json:"lifecycle_assessment_reason,omitempty"`
 }
 
 type auditPktDigest struct {
@@ -127,10 +143,12 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 
 	report := auditPacketReport{
-		Path:        packetPath,
-		SchemaCheck: statusSkipped,
-		ChainCheck:  statusSkipped,
-		CrossCheck:  statusSkipped,
+		Path:                      packetPath,
+		SchemaCheck:               statusSkipped,
+		ChainCheck:                statusSkipped,
+		CrossCheck:                statusSkipped,
+		LifecycleAssessment:       lifecycleNotAssessed,
+		LifecycleAssessmentReason: lifecycleReasonChainFailed,
 	}
 
 	rawPacket, err := readVerifierFile(packetPath)
@@ -176,6 +194,7 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	report.SchemaCheck = statusPass
 
 	if opts.offline {
+		report.LifecycleAssessmentReason = lifecycleReasonOffline
 		report.Valid = trustVerdict(&packet, opts)
 		emitReport(stdout, stderr, report, opts.jsonOutput)
 		if !report.Valid {
@@ -202,6 +221,8 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	lifecycle := completeness.Analyze(chainReceipts, chainResult)
 	report.LifecycleStatus = lifecycle.Status
 	report.LifecycleReason = lifecycle.Reason
+	report.LifecycleAssessment = lifecycleAssessed
+	report.LifecycleAssessmentReason = ""
 
 	if crossErrs := crossCheck(&packet, chainResult, chainReceipts); len(crossErrs) > 0 {
 		report.CrossCheck = statusFail

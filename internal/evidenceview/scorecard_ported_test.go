@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
+
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -419,5 +421,38 @@ func assertPortedNotVerify(t *testing.T, got, name string) {
 	t.Helper()
 	if got == StateVerify {
 		t.Fatalf("%s returned %q for an unknown signer", name, StateVerify)
+	}
+}
+
+// A broken chain takes the second branch of completenessLine, which rewrites
+// the detail string around the lost receipts. That branch carries its own copy
+// of the lifecycle clause, so it can silently lose the lifecycle reason while
+// the in-flight test above still passes.
+func TestComputeScorecard_BrokenChainStillReportsLifecycle(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generatePortedKey(t)
+	keyHex := hex.EncodeToString(pub)
+	chain := buildPortedChain(t, priv, 4)
+	chain[1].ActionRecord.Target = "https://api.vendor.example/tampered"
+
+	evidence := SessionEvidenceOf(portedTestSessionID, chain, map[string]TrustedKey{
+		keyHex: {Source: portedTrustedKeySource},
+	}, false, DashboardReceiptReadLimit, DashboardTimelineLimit)
+	if evidence.Chain.Valid {
+		t.Fatalf("tampered chain should not verify")
+	}
+	if evidence.Scorecard.Completeness.State != StateLimited {
+		t.Fatalf("Completeness.State = %q, want %q", evidence.Scorecard.Completeness.State, StateLimited)
+	}
+	detail := evidence.Scorecard.Completeness.Detail
+	if !strings.Contains(detail, "lost to the break") {
+		t.Fatalf("broken-chain completeness must name the lost receipts: %q", detail)
+	}
+	if !strings.Contains(detail, "lifecycle: ") {
+		t.Fatalf("broken-chain completeness must still carry a lifecycle clause: %q", detail)
+	}
+	if !strings.Contains(detail, string(completeness.ReasonChainBroken)) {
+		t.Fatalf("broken-chain completeness must name the chain-broken reason: %q", detail)
 	}
 }

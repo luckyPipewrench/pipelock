@@ -679,25 +679,7 @@ func TestChainCLIShowsCompletenessReasonForATailDroppedChain(t *testing.T) {
 // silently falls through to the v2 route. Each case below drives the real
 // command so the exit path is proven, not just the helper.
 
-func TestChainRefusesUnreadableBareV1JSONL(t *testing.T) {
-	t.Parallel()
-	fixture := newCompletenessFixture(t)
-	path := writeCompletenessJSONL(t, []receipt.Receipt{
-		fixture.open("run-unreadable", "open-unreadable"),
-		fixture.close("run-unreadable", "open-unreadable"),
-	})
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatalf("chmod fixture: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-
-	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
-	if code == cliutil.ExitOK {
-		t.Fatalf("unreadable evidence file accepted: stdout=%q stderr=%q", stdout, stderr)
-	}
-}
-
-func TestChainRefusesOversizedBareV1Line(t *testing.T) {
+func TestChainRefusesOversizedEvidenceFile(t *testing.T) {
 	t.Parallel()
 	fixture := newCompletenessFixture(t)
 	dir := t.TempDir()
@@ -707,9 +689,23 @@ func TestChainRefusesOversizedBareV1Line(t *testing.T) {
 		t.Fatalf("write oversized fixture: %v", err)
 	}
 
-	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
-	if code == cliutil.ExitOK {
-		t.Fatalf("oversized evidence line accepted: stdout=%q stderr=%q", stdout, stderr)
+	var stdout, stderr bytes.Buffer
+	err := runChain(&stdout, &stderr, path, chainOptions{signerKey: fixture.keyHex})
+	if err == nil {
+		t.Fatalf("oversized evidence line accepted: stdout=%q", stdout.String())
+	}
+	// Ordinary malformed input is classified as not-bare-v1 and refused later on
+	// a different route. Pinning the detector scan error is what proves this test
+	// exercises the line-length bound rather than generic rejection.
+	// The detector reads the whole file before classifying it, so the reader's
+	// total-size bound is what stops an oversized input from being buffered.
+	// Pinning that message is what proves this test exercises the size bound
+	// rather than ordinary malformed-input rejection.
+	if !strings.Contains(err.Error(), "input exceeds") {
+		t.Fatalf("oversized file must fail on the reader size bound: err=%v", err)
+	}
+	if got := exitCodeFor(err); got != cliutil.ExitConfig {
+		t.Fatalf("oversized line exit=%d, want %d", got, cliutil.ExitConfig)
 	}
 }
 

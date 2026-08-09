@@ -37,8 +37,12 @@ func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
 	_, _ = fmt.Fprintf(stdout, "  verdict:      %s\n", verdict)
 	_, _ = fmt.Fprintf(stdout, "  trusted:      %t\n", r.Trusted)
 	_, _ = fmt.Fprintf(stdout, "  receipts:     %d\n", r.Summary.ReceiptCount)
-	if r.LifecycleStatus == "" {
-		_, _ = fmt.Fprintln(stdout, "  lifecycle:    not assessed (offline mode skips chain re-verification)")
+	if r.LifecycleAssessment != lifecycleAssessed {
+		reason := r.LifecycleAssessmentReason
+		if reason == "" {
+			reason = lifecycleReasonChainFailed
+		}
+		_, _ = fmt.Fprintf(stdout, "  lifecycle:    not assessed (%s)\n", reason)
 	} else {
 		_, _ = fmt.Fprintf(stdout, "  lifecycle:    %s (%s)\n", r.LifecycleStatus, r.LifecycleReason)
 	}

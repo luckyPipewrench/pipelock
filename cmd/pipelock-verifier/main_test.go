@@ -2612,3 +2612,101 @@ func TestChain_EvidenceV2WithExpectFlagsOnV1Fails(t *testing.T) {
 		t.Fatalf("v2 expect flags on v1 chain should fail")
 	}
 }
+
+// An absent lifecycle status is produced by three different situations, and an
+// operator reading the report cannot tell them apart from the status alone. The
+// report therefore carries an explicit assessment field, and these cases pin
+// each situation to its own reason rather than letting one stand in for all.
+func TestAuditPacketLifecycleAssessmentDistinguishesOfflineFromFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("offline_says_offline", func(t *testing.T) {
+		t.Parallel()
+		fix := newFixture(t, 2)
+		dir := t.TempDir()
+		fix.writePacketDir(t, dir, nil)
+
+		stdout, stderr, _ := runRoot(t, "audit-packet", "--offline", "--json", "--key", fix.keyHex, dir)
+		var report auditPacketReport
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatalf("unmarshal report: %v stdout=%q stderr=%q", err, stdout, stderr)
+		}
+		if report.LifecycleAssessment != lifecycleNotAssessed {
+			t.Fatalf("offline assessment = %q, want %q", report.LifecycleAssessment, lifecycleNotAssessed)
+		}
+		if report.LifecycleAssessmentReason != lifecycleReasonOffline {
+			t.Fatalf("offline reason = %q, want %q", report.LifecycleAssessmentReason, lifecycleReasonOffline)
+		}
+	})
+
+	t.Run("chain_failure_does_not_claim_offline", func(t *testing.T) {
+		t.Parallel()
+		fix := newFixture(t, 2)
+		dir := t.TempDir()
+		fix.writePacketDir(t, dir, nil)
+		// Remove the evidence the packet points at so re-verification fails
+		// before completeness can run. This is the path that previously
+		// reported offline mode while the command was online.
+		if err := os.Remove(filepath.Join(dir, "evidence.jsonl")); err != nil {
+			t.Fatalf("remove evidence: %v", err)
+		}
+
+		stdout, _, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
+		if code == cliutil.ExitOK {
+			t.Fatalf("packet with missing evidence should not verify: stdout=%q", stdout)
+		}
+		var report auditPacketReport
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatalf("unmarshal report: %v stdout=%q", err, stdout)
+		}
+		if report.LifecycleAssessment != lifecycleNotAssessed {
+			t.Fatalf("failed-chain assessment = %q, want %q", report.LifecycleAssessment, lifecycleNotAssessed)
+		}
+		if report.LifecycleAssessmentReason == lifecycleReasonOffline {
+			t.Fatalf("a failed online re-verification must not report offline mode")
+		}
+	})
+
+	t.Run("human_output_names_the_real_reason", func(t *testing.T) {
+		t.Parallel()
+		fix := newFixture(t, 2)
+		dir := t.TempDir()
+		fix.writePacketDir(t, dir, nil)
+		if err := os.Remove(filepath.Join(dir, "evidence.jsonl")); err != nil {
+			t.Fatalf("remove evidence: %v", err)
+		}
+
+		stdout, _, code := runAuditPacketWithKey(t, fix.keyHex, dir)
+		if code == cliutil.ExitOK {
+			t.Fatalf("packet with missing evidence should not verify: stdout=%q", stdout)
+		}
+		if strings.Contains(stdout, lifecycleReasonOffline) {
+			t.Fatalf("an online run that failed re-verification must not blame offline mode: %s", stdout)
+		}
+		if !strings.Contains(stdout, lifecycleReasonChainFailed) {
+			t.Fatalf("report must name why lifecycle was not assessed: %s", stdout)
+		}
+	})
+
+	t.Run("verified_chain_is_assessed", func(t *testing.T) {
+		t.Parallel()
+		fix := newFixture(t, 2)
+		dir := t.TempDir()
+		fix.writePacketDir(t, dir, nil)
+
+		stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
+		if code != cliutil.ExitOK {
+			t.Fatalf("valid packet should verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		var report auditPacketReport
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatalf("unmarshal report: %v stdout=%q", err, stdout)
+		}
+		if report.LifecycleAssessment != lifecycleAssessed {
+			t.Fatalf("assessment = %q, want %q", report.LifecycleAssessment, lifecycleAssessed)
+		}
+		if report.LifecycleStatus == "" {
+			t.Fatalf("an assessed report must carry a lifecycle status: %+v", report)
+		}
+	})
+}

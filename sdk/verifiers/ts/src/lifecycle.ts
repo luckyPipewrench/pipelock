@@ -68,7 +68,7 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
     if (record === undefined) continue;
     const control = sessionControl(receipt);
     const runNonce = runNonceFor(record, control);
-    if (runNonce === "") continue;
+    if (runNonce === "") return { status: broken, reason: "chain_broken" };
     const state = stateFor(runNonce);
 
     if (record.decision_phase === "intent") increment(state.intents, record.action_id ?? "");
@@ -131,7 +131,7 @@ function counter(value: unknown): number {
 
 function sessionControl(receipt: Receipt): Record<string, unknown> | undefined {
   const value = receipt.action_record?.session_control;
-  return value !== undefined && typeof value === "object" && !Array.isArray(value)
+  return value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value)
     ? value
     : undefined;
 }

@@ -204,7 +204,8 @@
             "session_control": {
               "kind": "session_open",
               "open": {
-                "run_nonce": "run-orphan"
+                "run_nonce": "run-orphan",
+                "open_nonce": "open-orphan"
               }
             }
           }
@@ -279,7 +280,8 @@
             "session_control": {
               "kind": "session_open",
               "open": {
-                "run_nonce": "run-durability"
+                "run_nonce": "run-durability",
+                "open_nonce": "open-durability"
               }
             }
           }
@@ -291,6 +293,7 @@
               "kind": "heartbeat",
               "heartbeat": {
                 "run_nonce": "run-durability",
+                "open_nonce": "open-durability",
                 "beat": 1,
                 "fsync_errors_gated": 2,
                 "durability_blocks": 2
@@ -305,6 +308,7 @@
               "kind": "session_close",
               "close": {
                 "run_nonce": "run-durability",
+                "open_nonce": "open-durability",
                 "fsync_errors_gated": 1,
                 "durability_blocks": 1
               }
@@ -318,6 +322,78 @@
       "expected": {
         "status": "BROKEN",
         "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "missing_run_nonce",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-missing-nonce",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-missing-nonce",
+                "open_nonce": "open-missing-nonce"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-missing-nonce",
+            "session_control": {
+              "kind": "session_close",
+              "close": {
+                "run_nonce": "run-missing-nonce",
+                "open_nonce": "open-missing-nonce"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "decision_phase": "intent",
+            "action_id": "post-close-without-run"
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "null_session_control",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-null-control",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-null-control",
+                "open_nonce": "open-null-control"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-null-control",
+            "session_control": null
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "LIMITED",
+        "reason": "abnormal_end"
       }
     }
   ]

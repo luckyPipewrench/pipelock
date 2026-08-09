@@ -55,7 +55,8 @@ func TestLifecycleVerdictVectorsMatchGo(t *testing.T) {
 		"no_receipts": false, "no_lifecycle": false, "no_open": false,
 		"bounded_closed": false, "abnormal_end": false, "open_action": false,
 		"heartbeat_gap": false, "orphan_outcome": false, "duplicate_outcome": false,
-		"durability_decrease": false,
+		"durability_decrease": false, "missing_run_nonce": false,
+		"null_session_control": false,
 	}
 
 	for i := range file.Vectors {

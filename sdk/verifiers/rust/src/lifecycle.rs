@@ -61,7 +61,7 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
         let control = session_control(receipt);
         let run_nonce = run_nonce_for(record, control);
         if run_nonce.is_empty() {
-            continue;
+            return report("BROKEN", "chain_broken");
         }
         let state = runs.entry(run_nonce).or_default();
         match record

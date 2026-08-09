@@ -755,7 +755,38 @@ pipelock conductor fleet status \
   --ca-file /etc/pipelock/conductor-ca.pem
 ```
 
-## 13. Remove a follower
+## 13. Receipt-delivery health
+
+`pipelock conductor fleet convergence` checks every expected receipt producer
+against the enrolled-follower roster and its latest accepted signed audit batch.
+It emits the existing convergence report with `delivery_health`, plus the last
+batch ID, signer, schema version, sequence range, dropped count, runtime build,
+and delivery lag for every producer with a batch.
+
+Keep the expected-producer inventory in Git with the deployment declaration.
+Start from [`examples/conductor/receipt-producer-inventory.json`](../../examples/conductor/receipt-producer-inventory.json).
+Each active producer needs `instance_id` and `desired_replicas`. A local-only
+producer uses `excluded: true` and must name both `excluded_owner` and
+`excluded_reason`. A producer with `desired_replicas: 0` is intentionally
+scaled down. Both states stay in the report and do not count as delivery
+failures.
+
+```bash
+pipelock conductor fleet convergence \
+  --inventory /etc/pipelock/conductor/receipt-producers.json \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --token-file /etc/pipelock/conductor/tokens/auditor/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
+
+The command exits nonzero after writing the JSON report when an expected
+producer is stale, missing a batch, unenrolled, or otherwise not current. Use
+that exit status for an alert. `--require-current=false` is for collecting a
+diagnostic snapshot while an operator works the alert.
+
+## 14. Remove a follower
 
 `pipelock conductor follower remove` decommissions one exact follower identity.
 It deletes the active enrollment record from the Conductor store, so the
@@ -793,7 +824,7 @@ Expected result: no matching enrolled follower. If the old follower keeps
 running, it can still enforce local policy, but its later audit batches no
 longer verify through the Conductor enrollment resolver.
 
-## 14. Back up and restore Conductor state
+## 15. Back up and restore Conductor state
 
 Back up the Conductor storage directory as one unit while Conductor is stopped
 or from a crash-consistent read-only volume snapshot:
@@ -837,7 +868,7 @@ pipelock conductor store inspect-offline \
 Expected result: the restored policy-bundle store reports the expected stream
 heads and no startup-bricking orphan records.
 
-## 15. Query the audit sink
+## 16. Query the audit sink
 
 `pipelock conductor audit query` queries the audit sink's stored evidence
 metadata for one org/fleet/instance, read over mTLS with an auditor token:
@@ -875,7 +906,7 @@ Without `--key`, verification is **structural-only** and exits non-zero unless
 you pass `--allow-unpinned` — pin the trusted signer key to get a meaningful
 `CHAIN VALID`. See [receipt verification](receipt-verification.md).
 
-## 16. Rotate certs and keys
+## 17. Rotate certs and keys
 
 The operator-lifecycle rule for every piece of fleet state: prove you can
 **rotate, revoke, and recover** it, not just create it.

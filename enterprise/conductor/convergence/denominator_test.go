@@ -6,6 +6,7 @@
 package convergence
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -290,5 +291,52 @@ func TestEvidence_RuntimeBuildIsPopulated(t *testing.T) {
 		t.Fatalf("runtime_build = %q, want %q; the report declares this field, so "+
 			"leaving it empty overclaims what the evidence layer reports",
 			fc.LatestBatch.RuntimeBuild, "3.4.0")
+	}
+}
+
+func TestDeliveryHealth_ExpectedCurrentAndAlerting(t *testing.T) {
+	health := deliveryHealth([]FollowerConvergence{
+		{
+			InstanceID: "current",
+			State:      StateFullyConverged,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "current", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "stale",
+			State:      StateStale,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "stale", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "missing",
+			State:      StateCurrentWithoutBatch,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "missing", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "local-only",
+			State:      StateExcluded,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "local-only", DesiredReplicas: 1, Excluded: true,
+				ExcludedOwner: "ops", ExcludedReason: "local-only proxy",
+			},
+		},
+		{
+			InstanceID: "scaled-zero",
+			State:      StateScaledZero,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "scaled-zero", DesiredReplicas: 0,
+			},
+		},
+	})
+	if health.Expected != 3 || health.Current != 1 {
+		t.Fatalf("expected/current = %d/%d, want 3/1", health.Expected, health.Current)
+	}
+	if got, want := strings.Join(health.Alerting, ","), "stale,missing"; got != want {
+		t.Fatalf("alerting = %q, want %q", got, want)
 	}
 }

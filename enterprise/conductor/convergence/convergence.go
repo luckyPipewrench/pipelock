@@ -81,8 +81,10 @@ type DeploymentIntent struct {
 	DesiredReplicas int    `json:"desired_replicas"`
 	DesiredDigest   string `json:"desired_digest,omitempty"`
 	// Excluded marks this instance as intentionally not an expected receipt
-	// producer. The Reason field explains why (e.g. "local-only proxy").
+	// producer. Owner and reason make the exception reviewable instead of
+	// letting a delivery gap disappear behind an unexplained toggle.
 	Excluded       bool   `json:"excluded,omitempty"`
+	ExcludedOwner  string `json:"excluded_owner,omitempty"`
 	ExcludedReason string `json:"excluded_reason,omitempty"`
 }
 
@@ -147,8 +149,21 @@ type Report struct {
 	RuntimeCoverage    DenominatorSummary `json:"runtime_coverage"`
 	ConductorCoverage  DenominatorSummary `json:"conductor_coverage"`
 	EvidenceCoverage   DenominatorSummary `json:"evidence_coverage"`
+	DeliveryHealth     DeliveryHealth     `json:"delivery_health"`
 
 	Followers []FollowerConvergence `json:"followers"`
+}
+
+// DeliveryHealth is the explicit receipt-delivery view of the existing
+// convergence report. Expected means a configured, non-excluded,
+// non-scaled-zero producer. Current means that producer has a recent accepted
+// signed batch.
+// Local-only and scaled-zero instances remain visible in Followers but do not
+// count as failures.
+type DeliveryHealth struct {
+	Expected int      `json:"expected"`
+	Current  int      `json:"current"`
+	Alerting []string `json:"alerting"`
 }
 
 // Inputs collects the four data sources the convergence report joins.
@@ -253,6 +268,7 @@ func Build(in Inputs) Report {
 	report.RuntimeCoverage = runtimeSummary(report.Followers)
 	report.ConductorCoverage = conductorSummary(report.Followers)
 	report.EvidenceCoverage = evidenceSummary(report.Followers)
+	report.DeliveryHealth = deliveryHealth(report.Followers)
 
 	return report
 }
@@ -604,4 +620,23 @@ func evidenceSummary(followers []FollowerConvergence) DenominatorSummary {
 		}
 	}
 	return s
+}
+
+func deliveryHealth(followers []FollowerConvergence) DeliveryHealth {
+	result := DeliveryHealth{Alerting: []string{}}
+	for _, follower := range followers {
+		if follower.State == StateExcluded || follower.State == StateScaledZero {
+			continue
+		}
+		if follower.DeploymentIntent == nil || follower.DeploymentIntent.DesiredReplicas <= 0 {
+			continue
+		}
+		result.Expected++
+		if follower.State == StateFullyConverged {
+			result.Current++
+			continue
+		}
+		result.Alerting = append(result.Alerting, follower.InstanceID)
+	}
+	return result
 }

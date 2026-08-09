@@ -266,7 +266,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		first.Header.Set(listenerSessionTokenHeader, tokenA)
 		first.Header.Set("Mcp-Session-Id", "adaptive-client-a")
 		first.Header.Set("Authorization", "Bearer "+secret)
-		firstResp, err := http.DefaultClient.Do(first) //nolint:gosec // listener integration test
+		firstResp, err := http.DefaultClient.Do(first)
 		if err != nil {
 			t.Fatalf("POST(first): %v", err)
 		}
@@ -279,7 +279,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		second.Header.Set("Content-Type", "application/json")
 		second.Header.Set(listenerSessionTokenHeader, tokenB)
 		second.Header.Set("Mcp-Session-Id", "adaptive-client-b")
-		secondResp, err := http.DefaultClient.Do(second) //nolint:gosec // listener integration test
+		secondResp, err := http.DefaultClient.Do(second)
 		if err != nil {
 			t.Fatalf("POST(second): %v", err)
 		}
@@ -329,7 +329,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set(listenerSessionTokenHeader, token)
 			req.Header.Set("Mcp-Session-Id", sessionID)
-			resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatalf("POST: %v", err)
 			}
@@ -383,7 +383,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			if token != "" {
 				req.Header.Set(listenerSessionTokenHeader, token)
 			}
-			resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatalf("POST: %v", err)
 			}
@@ -551,7 +551,7 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 		if token != "" {
 			req.Header.Set(listenerSessionTokenHeader, token)
 		}
-		resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST listener: %v", err)
 		}
@@ -583,7 +583,7 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(listenerSessionTokenHeader, token)
-		resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			result <- responseResult{err: err}
 			return
@@ -603,7 +603,7 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 		t.Fatalf("NewRequest(DELETE): %v", err)
 	}
 	deleteReq.Header.Set(listenerSessionTokenHeader, token)
-	deleteResp, err := http.DefaultClient.Do(deleteReq) //nolint:gosec // listener integration test
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
 	if err != nil {
 		t.Fatalf("DELETE listener: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 		if token != "" {
 			req.Header.Set(listenerSessionTokenHeader, token)
 		}
-		resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("initialize listener: %v", err)
 		}
@@ -691,7 +691,7 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 		t.Fatalf("NewRequest(DELETE): %v", err)
 	}
 	deleteReq.Header.Set(listenerSessionTokenHeader, oldToken)
-	deleteResp, err := http.DefaultClient.Do(deleteReq) //nolint:gosec // listener integration test
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
 	if err != nil {
 		t.Fatalf("DELETE listener: %v", err)
 	}

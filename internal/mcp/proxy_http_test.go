@@ -3130,46 +3130,22 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *t
 		BindingNoBaselineAction: config.ActionBlock,
 	}
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
+	token := listenerSetupToken(t, baseURL)
 
-	listReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
-	if err != nil {
-		t.Fatalf("NewRequest(tools/list): %v", err)
-	}
-	listReq.Header.Set("Content-Type", "application/json")
-	listReq.Header.Set("Mcp-Session-Id", "session-binding-test-client")
-	listResp, err := http.DefaultClient.Do(listReq)
-	if err != nil {
-		t.Fatalf("POST tools/list: %v", err)
-	}
-	listPayload, err := io.ReadAll(listResp.Body)
-	_ = listResp.Body.Close()
-	if err != nil {
-		t.Fatalf("ReadAll(tools/list response): %v", err)
-	}
-	if !strings.Contains(string(listPayload), `"name":"echo"`) {
+	_, listPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	if !strings.Contains(listPayload, `"name":"echo"`) {
 		t.Fatalf("expected tools/list to establish baseline, got: %s", listPayload)
 	}
 
-	callReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`))
-	if err != nil {
-		t.Fatalf("NewRequest(tools/call): %v", err)
-	}
-	callReq.Header.Set("Content-Type", "application/json")
-	callReq.Header.Set("Mcp-Session-Id", "session-binding-test-client")
-	callResp, err := http.DefaultClient.Do(callReq)
-	if err != nil {
-		t.Fatalf("POST tools/call: %v", err)
-	}
-	defer func() { _ = callResp.Body.Close() }()
-	callPayload, err := io.ReadAll(callResp.Body)
-	if err != nil {
-		t.Fatalf("ReadAll(tools/call response): %v", err)
-	}
-	if !strings.Contains(string(callPayload), bindingReasonUnknownTool) {
+	// The setup handshake is forwarded as a non-list request, so record the
+	// upstream count after setup before proving the blocked call adds nothing.
+	afterSetup := toolCalls.Load()
+	_, callPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`)
+	if !strings.Contains(callPayload, bindingReasonUnknownTool) {
 		t.Fatalf("expected unknown-tool block, got: %s", callPayload)
 	}
-	if got := toolCalls.Load(); got != 0 {
-		t.Fatalf("tool call upstream forwards = %d, want 0", got)
+	if got := toolCalls.Load(); got != afterSetup {
+		t.Fatalf("blocked tool call reached upstream: calls = %d, want %d", got, afterSetup)
 	}
 	if !strings.Contains(logBuf.String(), "not in session baseline") {
 		t.Fatalf("expected binding diagnostic log, got: %s", logBuf.String())

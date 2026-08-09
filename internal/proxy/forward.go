@@ -70,6 +70,18 @@ func getTunnelSemaphore() *tunnelSemaphore {
 	return tunnelSem
 }
 
+// normalizeConnectTarget applies CONNECT's sole default and produces the
+// host-and-port target used by both scanning and dialing.
+func normalizeConnectTarget(target string) (normalized, host, port, scanURL string) {
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		bare := strings.TrimPrefix(strings.TrimSuffix(target, "]"), "[")
+		target = net.JoinHostPort(bare, "443")
+	}
+
+	host, port, _ = net.SplitHostPort(target)
+	return target, host, port, "https://" + net.JoinHostPort(host, port) + "/"
+}
+
 // handleConnect handles HTTP CONNECT tunnel requests. It scans the target
 // hostname through the full scanner pipeline, establishes a TCP connection
 // via the SSRF-safe dialer, and relays data bidirectionally.
@@ -153,29 +165,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure target has a port. CONNECT targets are always host:port.
-	// Strip brackets from bare IPv6 literals before JoinHostPort adds them back.
-	if _, _, err := net.SplitHostPort(target); err != nil {
-		bare := strings.TrimPrefix(strings.TrimSuffix(target, "]"), "[")
-		target = net.JoinHostPort(bare, "443")
-	}
-
-	// Synthesize a URL for scanner pipeline. The scanner expects a full URL,
-	// but CONNECT only gives us host:port. Use https:// as the tunnel is
-	// typically used for TLS traffic.
-	host, targetPort, _ := net.SplitHostPort(target)
-	syntheticHost := host
-	if strings.Contains(host, ":") { // IPv6 literal needs brackets in URL
-		syntheticHost = "[" + host + "]"
-	}
-	// The scanned/contract URL keeps its historical port-less form so the
-	// contract gate and scanner verdict are unchanged; the exact CONNECT port
-	// is bound to the dial snapshot below (from targetPort) and carried in the
-	// receipt target. Whether the CONNECT contract gate should also see the
-	// real port is a separate design question, tracked as a guard adjacent
-	// finding, not decided here.
-	syntheticURL := "https://" + syntheticHost + "/"
-	connectReceiptTarget := "https://" + net.JoinHostPort(host, targetPort) + "/"
+	target, host, targetPort, syntheticURL := normalizeConnectTarget(target)
+	connectReceiptTarget := syntheticURL
 	emitConnectSessionDenyReceipt := func() {
 		emitConnectReceipt(receipt.EmitOpts{
 			ActionID:  actionID,

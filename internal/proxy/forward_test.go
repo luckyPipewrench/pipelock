@@ -3579,6 +3579,59 @@ func TestConnectDefaultPort(t *testing.T) {
 	}
 }
 
+func TestNormalizeConnectTargetPreservesPortForScanAndDial(t *testing.T) {
+	tests := []struct {
+		name           string
+		target         string
+		wantNormalized string
+		wantHost       string
+		wantPort       string
+		wantScanURL    string
+	}{
+		{
+			name:           "explicit port",
+			target:         "api.vendor.example:6443",
+			wantNormalized: "api.vendor.example:6443",
+			wantHost:       "api.vendor.example",
+			wantPort:       "6443",
+			wantScanURL:    "https://api.vendor.example:6443/",
+		},
+		{
+			name:           "bare host defaults once",
+			target:         "api.vendor.example",
+			wantNormalized: "api.vendor.example:443",
+			wantHost:       "api.vendor.example",
+			wantPort:       "443",
+			wantScanURL:    "https://api.vendor.example:443/",
+		},
+		{
+			name:           "bracketed IPv6 explicit port",
+			target:         "[2001:db8::1]:6443",
+			wantNormalized: "[2001:db8::1]:6443",
+			wantHost:       "2001:db8::1",
+			wantPort:       "6443",
+			wantScanURL:    "https://[2001:db8::1]:6443/",
+		},
+		{
+			name:           "bracketed IPv6 defaults once",
+			target:         "[2001:db8::1]",
+			wantNormalized: "[2001:db8::1]:443",
+			wantHost:       "2001:db8::1",
+			wantPort:       "443",
+			wantScanURL:    "https://[2001:db8::1]:443/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, host, port, scanURL := normalizeConnectTarget(tt.target)
+			if normalized != tt.wantNormalized || host != tt.wantHost || port != tt.wantPort || scanURL != tt.wantScanURL {
+				t.Fatalf("normalizeConnectTarget(%q) = (%q, %q, %q, %q), want (%q, %q, %q, %q)", tt.target, normalized, host, port, scanURL, tt.wantNormalized, tt.wantHost, tt.wantPort, tt.wantScanURL)
+			}
+		})
+	}
+}
+
 func TestSSRFSafeDialContext_DirectIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}

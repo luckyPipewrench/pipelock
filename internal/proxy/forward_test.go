@@ -6308,3 +6308,37 @@ func TestForwardHTTP_CompressedSSE_GzipFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestConnectMalformedAuthorityRejectedByHandler drives the real handler rather
+// than the normalizer, because the normalizer returning a rejection only matters
+// if handleConnect acts on it. The empty-port form is the one that matters most:
+// net.SplitHostPort accepts it, and an empty port would leave the dial snapshot
+// with nothing to bind against.
+func TestConnectMalformedAuthorityRejectedByHandler(t *testing.T) {
+	t.Parallel()
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	for _, tc := range []struct {
+		name      string
+		authority string
+	}{
+		{"empty port", "api.vendor.example:"},
+		{"empty host", ":443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := dialProxy(t, proxyAddr)
+			defer func() { _ = conn.Close() }()
+
+			_, _ = conn.Write([]byte("CONNECT " + tc.authority + " HTTP/1.1\r\nHost: " + tc.authority + "\r\n\r\n"))
+			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("CONNECT %q status = %d, want %d", tc.authority, resp.StatusCode, http.StatusBadRequest)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -221,23 +222,28 @@ func anchorState(_ string) (state, chip, detail, sub string) {
 
 func completenessLine(chain receipt.ChainResult, receipts []receipt.Receipt) Line {
 	receiptCount := len(receipts)
+	lifecycle := completeness.Analyze(receipts, chain)
 	gaps := 0
 	detail := fmt.Sprintf(
-		"%d receipts, %d chain gaps. Covers mediated egress inside the declared Pipelock boundary.",
+		"%d receipts, %d chain gaps; lifecycle: %s (%s). Covers mediated egress inside the declared Pipelock boundary.",
 		receiptCount,
 		gaps,
+		lifecycle.Status,
+		lifecycle.Reason,
 	)
 	if !chain.Valid || chain.BrokenAtSeq != 0 {
 		gaps = 1
 		lost := receiptsAtOrAfterBreak(receipts, chain.BrokenAtIndex)
 		verifiable := receiptCount - lost
 		detail = fmt.Sprintf(
-			"%d of %d receipts verifiable; %d lost to the break. %d receipts, %d chain gaps. Covers mediated egress inside the declared Pipelock boundary.",
+			"%d of %d receipts verifiable; %d lost to the break. %d receipts, %d chain gaps; lifecycle: %s (%s). Covers mediated egress inside the declared Pipelock boundary.",
 			verifiable,
 			receiptCount,
 			lost,
 			receiptCount,
 			gaps,
+			lifecycle.Status,
+			lifecycle.Reason,
 		)
 	}
 	return Line{

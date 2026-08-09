@@ -274,6 +274,12 @@ func TestComputeScorecard_BoundSessionOpenGenesis(t *testing.T) {
 	if evidence.Scorecard.Untampered.State != StateVerify {
 		t.Fatalf("Untampered.State = %q, want %q", evidence.Scorecard.Untampered.State, StateVerify)
 	}
+	if evidence.Scorecard.Completeness.State != StateLimited {
+		t.Fatalf("in-flight Completeness.State = %q, want %q", evidence.Scorecard.Completeness.State, StateLimited)
+	}
+	if !strings.Contains(evidence.Scorecard.Completeness.Detail, "lifecycle: LIMITED (abnormal_end)") {
+		t.Fatalf("in-flight completeness must name the missing close: %q", evidence.Scorecard.Completeness.Detail)
+	}
 	if evidence.Timeline[0].Seq != 0 || evidence.Timeline[0].Unverifiable {
 		t.Fatalf("first bound-g1 timeline item = %+v, want verifiable seq 0", evidence.Timeline[0])
 	}

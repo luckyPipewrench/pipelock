@@ -765,11 +765,12 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T)
 	post := func(t *testing.T, client *http.Client, id int, token, sessionID, method string) (string, http.Header) {
 		t.Helper()
 		var body string
-		if method == "initialize" {
+		switch method {
+		case "initialize":
 			body = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"initialize","params":{}}`, id)
-		} else if method == "tools/list" {
+		case "tools/list":
 			body = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/list","params":{}}`, id)
-		} else {
+		default:
 			body = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"echo","arguments":{}}}`, id)
 		}
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))

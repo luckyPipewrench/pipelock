@@ -2605,20 +2605,6 @@ func startListenerProxy(
 	return startListenerProxyWithStateMode(t, upstreamURL, sc, inputCfg, toolCfg, policyCfg, nil)
 }
 
-// startLegacyListenerProxy exercises the pre-token session behavior for tests
-// that explicitly cover transport compatibility. New listener tests use
-// startListenerProxy and a Pipelock-issued token.
-func startLegacyListenerProxy(
-	t *testing.T,
-	upstreamURL string,
-	sc *scanner.Scanner,
-	inputCfg *InputScanConfig,
-	toolCfg *tools.ToolScanConfig,
-	policyCfg *policy.Config,
-) (string, context.CancelFunc, *bytes.Buffer) {
-	return startListenerProxyWithStateMode(t, upstreamURL, sc, inputCfg, toolCfg, policyCfg, boolPtr(false))
-}
-
 func startListenerProxyWithStateMode(
 	t *testing.T,
 	upstreamURL string,
@@ -3006,7 +2992,7 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksNoBaseline(t *testing.T) {
 	// The setup handshake is itself forwarded, so the invariant is that the
 	// BLOCKED call adds nothing beyond it, not that upstream is never reached.
 	afterSetup := upstreamCalls.Load()
-	_, payloadStr := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	payloadStr := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
 	payload := []byte(payloadStr)
 	if !strings.Contains(string(payload), bindingReasonNoBaseline) {
 		t.Fatalf("expected no-baseline block, got: %s", payload)
@@ -3132,7 +3118,7 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *t
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
 	token := listenerSetupToken(t, baseURL)
 
-	_, listPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	listPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 	if !strings.Contains(listPayload, `"name":"echo"`) {
 		t.Fatalf("expected tools/list to establish baseline, got: %s", listPayload)
 	}
@@ -3140,7 +3126,7 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *t
 	// The setup handshake is forwarded as a non-list request, so record the
 	// upstream count after setup before proving the blocked call adds nothing.
 	afterSetup := toolCalls.Load()
-	_, callPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`)
+	callPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`)
 	if !strings.Contains(callPayload, bindingReasonUnknownTool) {
 		t.Fatalf("expected unknown-tool block, got: %s", callPayload)
 	}
@@ -5053,7 +5039,7 @@ func TestHTTPListener_ToolPoisoningBlock(t *testing.T) {
 	token := listenerSetupToken(t, baseURL)
 
 	body := jsonToolsList
-	_, respBody := listenerPost(t, baseURL, token, body)
+	respBody := listenerPost(t, baseURL, token, body)
 	var rpc struct {
 		Error struct{ Code int } `json:"error"`
 	}
@@ -8155,7 +8141,7 @@ func listenerSetupToken(t *testing.T, baseURL string) string {
 }
 
 // listenerPost sends a listener request carrying an issued session token.
-func listenerPost(t *testing.T, baseURL, token, body string) (*http.Response, string) {
+func listenerPost(t *testing.T, baseURL, token, body string) string {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	if err != nil {
@@ -8175,5 +8161,5 @@ func listenerPost(t *testing.T, baseURL, token, body string) (*http.Response, st
 		t.Fatalf("ReadAll(response): %v", err)
 	}
 	_ = resp.Body.Close()
-	return resp, string(payload)
+	return string(payload)
 }

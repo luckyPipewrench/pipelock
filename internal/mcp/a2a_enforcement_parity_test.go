@@ -174,7 +174,7 @@ func TestRunHTTPListenerProxy_A2ASessionBindingBlocksNoBaseline(t *testing.T) {
 	// Setup reaches upstream. The block invariant is that the A2A request adds
 	// no call beyond the successful handshake.
 	afterSetup := upstreamCalls.Load()
-	_, payloadStr := listenerPost(t, baseURL, token, string(testA2ARequest(1, testA2AMethod)))
+	payloadStr := listenerPost(t, baseURL, token, string(testA2ARequest(1, testA2AMethod)))
 	payload := []byte(payloadStr)
 	if !strings.Contains(string(payload), bindingReasonNoBaseline) {
 		t.Fatalf("expected A2A session binding block, got: %s", payload)

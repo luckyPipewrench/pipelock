@@ -166,10 +166,23 @@ func (state *mcpListenerClientState) requestContext(parent context.Context) (con
 }
 
 func (state *mcpListenerClientState) revoke() {
+	state.revokeWithContentionSignal(nil)
+}
+
+// revokeWithContentionSignal exposes the point where revocation has observed
+// an in-flight response commit and must wait for it. Production callers do not
+// need the signal; deterministic concurrency tests use it to avoid scheduling
+// assumptions.
+func (state *mcpListenerClientState) revokeWithContentionSignal(contended chan<- struct{}) {
 	if state == nil {
 		return
 	}
-	state.commitMu.Lock()
+	if !state.commitMu.TryLock() {
+		if contended != nil {
+			close(contended)
+		}
+		state.commitMu.Lock()
+	}
 	defer state.commitMu.Unlock()
 	state.revoked.Store(true)
 	if state.cancel != nil {

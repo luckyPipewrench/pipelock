@@ -4,7 +4,10 @@
 package mcp
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -14,6 +17,91 @@ import (
 type listenerStateBoundedStore struct {
 	recorders map[string]session.Recorder
 	deleted   map[string]struct{}
+}
+
+func TestMCPListenerClientStates_EdgeTransitions(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	if state, ok := states.stateForToken(""); ok || state != nil {
+		t.Fatal("empty token selected state")
+	}
+	if state, ok := states.stateForToken("missing"); ok || state != nil {
+		t.Fatal("unknown token selected state")
+	}
+
+	revoked := newMCPListenerClientState("revoked", mcpListenerStateKey("revoked"))
+	states.clients[revoked.key] = revoked
+	revoked.revoke()
+	if state, ok := states.stateForToken(revoked.token); ok || state != nil {
+		t.Fatal("revoked token selected state")
+	}
+
+	duplicate := newMCPListenerClientState("duplicate", mcpListenerStateKey("duplicate"))
+	if !states.admitSetup(duplicate) {
+		t.Fatal("initial setup admission failed")
+	}
+	if states.admitSetup(newMCPListenerClientState("duplicate", duplicate.key)) {
+		t.Fatal("duplicate state key was admitted")
+	}
+
+	var nilState *mcpListenerClientState
+	ctx := context.Background()
+	gotCtx, cleanup := nilState.requestContext(ctx)
+	cleanup()
+	if gotCtx != ctx {
+		t.Fatal("nil state replaced request context")
+	}
+	nilState.revoke()
+	if nilState.commitIfActive(func() { t.Fatal("nil-state commit callback ran") }) {
+		t.Fatal("nil state accepted commit")
+	}
+
+	if cfg := states.toolConfig(duplicate, &tools.ToolScanConfig{DetectDrift: true}); cfg == nil {
+		t.Fatal("drift config was discarded")
+	}
+	states.resetDriftState()
+	if got := listenerAuditSessionKey("", duplicate.key); got == "" {
+		t.Fatal("state key did not produce audit fallback")
+	}
+}
+
+func TestMCPListenerTokenHelpers_EdgeCases(t *testing.T) {
+	valid := strings.Repeat("a", 43)
+	for _, tc := range []struct {
+		name   string
+		values []string
+		want   bool
+	}{
+		{name: "absent", want: true},
+		{name: "duplicate", values: []string{valid, valid}, want: false},
+		{name: "wrong length", values: []string{"short"}, want: false},
+		{name: "bad character", values: []string{valid[:42] + "!"}, want: false},
+		{name: "valid", values: []string{valid}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validMCPListenerSessionToken(tc.values); got != tc.want {
+				t.Fatalf("validMCPListenerSessionToken() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	disabled := false
+	if listenerRequiresStateToken(MCPProxyOpts{
+		ToolCfg:                    &tools.ToolScanConfig{Action: "block"},
+		listenerStateTokenRequired: &disabled,
+	}) {
+		t.Fatal("explicit compatibility mode required a listener token")
+	}
+
+	state := newMCPListenerClientState("token", "key")
+	state.revoke()
+	var out bytes.Buffer
+	writer := &listenerStateMessageWriter{state: state, writer: &syncWriter{w: &out}}
+	if err := writer.WriteMessage([]byte(`{"jsonrpc":"2.0"}`)); err == nil {
+		t.Fatal("revoked state writer accepted a message")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("revoked state writer emitted %q", out.String())
+	}
 }
 
 func (s *listenerStateBoundedStore) GetOrCreate(key string) session.Recorder {
@@ -180,10 +268,12 @@ func TestMCPListenerClientState_CommitLinearizesWithRevoke(t *testing.T) {
 		<-commitStarted
 
 		revokeDone := make(chan struct{})
+		revokeContended := make(chan struct{})
 		go func() {
-			state.revoke()
+			state.revokeWithContentionSignal(revokeContended)
 			close(revokeDone)
 		}()
+		<-revokeContended
 		select {
 		case <-revokeDone:
 			t.Fatal("revocation completed during an in-flight commit")

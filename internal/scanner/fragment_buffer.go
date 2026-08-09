@@ -197,6 +197,39 @@ func (fb *FragmentBuffer) TotalBufferBytes() int {
 	return total
 }
 
+// UpdateConfig applies new fragment limits without discarding fragments that
+// remain valid under them. It removes expired data first, then retains each
+// session's newest suffix within the new byte cap. This lets a reload tighten
+// limits immediately without creating a fresh split-secret window.
+func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, windowSecs int) {
+	if maxBytesPerSession <= 0 {
+		maxBytesPerSession = 1
+	}
+	if windowSecs <= 0 {
+		windowSecs = 1
+	}
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+
+	fb.maxBytes = maxBytesPerSession
+	fb.windowSecs = windowSecs
+	now := time.Now()
+	fb.cleanupLocked(now)
+	for _, sb := range fb.sessions {
+		for sb.totalBytes > fb.maxBytes && len(sb.fragments) > 1 {
+			sb.totalBytes -= len(sb.fragments[0].data)
+			sb.fragments = sb.fragments[1:]
+		}
+		if sb.totalBytes > fb.maxBytes && len(sb.fragments) == 1 {
+			fragment := &sb.fragments[0]
+			fragment.data = fragment.data[len(fragment.data)-fb.maxBytes:]
+			sb.totalBytes = fb.maxBytes
+		}
+	}
+	fb.lastCleanup = now
+}
+
 // Delete removes all fragment state for the given session key.
 func (fb *FragmentBuffer) Delete(key string) {
 	fb.mu.Lock()

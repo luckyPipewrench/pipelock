@@ -96,10 +96,18 @@ func (s *Server) refreshRuntimeState(
 	} else {
 		s.mcpToolExtraPoison = nil
 	}
-	if oldCfg == nil || !reflect.DeepEqual(oldCfg.ToolChainDetection, newCfg.ToolChainDetection) {
+	if oldCfg == nil {
 		s.mcpChainMatcher = buildMCPChainMatcher(newCfg, s.metrics)
+	} else if !reflect.DeepEqual(oldCfg.ToolChainDetection, newCfg.ToolChainDetection) {
+		if !newCfg.ToolChainDetection.Enabled {
+			s.mcpChainMatcher = nil
+		} else if s.mcpChainMatcher == nil {
+			s.mcpChainMatcher = buildMCPChainMatcher(newCfg, s.metrics)
+		} else {
+			s.mcpChainMatcher.Reconfigure(&newCfg.ToolChainDetection)
+		}
 	}
 	if oldCfg == nil || !reflect.DeepEqual(oldCfg.CrossRequestDetection, newCfg.CrossRequestDetection) {
-		s.mcpCEE = buildMCPCEE(newCfg, s.metrics)
+		s.mcpCEE = reloadMCPCEE(s.mcpCEE, newCfg, s.metrics)
 	}
 }

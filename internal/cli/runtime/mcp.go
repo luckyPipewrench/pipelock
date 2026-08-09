@@ -977,22 +977,7 @@ Key-free evidence capture:
 			// Build CEE deps when cross-request detection is enabled.
 			var cee *mcp.CEEDeps
 			if cfg.CrossRequestDetection.Enabled {
-				m := metrics.New()
-				ceeCfg := cfg.CrossRequestDetection
-				cee = &mcp.CEEDeps{Config: &ceeCfg, Metrics: m}
-				if ceeCfg.EntropyBudget.Enabled {
-					cee.Tracker = scanner.NewEntropyTracker(
-						ceeCfg.EntropyBudget.BitsPerWindow,
-						ceeCfg.EntropyBudget.WindowMinutes*60, // minutes to seconds
-					)
-				}
-				if ceeCfg.FragmentReassembly.Enabled {
-					cee.Buffer = scanner.NewFragmentBuffer(
-						ceeCfg.FragmentReassembly.MaxBufferBytes,
-						10000, // 10K max sessions, matching proxy constant
-						ceeCfg.FragmentReassembly.WindowMinutes*60,
-					)
-				}
+				cee = mcp.NewCEEDeps(cfg.CrossRequestDetection, metrics.New())
 			}
 
 			// Create the MCP metrics registry independently of session profiling so

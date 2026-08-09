@@ -1085,6 +1085,108 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	}
 }
 
+func TestReload_CEEPreservesStateAndAppliesLimits(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 8
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 12
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	tracker := p.EntropyTrackerPtr().Load()
+	buffer := p.FragmentBufferPtr().Load()
+	tracker.Record("session", []byte("abc"))
+	buffer.Append("session", []byte("first-"))
+
+	unrelated := cfg.Clone()
+	unrelated.KillSwitch.Message = "preserve CEE history"
+	if ok := p.Reload(unrelated, scanner.MustNew(unrelated)); !ok {
+		t.Fatal("unrelated reload failed")
+	}
+	if p.EntropyTrackerPtr().Load() != tracker || p.FragmentBufferPtr().Load() != buffer {
+		t.Fatal("unrelated reload replaced CEE state")
+	}
+	tracker.Record("session", []byte("abc"))
+	if !tracker.BudgetExceeded("session") {
+		t.Fatal("unrelated reload cleared entropy history")
+	}
+
+	tuned := unrelated.Clone()
+	tuned.CrossRequestDetection.EntropyBudget.BitsPerWindow = 6
+	tuned.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 8
+	if ok := p.Reload(tuned, scanner.MustNew(tuned)); !ok {
+		t.Fatal("CEE limit reload failed")
+	}
+	if p.EntropyTrackerPtr().Load() != tracker || p.FragmentBufferPtr().Load() != buffer {
+		t.Fatal("CEE limit reload replaced state")
+	}
+	if got := tracker.Budget(); got != 6 {
+		t.Fatalf("entropy budget after reload = %v, want 6", got)
+	}
+	buffer.Append("session", []byte("second"))
+	if got := buffer.TotalBufferBytes(); got > 8 {
+		t.Fatalf("fragment buffer retained %d bytes after limit reload, want at most 8", got)
+	}
+}
+
+func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	// Hold an old request snapshot while a reload tries to relax the budget.
+	// The reload must wait; otherwise this request could use block policy with
+	// the new permissive budget and continue to egress.
+	p.reloadMu.RLock()
+	result, ceeCfg, active := p.admitCurrentCEE(t.Context(), "session", []byte("abc"), nil, "https://api.vendor.example", "", "127.0.0.1", "req", nil, true)
+	if !active || !result.Blocked || ceeCfg.EntropyBudget.BitsPerWindow != 1 {
+		p.reloadMu.RUnlock()
+		t.Fatalf("old CEE snapshot = active:%v result:%+v cfg:%+v", active, result, ceeCfg)
+	}
+
+	permissive := cfg.Clone()
+	permissive.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1000
+	done := make(chan bool, 1)
+	go func() {
+		done <- p.Reload(permissive, scanner.MustNew(permissive))
+	}()
+	select {
+	case <-done:
+		p.reloadMu.RUnlock()
+		t.Fatal("permissive reload completed while old CEE snapshot was active")
+	default:
+	}
+	p.reloadMu.RUnlock()
+
+	if ok := <-done; !ok {
+		t.Fatal("permissive reload failed")
+	}
+	result, ceeCfg, active = p.admitCurrentCEE(t.Context(), "session", []byte(""), nil, "https://api.vendor.example", "", "127.0.0.1", "req", nil, true)
+	if !active || result.Blocked || ceeCfg.EntropyBudget.BitsPerWindow != 1000 {
+		t.Fatalf("new CEE snapshot = active:%v result:%+v cfg:%+v", active, result, ceeCfg)
+	}
+}
+
 // --- Fetch CEE integration ---
 
 func TestFetchEndpoint_CEEEntropyBlock(t *testing.T) {

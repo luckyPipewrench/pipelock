@@ -6,12 +6,76 @@ package mcp
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
+	strict := config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1,
+			WindowMinutes: 5,
+			Action:        config.ActionBlock,
+		},
+	}
+	cee := NewCEEDeps(strict, metrics.New())
+	oldTracker, _, _, oldCfg, release := cee.snapshot()
+	if oldTracker == nil || oldCfg.EntropyBudget.BitsPerWindow != 1 {
+		t.Fatalf("old CEE snapshot = tracker:%p cfg:%+v", oldTracker, oldCfg)
+	}
+	oldTracker.Record(testMCPSessionKey, []byte("abc"))
+	if !oldTracker.BudgetExceeded(testMCPSessionKey) {
+		t.Fatal("strict snapshot did not enforce its own budget")
+	}
+
+	permissive := strict
+	permissive.EntropyBudget.BitsPerWindow = 1000
+	started := make(chan struct{})
+	allowLock := make(chan struct{})
+	acquired := make(chan struct{})
+	cee.runtime.beforeReconfigureLock = func() {
+		close(started)
+		<-allowLock
+	}
+	cee.runtime.afterReconfigureLock = func() { close(acquired) }
+	done := make(chan struct{})
+	go func() {
+		cee.Reconfigure(permissive, metrics.New())
+		close(done)
+	}()
+	<-started
+	close(allowLock)
+	select {
+	case <-acquired:
+		t.Fatal("permissive reload acquired its write lock while an old policy snapshot was active")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reload remained wedged after the in-flight CEE check completed")
+	}
+
+	newTracker, _, _, newCfg, newRelease := cee.snapshot()
+	defer newRelease()
+	if newTracker != oldTracker {
+		t.Fatal("reload discarded entropy history instead of reusing the tracker")
+	}
+	if newCfg.EntropyBudget.BitsPerWindow != 1000 {
+		t.Fatalf("new policy budget = %v, want 1000", newCfg.EntropyBudget.BitsPerWindow)
+	}
+	if newTracker.BudgetExceeded(testMCPSessionKey) {
+		t.Fatal("new permissive snapshot retained the old strict limit")
+	}
+}
 
 const (
 	testMCPSessionKey = "session-001"

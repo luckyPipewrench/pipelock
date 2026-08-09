@@ -3011,6 +3011,50 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 	}
 }
 
+func TestInterceptHandler_CEELiveDisableReleasesReloadLock(t *testing.T) {
+	// Long-lived intercept tunnels retain their setup-time config. Re-resolve
+	// against a live CEE disable and verify the request does not retain the
+	// reload read lock that protects its runtime snapshot.
+	staleCfg := config.Defaults()
+	staleCfg.Internal = nil
+	staleCfg.CrossRequestDetection.Enabled = true
+	staleCfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	staleCfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 8
+	staleCfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+
+	liveCfg := staleCfg.Clone()
+	liveCfg.CrossRequestDetection.Enabled = false
+
+	sc := scanner.MustNew(staleCfg)
+	t.Cleanup(sc.Close)
+	p := &Proxy{captureObs: capture.NopObserver{}, metrics: metrics.New()}
+	p.cfgPtr.Store(liveCfg)
+
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "api.vendor.example",
+		TargetPort: "443",
+		Config:     staleCfg,
+		Scanner:    sc,
+		Logger:     audit.NewNop(),
+		Metrics:    metrics.New(),
+		ClientIP:   "203.0.113.10",
+		RequestID:  "cee-live-disable",
+		Proxy:      p,
+	}, &interceptMockRT{body: "ok", contentType: "text/plain"})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	if !p.reloadMu.TryLock() {
+		t.Fatal("intercept request leaked reload read lock after live CEE disable")
+	}
+	p.reloadMu.Unlock()
+}
+
 // TestRecEscalationLevel_Nil verifies that recEscalationLevel returns 0 when
 // the recorder is nil (session profiling disabled).
 func TestRecEscalationLevel_Nil(t *testing.T) {

@@ -15,7 +15,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func buildToolPolicyCfg(cfg *config.Config) *policy.Config {
@@ -72,22 +71,21 @@ func buildMCPCEE(cfg *config.Config, m *metrics.Metrics) *mcp.CEEDeps {
 	if cfg == nil || !cfg.CrossRequestDetection.Enabled {
 		return nil
 	}
-	ceeCfg := cfg.CrossRequestDetection
-	deps := &mcp.CEEDeps{Config: &ceeCfg, Metrics: m}
-	if ceeCfg.EntropyBudget.Enabled {
-		deps.Tracker = scanner.NewEntropyTracker(
-			ceeCfg.EntropyBudget.BitsPerWindow,
-			ceeCfg.EntropyBudget.WindowMinutes*60,
-		)
+	return mcp.NewCEEDeps(cfg.CrossRequestDetection, m)
+}
+
+// reloadMCPCEE applies a reload to the MCP listener's independently-owned CEE
+// state. The CEE runtime serializes each check with its policy snapshot while
+// enabled trackers retain the security history accumulated by active sessions.
+func reloadMCPCEE(current *mcp.CEEDeps, cfg *config.Config, m *metrics.Metrics) *mcp.CEEDeps {
+	if cfg == nil || !cfg.CrossRequestDetection.Enabled {
+		return nil
 	}
-	if ceeCfg.FragmentReassembly.Enabled {
-		deps.Buffer = scanner.NewFragmentBuffer(
-			ceeCfg.FragmentReassembly.MaxBufferBytes,
-			10000,
-			ceeCfg.FragmentReassembly.WindowMinutes*60,
-		)
+	if current == nil {
+		return buildMCPCEE(cfg, m)
 	}
-	return deps
+	current.Reconfigure(cfg.CrossRequestDetection, m)
+	return current
 }
 
 type mcpDoWWiring struct {

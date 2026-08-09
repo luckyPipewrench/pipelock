@@ -31,6 +31,7 @@ type MetricsRecorder interface {
 
 // Matcher tracks tool call history per session and matches against patterns.
 type Matcher struct {
+	runtimeMu    sync.RWMutex
 	cfg          *config.ToolChainDetection
 	patterns     []pattern
 	sessions     sync.Map // sessionKey -> *sessionHistory
@@ -110,10 +111,32 @@ func New(cfg *config.ToolChainDetection) *Matcher {
 		cfg = &config.ToolChainDetection{}
 	}
 	m := &Matcher{cfg: cfg}
+	m.patterns = compilePatterns(cfg)
+	return m
+}
 
-	if !cfg.Enabled {
-		return m
+// Reconfigure applies tool-chain policy changes without discarding recorded
+// session history. Record holds a shared runtime snapshot while classifying,
+// evicting, and matching so a reload cannot mix old and new policy fields.
+func (m *Matcher) Reconfigure(cfg *config.ToolChainDetection) {
+	if m == nil {
+		return
 	}
+	if cfg == nil {
+		cfg = &config.ToolChainDetection{}
+	}
+	m.runtimeMu.Lock()
+	defer m.runtimeMu.Unlock()
+	m.cfg = cfg
+	m.patterns = compilePatterns(cfg)
+}
+
+func compilePatterns(cfg *config.ToolChainDetection) []pattern {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+
+	patterns := make([]pattern, 0, len(builtInPatterns)+len(cfg.CustomPatterns))
 
 	// Load built-in patterns with config overrides.
 	for _, bp := range builtInPatterns {
@@ -127,7 +150,7 @@ func New(cfg *config.ToolChainDetection) *Matcher {
 		if override, ok := cfg.PatternOverrides[p.name]; ok {
 			p.action = override
 		}
-		m.patterns = append(m.patterns, p)
+		patterns = append(patterns, p)
 	}
 
 	// Load custom patterns from config.
@@ -145,10 +168,10 @@ func New(cfg *config.ToolChainDetection) *Matcher {
 		if override, ok := cfg.PatternOverrides[p.name]; ok {
 			p.action = override
 		}
-		m.patterns = append(m.patterns, p)
+		patterns = append(patterns, p)
 	}
 
-	return m
+	return patterns
 }
 
 // WithMetrics attaches a metrics recorder to the matcher.
@@ -167,18 +190,23 @@ func (m *Matcher) WithMetrics(mr MetricsRecorder) *Matcher {
 // name classifies as "exec" but the arguments contain persistence commands
 // (crontab, systemctl enable, etc.), the category is upgraded to "persist".
 func (m *Matcher) Record(sessionKey, toolName string, argHint ...string) Verdict {
-	if !m.cfg.Enabled || len(m.patterns) == 0 {
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+
+	cfg := m.cfg
+	patterns := m.patterns
+	if cfg == nil || !cfg.Enabled || len(patterns) == 0 {
 		return Verdict{}
 	}
 
 	// Classify tool by name, then refine by arguments if provided.
-	category := classifyTool(toolName, m.cfg)
+	category := classifyTool(toolName, cfg)
 	argHintStr := ""
 	if len(argHint) > 0 {
 		argHintStr = argHint[0]
 		category = reclassifyByArgs(category, argHintStr)
 	}
-	sensitivity := ClassifySensitivity(toolName, argHintStr, m.cfg)
+	sensitivity := ClassifySensitivity(toolName, argHintStr, cfg)
 	// Skip recording only if BOTH axes are uninformative. A tool that's
 	// "unknown" by category but carries a real sensitivity label
 	// (e.g., an unrecognized tool name with "external_sink" keywords)
@@ -195,7 +223,7 @@ func (m *Matcher) Record(sessionKey, toolName string, argHint ...string) Verdict
 	if !loaded {
 		count := m.sessionCount.Add(1)
 		if count%256 == 0 || count > maxTrackedSessions {
-			m.pruneExpiredSessions(time.Now())
+			m.pruneExpiredSessionsWithConfig(time.Now(), cfg)
 		}
 		if m.sessionCount.Load() > maxTrackedSessions {
 			if _, deleted := m.sessions.LoadAndDelete(sessionKey); deleted {
@@ -219,10 +247,10 @@ func (m *Matcher) Record(sessionKey, toolName string, argHint ...string) Verdict
 	})
 
 	// Evict old entries: time-based first, then count-based.
-	m.evict(sess, now)
+	m.evict(sess, now, cfg)
 
 	// Check all patterns and return highest-severity match.
-	v := m.matchPatterns(sess)
+	v := m.matchPatterns(sess, cfg, patterns)
 	if v.Matched && m.metrics != nil {
 		m.metrics.RecordChainDetection(v.PatternName, v.Severity, v.Action)
 	}
@@ -238,9 +266,18 @@ func (m *Matcher) ClearSession(sessionKey string) {
 }
 
 func (m *Matcher) pruneExpiredSessions(now time.Time) {
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+	m.pruneExpiredSessionsWithConfig(now, m.cfg)
+}
+
+func (m *Matcher) pruneExpiredSessionsWithConfig(now time.Time, cfg *config.ToolChainDetection) {
 	m.pruneMu.Lock()
 	defer m.pruneMu.Unlock()
-	cutoff := now.Add(-time.Duration(m.cfg.WindowSeconds) * time.Second)
+	if cfg == nil {
+		return
+	}
+	cutoff := now.Add(-time.Duration(cfg.WindowSeconds) * time.Second)
 	m.sessions.Range(func(key, value any) bool {
 		sess := value.(*sessionHistory)
 		sess.mu.Lock()
@@ -273,9 +310,9 @@ func (m *Matcher) recordResourceLimit(pattern string) Verdict {
 
 // evict removes stale entries from the session history.
 // Time-based eviction runs first, then count-based.
-func (m *Matcher) evict(sess *sessionHistory, now time.Time) {
+func (m *Matcher) evict(sess *sessionHistory, now time.Time, cfg *config.ToolChainDetection) {
 	// Time-based eviction.
-	cutoff := now.Add(-time.Duration(m.cfg.WindowSeconds) * time.Second)
+	cutoff := now.Add(-time.Duration(cfg.WindowSeconds) * time.Second)
 	firstValid := len(sess.records) // default: all expired
 	for i, r := range sess.records {
 		if !r.timestamp.Before(cutoff) {
@@ -288,8 +325,8 @@ func (m *Matcher) evict(sess *sessionHistory, now time.Time) {
 	}
 
 	// Count-based eviction.
-	if len(sess.records) > m.cfg.WindowSize {
-		excess := len(sess.records) - m.cfg.WindowSize
+	if len(sess.records) > cfg.WindowSize {
+		excess := len(sess.records) - cfg.WindowSize
 		sess.records = sess.records[excess:]
 	}
 }
@@ -301,14 +338,14 @@ func (m *Matcher) evict(sess *sessionHistory, now time.Time) {
 // Both axes are evaluated independently: category-axis built-ins/customs,
 // plus the sensitivity-axis lethal-trifecta pattern. The highest-severity
 // match across both wins.
-func (m *Matcher) matchPatterns(sess *sessionHistory) Verdict {
+func (m *Matcher) matchPatterns(sess *sessionHistory, cfg *config.ToolChainDetection, patterns []pattern) Verdict {
 	var best Verdict
 
 	maxGap := config.DefaultMaxGap
-	if m.cfg.MaxGap != nil {
-		maxGap = *m.cfg.MaxGap
+	if cfg.MaxGap != nil {
+		maxGap = *cfg.MaxGap
 	}
-	for _, p := range m.patterns {
+	for _, p := range patterns {
 		if subsequenceMatch(sess.records, p.sequence, maxGap) {
 			if !best.Matched || isBetterMatch(p, best) {
 				best = Verdict{
@@ -323,11 +360,11 @@ func (m *Matcher) matchPatterns(sess *sessionHistory) Verdict {
 
 	// Sensitivity-axis: lethal-trifecta detection.
 	if sensitivitySubsequenceMatch(sess.records, lethalTrifectaSequence, maxGap) {
-		action := m.cfg.Action
+		action := cfg.Action
 		if action == "" {
 			action = "warn"
 		}
-		if override, ok := m.cfg.PatternOverrides[lethalTrifectaName]; ok {
+		if override, ok := cfg.PatternOverrides[lethalTrifectaName]; ok {
 			action = override
 		}
 		p := pattern{

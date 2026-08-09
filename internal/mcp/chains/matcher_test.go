@@ -453,6 +453,49 @@ func TestMatcher_NilSafe(t *testing.T) {
 	}
 }
 
+func TestMatcher_ReconfigureRetainsPartialLethalTrifecta(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+	}
+	m := New(cfg)
+	const session = "reload-session"
+
+	if got := m.Record(session, "list_issues"); got.Matched {
+		t.Fatalf("untrusted-source prefix = %+v, want no match", got)
+	}
+	if got := m.Record(session, "read_private_repo"); got.Matched {
+		t.Fatalf("two-step trifecta prefix = %+v, want no match", got)
+	}
+
+	updated := *cfg
+	updated.WindowSeconds = 120
+	updated.PatternOverrides = map[string]string{lethalTrifectaName: config.ActionBlock}
+	m.Reconfigure(&updated)
+
+	got := m.Record(session, "create_pull_request")
+	if !got.Matched || got.PatternName != lethalTrifectaName {
+		t.Fatalf("completion after reconfigure = %+v, want lethal trifecta", got)
+	}
+	if got.Action != config.ActionBlock {
+		t.Fatalf("reconfigured trifecta action = %q, want %q", got.Action, config.ActionBlock)
+	}
+}
+
+func TestMatcher_ReconfigureNilSafe(t *testing.T) {
+	var nilMatcher *Matcher
+	nilMatcher.Reconfigure(&config.ToolChainDetection{Enabled: true})
+
+	m := New(&config.ToolChainDetection{Enabled: true})
+	m.Reconfigure(nil)
+	if got := m.Record("session", "read_file"); got.Matched {
+		t.Fatalf("record after nil reconfigure = %+v, want disabled matcher", got)
+	}
+	m.pruneExpiredSessionsWithConfig(time.Now(), nil)
+}
+
 func TestMatcher_CustomPatternAction(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,

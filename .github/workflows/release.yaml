@@ -264,12 +264,43 @@ jobs:
             done
           done
 
+      # Keep the release builder as reproducible as the artifacts it emits. The
+      # action's convenient `~> v2` selector silently moved the release tool
+      # underneath us. Download the exact upstream archive, check the digest
+      # published by GoReleaser, then ask the binary what version it is before
+      # it can publish anything.
+      - name: Install and verify GoReleaser
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GORELEASER_VERSION: v2.17.1
+          GORELEASER_LINUX_AMD64_SHA256: a99bbc7ae0d8d897b07c4c497a9b62f222558804715ef219d1af05a7e417bc80
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/goreleaser-${GORELEASER_VERSION}"
+          mkdir -p "$tool_dir"
+          gh release download "$GORELEASER_VERSION" \
+            --repo goreleaser/goreleaser \
+            --pattern goreleaser_Linux_x86_64.tar.gz \
+            --dir "$tool_dir"
+          printf '%s  %s\n' \
+            "$GORELEASER_LINUX_AMD64_SHA256" \
+            "$tool_dir/goreleaser_Linux_x86_64.tar.gz" | sha256sum --check
+          tar -xzf "$tool_dir/goreleaser_Linux_x86_64.tar.gz" -C "$tool_dir"
+          got="$($tool_dir/goreleaser --version | awk '/^GitVersion:/ { print $2 }')"
+          expected="${GORELEASER_VERSION#v}"
+          test "$got" = "$expected" || {
+            echo "::error::GoReleaser reports $got, expected $expected"
+            exit 1
+          }
+          echo "GoReleaser version: $got"
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+      # Keep the GitHub Release private while the artifact set is assembled and
+      # checked. GoReleaser still publishes container images and updates
+      # Homebrew through their separate public endpoints; a draft only prevents
+      # an incomplete GitHub Release page or its assets from becoming public.
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7.2.1
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
+        run: goreleaser release --clean --draft
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -299,6 +330,94 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" sbom.cdx.json --clobber
 
+      # Resolve the index AND its Linux children. An attestation against only a
+      # multi-architecture index does not prove the amd64 or arm64 image an
+      # operator actually runs. Matching the direct per-architecture tag to the
+      # index child prevents an image from being attested under a look-alike tag.
+      - name: Resolve release image platform digests
+        id: platform-digests
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
+          resolve_image() {
+            local name="$1"
+            local repository="$2"
+            local index_digest child_digest direct_digest arch
+
+            index_digest="$(crane digest "${repository}:${TAG#v}")"
+            printf '%s_index=%s\n' "$name" "$index_digest" >> "$GITHUB_OUTPUT"
+            for arch in amd64 arm64; do
+              child_digest="$(crane manifest "${repository}:${TAG#v}" | jq -er --arg arch "$arch" '
+                [.manifests[] | select(
+                  .platform.os == "linux" and
+                  .platform.architecture == $arch
+                ) | .digest] | if length == 1 then .[0] else error("expected one linux/" + $arch + " child") end
+              ')"
+              direct_digest="$(crane digest "${repository}:${TAG#v}-${arch}")"
+              test "$child_digest" = "$direct_digest" || {
+                echo "::error::${repository}:${TAG#v}-${arch} is not the index child"
+                exit 1
+              }
+              printf '%s_%s=%s\n' "$name" "$arch" "$child_digest" >> "$GITHUB_OUTPUT"
+            done
+          }
+
+          resolve_image pipelock ghcr.io/luckypipewrench/pipelock
+          resolve_image pipelock_init ghcr.io/luckypipewrench/pipelock-init
+          resolve_image license_service ghcr.io/luckypipewrench/pipelock-license-service
+
+      # Attach a CycloneDX SBOM for every platform-specific image, not a source
+      # dependency list that says nothing about the image base or architecture.
+      # The generator follows the same exact-version, exact-digest rule as the
+      # release builder; a bare Syft version is not enough to make the published
+      # inventory reproducible.
+      - name: Generate and publish platform image SBOMs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYFT_VERSION: v1.50.0
+          SYFT_LINUX_AMD64_SHA256: bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788
+          PIPELOCK_AMD64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
+          PIPELOCK_ARM64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
+          PIPELOCK_INIT_AMD64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
+          PIPELOCK_INIT_ARM64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
+          LICENSE_SERVICE_AMD64_DIGEST: ${{ steps.platform-digests.outputs.license_service_amd64 }}
+          LICENSE_SERVICE_ARM64_DIGEST: ${{ steps.platform-digests.outputs.license_service_arm64 }}
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/syft-${SYFT_VERSION}"
+          mkdir -p "$tool_dir"
+          gh release download "$SYFT_VERSION" \
+            --repo anchore/syft \
+            --pattern syft_1.50.0_linux_amd64.tar.gz \
+            --dir "$tool_dir"
+          printf '%s  %s\n' \
+            "$SYFT_LINUX_AMD64_SHA256" \
+            "$tool_dir/syft_1.50.0_linux_amd64.tar.gz" | sha256sum --check
+          tar -xzf "$tool_dir/syft_1.50.0_linux_amd64.tar.gz" -C "$tool_dir"
+          got="$($tool_dir/syft version | awk '/^Version:/ { print $2 }')"
+          expected="${SYFT_VERSION#v}"
+          test "$got" = "$expected" || {
+            echo "::error::Syft reports $got, expected $expected"
+            exit 1
+          }
+          echo "Syft version: $got"
+          publish_sbom() {
+            local image="$1"
+            local digest="$2"
+            local output="$3"
+            "$tool_dir/syft" "${image}@${digest}" -o "cyclonedx-json=${output}"
+            gh release upload "$GITHUB_REF_NAME" "$output" --clobber
+          }
+
+          publish_sbom ghcr.io/luckypipewrench/pipelock "$PIPELOCK_AMD64_DIGEST" sbom-pipelock-linux-amd64.cdx.json
+          publish_sbom ghcr.io/luckypipewrench/pipelock "$PIPELOCK_ARM64_DIGEST" sbom-pipelock-linux-arm64.cdx.json
+          publish_sbom ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_AMD64_DIGEST" sbom-pipelock-init-linux-amd64.cdx.json
+          publish_sbom ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_ARM64_DIGEST" sbom-pipelock-init-linux-arm64.cdx.json
+          publish_sbom ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_AMD64_DIGEST" sbom-pipelock-license-service-linux-amd64.cdx.json
+          publish_sbom ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_ARM64_DIGEST" sbom-pipelock-license-service-linux-arm64.cdx.json
+
       # Attestation steps use continue-on-error so one failure doesn't
       # cascade and kill the rest. The final verification step checks
       # that ALL attestation steps succeeded (binaries, checksums,
@@ -325,68 +444,85 @@ jobs:
           subject-path: dist/pipelock_*.tar.gz
           sbom-path: sbom.cdx.json
 
-      - name: Get container digest
-        id: digest
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
-          if ! DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock:${TAG}" 2>/dev/null); then
-            echo "::warning::Failed to resolve container digest for tag ${TAG}"
-            echo "digest=" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Attest container image
         id: attest-pipelock-container
-        if: steps.digest.outputs.digest != ''
         continue-on-error: true
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
-          subject-digest: ${{ steps.digest.outputs.digest }}
+          subject-digest: ${{ steps.platform-digests.outputs.pipelock_index }}
           push-to-registry: true
-
-      - name: Get pipelock-init container digest
-        id: init-digest
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          if ! DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock-init:${TAG}" 2>/dev/null); then
-            echo "::warning::Failed to resolve pipelock-init container digest for tag ${TAG}"
-            echo "digest=" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Attest pipelock-init container image
         id: attest-pipelock-init-container
-        if: steps.init-digest.outputs.digest != ''
         continue-on-error: true
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
-          subject-digest: ${{ steps.init-digest.outputs.digest }}
+          subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_index }}
           push-to-registry: true
-
-      - name: Get license-service container digest
-        id: license-service-digest
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          if ! DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock-license-service:${TAG}" 2>/dev/null); then
-            echo "::warning::Failed to resolve license-service container digest for tag ${TAG}"
-            echo "digest=" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Attest license-service container image
         id: attest-license-service-container
-        if: steps.license-service-digest.outputs.digest != ''
         continue-on-error: true
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
-          subject-digest: ${{ steps.license-service-digest.outputs.digest }}
+          subject-digest: ${{ steps.platform-digests.outputs.license_service_index }}
+          push-to-registry: true
+
+      - name: Attest pipelock linux amd64 image
+        id: attest-pipelock-amd64
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-digest: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
+          push-to-registry: true
+
+      - name: Attest pipelock linux arm64 image
+        id: attest-pipelock-arm64
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-digest: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
+          push-to-registry: true
+
+      - name: Attest pipelock-init linux amd64 image
+        id: attest-pipelock-init-amd64
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
+          push-to-registry: true
+
+      - name: Attest pipelock-init linux arm64 image
+        id: attest-pipelock-init-arm64
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
+          push-to-registry: true
+
+      - name: Attest license-service linux amd64 image
+        id: attest-license-service-amd64
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-digest: ${{ steps.platform-digests.outputs.license_service_amd64 }}
+          push-to-registry: true
+
+      - name: Attest license-service linux arm64 image
+        id: attest-license-service-arm64
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-digest: ${{ steps.platform-digests.outputs.license_service_arm64 }}
           push-to-registry: true
 
       # Fail closed: any attestation that did not SUCCEED blocks the release.
@@ -403,10 +539,34 @@ jobs:
           steps.attest-sbom.outcome != 'success' ||
           steps.attest-pipelock-container.outcome != 'success' ||
           steps.attest-pipelock-init-container.outcome != 'success' ||
-          steps.attest-license-service-container.outcome != 'success' )
+          steps.attest-license-service-container.outcome != 'success' ||
+          steps.attest-pipelock-amd64.outcome != 'success' ||
+          steps.attest-pipelock-arm64.outcome != 'success' ||
+          steps.attest-pipelock-init-amd64.outcome != 'success' ||
+          steps.attest-pipelock-init-arm64.outcome != 'success' ||
+          steps.attest-license-service-amd64.outcome != 'success' ||
+          steps.attest-license-service-arm64.outcome != 'success' )
         run: |
           echo "::error::Attestation failed — release provenance is incomplete"
           exit 1
+
+      # Build the operator-facing bundle only after every child image has its
+      # own SBOM and provenance proof. The bundle contains index digests because
+      # Kubernetes selects the matching platform child from that signed index.
+      - name: Build Kubernetes image digest bundle
+        run: |
+          go run ./cmd/pipelock-release-images \
+            -tag "$GITHUB_REF_NAME" \
+            -commit "$GITHUB_SHA" \
+            -out dist/release-images.json \
+            -image "pipelock=ghcr.io/luckypipewrench/pipelock@${{ steps.platform-digests.outputs.pipelock_index }}" \
+            -image "pipelock-init=ghcr.io/luckypipewrench/pipelock-init@${{ steps.platform-digests.outputs.pipelock_init_index }}" \
+            -image "pipelock-license-service=ghcr.io/luckypipewrench/pipelock-license-service@${{ steps.platform-digests.outputs.license_service_index }}"
+
+      - name: Upload Kubernetes image digest bundle
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/release-images.json --clobber
 
       # Deliberately placed after the attestation gate. The chart is the least
       # critical artifact in the release, and an earlier position would let a
@@ -483,6 +643,15 @@ jobs:
             echo "\`helm install oci://ghcr.io/luckypipewrench/charts/pipelock\` fails for"
             echo "everyone until it is made public once under Package settings."
           } >>"$GITHUB_STEP_SUMMARY"
+
+      # Promote only after the proof gate, Kubernetes digest bundle, and chart
+      # have all succeeded. The draft kept GitHub Release assets private while
+      # those checks ran. Container images and Homebrew remain separate
+      # publication surfaces and are not made atomic by this promotion.
+      - name: Publish GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
       # Move the v2 floating tag so `uses: luckyPipewrench/pipelock@v2`
       # always resolves to the latest release. Safe because the trigger requires

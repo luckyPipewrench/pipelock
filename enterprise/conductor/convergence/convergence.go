@@ -279,7 +279,7 @@ func Build(in Inputs) Report {
 	report.RuntimeCoverage = runtimeSummary(report.Followers)
 	report.ConductorCoverage = conductorSummary(report.Followers)
 	report.EvidenceCoverage = evidenceSummary(report.Followers)
-	report.DeliveryHealth = deliveryHealth(report.Followers)
+	report.DeliveryHealth = deliveryHealth(report.Followers, now, in.StaleAfter)
 
 	return report
 }
@@ -567,6 +567,10 @@ func runtimeSummary(followers []FollowerConvergence) DenominatorSummary {
 			continue
 		}
 		s.Total++
+		if f.State == StateUnknown {
+			s.Unknown++
+			continue
+		}
 		if f.ConductorHealth != nil && *f.ConductorHealth == controlplane.FleetHealthOK {
 			s.Healthy++
 		} else if f.State == StateUnknown || f.ConductorHealth == nil {
@@ -583,6 +587,10 @@ func conductorSummary(followers []FollowerConvergence) DenominatorSummary {
 			continue
 		}
 		s.Total++
+		if f.State == StateUnknown {
+			s.Unknown++
+			continue
+		}
 		if f.ConductorHealth != nil {
 			switch *f.ConductorHealth {
 			case controlplane.FleetHealthOK:
@@ -633,7 +641,7 @@ func evidenceSummary(followers []FollowerConvergence) DenominatorSummary {
 	return s
 }
 
-func deliveryHealth(followers []FollowerConvergence) DeliveryHealth {
+func deliveryHealth(followers []FollowerConvergence, now time.Time, staleAfter time.Duration) DeliveryHealth {
 	result := DeliveryHealth{Alerting: []string{}}
 	for _, follower := range followers {
 		if follower.State == StateExcluded || follower.State == StateScaledZero {
@@ -643,13 +651,23 @@ func deliveryHealth(followers []FollowerConvergence) DeliveryHealth {
 			continue
 		}
 		result.Expected++
-		if follower.State == StateFullyConverged {
+		if deliveryBatchCurrent(follower.LatestBatch, now, staleAfter) {
 			result.Current++
 			continue
 		}
 		result.Alerting = append(result.Alerting, follower.InstanceID)
 	}
 	return result
+}
+
+func deliveryBatchCurrent(batch *AuditEvidence, now time.Time, staleAfter time.Duration) bool {
+	if batch == nil || batch.ReceivedAt.IsZero() || batch.ReceivedAt.After(now) {
+		return false
+	}
+	if staleAfter <= 0 {
+		staleAfter = 5 * time.Minute
+	}
+	return now.Sub(batch.ReceivedAt) <= staleAfter*evidenceStaleWindowMultiple
 }
 
 func deliveryExpected(intent *DeploymentIntent) bool {

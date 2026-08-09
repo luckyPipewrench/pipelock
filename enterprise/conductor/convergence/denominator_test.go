@@ -309,12 +309,26 @@ func TestEvidence_RuntimeBuildIsPopulated(t *testing.T) {
 }
 
 func TestDeliveryHealth_ExpectedCurrentAndAlerting(t *testing.T) {
+	now := time.Now().UTC()
 	health := deliveryHealth([]FollowerConvergence{
 		{
 			InstanceID: "current",
 			State:      StateFullyConverged,
+			LatestBatch: &AuditEvidence{
+				ReceivedAt: now.Add(-time.Minute),
+			},
 			DeploymentIntent: &DeploymentIntent{
 				InstanceID: "current", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "rolling",
+			State:      StateWrongDigest,
+			LatestBatch: &AuditEvidence{
+				ReceivedAt: now.Add(-time.Minute),
+			},
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "rolling", DesiredReplicas: 1,
 			},
 		},
 		{
@@ -346,11 +360,54 @@ func TestDeliveryHealth_ExpectedCurrentAndAlerting(t *testing.T) {
 				InstanceID: "scaled-zero", DesiredReplicas: 0,
 			},
 		},
-	})
-	if health.Expected != 3 || health.Current != 1 {
-		t.Fatalf("expected/current = %d/%d, want 3/1", health.Expected, health.Current)
+	}, now, time.Minute)
+	if health.Expected != 4 || health.Current != 2 {
+		t.Fatalf("expected/current = %d/%d, want 4/2", health.Expected, health.Current)
 	}
 	if got, want := strings.Join(health.Alerting, ","), "stale,missing"; got != want {
 		t.Fatalf("alerting = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeAndConductorSummariesDoNotVouchForUnknownState(t *testing.T) {
+	healthOK := controlplane.FleetHealthOK
+	followers := []FollowerConvergence{{
+		InstanceID:      "unprovable",
+		State:           StateUnknown,
+		ConductorHealth: &healthOK,
+	}}
+
+	for name, summary := range map[string]DenominatorSummary{
+		"runtime":   runtimeSummary(followers),
+		"conductor": conductorSummary(followers),
+	} {
+		if summary.Total != 1 || summary.Healthy != 0 || summary.Unknown != 1 {
+			t.Errorf("%s summary = %+v, want one unknown and no healthy followers", name, summary)
+		}
+	}
+}
+
+func TestDeliveryBatchCurrentBoundaries(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name       string
+		batch      *AuditEvidence
+		staleAfter time.Duration
+		want       bool
+	}{
+		{name: "missing", batch: nil, staleAfter: time.Minute},
+		{name: "zero timestamp", batch: &AuditEvidence{}, staleAfter: time.Minute},
+		{name: "future timestamp", batch: &AuditEvidence{ReceivedAt: now.Add(time.Second)}, staleAfter: time.Minute},
+		{name: "at boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6 * time.Minute)}, staleAfter: time.Minute, want: true},
+		{name: "past boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6*time.Minute - time.Nanosecond)}, staleAfter: time.Minute},
+		{name: "default window", batch: &AuditEvidence{ReceivedAt: now.Add(-29 * time.Minute)}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deliveryBatchCurrent(tt.batch, now, tt.staleAfter); got != tt.want {
+				t.Fatalf("deliveryBatchCurrent() = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }

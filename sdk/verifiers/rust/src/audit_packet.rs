@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::chain::{compute_totals, verify_chain_with_options};
+use crate::lifecycle::analyze_lifecycle;
 use crate::recorder::extract_receipts;
 use crate::schema::validate_audit_packet;
 use crate::types::{
@@ -78,6 +79,8 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
     report.schema_check = "pass".to_string();
 
     if opts.offline {
+        report.lifecycle_assessment_reason =
+            Some("offline mode skips chain re-verification".to_string());
         report.valid = trust_verdict(&packet, opts);
         return Ok(report);
     }
@@ -129,6 +132,11 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
     };
     let chain = verify_chain_with_options(&receipts, &key_hex, opts.allow_self_consistent_only);
     report.chain_check = if chain.valid { "pass" } else { "fail" }.to_string();
+    let lifecycle = analyze_lifecycle(&receipts, &chain);
+    report.lifecycle_status = Some(lifecycle.status);
+    report.lifecycle_reason = Some(lifecycle.reason);
+    report.lifecycle_assessment = "assessed".to_string();
+    report.lifecycle_assessment_reason = None;
     if !chain.valid {
         push_error(
             &mut report,
@@ -203,6 +211,10 @@ pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPack
         schema_check: "skipped".to_string(),
         chain_check: "skipped".to_string(),
         cross_check: "skipped".to_string(),
+        lifecycle_status: None,
+        lifecycle_reason: None,
+        lifecycle_assessment: "not_assessed".to_string(),
+        lifecycle_assessment_reason: Some("chain re-verification did not complete".to_string()),
     }
 }
 

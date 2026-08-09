@@ -106,6 +106,13 @@ pub struct AuditPacketReport {
     pub schema_check: String,
     pub chain_check: String,
     pub cross_check: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_reason: Option<String>,
+    pub lifecycle_assessment: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_assessment_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -19,6 +19,15 @@ export function emitAuditPacket(report: AuditPacketReport, json: boolean): void 
   process.stdout.write(`  schema:       ${report.schema_check}\n`);
   process.stdout.write(`  chain:        ${report.chain_check}\n`);
   process.stdout.write(`  cross-check:  ${report.cross_check}\n`);
+  if (report.lifecycle_assessment !== "assessed") {
+    process.stdout.write(
+      `  lifecycle:    not assessed (${report.lifecycle_assessment_reason ?? "chain re-verification did not complete"})\n`,
+    );
+  } else {
+    process.stdout.write(
+      `  lifecycle:    ${report.lifecycle_status} (${report.lifecycle_reason})\n`,
+    );
+  }
   process.stdout.write(`  verdict:      ${verdict}\n`);
   process.stdout.write(`  trusted:      ${String(report.trusted)}\n`);
   process.stdout.write(`  receipts:     ${report.summary.receipt_count}\n`);

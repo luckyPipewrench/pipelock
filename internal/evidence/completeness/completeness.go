@@ -128,6 +128,15 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	if !chainResult.Valid && !isLifecycleOnlyChainFailure(chainResult) {
 		return brokenReport(report, chainResult)
 	}
+	if isLifecycleOnlyChainFailure(chainResult) {
+		// The chain verifier proved signatures and linkage, but it could not
+		// establish the run's opening boundary. That is incomplete evidence, not
+		// a forged or contradictory transcript.
+		report.Status = StatusUnverified
+		report.Reason = ReasonNoOpen
+		report.Error = chainResult.Error
+		return report
+	}
 
 	if !hasSessionControl(chain) {
 		report.Status = StatusUnverified

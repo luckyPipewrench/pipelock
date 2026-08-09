@@ -414,7 +414,7 @@ func TestAnalyzeReasons(t *testing.T) {
 	}
 }
 
-func TestAnalyzeNoOpenIsBroken(t *testing.T) {
+func TestAnalyzeIntegrityVerifiedNoOpenIsUnverified(t *testing.T) {
 	t.Parallel()
 	b := newChainBuilder(t)
 	chain := []receipt.Receipt{
@@ -426,9 +426,8 @@ func TestAnalyzeNoOpenIsBroken(t *testing.T) {
 		t.Fatal("fixture should trigger the existing chain verifier no-open rejection")
 	}
 	report := Analyze(chain, res)
-	run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
-	if run.StructuralViolation != "heartbeat observed before session_open" {
-		t.Fatalf("structural_violation = %q, want heartbeat before open: %#v", run.StructuralViolation, run)
+	if report.Status != StatusUnverified || report.Reason != ReasonNoOpen {
+		t.Fatalf("report = %s/%s, want UNVERIFIED/no_open: %#v", report.Status, report.Reason, report)
 	}
 }
 
@@ -861,8 +860,8 @@ func TestAnalyzeOnlyMissingOpenIntegrityFailureDowngrades(t *testing.T) {
 		},
 		"missing_open_with_integrity": {
 			chainResult: receipt.ChainResult{FailureKind: receipt.ChainFailureLifecycleOpen, IntegrityVerified: true, Error: "missing open"},
-			wantStatus:  StatusBroken,
-			wantReason:  ReasonChainBroken,
+			wantStatus:  StatusUnverified,
+			wantReason:  ReasonNoOpen,
 		},
 	}
 

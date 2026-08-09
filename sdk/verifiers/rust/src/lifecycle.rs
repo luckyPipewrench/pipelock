@@ -37,8 +37,14 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
     if receipts.is_empty() {
         return report("UNVERIFIED", "no_receipts");
     }
-    if !chain.valid {
+    let missing_open = !chain.valid
+        && chain.integrity_verified
+        && chain.failure_kind.as_deref() == Some("lifecycle_missing_open");
+    if !chain.valid && !missing_open {
         return report("BROKEN", "chain_broken");
+    }
+    if missing_open {
+        return report("UNVERIFIED", "no_open");
     }
     if !receipts
         .iter()
@@ -160,7 +166,7 @@ fn run_nonce_for(
     };
     let payload = match control.get("kind").and_then(serde_json::Value::as_str) {
         Some("session_open") => control.get("open"),
-        Some("session_heartbeat") => control.get("heartbeat"),
+        Some("heartbeat") | Some("session_heartbeat") => control.get("heartbeat"),
         Some("session_close") => control.get("close"),
         _ => None,
     };
@@ -179,11 +185,9 @@ fn assess_run(state: &RunState) -> LifecycleReport {
     if !state.opened {
         return report("UNVERIFIED", "no_open");
     }
-    if state
-        .outcomes
-        .iter()
-        .any(|(action_id, outcomes)| state.intents.get(action_id).unwrap_or(&0) < outcomes)
-    {
+    if state.outcomes.iter().any(|(action_id, outcomes)| {
+        *outcomes > 0 && state.intents.get(action_id).unwrap_or(&0) == &0
+    }) {
         return report("BROKEN", "chain_broken");
     }
     if state

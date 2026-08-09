@@ -35,7 +35,12 @@ const unverified: LifecycleStatus = "UNVERIFIED";
 // different questions.
 export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): LifecycleReport {
   if (receipts.length === 0) return { status: unverified, reason: "no_receipts" };
-  if (!chain.valid) return { status: broken, reason: "chain_broken" };
+  const missingOpen =
+    !chain.valid &&
+    chain.integrity_verified === true &&
+    chain.failure_kind === "lifecycle_missing_open";
+  if (!chain.valid && !missingOpen) return { status: broken, reason: "chain_broken" };
+  if (missingOpen) return { status: unverified, reason: "no_open" };
   const controls = receipts.filter((receipt) => sessionControl(receipt) !== undefined);
   if (controls.length === 0) return { status: unverified, reason: "no_lifecycle" };
 
@@ -151,7 +156,7 @@ function runNonceFor(
   const payload =
     kind === "session_open"
       ? objectField(control, "open")
-      : kind === "session_heartbeat"
+      : kind === "heartbeat" || kind === "session_heartbeat"
         ? objectField(control, "heartbeat")
         : kind === "session_close"
           ? objectField(control, "close")
@@ -166,7 +171,7 @@ function increment(values: Map<string, number>, key: string): void {
 function assessRun(state: RunState): LifecycleReport {
   if (!state.opened) return { status: unverified, reason: "no_open" };
   for (const [actionID, outcomes] of state.outcomes) {
-    if ((state.intents.get(actionID) ?? 0) < outcomes)
+    if ((state.intents.get(actionID) ?? 0) === 0 && outcomes > 0)
       return { status: broken, reason: "chain_broken" };
   }
   for (const [actionID, intents] of state.intents) {

@@ -281,6 +281,8 @@ pub fn verify_chain_with_endorsements(
     if session_id.trim().is_empty() {
         return ChainResult {
             valid: false,
+            integrity_verified: false,
+            failure_kind: None,
             receipt_count: receipts.len(),
             final_seq: 0,
             root_hash: String::new(),
@@ -293,6 +295,8 @@ pub fn verify_chain_with_endorsements(
     if receipts.is_empty() {
         return ChainResult {
             valid: false,
+            integrity_verified: false,
+            failure_kind: None,
             receipt_count: 0,
             final_seq: 0,
             root_hash: String::new(),
@@ -322,6 +326,8 @@ pub fn verify_chain_with_endorsements(
         if !transition && signer != authorized_signer {
             return ChainResult {
                 valid: false,
+                integrity_verified: false,
+                failure_kind: None,
                 receipt_count: receipts.len(),
                 final_seq: 0,
                 root_hash: String::new(),

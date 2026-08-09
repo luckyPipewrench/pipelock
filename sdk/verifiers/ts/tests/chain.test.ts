@@ -422,6 +422,8 @@ test("g1 close without open fixture is rejected", async () => {
     .public_key_hex;
   const result = await verifyChain(extractReceipts(g1CloseWithoutOpen), key);
   assert.equal(result.valid, false);
+  assert.equal(result.integrity_verified, true);
+  assert.equal(result.failure_kind, "lifecycle_missing_open");
   assert.match(result.error ?? "", /first receipt is not a matching session_open/u);
 });
 

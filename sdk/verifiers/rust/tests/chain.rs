@@ -523,6 +523,11 @@ fn g1_close_without_open_fixture_is_rejected() {
     let key = conformance_key();
     let result = verify_chain(&receipts, &key);
     assert!(!result.valid);
+    assert!(result.integrity_verified);
+    assert_eq!(
+        result.failure_kind.as_deref(),
+        Some("lifecycle_missing_open")
+    );
     assert!(result
         .error
         .unwrap_or_default()

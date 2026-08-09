@@ -210,6 +210,8 @@ export interface AuditPacket {
 
 export interface ChainResult {
   valid: boolean;
+  integrity_verified?: boolean;
+  failure_kind?: "integrity" | "trust" | "lifecycle" | "lifecycle_missing_open";
   receipt_count: number;
   final_seq: number;
   root_hash: string;

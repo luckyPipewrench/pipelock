@@ -10,10 +10,16 @@ import type { ChainResult, Receipt } from "../src/types.js";
 interface LifecycleVector {
   name: string;
   receipts: Receipt[];
+  chain_result: Partial<ChainResult>;
   expected: { status: string; reason: string };
 }
 
-const validChain: ChainResult = {
+interface LifecycleVectorFile {
+  generated_by: string;
+  vectors: LifecycleVector[];
+}
+
+const defaultChain: ChainResult = {
   valid: true,
   receipt_count: 3,
   final_seq: 2,
@@ -21,11 +27,12 @@ const validChain: ChainResult = {
 };
 
 test("lifecycle verdict vectors match the Go verifier", () => {
-  const vectors = JSON.parse(
+  const file = JSON.parse(
     readFileSync("../../conformance/testdata/lifecycle-verdict-vectors.json", "utf8"),
-  ) as LifecycleVector[];
-  for (const vector of vectors) {
-    const actual = analyzeLifecycle(vector.receipts, validChain);
+  ) as LifecycleVectorFile;
+  assert.match(file.generated_by, /^go test /u);
+  for (const vector of file.vectors) {
+    const actual = analyzeLifecycle(vector.receipts, { ...defaultChain, ...vector.chain_result });
     assert.deepEqual(actual, vector.expected, vector.name);
   }
 });

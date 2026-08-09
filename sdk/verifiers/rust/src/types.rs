@@ -81,6 +81,9 @@ impl Totals {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChainResult {
     pub valid: bool,
+    pub integrity_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
     pub receipt_count: usize,
     pub final_seq: u64,
     pub root_hash: String,

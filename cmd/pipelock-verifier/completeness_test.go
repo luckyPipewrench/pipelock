@@ -591,7 +591,7 @@ func TestChainAndCompletenessRejectMalformedBareV1JSONL(t *testing.T) {
 	path := writeCompletenessJSONL(t, []receipt.Receipt{
 		fixture.open("run-malformed-bare-v1", "open-malformed-bare-v1"),
 	})
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}

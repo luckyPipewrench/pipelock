@@ -3579,6 +3579,88 @@ func TestConnectDefaultPort(t *testing.T) {
 	}
 }
 
+func TestNormalizeConnectTargetPreservesPortForScanAndDial(t *testing.T) {
+	tests := []struct {
+		name           string
+		target         string
+		wantNormalized string
+		wantHost       string
+		wantPort       string
+		wantScanURL    string
+		wantBad        bool
+	}{
+		{
+			name:           "explicit port",
+			target:         "api.vendor.example:6443",
+			wantNormalized: "api.vendor.example:6443",
+			wantHost:       "api.vendor.example",
+			wantPort:       "6443",
+			wantScanURL:    "https://api.vendor.example:6443/",
+		},
+		{
+			name:           "bare host defaults once",
+			target:         "api.vendor.example",
+			wantNormalized: "api.vendor.example:443",
+			wantHost:       "api.vendor.example",
+			wantPort:       "443",
+			wantScanURL:    "https://api.vendor.example:443/",
+		},
+		{
+			name:           "bracketed IPv6 explicit port",
+			target:         "[2001:db8::1]:6443",
+			wantNormalized: "[2001:db8::1]:6443",
+			wantHost:       "2001:db8::1",
+			wantPort:       "6443",
+			wantScanURL:    "https://[2001:db8::1]:6443/",
+		},
+		{
+			name:           "bracketed IPv6 defaults once",
+			target:         "[2001:db8::1]",
+			wantNormalized: "[2001:db8::1]:443",
+			wantHost:       "2001:db8::1",
+			wantPort:       "443",
+			wantScanURL:    "https://[2001:db8::1]:443/",
+		},
+		// net.SplitHostPort accepts all three of these, so without an explicit
+		// rejection they reach policy as an empty host or an empty port. An
+		// empty port is the dangerous one: the dial snapshot only compares
+		// ports when it has one, so it would silently stop binding.
+		{
+			name:    "empty port is rejected",
+			target:  "api.vendor.example:",
+			wantBad: true,
+		},
+		{
+			name:    "empty host is rejected",
+			target:  ":443",
+			wantBad: true,
+		},
+		{
+			name:    "empty authority is rejected",
+			target:  "",
+			wantBad: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, host, port, scanURL, ok := normalizeConnectTarget(tt.target)
+			if tt.wantBad {
+				if ok {
+					t.Fatalf("normalizeConnectTarget(%q) accepted a malformed authority as (%q, %q, %q, %q)", tt.target, normalized, host, port, scanURL)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("normalizeConnectTarget(%q) rejected a well-formed authority", tt.target)
+			}
+			if normalized != tt.wantNormalized || host != tt.wantHost || port != tt.wantPort || scanURL != tt.wantScanURL {
+				t.Fatalf("normalizeConnectTarget(%q) = (%q, %q, %q, %q), want (%q, %q, %q, %q)", tt.target, normalized, host, port, scanURL, tt.wantNormalized, tt.wantHost, tt.wantPort, tt.wantScanURL)
+			}
+		})
+	}
+}
+
 func TestSSRFSafeDialContext_DirectIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
@@ -6222,6 +6304,102 @@ func TestForwardHTTP_CompressedSSE_GzipFailsClosed(t *testing.T) {
 			if resp.StatusCode != http.StatusForbidden {
 				t.Fatalf("compressed SSE (%s) must fail closed with 403; got %d",
 					enc, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestConnectMalformedAuthorityRejectedByHandler drives the real handler rather
+// than the normalizer, because the normalizer returning a rejection only matters
+// if handleConnect acts on it. The empty-port form is the one that matters most:
+// net.SplitHostPort accepts it, and an empty port would leave the dial snapshot
+// with nothing to bind against.
+func TestConnectMalformedAuthorityRejectedByHandler(t *testing.T) {
+	t.Parallel()
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	for _, tc := range []struct {
+		name      string
+		authority string
+	}{
+		{"empty port", "api.vendor.example:"},
+		{"empty host", ":443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := dialProxy(t, proxyAddr)
+			defer func() { _ = conn.Close() }()
+
+			_, _ = conn.Write([]byte("CONNECT " + tc.authority + " HTTP/1.1\r\nHost: " + tc.authority + "\r\n\r\n"))
+			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("CONNECT %q status = %d, want %d", tc.authority, resp.StatusCode, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+// TestConnectContractProjectionStaysHostnameOnly pins the deliberate divergence
+// between what raw CONNECT hands the contract gate and what it hands everything
+// else. Scanner, dial snapshot, and receipt must carry the exact authority, and
+// the contract gate must not, because contract rules cannot express a port yet
+// and would refuse every non-443 tunnel with no operator remedy.
+//
+// If someone later makes contract rules port-aware, this test should fail and be
+// replaced deliberately rather than quietly deleted.
+func TestConnectContractProjectionStaysHostnameOnly(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		target       string
+		wantScan     string
+		wantContract string
+	}{
+		{"high port", "api.vendor.example:8443", "https://api.vendor.example:8443/", "https://api.vendor.example/"},
+		{"explicit 443", "api.vendor.example:443", "https://api.vendor.example:443/", "https://api.vendor.example/"},
+		{"plain http port", "api.vendor.example:80", "https://api.vendor.example:80/", "https://api.vendor.example/"},
+		{"ipv6 high port", "[2001:db8::1]:8443", "https://[2001:db8::1]:8443/", "https://[2001:db8::1]/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, host, _, scanURL, ok := normalizeConnectTarget(tc.target)
+			if !ok {
+				t.Fatalf("normalizeConnectTarget(%q) rejected a well-formed authority", tc.target)
+			}
+			if scanURL != tc.wantScan {
+				t.Fatalf("scan URL = %q, want %q", scanURL, tc.wantScan)
+			}
+			contractURL := "https://" + hostForURL(host) + "/"
+			if contractURL != tc.wantContract {
+				t.Fatalf("contract URL = %q, want %q", contractURL, tc.wantContract)
+			}
+			if _, err := url.Parse(contractURL); err != nil {
+				t.Fatalf("contract URL %q does not parse: %v", contractURL, err)
+			}
+		})
+	}
+}
+
+// A CONNECT authority carries a numeric TCP port. A service name would leave
+// policy and the dial disagreeing about the destination.
+func TestConnectRejectsNonNumericPort(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{
+		"api.vendor.example:https",
+		"api.vendor.example:0",
+		"api.vendor.example:65536",
+		"api.vendor.example:-1",
+		"api.vendor.example:+443",
+		"api.vendor.example:443 ",
+	} {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			if _, _, _, scanURL, ok := normalizeConnectTarget(target); ok {
+				t.Fatalf("normalizeConnectTarget(%q) accepted a bad port and produced %q", target, scanURL)
 			}
 		})
 	}

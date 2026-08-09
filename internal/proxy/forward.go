@@ -70,6 +70,41 @@ func getTunnelSemaphore() *tunnelSemaphore {
 	return tunnelSem
 }
 
+// normalizeConnectTarget applies CONNECT's sole default and produces the
+// host-and-port target used by both scanning and dialing. It reports whether
+// the authority was well formed.
+//
+// net.SplitHostPort accepts two shapes that must not reach the rest of this
+// path. ":443" and "" parse with an EMPTY HOST, which would produce a scan URL
+// with no host to match policy against. "host:" parses with an EMPTY PORT,
+// which is worse: the dial snapshot guard only compares ports when it has one,
+// so an empty port would silently disable the port binding for that request.
+// Both are rejected here rather than normalized to a guess, because inventing a
+// host or a port for a malformed authority decides policy on an address the
+// client never asked for.
+func normalizeConnectTarget(target string) (normalized, host, port, scanURL string, ok bool) {
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		bare := strings.TrimPrefix(strings.TrimSuffix(target, "]"), "[")
+		target = net.JoinHostPort(bare, "443")
+	}
+
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || host == "" || port == "" {
+		return "", "", "", "", false
+	}
+	// CONNECT authorities carry a numeric TCP port. Accepting a service name or
+	// arbitrary text here would let policy and the dial disagree about what the
+	// port even is, and the dial resolver is not the right place to discover a
+	// malformed authority.
+	// ParseUint rather than Atoi: Atoi accepts a leading sign, so "+443" would be
+	// preserved verbatim in the authority while the dial read it as 443, leaving
+	// policy and the dial looking at different text for the same destination.
+	if n, convErr := strconv.ParseUint(port, 10, 16); convErr != nil || n == 0 {
+		return "", "", "", "", false
+	}
+	return target, host, port, "https://" + net.JoinHostPort(host, port) + "/", true
+}
+
 // handleConnect handles HTTP CONNECT tunnel requests. It scans the target
 // hostname through the full scanner pipeline, establishes a TCP connection
 // via the SSRF-safe dialer, and relays data bidirectionally.
@@ -153,29 +188,32 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure target has a port. CONNECT targets are always host:port.
-	// Strip brackets from bare IPv6 literals before JoinHostPort adds them back.
-	if _, _, err := net.SplitHostPort(target); err != nil {
-		bare := strings.TrimPrefix(strings.TrimSuffix(target, "]"), "[")
-		target = net.JoinHostPort(bare, "443")
+	target, host, targetPort, syntheticURL, targetOK := normalizeConnectTarget(target)
+	if !targetOK {
+		writeBlockedError(w,
+			blockInfoFor(blockreason.BadRequest, ""),
+			"malformed target authority", http.StatusBadRequest)
+		return
 	}
-
-	// Synthesize a URL for scanner pipeline. The scanner expects a full URL,
-	// but CONNECT only gives us host:port. Use https:// as the tunnel is
-	// typically used for TLS traffic.
-	host, targetPort, _ := net.SplitHostPort(target)
-	syntheticHost := host
-	if strings.Contains(host, ":") { // IPv6 literal needs brackets in URL
-		syntheticHost = "[" + host + "]"
-	}
-	// The scanned/contract URL keeps its historical port-less form so the
-	// contract gate and scanner verdict are unchanged; the exact CONNECT port
-	// is bound to the dial snapshot below (from targetPort) and carried in the
-	// receipt target. Whether the CONNECT contract gate should also see the
-	// real port is a separate design question, tracked as a guard adjacent
-	// finding, not decided here.
-	syntheticURL := "https://" + syntheticHost + "/"
-	connectReceiptTarget := "https://" + net.JoinHostPort(host, targetPort) + "/"
+	// Contract evaluation for a RAW CONNECT tunnel deliberately keeps the legacy
+	// hostname-only projection while the rest of this path uses the exact
+	// authority. This divergence is intentional and temporary, not an oversight.
+	//
+	// Contract rules cannot express a port: selectors have no port field and
+	// inference drops it, so feeding the real port to the gate would make
+	// usesDefaultHTTPPort refuse every non-443 tunnel with no way for an
+	// operator to authorize the service they actually run. It would also apply
+	// HTTPS default-port semantics to what is an opaque TCP authority, so a
+	// legitimate CONNECT to :80 would be refused for being "non-default https".
+	//
+	// Whether raw CONNECT contract enforcement should become port-aware is a
+	// design decision that belongs with a CONNECT-authority rule shape, not with
+	// this change. Intercepted CONNECT already reconstructs inner requests with
+	// their real port and is unaffected by this projection.
+	// host is unbracketed here, so an IPv6 literal must be re-bracketed or the
+	// resulting URL does not parse and the gate would see a different authority.
+	contractURL := "https://" + hostForURL(host) + "/"
+	connectReceiptTarget := syntheticURL
 	emitConnectSessionDenyReceipt := func() {
 		emitConnectReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
@@ -482,7 +520,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	gate, gateErr := EvaluateGate(ContractGateInput{
 		Loader:           snapshotContractLoader,
 		Agent:            agent,
-		URL:              syntheticURL,
+		URL:              contractURL,
 		Method:           http.MethodConnect,
 		EffectiveAction:  scannerVerdictForGate(hasFinding),
 		ScannerVerdict:   scannerVerdictForGate(hasFinding),
@@ -2896,4 +2934,14 @@ func responseBundleRules(matches []scanner.ResponseMatch) []audit.BundleRuleHit 
 		}
 	}
 	return hits
+}
+
+// hostForURL re-brackets an IPv6 literal so it can be placed in a URL authority.
+// net.SplitHostPort strips the brackets, and an unbracketed IPv6 host produces a
+// URL that does not parse back to the same authority.
+func hostForURL(host string) string {
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }

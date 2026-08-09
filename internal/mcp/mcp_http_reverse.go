@@ -1240,8 +1240,12 @@ func RunHTTPListenerProxy(
 
 		// 202 Accepted: notification acknowledged, no body.
 		if upResp.StatusCode == http.StatusAccepted {
-			commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
-			w.WriteHeader(http.StatusAccepted)
+			if !clientState.commitIfActive(func() {
+				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
+				w.WriteHeader(http.StatusAccepted)
+			}) {
+				rejectMissingListenerState(frame.ID)
+			}
 			return
 		}
 
@@ -1350,7 +1354,8 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			foundInjection, scanErr := ForwardScanned(reader, streamWriter, safeLogW, responseTracker, reqOpts)
+			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter}
+			foundInjection, scanErr := ForwardScanned(reader, revocableWriter, safeLogW, responseTracker, reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
@@ -1369,7 +1374,9 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr == nil && !foundInjection {
-				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
+				_ = clientState.commitIfActive(func() {
+					commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
+				})
 			}
 			if !streamWriter.Wrote() {
 				w.WriteHeader(http.StatusAccepted)
@@ -1385,16 +1392,19 @@ func RunHTTPListenerProxy(
 			return
 		}
 		if foundInjection {
-			w.Header().Set("Content-Type", "application/json")
 			output := bytes.TrimSpace(buf.Bytes())
-			if len(output) == 0 {
-				w.WriteHeader(http.StatusAccepted)
-				return
+			if !clientState.commitIfActive(func() {
+				w.Header().Set("Content-Type", "application/json")
+				if len(output) == 0 {
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				_, _ = w.Write(output)
+			}) {
+				rejectMissingListenerState(frame.ID)
 			}
-			_, _ = w.Write(output)
 			return
 		}
-		commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 		if setupState {
 			if !listenerClients.admitSetup(clientState) {
 				w.Header().Set("Content-Type", "application/json")
@@ -1404,13 +1414,23 @@ func RunHTTPListenerProxy(
 			}
 			w.Header().Set(listenerSessionTokenHeader, clientState.token)
 		}
-		w.Header().Set("Content-Type", "application/json")
 		output := bytes.TrimSpace(buf.Bytes())
-		if len(output) == 0 {
-			w.WriteHeader(http.StatusAccepted)
+		commitResponse := func() {
+			commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
+			w.Header().Set("Content-Type", "application/json")
+			if len(output) == 0 {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			_, _ = w.Write(output)
+		}
+		if setupState {
+			commitResponse()
 			return
 		}
-		_, _ = w.Write(output)
+		if !clientState.commitIfActive(commitResponse) {
+			rejectMissingListenerState(frame.ID)
+		}
 	})
 
 	srv := &http.Server{
@@ -1524,6 +1544,10 @@ func forwardListenerUpstreamHeaders(upReq, r *http.Request, includeLastEventID b
 	if includeLastEventID {
 		forwardIfOperatorUnset(upReq, r, listenerLastEventID)
 	}
+	// This listener-owned bearer capability is consumed locally. Remove it at
+	// the final egress boundary even if a client or operator header attempted
+	// to add it.
+	upReq.Header.Del(listenerSessionTokenHeader)
 }
 
 func adaptiveHostFromRemoteAddr(remoteAddr string) string {

@@ -152,3 +152,51 @@ func TestListenerHasStatefulControls_ToolBindingFields(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPListenerClientState_CommitLinearizesWithRevoke(t *testing.T) {
+	t.Run("revocation wins", func(t *testing.T) {
+		state := newMCPListenerClientState("token", "key")
+		state.revoke()
+		committed := false
+		if state.commitIfActive(func() { committed = true }) {
+			t.Fatal("commit succeeded after revocation")
+		}
+		if committed {
+			t.Fatal("commit callback ran after revocation")
+		}
+	})
+
+	t.Run("commit wins", func(t *testing.T) {
+		state := newMCPListenerClientState("token", "key")
+		commitStarted := make(chan struct{})
+		releaseCommit := make(chan struct{})
+		commitDone := make(chan bool, 1)
+		go func() {
+			commitDone <- state.commitIfActive(func() {
+				close(commitStarted)
+				<-releaseCommit
+			})
+		}()
+		<-commitStarted
+
+		revokeDone := make(chan struct{})
+		go func() {
+			state.revoke()
+			close(revokeDone)
+		}()
+		select {
+		case <-revokeDone:
+			t.Fatal("revocation completed during an in-flight commit")
+		default:
+		}
+
+		close(releaseCommit)
+		if !<-commitDone {
+			t.Fatal("active commit was rejected")
+		}
+		<-revokeDone
+		if !state.revoked.Load() {
+			t.Fatal("state was not revoked after commit completed")
+		}
+	})
+}

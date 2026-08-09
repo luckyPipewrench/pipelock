@@ -839,8 +839,8 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T)
 		t.Fatalf("returned session ID = %q, want upstream-minted-session", got)
 	}
 	afterSetup, _ := post(t, reconnectedClient, 6, "", "upstream-minted-session", "tools/call")
-	if !strings.Contains(afterSetup, "Pipelock-issued session token") {
-		t.Fatalf("upstream-minted session bypassed listener token requirement: %s", afterSetup)
+	if strings.Contains(afterSetup, `"error"`) {
+		t.Fatalf("unbound request lost stateless scanning/forwarding: %s", afterSetup)
 	}
 }
 

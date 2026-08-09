@@ -29,6 +29,21 @@ type sseMessageWriter struct {
 
 var _ transport.MessageWriter = (*sseMessageWriter)(nil)
 
+type listenerStateMessageWriter struct {
+	state  *mcpListenerClientState
+	writer transport.MessageWriter
+}
+
+func (w *listenerStateMessageWriter) WriteMessage(msg []byte) error {
+	var writeErr error
+	if !w.state.commitIfActive(func() {
+		writeErr = w.writer.WriteMessage(msg)
+	}) {
+		return context.Canceled
+	}
+	return writeErr
+}
+
 func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()

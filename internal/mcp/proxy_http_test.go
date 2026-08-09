@@ -4540,6 +4540,19 @@ func TestHTTPListener_HeaderPassthrough(t *testing.T) {
 	}
 }
 
+func TestForwardListenerUpstreamHeaders_StripsListenerToken(t *testing.T) {
+	inbound := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "http://listener.example/", nil)
+	inbound.Header.Set(listenerSessionTokenHeader, "client-token")
+	upstream := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "https://upstream.example/", nil)
+	upstream.Header.Set(listenerSessionTokenHeader, "operator-token")
+
+	forwardListenerUpstreamHeaders(upstream, inbound, false)
+
+	if got := upstream.Header.Get(listenerSessionTokenHeader); got != "" {
+		t.Fatalf("listener token reached upstream: %q", got)
+	}
+}
+
 func TestHTTPListener_RejectsHostileSessionIDsBeforeUpstream(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -30,6 +30,7 @@ type mcpListenerClientState struct {
 	baseline     *tools.ToolBaseline
 	recorder     session.Recorder
 	lastAccessed uint64
+	commitMu     sync.Mutex
 	revoked      atomic.Bool
 	done         context.Context
 	cancel       context.CancelFunc
@@ -168,10 +169,28 @@ func (state *mcpListenerClientState) revoke() {
 	if state == nil {
 		return
 	}
+	state.commitMu.Lock()
+	defer state.commitMu.Unlock()
 	state.revoked.Store(true)
 	if state.cancel != nil {
 		state.cancel()
 	}
+}
+
+// commitIfActive linearizes a response-side state commit or downstream write
+// against deletion and eviction. If the response wins, revocation waits for
+// that commit to finish; if revocation wins, the stale response is discarded.
+func (state *mcpListenerClientState) commitIfActive(commit func()) bool {
+	if state == nil {
+		return false
+	}
+	state.commitMu.Lock()
+	defer state.commitMu.Unlock()
+	if state.revoked.Load() {
+		return false
+	}
+	commit()
+	return true
 }
 
 // admitSetup adds state to the bounded registry. It holds the registry lock

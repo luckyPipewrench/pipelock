@@ -1581,6 +1581,7 @@ func TestHTTPListener_CORSPreflightAllowsStreamableMethods(t *testing.T) {
 			assertTokenSet(t, "Access-Control-Allow-Methods", resp.Header.Get("Access-Control-Allow-Methods"), []string{http.MethodPost, http.MethodGet, http.MethodDelete})
 			assertTokenSet(t, "Access-Control-Allow-Headers", resp.Header.Get("Access-Control-Allow-Headers"), []string{
 				listenerAuthorization,
+				listenerSessionTokenHeader,
 				"Mcp-Session-Id",
 				listenerProtocolVersion,
 				listenerMCPMethod,

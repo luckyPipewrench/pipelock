@@ -110,6 +110,34 @@ func newMCPListenerTransientState() *mcpListenerClientState {
 	return newMCPListenerClientState("", session.NextInvocationKey("mcp-http-listener-transient"))
 }
 
+// newUnboundState returns a request-local state container for a client that
+// has not presented a Pipelock-issued listener token. It exists only long
+// enough to attach scanner evidence, such as an adaptive SignalBlock, to the
+// request that produced it. The caller must discard it before the request
+// completes: it must never become a cross-request state partition selected by
+// an untrusted client header.
+func (s *mcpListenerClientStates) newUnboundState() *mcpListenerClientState {
+	state := newMCPListenerTransientState()
+	if s.store != nil {
+		state.recorder = s.store.GetOrCreate(state.key)
+	}
+	return state
+}
+
+// discardUnboundState removes the evidence recorder allocated for a single
+// unbound request. This preserves the event emitted for that request without
+// retaining a score, baseline, taint, or chain history that a later request
+// could join by presenting client-controlled routing data.
+func (s *mcpListenerClientStates) discardUnboundState(state *mcpListenerClientState) {
+	if state == nil || state.token != "" {
+		return
+	}
+	state.revoke()
+	if s.store != nil {
+		s.store.Delete(state.key)
+	}
+}
+
 func newMCPListenerClientState(token, key string) *mcpListenerClientState {
 	done, cancel := context.WithCancel(context.Background())
 	return &mcpListenerClientState{

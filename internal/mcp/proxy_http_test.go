@@ -2590,8 +2590,10 @@ func TestRunHTTPListenerProxy_MetadataDialBlockSurfacesReason(t *testing.T) {
 	}
 }
 
-// startListenerProxy starts RunHTTPListenerProxy on a free port and returns
-// the base URL (e.g. "http://127.0.0.1:<port>") and a cancel function.
+// startListenerProxy starts a production-default RunHTTPListenerProxy on a
+// free port and returns the base URL (e.g. "http://127.0.0.1:<port>") and a
+// cancel function. Tests that need compatibility behavior must opt in through
+// startLegacyListenerProxy instead.
 func startListenerProxy(
 	t *testing.T,
 	upstreamURL string,
@@ -2599,6 +2601,32 @@ func startListenerProxy(
 	inputCfg *InputScanConfig,
 	toolCfg *tools.ToolScanConfig,
 	policyCfg *policy.Config,
+) (string, context.CancelFunc, *bytes.Buffer) {
+	return startListenerProxyWithStateMode(t, upstreamURL, sc, inputCfg, toolCfg, policyCfg, nil)
+}
+
+// startLegacyListenerProxy exercises the pre-token session behavior for tests
+// that explicitly cover transport compatibility. New listener tests use
+// startListenerProxy and a Pipelock-issued token.
+func startLegacyListenerProxy(
+	t *testing.T,
+	upstreamURL string,
+	sc *scanner.Scanner,
+	inputCfg *InputScanConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
+) (string, context.CancelFunc, *bytes.Buffer) {
+	return startListenerProxyWithStateMode(t, upstreamURL, sc, inputCfg, toolCfg, policyCfg, boolPtr(false))
+}
+
+func startListenerProxyWithStateMode(
+	t *testing.T,
+	upstreamURL string,
+	sc *scanner.Scanner,
+	inputCfg *InputScanConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
+	stateTokenRequired *bool,
 ) (string, context.CancelFunc, *bytes.Buffer) {
 	t.Helper()
 
@@ -2615,8 +2643,7 @@ func startListenerProxy(
 	done := make(chan error, 1)
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, MCPProxyOpts{
-			Scanner: sc, InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
-			listenerStateTokenRequired: boolPtr(false),
+			Scanner: sc, InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg, listenerStateTokenRequired: stateTokenRequired,
 		})
 	}()
 
@@ -2641,9 +2668,6 @@ func startListenerProxy(
 
 func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer) {
 	t.Helper()
-	if opts.listenerStateTokenRequired == nil {
-		opts.listenerStateTokenRequired = boolPtr(false)
-	}
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -2978,20 +3002,17 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksNoBaseline(t *testing.T) {
 	}
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
 
-	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)) //nolint:gosec,noctx // test
-	if err != nil {
-		t.Fatalf("POST listener proxy: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("ReadAll(response): %v", err)
-	}
+	token := listenerSetupToken(t, baseURL)
+	// The setup handshake is itself forwarded, so the invariant is that the
+	// BLOCKED call adds nothing beyond it, not that upstream is never reached.
+	afterSetup := upstreamCalls.Load()
+	_, payloadStr := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	payload := []byte(payloadStr)
 	if !strings.Contains(string(payload), bindingReasonNoBaseline) {
 		t.Fatalf("expected no-baseline block, got: %s", payload)
 	}
-	if got := upstreamCalls.Load(); got != 0 {
-		t.Fatalf("upstream calls = %d, want 0", got)
+	if got := upstreamCalls.Load(); got != afterSetup {
+		t.Fatalf("blocked call reached upstream: calls = %d, want %d", got, afterSetup)
 	}
 	if !strings.Contains(logBuf.String(), "before baseline established") {
 		t.Fatalf("expected binding diagnostic log, got: %s", logBuf.String())
@@ -5288,6 +5309,21 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, logBuf := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
+	setupReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
+	if err != nil {
+		t.Fatalf("NewRequest initialize: %v", err)
+	}
+	setupReq.Header.Set("Content-Type", "application/json")
+	setupResp, err := http.DefaultClient.Do(setupReq)
+	if err != nil {
+		t.Fatalf("POST initialize: %v", err)
+	}
+	setupBody, _ := io.ReadAll(setupResp.Body)
+	_ = setupResp.Body.Close()
+	token := setupResp.Header.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatalf("initialize response missing %s: status=%d body=%s log=%s", listenerSessionTokenHeader, setupResp.StatusCode, setupBody, logBuf.String())
+	}
 
 	// Send read_file then execute_command to trigger "read-then-exec" chain.
 	calls := []string{
@@ -5300,6 +5336,7 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 			t.Fatalf("NewRequest call %d: %v", i, err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerSessionTokenHeader, token)
 		req.Header.Set("Mcp-Session-Id", "chain-warn-session")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -5341,6 +5378,21 @@ func TestHTTPListener_ChainDetectionBlock(t *testing.T) {
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, _ := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
+	setupReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
+	if err != nil {
+		t.Fatalf("NewRequest initialize: %v", err)
+	}
+	setupReq.Header.Set("Content-Type", "application/json")
+	setupResp, err := http.DefaultClient.Do(setupReq)
+	if err != nil {
+		t.Fatalf("POST initialize: %v", err)
+	}
+	setupBody, _ := io.ReadAll(setupResp.Body)
+	_ = setupResp.Body.Close()
+	token := setupResp.Header.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatalf("initialize response missing %s: status=%d body=%s", listenerSessionTokenHeader, setupResp.StatusCode, setupBody)
+	}
 
 	// Send read_file then execute_command to trigger "read-then-exec" chain.
 	calls := []string{
@@ -5354,6 +5406,7 @@ func TestHTTPListener_ChainDetectionBlock(t *testing.T) {
 			t.Fatalf("NewRequest: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerSessionTokenHeader, token)
 		req.Header.Set("Mcp-Session-Id", "chain-block-session")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -8102,4 +8155,54 @@ func TestHTTPListener_CompressedUpstreamResponseBlocked(t *testing.T) {
 			}
 		})
 	}
+}
+
+// listenerSetupToken performs the setup handshake a real client performs and
+// returns the token the listener issued. Tests that exercise stateful controls
+// need this, because state is now bound to a Pipelock-issued token rather than
+// to a client-supplied header. Tests that deliberately exercise the unbound path
+// should not call it.
+func listenerSetupToken(t *testing.T, baseURL string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
+	if err != nil {
+		t.Fatalf("NewRequest(initialize): %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST initialize: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	token := resp.Header.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatalf("initialize response issued no %s: status=%d body=%s", listenerSessionTokenHeader, resp.StatusCode, body)
+	}
+	return token
+}
+
+// listenerPost sends a listener request carrying an issued session token.
+func listenerPost(t *testing.T, baseURL, token, body string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set(listenerSessionTokenHeader, token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST listener: %v", err)
+	}
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("ReadAll(response): %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp, string(payload)
 }

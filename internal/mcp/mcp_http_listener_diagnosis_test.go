@@ -690,7 +690,7 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 	}
 }
 
-func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testing.T) {
+func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T) {
 	var changedDescription atomic.Bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -703,8 +703,10 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testin
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch request.Method {
+		case "initialize":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, request.ID)
 		case "tools/list":
-			if request.ID == 4 {
+			if request.ID == 5 {
 				w.Header().Set("Mcp-Session-Id", "upstream-minted-session")
 			}
 			description := "Echo text"
@@ -738,7 +740,7 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testin
 	// A hot-reload snapshot may arrive before any client establishes a
 	// baseline. The first tools/list must still initialize normally.
 	activeToolCfg.Store(newToolCfg())
-	post := func(t *testing.T, client *http.Client, id int, sessionID, method string) (string, http.Header) {
+	post := func(t *testing.T, client *http.Client, id int, token, sessionID, method string) (string, http.Header) {
 		t.Helper()
 		var body string
 		if method == "tools/list" {
@@ -754,6 +756,9 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testin
 		if sessionID != "" {
 			req.Header.Set("Mcp-Session-Id", sessionID)
 		}
+		if token != "" {
+			req.Header.Set(listenerSessionTokenHeader, token)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("POST: %v", err)
@@ -768,7 +773,12 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testin
 
 	clientA := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	t.Cleanup(clientA.CloseIdleConnections)
-	first, _ := post(t, clientA, 1, "reload-client", "tools/list")
+	_, setupHeaders := post(t, clientA, 1, "", "", "initialize")
+	token := setupHeaders.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatalf("initialize response missing %s", listenerSessionTokenHeader)
+	}
+	first, _ := post(t, clientA, 2, token, "reload-client", "tools/list")
 	if strings.Contains(first, `"error"`) {
 		t.Fatalf("first tools/list blocked: %s", first)
 	}
@@ -778,32 +788,30 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testin
 	activeToolCfg.Store(newToolCfg())
 	reconnectedClient := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	t.Cleanup(reconnectedClient.CloseIdleConnections)
-	reconnected, _ := post(t, reconnectedClient, 2, "reload-client", "tools/call")
+	reconnected, _ := post(t, reconnectedClient, 3, token, "reload-client", "tools/call")
 	if strings.Contains(reconnected, `"error"`) {
 		t.Fatalf("same client was refused after reload: %s", reconnected)
 	}
 
 	changedDescription.Store(true)
-	drifted, _ := post(t, reconnectedClient, 3, "reload-client", "tools/list")
+	drifted, _ := post(t, reconnectedClient, 4, token, "reload-client", "tools/list")
 	if !strings.Contains(drifted, `"error"`) {
 		t.Fatalf("tool drift after reload was not blocked: %s", drifted)
 	}
 
-	// A headerless setup request has no shared fallback state. The upstream's
-	// session ID promotes this request's fresh baseline for later calls.
+	// An upstream-issued Mcp-Session-Id remains routing data. It cannot promote
+	// unbound traffic into the Pipelock token partition that owns the baseline.
 	changedDescription.Store(false)
-	anonymousClient := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	t.Cleanup(anonymousClient.CloseIdleConnections)
-	setup, headers := post(t, anonymousClient, 4, "", "tools/list")
+	setup, headers := post(t, reconnectedClient, 5, token, "", "tools/list")
 	if strings.Contains(setup, `"error"`) {
-		t.Fatalf("headerless tools/list blocked: %s", setup)
+		t.Fatalf("token-bound tools/list blocked: %s", setup)
 	}
 	if got := headers.Get("Mcp-Session-Id"); got != "upstream-minted-session" {
 		t.Fatalf("returned session ID = %q, want upstream-minted-session", got)
 	}
-	afterSetup, _ := post(t, anonymousClient, 5, "upstream-minted-session", "tools/call")
-	if strings.Contains(afterSetup, `"error"`) {
-		t.Fatalf("upstream-minted session lost its baseline: %s", afterSetup)
+	afterSetup, _ := post(t, reconnectedClient, 6, "", "upstream-minted-session", "tools/call")
+	if !strings.Contains(afterSetup, "Pipelock-issued session token") {
+		t.Fatalf("upstream-minted session bypassed listener token requirement: %s", afterSetup)
 	}
 }
 

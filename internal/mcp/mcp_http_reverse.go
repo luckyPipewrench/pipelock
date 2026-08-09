@@ -426,12 +426,14 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
+		fullRequestBaseOpts := requestBaseOpts
 		statefulControls := listenerHasStatefulControls(opts)
 		requireStateToken := listenerRequiresStateToken(opts)
 		listenerSessionToken := r.Header.Get(listenerSessionTokenHeader)
 		clientState := newMCPListenerTransientState()
 		clientStateKey := clientState.key
 		setupState := false
+		stateBound := false
 		setClientState := func(state *mcpListenerClientState) {
 			clientState = state
 			clientStateKey = state.key
@@ -444,6 +446,21 @@ func RunHTTPListenerProxy(
 		setClientState(clientState)
 		if statefulControls && !requireStateToken {
 			setClientState(listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")))
+		}
+		if requireStateToken && listenerSessionToken != "" {
+			if state, ok := listenerClients.stateForToken(listenerSessionToken); ok {
+				setClientState(state)
+				stateBound = true
+			}
+		}
+		if requireStateToken && !stateBound {
+			// An unbound client still receives stateless content scanning and its
+			// resulting evidence. It never enters a state partition selected by
+			// client-controlled routing data.
+			clientState = listenerClients.newUnboundState()
+			clientStateKey = clientState.key
+			defer listenerClients.discardUnboundState(clientState)
+			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
 		listenerStateAuditKey := func() string {
 			if requireStateToken {
@@ -507,15 +524,23 @@ func RunHTTPListenerProxy(
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("stateful MCP listener request requires a Pipelock-issued session token")))
 		}
-		if requireStateToken && (r.Method == http.MethodGet || r.Method == http.MethodDelete) {
-			state, ok := listenerClients.stateForToken(listenerSessionToken)
-			if !ok {
-				rejectMissingListenerState(nil)
+		// The cancel func belongs to the HANDLER's lifetime, not this closure's.
+		// Deferring it inside the closure cancelled the context as soon as the
+		// closure returned, so every state-bound request was forwarded with an
+		// already-dead context and failed upstream. DELETE still cancels in-flight
+		// work through the state's own context; this only fixes when we release it.
+		var cancelStateRequest context.CancelFunc
+		defer func() {
+			if cancelStateRequest != nil {
+				cancelStateRequest()
+			}
+		}()
+		bindStateRequestContext := func() {
+			if !stateBound {
 				return
 			}
-			setClientState(state)
-			stateCtx, cancelStateRequest := clientState.requestContext(r.Context())
-			defer cancelStateRequest()
+			var stateCtx context.Context
+			stateCtx, cancelStateRequest = clientState.requestContext(r.Context())
 			r = r.WithContext(stateCtx)
 		}
 		// handleMetadataDialError recognizes a dial-time metadata refusal
@@ -719,6 +744,11 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
+			if requireStateToken && !stateBound {
+				rejectMissingListenerState(nil)
+				return
+			}
+			bindStateRequestContext()
 			upReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL, nil)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -849,6 +879,11 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
+			if requireStateToken && !stateBound {
+				rejectMissingListenerState(nil)
+				return
+			}
+			bindStateRequestContext()
 			upReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, upstreamURL, nil)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -1003,35 +1038,28 @@ func RunHTTPListenerProxy(
 					_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock session setup unavailable")))
 					return false
 				}
+				requestBaseOpts = fullRequestBaseOpts
 				setClientState(state)
 				setupState = true
+				stateBound = true
 				return true
 			}
-			if listenerSessionToken != "" {
-				state, ok := listenerClients.stateForToken(listenerSessionToken)
-				if ok {
-					setClientState(state)
-				} else if !frame.IsBatch && frame.Method == "initialize" {
+			if stateBound {
+				// The token lookup above bound this request to its issued state.
+			} else if listenerSessionToken != "" {
+				if !frame.IsBatch && frame.Method == "initialize" {
 					if !startSetup() {
 						return
 					}
-				} else {
-					rejectMissingListenerState(frame.ID)
-					return
 				}
 			} else if !frame.IsBatch && frame.Method == "initialize" {
 				if !startSetup() {
 					return
 				}
-			} else {
-				rejectMissingListenerState(frame.ID)
-				return
 			}
 		}
-		if requireStateToken && !setupState {
-			stateCtx, cancelStateRequest := clientState.requestContext(r.Context())
-			defer cancelStateRequest()
-			r = r.WithContext(stateCtx)
+		if stateBound {
+			bindStateRequestContext()
 		}
 
 		// Kill switch: deny all requests when active.
@@ -1177,6 +1205,10 @@ func RunHTTPListenerProxy(
 		}
 
 		if blockedByUpstreamContract(frame.ID, scanOpts) {
+			return
+		}
+		if requireStateToken && !stateBound {
+			rejectMissingListenerState(frame.ID)
 			return
 		}
 
@@ -1700,6 +1732,30 @@ func listenerRequiresStateToken(opts MCPProxyOpts) bool {
 		return false
 	}
 	return listenerHasStatefulControls(opts)
+}
+
+// listenerStatelessRequestOpts strips every control whose decision depends on
+// a retained client state partition. It is used only while a listener request
+// lacks a valid Pipelock-issued token. Stateless scanner, A2A, policy,
+// redaction, contract, and receipt checks remain active and run before the
+// request receives its token-required verdict.
+func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
+	opts.ToolCfg = nil
+	opts.ToolCfgFn = nil
+	opts.Baseline = nil
+	opts.BaselineFn = nil
+	opts.ChainMatcher = nil
+	opts.ChainMatcherFn = nil
+	opts.TaintCfg = nil
+	opts.TaintCfgFn = nil
+	opts.CEE = nil
+	opts.CEEFn = nil
+	opts.ToolFreezer = nil
+	opts.FrozenToolStableKey = ""
+	opts.DoWCheck = nil
+	opts.DoWEnabledFn = nil
+	opts.DoWEnforceSubjectTrust = false
+	return opts
 }
 
 // trustedDoWSubjectKey returns the denial-of-wallet subject key when the request

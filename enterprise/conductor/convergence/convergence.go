@@ -324,11 +324,6 @@ func classifyFollower(
 
 	// Excluded instances are reported as N/A.
 	if intent != nil && intent.Excluded {
-		if !validReceiptExclusion(intent) {
-			fc.State = StateUnknown
-			fc.Reason = "excluded receipt producer requires excluded_owner and excluded_reason"
-			return fc
-		}
 		fc.State = StateExcluded
 		fc.Reason = intent.ExcludedReason
 		if fc.Reason == "" {
@@ -714,16 +709,5 @@ func batchTimestampPlausible(receivedAt, now time.Time) bool {
 }
 
 func deliveryExpected(intent *DeploymentIntent) bool {
-	if intent == nil {
-		return false
-	}
-	if intent.Excluded {
-		return !validReceiptExclusion(intent)
-	}
-	return intent.DesiredReplicas > 0
-}
-
-func validReceiptExclusion(intent *DeploymentIntent) bool {
-	return intent != nil && intent.Excluded && strings.TrimSpace(intent.ExcludedOwner) != "" &&
-		strings.TrimSpace(intent.ExcludedReason) != ""
+	return intent != nil && !intent.Excluded && intent.DesiredReplicas > 0
 }

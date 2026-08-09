@@ -761,7 +761,7 @@ pipelock conductor fleet status \
 against the enrolled-follower roster and its latest accepted signed audit batch.
 It emits the existing convergence report with `delivery_health`, plus the last
 batch ID, signer, schema version, sequence range, dropped count, runtime build,
-and delivery lag for every producer with a batch.
+and delivery lag for every expected producer with a batch.
 
 Keep the expected-producer inventory in Git with the deployment declaration.
 Start from [`examples/conductor/receipt-producer-inventory.json`](../../examples/conductor/receipt-producer-inventory.json).

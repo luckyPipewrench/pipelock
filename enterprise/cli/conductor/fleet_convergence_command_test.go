@@ -40,10 +40,13 @@ type convergenceCommandServer struct {
 	followersBody   string
 	auditStatus     map[string]int
 	auditBody       map[string]string
+	auditDelay      time.Duration
 
-	mu         sync.Mutex
-	requests   int
-	auditCalls map[string]int
+	mu             sync.Mutex
+	requests       int
+	auditCalls     map[string]int
+	activeAudit    int
+	maxActiveAudit int
 }
 
 func (s *convergenceCommandServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +85,24 @@ func (s *convergenceCommandServer) ServeHTTP(w http.ResponseWriter, r *http.Requ
 			s.auditCalls = make(map[string]int)
 		}
 		s.auditCalls[instanceID]++
+		s.activeAudit++
+		if s.activeAudit > s.maxActiveAudit {
+			s.maxActiveAudit = s.activeAudit
+		}
+		delay := s.auditDelay
 		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			s.activeAudit--
+			s.mu.Unlock()
+		}()
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if status := s.auditStatus[instanceID]; status != 0 {
 			http.Error(w, "synthetic audit failure", status)
 			return
@@ -108,6 +128,12 @@ func (s *convergenceCommandServer) requestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.requests
+}
+
+func (s *convergenceCommandServer) maxConcurrentAuditRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxActiveAudit
 }
 
 func TestFleetConvergenceCommand_NoLicenseFailsBeforeNetwork(t *testing.T) {
@@ -229,6 +255,20 @@ func TestFleetConvergenceCommand_MissingAndStaleExitNonzero(t *testing.T) {
 
 func TestRunFleetConvergence_FailsClosedOnClientAndAPIErrors(t *testing.T) {
 	inventory := writeConvergenceInventory(t, `[{"instance_id":"current","desired_replicas":1}]`)
+	t.Run("inventory producer limit fails before network", func(t *testing.T) {
+		server := &convergenceCommandServer{}
+		client := newTestClientServer(t, convergenceTestToken, server)
+		producers := "[" + strings.TrimSuffix(strings.Repeat(`{"instance_id":"too-many","desired_replicas":1},`, maxReceiptInventoryProducers+1), ",") + "]"
+		tooMany := writeConvergenceInventory(t, producers)
+
+		err := runFleetConvergenceDirect(t, client, tooMany, true, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "supported report limit") {
+			t.Fatalf("error = %v, want producer-limit refusal", err)
+		}
+		if got := server.requestCount(); got != 0 {
+			t.Fatalf("network requests = %d, want none before inventory limit refusal", got)
+		}
+	})
 
 	t.Run("nonpositive stale after", func(t *testing.T) {
 		err := runFleetConvergence(&cobra.Command{}, fleetConvergenceOptions{staleAfter: 0})
@@ -297,11 +337,37 @@ func TestRunFleetConvergence_FailsClosedOnClientAndAPIErrors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			client := newTestClientServer(t, convergenceTestToken, tc.server)
-			err := runFleetConvergenceDirect(t, client, inventory, time.Minute, false, io.Discard)
+			err := runFleetConvergenceDirect(t, client, inventory, false, io.Discard)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFetchExpectedLatestBatches_BoundsConcurrencyAndHonorsCancellation(t *testing.T) {
+	server := &convergenceCommandServer{auditDelay: 20 * time.Millisecond}
+	clientOpts := newTestClientServer(t, convergenceTestToken, server)
+	client, err := newConductorClient(clientOpts)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	replicas := 1
+	inventory := receiptProducerInventory{OrgID: convergenceTestOrg, FleetID: convergenceTestFleet}
+	for range 2 * maxConcurrentAuditBatchReads {
+		inventory.Producers = append(inventory.Producers, receiptProducerIntent{InstanceID: "current", DesiredReplicas: &replicas})
+	}
+	if _, err := fetchExpectedLatestBatches(context.Background(), client, inventory); err != nil {
+		t.Fatalf("fetch batches: %v", err)
+	}
+	if got := server.maxConcurrentAuditRequests(); got > maxConcurrentAuditBatchReads || got < 2 {
+		t.Fatalf("maximum concurrent audit requests = %d, want 2 through %d", got, maxConcurrentAuditBatchReads)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fetchExpectedLatestBatches(canceled, client, inventory); err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled fetch error = %v, want context cancellation", err)
 	}
 }
 
@@ -316,7 +382,7 @@ func TestRunFleetConvergence_ReturnsWriteError(t *testing.T) {
 	client := newTestClientServer(t, convergenceTestToken, server)
 	inventory := writeConvergenceInventory(t, `[{"instance_id":"current","desired_replicas":1}]`)
 
-	err := runFleetConvergenceDirect(t, client, inventory, time.Minute, false, failingWriter{})
+	err := runFleetConvergenceDirect(t, client, inventory, false, failingWriter{})
 	if err == nil || !strings.Contains(err.Error(), "write convergence report") {
 		t.Fatalf("error = %v, want write convergence report", err)
 	}
@@ -342,7 +408,7 @@ func TestRunFleetConvergence_InventoryErrorAndDiagnosticMode(t *testing.T) {
 		inventory := writeConvergenceInventory(t, `[{"instance_id":"missing","desired_replicas":1}]`)
 		var output bytes.Buffer
 
-		if err := runFleetConvergenceDirect(t, client, inventory, time.Minute, false, &output); err != nil {
+		if err := runFleetConvergenceDirect(t, client, inventory, false, &output); err != nil {
 			t.Fatalf("diagnostic convergence run: %v", err)
 		}
 		report := decodeConvergenceReport(t, output.Bytes())
@@ -408,7 +474,7 @@ func executeFleetConvergence(t *testing.T, client clientOptions, inventory strin
 	return output.Bytes(), err
 }
 
-func runFleetConvergenceDirect(t *testing.T, client clientOptions, inventory string, staleAfter time.Duration, requireCurrent bool, out io.Writer) error {
+func runFleetConvergenceDirect(t *testing.T, client clientOptions, inventory string, requireCurrent bool, out io.Writer) error {
 	t.Helper()
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
@@ -416,7 +482,7 @@ func runFleetConvergenceDirect(t *testing.T, client clientOptions, inventory str
 	return runFleetConvergence(cmd, fleetConvergenceOptions{
 		client:         client,
 		inventory:      inventory,
-		staleAfter:     staleAfter,
+		staleAfter:     time.Minute,
 		requireCurrent: requireCurrent,
 	})
 }

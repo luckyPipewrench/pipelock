@@ -14,6 +14,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,8 @@ import (
 const (
 	receiptProducerInventorySchema = "pipelock-receipt-producer-inventory-v1"
 	maxReceiptInventoryBytes       = 1 << 20
+	maxReceiptInventoryProducers   = ReadClientFollowerLimitMax - 1
+	maxConcurrentAuditBatchReads   = 8
 )
 
 var ErrReceiptDeliveryUnhealthy = errors.New("expected receipt producer delivery is unhealthy")
@@ -134,6 +137,10 @@ func runFleetConvergence(cmd *cobra.Command, opts fleetConvergenceOptions) error
 	if err != nil {
 		return err
 	}
+	// Use one reference time for the complete audit-batch snapshot. Sampling it
+	// after sequential reads would make the first response look older merely
+	// because later requests took time to finish.
+	reportNow := time.Now().UTC()
 	batches, err := fetchExpectedLatestBatches(cmd.Context(), client, inventory)
 	if err != nil {
 		return err
@@ -141,7 +148,7 @@ func runFleetConvergence(cmd *cobra.Command, opts fleetConvergenceOptions) error
 	report := convergence.Build(convergence.Inputs{
 		OrgID:        inventory.OrgID,
 		FleetID:      inventory.FleetID,
-		Now:          time.Now().UTC(),
+		Now:          reportNow,
 		Intents:      inventory.deploymentIntents(),
 		FleetStatus:  statuses,
 		AuditBatches: batches,
@@ -245,6 +252,9 @@ func validateReceiptProducerInventory(inventory receiptProducerInventory) error 
 	if len(inventory.Producers) == 0 {
 		return errors.New("--inventory producers must not be empty")
 	}
+	if len(inventory.Producers) > maxReceiptInventoryProducers {
+		return fmt.Errorf("--inventory producers exceeds supported report limit of %d", maxReceiptInventoryProducers)
+	}
 	seen := make(map[string]struct{}, len(inventory.Producers))
 	for _, producer := range inventory.Producers {
 		if strings.TrimSpace(producer.InstanceID) == "" {
@@ -296,27 +306,70 @@ func fetchConvergenceFollowers(ctx context.Context, client *conductorClient, inv
 }
 
 func fetchExpectedLatestBatches(ctx context.Context, client *conductorClient, inventory receiptProducerInventory) ([]controlplane.AuditBatchSummary, error) {
-	batches := make([]controlplane.AuditBatchSummary, 0, len(inventory.Producers))
+	ctx, cancel := context.WithTimeout(ctx, clientHTTPTimeout)
+	defer cancel()
+	producers := make([]receiptProducerIntent, 0, len(inventory.Producers))
 	for _, producer := range inventory.Producers {
 		if producer.Excluded || *producer.DesiredReplicas == 0 {
 			continue
 		}
-		params := map[string]string{
-			"org_id":      inventory.OrgID,
-			"fleet_id":    inventory.FleetID,
-			"instance_id": producer.InstanceID,
-			"limit":       "1",
+		producers = append(producers, producer)
+	}
+	if len(producers) == 0 {
+		return nil, nil
+	}
+	type result struct {
+		batch *controlplane.AuditBatchSummary
+		err   error
+	}
+	results := make([]result, len(producers))
+	jobs := make(chan int)
+	workers := min(maxConcurrentAuditBatchReads, len(producers))
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				producer := producers[index]
+				params := map[string]string{"org_id": inventory.OrgID, "fleet_id": inventory.FleetID, "instance_id": producer.InstanceID, "limit": "1"}
+				body, err := client.getJSON(ctx, controlplane.AuditBatchesPath+encodeQuery(params))
+				if err != nil {
+					results[index].err = fmt.Errorf("read latest audit batch for %q: %w", producer.InstanceID, err)
+					continue
+				}
+				var response auditBatchListResponse
+				if err := json.Unmarshal(body, &response); err != nil {
+					results[index].err = fmt.Errorf("decode latest audit batch for %q: %w", producer.InstanceID, err)
+					continue
+				}
+				if len(response.Batches) > 0 {
+					results[index].batch = &response.Batches[0]
+				}
+			}
+		}()
+	}
+	for index := range producers {
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return nil, fmt.Errorf("read latest audit batches: %w", ctx.Err())
 		}
-		body, err := client.getJSON(ctx, controlplane.AuditBatchesPath+encodeQuery(params))
-		if err != nil {
-			return nil, fmt.Errorf("read latest audit batch for %q: %w", producer.InstanceID, err)
+	}
+	close(jobs)
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("read latest audit batches: %w", ctx.Err())
+	}
+	batches := make([]controlplane.AuditBatchSummary, 0, len(producers))
+	for _, result := range results {
+		if result.err != nil {
+			return nil, result.err
 		}
-		var response auditBatchListResponse
-		if err := json.Unmarshal(body, &response); err != nil {
-			return nil, fmt.Errorf("decode latest audit batch for %q: %w", producer.InstanceID, err)
-		}
-		if len(response.Batches) > 0 {
-			batches = append(batches, response.Batches[0])
+		if result.batch != nil {
+			batches = append(batches, *result.batch)
 		}
 	}
 	return batches, nil

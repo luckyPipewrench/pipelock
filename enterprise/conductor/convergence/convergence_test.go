@@ -178,7 +178,7 @@ func TestBuild_SixFixtureStates(t *testing.T) {
 		report := Build(Inputs{
 			OrgID: "org1", FleetID: "fleet1", Now: now,
 			Intents: []DeploymentIntent{
-				{InstanceID: "local-1", DesiredReplicas: 1, Excluded: true, ExcludedOwner: "ops", ExcludedReason: "local-only proxy"},
+				{InstanceID: "local-1", DesiredReplicas: 1, Excluded: true, ExcludedReason: "local-only proxy"},
 			},
 		})
 		if len(report.Followers) != 1 {

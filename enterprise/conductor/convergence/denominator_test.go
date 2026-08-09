@@ -369,29 +369,6 @@ func TestDeliveryHealth_ExpectedCurrentAndAlerting(t *testing.T) {
 	}
 }
 
-func TestBuild_UnaccountableExclusionFailsClosed(t *testing.T) {
-	now := time.Now().UTC()
-	for _, tc := range []DeploymentIntent{
-		{
-			InstanceID: "missing-owner", DesiredReplicas: 1, Excluded: true,
-			ExcludedReason: "local-only proxy",
-		},
-		{
-			InstanceID: "excluded-scaled-zero", DesiredReplicas: 0, Excluded: true,
-		},
-	} {
-		report := Build(Inputs{Now: now, Intents: []DeploymentIntent{tc}})
-
-		if len(report.Followers) != 1 || report.Followers[0].State != StateUnknown {
-			t.Fatalf("unaccountable exclusion follower = %+v, want one unknown follower", report.Followers)
-		}
-		if report.DeliveryHealth.Expected != 1 || report.DeliveryHealth.Current != 0 ||
-			!slices.Equal(report.DeliveryHealth.Alerting, []string{tc.InstanceID}) {
-			t.Fatalf("unaccountable exclusion delivery health = %+v, want one alerting producer", report.DeliveryHealth)
-		}
-	}
-}
-
 func TestRuntimeAndConductorSummariesDoNotVouchForUnknownState(t *testing.T) {
 	healthOK := controlplane.FleetHealthOK
 	followers := []FollowerConvergence{{

@@ -141,9 +141,11 @@ func newReverseUpstreamClient(dialContext func(ctx context.Context, network, add
 // net.ListenConfig). This separates the bind step from serving, so callers
 // detect port conflicts synchronously instead of losing them inside a goroutine.
 //
-// When store is non-nil, per-request session recorders are created using the
-// Mcp-Session-Id header (or RemoteAddr fallback) as the session key, enabling
-// adaptive enforcement signal tracking per logical MCP session.
+// Mutable session state is partitioned by Mcp-Session-Id. A headerless request
+// starts with a private empty state and may retain it only when the upstream
+// returns a session ID. Mcp-Session-Id is client-supplied correlation data, not
+// authenticated client identity; a client that reuses another client's value
+// can select the same state.
 //
 // DoW enforcement is stricter: when DoWEnforceSubjectTrust is true, a tool or
 // A2A call is refused unless its subject is identified at or above
@@ -187,38 +189,7 @@ func RunHTTPListenerProxy(
 		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
 	}
 
-	// Shared tool baseline across all requests for drift detection and
-	// session binding. It intentionally survives hot reloads for the
-	// lifetime of this listener; reload updates policy knobs, not the
-	// listener's observed tool inventory.
-	toolBaseline := tools.NewToolBaseline()
-	// driftEdge detects detect_drift false→true transitions. When
-	// detect_drift transitions false→true via hot reload, the drift maps
-	// retained from before the disabled window are stale relative to the
-	// upstream's current tool inventory; ResetDriftState forces a re-seed
-	// on the next tools/list so post-flip traffic is evaluated against the
-	// new ground truth rather than pre-disable hashes. Other transitions
-	// are no-ops: true→true preserves a legitimate baseline, true→false
-	// leaves the maps intact so a subsequent re-enable can still detect
-	// drift across short toggles, false→false stays empty.
-	var driftEdge tools.DetectDriftRisingEdge
-	toolCfgFn := func() *tools.ToolScanConfig {
-		cfg := opts.toolCfg()
-		if cfg == nil || cfg.Action == "" {
-			return nil
-		}
-		if driftEdge.Observe(cfg.DetectDrift) {
-			toolBaseline.ResetDriftState()
-		}
-		return &tools.ToolScanConfig{
-			Baseline:                toolBaseline,
-			Action:                  cfg.Action,
-			DetectDrift:             cfg.DetectDrift,
-			BindingUnknownAction:    cfg.BindingUnknownAction,
-			BindingNoBaselineAction: cfg.BindingNoBaselineAction,
-			ExtraPoison:             cfg.ExtraPoison,
-		}
-	}
+	listenerClients := newMCPListenerClientStates(opts.Store)
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler. The static
@@ -232,8 +203,8 @@ func RunHTTPListenerProxy(
 		Approver:                  opts.Approver,
 		InputCfg:                  opts.inputCfg(),
 		InputCfgFn:                opts.InputCfgFn,
-		ToolCfg:                   toolCfgFn(),
-		ToolCfgFn:                 toolCfgFn,
+		ToolCfg:                   nil,
+		ToolCfgFn:                 nil,
 		PolicyCfg:                 opts.policyCfg(),
 		PolicyCfgFn:               opts.PolicyCfgFn,
 		KillSwitch:                opts.KillSwitch,
@@ -450,6 +421,12 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
+		clientState, clientStateKey := listenerClients.stateForRequest(r.Header.Get("Mcp-Session-Id"))
+		listenerToolCfgFn := func() *tools.ToolScanConfig {
+			return listenerClients.toolConfig(clientState, opts.toolCfg())
+		}
+		requestBaseOpts.ToolCfg = listenerToolCfgFn()
+		requestBaseOpts.ToolCfgFn = listenerToolCfgFn
 		reqA2ACfg := requestBaseOpts.a2aCfg()
 		emitListenerBlockDecision := func(dec mcpListenerBlockDecision) {
 			actionID := receipt.NewActionID()
@@ -584,15 +561,7 @@ func RunHTTPListenerProxy(
 			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 				return
 			}
-			var reqRec session.Recorder
-			if opts.Store != nil {
-				reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
-			}
-			auditSessionKey := sanitizeAuditSessionKey(r.Header.Get("Mcp-Session-Id"))
-			if auditSessionKey == "" {
-				auditSessionKey = hashSessionKey(adaptiveHostFromRemoteAddr(r.RemoteAddr))
-			}
-			recordListenerAdaptiveSignal(reqRec, sig, auditSessionKey)
+			recordListenerAdaptiveSignal(clientState.recorder, sig, listenerAuditSessionKey(r.Header.Get("Mcp-Session-Id"), clientStateKey))
 		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
@@ -767,10 +736,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 
-			var reqRec session.Recorder
-			if opts.Store != nil {
-				reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
-			}
+			reqRec := clientState.recorder
 			baselineRec := newMCPRequestBaselineRecorder()
 			baselineOpts := requestBaseOpts
 			baselineOpts.BaselineRec = baselineRec
@@ -782,6 +748,7 @@ func RunHTTPListenerProxy(
 			reqOpts.AdaptiveCfgFn = nil
 
 			if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
+				listenerClients.bindUpstreamSession(clientState, sid)
 				if opts.DoWRegisterSession != nil {
 					opts.DoWRegisterSession(sid)
 				}
@@ -877,6 +844,7 @@ func RunHTTPListenerProxy(
 			if opts.DoWForgetSession != nil {
 				opts.DoWForgetSession(r.Header.Get("Mcp-Session-Id"))
 			}
+			listenerClients.forget(r.Header.Get("Mcp-Session-Id"))
 			w.WriteHeader(upResp.StatusCode)
 			return
 		}
@@ -989,30 +957,13 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Use a sanitized Mcp-Session-Id header as the audit and chain
-		// detection session key so concurrent clients don't share tool call
-		// history. This preserves equality for well-formed IDs. Residual risk:
-		// an attacker who already knows a valid session ID can still
-		// mis-attribute audit records; enforcement is unaffected because
-		// adaptive risk scoring uses the remote address recorder.
-		chainSessionKey := sanitizeAuditSessionKey(r.Header.Get("Mcp-Session-Id"))
-		auditSessionKey := chainSessionKey
-		if chainSessionKey == "" {
-			host := adaptiveHostFromRemoteAddr(r.RemoteAddr)
-			chainSessionKey = host
-			// Hash the IP for audit logs to avoid persisting raw client
-			// addresses in a field that bypasses report IP redaction.
-			auditSessionKey = hashSessionKey(host)
-		}
-
-		// Per-request adaptive enforcement recorder. Uses RemoteAddr (without
-		// port) as a stable session key: the first request has no Mcp-Session-Id
-		// yet, so using the chain key would split signals across two keys (IP
-		// for first request, session ID for subsequent ones).
-		var reqRec session.Recorder
-		if opts.Store != nil {
-			reqRec = opts.Store.GetOrCreate(adaptiveHostFromRemoteAddr(r.RemoteAddr))
-		}
+		// chainSessionKey is unique for a request without Mcp-Session-Id and
+		// stable only for requests that supply the same session ID. That keeps
+		// headerless clients separate instead of collapsing them into the
+		// listener's RemoteAddr fallback.
+		chainSessionKey := clientStateKey
+		auditSessionKey := listenerAuditSessionKey(r.Header.Get("Mcp-Session-Id"), clientStateKey)
+		reqRec := clientState.recorder
 		baselineRec := newMCPRequestBaselineRecorder()
 		baselineOpts := requestBaseOpts
 		baselineOpts.BaselineRec = baselineRec
@@ -1262,6 +1213,7 @@ func RunHTTPListenerProxy(
 
 		// Pass Mcp-Session-Id from upstream back to client.
 		if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
+			listenerClients.bindUpstreamSession(clientState, sid)
 			if opts.DoWRegisterSession != nil {
 				opts.DoWRegisterSession(sid)
 			}

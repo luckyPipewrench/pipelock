@@ -1135,6 +1135,18 @@ mcp_session_binding:
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
+On the HTTP reverse listener, Pipelock keeps the tool baseline, adaptive
+enforcement state, taint risk, and chain history separate for each supplied
+`Mcp-Session-Id`. A request without that header starts with an empty,
+single-request state. It must receive an upstream session ID from a successful
+setup response before later requests can reuse its learned baseline.
+
+`Mcp-Session-Id` is client-supplied correlation data, not authenticated client
+identity. Clients that present the same value select the same state. Use a
+listener identity credential that Pipelock can bind to this state when the
+deployment requires isolation against a client that can forge or reuse another
+client's session ID. The current listener does not expose that binding.
+
 ## MCP WebSocket Listener
 
 Controls inbound WebSocket connections when the MCP proxy runs in listener mode with a `ws://` or `wss://` upstream. Loopback origins are always allowed.

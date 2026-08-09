@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -368,7 +367,7 @@ func TestHTTPListener_GETStreamBlocksDuplicateCompressedUpstreamEncoding(t *test
 	}
 }
 
-func TestHTTPListener_GETStreamWithStoreRecordsRemoteHost(t *testing.T) {
+func TestHTTPListener_GETStreamWithoutSessionDoesNotPersistState(t *testing.T) {
 	message := `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"clean"}}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -395,8 +394,8 @@ func TestHTTPListener_GETStreamWithStoreRecordsRemoteHost(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
 	}
-	if got := store.capturedKeys(); !slices.Contains(got, "127.0.0.1") {
-		t.Fatalf("store captured keys = %v, want listener client host 127.0.0.1", got)
+	if got := store.capturedKeys(); len(got) != 0 {
+		t.Fatalf("store captured keys = %v, want no headerless persisted state", got)
 	}
 }
 

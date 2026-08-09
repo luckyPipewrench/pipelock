@@ -3587,6 +3587,7 @@ func TestNormalizeConnectTargetPreservesPortForScanAndDial(t *testing.T) {
 		wantHost       string
 		wantPort       string
 		wantScanURL    string
+		wantBad        bool
 	}{
 		{
 			name:           "explicit port",
@@ -3620,11 +3621,39 @@ func TestNormalizeConnectTargetPreservesPortForScanAndDial(t *testing.T) {
 			wantPort:       "443",
 			wantScanURL:    "https://[2001:db8::1]:443/",
 		},
+		// net.SplitHostPort accepts all three of these, so without an explicit
+		// rejection they reach policy as an empty host or an empty port. An
+		// empty port is the dangerous one: the dial snapshot only compares
+		// ports when it has one, so it would silently stop binding.
+		{
+			name:    "empty port is rejected",
+			target:  "api.vendor.example:",
+			wantBad: true,
+		},
+		{
+			name:    "empty host is rejected",
+			target:  ":443",
+			wantBad: true,
+		},
+		{
+			name:    "empty authority is rejected",
+			target:  "",
+			wantBad: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			normalized, host, port, scanURL := normalizeConnectTarget(tt.target)
+			normalized, host, port, scanURL, ok := normalizeConnectTarget(tt.target)
+			if tt.wantBad {
+				if ok {
+					t.Fatalf("normalizeConnectTarget(%q) accepted a malformed authority as (%q, %q, %q, %q)", tt.target, normalized, host, port, scanURL)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("normalizeConnectTarget(%q) rejected a well-formed authority", tt.target)
+			}
 			if normalized != tt.wantNormalized || host != tt.wantHost || port != tt.wantPort || scanURL != tt.wantScanURL {
 				t.Fatalf("normalizeConnectTarget(%q) = (%q, %q, %q, %q), want (%q, %q, %q, %q)", tt.target, normalized, host, port, scanURL, tt.wantNormalized, tt.wantHost, tt.wantPort, tt.wantScanURL)
 			}

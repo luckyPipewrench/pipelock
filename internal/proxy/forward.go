@@ -71,15 +71,28 @@ func getTunnelSemaphore() *tunnelSemaphore {
 }
 
 // normalizeConnectTarget applies CONNECT's sole default and produces the
-// host-and-port target used by both scanning and dialing.
-func normalizeConnectTarget(target string) (normalized, host, port, scanURL string) {
+// host-and-port target used by both scanning and dialing. It reports whether
+// the authority was well formed.
+//
+// net.SplitHostPort accepts two shapes that must not reach the rest of this
+// path. ":443" and "" parse with an EMPTY HOST, which would produce a scan URL
+// with no host to match policy against. "host:" parses with an EMPTY PORT,
+// which is worse: the dial snapshot guard only compares ports when it has one,
+// so an empty port would silently disable the port binding for that request.
+// Both are rejected here rather than normalized to a guess, because inventing a
+// host or a port for a malformed authority decides policy on an address the
+// client never asked for.
+func normalizeConnectTarget(target string) (normalized, host, port, scanURL string, ok bool) {
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		bare := strings.TrimPrefix(strings.TrimSuffix(target, "]"), "[")
 		target = net.JoinHostPort(bare, "443")
 	}
 
-	host, port, _ = net.SplitHostPort(target)
-	return target, host, port, "https://" + net.JoinHostPort(host, port) + "/"
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || host == "" || port == "" {
+		return "", "", "", "", false
+	}
+	return target, host, port, "https://" + net.JoinHostPort(host, port) + "/", true
 }
 
 // handleConnect handles HTTP CONNECT tunnel requests. It scans the target
@@ -165,7 +178,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, host, targetPort, syntheticURL := normalizeConnectTarget(target)
+	target, host, targetPort, syntheticURL, targetOK := normalizeConnectTarget(target)
+	if !targetOK {
+		writeBlockedError(w,
+			blockInfoFor(blockreason.BadRequest, ""),
+			"malformed target authority", http.StatusBadRequest)
+		return
+	}
 	connectReceiptTarget := syntheticURL
 	emitConnectSessionDenyReceipt := func() {
 		emitConnectReceipt(receipt.EmitOpts{

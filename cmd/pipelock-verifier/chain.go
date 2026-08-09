@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -104,15 +106,12 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		}
 		clean = location.Dir
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
+		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, keyHex, opts); handled || handleErr != nil {
+			return handleErr
+		}
 		receipts, extractErr := actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
 		if extractErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
-		}
-		if len(receipts) > 0 {
-			return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
-		}
-		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, keyHex, opts); handled || handleErr != nil {
-			return handleErr
 		}
 		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	} else {
@@ -128,18 +127,55 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%q is a directory; pass --dir to verify a session directory", target))
 		}
 		label = clean
-		receipts, extractErr := actionreceipt.ExtractReceipts(clean)
-		if extractErr != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+		isBareV1, detectErr := isBareActionReceiptJSONL(clean)
+		if detectErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
 		}
-		if len(receipts) > 0 {
+		if isBareV1 {
+			receipts, extractErr := actionreceipt.ExtractReceipts(clean)
+			if extractErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+			}
 			return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 		}
 		if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
 			return handleErr
 		}
+		receipts, extractErr := actionreceipt.ExtractReceipts(clean)
+		if extractErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+		}
 		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	}
+}
+
+// isBareActionReceiptJSONL identifies the legacy compatibility format without
+// treating malformed or mixed input as an action chain. Recorder-backed v1 and
+// all v2 input keep the v2-first route below, which preserves its strict
+// recorder validation before the v1 fallback.
+func isBareActionReceiptJSONL(path string) (bool, error) {
+	data, err := readVerifierFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read evidence file: %w", err)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
+	found := false
+	for scanner.Scan() {
+		raw := bytes.TrimSpace(scanner.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		r, unmarshalErr := actionreceipt.Unmarshal(raw)
+		if unmarshalErr != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
+			return false, nil
+		}
+		found = true
+	}
+	if err := scanner.Err(); err != nil {
+		return false, fmt.Errorf("scan evidence file: %w", err)
+	}
+	return found, nil
 }
 
 func verifyActionChain(stdout, stderr io.Writer, label string, receipts []actionreceipt.Receipt, keyHex string, opts chainOptions) error {

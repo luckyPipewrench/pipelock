@@ -1526,6 +1526,73 @@ func TestRunHTTPProxy_SessionDeleteOnEOF(t *testing.T) {
 	}
 }
 
+func TestRunHTTPProxy_SessionBindingActionsBlockBeforeForward(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		input          string
+		wantReason     string
+		wantListCalls  int32
+		unknownAction  string
+		baselineAction string
+	}{
+		{
+			name:           "no baseline with binding-only action",
+			input:          `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe","arguments":{}}}` + "\n",
+			wantReason:     bindingReasonNoBaseline,
+			baselineAction: config.ActionBlock,
+		},
+		{
+			name: "unknown after baseline with binding-only action",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n" +
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown","arguments":{}}}` + "\n",
+			wantReason:    bindingReasonUnknownTool,
+			wantListCalls: 1,
+			unknownAction: config.ActionBlock,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var listCalls, toolCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("ReadAll(upstream): %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(string(body), `"method":"tools/list"`) {
+					listCalls.Add(1)
+					_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe","description":"Safe tool","inputSchema":{"type":"object"}}]}}`))
+					return
+				}
+				toolCalls.Add(1)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"unexpected"}]}}`))
+			}))
+			defer upstream.Close()
+
+			toolCfg := &tools.ToolScanConfig{
+				Baseline:                tools.NewToolBaseline(),
+				BindingUnknownAction:    tc.unknownAction,
+				BindingNoBaselineAction: tc.baselineAction,
+			}
+			var stdout, stderr bytes.Buffer
+			err := RunHTTPProxy(context.Background(), strings.NewReader(tc.input), &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), ToolCfg: toolCfg,
+			})
+			if err != nil {
+				t.Fatalf("RunHTTPProxy: %v", err)
+			}
+			if !strings.Contains(stdout.String(), tc.wantReason) {
+				t.Fatalf("stdout = %s, want binding reason %q", stdout.String(), tc.wantReason)
+			}
+			if got := listCalls.Load(); got != tc.wantListCalls {
+				t.Fatalf("tools/list forwards = %d, want %d", got, tc.wantListCalls)
+			}
+			if got := toolCalls.Load(); got != 0 {
+				t.Fatalf("tools/call forwards = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestScanHTTPInput_AskFallbackToBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

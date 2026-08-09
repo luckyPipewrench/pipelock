@@ -125,12 +125,16 @@ func RunHTTPProxy(
 	// this invocation.
 	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if toolCfg != nil && (toolCfg.Action != "" ||
+		toolCfg.BindingUnknownAction != "" ||
+		toolCfg.BindingNoBaselineAction != "") {
 		fwdToolCfg = &tools.ToolScanConfig{
-			Baseline:    tools.NewToolBaseline(),
-			Action:      toolCfg.Action,
-			DetectDrift: toolCfg.DetectDrift,
-			ExtraPoison: toolCfg.ExtraPoison,
+			Baseline:                tools.NewToolBaseline(),
+			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
+			ExtraPoison:             toolCfg.ExtraPoison,
+			BindingUnknownAction:    toolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 		}
 	}
 

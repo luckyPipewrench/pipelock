@@ -96,7 +96,10 @@ func normalizeConnectTarget(target string) (normalized, host, port, scanURL stri
 	// arbitrary text here would let policy and the dial disagree about what the
 	// port even is, and the dial resolver is not the right place to discover a
 	// malformed authority.
-	if n, convErr := strconv.Atoi(port); convErr != nil || n < 1 || n > 65535 {
+	// ParseUint rather than Atoi: Atoi accepts a leading sign, so "+443" would be
+	// preserved verbatim in the authority while the dial read it as 443, leaving
+	// policy and the dial looking at different text for the same destination.
+	if n, convErr := strconv.ParseUint(port, 10, 16); convErr != nil || n == 0 {
 		return "", "", "", "", false
 	}
 	return target, host, port, "https://" + net.JoinHostPort(host, port) + "/", true

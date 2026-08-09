@@ -6388,9 +6388,19 @@ func TestConnectContractProjectionStaysHostnameOnly(t *testing.T) {
 // policy and the dial disagreeing about the destination.
 func TestConnectRejectsNonNumericPort(t *testing.T) {
 	t.Parallel()
-	for _, target := range []string{"api.vendor.example:https", "api.vendor.example:0", "api.vendor.example:65536", "api.vendor.example:-1"} {
-		if _, _, _, _, ok := normalizeConnectTarget(target); ok {
-			t.Fatalf("normalizeConnectTarget(%q) accepted a non-numeric or out-of-range port", target)
-		}
+	for _, target := range []string{
+		"api.vendor.example:https",
+		"api.vendor.example:0",
+		"api.vendor.example:65536",
+		"api.vendor.example:-1",
+		"api.vendor.example:+443",
+		"api.vendor.example:443 ",
+	} {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			if _, _, _, scanURL, ok := normalizeConnectTarget(target); ok {
+				t.Fatalf("normalizeConnectTarget(%q) accepted a bad port and produced %q", target, scanURL)
+			}
+		})
 	}
 }

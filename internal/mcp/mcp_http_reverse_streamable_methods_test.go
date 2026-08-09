@@ -1928,6 +1928,7 @@ func TestHTTPListener_GETAndDELETEA2AHeaderBlockRecordsAdaptiveSignal(t *testing
 				req.Header.Set("Accept", "text/event-stream")
 			}
 			req.Header.Set("A2A-Extensions", "http://169.254.169.254/latest/meta-data/")
+			req.Header.Set("Mcp-Session-Id", "a2a-adaptive-test-session")
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

@@ -3106,7 +3106,13 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *t
 	}
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
 
-	listResp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)) //nolint:gosec,noctx // test
+	listReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	if err != nil {
+		t.Fatalf("NewRequest(tools/list): %v", err)
+	}
+	listReq.Header.Set("Content-Type", "application/json")
+	listReq.Header.Set("Mcp-Session-Id", "session-binding-test-client")
+	listResp, err := http.DefaultClient.Do(listReq)
 	if err != nil {
 		t.Fatalf("POST tools/list: %v", err)
 	}
@@ -3119,7 +3125,13 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *t
 		t.Fatalf("expected tools/list to establish baseline, got: %s", listPayload)
 	}
 
-	callResp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`)) //nolint:gosec,noctx // test
+	callReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`))
+	if err != nil {
+		t.Fatalf("NewRequest(tools/call): %v", err)
+	}
+	callReq.Header.Set("Content-Type", "application/json")
+	callReq.Header.Set("Mcp-Session-Id", "session-binding-test-client")
+	callResp, err := http.DefaultClient.Do(callReq)
 	if err != nil {
 		t.Fatalf("POST tools/call: %v", err)
 	}
@@ -5245,9 +5257,15 @@ func TestHTTPListener_KillSwitchDropsNotification(t *testing.T) {
 }
 
 func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID int `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
 	}))
 	defer upstream.Close()
 
@@ -5271,7 +5289,13 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"ls"}}}`,
 	}
 	for i, call := range calls {
-		resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(call)) //nolint:gosec,noctx // test
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(call))
+		if err != nil {
+			t.Fatalf("NewRequest call %d: %v", i, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", "chain-warn-session")
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST: %v", err)
 		}
@@ -5319,7 +5343,13 @@ func TestHTTPListener_ChainDetectionBlock(t *testing.T) {
 	}
 	var lastResp []byte
 	for _, call := range calls {
-		resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(call)) //nolint:gosec,noctx // test
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(call))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", "chain-block-session")
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST: %v", err)
 		}
@@ -6257,8 +6287,7 @@ func TestHTTPListener_RedirectSyntheticResponse(t *testing.T) {
 }
 
 func TestHTTPListener_StoreAdaptive(t *testing.T) {
-	// Exercises line 817-822: listener proxy with non-nil store creates
-	// per-request adaptive enforcement recorder.
+	// Listener proxy with a session ID resolves its adaptive recorder from the store.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"clean"}]}}`))
@@ -6291,7 +6320,13 @@ func TestHTTPListener_StoreAdaptive(t *testing.T) {
 	waitForHTTPHealth(t, baseURL)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
-	resp, httpErr := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", "store-adaptive-session")
+	resp, httpErr := http.DefaultClient.Do(req)
 	if httpErr != nil {
 		t.Fatalf("POST: %v", httpErr)
 	}
@@ -7000,6 +7035,7 @@ func TestHTTPListener_AdaptiveCfgFn_HotReload(t *testing.T) {
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
 	pReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	pReq.Header.Set("Content-Type", "application/json")
+	pReq.Header.Set("Mcp-Session-Id", "adaptive-reload-session")
 	resp, httpErr := http.DefaultClient.Do(pReq)
 	if httpErr != nil {
 		t.Fatalf("POST: %v", httpErr)
@@ -7017,6 +7053,7 @@ func TestHTTPListener_AdaptiveCfgFn_HotReload(t *testing.T) {
 	// Second request: picks up new config.
 	pReq2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	pReq2.Header.Set("Content-Type", "application/json")
+	pReq2.Header.Set("Mcp-Session-Id", "adaptive-reload-session")
 	resp2, httpErr2 := http.DefaultClient.Do(pReq2)
 	if httpErr2 != nil {
 		t.Fatalf("POST: %v", httpErr2)
@@ -7917,6 +7954,7 @@ func TestHTTPListener_AuthDLPWithAdaptiveSignal(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Mcp-Session-Id", "auth-dlp-adaptive-session")
 
 	resp, httpErr := http.DefaultClient.Do(req)
 	if httpErr != nil {

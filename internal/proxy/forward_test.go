@@ -6342,3 +6342,55 @@ func TestConnectMalformedAuthorityRejectedByHandler(t *testing.T) {
 		})
 	}
 }
+
+// TestConnectContractProjectionStaysHostnameOnly pins the deliberate divergence
+// between what raw CONNECT hands the contract gate and what it hands everything
+// else. Scanner, dial snapshot, and receipt must carry the exact authority, and
+// the contract gate must not, because contract rules cannot express a port yet
+// and would refuse every non-443 tunnel with no operator remedy.
+//
+// If someone later makes contract rules port-aware, this test should fail and be
+// replaced deliberately rather than quietly deleted.
+func TestConnectContractProjectionStaysHostnameOnly(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		target       string
+		wantScan     string
+		wantContract string
+	}{
+		{"high port", "api.vendor.example:8443", "https://api.vendor.example:8443/", "https://api.vendor.example/"},
+		{"explicit 443", "api.vendor.example:443", "https://api.vendor.example:443/", "https://api.vendor.example/"},
+		{"plain http port", "api.vendor.example:80", "https://api.vendor.example:80/", "https://api.vendor.example/"},
+		{"ipv6 high port", "[2001:db8::1]:8443", "https://[2001:db8::1]:8443/", "https://[2001:db8::1]/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, host, _, scanURL, ok := normalizeConnectTarget(tc.target)
+			if !ok {
+				t.Fatalf("normalizeConnectTarget(%q) rejected a well-formed authority", tc.target)
+			}
+			if scanURL != tc.wantScan {
+				t.Fatalf("scan URL = %q, want %q", scanURL, tc.wantScan)
+			}
+			contractURL := "https://" + hostForURL(host) + "/"
+			if contractURL != tc.wantContract {
+				t.Fatalf("contract URL = %q, want %q", contractURL, tc.wantContract)
+			}
+			if _, err := url.Parse(contractURL); err != nil {
+				t.Fatalf("contract URL %q does not parse: %v", contractURL, err)
+			}
+		})
+	}
+}
+
+// A CONNECT authority carries a numeric TCP port. A service name would leave
+// policy and the dial disagreeing about the destination.
+func TestConnectRejectsNonNumericPort(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"api.vendor.example:https", "api.vendor.example:0", "api.vendor.example:65536", "api.vendor.example:-1"} {
+		if _, _, _, _, ok := normalizeConnectTarget(target); ok {
+			t.Fatalf("normalizeConnectTarget(%q) accepted a non-numeric or out-of-range port", target)
+		}
+	}
+}

@@ -92,6 +92,13 @@ func normalizeConnectTarget(target string) (normalized, host, port, scanURL stri
 	if err != nil || host == "" || port == "" {
 		return "", "", "", "", false
 	}
+	// CONNECT authorities carry a numeric TCP port. Accepting a service name or
+	// arbitrary text here would let policy and the dial disagree about what the
+	// port even is, and the dial resolver is not the right place to discover a
+	// malformed authority.
+	if n, convErr := strconv.Atoi(port); convErr != nil || n < 1 || n > 65535 {
+		return "", "", "", "", false
+	}
 	return target, host, port, "https://" + net.JoinHostPort(host, port) + "/", true
 }
 
@@ -185,6 +192,24 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			"malformed target authority", http.StatusBadRequest)
 		return
 	}
+	// Contract evaluation for a RAW CONNECT tunnel deliberately keeps the legacy
+	// hostname-only projection while the rest of this path uses the exact
+	// authority. This divergence is intentional and temporary, not an oversight.
+	//
+	// Contract rules cannot express a port: selectors have no port field and
+	// inference drops it, so feeding the real port to the gate would make
+	// usesDefaultHTTPPort refuse every non-443 tunnel with no way for an
+	// operator to authorize the service they actually run. It would also apply
+	// HTTPS default-port semantics to what is an opaque TCP authority, so a
+	// legitimate CONNECT to :80 would be refused for being "non-default https".
+	//
+	// Whether raw CONNECT contract enforcement should become port-aware is a
+	// design decision that belongs with a CONNECT-authority rule shape, not with
+	// this change. Intercepted CONNECT already reconstructs inner requests with
+	// their real port and is unaffected by this projection.
+	// host is unbracketed here, so an IPv6 literal must be re-bracketed or the
+	// resulting URL does not parse and the gate would see a different authority.
+	contractURL := "https://" + hostForURL(host) + "/"
 	connectReceiptTarget := syntheticURL
 	emitConnectSessionDenyReceipt := func() {
 		emitConnectReceipt(receipt.EmitOpts{
@@ -492,7 +517,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	gate, gateErr := EvaluateGate(ContractGateInput{
 		Loader:           snapshotContractLoader,
 		Agent:            agent,
-		URL:              syntheticURL,
+		URL:              contractURL,
 		Method:           http.MethodConnect,
 		EffectiveAction:  scannerVerdictForGate(hasFinding),
 		ScannerVerdict:   scannerVerdictForGate(hasFinding),
@@ -2906,4 +2931,14 @@ func responseBundleRules(matches []scanner.ResponseMatch) []audit.BundleRuleHit 
 		}
 	}
 	return hits
+}
+
+// hostForURL re-brackets an IPv6 literal so it can be placed in a URL authority.
+// net.SplitHostPort strips the brackets, and an unbracketed IPv6 host produces a
+// URL that does not parse back to the same authority.
+func hostForURL(host string) string {
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }

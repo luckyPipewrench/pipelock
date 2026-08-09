@@ -193,6 +193,17 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 	if got := toolCalls.Load(); got != 0 {
 		t.Fatalf("cross-session echo calls = %d, want 0", got)
 	}
+
+	// A repeated client-supplied value deliberately selects the same
+	// correlation state even over a separate connection. This proves the
+	// boundary is separate-unless-proven-same, not authenticated identity.
+	sameDeclaredClient := post(t, clientB, "diagnostic-client-a", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	if strings.Contains(sameDeclaredClient, `"error"`) {
+		t.Fatalf("same supplied session ID did not reuse its baseline: %s", sameDeclaredClient)
+	}
+	if got := toolCalls.Load(); got != 1 {
+		t.Fatalf("same supplied session ID echo calls = %d, want 1", got)
+	}
 }
 
 // TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions proves adaptive,
@@ -403,6 +414,9 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testin
 		Scanner:   testScannerForHTTP(t),
 		ToolCfgFn: activeToolCfg.Load,
 	})
+	// A hot-reload snapshot may arrive before any client establishes a
+	// baseline. The first tools/list must still initialize normally.
+	activeToolCfg.Store(newToolCfg())
 	post := func(t *testing.T, client *http.Client, id int, sessionID, method string) (string, http.Header) {
 		t.Helper()
 		var body string

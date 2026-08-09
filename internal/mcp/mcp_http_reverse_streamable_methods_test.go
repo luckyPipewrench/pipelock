@@ -1823,6 +1823,7 @@ func TestHTTPListener_GETAndDELETEForwardedHeaderDLPRecordsAdaptiveBlock(t *test
 			} else {
 				req.Header.Set("Authorization", "Bearer "+mcpSyntheticAWSAccessKey())
 			}
+			req.Header.Set("Mcp-Session-Id", "forwarded-header-dlp-test-session")
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

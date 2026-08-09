@@ -308,7 +308,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			}
 			upstreamCalls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, request.ID)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"external result"}]}}`, request.ID)
 		}))
 		defer upstream.Close()
 
@@ -342,6 +342,10 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		}
 
 		post(t, tokenA, "taint-client-a", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+		blocked := post(t, tokenA, "taint-client-a", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+		if !strings.Contains(blocked, "mutating_exec_after_untrusted_external_exposure") {
+			t.Fatalf("tainted client was not blocked: %s", blocked)
+		}
 		second := post(t, tokenB, "taint-client-b", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 		if strings.Contains(second, "mutating_exec_after_untrusted_external_exposure") {
 			t.Fatalf("second client inherited first client taint: %s", second)
@@ -416,20 +420,20 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			t.Fatalf("first token lost its own chain history: %s", blocked)
 		}
 		withoutToken, _ := post(t, "", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
-		if !strings.Contains(withoutToken, "session token") {
-			t.Fatalf("headerless stateful request was not refused: %s", withoutToken)
+		if strings.Contains(withoutToken, "chain pattern") || strings.Contains(withoutToken, "session token") {
+			t.Fatalf("unbound request did not remain stateless and forwardable: %s", withoutToken)
 		}
-		if got := upstreamCalls.Load(); got != 4 {
-			t.Fatalf("upstream calls = %d, want 4 after token isolation and blocks", got)
+		if got := upstreamCalls.Load(); got != 5 {
+			t.Fatalf("upstream calls = %d, want 5 after token isolation, one block, and stateless forwarding", got)
 		}
 	})
 }
 
-// TestHTTPListenerDiagnosis_HeaderlessChainCannotResetState proves that a
-// client cannot erase its own chain history by omitting Mcp-Session-Id on
-// every request. Stateful calls require a Pipelock-issued setup token, and
-// calls that carry it share one chain history.
-func TestHTTPListenerDiagnosis_HeaderlessChainCannotResetState(t *testing.T) {
+// TestHTTPListenerDiagnosis_HeaderlessChainDoesNotJoinState proves that a
+// request without a Pipelock-issued token gets stateless scanning and does not
+// join the token-bound chain history. Calls that carry the token still share
+// one chain history even when their routing session IDs differ.
+func TestHTTPListenerDiagnosis_HeaderlessChainDoesNotJoinState(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
@@ -491,11 +495,11 @@ func TestHTTPListenerDiagnosis_HeaderlessChainCannotResetState(t *testing.T) {
 		t.Fatalf("token-bound follow-up bypassed chain detection: %s", second)
 	}
 	withoutToken, _ := post(t, "", "client-b", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
-	if !strings.Contains(withoutToken, "session token") {
-		t.Fatalf("headerless follow-up was not refused: %s", withoutToken)
+	if strings.Contains(withoutToken, "chain pattern") || strings.Contains(withoutToken, "session token") {
+		t.Fatalf("headerless follow-up did not remain stateless and forwardable: %s", withoutToken)
 	}
-	if got := upstreamCalls.Load(); got != 2 {
-		t.Fatalf("upstream calls = %d, want 2 after token and chain blocks", got)
+	if got := upstreamCalls.Load(); got != 3 {
+		t.Fatalf("upstream calls = %d, want 3 after token block and stateless forwarding", got)
 	}
 }
 

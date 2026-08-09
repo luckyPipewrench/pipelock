@@ -215,18 +215,18 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	trackSessionID := func() error {
-		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-			c.sessionMu.Lock()
-			c.sessionID = sid
-			c.sessionMu.Unlock()
+		sid := resp.Header.Get("Mcp-Session-Id")
+		token := resp.Header.Get(pipelockSessionTokenHeader)
+		if token != "" && !validPipelockSessionToken(token) {
+			return ErrInvalidPipelockSessionToken
 		}
-		if token := resp.Header.Get(pipelockSessionTokenHeader); token != "" {
-			if !validPipelockSessionToken(token) {
-				return ErrInvalidPipelockSessionToken
-			}
-			c.sessionMu.Lock()
+		c.sessionMu.Lock()
+		defer c.sessionMu.Unlock()
+		if sid != "" {
+			c.sessionID = sid
+		}
+		if token != "" {
 			c.listenerSessionToken = token
-			c.sessionMu.Unlock()
 		}
 		return nil
 	}

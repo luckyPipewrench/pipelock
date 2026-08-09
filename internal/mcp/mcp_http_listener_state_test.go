@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -36,11 +37,7 @@ func (s *listenerStateBoundedStore) Delete(key string) {
 func listenerSetupState(t *testing.T, states *mcpListenerClientStates, n int) *mcpListenerClientState {
 	t.Helper()
 	token := fmt.Sprintf("listener-state-test-%d", n)
-	state := &mcpListenerClientState{
-		token:    token,
-		key:      mcpListenerStateKey(token),
-		baseline: newMCPListenerTransientState().baseline,
-	}
+	state := newMCPListenerClientState(token, mcpListenerStateKey(token))
 	if !states.admitSetup(state) {
 		t.Fatalf("admitSetup(%d) = false", n)
 	}
@@ -82,5 +79,71 @@ func TestMCPListenerClientStates_BoundedAdmissionDeletesEvictedRecorder(t *testi
 	}
 	if got := len(store.recorders); got != maxMCPListenerClients {
 		t.Fatalf("store entries after delayed response = %d, want %d", got, maxMCPListenerClients)
+	}
+}
+
+func TestMCPListenerClientStates_DiscardUnboundState(t *testing.T) {
+	store := &listenerStateBoundedStore{}
+	states := newMCPListenerClientStates(store)
+	unbound := states.newUnboundState()
+	states.discardUnboundState(unbound)
+	if _, ok := store.deleted[unbound.key]; !ok {
+		t.Fatalf("unbound recorder %q was not deleted", unbound.key)
+	}
+
+	bound := listenerSetupState(t, states, 1)
+	states.discardUnboundState(bound)
+	if _, ok := states.stateForToken(bound.token); !ok {
+		t.Fatal("token-bound state was discarded")
+	}
+}
+
+func TestMCPListenerClientStates_Forget(t *testing.T) {
+	store := &listenerStateBoundedStore{}
+	states := newMCPListenerClientStates(store)
+	states.forget("")
+	states.forgetLegacySession("")
+
+	bound := listenerSetupState(t, states, 1)
+	states.forget(bound.token)
+	if _, ok := states.stateForToken(bound.token); ok {
+		t.Fatal("forgotten token remained admitted")
+	}
+	if _, ok := store.deleted[bound.key]; !ok {
+		t.Fatalf("forgotten recorder %q was not deleted", bound.key)
+	}
+
+	legacy := states.stateForLegacySession("legacy")
+	states.forgetLegacySession("legacy")
+	if !legacy.revoked.Load() {
+		t.Fatal("forgotten legacy state was not revoked")
+	}
+	if _, ok := store.deleted[legacy.key]; !ok {
+		t.Fatalf("forgotten legacy recorder %q was not deleted", legacy.key)
+	}
+}
+
+func TestMCPListenerClientStates_LegacySessionReuse(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	transient := states.stateForLegacySession("")
+	if transient.token != "" || len(states.clients) != 0 {
+		t.Fatal("empty legacy session was registered")
+	}
+	first := states.stateForLegacySession("legacy")
+	second := states.stateForLegacySession("legacy")
+	if first != second {
+		t.Fatal("repeated legacy session did not reuse state")
+	}
+}
+
+func TestListenerHasStatefulControls_ToolBindingFields(t *testing.T) {
+	for _, cfg := range []*tools.ToolScanConfig{
+		{BindingUnknownAction: "block"},
+		{BindingNoBaselineAction: "warn"},
+		{DetectDrift: true},
+	} {
+		if !listenerHasStatefulControls(MCPProxyOpts{ToolCfg: cfg}) {
+			t.Fatalf("tool config %+v was not treated as stateful", cfg)
+		}
 	}
 }

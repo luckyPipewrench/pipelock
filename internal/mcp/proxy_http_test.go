@@ -2602,18 +2602,25 @@ func startListenerProxy(
 	toolCfg *tools.ToolScanConfig,
 	policyCfg *policy.Config,
 ) (string, context.CancelFunc, *bytes.Buffer) {
-	return startListenerProxyWithStateMode(t, upstreamURL, sc, inputCfg, toolCfg, policyCfg, nil)
+	return startListenerProxyWithStateMode(t, listenerProxyTestOpts{
+		upstreamURL: upstreamURL,
+		sc:          sc,
+		inputCfg:    inputCfg,
+		toolCfg:     toolCfg,
+		policyCfg:   policyCfg,
+	})
 }
 
-func startListenerProxyWithStateMode(
-	t *testing.T,
-	upstreamURL string,
-	sc *scanner.Scanner,
-	inputCfg *InputScanConfig,
-	toolCfg *tools.ToolScanConfig,
-	policyCfg *policy.Config,
-	stateTokenRequired *bool,
-) (string, context.CancelFunc, *bytes.Buffer) {
+type listenerProxyTestOpts struct {
+	upstreamURL        string
+	sc                 *scanner.Scanner
+	inputCfg           *InputScanConfig
+	toolCfg            *tools.ToolScanConfig
+	policyCfg          *policy.Config
+	stateTokenRequired *bool
+}
+
+func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpts) (string, context.CancelFunc, *bytes.Buffer) {
 	t.Helper()
 
 	// Bind a free port and pass the listener directly.
@@ -2628,8 +2635,8 @@ func startListenerProxyWithStateMode(
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, MCPProxyOpts{
-			Scanner: sc, InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg, listenerStateTokenRequired: stateTokenRequired,
+		done <- RunHTTPListenerProxy(ctx, ln, testOpts.upstreamURL, &logBuf, MCPProxyOpts{
+			Scanner: testOpts.sc, InputCfg: testOpts.inputCfg, ToolCfg: testOpts.toolCfg, PolicyCfg: testOpts.policyCfg, listenerStateTokenRequired: testOpts.stateTokenRequired,
 		})
 	}()
 
@@ -5246,7 +5253,9 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 			ID int `json:"id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode upstream request: %v", err)
+			t.Errorf("decode upstream request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
@@ -5266,21 +5275,7 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, logBuf := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
-	setupReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
-	if err != nil {
-		t.Fatalf("NewRequest initialize: %v", err)
-	}
-	setupReq.Header.Set("Content-Type", "application/json")
-	setupResp, err := http.DefaultClient.Do(setupReq)
-	if err != nil {
-		t.Fatalf("POST initialize: %v", err)
-	}
-	setupBody, _ := io.ReadAll(setupResp.Body)
-	_ = setupResp.Body.Close()
-	token := setupResp.Header.Get(listenerSessionTokenHeader)
-	if token == "" {
-		t.Fatalf("initialize response missing %s: status=%d body=%s log=%s", listenerSessionTokenHeader, setupResp.StatusCode, setupBody, logBuf.String())
-	}
+	token := listenerSetupToken(t, baseURL)
 
 	// Send read_file then execute_command to trigger "read-then-exec" chain.
 	calls := []string{
@@ -5335,21 +5330,7 @@ func TestHTTPListener_ChainDetectionBlock(t *testing.T) {
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, _ := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
-	setupReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
-	if err != nil {
-		t.Fatalf("NewRequest initialize: %v", err)
-	}
-	setupReq.Header.Set("Content-Type", "application/json")
-	setupResp, err := http.DefaultClient.Do(setupReq)
-	if err != nil {
-		t.Fatalf("POST initialize: %v", err)
-	}
-	setupBody, _ := io.ReadAll(setupResp.Body)
-	_ = setupResp.Body.Close()
-	token := setupResp.Header.Get(listenerSessionTokenHeader)
-	if token == "" {
-		t.Fatalf("initialize response missing %s: status=%d body=%s", listenerSessionTokenHeader, setupResp.StatusCode, setupBody)
-	}
+	token := listenerSetupToken(t, baseURL)
 
 	// Send read_file then execute_command to trigger "read-then-exec" chain.
 	calls := []string{

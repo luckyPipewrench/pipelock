@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -629,7 +630,7 @@ func TestHTTPClient_TracksPipelockListenerSessionToken(t *testing.T) {
 		t.Fatalf("test token length = %d, want 43", len(token))
 	}
 	var calls atomic.Int32
-	var deleteToken string
+	deleteToken := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -644,7 +645,7 @@ func TestHTTPClient_TracksPipelockListenerSessionToken(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 		case http.MethodDelete:
-			deleteToken = r.Header.Get(pipelockSessionTokenHeader)
+			deleteToken <- r.Header.Get(pipelockSessionTokenHeader)
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -662,8 +663,8 @@ func TestHTTPClient_TracksPipelockListenerSessionToken(t *testing.T) {
 	}
 	drain(t, second)
 	c.DeleteSession(nil)
-	if deleteToken != token {
-		t.Errorf("DELETE token = %q, want %q", deleteToken, token)
+	if got := <-deleteToken; got != token {
+		t.Errorf("DELETE token = %q, want %q", got, token)
 	}
 }
 
@@ -1514,9 +1515,12 @@ func TestHTTPClient_PipelockSessionTokenValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			var seenMu sync.Mutex
 			var seen []string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenMu.Lock()
 				seen = append(seen, r.Header.Get(pipelockSessionTokenHeader))
+				seenMu.Unlock()
 				w.Header().Set(pipelockSessionTokenHeader, tc.token)
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
@@ -1538,6 +1542,8 @@ func TestHTTPClient_PipelockSessionTokenValidation(t *testing.T) {
 			if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)); err != nil {
 				t.Fatalf("second SendMessage: %v", err)
 			}
+			seenMu.Lock()
+			defer seenMu.Unlock()
 			if len(seen) != 2 {
 				t.Fatalf("requests seen = %d, want 2", len(seen))
 			}
@@ -1548,6 +1554,39 @@ func TestHTTPClient_PipelockSessionTokenValidation(t *testing.T) {
 				t.Fatalf("second request token = %q, want %q", seen[1], tc.token)
 			}
 		})
+	}
+}
+
+func TestHTTPClient_InvalidTokenDoesNotCommitResponseState(t *testing.T) {
+	valid := strings.Repeat("C", 43)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.Header().Set("Mcp-Session-Id", "good-session")
+			w.Header().Set(pipelockSessionTokenHeader, valid)
+		case 2:
+			w.Header().Set("Mcp-Session-Id", "rejected-session")
+			w.Header().Set(pipelockSessionTokenHeader, "too-short")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	drain(t, reader)
+	if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)); !errors.Is(err, ErrInvalidPipelockSessionToken) {
+		t.Fatalf("second SendMessage error = %v, want ErrInvalidPipelockSessionToken", err)
+	}
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if c.sessionID != "good-session" || c.listenerSessionToken != valid {
+		t.Fatalf("rejected response changed state: session=%q token=%q", c.sessionID, c.listenerSessionToken)
 	}
 }
 

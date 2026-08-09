@@ -71,6 +71,27 @@ func TestSessionManager_GetOrCreate(t *testing.T) {
 	}
 }
 
+func TestSessionManager_Delete(t *testing.T) {
+	m := metrics.New()
+	sm := NewSessionManager(testSessionConfig(), nil, m)
+	defer sm.Close()
+
+	sm.GetOrCreate("keep")
+	sm.GetOrCreate("delete")
+	sm.Delete("")
+	sm.Delete("missing")
+	if got := sm.Len(); got != 2 {
+		t.Fatalf("sessions after no-op deletes = %d, want 2", got)
+	}
+	sm.Delete("delete")
+	if got := sm.Len(); got != 1 {
+		t.Fatalf("sessions after delete = %d, want 1", got)
+	}
+	if !scrapeMetric(t, m, "pipelock_sessions_active 1") {
+		t.Fatal("active-session gauge was not refreshed after delete")
+	}
+}
+
 func TestSessionManager_DomainBurst(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3

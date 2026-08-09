@@ -224,7 +224,8 @@ func (s *mcpListenerClientStates) forgetKey(key string) {
 }
 
 func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg *tools.ToolScanConfig) *tools.ToolScanConfig {
-	if state == nil || cfg == nil || cfg.Action == "" {
+	if state == nil || cfg == nil ||
+		(cfg.Action == "" && cfg.BindingUnknownAction == "" && cfg.BindingNoBaselineAction == "" && !cfg.DetectDrift) {
 		return nil
 	}
 	if s.driftEdge.Observe(cfg.DetectDrift) {

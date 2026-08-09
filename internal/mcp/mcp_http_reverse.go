@@ -1044,15 +1044,7 @@ func RunHTTPListenerProxy(
 				stateBound = true
 				return true
 			}
-			if stateBound {
-				// The token lookup above bound this request to its issued state.
-			} else if listenerSessionToken != "" {
-				if !frame.IsBatch && frame.Method == "initialize" {
-					if !startSetup() {
-						return
-					}
-				}
-			} else if !frame.IsBatch && frame.Method == "initialize" {
+			if !stateBound && !frame.IsBatch && frame.Method == "initialize" {
 				if !startSetup() {
 					return
 				}
@@ -1207,11 +1199,6 @@ func RunHTTPListenerProxy(
 		if blockedByUpstreamContract(frame.ID, scanOpts) {
 			return
 		}
-		if requireStateToken && !stateBound {
-			rejectMissingListenerState(frame.ID)
-			return
-		}
-
 		// Build upstream request with passthrough headers.
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(decision.ForwardMessage))
 		if err != nil {
@@ -1709,8 +1696,13 @@ func validMCPListenerSessionToken(values []string) bool {
 }
 
 func listenerHasStatefulControls(opts MCPProxyOpts) bool {
-	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Action != "" {
-		return true
+	if toolCfg := opts.toolCfg(); toolCfg != nil {
+		if toolCfg.Action != "" ||
+			toolCfg.BindingUnknownAction != "" ||
+			toolCfg.BindingNoBaselineAction != "" ||
+			toolCfg.DetectDrift {
+			return true
+		}
 	}
 	if opts.chainMatcher() != nil || opts.cee() != nil {
 		return true

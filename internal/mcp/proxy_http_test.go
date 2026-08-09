@@ -689,6 +689,171 @@ func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 	}
 }
 
+func TestRunHTTPProxy_GETStreamRejectsResponseIDs(t *testing.T) {
+	getCalled := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"owned\":\"wrong-id\"}}\n\n" +
+				"data: {\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{\"owned\":\"null-id\"}}\n\n" +
+				"data: {\"jsonrpc\":\"2.0\",\"result\":{\"owned\":\"missing-id\"}}\n\n"))
+			select {
+			case getCalled <- struct{}{}:
+			default:
+			}
+			return
+		}
+		w.Header().Set("Mcp-Session-Id", "sess-strict-get")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`))
+	}))
+	defer srv.Close()
+
+	stdinR, stdinW := io.Pipe()
+	var stdout, stderr lockedHTTPBuffer
+	done := make(chan error, 1)
+	sc := testScannerForHTTP(t)
+	go func() {
+		done <- RunHTTPProxy(context.Background(), stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
+	}()
+	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
+	select {
+	case <-getCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for GET stream")
+	}
+	testwait.For(t, 2*time.Second, func() bool {
+		return stdout.contains("unsolicited response ID") && stdout.contains("no correlatable ID")
+	}, "GET response IDs rejected")
+	_ = stdinW.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+	if stdout.contains(`"owned":`) {
+		t.Fatalf("GET response payload reached client: %s", stdout.String())
+	}
+}
+
+func TestRunHTTPProxy_GETStreamWrongIDCannotCompleteOutstandingPOST(t *testing.T) {
+	getReady := make(chan struct{})
+	secondPOSTStarted := make(chan struct{})
+	attackSent := make(chan struct{})
+	allowSecondResponse := make(chan struct{})
+	var getReadyOnce, attackOnce, secondPOSTOnce sync.Once
+	var nonPOSTCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Error("test server does not support flushing")
+				return
+			}
+			flusher.Flush()
+			getReadyOnce.Do(func() { close(getReady) })
+			select {
+			case <-secondPOSTStarted:
+			case <-r.Context().Done():
+				return
+			}
+			attackOnce.Do(func() {
+				_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"owned\":\"cross-request\"}}\n\n"))
+				flusher.Flush()
+				close(attackSent)
+			})
+			<-r.Context().Done()
+			return
+		}
+		if r.Method != http.MethodPost {
+			nonPOSTCalls.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll(request): %v", err)
+			return
+		}
+		requestID := ParseMCPFrame(requestBody).ID
+		w.Header().Set("Content-Type", "application/json")
+		if string(requestID) == "1" {
+			w.Header().Set("Mcp-Session-Id", "sess-cross-request")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`))
+			return
+		}
+		secondPOSTOnce.Do(func() { close(secondPOSTStarted) })
+		select {
+		case <-attackSent:
+		case <-r.Context().Done():
+			return
+		}
+		select {
+		case <-allowSecondResponse:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`))
+	}))
+	defer srv.Close()
+
+	stdinR, stdinW := io.Pipe()
+	var stdout, stderr lockedHTTPBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(context.Background(), stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	}()
+
+	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
+	select {
+	case <-getReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for GET stream")
+	}
+	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
+	testwait.For(t, 2*time.Second, func() bool {
+		return stdout.contains("unsolicited response ID")
+	}, "strict GET stream block")
+	close(allowSecondResponse)
+	_ = stdinW.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+	if !stdout.contains(`"id":2,"result":{"tools":[]}`) {
+		t.Fatalf("legitimate POST response did not reach client: %s", stdout.String())
+	}
+	if got := nonPOSTCalls.Load(); got != 1 {
+		t.Fatalf("non-POST cleanup calls = %d, want 1 DELETE", got)
+	}
+
+	foundBlock := false
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		var response struct {
+			ID    json.RawMessage `json:"id"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &response); err != nil {
+			t.Fatalf("invalid JSON response %q: %v", line, err)
+		}
+		if !strings.Contains(response.Error.Message, "unsolicited response ID") {
+			continue
+		}
+		foundBlock = true
+		if canonicalID(response.ID) != "" {
+			t.Fatalf("strict GET block reused attacker-selected ID %s: %s", response.ID, line)
+		}
+	}
+	if !foundBlock {
+		t.Fatal("strict GET stream did not emit a confused-deputy block")
+	}
+	if stdout.contains(`"owned":"cross-request"`) {
+		t.Fatalf("hostile GET payload reached client: %s", stdout.String())
+	}
+}
+
 func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 	// Server should NOT be called - input is blocked before forwarding.
 	var serverCalled int32
@@ -2826,6 +2991,92 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksNoBaseline(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "before baseline established") {
 		t.Fatalf("expected binding diagnostic log, got: %s", logBuf.String())
+	}
+}
+
+func TestRunHTTPListenerProxy_RejectsMismatchedResponseID(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		reason      string
+	}{
+		{name: "json wrong ID", contentType: "application/json", body: `{"jsonrpc":"2.0","id":999,"result":{"owned":"attack"}}`, reason: "unsolicited response ID"},
+		{name: "json null ID", contentType: "application/json", body: `{"jsonrpc":"2.0","id":null,"result":{"owned":"attack"}}`, reason: "no correlatable ID"},
+		{name: "json missing ID", contentType: "application/json", body: `{"jsonrpc":"2.0","result":{"owned":"attack"}}`, reason: "no correlatable ID"},
+		{name: "sse wrong ID", contentType: "text/event-stream", body: "data: {\"jsonrpc\":\"2.0\",\"id\":999,\"result\":{\"owned\":\"attack\"}}\n\n", reason: "unsolicited response ID"},
+		{name: "sse null ID", contentType: "text/event-stream", body: "data: {\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{\"owned\":\"attack\"}}\n\n", reason: "no correlatable ID"},
+		{name: "sse missing ID", contentType: "text/event-stream", body: "data: {\"jsonrpc\":\"2.0\",\"result\":{\"owned\":\"attack\"}}\n\n", reason: "no correlatable ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer upstream.Close()
+			baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), nil, nil, nil)
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST listener: %v", err)
+			}
+			payload, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("ReadAll: %v", readErr)
+			}
+			if !bytes.Contains(payload, []byte(tc.reason)) {
+				t.Fatalf("response = %s, want confused-deputy block", payload)
+			}
+			if bytes.Contains(payload, []byte(`"owned":"attack"`)) {
+				t.Fatalf("mismatched response payload reached client: %s", payload)
+			}
+		})
+	}
+}
+
+func TestRunHTTPListenerProxy_GETRejectsJSONRPCResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, event, reason string
+	}{
+		{name: "wrong ID", event: `{"jsonrpc":"2.0","id":999,"result":{"owned":"attack"}}`, reason: "unsolicited response ID"},
+		{name: "null ID", event: `{"jsonrpc":"2.0","id":null,"result":{"owned":"attack"}}`, reason: "no correlatable ID"},
+		{name: "missing ID", event: `{"jsonrpc":"2.0","result":{"owned":"attack"}}`, reason: "no correlatable ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", tc.event)
+			}))
+			defer upstream.Close()
+			baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), nil, nil, nil)
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Accept", "text/event-stream")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET listener: %v", err)
+			}
+			payload, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("ReadAll: %v", readErr)
+			}
+			if !bytes.Contains(payload, []byte(tc.reason)) {
+				t.Fatalf("response = %s, want confused-deputy block", payload)
+			}
+			if bytes.Contains(payload, []byte(`"owned":"attack"`)) {
+				t.Fatalf("GET response payload reached client: %s", payload)
+			}
+		})
 	}
 }
 

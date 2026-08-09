@@ -140,6 +140,10 @@ func RunHTTPProxy(
 
 	// Request tracker for confused deputy protection.
 	tracker := NewRequestTracker()
+	// The background GET stream carries server requests and notifications. A
+	// JSON-RPC result/error on that channel is unsolicited even if it copies an
+	// ID currently outstanding on the POST response path.
+	getResponseTracker := NewStrictRequestTracker()
 
 	// Session-scoped opts: override Rec and ToolCfg from the caller's opts.
 	fwdOpts := opts
@@ -426,7 +430,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, fwdOpts, &wg)
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, fwdOpts, getResponseTracker, &wg)
 			})
 		}
 	}

@@ -295,13 +295,25 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		var hasTrackedOutcome bool
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
+			if canonicalID(rpcID) == "" && tracker.Strict() {
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: response has no correlatable ID\n", lineNum)
+				resp := blockResponseReason(nil, "response has no correlatable ID (confused deputy)")
+				if err := writer.WriteMessage(resp); err != nil {
+					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
+				}
+				continue
+			}
 			if rpcID != nil {
 				var valid bool
 				trackedOutcome, valid = tracker.Consume(rpcID)
 				if !valid {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
 						lineNum, string(rpcID))
-					resp := blockResponseReason(rpcID, "unsolicited response ID (confused deputy)")
+					blockID := rpcID
+					if tracker.Strict() {
+						blockID = nil
+					}
+					resp := blockResponseReason(blockID, "unsolicited response ID (confused deputy)")
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 					}

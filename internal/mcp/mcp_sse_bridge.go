@@ -76,6 +76,7 @@ func startGETStream(
 	safeClientOut *syncWriter,
 	safeLogW *syncWriter,
 	opts MCPProxyOpts,
+	tracker *RequestTracker,
 	wg *sync.WaitGroup,
 ) {
 	wg.Add(1)
@@ -131,9 +132,7 @@ func startGETStream(
 			// Reset backoff on successful connection.
 			backoff = time.Second
 
-			// nil tracker: GET stream carries server-initiated messages,
-			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, nil, opts)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, tracker, opts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}

@@ -107,6 +107,8 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.Contains(string(body), `"method":"initialize"`):
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":0,"result":{}}`))
 		case strings.Contains(string(body), `"method":"tools/list"`):
 			listCalls.Add(1)
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]}}`))
@@ -138,13 +140,14 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 	}
 	clientA := newClient()
 	clientB := newClient()
-	post := func(t *testing.T, client *http.Client, sessionID, body string) string {
+	post := func(t *testing.T, client *http.Client, token, sessionID, body string) string {
 		t.Helper()
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 		if err != nil {
 			t.Fatalf("NewRequest: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerSessionTokenHeader, token)
 		req.Header.Set("Mcp-Session-Id", sessionID)
 		resp, err := client.Do(req)
 		if err != nil {
@@ -161,9 +164,12 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 		return string(payload)
 	}
 
+	tokenA := listenerSetupToken(t, baseURL)
+	tokenB := listenerSetupToken(t, baseURL)
+
 	// Client B has no tool inventory, so its first call proves that the
 	// no-baseline control is active before any other session seeds the listener.
-	preBaseline := post(t, clientB, "diagnostic-client-b", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	preBaseline := post(t, clientB, tokenB, "diagnostic-client-b", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
 	if !strings.Contains(preBaseline, bindingReasonNoBaseline) {
 		t.Fatalf("pre-baseline response = %s, want %q", preBaseline, bindingReasonNoBaseline)
 	}
@@ -171,7 +177,7 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 		t.Fatalf("upstream echo calls before baseline = %d, want 0", got)
 	}
 
-	listPayload := post(t, clientA, "diagnostic-client-a", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	listPayload := post(t, clientA, tokenA, "diagnostic-client-a", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	if !strings.Contains(listPayload, `"name":"echo"`) {
 		t.Fatalf("tools/list response = %s, want echo inventory", listPayload)
 	}
@@ -182,7 +188,7 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 	// B still has no tools/list. Its own empty baseline must take precedence
 	// over A's populated baseline, so the configured no-baseline action blocks
 	// even an unlisted name.
-	unknown := post(t, clientB, "diagnostic-client-b", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"not_listed","arguments":{}}}`)
+	unknown := post(t, clientB, tokenB, "diagnostic-client-b", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"not_listed","arguments":{}}}`)
 	if !strings.Contains(unknown, bindingReasonNoBaseline) {
 		t.Fatalf("unlisted client-B response = %s, want %q", unknown, bindingReasonNoBaseline)
 	}
@@ -192,7 +198,7 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 
 	// B never received tools/list. echo is known only to A and must stay
 	// blocked for B.
-	postBaseline := post(t, clientB, "diagnostic-client-b", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	postBaseline := post(t, clientB, tokenB, "diagnostic-client-b", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
 	if !strings.Contains(postBaseline, bindingReasonNoBaseline) {
 		t.Fatalf("cross-session echo call = %s, want %q", postBaseline, bindingReasonNoBaseline)
 	}
@@ -200,15 +206,24 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 		t.Fatalf("cross-session echo calls = %d, want 0", got)
 	}
 
-	// A repeated client-supplied value deliberately selects the same
-	// correlation state even over a separate connection. This proves the
-	// boundary is separate-unless-proven-same, not authenticated identity.
-	sameDeclaredClient := post(t, clientB, "diagnostic-client-a", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
-	if strings.Contains(sameDeclaredClient, `"error"`) {
-		t.Fatalf("same supplied session ID did not reuse its baseline: %s", sameDeclaredClient)
+	// The old client-supplied session header is routing data. Client B cannot
+	// select A's baseline by replaying A's header with B's issued token.
+	spoofedHeader := post(t, clientB, tokenB, "diagnostic-client-a", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	if !strings.Contains(spoofedHeader, bindingReasonNoBaseline) {
+		t.Fatalf("client-B token used client-A baseline through header: %s", spoofedHeader)
+	}
+	if got := toolCalls.Load(); got != 0 {
+		t.Fatalf("spoofed client-B header reached upstream: calls = %d, want 0", got)
+	}
+
+	// A's token retains A's state even when an unrelated upstream routing value
+	// accompanies the request.
+	sameToken := post(t, clientA, tokenA, "diagnostic-client-b", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	if strings.Contains(sameToken, `"error"`) {
+		t.Fatalf("client-A token lost its baseline: %s", sameToken)
 	}
 	if got := toolCalls.Load(); got != 1 {
-		t.Fatalf("same supplied session ID echo calls = %d, want 1", got)
+		t.Fatalf("client-A token echo calls = %d, want 1", got)
 	}
 }
 

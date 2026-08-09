@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/release.yaml"
+GORELEASER = ROOT / ".goreleaser.yaml"
 
 GORELEASER_VERSION = "v2.17.1"
 GORELEASER_LINUX_AMD64_SHA256 = "a99bbc7ae0d8d897b07c4c497a9b62f222558804715ef219d1af05a7e417bc80"
@@ -39,12 +40,19 @@ BUNDLE_NAMES = {
     "pipelock_init": "pipelock-init",
     "license_service": "pipelock-license-service",
 }
+INDEX_ATTESTATION_IDS = (
+    "attest-pipelock-container",
+    "attest-pipelock-init-container",
+    "attest-license-service-container",
+)
+ARCHIVE_ATTESTATION_IDS = ("attest-binaries", "attest-checksums", "attest-sbom")
 
 
 class TestReleaseArtifacts(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
+        cls.goreleaser = GORELEASER.read_text(encoding="utf-8")
 
     def test_goreleaser_is_exactly_pinned_and_self_reports(self) -> None:
         self.assertIn(f"GORELEASER_VERSION: {GORELEASER_VERSION}", self.workflow)
@@ -60,11 +68,19 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn("run: goreleaser release --clean --draft", self.workflow)
         self.assertNotIn("version: '~> v2'", self.workflow)
 
-    def test_every_platform_is_resolved_from_the_published_index(self) -> None:
+        for repository in PLATFORM_ARTIFACTS.values():
+            self.assertIn(f'"{repository}:{{{{ .Version }}}}-staging-amd64"', self.goreleaser)
+            self.assertIn(f'"{repository}:{{{{ .Version }}}}-staging-arm64"', self.goreleaser)
+            self.assertIn(f'name_template: "{repository}:{{{{ .Version }}}}-staging"', self.goreleaser)
+            self.assertNotIn(f'name_template: "{repository}:{{{{ .Version }}}}"', self.goreleaser)
+            self.assertNotIn(f'name_template: "{repository}:latest"', self.goreleaser)
+
+    def test_every_platform_is_resolved_from_the_staging_index(self) -> None:
         self.assertIn("Resolve release image platform digests", self.workflow)
         self.assertIn('for arch in amd64 arm64; do', self.workflow)
-        self.assertIn('crane manifest "${repository}:${TAG#v}"', self.workflow)
-        self.assertIn('crane digest "${repository}:${TAG#v}-${arch}"', self.workflow)
+        self.assertIn('staging_tag="${TAG#v}-staging"', self.workflow)
+        self.assertIn('crane manifest "${repository}:${staging_tag}"', self.workflow)
+        self.assertIn('crane digest "${repository}:${staging_tag}-${arch}"', self.workflow)
         self.assertIn('is not the index child', self.workflow)
         for name, repository in PLATFORM_ARTIFACTS.items():
             self.assertIn(f"resolve_image {name} {repository}", self.workflow)
@@ -95,10 +111,18 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.workflow,
                 )
 
-    def test_every_platform_child_has_provenance_and_is_fail_closed(self) -> None:
+    def test_every_attestation_dependency_is_fail_closed(self) -> None:
+        proof_gate = self.workflow.index("- name: Verify attestation")
+        attestation_ids = [*ARCHIVE_ATTESTATION_IDS, *INDEX_ATTESTATION_IDS]
+        for attestation_id in attestation_ids:
+            self.assertIn(f"id: {attestation_id}", self.workflow)
+            self.assertIn(f"steps.{attestation_id}.outcome != 'success'", self.workflow)
+            self.assertLess(self.workflow.index(f"id: {attestation_id}"), proof_gate)
+
         for name, repository in PLATFORM_ARTIFACTS.items():
             for arch in ("amd64", "arm64"):
                 attestation_id = f"attest-{ATTESTATION_NAMES[name]}-{arch}"
+                attestation_ids.append(attestation_id)
                 self.assertIn(f"id: {attestation_id}", self.workflow)
                 self.assertIn(
                     f"subject-digest: ${{{{ steps.platform-digests.outputs.{name}_{arch} }}}}",
@@ -108,6 +132,41 @@ class TestReleaseArtifacts(unittest.TestCase):
                     f"steps.{attestation_id}.outcome != 'success'",
                     self.workflow,
                 )
+                self.assertLess(self.workflow.index(f"id: {attestation_id}"), proof_gate)
+
+        gate_end = self.workflow.index("run: |", proof_gate)
+        normalized_gate = " ".join(self.workflow[proof_gate:gate_end].split())
+        expected_condition = "always() && ( " + " || ".join(
+            f"steps.{attestation_id}.outcome != 'success'"
+            for attestation_id in attestation_ids
+        ) + " )"
+        self.assertIn(expected_condition, normalized_gate)
+        self.assertNotIn("== 'failure'", normalized_gate)
+
+    def test_verified_staging_indexes_promote_after_the_proof_gate(self) -> None:
+        resolution = self.workflow.index("- name: Resolve release image platform digests")
+        proof_gate = self.workflow.index("- name: Verify attestation")
+        chart_preflight = self.workflow.index("- name: Verify Helm chart version is unpublished")
+        promotion = self.workflow.index("- name: Promote verified image manifests")
+        bundle = self.workflow.index("- name: Build Kubernetes image digest bundle")
+        self.assertLess(resolution, proof_gate)
+        self.assertLess(proof_gate, chart_preflight)
+        self.assertLess(chart_preflight, promotion)
+        self.assertLess(proof_gate, promotion)
+        self.assertLess(promotion, bundle)
+        self.assertIn('crane copy --no-clobber "${repository}@${index_digest}"', self.workflow)
+        self.assertIn('"${repository}:latest"', self.workflow)
+
+        digest_vars = {
+            "pipelock": "PIPELOCK_INDEX_DIGEST",
+            "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",
+            "license_service": "LICENSE_SERVICE_INDEX_DIGEST",
+        }
+        for name, repository in PLATFORM_ARTIFACTS.items():
+            self.assertIn(
+                f'promote_image {repository} "${digest_vars[name]}"',
+                self.workflow,
+            )
 
     def test_github_release_promotion_follows_proof_bundle_and_chart(self) -> None:
         goreleaser = self.workflow.index("- name: Run GoReleaser")

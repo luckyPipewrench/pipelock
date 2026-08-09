@@ -145,10 +145,13 @@ func parseImage(value string) (releaseImage, error) {
 		return releaseImage{}, fmt.Errorf("--image %q must use name=repository@sha256:<64 lowercase hex chars>", value)
 	}
 	repository, digest, ok := strings.Cut(reference, "@")
-	if !ok || repository == "" {
+	if !ok {
 		return releaseImage{}, fmt.Errorf("--image %q must use a lowercase sha256 manifest digest", value)
 	}
-	if strings.Contains(repository, "@") || strings.Contains(digest, "@") {
+	if repository == "" {
+		return releaseImage{}, fmt.Errorf("--image %q must name a repository before @", value)
+	}
+	if strings.Contains(digest, "@") {
 		return releaseImage{}, fmt.Errorf("--image %q has more than one @ separator", value)
 	}
 	if !digestRE.MatchString(digest) {

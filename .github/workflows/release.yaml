@@ -296,9 +296,9 @@ jobs:
           echo "$tool_dir" >> "$GITHUB_PATH"
 
       # Keep the GitHub Release private while the artifact set is assembled and
-      # checked. GoReleaser still publishes container images and updates
-      # Homebrew through their separate public endpoints; a draft only prevents
-      # an incomplete GitHub Release page or its assets from becoming public.
+      # checked. GoReleaser publishes only staging image tags; the consumer
+      # version and latest manifests are promoted after attestation completes.
+      # Homebrew remains a separate publication surface.
       - name: Run GoReleaser
         run: goreleaser release --clean --draft
         env:
@@ -344,20 +344,21 @@ jobs:
           resolve_image() {
             local name="$1"
             local repository="$2"
-            local index_digest child_digest direct_digest arch
+            local staging_tag index_digest child_digest direct_digest arch
 
-            index_digest="$(crane digest "${repository}:${TAG#v}")"
+            staging_tag="${TAG#v}-staging"
+            index_digest="$(crane digest "${repository}:${staging_tag}")"
             printf '%s_index=%s\n' "$name" "$index_digest" >> "$GITHUB_OUTPUT"
             for arch in amd64 arm64; do
-              child_digest="$(crane manifest "${repository}:${TAG#v}" | jq -er --arg arch "$arch" '
+              child_digest="$(crane manifest "${repository}:${staging_tag}" | jq -er --arg arch "$arch" '
                 [.manifests[] | select(
                   .platform.os == "linux" and
                   .platform.architecture == $arch
                 ) | .digest] | if length == 1 then .[0] else error("expected one linux/" + $arch + " child") end
               ')"
-              direct_digest="$(crane digest "${repository}:${TAG#v}-${arch}")"
+              direct_digest="$(crane digest "${repository}:${staging_tag}-${arch}")"
               test "$child_digest" = "$direct_digest" || {
-                echo "::error::${repository}:${TAG#v}-${arch} is not the index child"
+                echo "::error::${repository}:${staging_tag}-${arch} is not the index child"
                 exit 1
               }
               printf '%s_%s=%s\n' "$name" "$arch" "$child_digest" >> "$GITHUB_OUTPUT"
@@ -550,6 +551,78 @@ jobs:
           echo "::error::Attestation failed — release provenance is incomplete"
           exit 1
 
+      - name: Set up Helm
+        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      # Refuse a re-pushed release tag before moving any consumer image tag.
+      # Without this preflight, replaying an older tag could roll :latest back
+      # and only then fail when chart publication discovers the version exists.
+      - name: Verify Helm chart version is unpublished
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          chart_version="$(helm show chart charts/pipelock | awk '$1 == "version:" { print $2 }')"
+          test -n "$chart_version" || {
+            echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
+            exit 1
+          }
+          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          if chart_lookup_output="$(helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" 2>&1)"; then
+            echo "::error::chart ${chart_version} is already published; refusing to replay a release tag"
+            exit 1
+          elif ! printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
+            echo "::error::could not determine whether chart ${chart_version} already exists; refusing image promotion"
+            exit 1
+          fi
+
+      # GoReleaser writes only staging tags, so an attestation failure leaves
+      # no consumer version or latest image manifest. Promote the verified index
+      # by digest. Version tags never overwrite an existing different digest;
+      # latest deliberately advances to the newly verified release.
+      - name: Promote verified image manifests
+        env:
+          TAG: ${{ github.ref_name }}
+          PIPELOCK_INDEX_DIGEST: ${{ steps.platform-digests.outputs.pipelock_index }}
+          PIPELOCK_INIT_INDEX_DIGEST: ${{ steps.platform-digests.outputs.pipelock_init_index }}
+          LICENSE_SERVICE_INDEX_DIGEST: ${{ steps.platform-digests.outputs.license_service_index }}
+        run: |
+          set -euo pipefail
+          promote_image() {
+            local repository="$1"
+            local index_digest="$2"
+            local version="${TAG#v}"
+            local tags existing
+
+            tags="$(crane ls "$repository")" || {
+              echo "::error::could not list tags for ${repository}; refusing image promotion"
+              exit 1
+            }
+            if grep -Fxq "$version" <<<"$tags"; then
+              existing="$(crane digest "${repository}:${version}")" || {
+                echo "::error::could not resolve existing ${repository}:${version}"
+                exit 1
+              }
+              test "$existing" = "$index_digest" || {
+                echo "::error::${repository}:${version} already resolves to a different digest"
+                exit 1
+              }
+            else
+              crane copy --no-clobber "${repository}@${index_digest}" "${repository}:${version}"
+            fi
+            crane copy "${repository}@${index_digest}" "${repository}:latest"
+
+            test "$(crane digest "${repository}:${version}")" = "$index_digest"
+            test "$(crane digest "${repository}:latest")" = "$index_digest"
+          }
+
+          promote_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_INDEX_DIGEST"
+          promote_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_INDEX_DIGEST"
+          promote_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_INDEX_DIGEST"
+
       # Build the operator-facing bundle only after every child image has its
       # own SBOM and provenance proof. The bundle contains index digests because
       # Kubernetes selects the matching platform child from that signed index.
@@ -590,11 +663,6 @@ jobs:
       # by default, so the chart is not installable until that package is made
       # public once in the GitHub UI. There is no REST endpoint for that, and it
       # is irreversible, so it stays a deliberate human step.
-      - name: Set up Helm
-        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
-        with:
-          version: v3.20.2
-
       - name: Package and publish Helm chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -610,20 +678,6 @@ jobs:
           helm package charts/pipelock --app-version "$app_version" --destination dist-chart
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
           trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
-
-          # Refuse to overwrite a published tag. The release gate keeps the chart
-          # version equal to the release version, so this can only trigger when
-          # the same version is released twice, which a re-pushed tag allows.
-          # An OCI registry accepts a re-push silently, so without this the
-          # second run would change what an already-published version means for
-          # anyone who pinned it.
-          if chart_lookup_output="$(helm show chart "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" 2>&1)"; then
-            echo "::error::chart ${chart_version} is already published; refusing to overwrite a published tag"
-            exit 1
-          elif ! printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
-            echo "::error::could not determine whether chart ${chart_version} already exists; refusing to publish"
-            exit 1
-          fi
 
           helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
 

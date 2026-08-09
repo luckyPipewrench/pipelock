@@ -166,7 +166,7 @@ func TestParseImageRejectsMalformedReferences(t *testing.T) {
 		{name: "empty name", value: "=ghcr.io/luckypipewrench/pipelock@" + testDigest, want: "must use name"},
 		{name: "empty reference", value: "pipelock=", want: "must use name"},
 		{name: "missing digest separator", value: "pipelock=ghcr.io/luckypipewrench/pipelock", want: "lowercase sha256"},
-		{name: "empty repository", value: "pipelock=@" + testDigest, want: "lowercase sha256"},
+		{name: "empty repository", value: "pipelock=@" + testDigest, want: "must name a repository"},
 		{name: "repeated digest separator", value: "pipelock=ghcr.io/luckypipewrench/pipelock@" + testDigest + "@again", want: "more than one @"},
 	}
 	for _, tc := range tests {

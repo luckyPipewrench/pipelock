@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -1547,5 +1548,64 @@ func TestHTTPClient_PipelockSessionTokenValidation(t *testing.T) {
 				t.Fatalf("second request token = %q, want %q", seen[1], tc.token)
 			}
 		})
+	}
+}
+
+// A notification is acknowledged with 202 and no body, and that path tracks the
+// token too. A bad token there must fail the same way it does on a normal
+// response rather than being silently accepted because there was nothing to read.
+func TestHTTPClient_NotificationRefusesInvalidPipelockToken(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(pipelockSessionTokenHeader, "too-short")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	if !errors.Is(err, ErrInvalidPipelockSessionToken) {
+		t.Fatalf("err = %v, want ErrInvalidPipelockSessionToken", err)
+	}
+}
+
+// The GET event stream is a separate request path, so it needs its own proof
+// that a learned token is replayed. Without it the stream would arrive at the
+// listener unbound and be refused.
+func TestHTTPClient_GETStreamCarriesPipelockToken(t *testing.T) {
+	t.Parallel()
+	token := strings.Repeat("B", 43)
+	gotToken := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gotToken <- r.Header.Get(pipelockSessionTokenHeader)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set(pipelockSessionTokenHeader, token)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	reader, err := c.OpenGETStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenGETStream: %v", err)
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer func() { _ = closer.Close() }()
+	}
+	select {
+	case got := <-gotToken:
+		if got != token {
+			t.Fatalf("GET stream token = %q, want %q", got, token)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GET stream never reached the server")
 	}
 }

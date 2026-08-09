@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
@@ -86,18 +87,20 @@ and --key (or the packet's own signer_key) must match.`,
 // auditPacketReport is the structured form emitted by --json. Field names are
 // deliberately stable so external CI checks can grep them.
 type auditPacketReport struct {
-	Path        string         `json:"path"`
-	Verdict     string         `json:"verdict"`
-	Trusted     bool           `json:"trusted"`
-	Valid       bool           `json:"valid"`
-	Summary     auditPktDigest `json:"summary"`
-	Posture     posturePeek    `json:"posture"`
-	Run         runPeek        `json:"run"`
-	Errors      []string       `json:"errors,omitempty"`
-	Warnings    []string       `json:"warnings,omitempty"`
-	SchemaCheck string         `json:"schema_check"`
-	ChainCheck  string         `json:"chain_check"`
-	CrossCheck  string         `json:"cross_check"`
+	Path            string              `json:"path"`
+	Verdict         string              `json:"verdict"`
+	Trusted         bool                `json:"trusted"`
+	Valid           bool                `json:"valid"`
+	Summary         auditPktDigest      `json:"summary"`
+	Posture         posturePeek         `json:"posture"`
+	Run             runPeek             `json:"run"`
+	Errors          []string            `json:"errors,omitempty"`
+	Warnings        []string            `json:"warnings,omitempty"`
+	SchemaCheck     string              `json:"schema_check"`
+	ChainCheck      string              `json:"chain_check"`
+	CrossCheck      string              `json:"cross_check"`
+	LifecycleStatus completeness.Status `json:"lifecycle_status,omitempty"`
+	LifecycleReason completeness.Reason `json:"lifecycle_reason,omitempty"`
 }
 
 type auditPktDigest struct {
@@ -196,6 +199,9 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, chainErr)
 	}
 	report.ChainCheck = chainStatusLabel(chainResult)
+	lifecycle := completeness.Analyze(chainReceipts, chainResult)
+	report.LifecycleStatus = lifecycle.Status
+	report.LifecycleReason = lifecycle.Reason
 
 	if crossErrs := crossCheck(&packet, chainResult, chainReceipts); len(crossErrs) > 0 {
 		report.CrossCheck = statusFail

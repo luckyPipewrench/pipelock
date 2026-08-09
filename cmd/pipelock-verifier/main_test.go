@@ -346,6 +346,29 @@ func TestAuditPacket_HappyPath(t *testing.T) {
 	}
 }
 
+func TestAuditPacketReportsInFlightLifecycleCompleteness(t *testing.T) {
+	t.Parallel()
+	lifecycle := newCompletenessFixture(t)
+	fix := &fixture{
+		pub:  lifecycle.priv.Public().(ed25519.PublicKey),
+		priv: lifecycle.priv,
+		receipts: []receipt.Receipt{
+			lifecycle.open("run-audit-packet", "open-audit-packet"),
+		},
+		keyHex: lifecycle.keyHex,
+	}
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
+	if code != cliutil.ExitOK {
+		t.Fatalf("valid in-flight packet should verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "lifecycle:    LIMITED (abnormal_end)") {
+		t.Fatalf("packet report must name missing session_close: %s", stdout)
+	}
+}
+
 func TestAuditPacket_ValidVerdictRequiresExternalTrustAnchor(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)

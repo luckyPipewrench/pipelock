@@ -228,8 +228,18 @@ func Build(in Inputs) Report {
 	}
 
 	intentByID := make(map[string]*DeploymentIntent, len(in.Intents))
+	// Keep a conservative representative for delivery accounting even when
+	// duplicate intent records make normal classification impossible. If any
+	// record declares the producer expected, prefer it so an excluded or
+	// scaled-zero duplicate cannot make the exit-code gate report healthy.
+	deliveryIntentByID := make(map[string]*DeploymentIntent, len(in.Intents))
 	for i := range in.Intents {
 		id := in.Intents[i].InstanceID
+		candidate := &in.Intents[i]
+		current := deliveryIntentByID[id]
+		if current == nil || (!deliveryExpected(current) && deliveryExpected(candidate)) {
+			deliveryIntentByID[id] = candidate
+		}
 		if _, dup := intentByID[id]; dup {
 			conflictingIDs[id] = "multiple deployment-intent records for one instance ID"
 			continue
@@ -250,9 +260,10 @@ func Build(in Inputs) Report {
 		// guards against.
 		if reason, conflicted := conflictingIDs[id]; conflicted {
 			report.Followers = append(report.Followers, FollowerConvergence{
-				InstanceID: id,
-				State:      StateUnknown,
-				Reason:     reason,
+				InstanceID:       id,
+				State:            StateUnknown,
+				Reason:           reason,
+				DeploymentIntent: deliveryIntentByID[id],
 			})
 			continue
 		}
@@ -628,7 +639,7 @@ func deliveryHealth(followers []FollowerConvergence) DeliveryHealth {
 		if follower.State == StateExcluded || follower.State == StateScaledZero {
 			continue
 		}
-		if follower.DeploymentIntent == nil || follower.DeploymentIntent.DesiredReplicas <= 0 {
+		if !deliveryExpected(follower.DeploymentIntent) {
 			continue
 		}
 		result.Expected++
@@ -639,4 +650,8 @@ func deliveryHealth(followers []FollowerConvergence) DeliveryHealth {
 		result.Alerting = append(result.Alerting, follower.InstanceID)
 	}
 	return result
+}
+
+func deliveryExpected(intent *DeploymentIntent) bool {
+	return intent != nil && !intent.Excluded && intent.DesiredReplicas > 0
 }

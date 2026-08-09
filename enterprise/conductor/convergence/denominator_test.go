@@ -6,6 +6,7 @@
 package convergence
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,9 @@ func TestBuild_DuplicateFleetStatusFailsClosed(t *testing.T) {
 	now := time.Now().UTC()
 	report := Build(Inputs{
 		Now: now,
+		Intents: []DeploymentIntent{
+			{InstanceID: "dup-fs", DesiredReplicas: 1},
+		},
 		FleetStatus: []controlplane.FollowerFleetStatus{
 			{
 				FollowerSummary: controlplane.FollowerSummary{InstanceID: "dup-fs", Active: true},
@@ -78,6 +82,11 @@ func TestBuild_DuplicateFleetStatusFailsClosed(t *testing.T) {
 	}
 	if found.State != StateUnknown {
 		t.Fatalf("duplicate fleet-status record reported as %q, want %q", found.State, StateUnknown)
+	}
+	if report.DeliveryHealth.Expected != 1 || report.DeliveryHealth.Current != 0 ||
+		!slices.Equal(report.DeliveryHealth.Alerting, []string{"dup-fs"}) {
+		t.Fatalf("duplicate expected producer delivery health = %+v, want one alerting producer; "+
+			"an ambiguous expected producer must not leave the exit-code gate green", report.DeliveryHealth)
 	}
 }
 
@@ -115,6 +124,11 @@ func TestBuild_DuplicateInstanceIDFailsClosed(t *testing.T) {
 	}
 	if found.State != StateUnknown {
 		t.Fatalf("duplicate instance ID reported as %q, want unknown with a conflict reason", found.State)
+	}
+	if report.DeliveryHealth.Expected != 1 || report.DeliveryHealth.Current != 0 ||
+		!slices.Equal(report.DeliveryHealth.Alerting, []string{"dup-1"}) {
+		t.Fatalf("conflicting expected producer delivery health = %+v, want one alerting producer; "+
+			"an excluded duplicate must not suppress an expected producer", report.DeliveryHealth)
 	}
 }
 

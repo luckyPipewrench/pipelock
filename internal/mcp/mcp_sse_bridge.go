@@ -21,10 +21,12 @@ import (
 // text/event-stream so clean messages reach the downstream client as soon as
 // ForwardScanned accepts them, instead of buffering the whole stream to EOF.
 type sseMessageWriter struct {
-	mu      sync.Mutex
-	w       io.Writer
-	flusher http.Flusher
-	wrote   bool
+	mu             sync.Mutex
+	w              io.Writer
+	responseWriter http.ResponseWriter
+	writeTimeout   time.Duration
+	flusher        http.Flusher
+	wrote          bool
 }
 
 var _ transport.MessageWriter = (*sseMessageWriter)(nil)
@@ -47,6 +49,12 @@ func (w *listenerStateMessageWriter) WriteMessage(msg []byte) error {
 func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	if sw.responseWriter != nil && sw.writeTimeout > 0 {
+		controller := http.NewResponseController(sw.responseWriter)
+		if err := controller.SetWriteDeadline(time.Now().Add(sw.writeTimeout)); err == nil {
+			defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
+		}
+	}
 	if len(msg) > transport.MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}

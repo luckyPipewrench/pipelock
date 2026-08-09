@@ -718,7 +718,9 @@ func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
 
 func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T) {
 	var changedDescription atomic.Bool
+	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
 		var request struct {
 			ID     int    `json:"id"`
 			Method string `json:"method"`
@@ -838,9 +840,14 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T)
 	if got := headers.Get("Mcp-Session-Id"); got != "upstream-minted-session" {
 		t.Fatalf("returned session ID = %q, want upstream-minted-session", got)
 	}
+	beforeUnbound := upstreamCalls.Load()
 	afterSetup, _ := post(t, reconnectedClient, 6, "", "upstream-minted-session", "tools/call")
-	if strings.Contains(afterSetup, `"error"`) {
-		t.Fatalf("unbound request lost stateless scanning/forwarding: %s", afterSetup)
+	wantAfterSetup := `{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"ok"}]}}`
+	if afterSetup != wantAfterSetup {
+		t.Fatalf("unbound response = %s, want exact upstream response %s", afterSetup, wantAfterSetup)
+	}
+	if got := upstreamCalls.Load(); got != beforeUnbound+1 {
+		t.Fatalf("unbound upstream calls = %d, want %d", got, beforeUnbound+1)
 	}
 }
 

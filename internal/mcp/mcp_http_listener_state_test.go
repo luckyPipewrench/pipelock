@@ -6,9 +6,13 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -101,6 +105,79 @@ func TestMCPListenerTokenHelpers_EdgeCases(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("revoked state writer emitted %q", out.String())
+	}
+
+	writeErr := errors.New("delegated write failed")
+	active := newMCPListenerClientState("active-token", "active-key")
+	delegated := &sentinelMessageWriter{err: writeErr}
+	writer = &listenerStateMessageWriter{state: active, writer: delegated}
+	if err := writer.WriteMessage([]byte(`{"jsonrpc":"2.0"}`)); !errors.Is(err, writeErr) {
+		t.Fatalf("delegated writer error = %v, want %v", err, writeErr)
+	}
+}
+
+type sentinelMessageWriter struct{ err error }
+
+func (w *sentinelMessageWriter) WriteMessage([]byte) error { return w.err }
+
+type deadlineBlockingResponseWriter struct {
+	header      http.Header
+	deadlineSet chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func newDeadlineBlockingResponseWriter() *deadlineBlockingResponseWriter {
+	return &deadlineBlockingResponseWriter{
+		header:      make(http.Header),
+		deadlineSet: make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (w *deadlineBlockingResponseWriter) Header() http.Header { return w.header }
+func (w *deadlineBlockingResponseWriter) WriteHeader(int)     {}
+func (w *deadlineBlockingResponseWriter) Write([]byte) (int, error) {
+	<-w.release
+	return 0, context.DeadlineExceeded
+}
+
+func (w *deadlineBlockingResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return nil
+	}
+	w.once.Do(func() {
+		close(w.deadlineSet)
+		time.AfterFunc(time.Until(deadline), func() { close(w.release) })
+	})
+	return nil
+}
+
+func TestListenerStateMessageWriter_BoundsBlockedWriteBeforeRevocation(t *testing.T) {
+	state := newMCPListenerClientState("token", "key")
+	blocked := newDeadlineBlockingResponseWriter()
+	stream := &sseMessageWriter{
+		w:              blocked,
+		responseWriter: blocked,
+		writeTimeout:   20 * time.Millisecond,
+	}
+	writer := &listenerStateMessageWriter{state: state, writer: stream}
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- writer.WriteMessage([]byte(`{"jsonrpc":"2.0"}`)) }()
+	<-blocked.deadlineSet
+
+	revokeDone := make(chan struct{})
+	go func() {
+		state.revoke()
+		close(revokeDone)
+	}()
+	select {
+	case <-revokeDone:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("revocation remained blocked behind a downstream write deadline")
+	}
+	if err := <-writeDone; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked write error = %v, want deadline exceeded", err)
 	}
 }
 

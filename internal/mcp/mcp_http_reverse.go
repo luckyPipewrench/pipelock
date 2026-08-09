@@ -58,6 +58,10 @@ const (
 	// deliberately does not bound total body lifetime: see
 	// newReverseUpstreamTransport.
 	upstreamIdleReadTimeout = 120 * time.Second
+	// listenerDownstreamWriteTimeout bounds each downstream response write, not
+	// the lifetime of an SSE stream. The deadline is refreshed per event so a
+	// client that stops reading cannot hold token revocation indefinitely.
+	listenerDownstreamWriteTimeout = 30 * time.Second
 	// Mcp-Method and Mcp-Name are required from revision 2026-07-28; the
 	// preflight is refused outright when a requested header is absent here, so
 	// omitting them blocks browser MCP clients rather than degrading them.
@@ -833,7 +837,11 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Mcp-Session-Id", sid)
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
-			streamWriter := &sseMessageWriter{w: w}
+			streamWriter := &sseMessageWriter{
+				w:              w,
+				responseWriter: w,
+				writeTimeout:   listenerDownstreamWriteTimeout,
+			}
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
@@ -1350,7 +1358,11 @@ func RunHTTPListenerProxy(
 		// the buffer holds a single message and is forwarded verbatim below.
 		if upstreamIsSSE {
 			w.Header().Set("Content-Type", "text/event-stream")
-			streamWriter := &sseMessageWriter{w: w}
+			streamWriter := &sseMessageWriter{
+				w:              w,
+				responseWriter: w,
+				writeTimeout:   listenerDownstreamWriteTimeout,
+			}
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
@@ -1394,12 +1406,14 @@ func RunHTTPListenerProxy(
 		if foundInjection {
 			output := bytes.TrimSpace(buf.Bytes())
 			if !clientState.commitIfActive(func() {
-				w.Header().Set("Content-Type", "application/json")
-				if len(output) == 0 {
-					w.WriteHeader(http.StatusAccepted)
-					return
-				}
-				_, _ = w.Write(output)
+				withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+					w.Header().Set("Content-Type", "application/json")
+					if len(output) == 0 {
+						w.WriteHeader(http.StatusAccepted)
+						return
+					}
+					_, _ = w.Write(output)
+				})
 			}) {
 				rejectMissingListenerState(frame.ID)
 			}
@@ -1417,12 +1431,14 @@ func RunHTTPListenerProxy(
 		output := bytes.TrimSpace(buf.Bytes())
 		commitResponse := func() {
 			commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
-			w.Header().Set("Content-Type", "application/json")
-			if len(output) == 0 {
-				w.WriteHeader(http.StatusAccepted)
-				return
-			}
-			_, _ = w.Write(output)
+			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+				w.Header().Set("Content-Type", "application/json")
+				if len(output) == 0 {
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				_, _ = w.Write(output)
+			})
 		}
 		if setupState {
 			commitResponse()
@@ -1454,6 +1470,14 @@ func RunHTTPListenerProxy(
 		return fmt.Errorf("HTTP listener: %w", err)
 	}
 	return nil
+}
+
+func withListenerWriteDeadline(w http.ResponseWriter, timeout time.Duration, write func()) {
+	controller := http.NewResponseController(w)
+	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err == nil {
+		defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
+	}
+	write()
 }
 
 func listenerIsLoopback(ln net.Listener) bool {

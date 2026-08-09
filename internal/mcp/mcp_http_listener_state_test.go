@@ -137,13 +137,18 @@ func TestMCPListenerClientStates_LegacySessionReuse(t *testing.T) {
 }
 
 func TestListenerHasStatefulControls_ToolBindingFields(t *testing.T) {
-	for _, cfg := range []*tools.ToolScanConfig{
-		{BindingUnknownAction: "block"},
-		{BindingNoBaselineAction: "warn"},
-		{DetectDrift: true},
+	for _, tc := range []struct {
+		name string
+		cfg  *tools.ToolScanConfig
+	}{
+		{"unknown action", &tools.ToolScanConfig{BindingUnknownAction: "block"}},
+		{"no-baseline action", &tools.ToolScanConfig{BindingNoBaselineAction: "warn"}},
+		{"drift detection", &tools.ToolScanConfig{DetectDrift: true}},
 	} {
-		if !listenerHasStatefulControls(MCPProxyOpts{ToolCfg: cfg}) {
-			t.Fatalf("tool config %+v was not treated as stateful", cfg)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if !listenerHasStatefulControls(MCPProxyOpts{ToolCfg: tc.cfg}) {
+				t.Fatalf("tool config %+v was not treated as stateful", tc.cfg)
+			}
+		})
 	}
 }

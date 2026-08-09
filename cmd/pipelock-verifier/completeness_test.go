@@ -565,6 +565,56 @@ func writeChainRecorderJSONL(t *testing.T, receipts []receipt.Receipt) string {
 	return path
 }
 
+func TestChainAndCompletenessAcceptSameBareV1JSONL(t *testing.T) {
+	t.Parallel()
+	fixture := newCompletenessFixture(t)
+	path := writeCompletenessJSONL(t, []receipt.Receipt{
+		fixture.open("run-bare-v1", "open-bare-v1"),
+		fixture.close("run-bare-v1", "open-bare-v1"),
+	})
+
+	for _, command := range []string{"chain", "completeness"} {
+		command := command
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			stdout, stderr, code := runRoot(t, command, "--json", "--key", fixture.keyHex, path)
+			if code != cliutil.ExitOK {
+				t.Fatalf("bare v1 %s should verify: code=%d stdout=%q stderr=%q", command, code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestChainAndCompletenessRejectMalformedBareV1JSONL(t *testing.T) {
+	t.Parallel()
+	fixture := newCompletenessFixture(t)
+	path := writeCompletenessJSONL(t, []receipt.Receipt{
+		fixture.open("run-malformed-bare-v1", "open-malformed-bare-v1"),
+	})
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	if _, err := file.WriteString(`{"record_type":"evidence_receipt_v2"}` + "\n"); err != nil {
+		_ = file.Close()
+		t.Fatalf("append mixed record: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	for _, command := range []string{"chain", "completeness"} {
+		command := command
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			stdout, stderr, code := runRoot(t, command, "--json", "--key", fixture.keyHex, path)
+			if code == cliutil.ExitOK {
+				t.Fatalf("mixed bare v1 %s input accepted: stdout=%q stderr=%q", command, stdout, stderr)
+			}
+		})
+	}
+}
+
 // TestChainCLIShowsCompletenessReasonForATailDroppedChain proves the PATH, not
 // the formatter. The sibling unit test hands emitScorecard a reason and checks
 // it prints; that cannot fail if the analyzer stopped classifying a missing

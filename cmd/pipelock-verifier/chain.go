@@ -104,12 +104,15 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		}
 		clean = location.Dir
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
-		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, keyHex, opts); handled || handleErr != nil {
-			return handleErr
-		}
 		receipts, extractErr := actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
 		if extractErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+		}
+		if len(receipts) > 0 {
+			return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
+		}
+		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, keyHex, opts); handled || handleErr != nil {
+			return handleErr
 		}
 		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	} else {
@@ -125,12 +128,15 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%q is a directory; pass --dir to verify a session directory", target))
 		}
 		label = clean
-		if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
-			return handleErr
-		}
 		receipts, extractErr := actionreceipt.ExtractReceipts(clean)
 		if extractErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+		}
+		if len(receipts) > 0 {
+			return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
+		}
+		if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
+			return handleErr
 		}
 		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	}

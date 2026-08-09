@@ -765,16 +765,16 @@ and delivery lag for every producer with a batch.
 
 Keep the expected-producer inventory in Git with the deployment declaration.
 Start from [`examples/conductor/receipt-producer-inventory.json`](../../examples/conductor/receipt-producer-inventory.json).
-Each active producer needs `instance_id` and `desired_replicas`. A local-only
-producer uses `excluded: true` and must name both `excluded_owner` and
-`excluded_reason`. A producer with `desired_replicas: 0` is intentionally
-scaled down. Both states stay in the report and do not count as delivery
-failures.
+Every producer entry needs `instance_id` and `desired_replicas`. A local-only
+producer uses `excluded: true`, must name both `excluded_owner` and
+`excluded_reason`, and must have a positive `desired_replicas` value. A
+producer with `desired_replicas: 0` is intentionally scaled down. Both states
+stay in the report and do not count as delivery failures.
 
 ```bash
 pipelock conductor fleet convergence \
   --inventory /etc/pipelock/conductor/receipt-producers.json \
-  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --server https://conductor.api.vendor.example:8895 \
   --token-file /etc/pipelock/conductor/tokens/auditor/token \
   --client-cert /etc/pipelock/operator.crt \
   --client-key /etc/pipelock/operator.key \

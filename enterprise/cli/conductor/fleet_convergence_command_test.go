@@ -237,6 +237,15 @@ func TestRunFleetConvergence_FailsClosedOnClientAndAPIErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("overflowing stale after", func(t *testing.T) {
+		err := runFleetConvergence(&cobra.Command{}, fleetConvergenceOptions{
+			staleAfter: convergence.MaxEvidenceStaleAfter() + time.Nanosecond,
+		})
+		if err == nil || !strings.Contains(err.Error(), "--stale-after") {
+			t.Fatalf("error = %v, want stale-after overflow validation", err)
+		}
+	})
+
 	t.Run("client setup failure", func(t *testing.T) {
 		err := runFleetConvergence(&cobra.Command{}, fleetConvergenceOptions{
 			inventory:  inventory,
@@ -319,7 +328,7 @@ func TestRunFleetConvergence_InventoryErrorAndDiagnosticMode(t *testing.T) {
 			inventory:  filepath.Join(t.TempDir(), "missing.json"),
 			staleAfter: time.Minute,
 		})
-		if err == nil || !strings.Contains(err.Error(), "open --inventory") {
+		if err == nil || !strings.Contains(err.Error(), "read --inventory") {
 			t.Fatalf("error = %v, want inventory read error", err)
 		}
 	})

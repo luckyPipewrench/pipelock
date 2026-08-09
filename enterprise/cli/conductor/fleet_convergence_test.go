@@ -143,6 +143,34 @@ func TestReadReceiptProducerInventory_RejectsInvalidExceptions(t *testing.T) {
 }`,
 			want: "duplicate producer",
 		},
+		{
+			name: "duplicate root producers key is rejected",
+			content: `{
+  "schema": "pipelock-receipt-producer-inventory-v1",
+  "org_id": "org-example", "fleet_id": "production",
+  "producers": [{"instance_id": "current", "desired_replicas": 1}],
+  "producers": [{"instance_id": "scaled-zero", "desired_replicas": 0}]
+}`,
+			want: "duplicate JSON key \"producers\"",
+		},
+		{
+			name: "duplicate desired replicas key is rejected",
+			content: `{
+  "schema": "pipelock-receipt-producer-inventory-v1",
+  "org_id": "org-example", "fleet_id": "production",
+  "producers": [{"instance_id": "current", "desired_replicas": 1, "desired_replicas": 0}]
+}`,
+			want: "duplicate JSON key \"desired_replicas\"",
+		},
+		{
+			name: "duplicate excluded key is rejected",
+			content: `{
+  "schema": "pipelock-receipt-producer-inventory-v1",
+  "org_id": "org-example", "fleet_id": "production",
+  "producers": [{"instance_id": "current", "desired_replicas": 1, "excluded": false, "excluded": true}]
+}`,
+			want: "duplicate JSON key \"excluded\"",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -190,7 +218,7 @@ func TestReadReceiptProducerInventory_RejectsMissingAndNonRegularPaths(t *testin
 		t.Fatalf("empty inventory error = %v", err)
 	}
 	missing := filepath.Join(t.TempDir(), "missing.json")
-	if _, err := readReceiptProducerInventory(missing); err == nil || !strings.Contains(err.Error(), "open --inventory") {
+	if _, err := readReceiptProducerInventory(missing); err == nil || !strings.Contains(err.Error(), "read --inventory") {
 		t.Fatalf("missing inventory error = %v", err)
 	}
 	dir := t.TempDir()

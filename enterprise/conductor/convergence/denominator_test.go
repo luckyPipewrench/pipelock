@@ -105,7 +105,7 @@ func TestBuild_DuplicateInstanceIDFailsClosed(t *testing.T) {
 			{InstanceID: "dup-1", DesiredReplicas: 1},
 			// A second record for the same ID that would silently win and
 			// suppress the instance entirely.
-			{InstanceID: "dup-1", Excluded: true, ExcludedReason: "suppressed"},
+			{InstanceID: "dup-1", Excluded: true, ExcludedOwner: "ops", ExcludedReason: "suppressed"},
 		},
 	})
 
@@ -369,6 +369,29 @@ func TestDeliveryHealth_ExpectedCurrentAndAlerting(t *testing.T) {
 	}
 }
 
+func TestBuild_UnaccountableExclusionFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []DeploymentIntent{
+		{
+			InstanceID: "missing-owner", DesiredReplicas: 1, Excluded: true,
+			ExcludedReason: "local-only proxy",
+		},
+		{
+			InstanceID: "excluded-scaled-zero", DesiredReplicas: 0, Excluded: true,
+		},
+	} {
+		report := Build(Inputs{Now: now, Intents: []DeploymentIntent{tc}})
+
+		if len(report.Followers) != 1 || report.Followers[0].State != StateUnknown {
+			t.Fatalf("unaccountable exclusion follower = %+v, want one unknown follower", report.Followers)
+		}
+		if report.DeliveryHealth.Expected != 1 || report.DeliveryHealth.Current != 0 ||
+			!slices.Equal(report.DeliveryHealth.Alerting, []string{tc.InstanceID}) {
+			t.Fatalf("unaccountable exclusion delivery health = %+v, want one alerting producer", report.DeliveryHealth)
+		}
+	}
+}
+
 func TestRuntimeAndConductorSummariesDoNotVouchForUnknownState(t *testing.T) {
 	healthOK := controlplane.FleetHealthOK
 	followers := []FollowerConvergence{{
@@ -402,6 +425,7 @@ func TestDeliveryBatchCurrentBoundaries(t *testing.T) {
 		{name: "at boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6 * time.Minute)}, staleAfter: time.Minute, want: true},
 		{name: "past boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6*time.Minute - time.Nanosecond)}, staleAfter: time.Minute},
 		{name: "default window", batch: &AuditEvidence{ReceivedAt: now.Add(-29 * time.Minute)}, want: true},
+		{name: "overflowing direct caller window saturates", batch: &AuditEvidence{ReceivedAt: now.Add(-time.Hour)}, staleAfter: MaxEvidenceStaleAfter() + time.Nanosecond, want: true},
 	}
 
 	for _, tt := range tests {

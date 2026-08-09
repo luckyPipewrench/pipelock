@@ -67,6 +67,7 @@ const (
 	// ordinary gap between deliveries. Loose enough not to cry wolf, tight
 	// enough that a real delivery outage still surfaces.
 	evidenceStaleWindowMultiple = 6
+	maxDuration                 = time.Duration(1<<63 - 1)
 	// deliveryClockSkewAllowance tolerates ordinary clock skew between the
 	// Conductor host that stamps ReceivedAt and the operator host running this
 	// report. Larger future timestamps remain unprovable and alert.
@@ -323,6 +324,11 @@ func classifyFollower(
 
 	// Excluded instances are reported as N/A.
 	if intent != nil && intent.Excluded {
+		if !validReceiptExclusion(intent) {
+			fc.State = StateUnknown
+			fc.Reason = "excluded receipt producer requires excluded_owner and excluded_reason"
+			return fc
+		}
 		fc.State = StateExcluded
 		fc.Reason = intent.ExcludedReason
 		if fc.Reason == "" {
@@ -684,7 +690,23 @@ func batchReceivedAtCurrent(receivedAt, now time.Time, staleAfter time.Duration)
 	if staleAfter <= 0 {
 		staleAfter = 5 * time.Minute
 	}
-	return now.Sub(receivedAt) <= staleAfter*evidenceStaleWindowMultiple
+	return now.Sub(receivedAt) <= evidenceStaleWindow(staleAfter)
+}
+
+// MaxEvidenceStaleAfter is the largest runtime staleness window that can be
+// multiplied by the evidence window without overflowing a time.Duration.
+func MaxEvidenceStaleAfter() time.Duration {
+	return maxDuration / evidenceStaleWindowMultiple
+}
+
+func evidenceStaleWindow(staleAfter time.Duration) time.Duration {
+	if staleAfter <= 0 {
+		staleAfter = 5 * time.Minute
+	}
+	if staleAfter > MaxEvidenceStaleAfter() {
+		return maxDuration
+	}
+	return staleAfter * evidenceStaleWindowMultiple
 }
 
 func batchTimestampPlausible(receivedAt, now time.Time) bool {
@@ -692,5 +714,16 @@ func batchTimestampPlausible(receivedAt, now time.Time) bool {
 }
 
 func deliveryExpected(intent *DeploymentIntent) bool {
-	return intent != nil && !intent.Excluded && intent.DesiredReplicas > 0
+	if intent == nil {
+		return false
+	}
+	if intent.Excluded {
+		return !validReceiptExclusion(intent)
+	}
+	return intent.DesiredReplicas > 0
+}
+
+func validReceiptExclusion(intent *DeploymentIntent) bool {
+	return intent != nil && intent.Excluded && strings.TrimSpace(intent.ExcludedOwner) != "" &&
+		strings.TrimSpace(intent.ExcludedReason) != ""
 }

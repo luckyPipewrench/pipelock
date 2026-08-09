@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/convergence"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 const (
@@ -119,6 +119,9 @@ func runFleetConvergence(cmd *cobra.Command, opts fleetConvergenceOptions) error
 	if opts.staleAfter <= 0 {
 		return errors.New("--stale-after must be positive")
 	}
+	if opts.staleAfter > convergence.MaxEvidenceStaleAfter() {
+		return fmt.Errorf("--stale-after must not exceed %s", convergence.MaxEvidenceStaleAfter())
+	}
 	inventory, err := readReceiptProducerInventory(opts.inventory)
 	if err != nil {
 		return err
@@ -158,27 +161,12 @@ func readReceiptProducerInventory(path string) (receiptProducerInventory, error)
 		return receiptProducerInventory{}, errors.New("--inventory is required")
 	}
 	clean := filepath.Clean(path)
-	file, err := os.Open(clean) // #nosec G304 -- explicit operator-supplied inventory path
-	if err != nil {
-		return receiptProducerInventory{}, fmt.Errorf("open --inventory: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return receiptProducerInventory{}, fmt.Errorf("stat --inventory: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return receiptProducerInventory{}, errors.New("--inventory must be a regular file")
-	}
-	if info.Size() > maxReceiptInventoryBytes {
-		return receiptProducerInventory{}, fmt.Errorf("--inventory exceeds %d bytes", maxReceiptInventoryBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxReceiptInventoryBytes+1))
+	data, err := securefile.Read(clean, securefile.Options{MaxBytes: maxReceiptInventoryBytes})
 	if err != nil {
 		return receiptProducerInventory{}, fmt.Errorf("read --inventory: %w", err)
 	}
-	if len(data) > maxReceiptInventoryBytes {
-		return receiptProducerInventory{}, fmt.Errorf("--inventory exceeds %d bytes", maxReceiptInventoryBytes)
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return receiptProducerInventory{}, fmt.Errorf("decode --inventory: %w", err)
 	}
 	var inventory receiptProducerInventory
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -193,6 +181,58 @@ func readReceiptProducerInventory(path string) (receiptProducerInventory, error)
 		return receiptProducerInventory{}, err
 	}
 	return inventory, nil
+}
+
+// rejectDuplicateJSONKeys rejects ambiguous JSON before decoding it into the
+// inventory schema. encoding/json otherwise accepts repeated object members
+// and silently retains the last value.
+func rejectDuplicateJSONKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	return rejectDuplicateJSONValue(dec)
+}
+
+func rejectDuplicateJSONValue(dec *json.Decoder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyToken, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("object key is not a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate JSON key %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := rejectDuplicateJSONValue(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	case '[':
+		for dec.More() {
+			if err := rejectDuplicateJSONValue(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
 }
 
 func validateReceiptProducerInventory(inventory receiptProducerInventory) error {

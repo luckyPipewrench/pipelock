@@ -507,6 +507,13 @@ pipelock-verifier chain evidence-proxy-0.jsonl \
 pipelock-verifier audit-packet ./audit-packet --key ./trusted-signing-key.pub
 ```
 
+An Audit Packet report separates chain integrity from run lifecycle evidence.
+After chain re-verification, its `lifecycle` line reports the lifecycle status
+and reason, such as `LIMITED (abnormal_end)` when a valid in-flight chain has
+no signed `session_close`. That status does not change the packet's integrity
+verdict. With `--offline`, the report says lifecycle was not assessed because
+it did not re-read the receipt chain.
+
 For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public
 key. Without `--key`, the verifier can check structure, hash linkage, sequence
 monotonicity, and signer-id consistency, but it reports signatures as not

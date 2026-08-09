@@ -52,10 +52,13 @@ fn audit_packet_verifies_end_to_end() {
 }
 
 #[test]
-fn audit_packet_reports_lifecycle_structure_separately_from_chain_validity() {
+fn audit_packet_rejects_an_orphan_outcome_in_an_otherwise_valid_chain() {
     let packet_dir = write_packet_with_evidence("g1-valid-chain.jsonl", None);
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(!report.valid);
+    assert_eq!(report.chain_check, "pass");
+    assert_eq!(report.cross_check, "pass");
+    assert!(has_error(&report.errors, "lifecycle: chain_broken"));
     assert_eq!(report.lifecycle_assessment, "assessed");
     assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
     assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
@@ -202,7 +205,11 @@ fn audit_packet_rejects_empty_chain() {
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
     assert!(!report.valid);
     assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.cross_check, "fail");
     assert!(has_error(&report.errors, "empty chain"));
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("UNVERIFIED"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("no_receipts"));
 }
 
 #[test]
@@ -295,7 +302,10 @@ fn audit_packet_reports_chain_failure_reason() {
     .unwrap();
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
     assert_eq!(report.chain_check, "fail");
-    assert_eq!(report.cross_check, "skipped");
+    assert_eq!(report.cross_check, "fail");
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
     assert!(has_error(&report.errors, "chain_prev_hash mismatch"));
 }
 

@@ -19,6 +19,14 @@ struct RunState {
     saw_heartbeat: bool,
     last_heartbeat: u64,
     heartbeat_gap: bool,
+    last_durability: Option<DurabilitySnapshot>,
+    durability_drop: bool,
+}
+
+#[derive(Clone, Copy)]
+struct DurabilitySnapshot {
+    fsync_errors_gated: u64,
+    durability_blocks: u64,
 }
 
 // analyze_lifecycle mirrors the Go verifier's packet-level lifecycle verdict.
@@ -79,8 +87,11 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
                 state.opened = true;
                 state.closed = false;
             }
-            Some("session_close") => state.closed = true,
-            Some("session_heartbeat") => {
+            Some("session_close") => {
+                state.closed = true;
+                apply_durability(state, control.get("close"));
+            }
+            Some("heartbeat") | Some("session_heartbeat") => {
                 if let Some(beat) = control
                     .get("heartbeat")
                     .and_then(serde_json::Value::as_object)
@@ -95,6 +106,7 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
                     state.saw_heartbeat = true;
                     state.last_heartbeat = beat;
                 }
+                apply_durability(state, control.get("heartbeat"));
             }
             _ => {}
         }
@@ -104,6 +116,27 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
         .map(assess_run)
         .reduce(worse)
         .unwrap_or_else(|| report("UNVERIFIED", "no_lifecycle"))
+}
+
+fn apply_durability(state: &mut RunState, value: Option<&serde_json::Value>) {
+    let snapshot = DurabilitySnapshot {
+        fsync_errors_gated: value
+            .and_then(|value| value.get("fsync_errors_gated"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        durability_blocks: value
+            .and_then(|value| value.get("durability_blocks"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    };
+    if let Some(previous) = state.last_durability {
+        if snapshot.fsync_errors_gated < previous.fsync_errors_gated
+            || snapshot.durability_blocks < previous.durability_blocks
+        {
+            state.durability_drop = true;
+        }
+    }
+    state.last_durability = Some(snapshot);
 }
 
 fn session_control(receipt: &Receipt) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -159,6 +192,9 @@ fn assess_run(state: &RunState) -> LifecycleReport {
         .any(|(action_id, intents)| state.outcomes.get(action_id).unwrap_or(&0) < intents)
     {
         return report("LIMITED", "open_action");
+    }
+    if state.durability_drop {
+        return report("BROKEN", "chain_broken");
     }
     if state.heartbeat_gap {
         return report("LIMITED", "heartbeat_gap");

@@ -87,7 +87,11 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 	chainResult := actionreceipt.VerifyChain(receipts, keyHex)
 	report := completeness.Analyze(receipts, chainResult)
 	report.Path = label
-	report.SignaturesVerified = chainResult.IntegrityVerified && keyHex != ""
+	// An empty chain has no signatures to verify. VerifyChain reports its
+	// integrity result separately so that lifecycle-only failures can retain
+	// their provenance detail, but that must not turn no evidence into a
+	// signatures-verified claim.
+	report.SignaturesVerified = len(receipts) > 0 && chainResult.IntegrityVerified && keyHex != ""
 	report.Unpinned = len(receipts) > 0 && chainResult.IntegrityVerified && keyHex == ""
 	if report.Unpinned && !opts.allowUnpinned {
 		// Append rather than overwrite: a report can be both Unpinned and

@@ -203,7 +203,8 @@ export async function verifyAuditPacket(
     return report;
   }
   report.cross_check = "pass";
-  report.valid = chain.valid && trustVerdict(packet, opts);
+  report.valid = chain.valid && lifecycle.status !== "BROKEN" && trustVerdict(packet, opts);
+  if (lifecycle.status === "BROKEN") pushError(report, `lifecycle: ${lifecycle.reason}`);
   if (!report.valid) pushError(report, "packet not trusted");
   return report;
 }

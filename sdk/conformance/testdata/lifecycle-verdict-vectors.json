@@ -1,0 +1,66 @@
+[
+  {
+    "name": "orphan_outcome",
+    "receipts": [
+      {
+        "action_record": {
+          "run_nonce": "run-orphan",
+          "session_control": {
+            "kind": "session_open",
+            "open": { "run_nonce": "run-orphan" }
+          }
+        }
+      },
+      {
+        "action_record": {
+          "run_nonce": "run-orphan",
+          "decision_phase": "outcome",
+          "action_id": "outcome-without-intent"
+        }
+      }
+    ],
+    "expected": { "status": "BROKEN", "reason": "chain_broken" }
+  },
+  {
+    "name": "durability_decrease",
+    "receipts": [
+      {
+        "action_record": {
+          "run_nonce": "run-durability",
+          "session_control": {
+            "kind": "session_open",
+            "open": { "run_nonce": "run-durability" }
+          }
+        }
+      },
+      {
+        "action_record": {
+          "run_nonce": "run-durability",
+          "session_control": {
+            "kind": "heartbeat",
+            "heartbeat": {
+              "run_nonce": "run-durability",
+              "beat": 1,
+              "fsync_errors_gated": 2,
+              "durability_blocks": 2
+            }
+          }
+        }
+      },
+      {
+        "action_record": {
+          "run_nonce": "run-durability",
+          "session_control": {
+            "kind": "session_close",
+            "close": {
+              "run_nonce": "run-durability",
+              "fsync_errors_gated": 1,
+              "durability_blocks": 1
+            }
+          }
+        }
+      }
+    ],
+    "expected": { "status": "BROKEN", "reason": "chain_broken" }
+  }
+]

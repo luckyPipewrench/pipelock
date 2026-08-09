@@ -128,12 +128,15 @@ test("audit packet verifies end to end", async () => {
   assert.equal(report.lifecycle_reason, "no_lifecycle");
 });
 
-test("audit packet reports lifecycle structure separately from chain validity", async () => {
+test("audit packet rejects an orphan outcome in an otherwise valid chain", async () => {
   const report = await verifyAuditPacket(
     await writePacketWithEvidence("../../conformance/testdata/g1-valid-chain.jsonl"),
     defaultOptions,
   );
-  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.valid, false);
+  assert.equal(report.chain_check, "pass");
+  assert.equal(report.cross_check, "pass");
+  assert.ok(report.errors?.some((error) => error.includes("lifecycle: chain_broken")));
   assert.equal(report.lifecycle_assessment, "assessed");
   assert.equal(report.lifecycle_status, "BROKEN");
   assert.equal(report.lifecycle_reason, "chain_broken");

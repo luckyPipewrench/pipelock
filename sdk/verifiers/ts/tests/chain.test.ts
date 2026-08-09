@@ -382,6 +382,18 @@ test("g1 rotated close receipt_count invalid fixture is rejected", async () => {
   assert.match(result.error ?? "", /session_close receipt_count mismatch/u);
 });
 
+test("chain CLI rejects a lifecycle-broken but signature-valid chain", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["dist/src/cli.js", "chain", g1ValidChain, "--key", trustedKeys().split(",")[0]!, "--json"],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as { valid: boolean; error?: string };
+  assert.equal(report.valid, false);
+  assert.match(report.error ?? "", /lifecycle: chain_broken/u);
+});
+
 test("g1 plain action after close fixture is rejected", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;

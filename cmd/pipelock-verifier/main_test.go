@@ -370,6 +370,42 @@ func TestAuditPacketReportsInFlightLifecycleCompleteness(t *testing.T) {
 	}
 }
 
+func TestAuditPacketRejectsLifecycleBrokenChain(t *testing.T) {
+	t.Parallel()
+	lifecycle := newCompletenessFixture(t)
+	fix := &fixture{
+		pub:  lifecycle.priv.Public().(ed25519.PublicKey),
+		priv: lifecycle.priv,
+		receipts: []receipt.Receipt{
+			lifecycle.open("run-audit-broken", "open-audit-broken"),
+			// The outcome deliberately has no matching intent. Its signature and
+			// chain link are valid, so this proves the lifecycle boundary itself.
+			lifecycle.outcome("run-audit-broken", "outcome-without-intent"),
+		},
+		keyHex: lifecycle.keyHex,
+	}
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("lifecycle-broken packet code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report auditPacketReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if report.Valid || report.ChainCheck != statusPass || report.CrossCheck != statusPass {
+		t.Fatalf("lifecycle-broken packet must fail after otherwise passing checks: %+v", report)
+	}
+	if report.LifecycleStatus != completeness.StatusBroken || report.LifecycleReason != completeness.ReasonChainBroken {
+		t.Fatalf("lifecycle = %s/%s, want BROKEN/chain_broken", report.LifecycleStatus, report.LifecycleReason)
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "lifecycle: chain_broken") {
+		t.Fatalf("missing lifecycle failure detail: %+v", report.Errors)
+	}
+}
+
 func TestAuditPacket_ValidVerdictRequiresExternalTrustAnchor(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)

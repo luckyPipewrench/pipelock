@@ -133,21 +133,12 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
     let chain = verify_chain_with_options(&receipts, &key_hex, opts.allow_self_consistent_only);
     report.chain_check = if chain.valid { "pass" } else { "fail" }.to_string();
     let lifecycle = analyze_lifecycle(&receipts, &chain);
+    let lifecycle_broken = lifecycle.status == "BROKEN";
+    let lifecycle_reason = lifecycle.reason.clone();
     report.lifecycle_status = Some(lifecycle.status);
     report.lifecycle_reason = Some(lifecycle.reason);
     report.lifecycle_assessment = "assessed".to_string();
     report.lifecycle_assessment_reason = None;
-    if !chain.valid {
-        push_error(
-            &mut report,
-            format!(
-                "chain: {}",
-                chain.error.as_deref().unwrap_or("verification failed")
-            ),
-        );
-        return Ok(report);
-    }
-
     let cross_errors = cross_check(&packet, &chain, &receipts);
     if !cross_errors.is_empty() {
         report.cross_check = "fail".to_string();
@@ -157,7 +148,19 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
         return Ok(report);
     }
     report.cross_check = "pass".to_string();
-    report.valid = chain.valid && trust_verdict(&packet, opts);
+    if !chain.valid {
+        push_error(
+            &mut report,
+            format!(
+                "chain: {}",
+                chain.error.as_deref().unwrap_or("verification failed")
+            ),
+        );
+    }
+    report.valid = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
+    if lifecycle_broken {
+        push_error(&mut report, format!("lifecycle: {lifecycle_reason}"));
+    }
     if !report.valid {
         push_error(&mut report, "packet not trusted".to_string());
     }

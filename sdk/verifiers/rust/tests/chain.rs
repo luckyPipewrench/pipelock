@@ -15,6 +15,7 @@ use pipelock_verifier_rs::rotation::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TempFixture(std::path::PathBuf);
@@ -78,6 +79,30 @@ fn g1_go_generated_chain_verifies_with_pinned_key() {
     assert!(result.valid, "{:?}", result.error);
     assert_eq!(result.receipt_count, 5);
     assert_eq!(result.final_seq, 4);
+}
+
+#[test]
+fn chain_cli_rejects_a_lifecycle_broken_but_signature_valid_chain() {
+    let root = common::repo_root();
+    let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .args([
+            "chain",
+            root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")
+                .to_str()
+                .unwrap(),
+            "--key",
+            &conformance_key(),
+            "--json",
+        ])
+        .output()
+        .expect("run chain CLI");
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    let report: Value = serde_json::from_slice(&output.stdout).expect("chain JSON report");
+    assert_eq!(report["valid"], Value::Bool(false));
+    assert!(report["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("lifecycle: chain_broken"));
 }
 
 #[test]

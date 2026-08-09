@@ -238,6 +238,20 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
+	t.Run("empty_chain_never_claims_signatures_verified", func(t *testing.T) {
+		t.Parallel()
+		f := newCompletenessFixture(t)
+		path := writeCompletenessJSONL(t, nil)
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", f.keyHex, path)
+		if code != cliutil.ExitOK {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitOK, stdout, stderr)
+		}
+		report := parseCompletenessReport(t, stdout)
+		if report.SignaturesVerified {
+			t.Fatalf("empty chain claimed signatures_verified: %#v", report)
+		}
+	})
+
 	t.Run("lifecycle_no_open_exits_nonzero", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
@@ -671,6 +685,33 @@ func TestChainCLIShowsCompletenessReasonForATailDroppedChain(t *testing.T) {
 	droppedLine := scorecardLine(t, droppedOut)
 	if closedLine == droppedLine {
 		t.Fatalf("a bounded chain and a tail-dropped one print the same completeness line: %s", closedLine)
+	}
+}
+
+func TestChainCLIRejectsLifecycleBrokenChain(t *testing.T) {
+	t.Parallel()
+	fixture := newCompletenessFixture(t)
+	path := writeChainRecorderJSONL(t, []receipt.Receipt{
+		fixture.open("run-chain-broken", "open-chain-broken"),
+		fixture.outcome("run-chain-broken", "outcome-without-intent"),
+	})
+
+	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("lifecycle-broken chain code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report chainReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if report.Valid || report.Scorecard == nil {
+		t.Fatalf("lifecycle-broken chain accepted or omitted scorecard: %+v", report)
+	}
+	if report.Scorecard.Authentic.Status != "FAIL" || report.Scorecard.Untampered.Status != "FAIL" {
+		t.Fatalf("lifecycle-broken scorecard left a pass: %+v", report.Scorecard)
+	}
+	if !strings.Contains(report.Error, "lifecycle: chain_broken") {
+		t.Fatalf("missing lifecycle error: %q", report.Error)
 	}
 }
 

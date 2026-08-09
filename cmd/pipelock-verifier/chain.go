@@ -219,6 +219,14 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 		report.Error = unpinnedReceiptBanner
 		report.Valid = opts.allowUnpinned
 	}
+	if completenessReport.Status == completeness.StatusBroken {
+		report.Valid = false
+		report.Unpinned = false
+		report.Error = "lifecycle: " + string(completenessReport.Reason)
+		if completenessReport.Error != "" {
+			report.Error += ": " + completenessReport.Error
+		}
+	}
 	if res.Valid {
 		if lintErr := lintDeferredCascadeReceipts(receipts); lintErr != nil {
 			report.Valid = false
@@ -230,6 +238,9 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
+	}
+	if completenessReport.Status == completeness.StatusBroken {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain lifecycle broken: %s", completenessReport.Error))
 	}
 	if keyHex == "" && !opts.allowUnpinned {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain verification unpinned"))

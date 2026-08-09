@@ -16,6 +16,13 @@ interface RunState {
   sawHeartbeat: boolean;
   lastHeartbeat: number;
   heartbeatGap: boolean;
+  lastDurability?: DurabilitySnapshot;
+  durabilityDrop: boolean;
+}
+
+interface DurabilitySnapshot {
+  fsyncErrorsGated: number;
+  durabilityBlocks: number;
 }
 
 const limited: LifecycleStatus = "LIMITED";
@@ -44,6 +51,7 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
         sawHeartbeat: false,
         lastHeartbeat: 0,
         heartbeatGap: false,
+        durabilityDrop: false,
       };
       runs.set(runNonce, state);
     }
@@ -70,9 +78,10 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
     }
     if (kind === "session_close") {
       state.closed = true;
+      applyDurability(state, objectField(control, "close"));
       continue;
     }
-    if (kind === "session_heartbeat") {
+    if (kind === "heartbeat" || kind === "session_heartbeat") {
       const heartbeat = objectField(control, "heartbeat");
       const beat = heartbeat?.["beat"];
       if (typeof beat === "number" && Number.isInteger(beat)) {
@@ -85,6 +94,7 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
         state.sawHeartbeat = true;
         state.lastHeartbeat = beat;
       }
+      applyDurability(state, heartbeat);
     }
   }
 
@@ -93,6 +103,25 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
     report = worse(report, assessRun(state));
   }
   return report ?? { status: unverified, reason: "no_lifecycle" };
+}
+
+function applyDurability(state: RunState, value: Record<string, unknown> | undefined): void {
+  const snapshot: DurabilitySnapshot = {
+    fsyncErrorsGated: counter(value?.["fsync_errors_gated"]),
+    durabilityBlocks: counter(value?.["durability_blocks"]),
+  };
+  if (
+    state.lastDurability !== undefined &&
+    (snapshot.fsyncErrorsGated < state.lastDurability.fsyncErrorsGated ||
+      snapshot.durabilityBlocks < state.lastDurability.durabilityBlocks)
+  ) {
+    state.durabilityDrop = true;
+  }
+  state.lastDurability = snapshot;
+}
+
+function counter(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function sessionControl(receipt: Receipt): Record<string, unknown> | undefined {
@@ -144,6 +173,7 @@ function assessRun(state: RunState): LifecycleReport {
     if ((state.outcomes.get(actionID) ?? 0) < intents)
       return { status: limited, reason: "open_action" };
   }
+  if (state.durabilityDrop) return { status: broken, reason: "chain_broken" };
   if (state.heartbeatGap) return { status: limited, reason: "heartbeat_gap" };
   if (!state.closed) return { status: limited, reason: "abnormal_end" };
   return { status: limited, reason: "bounded_closed" };

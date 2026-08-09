@@ -234,9 +234,15 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 	report.CrossCheck = statusPass
 
-	report.Valid = chainResult.Valid && trustVerdict(&packet, opts)
+	report.Valid = chainResult.Valid && lifecycle.Status != completeness.StatusBroken && trustVerdict(&packet, opts)
+	if lifecycle.Status == completeness.StatusBroken {
+		report.Errors = append(report.Errors, fmt.Sprintf("lifecycle: %s", lifecycle.Reason))
+	}
 	emitReport(stdout, stderr, report, opts.jsonOutput)
 	if !report.Valid {
+		if lifecycle.Status == completeness.StatusBroken {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet lifecycle broken: %s", lifecycle.Error))
+		}
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("packet not trusted"))
 	}
 	return nil

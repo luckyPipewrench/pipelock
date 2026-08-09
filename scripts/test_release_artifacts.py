@@ -156,6 +156,12 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertLess(promotion, bundle)
         self.assertIn('crane copy --no-clobber "${repository}@${index_digest}"', self.workflow)
         self.assertIn('"${repository}:latest"', self.workflow)
+        self.assertIn('if [[ "$version" != *-* ]]; then', self.workflow)
+        self.assertIn("grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+$'", self.workflow)
+        self.assertIn('if [[ "$promote_latest" = true ]]; then', self.workflow)
+        self.assertIn('"$newest_stable" = "$version"', self.workflow)
+        self.assertIn('latest_stable_tag="$(git tag --list', self.workflow)
+        self.assertIn('if [[ "$TAG_NAME" != "$latest_stable_tag" ]]; then', self.workflow)
 
         digest_vars = {
             "pipelock": "PIPELOCK_INDEX_DIGEST",

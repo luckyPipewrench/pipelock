@@ -582,7 +582,8 @@ jobs:
       # GoReleaser writes only staging tags, so an attestation failure leaves
       # no consumer version or latest image manifest. Promote the verified index
       # by digest. Version tags never overwrite an existing different digest;
-      # latest deliberately advances to the newly verified release.
+      # latest advances only for a newer stable release, never for a prerelease
+      # or an older-line backport.
       - name: Promote verified image manifests
         env:
           TAG: ${{ github.ref_name }}
@@ -595,7 +596,7 @@ jobs:
             local repository="$1"
             local index_digest="$2"
             local version="${TAG#v}"
-            local tags existing
+            local tags existing current_stable newest_stable promote_latest=false
 
             tags="$(crane ls "$repository")" || {
               echo "::error::could not list tags for ${repository}; refusing image promotion"
@@ -613,10 +614,26 @@ jobs:
             else
               crane copy --no-clobber "${repository}@${index_digest}" "${repository}:${version}"
             fi
-            crane copy "${repository}@${index_digest}" "${repository}:latest"
+
+            if [[ "$version" != *-* ]]; then
+              current_stable="$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+              if [[ -z "$current_stable" ]]; then
+                promote_latest=true
+              else
+                newest_stable="$(printf '%s\n%s\n' "$current_stable" "$version" | sort -V | tail -n 1)"
+                if [[ "$newest_stable" = "$version" && "$current_stable" != "$version" ]]; then
+                  promote_latest=true
+                fi
+              fi
+            fi
+            if [[ "$promote_latest" = true ]]; then
+              crane copy "${repository}@${index_digest}" "${repository}:latest"
+              test "$(crane digest "${repository}:latest")" = "$index_digest"
+            else
+              echo "Not moving ${repository}:latest for non-newer or prerelease version ${version}"
+            fi
 
             test "$(crane digest "${repository}:${version}")" = "$index_digest"
-            test "$(crane digest "${repository}:latest")" = "$index_digest"
           }
 
           promote_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_INDEX_DIGEST"
@@ -707,13 +724,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
-      # Move the v2 floating tag so `uses: luckyPipewrench/pipelock@v2`
-      # always resolves to the latest release. Safe because the trigger requires
-      # two dotted components, so a bare `v2` push cannot re-fire this workflow.
+      # Move the v2 floating tag only for the newest stable product release.
+      # A prerelease or an older-line backport still publishes its immutable
+      # version, but cannot move this consumer-facing pointer backward.
       - name: Update v2 floating tag for GitHub Action
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          latest_stable_tag="$(git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          if [[ "$TAG_NAME" != "$latest_stable_tag" ]]; then
+            echo "Not moving v2 for non-latest or prerelease tag ${TAG_NAME}"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # The ^{} suffix dereferences TAG_NAME (annotated tag) to its commit.

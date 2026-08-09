@@ -217,7 +217,7 @@ func Build(in Inputs) Report {
 		}
 		statusByID[id] = &in.FleetStatus[i]
 	}
-	latestBatchByID := latestBatchMap(in.AuditBatches)
+	latestBatchByID := latestBatchMap(in.AuditBatches, now)
 
 	// Collect all known instance IDs from all sources.
 	seen := make(map[string]bool)
@@ -444,11 +444,14 @@ func classifyFollower(
 		return fc
 	}
 
-	// Check if the batch is stale relative to now.
-	if staleAfter <= 0 {
-		staleAfter = 5 * time.Minute
+	// Check the same bounded freshness predicate used by the delivery gate so
+	// one report cannot call a future-dated batch healthy and alerting at once.
+	if !batchTimestampPlausible(latestBatch.ReceivedAt, now) {
+		fc.State = StateUnknown
+		fc.Reason = "latest audit batch received_at is outside the allowed clock-skew window"
+		return fc
 	}
-	if now.Sub(latestBatch.ReceivedAt) > staleAfter*evidenceStaleWindowMultiple {
+	if !batchReceivedAtCurrent(latestBatch.ReceivedAt, now, staleAfter) {
 		fc.State = StateStale
 		fc.Reason = fmt.Sprintf("latest audit batch received %s ago", now.Sub(latestBatch.ReceivedAt).Truncate(time.Second))
 		return fc
@@ -526,12 +529,15 @@ func batchToEvidence(b *controlplane.AuditBatchSummary, instanceID, runtimeBuild
 	}
 }
 
-func latestBatchMap(batches []controlplane.AuditBatchSummary) map[string]*controlplane.AuditBatchSummary {
+func latestBatchMap(batches []controlplane.AuditBatchSummary, now time.Time) map[string]*controlplane.AuditBatchSummary {
 	m := make(map[string]*controlplane.AuditBatchSummary, len(batches))
 	for i := range batches {
 		b := &batches[i]
 		existing, ok := m[b.InstanceID]
-		if !ok || b.ReceivedAt.After(existing.ReceivedAt) {
+		candidatePlausible := batchTimestampPlausible(b.ReceivedAt, now)
+		existingPlausible := ok && batchTimestampPlausible(existing.ReceivedAt, now)
+		if !ok || (candidatePlausible && !existingPlausible) ||
+			(candidatePlausible == existingPlausible && b.ReceivedAt.After(existing.ReceivedAt)) {
 			m[b.InstanceID] = b
 		}
 	}
@@ -665,13 +671,24 @@ func deliveryHealth(followers []FollowerConvergence, now time.Time, staleAfter t
 }
 
 func deliveryBatchCurrent(batch *AuditEvidence, now time.Time, staleAfter time.Duration) bool {
-	if batch == nil || batch.ReceivedAt.IsZero() || batch.ReceivedAt.After(now.Add(deliveryClockSkewAllowance)) {
+	if batch == nil {
+		return false
+	}
+	return batchReceivedAtCurrent(batch.ReceivedAt, now, staleAfter)
+}
+
+func batchReceivedAtCurrent(receivedAt, now time.Time, staleAfter time.Duration) bool {
+	if !batchTimestampPlausible(receivedAt, now) {
 		return false
 	}
 	if staleAfter <= 0 {
 		staleAfter = 5 * time.Minute
 	}
-	return now.Sub(batch.ReceivedAt) <= staleAfter*evidenceStaleWindowMultiple
+	return now.Sub(receivedAt) <= staleAfter*evidenceStaleWindowMultiple
+}
+
+func batchTimestampPlausible(receivedAt, now time.Time) bool {
+	return !receivedAt.IsZero() && !receivedAt.After(now.Add(deliveryClockSkewAllowance))
 }
 
 func deliveryExpected(intent *DeploymentIntent) bool {

@@ -412,3 +412,33 @@ func TestDeliveryBatchCurrentBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyFutureBatchIsUnknown(t *testing.T) {
+	now := time.Now().UTC()
+	status := &controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		Health:          controlplane.FleetHealthOK,
+	}
+	intent := &DeploymentIntent{DesiredReplicas: 1}
+	batch := &controlplane.AuditBatchSummary{
+		ReceivedAt: now.Add(deliveryClockSkewAllowance + time.Nanosecond),
+	}
+
+	follower := classifyFollower("future", intent, status, batch, now, time.Minute)
+	if follower.State != StateUnknown {
+		t.Fatalf("future-dated batch state = %q, want %q", follower.State, StateUnknown)
+	}
+}
+
+func TestLatestBatchMapPrefersPlausibleTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+	batches := []controlplane.AuditBatchSummary{
+		{InstanceID: "producer", BatchID: "recent", ReceivedAt: now.Add(-time.Minute)},
+		{InstanceID: "producer", BatchID: "future", ReceivedAt: now.Add(time.Hour)},
+	}
+
+	latest := latestBatchMap(batches, now)["producer"]
+	if latest == nil || latest.BatchID != "recent" {
+		t.Fatalf("latest plausible batch = %+v, want recent", latest)
+	}
+}

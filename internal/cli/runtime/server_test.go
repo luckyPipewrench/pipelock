@@ -3416,19 +3416,30 @@ func TestServer_Reload_PreservesLearnLockTrustAnchor(t *testing.T) {
 		"  minimum_signatures: 1",
 		"",
 	}, "\n"))
-	s, _ := newTestServer(t, func(opts *ServerOpts) { opts.ConfigFile = cfgPath })
+	s, buf := newTestServer(t, func(opts *ServerOpts) { opts.ConfigFile = cfgPath })
 	first := s.proxy.CurrentConfig().Clone()
 	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
 	assertLearnLockVerdict(t, s, "http://api-a.example.test/v1/chat", config.ActionAllow)
 
 	// Field removal must not clear a loader that has already made a successful
-	// decision. Current code rejects this malformed direct Reload input; the
-	// restart-only preservation path may instead accept it after restoring the
-	// live value. In either case, the gate must remain on the original anchor.
+	// decision. The reload is ACCEPTED and the restart-only path restores the live
+	// value, so the operator sees a warning rather than a failed reload, and the
+	// gate stays on the original anchor.
 	removed := s.proxy.CurrentConfig().Clone()
 	removed.LearnLock.PinnedRootFingerprint = ""
 	s.lastReloadAt = time.Time{} // exercise a real later reload, not dedup.
-	_ = s.Reload(removed)
+	if err := s.Reload(removed); err != nil {
+		t.Fatalf("removed learn_lock fingerprint reload: %v", err)
+	}
+	// The reload SUCCEEDING is the point. A rejected reload would also leave the
+	// gate on the original anchor, so without this the assertion below passes for
+	// the wrong reason and proves nothing about the preservation path.
+	if got := s.proxy.CurrentConfig().LearnLock; got != first.LearnLock {
+		t.Fatalf("learn_lock after removed-field reload = %+v, want the startup block %+v", got, first.LearnLock)
+	}
+	if out := buf.String(); !strings.Contains(out, "learn_lock settings changed") {
+		t.Fatalf("an ignored learn_lock reload must warn the operator, got: %s", out)
+	}
 	assertLearnLockVerdict(t, s, "http://api-b.example.test/v1/chat", config.ActionBlock)
 
 	// An unrelated reload and an identical reload must retain the established

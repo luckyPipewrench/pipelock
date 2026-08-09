@@ -24,18 +24,30 @@ const Null = "null"
 
 // ContentBlock represents a single content block in an MCP tool result.
 type ContentBlock struct {
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	Data      string `json:"data,omitempty"`
-	Blob      string `json:"blob,omitempty"`
-	Raw       string `json:"raw,omitempty"`
-	MimeType  string `json:"mimeType,omitempty"`
-	MediaType string `json:"mediaType,omitempty"`
+	Type        string            `json:"type"`
+	Text        string            `json:"text,omitempty"`
+	Resource    *ResourceContents `json:"resource,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Data        string            `json:"data,omitempty"`
+	Blob        string            `json:"blob,omitempty"`
+	Raw         string            `json:"raw,omitempty"`
+	MimeType    string            `json:"mimeType,omitempty"`
+	MediaType   string            `json:"mediaType,omitempty"`
+}
+
+// ResourceContents is the text-bearing portion of an embedded MCP resource.
+// Blob data intentionally stays out of prompt scanning: it is opaque binary
+// content, while Text is rendered directly to the agent.
+type ResourceContents struct {
+	Text string `json:"text,omitempty"`
 }
 
 // ToolResult represents the result field of an MCP tool response.
 type ToolResult struct {
-	Content []ContentBlock `json:"content"`
+	Content           []ContentBlock  `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 }
 
 // RPCError represents a JSON-RPC 2.0 error object.
@@ -136,7 +148,7 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 
 	// Try standard ToolResult structure first.
 	var tr ToolResult
-	if err := json.Unmarshal(raw, &tr); err == nil && len(tr.Content) > 0 {
+	if err := json.Unmarshal(raw, &tr); err == nil && (len(tr.Content) > 0 || tr.StructuredContent != nil) {
 		var texts []string
 		for _, block := range tr.Content {
 			// Extract text from ALL content blocks, not just type=="text".
@@ -145,7 +157,30 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 			if block.Text != "" {
 				texts = append(texts, block.Text)
 			}
+			// Embedded resources carry their rendered text under resource.text,
+			// rather than the top-level content block's text field. Treat it as
+			// agent-visible response content while deliberately excluding opaque
+			// resource blobs from prompt scanning.
+			if block.Resource != nil && block.Resource.Text != "" {
+				texts = append(texts, block.Resource.Text)
+			}
+			// resource_link metadata is also rendered to the agent. Keep URI and
+			// binary fields out of this text path; Name, Title, and Description
+			// are the human-facing fields an attacker could use as instructions.
+			for _, field := range []string{block.Name, block.Title, block.Description} {
+				if field != "" {
+					texts = append(texts, field)
+				}
+			}
 		}
+		// structuredContent is rendered to the agent alongside content blocks.
+		// Extract its text even when the typed content fast path succeeds, while
+		// excluding known opaque media fields such as data/blob/raw.
+		structured := ExtractVisibleStringsFromJSONResult(tr.StructuredContent)
+		if structured.Truncated {
+			return TextResult{Truncated: true}
+		}
+		texts = append(texts, structured.Strings...)
 		// Always return after a successful ToolResult parse, even when
 		// texts is empty. Falling through to ExtractStringsFromJSON would
 		// feed base64 media in data/blob/raw fields into prompt scanning.
@@ -160,6 +195,53 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 	}
 
 	return TextResult{Truncated: extracted.Truncated}
+}
+
+// ExtractVisibleStringsFromJSONResult extracts agent-visible JSON string
+// values while deliberately excluding opaque MCP media fields. It is used for
+// structuredContent, whose values are rendered to the agent but which may
+// include image/resource payloads that must not be treated as prompt text.
+func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return ExtractStringsResult{}
+	}
+
+	var result []string
+	truncated := false
+	var extract func(interface{}, int)
+	extract = func(v interface{}, depth int) {
+		if depth > maxExtractDepth {
+			truncated = true
+			return
+		}
+		switch val := v.(type) {
+		case string:
+			result = append(result, val)
+		case []interface{}:
+			for _, item := range val {
+				extract(item, depth+1)
+			}
+		case map[string]interface{}:
+			for _, key := range SortedKeys(val) {
+				if isOpaqueMCPMediaField(key) {
+					continue
+				}
+				extract(val[key], depth+1)
+			}
+		}
+	}
+	extract(parsed, 0)
+	return ExtractStringsResult{Strings: result, Truncated: truncated}
+}
+
+func isOpaqueMCPMediaField(key string) bool {
+	switch strings.ToLower(key) {
+	case "blob", "data", "raw":
+		return true
+	default:
+		return false
+	}
 }
 
 // jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction

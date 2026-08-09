@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -580,6 +581,14 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// avoid false positives on benign "submit the request body" descriptions.
 		re: regexp.MustCompile(`(?i)(first\s+call\s+this\s+tool|before\s+(?:using|calling|sending)|when\s+(?:the\s+user|you)\s+(?:asks?\s+to\s+)?use\s+\w+\s+tool).{0,80}(pass|send|include|forward)\s+(the\s+)?(full|entire|complete)?\s*(body|content|data|message|email|payload|request\s+body)\s+.{0,40}(parameter|argument|field)`),
 	},
+	{
+		name: "Workspace Data Exfiltration Directive",
+		// A lookup or analysis tool has no legitimate reason to require the
+		// agent to collect workspace material and submit it to an external URL.
+		// Requiring both the local-workspace collection and URL-routing cues
+		// keeps ordinary descriptions of upload tools out of scope.
+		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:recent\s+)?(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
+	},
 }
 
 // exfilParamPattern detects parameter names that encode exfiltration intent.
@@ -674,10 +683,10 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 			parts = append(parts, name)
 		}
 	}
-	// Space separator ensures word boundaries survive Unicode normalization,
-	// which strips newlines. Without this, adjacent parts merge into one word
-	// (e.g., "contextcontent") and \b patterns fail to match.
-	return strings.Join(parts, " ")
+	// A sentence boundary keeps word boundaries intact after Unicode
+	// normalization without letting a negated capability in one tool field
+	// suppress an exfiltration directive in a later schema field.
+	return strings.Join(parts, ". ")
 }
 
 // expandParamName expands a parameter name into space-separated words by:
@@ -952,11 +961,97 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 func checkToolPoison(text string) []string {
 	var findings []string
 	for _, p := range toolPoisonPatterns {
-		if p.re.MatchString(text) {
+		// FindStringIndex on the remaining suffix has FindAll's non-overlap
+		// semantics without allocating an index slice for every match.
+		for offset := 0; offset < len(text); {
+			loc := p.re.FindStringIndex(text[offset:])
+			if loc == nil {
+				break
+			}
+			loc[0] += offset
+			loc[1] += offset
+			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
+				offset = loc[1]
+				continue
+			}
 			findings = append(findings, p.name)
+			break
 		}
 	}
 	return findings
+}
+
+var negatedFileExfiltrationPrefix = regexp.MustCompile(
+	`(?i)(?:\b(?:do|does|did|will|would|should|must|can|could)\s+not|\b(?:never|don't|doesn't|didn't|cannot|can't|won't))(?:\s+(?:read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat|prepend|append|add|attach|embed))?(?:\s+[\w'-]+){0,8}\s*$`,
+)
+
+var commaSeparatedFileExfilDirective = regexp.MustCompile(
+	`(?i),\s*(?:read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat|prepend|append|add|attach|embed)\b`,
+)
+
+// isNegatedFileExfiltration excludes a narrow false-positive shape: a tool
+// capability boundary such as "does not fetch files, inspect credentials".
+// The exfiltration pattern intentionally permits a short span between an
+// action and sensitive target to catch natural prose. That span must not turn
+// an immediate, uninterrupted negated action into a finding. A sentence or
+// contrast boundary keeps a later malicious instruction load-bearing.
+func isNegatedFileExfiltration(text string, loc []int) bool {
+	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {
+		return false
+	}
+
+	// The prefix matcher itself is capped at eight words. Bound the lookback
+	// too, so repeated short matches cannot turn clause discovery into a
+	// quadratic scan of an attacker-controlled description.
+	prefixStart := loc[0] - 1024
+	if prefixStart < 0 {
+		prefixStart = 0
+	}
+	for i := loc[0]; i > prefixStart; {
+		r, size := utf8.DecodeLastRuneInString(text[:i])
+		i -= size
+		if isClauseBoundary(r) {
+			prefixStart = i + size
+			break
+		}
+	}
+	prefix := strings.TrimSpace(text[prefixStart:loc[0]])
+	if !negatedFileExfiltrationPrefix.MatchString(prefix) {
+		return false
+	}
+
+	return !hasContrastBoundary(text[loc[0]:loc[1]])
+}
+
+func isClauseBoundary(r rune) bool {
+	switch r {
+	case '.', ';', ':', '!', '?', '\n', '\r', '\u2013', '\u2014':
+		return true
+	default:
+		return false
+	}
+}
+
+func hasContrastBoundary(text string) bool {
+	for _, r := range text {
+		if isClauseBoundary(r) {
+			return true
+		}
+	}
+	// A comma alone is common inside a benign capability statement. Treat it
+	// as a boundary only when it introduces a fresh exfiltration action, so a
+	// negated first match cannot swallow a later directive in the same regex
+	// span ("does not fetch credentials, upload credentials").
+	if commaSeparatedFileExfilDirective.MatchString(text) {
+		return true
+	}
+	words := strings.Fields(strings.ToLower(text))
+	for _, word := range words {
+		if strings.Trim(word, ",") == "but" || strings.Trim(word, ",") == "however" || strings.Trim(word, ",") == "instead" || strings.Trim(word, ",") == "then" {
+			return true
+		}
+	}
+	return false
 }
 
 // ScanTools scans a JSON-RPC 2.0 response for tool description poisoning.

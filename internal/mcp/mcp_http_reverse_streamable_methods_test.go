@@ -869,7 +869,6 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
 	const dlpToken = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
 	rawSessionID := strings.Repeat("S", maxAuditSessionKeyLen+40)
-	wantSessionID := rawSessionID[:maxAuditSessionKeyLen]
 
 	for _, method := range []string{http.MethodGet, http.MethodDelete, http.MethodPost} {
 		t.Run(method, func(t *testing.T) {
@@ -891,6 +890,10 @@ func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
 				AuditLogger: auditLogger,
 			})
 
+			token := listenerSetupToken(t, baseURL)
+			// Setup is forwarded. The DLP-blocked request must add no call beyond it.
+			afterSetup := upstreamCalls.Load()
+			wantAuditSession := listenerAuditSessionKey("", mcpListenerStateKey(token))
 			var body io.Reader
 			if method == http.MethodPost {
 				body = strings.NewReader(jsonToolsList)
@@ -900,6 +903,7 @@ func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
 				t.Fatalf("NewRequest: %v", err)
 			}
 			req.Header.Set("Mcp-Session-Id", rawSessionID)
+			req.Header.Set(listenerSessionTokenHeader, token)
 			req.Header.Set("Authorization", "Bearer "+dlpToken)
 			if method == http.MethodGet {
 				req.Header.Set("Accept", "text/event-stream")
@@ -918,11 +922,14 @@ func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
 			if len(sessions) != 1 {
 				t.Fatalf("audit sessions = %v, want one event", sessions)
 			}
-			if sessions[0] != wantSessionID {
-				t.Fatalf("audit session len=%d value=%q, want len=%d value=%q", len(sessions[0]), sessions[0], len(wantSessionID), wantSessionID)
+			if sessions[0] != wantAuditSession {
+				t.Fatalf("audit session len=%d value=%q, want len=%d value=%q", len(sessions[0]), sessions[0], len(wantAuditSession), wantAuditSession)
 			}
-			if upstreamCalls.Load() != 0 {
-				t.Fatalf("upstream calls = %d, want 0 after listener-header DLP block", upstreamCalls.Load())
+			if strings.Contains(sessions[0], rawSessionID) || strings.Contains(sessions[0], token) {
+				t.Fatalf("audit session leaked client routing data or issued bearer token: %q", sessions[0])
+			}
+			if got := upstreamCalls.Load(); got != afterSetup {
+				t.Fatalf("listener-header DLP block reached upstream: calls = %d, want %d", got, afterSetup)
 			}
 		})
 	}

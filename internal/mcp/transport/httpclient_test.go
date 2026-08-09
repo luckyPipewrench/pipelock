@@ -622,6 +622,50 @@ func TestHTTPClient_OpenGETStream_IncludesSessionID(t *testing.T) {
 	drain(t, reader)
 }
 
+func TestHTTPClient_TracksPipelockListenerSessionToken(t *testing.T) {
+	token := strings.Repeat("a", 43)
+	if len(token) != 43 {
+		t.Fatalf("test token length = %d, want 43", len(token))
+	}
+	var calls atomic.Int32
+	var deleteToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			if calls.Add(1) == 1 {
+				if got := r.Header.Get(pipelockSessionTokenHeader); got != "" {
+					t.Errorf("first POST token = %q, want empty", got)
+				}
+				w.Header().Set(pipelockSessionTokenHeader, token)
+			} else if got := r.Header.Get(pipelockSessionTokenHeader); got != token {
+				t.Errorf("follow-up POST token = %q, want %q", got, token)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+		case http.MethodDelete:
+			deleteToken = r.Header.Get(pipelockSessionTokenHeader)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, http.Header{pipelockSessionTokenHeader: []string{"caller-supplied"}})
+	first, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	drain(t, first)
+	second, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("second SendMessage: %v", err)
+	}
+	drain(t, second)
+	c.DeleteSession(nil)
+	if deleteToken != token {
+		t.Errorf("DELETE token = %q, want %q", deleteToken, token)
+	}
+}
+
 func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

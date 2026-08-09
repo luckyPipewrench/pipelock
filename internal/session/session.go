@@ -96,6 +96,7 @@ type RecoveryEventRecorder interface {
 // Store manages session lifecycle.
 type Store interface {
 	GetOrCreate(key string) Recorder
+	Delete(key string)
 }
 
 // BaselineDecision is the transport-neutral behavioral baseline result.

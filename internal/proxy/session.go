@@ -2551,9 +2551,31 @@ func (a *storeAdapter) GetOrCreate(key string) session.Recorder {
 	return a.sm.GetOrCreate(key)
 }
 
+func (a *storeAdapter) Delete(key string) {
+	a.sm.Delete(key)
+}
+
 // AsStore returns a session.Store interface for this SessionManager.
 func (sm *SessionManager) AsStore() session.Store {
 	return &storeAdapter{sm: sm}
+}
+
+// Delete removes one transport-owned session. Callers use unique internal
+// keys, so deleting a listener session cannot remove state owned by another
+// transport. A deleted session is not recorded as a behavioral baseline: the
+// caller intentionally invalidated it rather than ending it normally.
+func (sm *SessionManager) Delete(key string) {
+	if key == "" {
+		return
+	}
+	sm.mu.Lock()
+	if _, ok := sm.sessions[key]; ok {
+		delete(sm.sessions, key)
+		if sm.metrics != nil {
+			sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
+		}
+	}
+	sm.mu.Unlock()
 }
 
 // evictOldest removes the session with the oldest lastActivity.

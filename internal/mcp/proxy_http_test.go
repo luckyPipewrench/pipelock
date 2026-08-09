@@ -2616,6 +2616,7 @@ func startListenerProxy(
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, MCPProxyOpts{
 			Scanner: sc, InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+			listenerStateTokenRequired: boolPtr(false),
 		})
 	}()
 
@@ -2640,6 +2641,9 @@ func startListenerProxy(
 
 func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer) {
 	t.Helper()
+	if opts.listenerStateTokenRequired == nil {
+		opts.listenerStateTokenRequired = boolPtr(false)
+	}
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -5078,7 +5082,9 @@ func TestHTTPListener_EmbeddedResourceResultScanning(t *testing.T) {
 			ID int `json:"id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode upstream request: %v", err)
+			t.Errorf("decode upstream request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(responses[request.ID]))

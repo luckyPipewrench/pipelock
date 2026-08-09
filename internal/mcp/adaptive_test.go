@@ -43,6 +43,8 @@ func (s *mockStore) GetOrCreate(key string) session.Recorder {
 	return s.rec
 }
 
+func (s *mockStore) Delete(string) {}
+
 func (s *mockStore) capturedKeys() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

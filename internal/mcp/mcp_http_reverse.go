@@ -64,7 +64,7 @@ const (
 	// Mcp-Session-Id and Last-Event-ID belong to revisions the 2026-07-28
 	// deprecation window still covers, so they stay: dropping them would break
 	// older browser clients, and a mixed-revision fleet is the normal state.
-	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, A2A-Extensions, A2A-Version, Last-Event-ID"
+	listenerCORSAllowedHeaders = "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Pipelock-Session-Token, A2A-Extensions, A2A-Version, Last-Event-ID"
 	maxAuditSessionKeyLen      = 128
 )
 
@@ -141,11 +141,10 @@ func newReverseUpstreamClient(dialContext func(ctx context.Context, network, add
 // net.ListenConfig). This separates the bind step from serving, so callers
 // detect port conflicts synchronously instead of losing them inside a goroutine.
 //
-// Mutable session state is partitioned by Mcp-Session-Id. A headerless request
-// starts with a private empty state and may retain it only when the upstream
-// returns a session ID. Mcp-Session-Id is client-supplied correlation data, not
-// authenticated client identity; a client that reuses another client's value
-// can select the same state.
+// Stateful listener controls use a Pipelock-issued opaque session token. An
+// allowed initialize response issues the token; later stateful requests must
+// present it. Mcp-Session-Id remains upstream protocol routing data and never
+// selects listener state.
 //
 // DoW enforcement is stricter: when DoWEnforceSubjectTrust is true, a tool or
 // A2A call is refused unless its subject is identified at or above
@@ -382,6 +381,12 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid Mcp-Session-Id header")))
 			return
 		}
+		if !validMCPListenerSessionToken(r.Header.Values(listenerSessionTokenHeader)) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid %s header", listenerSessionTokenHeader)))
+			return
+		}
 		if !validMCPProtocolVersion(r.Header.Values(listenerProtocolVersion)) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -421,12 +426,31 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
-		clientState, clientStateKey := listenerClients.stateForRequest(r.Header.Get("Mcp-Session-Id"))
-		listenerToolCfgFn := func() *tools.ToolScanConfig {
-			return listenerClients.toolConfig(clientState, opts.toolCfg())
+		statefulControls := listenerHasStatefulControls(opts)
+		requireStateToken := listenerRequiresStateToken(opts)
+		listenerSessionToken := r.Header.Get(listenerSessionTokenHeader)
+		clientState := newMCPListenerTransientState()
+		clientStateKey := clientState.key
+		setupState := false
+		setClientState := func(state *mcpListenerClientState) {
+			clientState = state
+			clientStateKey = state.key
+			listenerToolCfgFn := func() *tools.ToolScanConfig {
+				return listenerClients.toolConfig(clientState, opts.toolCfg())
+			}
+			requestBaseOpts.ToolCfg = listenerToolCfgFn()
+			requestBaseOpts.ToolCfgFn = listenerToolCfgFn
 		}
-		requestBaseOpts.ToolCfg = listenerToolCfgFn()
-		requestBaseOpts.ToolCfgFn = listenerToolCfgFn
+		setClientState(clientState)
+		if statefulControls && !requireStateToken {
+			setClientState(listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")))
+		}
+		listenerStateAuditKey := func() string {
+			if requireStateToken {
+				return listenerAuditSessionKey("", clientStateKey)
+			}
+			return listenerAuditSessionKey(r.Header.Get("Mcp-Session-Id"), clientStateKey)
+		}
 		reqA2ACfg := requestBaseOpts.a2aCfg()
 		emitListenerBlockDecision := func(dec mcpListenerBlockDecision) {
 			actionID := receipt.NewActionID()
@@ -468,6 +492,31 @@ func RunHTTPListenerProxy(
 				}
 			}
 			info.SetHeaders(w.Header())
+		}
+		rejectMissingListenerState := func(id json.RawMessage) {
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          blockreason.SessionBinding,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryPolicy,
+				layer:           "mcp_listener_session",
+				pattern:         "listener_session_token_required",
+				target:          "mcp:listener-session",
+				receiptSeverity: config.SeverityHigh,
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("stateful MCP listener request requires a Pipelock-issued session token")))
+		}
+		if requireStateToken && (r.Method == http.MethodGet || r.Method == http.MethodDelete) {
+			state, ok := listenerClients.stateForToken(listenerSessionToken)
+			if !ok {
+				rejectMissingListenerState(nil)
+				return
+			}
+			setClientState(state)
+			stateCtx, cancelStateRequest := clientState.requestContext(r.Context())
+			defer cancelStateRequest()
+			r = r.WithContext(stateCtx)
 		}
 		// handleMetadataDialError recognizes a dial-time metadata refusal
 		// (MetadataDialBlockError from the metadata-safe dialer) and renders it
@@ -561,7 +610,7 @@ func RunHTTPListenerProxy(
 			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 				return
 			}
-			recordListenerAdaptiveSignal(clientState.recorder, sig, listenerAuditSessionKey(r.Header.Get("Mcp-Session-Id"), clientStateKey))
+			recordListenerAdaptiveSignal(clientState.recorder, sig, listenerStateAuditKey())
 		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
@@ -748,7 +797,6 @@ func RunHTTPListenerProxy(
 			reqOpts.AdaptiveCfgFn = nil
 
 			if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
-				listenerClients.bindUpstreamSession(clientState, sid)
 				if opts.DoWRegisterSession != nil {
 					opts.DoWRegisterSession(sid)
 				}
@@ -844,7 +892,11 @@ func RunHTTPListenerProxy(
 			if opts.DoWForgetSession != nil {
 				opts.DoWForgetSession(r.Header.Get("Mcp-Session-Id"))
 			}
-			listenerClients.forget(r.Header.Get("Mcp-Session-Id"))
+			if requireStateToken {
+				listenerClients.forget(listenerSessionToken)
+			} else {
+				listenerClients.forgetLegacySession(r.Header.Get("Mcp-Session-Id"))
+			}
 			w.WriteHeader(upResp.StatusCode)
 			return
 		}
@@ -941,6 +993,46 @@ func RunHTTPListenerProxy(
 				return
 			}
 		}
+		if requireStateToken {
+			startSetup := func() bool {
+				state, stateErr := listenerClients.newSetupState()
+				if stateErr != nil {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: listener session token generation failed: %v\n", stateErr)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("Pipelock session setup unavailable")))
+					return false
+				}
+				setClientState(state)
+				setupState = true
+				return true
+			}
+			if listenerSessionToken != "" {
+				state, ok := listenerClients.stateForToken(listenerSessionToken)
+				if ok {
+					setClientState(state)
+				} else if !frame.IsBatch && frame.Method == "initialize" {
+					if !startSetup() {
+						return
+					}
+				} else {
+					rejectMissingListenerState(frame.ID)
+					return
+				}
+			} else if !frame.IsBatch && frame.Method == "initialize" {
+				if !startSetup() {
+					return
+				}
+			} else {
+				rejectMissingListenerState(frame.ID)
+				return
+			}
+		}
+		if requireStateToken && !setupState {
+			stateCtx, cancelStateRequest := clientState.requestContext(r.Context())
+			defer cancelStateRequest()
+			r = r.WithContext(stateCtx)
+		}
 
 		// Kill switch: deny all requests when active.
 		if opts.KillSwitch != nil {
@@ -957,12 +1049,11 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// chainSessionKey is unique for a request without Mcp-Session-Id and
-		// stable only for requests that supply the same session ID. That keeps
-		// headerless clients separate instead of collapsing them into the
-		// listener's RemoteAddr fallback.
+		// clientStateKey is token-derived for stateful listeners and unique for
+		// every stateless request. Mcp-Session-Id remains upstream routing data
+		// and cannot select chain, adaptive, taint, or baseline state.
 		chainSessionKey := clientStateKey
-		auditSessionKey := listenerAuditSessionKey(r.Header.Get("Mcp-Session-Id"), clientStateKey)
+		auditSessionKey := listenerStateAuditKey()
 		reqRec := clientState.recorder
 		baselineRec := newMCPRequestBaselineRecorder()
 		baselineOpts := requestBaseOpts
@@ -1123,6 +1214,10 @@ func RunHTTPListenerProxy(
 		// headers and then stalls cannot pin this goroutine and both connections.
 		upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 		defer func() { _ = upResp.Body.Close() }()
+		if clientState.revoked.Load() {
+			rejectMissingListenerState(frame.ID)
+			return
+		}
 
 		// 202 Accepted: notification acknowledged, no body.
 		if upResp.StatusCode == http.StatusAccepted {
@@ -1197,6 +1292,12 @@ func RunHTTPListenerProxy(
 		// concurrent request's ID, so validate the exact client request ID.
 		responseTracker := NewStrictRequestTracker(frame.ID)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
+		if setupState && upstreamIsSSE {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("MCP session setup response must be application/json")))
+			return
+		}
 		var reader transport.MessageReader
 		if upstreamIsSSE {
 			reader = transport.NewSSEReader(upResp.Body)
@@ -1213,7 +1314,6 @@ func RunHTTPListenerProxy(
 
 		// Pass Mcp-Session-Id from upstream back to client.
 		if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
-			listenerClients.bindUpstreamSession(clientState, sid)
 			if opts.DoWRegisterSession != nil {
 				opts.DoWRegisterSession(sid)
 			}
@@ -1276,6 +1376,15 @@ func RunHTTPListenerProxy(
 			return
 		}
 		commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
+		if setupState {
+			if !listenerClients.admitSetup(clientState) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("Pipelock session setup unavailable")))
+				return
+			}
+			w.Header().Set(listenerSessionTokenHeader, clientState.token)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		output := bytes.TrimSpace(buf.Bytes())
 		if len(output) == 0 {
@@ -1498,7 +1607,7 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Pipelock-Session-Token")
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")
@@ -1543,6 +1652,54 @@ func validMCPSessionID(values []string) bool {
 		}
 	}
 	return true
+}
+
+func validMCPListenerSessionToken(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 {
+		return false
+	}
+	token := values[0]
+	if len(token) != 43 {
+		return false
+	}
+	for i := range len(token) {
+		if !((token[i] >= 'A' && token[i] <= 'Z') ||
+			(token[i] >= 'a' && token[i] <= 'z') ||
+			(token[i] >= '0' && token[i] <= '9') ||
+			token[i] == '-' || token[i] == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func listenerHasStatefulControls(opts MCPProxyOpts) bool {
+	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Action != "" {
+		return true
+	}
+	if opts.chainMatcher() != nil || opts.cee() != nil {
+		return true
+	}
+	if opts.Store == nil {
+		return false
+	}
+	if adaptiveCfg := opts.adaptiveCfg(); adaptiveCfg != nil && adaptiveCfg.Enabled {
+		return true
+	}
+	if taintCfg := opts.taintCfg(); taintCfg != nil && taintCfg.Enabled {
+		return true
+	}
+	return false
+}
+
+func listenerRequiresStateToken(opts MCPProxyOpts) bool {
+	if opts.listenerStateTokenRequired != nil && !*opts.listenerStateTokenRequired {
+		return false
+	}
+	return listenerHasStatefulControls(opts)
 }
 
 // trustedDoWSubjectKey returns the denial-of-wallet subject key when the request

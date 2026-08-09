@@ -41,6 +41,12 @@ func (s *listenerDiagnosisStore) GetOrCreate(key string) session.Recorder {
 	return s.recs[key]
 }
 
+func (s *listenerDiagnosisStore) Delete(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.recs, key)
+}
+
 type listenerDiagnosisRecorder struct {
 	mu    sync.Mutex
 	score float64
@@ -207,7 +213,7 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 }
 
 // TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions proves adaptive,
-// taint, and headerless chain state cannot cross between listener clients.
+// taint, and token-bound chain state cannot cross between listener clients.
 func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 	t.Run("adaptive", func(t *testing.T) {
 		var upstreamCalls atomic.Int32
@@ -323,7 +329,7 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		}
 	})
 
-	t.Run("chain without session ID", func(t *testing.T) {
+	t.Run("chain requires listener token", func(t *testing.T) {
 		var upstreamCalls atomic.Int32
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var request struct {
@@ -340,13 +346,22 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		defer upstream.Close()
 
 		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-			Scanner:      testScannerForHTTP(t),
-			InputCfg:     newHTTPInputCfg(config.ActionBlock),
-			ChainMatcher: buildBlockChainMatcher(),
+			Scanner:                    testScannerForHTTP(t),
+			InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+			ChainMatcher:               buildBlockChainMatcher(),
+			listenerStateTokenRequired: boolPtr(true),
 		})
-		post := func(t *testing.T, body string) string {
+		post := func(t *testing.T, token, body string) (string, http.Header) {
 			t.Helper()
-			resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // listener integration test
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if token != "" {
+				req.Header.Set(listenerSessionTokenHeader, token)
+			}
+			resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
 			if err != nil {
 				t.Fatalf("POST: %v", err)
 			}
@@ -355,18 +370,324 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadAll: %v", err)
 			}
-			return string(payload)
+			return string(payload), resp.Header
 		}
 
-		post(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
-		second := post(t, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
-		if strings.Contains(second, "chain pattern") {
-			t.Fatalf("second headerless client inherited first client chain: %s", second)
+		_, firstHeaders := post(t, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+		firstToken := firstHeaders.Get(listenerSessionTokenHeader)
+		if firstToken == "" {
+			t.Fatalf("first initialize response missing %s", listenerSessionTokenHeader)
 		}
-		if got := upstreamCalls.Load(); got != 2 {
-			t.Fatalf("upstream calls = %d, want 2 after isolated chain state", got)
+		_, secondHeaders := post(t, "", `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}`)
+		secondToken := secondHeaders.Get(listenerSessionTokenHeader)
+		if secondToken == "" {
+			t.Fatalf("second initialize response missing %s", listenerSessionTokenHeader)
+		}
+
+		post(t, firstToken, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
+		isolated, _ := post(t, secondToken, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+		if strings.Contains(isolated, "chain pattern") {
+			t.Fatalf("second token inherited first token chain: %s", isolated)
+		}
+		blocked, _ := post(t, firstToken, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+		if !strings.Contains(blocked, "chain pattern") {
+			t.Fatalf("first token lost its own chain history: %s", blocked)
+		}
+		withoutToken, _ := post(t, "", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+		if !strings.Contains(withoutToken, "session token") {
+			t.Fatalf("headerless stateful request was not refused: %s", withoutToken)
+		}
+		if got := upstreamCalls.Load(); got != 4 {
+			t.Fatalf("upstream calls = %d, want 4 after token isolation and blocks", got)
 		}
 	})
+}
+
+// TestHTTPListenerDiagnosis_HeaderlessChainCannotResetState proves that a
+// client cannot erase its own chain history by omitting Mcp-Session-Id on
+// every request. Stateful calls require a Pipelock-issued setup token, and
+// calls that carry it share one chain history.
+func TestHTTPListenerDiagnosis_HeaderlessChainCannotResetState(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		var request struct {
+			ID int `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode(upstream request): %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", "shared-upstream-session")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                    testScannerForHTTP(t),
+		InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+		ChainMatcher:               buildBlockChainMatcher(),
+		listenerStateTokenRequired: boolPtr(true),
+	})
+	post := func(t *testing.T, token, sessionID, body string) (string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set(listenerSessionTokenHeader, token)
+		}
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		payload, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		return string(payload), resp.Header
+	}
+
+	_, setupHeaders := post(t, "", "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	token := setupHeaders.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatalf("initialize response missing %s", listenerSessionTokenHeader)
+	}
+	// The upstream protocol session can change between calls without moving the
+	// Pipelock-owned state. If Mcp-Session-Id rekeyed the partition, the second
+	// call would lose the first half of this chain.
+	post(t, token, "client-a", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
+	second, _ := post(t, token, "client-b", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+	if !strings.Contains(second, "chain pattern") {
+		t.Fatalf("token-bound follow-up bypassed chain detection: %s", second)
+	}
+	withoutToken, _ := post(t, "", "client-b", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+	if !strings.Contains(withoutToken, "session token") {
+		t.Fatalf("headerless follow-up was not refused: %s", withoutToken)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2 after token and chain blocks", got)
+	}
+}
+
+// TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState proves a completed
+// DELETE revokes both retained listener state and a request that was already
+// using that state. Without cancellation, a delayed upstream response can
+// commit a baseline and reach the client after the session has ended.
+func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var request struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode(upstream request): %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "initialize" {
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, request.ID)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(started)
+		<-release
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"late"}]}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                    testScannerForHTTP(t),
+		InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+		ChainMatcher:               buildBlockChainMatcher(),
+		listenerStateTokenRequired: boolPtr(true),
+	})
+	post := func(t *testing.T, token, body string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("NewRequest(POST): %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set(listenerSessionTokenHeader, token)
+		}
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+		if err != nil {
+			t.Fatalf("POST listener: %v", err)
+		}
+		payload, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll(POST): %v", err)
+		}
+		return resp, payload
+	}
+
+	setupResp, _ := post(t, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	token := setupResp.Header.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatalf("initialize response missing %s", listenerSessionTokenHeader)
+	}
+
+	type responseResult struct {
+		status int
+		body   string
+		err    error
+	}
+	result := make(chan responseResult, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+		if err != nil {
+			result <- responseResult{err: err}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerSessionTokenHeader, token)
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+		if err != nil {
+			result <- responseResult{err: err}
+			return
+		}
+		payload, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		result <- responseResult{status: resp.StatusCode, body: string(payload), err: readErr}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("delayed request did not reach upstream")
+	}
+	deleteReq, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(DELETE): %v", err)
+	}
+	deleteReq.Header.Set(listenerSessionTokenHeader, token)
+	deleteResp, err := http.DefaultClient.Do(deleteReq) //nolint:gosec // listener integration test
+	if err != nil {
+		t.Fatalf("DELETE listener: %v", err)
+	}
+	_ = deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200", deleteResp.StatusCode)
+	}
+	close(release)
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("delayed POST: %v", got.err)
+		}
+		if got.status == http.StatusOK || strings.Contains(got.body, `"result"`) {
+			t.Fatalf("deleted session forwarded delayed response: status=%d body=%s", got.status, got.body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("delayed request did not finish after release")
+	}
+}
+
+// TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain proves an evicted or
+// deleted client can recover by running the allowed setup flow. A stale token
+// must deny stateful work, but it cannot make initialize permanently unusable.
+func TestHTTPListenerDiagnosis_StaleTokenCanInitializeAgain(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		upstreamCalls.Add(1)
+		var request struct {
+			ID int `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode(upstream request): %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                    testScannerForHTTP(t),
+		InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+		ChainMatcher:               buildBlockChainMatcher(),
+		listenerStateTokenRequired: boolPtr(true),
+	})
+	initialize := func(t *testing.T, token string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+		if err != nil {
+			t.Fatalf("NewRequest(initialize): %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set(listenerSessionTokenHeader, token)
+		}
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // listener integration test
+		if err != nil {
+			t.Fatalf("initialize listener: %v", err)
+		}
+		payload, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll(initialize): %v", err)
+		}
+		return resp, payload
+	}
+
+	first, firstBody := initialize(t, "")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first initialize status = %d, body=%s", first.StatusCode, firstBody)
+	}
+	oldToken := first.Header.Get(listenerSessionTokenHeader)
+	if oldToken == "" {
+		t.Fatalf("first initialize missing %s", listenerSessionTokenHeader)
+	}
+	deleteReq, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(DELETE): %v", err)
+	}
+	deleteReq.Header.Set(listenerSessionTokenHeader, oldToken)
+	deleteResp, err := http.DefaultClient.Do(deleteReq) //nolint:gosec // listener integration test
+	if err != nil {
+		t.Fatalf("DELETE listener: %v", err)
+	}
+	_ = deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200", deleteResp.StatusCode)
+	}
+
+	restarted, restartedBody := initialize(t, oldToken)
+	if restarted.StatusCode != http.StatusOK {
+		t.Fatalf("stale-token initialize status = %d, want 200; body=%s", restarted.StatusCode, restartedBody)
+	}
+	if newToken := restarted.Header.Get(listenerSessionTokenHeader); newToken == "" || newToken == oldToken {
+		t.Fatalf("stale-token initialize issued %q, want a new %s", newToken, listenerSessionTokenHeader)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream initialize calls = %d, want 2", got)
+	}
 }
 
 func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndAnonymousSetup(t *testing.T) {

@@ -792,7 +792,7 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), streamWriter, safeLogW, nil, reqOpts)
+			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), streamWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
@@ -1241,8 +1241,10 @@ func RunHTTPListenerProxy(
 		// internal/mcp/transport/httpclient.go; this listener has its own
 		// hand-rolled HTTP request loop and so has to do it inline.
 		//
-		// nil tracker: HTTP reverse proxy pairs each request/response via HTTP
-		// semantics, so confused deputy tracking is handled at the transport level.
+		// HTTP attachment alone does not correlate the JSON-RPC envelope. A
+		// hostile upstream can answer request 1 with result 999, or inject a
+		// concurrent request's ID, so validate the exact client request ID.
+		responseTracker := NewStrictRequestTracker(frame.ID)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		var reader transport.MessageReader
 		if upstreamIsSSE {
@@ -1277,7 +1279,7 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			foundInjection, scanErr := ForwardScanned(reader, streamWriter, safeLogW, nil, reqOpts)
+			foundInjection, scanErr := ForwardScanned(reader, streamWriter, safeLogW, responseTracker, reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
@@ -1303,7 +1305,7 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
-		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
+		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, responseTracker, reqOpts)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			w.Header().Set("Content-Type", "application/json")

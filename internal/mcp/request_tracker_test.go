@@ -51,6 +51,15 @@ func TestRequestTracker_NullID(t *testing.T) {
 	}
 }
 
+func TestStrictRequestTracker_RejectsUnkeyedIDs(t *testing.T) {
+	tr := NewStrictRequestTracker()
+	for _, id := range []json.RawMessage{nil, json.RawMessage(`null`), {}} {
+		if tr.Validate(id) {
+			t.Errorf("strict tracker accepted unkeyed ID %q", id)
+		}
+	}
+}
+
 func TestRequestTracker_EmptyID(t *testing.T) {
 	tr := NewRequestTracker()
 

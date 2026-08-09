@@ -32,6 +32,10 @@ type RequestTracker struct {
 	// so responses arriving before any request tracking (e.g., during MCP
 	// server initialization) pass through instead of being blocked.
 	seeded bool
+	// strict rejects response envelopes whose ID is absent or null. It is used
+	// by HTTP response channels with an exact request set (including an empty
+	// set), while ordinary stdio/WS trackers retain JSON-RPC parse-error parity.
+	strict bool
 }
 
 // TrackedRequestOutcome carries the receipt metadata needed to emit a
@@ -52,6 +56,20 @@ func NewRequestTracker() *RequestTracker {
 	return &RequestTracker{
 		pending: make(map[string]TrackedRequestOutcome),
 	}
+}
+
+// NewStrictRequestTracker creates a tracker that rejects response IDs even
+// when no request ID is pending. Use it on HTTP response channels where the
+// corresponding client request is already known, or where responses are never
+// valid, so the initialization race exception cannot become a fail-open.
+func NewStrictRequestTracker(ids ...json.RawMessage) *RequestTracker {
+	t := NewRequestTracker()
+	t.seeded = true
+	t.strict = true
+	for _, id := range ids {
+		t.Track(id)
+	}
+	return t
 }
 
 // Track records a request ID as pending. Nil/null IDs are ignored
@@ -110,7 +128,7 @@ func (t *RequestTracker) Consume(id json.RawMessage) (TrackedRequestOutcome, boo
 	key := canonicalID(id)
 	if key == "" {
 		// Nil/null IDs: notifications and server-initiated requests.
-		return TrackedRequestOutcome{}, true
+		return TrackedRequestOutcome{}, !t.strict
 	}
 
 	t.mu.Lock()
@@ -142,6 +160,11 @@ func (t *RequestTracker) Seeded() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.seeded
+}
+
+// Strict reports whether response envelopes must carry an exact tracked ID.
+func (t *RequestTracker) Strict() bool {
+	return t != nil && t.strict
 }
 
 // DrainPending returns and removes all pending request IDs. Used when a

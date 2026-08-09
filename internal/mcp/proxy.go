@@ -295,6 +295,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		var hasTrackedOutcome bool
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
+			if rpcID == nil && tracker.Strict() {
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: response has no correlatable ID\n", lineNum)
+				resp := blockResponseReason(nil, "response has no correlatable ID (confused deputy)")
+				if err := writer.WriteMessage(resp); err != nil {
+					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
+				}
+				continue
+			}
 			if rpcID != nil {
 				var valid bool
 				trackedOutcome, valid = tracker.Consume(rpcID)

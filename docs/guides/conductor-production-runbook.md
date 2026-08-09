@@ -782,8 +782,10 @@ pipelock conductor fleet convergence \
 ```
 
 The command exits nonzero after writing the JSON report when an expected
-producer is stale, missing a batch, unenrolled, or otherwise not current. Use
-that exit status for an alert. `--require-current=false` is for collecting a
+producer has no recent accepted batch. Use that exit status for a receipt
+delivery alert. Enrollment, runtime health, and bundle drift remain separate
+fields in the same report; they do not change the delivery exit status while a
+recent batch is still arriving. `--require-current=false` is for collecting a
 diagnostic snapshot while an operator works the alert.
 
 ## 14. Remove a follower

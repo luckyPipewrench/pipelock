@@ -67,6 +67,10 @@ const (
 	// ordinary gap between deliveries. Loose enough not to cry wolf, tight
 	// enough that a real delivery outage still surfaces.
 	evidenceStaleWindowMultiple = 6
+	// deliveryClockSkewAllowance tolerates ordinary clock skew between the
+	// Conductor host that stamps ReceivedAt and the operator host running this
+	// report. Larger future timestamps remain unprovable and alert.
+	deliveryClockSkewAllowance = 30 * time.Second
 
 	// StateUndeclared means conductor knows about this follower but no
 	// deployment intent declares it. It is distinct from StateUnknown: the
@@ -661,7 +665,7 @@ func deliveryHealth(followers []FollowerConvergence, now time.Time, staleAfter t
 }
 
 func deliveryBatchCurrent(batch *AuditEvidence, now time.Time, staleAfter time.Duration) bool {
-	if batch == nil || batch.ReceivedAt.IsZero() || batch.ReceivedAt.After(now) {
+	if batch == nil || batch.ReceivedAt.IsZero() || batch.ReceivedAt.After(now.Add(deliveryClockSkewAllowance)) {
 		return false
 	}
 	if staleAfter <= 0 {

@@ -397,7 +397,8 @@ func TestDeliveryBatchCurrentBoundaries(t *testing.T) {
 	}{
 		{name: "missing", batch: nil, staleAfter: time.Minute},
 		{name: "zero timestamp", batch: &AuditEvidence{}, staleAfter: time.Minute},
-		{name: "future timestamp", batch: &AuditEvidence{ReceivedAt: now.Add(time.Second)}, staleAfter: time.Minute},
+		{name: "within clock skew", batch: &AuditEvidence{ReceivedAt: now.Add(time.Second)}, staleAfter: time.Minute, want: true},
+		{name: "beyond clock skew", batch: &AuditEvidence{ReceivedAt: now.Add(deliveryClockSkewAllowance + time.Nanosecond)}, staleAfter: time.Minute},
 		{name: "at boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6 * time.Minute)}, staleAfter: time.Minute, want: true},
 		{name: "past boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6*time.Minute - time.Nanosecond)}, staleAfter: time.Minute},
 		{name: "default window", batch: &AuditEvidence{ReceivedAt: now.Add(-29 * time.Minute)}, want: true},

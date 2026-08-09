@@ -92,9 +92,10 @@ func fleetConvergenceCmd() *cobra.Command {
 runtime status and the latest accepted signed audit batch for each producer.
 
 The JSON report retains the four convergence denominators and adds an explicit
-delivery health summary. Expected producers that are stale, missing, or
-unenrolled appear in delivery_health.alerting. Local-only and scaled-zero
-entries stay visible but do not count as failures.
+delivery health summary. Expected producers without a recent accepted batch
+appear in delivery_health.alerting. Enrollment, runtime health, and bundle
+drift remain separate report fields. Local-only and scaled-zero entries stay
+visible but do not count as delivery failures.
 
 The command exits nonzero by default when an expected producer has no current
 accepted batch. Set --require-current=false only when collecting a diagnostic
@@ -244,6 +245,12 @@ func fetchConvergenceFollowers(ctx context.Context, client *conductorClient, inv
 	var response followersResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("decode Conductor followers: %w", err)
+	}
+	// The extra row is a truncation sentinel: this endpoint has no cursor, so
+	// treating a full response as complete could falsely report an expected
+	// producer unenrolled. Refuse the report instead of guessing.
+	if len(response.Followers) >= ReadClientFollowerLimitMax {
+		return nil, fmt.Errorf("read Conductor followers: roster exceeds the supported report limit of %d", ReadClientFollowerLimitMax-1)
 	}
 	return response.Followers, nil
 }

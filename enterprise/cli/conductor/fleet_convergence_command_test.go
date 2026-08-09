@@ -247,6 +247,7 @@ func TestRunFleetConvergence_FailsClosedOnClientAndAPIErrors(t *testing.T) {
 		}
 	})
 
+	fullRoster := make([]controlplane.FollowerFleetStatus, ReadClientFollowerLimitMax)
 	tests := []struct {
 		name   string
 		server *convergenceCommandServer
@@ -261,6 +262,11 @@ func TestRunFleetConvergence_FailsClosedOnClientAndAPIErrors(t *testing.T) {
 			name:   "followers malformed JSON",
 			server: &convergenceCommandServer{followersBody: "{"},
 			want:   "decode Conductor followers",
+		},
+		{
+			name:   "followers roster truncation",
+			server: &convergenceCommandServer{followers: fullRoster},
+			want:   "roster exceeds the supported report limit",
 		},
 		{
 			name: "audit HTTP error",

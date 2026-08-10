@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,15 @@ func TestRunWritesStableImageBundle(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "release-images.json")
 	if err := run(validArgs(out), io.Discard, io.Discard); err != nil {
 		t.Fatalf("run: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(out)
+		if err != nil {
+			t.Fatalf("stat output: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("output permissions = %04o, want 0600", got)
+		}
 	}
 	data, err := os.ReadFile(out) // #nosec G304 -- test reads its own temp output
 	if err != nil {

@@ -52,6 +52,14 @@ INDEX_ATTESTATION_IDS = (
     "attest-license-service-container",
 )
 ARCHIVE_ATTESTATION_IDS = ("attest-binaries", "attest-checksums", "attest-sbom")
+IMAGE_SBOM_ATTESTATION_IDS = (
+    "attest-pipelock-amd64-sbom",
+    "attest-pipelock-arm64-sbom",
+    "attest-pipelock-init-amd64-sbom",
+    "attest-pipelock-init-arm64-sbom",
+    "attest-license-service-amd64-sbom",
+    "attest-license-service-arm64-sbom",
+)
 
 
 class TestReleaseArtifacts(unittest.TestCase):
@@ -109,12 +117,14 @@ class TestReleaseArtifacts(unittest.TestCase):
             ),
         )
         for prefix, version, digest, repository, asset, version_check in expected_tools:
-            self.assertIn(f"{prefix}_VERSION: {version}", self.workflow)
-            self.assertIn(f"{prefix}_LINUX_AMD64_SHA256: {digest}", self.workflow)
-            self.assertIn(f"--repo {repository}", self.workflow)
-            self.assertIn(asset, self.workflow)
-            self.assertIn("sha256sum --check", self.workflow)
-            self.assertIn(version_check, self.workflow)
+            start = self.workflow.index(f"{prefix}_VERSION: {version}")
+            end = self.workflow.find("\n      - name:", start)
+            block = self.workflow[start : end if end != -1 else len(self.workflow)]
+            self.assertIn(f"{prefix}_LINUX_AMD64_SHA256: {digest}", block)
+            self.assertIn(f"--repo {repository}", block)
+            self.assertIn(asset, block)
+            self.assertIn("sha256sum --check", block)
+            self.assertIn(version_check, block)
 
         self.assertNotIn("go install github.com/CycloneDX", self.workflow)
         self.assertNotIn("go install github.com/google/go-containerregistry", self.workflow)
@@ -136,6 +146,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn(f"SYFT_LINUX_AMD64_SHA256: {SYFT_LINUX_AMD64_SHA256}", self.workflow)
         self.assertIn('gh release download "$SYFT_VERSION"', self.workflow)
         self.assertIn("--repo anchore/syft", self.workflow)
+        self.assertIn('archive="syft_${SYFT_VERSION#v}_linux_amd64.tar.gz"', self.workflow)
         self.assertIn('got="$($tool_dir/syft version', self.workflow)
         self.assertIn('test "$got" = "$expected"', self.workflow)
         self.assertIn('"$tool_dir/syft" "${image}@${digest}"', self.workflow)
@@ -177,6 +188,14 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.workflow,
                 )
                 self.assertLess(self.workflow.index(f"id: {attestation_id}"), proof_gate)
+                sbom_attestation_id = f"{attestation_id}-sbom"
+                self.assertIn(f"id: {sbom_attestation_id}", self.workflow)
+                self.assertIn(
+                    f"sbom-{repository.rsplit('/', maxsplit=1)[-1]}-linux-{arch}.cdx.json",
+                    self.workflow,
+                )
+
+        attestation_ids.extend(IMAGE_SBOM_ATTESTATION_IDS)
 
         gate_end = self.workflow.index("run: |", proof_gate)
         normalized_gate = " ".join(self.workflow[proof_gate:gate_end].split())
@@ -190,7 +209,7 @@ class TestReleaseArtifacts(unittest.TestCase):
     def test_verified_staging_indexes_promote_after_the_proof_gate(self) -> None:
         resolution = self.workflow.index("- name: Resolve release image platform digests")
         proof_gate = self.workflow.index("- name: Verify attestation")
-        chart_preflight = self.workflow.index("- name: Verify Helm chart version is unpublished")
+        chart_preflight = self.workflow.index("- name: Package and verify Helm chart version")
         promotion = self.workflow.index("- name: Promote verified image manifests")
         bundle = self.workflow.index("- name: Build Kubernetes image digest bundle")
         self.assertLess(resolution, proof_gate)
@@ -199,12 +218,13 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertLess(proof_gate, promotion)
         self.assertLess(promotion, bundle)
         self.assertIn('crane copy --no-clobber "${repository}@${index_digest}"', self.workflow)
+        self.assertIn('crane copy --no-clobber "${repository}@${digest}" "$target"', self.workflow)
         self.assertIn('"${repository}:latest"', self.workflow)
         self.assertIn('if [[ "$version" != *-* ]]; then', self.workflow)
         self.assertIn("grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+$'", self.workflow)
-        self.assertIn('if [[ "$promote_latest" = true ]]; then', self.workflow)
-        self.assertIn('"$newest_stable" = "$version"', self.workflow)
-        self.assertIn('latest_stable_tag="$(git tag --list', self.workflow)
+        self.assertIn('if [[ "$newest_stable" = "$version" ]]; then', self.workflow)
+        self.assertIn('if [[ "$latest_digest" != "$index_digest" ]]; then', self.workflow)
+        self.assertIn("grep -E '^v2\\.[0-9]+\\.[0-9]+$'", self.workflow)
         self.assertIn('if [[ "$TAG_NAME" != "$latest_stable_tag" ]]; then', self.workflow)
 
         digest_vars = {
@@ -217,25 +237,44 @@ class TestReleaseArtifacts(unittest.TestCase):
                 f'promote_image {repository} "${digest_vars[name]}"',
                 self.workflow,
             )
+            for arch in ("amd64", "arm64"):
+                self.assertIn(
+                    f'promote_platform_image {repository} "${name.upper()}_{arch.upper()}_DIGEST" {arch}',
+                    self.workflow,
+                )
 
     def test_github_release_promotion_follows_proof_bundle_and_chart(self) -> None:
         goreleaser = self.workflow.index("- name: Run GoReleaser")
         proof_gate = self.workflow.index("- name: Verify attestation")
         bundle = self.workflow.index("- name: Build Kubernetes image digest bundle")
+        bundle_attestation = self.workflow.index("- name: Attest Kubernetes image digest bundle")
+        bundle_gate = self.workflow.index("- name: Verify Kubernetes image digest bundle attestation")
         upload = self.workflow.index("- name: Upload Kubernetes image digest bundle")
-        chart = self.workflow.index("- name: Package and publish Helm chart")
+        chart = self.workflow.index("- name: Publish Helm chart")
         promotion = self.workflow.index("- name: Publish GitHub release")
         self.assertIn('gh release edit "$GITHUB_REF_NAME" --draft=false', self.workflow)
 
         self.assertLess(goreleaser, proof_gate)
         self.assertLess(proof_gate, bundle)
-        self.assertLess(bundle, upload)
+        self.assertLess(bundle, bundle_attestation)
+        self.assertLess(bundle_attestation, bundle_gate)
+        self.assertLess(bundle_gate, upload)
         self.assertLess(upload, chart)
         self.assertLess(chart, promotion)
 
+        self.assertIn('release_commit="$(git rev-parse "${GITHUB_REF_NAME}^{}")"', self.workflow)
+        self.assertNotIn('-commit "$GITHUB_SHA"', self.workflow)
+        self.assertIn('steps.attest-release-images.outcome != \'success\'', self.workflow)
+        self.assertIn('if [[ "$CHART_ALREADY_PUBLISHED" != true ]]; then', self.workflow)
+        self.assertIn('diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock"', self.workflow)
+        digest_vars = {
+            "pipelock": "PIPELOCK_INDEX_DIGEST",
+            "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",
+            "license_service": "LICENSE_SERVICE_INDEX_DIGEST",
+        }
         for name, repository in PLATFORM_ARTIFACTS.items():
             self.assertIn(
-                f'-image "{BUNDLE_NAMES[name]}={repository}@${{{{ steps.platform-digests.outputs.{name}_index }}}}"',
+                f'-image "{BUNDLE_NAMES[name]}={repository}@${{{digest_vars[name]}}}"',
                 self.workflow,
             )
         self.assertIn("dist/release-images.json", self.workflow)

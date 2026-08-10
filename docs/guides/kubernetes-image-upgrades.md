@@ -25,11 +25,22 @@ cat pipelock-v3.4.0/release-images.json
 ```
 
 Verify the provenance for each image before you put its digest in a workload.
-This command verifies the main Pipelock image named in the bundle:
+This command verifies the main Pipelock image named in the bundle. It pins the
+attestation to the release workflow, tag, and commit recorded in that bundle;
+it requires a current GitHub CLI login and registry access when the image is
+not public:
 
 ```bash
-PIPELOCK_IMAGE="$(jq -r '.images[] | select(.name == "pipelock") | "\(.repository)@\(.digest)"' pipelock-v3.4.0/release-images.json)"
-gh attestation verify "oci://${PIPELOCK_IMAGE}" --repo luckyPipewrench/pipelock
+PIPELOCK_BUNDLE=pipelock-v3.4.0/release-images.json
+PIPELOCK_TAG="$(jq -er '.tag' "$PIPELOCK_BUNDLE")"
+PIPELOCK_COMMIT="$(jq -er '.commit' "$PIPELOCK_BUNDLE")"
+PIPELOCK_IMAGE="$(jq -er '.images[] | select(.name == "pipelock") | "\(.repository)@\(.digest)"' "$PIPELOCK_BUNDLE")"
+gh attestation verify "oci://${PIPELOCK_IMAGE}" \
+  --repo luckyPipewrench/pipelock \
+  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --source-ref "refs/tags/${PIPELOCK_TAG}" \
+  --source-digest "$PIPELOCK_COMMIT" \
+  --deny-self-hosted-runners
 ```
 
 Run the same command for `pipelock-init` and `pipelock-license-service` when
@@ -46,7 +57,7 @@ The file has this shape:
     {
       "name": "pipelock",
       "repository": "ghcr.io/luckypipewrench/pipelock",
-      "digest": "sha256:..."
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   ]
 }

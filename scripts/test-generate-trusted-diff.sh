@@ -183,4 +183,29 @@ set -e
 [[ "$control_status" -ne 0 ]] || fail "unrepresentable control-character path was not rejected"
 grep -q 'control character' "$tmp_dir/control.out" || fail "control-character rejection was not explicit"
 
+# A mode-only change reports as changed while the content is byte-identical.
+# It must scan nothing: there is no new content, and falling through to the
+# full-blob path would block the author on a pre-existing finding they never
+# touched. Pinned because that is exactly the availability regression this
+# generator was narrowed to avoid.
+mode_repo="$tmp_dir/mode-only"
+init_repo "$mode_repo"
+# Assemble the specimen at runtime so this test file does not itself carry a
+# scannable credential literal, matching the repository convention for fake
+# credentials in tests.
+mode_specimen="AKIA""IOSFODNN7EXAMPLE"
+printf '#!/bin/sh\n%s\n' "$mode_specimen" > "$mode_repo/script.sh"
+commit_all "$mode_repo"
+chmod +x "$mode_repo/script.sh"
+commit_all "$mode_repo"
+mode_base=$(git -C "$mode_repo" rev-parse HEAD^)
+mode_head=$(git -C "$mode_repo" rev-parse HEAD)
+(
+	cd "$mode_repo"
+	bash "$generator" "$mode_base" "$mode_head" "$tmp_dir/mode.diff"
+) > /dev/null 2>&1 || fail "mode-only change was rejected"
+if [[ -s "$tmp_dir/mode.diff" ]]; then
+	fail "mode-only change produced scan input; a pre-existing finding would block it"
+fi
+
 printf 'trusted diff generator tests: PASS\n'

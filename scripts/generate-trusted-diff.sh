@@ -74,6 +74,17 @@ while IFS= read -r -d '' path; do
 	object_type=$(git cat-file -t "$object") || fail "cannot read changed object: ${path}"
 	[[ "$object_type" == "blob" ]] || fail "changed path is not a scannable blob: ${path} (${object_type})"
 
+	# A mode-only change (chmod, symlink-to-regular) reports as changed while the
+	# content is byte-identical, so it produces no hunk and would otherwise fall
+	# through to the full-blob path and block on a pre-existing finding the
+	# author never touched. Identical blob IDs mean there is no new content to
+	# scan, so skip it. This is not a coverage hole: nothing was added.
+	base_blob=$(git rev-parse --quiet --verify "${merge_base}:${path}" 2>/dev/null || true)
+	head_blob=$(git rev-parse --quiet --verify "${object}" 2>/dev/null || true)
+	if [[ -n "$base_blob" && "$base_blob" == "$head_blob" ]]; then
+		continue
+	fi
+
 	# Preserve added-line scope whenever Git can produce a textual patch. This
 	# keeps pre-existing findings outside the pull request from blocking an
 	# unrelated edit. Bound each patch as it is generated so the temporary file

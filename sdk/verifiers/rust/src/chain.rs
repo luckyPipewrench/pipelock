@@ -42,9 +42,34 @@ pub fn verify_chain_with_options(
     expected_key_hex: &str,
     allow_unpinned: bool,
 ) -> ChainResult {
+    let result = verify_chain_inner(receipts, expected_key_hex, allow_unpinned, false);
+    if result.failure_kind.as_deref() != Some("lifecycle_missing_open") {
+        return result;
+    }
+    let integrity = verify_chain_inner(receipts, expected_key_hex, allow_unpinned, true);
+    if !integrity.valid {
+        return integrity;
+    }
+    ChainResult {
+        integrity_verified: true,
+        receipt_count: integrity.receipt_count,
+        final_seq: integrity.final_seq,
+        root_hash: integrity.root_hash,
+        ..result
+    }
+}
+
+fn verify_chain_inner(
+    receipts: &[Receipt],
+    expected_key_hex: &str,
+    allow_unpinned: bool,
+    skip_lifecycle: bool,
+) -> ChainResult {
     if receipts.is_empty() {
         return ChainResult {
             valid: false,
+            integrity_verified: false,
+            failure_kind: None,
             receipt_count: 0,
             final_seq: 0,
             root_hash: String::new(),
@@ -166,32 +191,40 @@ pub fn verify_chain_with_options(
             return broken(seq, format!("seq gap: expected {expected_seq}, got {seq}"));
         }
         state.segment_receipt_count += 1;
-        if let Some(result) = validate_closed_run(receipt, seq, &state) {
-            return result;
-        }
-        if let Some(result) = validate_session_control_state(receipt, seq, index as u64, &mut state)
-        {
-            return result;
-        }
-        if let Some(open) = session_open(receipt) {
-            state.active_run_nonce = open
-                .get("run_nonce")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            state.active_open_nonce = open
-                .get("open_nonce")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            if let Some(run_nonce) = state.active_run_nonce.clone() {
-                state.opened_runs.insert(run_nonce.clone());
-                state.closed_runs.remove(&run_nonce);
+        if !skip_lifecycle {
+            if let Some(mut result) = validate_closed_run(receipt, seq, &state) {
+                if result.error.as_deref().is_some_and(|error| {
+                    error.contains("first receipt is not a matching session_open")
+                }) {
+                    result.failure_kind = Some("lifecycle_missing_open".to_string());
+                }
+                return result;
             }
-        } else if session_close(receipt).is_some() {
-            if let Some(run_nonce) = state.active_run_nonce.clone() {
-                state.closed_runs.insert(run_nonce);
+            if let Some(result) =
+                validate_session_control_state(receipt, seq, index as u64, &mut state)
+            {
+                return result;
             }
-            state.active_run_nonce = None;
-            state.active_open_nonce = None;
+            if let Some(open) = session_open(receipt) {
+                state.active_run_nonce = open
+                    .get("run_nonce")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                state.active_open_nonce = open
+                    .get("open_nonce")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                if let Some(run_nonce) = state.active_run_nonce.clone() {
+                    state.opened_runs.insert(run_nonce.clone());
+                    state.closed_runs.remove(&run_nonce);
+                }
+            } else if session_close(receipt).is_some() {
+                if let Some(run_nonce) = state.active_run_nonce.clone() {
+                    state.closed_runs.insert(run_nonce);
+                }
+                state.active_run_nonce = None;
+                state.active_open_nonce = None;
+            }
         }
         state.prev_hash = receipt_hash(receipt);
         state.prior_segment_seq = Some(seq);
@@ -199,6 +232,8 @@ pub fn verify_chain_with_options(
 
     ChainResult {
         valid: true,
+        integrity_verified: true,
+        failure_kind: None,
         receipt_count: receipts.len(),
         final_seq: receipts
             .last()
@@ -752,6 +787,8 @@ fn verify_evidence_chain(
 
     ChainResult {
         valid: true,
+        integrity_verified: true,
+        failure_kind: None,
         receipt_count: receipts.len(),
         final_seq: receipts
             .last()
@@ -789,6 +826,8 @@ pub fn compute_totals(receipts: &[Receipt]) -> Totals {
 fn broken(seq: u64, error: String) -> ChainResult {
     ChainResult {
         valid: false,
+        integrity_verified: false,
+        failure_kind: None,
         receipt_count: 0,
         final_seq: 0,
         root_hash: String::new(),

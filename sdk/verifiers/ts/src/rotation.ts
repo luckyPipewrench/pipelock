@@ -41,7 +41,7 @@ export interface EndorsedChainOptions {
 }
 
 function broken(base: ChainResult, message: string): ChainResult {
-  return { ...base, valid: false, error: message };
+  return { ...base, valid: false, failure_kind: undefined, error: message };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -327,7 +327,11 @@ export async function verifyChainWithEndorsements(
     ),
   ];
   const base = await verifyChain(receipts, allKeys.join(","));
-  if (!base.valid) return base;
+  const lifecycleOnlyFailure =
+    !base.valid &&
+    base.integrity_verified === true &&
+    base.failure_kind === "lifecycle_missing_open";
+  if (!base.valid && !lifecycleOnlyFailure) return base;
   const roots = new Set(
     rootKeyHex
       .split(",")

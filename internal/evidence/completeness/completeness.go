@@ -8,6 +8,8 @@ package completeness
 
 import "github.com/luckyPipewrench/pipelock/internal/receipt"
 
+const maxSafeLifecycleInteger uint64 = 9_007_199_254_740_991
+
 // Status is the top-level completeness status vocabulary.
 type Status string
 
@@ -90,6 +92,13 @@ type runState struct {
 	hasOpen  bool
 	intents  map[string]int
 	outcomes map[string]int
+	// firstOutcomeSeq records the first outcome for each action so a
+	// terminal outcome-without-intent finding can retain the failing receipt.
+	firstOutcomeSeq map[string]uint64
+	// firstOutcomeIndex is the receipt's position in the supplied chain. Chain
+	// sequence numbers restart at a key transition, so this is the stable way
+	// to select the first orphan outcome across segments.
+	firstOutcomeIndex map[string]int
 
 	lastBeat uint64
 	sawBeat  bool
@@ -128,6 +137,15 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	if !chainResult.Valid && !isLifecycleOnlyChainFailure(chainResult) {
 		return brokenReport(report, chainResult)
 	}
+	if isLifecycleOnlyChainFailure(chainResult) {
+		// The chain verifier proved signatures and linkage, but it could not
+		// establish the run's opening boundary. That is incomplete evidence, not
+		// a forged or contradictory transcript.
+		report.Status = StatusUnverified
+		report.Reason = ReasonNoOpen
+		report.Error = chainResult.Error
+		return report
+	}
 
 	if !hasSessionControl(chain) {
 		report.Status = StatusUnverified
@@ -156,8 +174,10 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 				Reason:              ReasonBoundedClosed,
 				DurabilityMonotonic: true,
 			},
-			intents:  make(map[string]int),
-			outcomes: make(map[string]int),
+			intents:           make(map[string]int),
+			outcomes:          make(map[string]int),
+			firstOutcomeSeq:   make(map[string]uint64),
+			firstOutcomeIndex: make(map[string]int),
 		}
 		states[runNonce] = st
 		order = append(order, runNonce)
@@ -167,6 +187,20 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	var previous receipt.ActionRecord
 	hasPrevious := false
 	var segmentPrefixCount uint64
+	type observedRecord struct {
+		seq   uint64
+		index int
+	}
+	firstRecordByRun := make(map[string]observedRecord)
+	structuralBrokenAtSeqSet := false
+	markStructural := func(st *runState, violation string, seq uint64, index int) {
+		markStructuralViolation(st, violation)
+		if !structuralBrokenAtSeqSet {
+			report.BrokenAtSeq = seq
+			report.BrokenAtIndex = index
+			structuralBrokenAtSeqSet = true
+		}
+	}
 	for i := range chain {
 		ar := chain[i].ActionRecord
 		// session_close carries the emitter's SEGMENT-LOCAL FinalSeq/ReceiptCount,
@@ -190,18 +224,23 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		hasPrevious = true
 
 		runNonce := effectiveRunNonce(ar)
+		if runNonce != "" {
+			if _, ok := firstRecordByRun[runNonce]; !ok {
+				firstRecordByRun[runNonce] = observedRecord{seq: ar.ChainSeq, index: i}
+			}
+		}
 		if ar.SessionControl == nil {
 			if violation := validateLifecycleAction(lifecycle, ar); violation != "" {
 				st := getRun(runNonce)
-				markStructuralViolation(st, violation)
+				markStructural(st, violation, ar.ChainSeq, i)
 				segmentPrefixCount++
 				continue
 			}
 		}
 		if runNonce != "" || ar.SessionControl != nil {
 			st := getRun(runNonce)
-			if violation := applyRecord(st, ar, ctx); violation != "" {
-				markStructuralViolation(st, violation)
+			if violation := applyRecordAt(st, ar, ctx, i); violation != "" {
+				markStructural(st, violation, ar.ChainSeq, i)
 			}
 			updateLifecycleState(lifecycle, ar)
 		}
@@ -212,12 +251,35 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		if runNonce == "(missing)" || lifecycle.opened[runNonce] {
 			continue
 		}
-		markStructuralViolation(states[runNonce], "receipt run_nonce has no matching session_open")
+		first := firstRecordByRun[runNonce]
+		markStructural(states[runNonce], "receipt run_nonce has no matching session_open", first.seq, first.index)
 	}
 
 	for _, runNonce := range order {
 		st := states[runNonce]
 		finalizeRun(st)
+		if st.report.Status == StatusBroken && !structuralBrokenAtSeqSet {
+			var firstOrphan observedRecord
+			foundOrphan := false
+			for actionID := range st.outcomes {
+				if st.intents[actionID] != 0 {
+					continue
+				}
+				orphan := observedRecord{
+					seq:   st.firstOutcomeSeq[actionID],
+					index: st.firstOutcomeIndex[actionID],
+				}
+				if !foundOrphan || orphan.index < firstOrphan.index {
+					firstOrphan = orphan
+					foundOrphan = true
+				}
+			}
+			if foundOrphan {
+				report.BrokenAtSeq = firstOrphan.seq
+				report.BrokenAtIndex = firstOrphan.index
+				structuralBrokenAtSeqSet = true
+			}
+		}
 		report.Runs = append(report.Runs, st.report)
 		report.Status, report.Reason = worse(report.Status, report.Reason, st.report.Status, st.report.Reason)
 	}
@@ -227,10 +289,10 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	}
 	if report.Status == StatusBroken {
 		report.Error = firstBrokenRunError(report.Runs, chainResult.Error)
-		if report.BrokenAtSeq == 0 {
+		if !structuralBrokenAtSeqSet {
 			report.BrokenAtSeq = chainResult.BrokenAtSeq
+			report.BrokenAtIndex = chainResult.BrokenAtIndex
 		}
-		report.BrokenAtIndex = chainResult.BrokenAtIndex
 		return report
 	}
 	if !chainResult.Valid {
@@ -324,6 +386,10 @@ func markStructuralViolation(st *runState, violation string) {
 }
 
 func applyRecord(st *runState, ar receipt.ActionRecord, ctx recordContext) string {
+	return applyRecordAt(st, ar, ctx, -1)
+}
+
+func applyRecordAt(st *runState, ar receipt.ActionRecord, ctx recordContext, index int) string {
 	if st.report.Closed {
 		return "record observed after session_close"
 	}
@@ -335,6 +401,18 @@ func applyRecord(st *runState, ar receipt.ActionRecord, ctx recordContext) strin
 	case receipt.DecisionPhaseOutcome:
 		st.report.Outcomes++
 		st.outcomes[ar.ActionID]++
+		if st.firstOutcomeSeq == nil {
+			st.firstOutcomeSeq = make(map[string]uint64)
+		}
+		if st.firstOutcomeIndex == nil {
+			st.firstOutcomeIndex = make(map[string]int)
+		}
+		if _, ok := st.firstOutcomeSeq[ar.ActionID]; !ok {
+			st.firstOutcomeSeq[ar.ActionID] = ar.ChainSeq
+			if index >= 0 {
+				st.firstOutcomeIndex[ar.ActionID] = index
+			}
+		}
 	}
 
 	ctrl := ar.SessionControl
@@ -394,6 +472,11 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 	if heartbeat == nil {
 		return "heartbeat kind missing heartbeat payload"
 	}
+	if heartbeat.Beat > maxSafeLifecycleInteger ||
+		heartbeat.FsyncErrorsGated > maxSafeLifecycleInteger ||
+		heartbeat.DurabilityBlocks > maxSafeLifecycleInteger {
+		return "heartbeat lifecycle counter exceeds the cross-language safe integer range"
+	}
 	if ar.RunNonce == "" || heartbeat.RunNonce != ar.RunNonce {
 		return "heartbeat run_nonce does not match receipt run_nonce"
 	}
@@ -432,6 +515,10 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 func applyClose(st *runState, ar receipt.ActionRecord, closeRecord *receipt.SessionClose, ctx recordContext) string {
 	if closeRecord == nil {
 		return "session_close kind missing close payload"
+	}
+	if closeRecord.FsyncErrorsGated > maxSafeLifecycleInteger ||
+		closeRecord.DurabilityBlocks > maxSafeLifecycleInteger {
+		return "session_close lifecycle counter exceeds the cross-language safe integer range"
 	}
 	if ar.RunNonce == "" || closeRecord.RunNonce != ar.RunNonce {
 		return "session_close run_nonce does not match receipt run_nonce"

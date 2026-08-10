@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { parseArgs } from "node:util";
 import { verifyAuditPacket } from "./audit-packet.js";
 import { verifyChain } from "./chain.js";
+import { analyzeLifecycle } from "./lifecycle.js";
 import { emitAuditPacket, emitChain, emitReceipt } from "./output.js";
 import { extractReceipts, extractReceiptsFromSessionDir } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
@@ -139,18 +140,27 @@ async function runChainCommand(args: string[]): Promise<number> {
           endorsements,
         })
       : await verifyChain(receipts, keyHex, { allowUnpinned });
+  const lifecycle = analyzeLifecycle(receipts, result);
+  const lifecycleBroken = lifecycle.status === "BROKEN";
   const report: ChainCommandReport = {
     path: label,
-    valid: result.valid,
-    unpinned: keyHex === "" && (result.valid || result.error?.includes("UNPINNED")),
+    valid: result.valid && !lifecycleBroken,
+    unpinned:
+      keyHex === "" &&
+      (result.error?.includes("UNPINNED") === true || (result.valid && !lifecycleBroken))
+        ? true
+        : undefined,
     receipt_count: result.receipt_count,
     final_seq: result.final_seq,
     root_hash: result.root_hash || undefined,
-    error: result.error,
+    // Preserve the verifier's concrete cryptographic, hash, trust, or
+    // sequence failure. Lifecycle is a supplemental gate only when the chain
+    // itself verified successfully.
+    error: lifecycleBroken && result.valid ? `lifecycle: ${lifecycle.reason}` : result.error,
     broken_at_seq: result.broken_at_seq,
   };
   emitChain(report, parsed.values.json === true);
-  return result.valid ? 0 : 1;
+  return report.valid ? 0 : 1;
 }
 
 async function runReceiptCommand(args: string[]): Promise<number> {

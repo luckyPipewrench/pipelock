@@ -442,8 +442,11 @@ func TestComputeScorecard_BrokenChainStillReportsLifecycle(t *testing.T) {
 	if evidence.Chain.Valid {
 		t.Fatalf("tampered chain should not verify")
 	}
-	if evidence.Scorecard.Completeness.State != StateLimited {
-		t.Fatalf("Completeness.State = %q, want %q", evidence.Scorecard.Completeness.State, StateLimited)
+	if evidence.Scorecard.Completeness.State != StateFail {
+		t.Fatalf("Completeness.State = %q, want %q", evidence.Scorecard.Completeness.State, StateFail)
+	}
+	if evidence.Scorecard.Completeness.Chip != chipChainBroken {
+		t.Fatalf("Completeness.Chip = %q, want %q", evidence.Scorecard.Completeness.Chip, chipChainBroken)
 	}
 	detail := evidence.Scorecard.Completeness.Detail
 	if !strings.Contains(detail, "lost to the break") {
@@ -454,5 +457,35 @@ func TestComputeScorecard_BrokenChainStillReportsLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(detail, string(completeness.ReasonChainBroken)) {
 		t.Fatalf("broken-chain completeness must name the chain-broken reason: %q", detail)
+	}
+}
+
+func TestComputeScorecardRejectsLifecycleBrokenValidChain(t *testing.T) {
+	t.Parallel()
+	pub, priv := generatePortedKey(t)
+	keyHex := hex.EncodeToString(pub)
+	chain := buildBoundPortedChain(t, priv, keyHex)
+	chain[1].ActionRecord.DecisionPhase = receipt.DecisionPhaseOutcome
+	chain[1].ActionRecord.ActionID = "outcome-without-intent"
+	var err error
+	chain[1], err = receipt.Sign(chain[1].ActionRecord, priv)
+	if err != nil {
+		t.Fatalf("sign orphan outcome: %v", err)
+	}
+
+	evidence := SessionEvidenceOf(portedTestSessionID, chain, map[string]TrustedKey{
+		keyHex: {Source: portedTrustedKeySource},
+	}, false, DashboardReceiptReadLimit, DashboardTimelineLimit)
+	if !evidence.Chain.Valid {
+		t.Fatalf("orphan outcome must retain a valid signed chain: %+v", evidence.Chain)
+	}
+	for name, line := range map[string]Line{
+		"authentic":    evidence.Scorecard.Authentic,
+		"untampered":   evidence.Scorecard.Untampered,
+		"completeness": evidence.Scorecard.Completeness,
+	} {
+		if line.State != StateFail || line.Chip != "Lifecycle broken" {
+			t.Fatalf("%s = %+v, want lifecycle failure", name, line)
+		}
 	}
 }

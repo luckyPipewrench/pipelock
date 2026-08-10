@@ -67,6 +67,22 @@ func newActionScorecard(res actionreceipt.ChainResult, keyPinned bool, report co
 	if res.Valid || res.IntegrityVerified {
 		untampered = scorecardUntampered{Status: "PASS"}
 	}
+	if report.Status == completeness.StatusBroken {
+		// A signature-valid receipt stream can still be structurally impossible
+		// as lifecycle evidence (for example, an orphaned outcome). Neither
+		// authenticity nor tamper-evidence is safe to present as passing then.
+		detail := "lifecycle: " + string(report.Reason)
+		if report.Error != "" {
+			detail += ": " + report.Error
+		}
+		authentic.Status = "FAIL"
+		authentic.Detail = appendScorecardDetail(authentic.Detail, detail)
+		untampered.Status = "FAIL"
+		if untampered.BrokenAtSeq == 0 {
+			untampered.BrokenAtSeq = report.BrokenAtSeq
+		}
+		untampered.Reason = appendScorecardDetail(untampered.Reason, detail)
+	}
 	gaps := uint64(0)
 	heartbeat := "continuous"
 	for _, run := range report.Runs {
@@ -99,6 +115,13 @@ func newActionScorecard(res actionreceipt.ChainResult, keyPinned bool, report co
 			},
 		},
 	}
+}
+
+func appendScorecardDetail(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	return existing + "; " + addition
 }
 
 func emitScorecard(out io.Writer, sc scorecard) {

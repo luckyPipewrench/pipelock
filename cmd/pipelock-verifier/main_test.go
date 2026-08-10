@@ -25,6 +25,7 @@ import (
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
@@ -369,6 +370,102 @@ func TestAuditPacketReportsInFlightLifecycleCompleteness(t *testing.T) {
 	}
 }
 
+func TestAuditPacketRejectsLifecycleBrokenChain(t *testing.T) {
+	t.Parallel()
+	lifecycle := newCompletenessFixture(t)
+	fix := &fixture{
+		pub:  lifecycle.priv.Public().(ed25519.PublicKey),
+		priv: lifecycle.priv,
+		receipts: []receipt.Receipt{
+			lifecycle.open("run-audit-broken", "open-audit-broken"),
+			// The outcome deliberately has no matching intent. Its signature and
+			// chain link are valid, so this proves the lifecycle boundary itself.
+			lifecycle.outcome("run-audit-broken", "outcome-without-intent"),
+		},
+		keyHex: lifecycle.keyHex,
+	}
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("lifecycle-broken packet code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report auditPacketReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if report.Valid || report.ChainCheck != statusPass || report.CrossCheck != statusPass {
+		t.Fatalf("lifecycle-broken packet must fail after otherwise passing checks: %+v", report)
+	}
+	if report.LifecycleStatus != completeness.StatusBroken || report.LifecycleReason != completeness.ReasonChainBroken {
+		t.Fatalf("lifecycle = %s/%s, want BROKEN/chain_broken", report.LifecycleStatus, report.LifecycleReason)
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "lifecycle: chain_broken") {
+		t.Fatalf("missing lifecycle failure detail: %+v", report.Errors)
+	}
+}
+
+func TestAuditPacketPreservesChainFailureInsteadOfRelabelingItAsLifecycle(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	raw, err := os.ReadFile(filepath.Clean(evidence))
+	if err != nil {
+		t.Fatalf("read evidence: %v", err)
+	}
+	// Flip one signature nibble after the packet is written. The recorder
+	// envelope and signature encoding remain valid, so this reaches
+	// cryptographic signature verification rather than the parser.
+	const signaturePrefix = `"signature":"ed25519:`
+	signatureOffset := bytes.Index(raw, []byte(signaturePrefix))
+	if signatureOffset < 0 {
+		t.Fatal("signature prefix not found in evidence")
+	}
+	tampered := append([]byte(nil), raw...)
+	signatureOffset += len(signaturePrefix)
+	if tampered[signatureOffset] == '0' {
+		tampered[signatureOffset] = '1'
+	} else {
+		tampered[signatureOffset] = '0'
+	}
+	if err := os.WriteFile(evidence, tampered, 0o600); err != nil {
+		t.Fatalf("write tampered evidence: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = runAuditPacket(&stdout, &stderr, dir, auditPacketOptions{
+		signerKey:  fix.keyHex,
+		jsonOutput: true,
+	})
+	code := exitCodeFor(err)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("tampered packet code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout.String(), stderr.String())
+	}
+	var report auditPacketReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.ChainCheck != statusFail || report.Valid {
+		t.Fatalf("tampered chain report = %+v, want failed chain and invalid packet", report)
+	}
+	errorsText := strings.Join(report.Errors, "\n")
+	if !strings.Contains(errorsText, "signature verification failed") ||
+		strings.Contains(errorsText, "lifecycle:") {
+		t.Fatalf("chain failure must preserve signature detail without lifecycle label: %q", errorsText)
+	}
+	if report.LifecycleAssessment != lifecycleNotAssessed || report.LifecycleStatus != "" || report.LifecycleReason != "" {
+		t.Fatalf("invalid chain must not receive lifecycle assessment: %+v", report)
+	}
+	if err == nil || !strings.Contains(err.Error(), "packet chain rejected") ||
+		!strings.Contains(err.Error(), "signature verification failed") ||
+		strings.Contains(err.Error(), "packet lifecycle broken") {
+		t.Fatalf("terminal error must preserve chain failure without lifecycle label: %v", err)
+	}
+}
+
 func TestAuditPacket_ValidVerdictRequiresExternalTrustAnchor(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)
@@ -572,12 +669,24 @@ func TestAuditPacket_RejectsEmptyChain(t *testing.T) {
 	fix := newFixture(t, 0)
 	pkt := fix.writePacketDir(t, t.TempDir(), nil)
 
-	_, stderr, code := runRoot(t, "audit-packet", "--key", fix.keyHex, pkt)
+	stdout, stderr, code := runRoot(t, "audit-packet", "--json", "--key", fix.keyHex, pkt)
 	if code == cliutil.ExitOK {
 		t.Fatalf("empty audit-packet chain should fail, stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "empty chain") {
-		t.Fatalf("expected empty-chain error, got %q", stderr)
+	var report auditPacketReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "empty chain") {
+		t.Fatalf("expected empty-chain error, got report errors %q and stderr %q", report.Errors, stderr)
+	}
+	if report.LifecycleAssessment != lifecycleAssessed ||
+		report.LifecycleStatus != completeness.StatusUnverified ||
+		report.LifecycleReason != completeness.ReasonNoReceipts {
+		t.Fatalf("empty-chain lifecycle = assessment %q, status %q, reason %q; "+
+			"want assessed/%s/%s to match the TypeScript verifier",
+			report.LifecycleAssessment, report.LifecycleStatus, report.LifecycleReason,
+			completeness.StatusUnverified, completeness.ReasonNoReceipts)
 	}
 }
 

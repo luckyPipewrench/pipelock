@@ -24,6 +24,21 @@ pub fn emit_audit_packet(report: &AuditPacketReport, json: bool) -> Result<()> {
     println!("  schema:       {}", report.schema_check);
     println!("  chain:        {}", report.chain_check);
     println!("  cross-check:  {}", report.cross_check);
+    if report.lifecycle_assessment != "assessed" {
+        println!(
+            "  lifecycle:    not assessed ({})",
+            report
+                .lifecycle_assessment_reason
+                .as_deref()
+                .unwrap_or("chain re-verification did not complete")
+        );
+    } else {
+        println!(
+            "  lifecycle:    {} ({})",
+            report.lifecycle_status.as_deref().unwrap_or(""),
+            report.lifecycle_reason.as_deref().unwrap_or("")
+        );
+    }
     println!("  verdict:      {verdict}");
     println!("  trusted:      {}", report.trusted);
     println!("  receipts:     {}", report.summary.receipt_count);

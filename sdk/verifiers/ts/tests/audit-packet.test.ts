@@ -8,6 +8,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { verifyAuditPacket } from "../src/audit-packet.js";
+import { computeTotals, verifyChain } from "../src/chain.js";
+import { extractReceipts } from "../src/recorder.js";
 import type { AuditPacket } from "../src/types.js";
 import { resolveSignerKey, sha256Hex } from "../src/util.js";
 
@@ -83,6 +85,30 @@ function writePacket(mutator?: (packet: AuditPacket) => void): string {
   return dir;
 }
 
+async function writePacketWithEvidence(source: string, lines?: number): Promise<string> {
+  const dir = mkdtempSync(path.join(tmpdir(), "pipelock-ts-verifier-lifecycle-"));
+  const rawEvidence = readFileSync(source, "utf8");
+  const evidence =
+    lines === undefined
+      ? rawEvidence
+      : `${rawEvidence.trimEnd().split("\n").slice(0, lines).join("\n")}\n`;
+  writeFileSync(path.join(dir, "evidence.jsonl"), evidence, { mode: 0o600 });
+  const receipts = extractReceipts(path.join(dir, "evidence.jsonl"));
+  const chain = await verifyChain(receipts, publicKey);
+  assert.equal(chain.valid, true, chain.error);
+  const packet = basePacket();
+  packet.summary!.receipt_count = chain.receipt_count;
+  packet.summary!.totals = computeTotals(receipts);
+  packet.verifier!.receipt_count = chain.receipt_count;
+  packet.verifier!.root_hash = chain.root_hash;
+  packet.verifier!.final_seq = chain.final_seq;
+  writeFileSync(path.join(dir, "packet.json"), `${JSON.stringify(packet, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  writeFileSync(path.join(dir, "verifier.txt"), "ok\n", { mode: 0o600 });
+  return dir;
+}
+
 const defaultOptions = {
   signerKey: publicKey,
   offline: false,
@@ -97,6 +123,60 @@ test("audit packet verifies end to end", async () => {
   assert.equal(report.schema_check, "pass");
   assert.equal(report.chain_check, "pass");
   assert.equal(report.cross_check, "pass");
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "UNVERIFIED");
+  assert.equal(report.lifecycle_reason, "no_lifecycle");
+});
+
+test("audit packet rejects an orphan outcome in an otherwise valid chain", async () => {
+  const report = await verifyAuditPacket(
+    await writePacketWithEvidence("../../conformance/testdata/g1-valid-chain.jsonl"),
+    defaultOptions,
+  );
+  assert.equal(report.valid, false);
+  assert.equal(report.chain_check, "pass");
+  assert.equal(report.cross_check, "pass");
+  assert.ok(report.errors?.some((error) => error.includes("lifecycle: chain_broken")));
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "BROKEN");
+  assert.equal(report.lifecycle_reason, "chain_broken");
+});
+
+test("audit packet keeps an in-progress lifecycle valid but names it", async () => {
+  const report = await verifyAuditPacket(
+    await writePacketWithEvidence("../../conformance/testdata/g1-restart-chain.jsonl"),
+    defaultOptions,
+  );
+  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "LIMITED");
+  assert.equal(report.lifecycle_reason, "open_action");
+});
+
+test("audit packet keeps an open session valid but marks its missing close", async () => {
+  const report = await verifyAuditPacket(
+    await writePacketWithEvidence("../../conformance/testdata/g1-valid-chain.jsonl", 1),
+    defaultOptions,
+  );
+  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "LIMITED");
+  assert.equal(report.lifecycle_reason, "abnormal_end");
+});
+
+test("audit packet reports a malformed lifecycle chain as assessed and broken", async () => {
+  const dir = writePacket();
+  writeFileSync(
+    path.join(dir, "evidence.jsonl"),
+    readFileSync("../../conformance/testdata/g1-inconsistent-close.jsonl"),
+    { mode: 0o600 },
+  );
+  const report = await verifyAuditPacket(dir, defaultOptions);
+  assert.equal(report.valid, false);
+  assert.equal(report.chain_check, "fail");
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "BROKEN");
+  assert.equal(report.lifecycle_reason, "chain_broken");
 });
 
 test("audit packet requires external trust for valid verdict", async () => {
@@ -168,6 +248,9 @@ test("audit packet rejects an empty chain", async () => {
   assert.equal(report.valid, false);
   assert.equal(report.chain_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("empty chain")));
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "UNVERIFIED");
+  assert.equal(report.lifecycle_reason, "no_receipts");
 });
 
 test("literal signer key wins over a same-named cwd file", () => {
@@ -285,6 +368,8 @@ test("--offline skips chain verification", async () => {
   assert.equal(report.valid, true);
   assert.equal(report.chain_check, "skipped");
   assert.equal(report.cross_check, "skipped");
+  assert.equal(report.lifecycle_assessment, "not_assessed");
+  assert.equal(report.lifecycle_assessment_reason, "offline mode skips chain re-verification");
 });
 
 test("CLI missing argument exits 64", () => {

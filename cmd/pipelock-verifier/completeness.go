@@ -37,10 +37,9 @@ Pipelock can bound mediated egress it observed, but cannot prove the agent had
 no egress path outside that boundary.
 
 Exit-code contract:
-  0  analysis ran and the chain was not classified BROKEN; LIMITED and
-     UNVERIFIED are successful analyses
-  1  BROKEN chain/completeness evidence, unpinned non-empty chain without
-     --allow-unpinned, or another verifier failure
+  0  LIMITED bounded-completeness result
+  1  BROKEN or UNVERIFIED completeness evidence, unpinned non-empty chain
+     without --allow-unpinned, or another verifier failure
   2  tool, IO, extraction, or key-resolution error
  64  command-line usage error`,
 		Args:          exactOneArg,
@@ -108,6 +107,9 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 	emitCompletenessReport(stdout, stderr, report, opts.jsonOutput)
 	if report.Status == completeness.StatusBroken {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("completeness broken: %s", report.Error))
+	}
+	if report.Status == completeness.StatusUnverified {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("completeness unverified: %s", report.Reason))
 	}
 	if report.Unpinned && !opts.allowUnpinned {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("completeness verification unpinned"))

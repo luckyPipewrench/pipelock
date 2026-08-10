@@ -92,6 +92,9 @@ type runState struct {
 	hasOpen  bool
 	intents  map[string]int
 	outcomes map[string]int
+	// firstOutcomeSeq records the first outcome for each action so a
+	// terminal outcome-without-intent finding can retain the failing receipt.
+	firstOutcomeSeq map[string]uint64
 
 	lastBeat uint64
 	sawBeat  bool
@@ -167,8 +170,9 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 				Reason:              ReasonBoundedClosed,
 				DurabilityMonotonic: true,
 			},
-			intents:  make(map[string]int),
-			outcomes: make(map[string]int),
+			intents:         make(map[string]int),
+			outcomes:        make(map[string]int),
+			firstOutcomeSeq: make(map[string]uint64),
 		}
 		states[runNonce] = st
 		order = append(order, runNonce)
@@ -178,6 +182,20 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	var previous receipt.ActionRecord
 	hasPrevious := false
 	var segmentPrefixCount uint64
+	type observedRecord struct {
+		seq   uint64
+		index int
+	}
+	firstRecordByRun := make(map[string]observedRecord)
+	structuralBrokenAtSeqSet := false
+	markStructural := func(st *runState, violation string, seq uint64, index int) {
+		markStructuralViolation(st, violation)
+		if !structuralBrokenAtSeqSet {
+			report.BrokenAtSeq = seq
+			report.BrokenAtIndex = index
+			structuralBrokenAtSeqSet = true
+		}
+	}
 	for i := range chain {
 		ar := chain[i].ActionRecord
 		// session_close carries the emitter's SEGMENT-LOCAL FinalSeq/ReceiptCount,
@@ -201,10 +219,15 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		hasPrevious = true
 
 		runNonce := effectiveRunNonce(ar)
+		if runNonce != "" {
+			if _, ok := firstRecordByRun[runNonce]; !ok {
+				firstRecordByRun[runNonce] = observedRecord{seq: ar.ChainSeq, index: i}
+			}
+		}
 		if ar.SessionControl == nil {
 			if violation := validateLifecycleAction(lifecycle, ar); violation != "" {
 				st := getRun(runNonce)
-				markStructuralViolation(st, violation)
+				markStructural(st, violation, ar.ChainSeq, i)
 				segmentPrefixCount++
 				continue
 			}
@@ -212,7 +235,7 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		if runNonce != "" || ar.SessionControl != nil {
 			st := getRun(runNonce)
 			if violation := applyRecord(st, ar, ctx); violation != "" {
-				markStructuralViolation(st, violation)
+				markStructural(st, violation, ar.ChainSeq, i)
 			}
 			updateLifecycleState(lifecycle, ar)
 		}
@@ -223,12 +246,31 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		if runNonce == "(missing)" || lifecycle.opened[runNonce] {
 			continue
 		}
-		markStructuralViolation(states[runNonce], "receipt run_nonce has no matching session_open")
+		first := firstRecordByRun[runNonce]
+		markStructural(states[runNonce], "receipt run_nonce has no matching session_open", first.seq, first.index)
 	}
 
 	for _, runNonce := range order {
 		st := states[runNonce]
 		finalizeRun(st)
+		if st.report.Status == StatusBroken && !structuralBrokenAtSeqSet {
+			var firstOrphanSeq uint64
+			foundOrphan := false
+			for actionID := range st.outcomes {
+				if st.intents[actionID] != 0 {
+					continue
+				}
+				seq := st.firstOutcomeSeq[actionID]
+				if !foundOrphan || seq < firstOrphanSeq {
+					firstOrphanSeq = seq
+					foundOrphan = true
+				}
+			}
+			if foundOrphan {
+				report.BrokenAtSeq = firstOrphanSeq
+				structuralBrokenAtSeqSet = true
+			}
+		}
 		report.Runs = append(report.Runs, st.report)
 		report.Status, report.Reason = worse(report.Status, report.Reason, st.report.Status, st.report.Reason)
 	}
@@ -346,6 +388,12 @@ func applyRecord(st *runState, ar receipt.ActionRecord, ctx recordContext) strin
 	case receipt.DecisionPhaseOutcome:
 		st.report.Outcomes++
 		st.outcomes[ar.ActionID]++
+		if st.firstOutcomeSeq == nil {
+			st.firstOutcomeSeq = make(map[string]uint64)
+		}
+		if _, ok := st.firstOutcomeSeq[ar.ActionID]; !ok {
+			st.firstOutcomeSeq[ar.ActionID] = ar.ChainSeq
+		}
 	}
 
 	ctrl := ar.SessionControl

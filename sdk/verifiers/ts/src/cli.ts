@@ -153,7 +153,10 @@ async function runChainCommand(args: string[]): Promise<number> {
     receipt_count: result.receipt_count,
     final_seq: result.final_seq,
     root_hash: result.root_hash || undefined,
-    error: lifecycleBroken ? `lifecycle: ${lifecycle.reason}` : result.error,
+    // Preserve the verifier's concrete cryptographic, hash, trust, or
+    // sequence failure. Lifecycle is a supplemental gate only when the chain
+    // itself verified successfully.
+    error: lifecycleBroken && result.valid ? `lifecycle: ${lifecycle.reason}` : result.error,
     broken_at_seq: result.broken_at_seq,
   };
   emitChain(report, parsed.values.json === true);

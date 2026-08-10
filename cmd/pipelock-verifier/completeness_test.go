@@ -238,21 +238,24 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("empty_chain_never_claims_signatures_verified", func(t *testing.T) {
+	t.Run("empty_chain_is_unverified_and_exits_nonzero", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, nil)
 		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", f.keyHex, path)
-		if code != cliutil.ExitOK {
-			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitOK, stdout, stderr)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report := parseCompletenessReport(t, stdout)
+		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoReceipts {
+			t.Fatalf("report=%s/%s, want UNVERIFIED/no_receipts", report.Status, report.Reason)
+		}
 		if report.SignaturesVerified {
 			t.Fatalf("empty chain claimed signatures_verified: %#v", report)
 		}
 	})
 
-	t.Run("integrity_verified_no_open_is_unverified", func(t *testing.T) {
+	t.Run("integrity_verified_no_open_is_unverified_and_exits_nonzero", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, []receipt.Receipt{
@@ -260,8 +263,8 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 			f.close(runNonce, openNonce),
 		})
 		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", f.keyHex, path)
-		if code != cliutil.ExitOK {
-			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitOK, stdout, stderr)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report := parseCompletenessReport(t, stdout)
 		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoOpen {
@@ -294,7 +297,7 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("unverified_no_open_requires_unpinned_opt_in", func(t *testing.T) {
+	t.Run("unverified_no_open_remains_nonzero_with_unpinned_opt_in", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, []receipt.Receipt{
@@ -311,8 +314,8 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 
 		stdout, stderr, code = runRoot(t, "completeness", "--json", "--allow-unpinned", path)
-		if code != cliutil.ExitOK {
-			t.Fatalf("allow-unpinned code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitOK, stdout, stderr)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("allow-unpinned code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report = parseCompletenessReport(t, stdout)
 		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoOpen || !report.Unpinned {
@@ -712,6 +715,13 @@ func TestChainCLIRejectsLifecycleBrokenChain(t *testing.T) {
 	}
 	if !strings.Contains(report.Error, "lifecycle: chain_broken") {
 		t.Fatalf("missing lifecycle error: %q", report.Error)
+	}
+	if report.BrokenAtSeq == 0 {
+		t.Fatalf("lifecycle break sequence omitted: %+v", report)
+	}
+	if report.Scorecard.Untampered.BrokenAtSeq != report.BrokenAtSeq {
+		t.Fatalf("scorecard break sequence = %d, want lifecycle break sequence %d: %+v",
+			report.Scorecard.Untampered.BrokenAtSeq, report.BrokenAtSeq, report.Scorecard.Untampered)
 	}
 }
 

@@ -155,7 +155,10 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         receipt_count: result.receipt_count,
         final_seq: result.final_seq,
         root_hash: (!result.root_hash.is_empty()).then_some(result.root_hash),
-        error: if lifecycle_broken {
+        // Preserve the verifier's concrete cryptographic, hash, trust, or
+        // sequence failure. Lifecycle is a supplemental gate only when the
+        // chain itself verified successfully.
+        error: if lifecycle_broken && result.valid {
             Some(format!("lifecycle: {}", lifecycle.reason))
         } else {
             result.error

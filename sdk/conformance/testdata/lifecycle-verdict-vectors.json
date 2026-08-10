@@ -464,6 +464,246 @@
         "status": "LIMITED",
         "reason": "abnormal_end"
       }
+    },
+    {
+      "name": "missing_heartbeat_payload",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-missing-heartbeat",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-missing-heartbeat",
+                "open_nonce": "open-missing-heartbeat"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-missing-heartbeat",
+            "session_control": {
+              "kind": "heartbeat"
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "null_heartbeat_payload",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-null-heartbeat",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-null-heartbeat",
+                "open_nonce": "open-null-heartbeat"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-null-heartbeat",
+            "session_control": {
+              "kind": "heartbeat",
+              "heartbeat": null
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "missing_close_payload",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-missing-close",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-missing-close",
+                "open_nonce": "open-missing-close"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-missing-close",
+            "session_control": {
+              "kind": "session_close"
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "null_close_payload",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-null-close",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-null-close",
+                "open_nonce": "open-null-close"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-null-close",
+            "session_control": {
+              "kind": "session_close",
+              "close": null
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "heartbeat_run_nonce_mismatch",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-heartbeat-match",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-heartbeat-match",
+                "open_nonce": "open-heartbeat-match"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-heartbeat-match",
+            "session_control": {
+              "kind": "heartbeat",
+              "heartbeat": {
+                "run_nonce": "other-run",
+                "open_nonce": "open-heartbeat-match",
+                "beat": 1
+              }
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "close_run_nonce_mismatch",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-close-match",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-close-match",
+                "open_nonce": "open-close-match"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-close-match",
+            "session_control": {
+              "kind": "session_close",
+              "close": {
+                "run_nonce": "other-run",
+                "open_nonce": "open-close-match"
+              }
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "missing_beat_with_malformed_durability_counter",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-missing-beat",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-missing-beat",
+                "open_nonce": "open-missing-beat"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-missing-beat",
+            "session_control": {
+              "kind": "heartbeat",
+              "heartbeat": {
+                "run_nonce": "run-missing-beat",
+                "open_nonce": "open-missing-beat",
+                "fsync_errors_gated": 9007199254740992
+              }
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
     }
   ]
 }

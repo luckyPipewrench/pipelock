@@ -222,6 +222,7 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 	if res.Valid && completenessReport.Status == completeness.StatusBroken {
 		report.Valid = false
 		report.Unpinned = false
+		report.BrokenAtSeq = completenessReport.BrokenAtSeq
 		report.Error = "lifecycle: " + string(completenessReport.Reason)
 		if completenessReport.Error != "" {
 			report.Error += ": " + completenessReport.Error

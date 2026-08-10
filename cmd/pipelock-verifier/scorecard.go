@@ -78,6 +78,9 @@ func newActionScorecard(res actionreceipt.ChainResult, keyPinned bool, report co
 		authentic.Status = "FAIL"
 		authentic.Detail = appendScorecardDetail(authentic.Detail, detail)
 		untampered.Status = "FAIL"
+		if untampered.BrokenAtSeq == 0 {
+			untampered.BrokenAtSeq = report.BrokenAtSeq
+		}
 		untampered.Reason = appendScorecardDetail(untampered.Reason, detail)
 	}
 	gaps := uint64(0)

@@ -82,14 +82,31 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
       continue;
     }
     if (kind === "session_close") {
+      const close = objectField(control, "close");
+      if (
+        close === undefined ||
+        typeof record.run_nonce !== "string" ||
+        record.run_nonce === "" ||
+        close["run_nonce"] !== record.run_nonce
+      ) {
+        return { status: broken, reason: "chain_broken" };
+      }
       state.closed = true;
-      if (!applyDurability(state, objectField(control, "close"))) {
+      if (!applyDurability(state, close)) {
         return { status: broken, reason: "chain_broken" };
       }
       continue;
     }
     if (kind === "heartbeat" || kind === "session_heartbeat") {
       const heartbeat = objectField(control, "heartbeat");
+      if (
+        heartbeat === undefined ||
+        typeof record.run_nonce !== "string" ||
+        record.run_nonce === "" ||
+        heartbeat["run_nonce"] !== record.run_nonce
+      ) {
+        return { status: broken, reason: "chain_broken" };
+      }
       const beat = heartbeat?.["beat"];
       if (beat !== undefined && !validCounter(beat)) {
         return { status: broken, reason: "chain_broken" };

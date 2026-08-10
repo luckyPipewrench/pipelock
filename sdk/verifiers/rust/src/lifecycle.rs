@@ -96,27 +96,49 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
                 state.closed = false;
             }
             Some("session_close") => {
+                let Some(close) = control.get("close").and_then(serde_json::Value::as_object)
+                else {
+                    return report("BROKEN", "chain_broken");
+                };
+                let action_run_nonce = record
+                    .get("run_nonce")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if action_run_nonce.is_empty()
+                    || close.get("run_nonce").and_then(serde_json::Value::as_str)
+                        != Some(action_run_nonce)
+                {
+                    return report("BROKEN", "chain_broken");
+                }
                 state.closed = true;
                 if !apply_durability(state, control.get("close")) {
                     return report("BROKEN", "chain_broken");
                 }
             }
             Some("heartbeat") | Some("session_heartbeat") => {
-                let beat = control
+                let Some(heartbeat) = control
                     .get("heartbeat")
                     .and_then(serde_json::Value::as_object)
-                    .and_then(|heartbeat| heartbeat.get("beat"))
-                    .map(lifecycle_counter);
+                else {
+                    return report("BROKEN", "chain_broken");
+                };
+                let action_run_nonce = record
+                    .get("run_nonce")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if action_run_nonce.is_empty()
+                    || heartbeat
+                        .get("run_nonce")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(action_run_nonce)
+                {
+                    return report("BROKEN", "chain_broken");
+                }
+                let beat = heartbeat.get("beat").map(lifecycle_counter);
                 let Some(beat) = beat else {
-                    if control
-                        .get("heartbeat")
-                        .and_then(serde_json::Value::as_object)
-                        .and_then(|heartbeat| heartbeat.get("beat"))
-                        .is_some()
-                    {
+                    if !apply_durability(state, control.get("heartbeat")) {
                         return report("BROKEN", "chain_broken");
                     }
-                    apply_durability(state, control.get("heartbeat"));
                     continue;
                 };
                 let Some(beat) = beat else {

@@ -59,40 +59,47 @@ func TestLifecycleVerdictVectorsMatchGo(t *testing.T) {
 		"durability_decrease": false, "missing_run_nonce": false,
 		"null_session_control": false,
 	}
+	sawGoDecodeError := false
 
 	for i := range file.Vectors {
 		vector := &file.Vectors[i]
-		if _, ok := required[vector.Name]; ok {
-			required[vector.Name] = true
-		}
-		receipts, err := decodeLifecycleVectorReceipts(vector.Receipts)
-		if vector.GoDecodeError {
-			if err == nil {
-				t.Fatalf("%s decoded successfully, want Go parser rejection", vector.Name)
+		t.Run(vector.Name, func(t *testing.T) {
+			if _, ok := required[vector.Name]; ok {
+				required[vector.Name] = true
 			}
-			continue
-		}
-		if err != nil {
-			t.Fatalf("%s: decode receipts: %v", vector.Name, err)
-		}
-		report := Analyze(receipts, receipt.ChainResult{
-			Valid:             vector.ChainResult.Valid,
-			IntegrityVerified: vector.ChainResult.IntegrityVerified,
-			FailureKind:       receipt.ChainFailureKind(vector.ChainResult.FailureKind),
+			receipts, err := decodeLifecycleVectorReceipts(vector.Receipts)
+			if vector.GoDecodeError {
+				sawGoDecodeError = true
+				if err == nil {
+					t.Fatalf("decoded successfully, want Go parser rejection")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode receipts: %v", err)
+			}
+			report := Analyze(receipts, receipt.ChainResult{
+				Valid:             vector.ChainResult.Valid,
+				IntegrityVerified: vector.ChainResult.IntegrityVerified,
+				FailureKind:       receipt.ChainFailureKind(vector.ChainResult.FailureKind),
+			})
+			actual := lifecycleExpected{Status: report.Status, Reason: report.Reason}
+			if *updateLifecycleVectors {
+				vector.Expected = actual
+				return
+			}
+			if actual != vector.Expected {
+				t.Fatalf("got %s/%s, want %s/%s", actual.Status, actual.Reason, vector.Expected.Status, vector.Expected.Reason)
+			}
 		})
-		actual := lifecycleExpected{Status: report.Status, Reason: report.Reason}
-		if *updateLifecycleVectors {
-			vector.Expected = actual
-			continue
-		}
-		if actual != vector.Expected {
-			t.Fatalf("%s = %s/%s, want %s/%s", vector.Name, actual.Status, actual.Reason, vector.Expected.Status, vector.Expected.Reason)
-		}
 	}
 	for name, present := range required {
 		if !present {
 			t.Fatalf("lifecycle vector %q is missing", name)
 		}
+	}
+	if !sawGoDecodeError {
+		t.Fatal("lifecycle vector file has no Go parser rejection vector")
 	}
 	if !*updateLifecycleVectors {
 		return

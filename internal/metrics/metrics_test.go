@@ -76,14 +76,21 @@ func TestRecordDenialOfWalletEventBoundedLabels(t *testing.T) {
 	if strings.Contains(text, "attacker-action") || strings.Contains(text, "attacker-trust") {
 		t.Fatalf("unbounded action/trust label leaked into metrics:\n%s", text)
 	}
+	if strings.Contains(text, `pipelock_requests_total{agent="claude-code",result="blocked"}`) {
+		t.Fatalf("warn event counted as a blocked request:\n%s", text)
+	}
+	if strings.Contains(text, `pipelock_scanner_hits_total{agent="claude-code",scanner="denial_of_wallet"}`) {
+		t.Fatalf("warn event counted as a scanner block:\n%s", text)
+	}
 }
 
 func TestRecordDenialOfWalletEventCapsAgentCardinality(t *testing.T) {
 	m := New()
-	for i := range maxTopEntries {
+	for i := range maxTopEntries - 1 {
 		m.RecordDenialOfWalletEvent("block", fmt.Sprintf("profile-%03d", i), "agent")
 	}
 	m.RecordDenialOfWalletEvent("block", "profile-overflow", "agent")
+	m.RecordDenialOfWalletEvent("block", "", "default")
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -94,6 +101,12 @@ func TestRecordDenialOfWalletEventCapsAgentCardinality(t *testing.T) {
 	}
 	if !strings.Contains(text, `pipelock_scanner_hits_total{agent="_other",scanner="denial_of_wallet"} 1`) {
 		t.Fatalf("scanner hit did not use the bounded agent label:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_denial_of_wallet_events_total{action="block",agent="_default",subject_trust="default"} 1`) {
+		t.Fatalf("default denial-of-wallet bucket collapsed after cap:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_scanner_hits_total{agent="_default",scanner="denial_of_wallet"} 1`) {
+		t.Fatalf("default scanner-hit bucket collapsed after cap:\n%s", text)
 	}
 	if strings.Contains(text, "profile-overflow") {
 		t.Fatalf("overflow profile created an unbounded series:\n%s", text)

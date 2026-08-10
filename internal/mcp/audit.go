@@ -14,6 +14,7 @@ const (
 	dowSubjectKeyDefault   = "_default"
 	dowSubjectTrustDefault = "default"
 	metricAgentDefault     = "_default"
+	dowAuditFallbackTarget = "invalid-mcp-resource"
 )
 
 func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.LogContext {
@@ -50,13 +51,22 @@ func resolvedDoWTrust(trust string) string {
 }
 
 func mustMCPDoWAuditContext(logger *audit.Logger, resource string, opts MCPProxyOpts) audit.LogContext {
+	return mcpDoWAuditContext(logger, resource, opts, audit.NewMCPLogContext)
+}
+
+func mcpDoWAuditContext(
+	logger *audit.Logger,
+	resource string,
+	opts MCPProxyOpts,
+	newContext func(method, resource, agent string) (audit.LogContext, error),
+) audit.LogContext {
 	agent, attribution := resolvedDoWAttribution(opts)
-	ctx, err := audit.NewMCPLogContext("MCP", resource, agent)
+	ctx, err := newContext("MCP", resource, agent)
 	if err != nil {
 		if logger != nil {
 			logger.LogError(audit.NewMethodLogContext("MCP"), err)
 		}
-		return audit.NewMethodLogContext("MCP")
+		ctx, _ = audit.NewMCPLogContext("MCP", dowAuditFallbackTarget, agent)
 	}
 	return ctx.WithDoWAttribution(attribution.SubjectKey, attribution.Trust)
 }

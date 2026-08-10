@@ -143,7 +143,7 @@ func (m *Metrics) RecordDenialOfWalletEvent(action, agent, subjectTrust string) 
 
 func (m *Metrics) boundedDoWAgent(agent string) string {
 	if agent == "" {
-		agent = "_default"
+		return "_default"
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

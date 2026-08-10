@@ -6,9 +6,10 @@ package audit
 import (
 	"bytes"
 	"errors"
-	"io"
 	"strings"
 	"testing"
+
+	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 type failingIdentifierReader struct{}
@@ -54,8 +55,14 @@ func TestNewIdentifierRedactorFailsClosedWithoutEntropy(t *testing.T) {
 }
 
 func TestAuditLoggersShareProcessDiscriminator(t *testing.T) {
-	first := NewNop().identifierRedactor.discriminator("same-subject")
-	second := NewNop().identifierRedactor.discriminator("same-subject")
+	first, err := NewNop().identifierRedactor.discriminator("same-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewNop().identifierRedactor.discriminator("same-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first == "" || first != second {
 		t.Fatalf("process discriminators differ: first=%q second=%q", first, second)
 	}
@@ -83,12 +90,74 @@ func TestNewWithStreamRejectsNilWriter(t *testing.T) {
 	}
 }
 
-func TestNewLoggerPropagatesIdentifierEntropyFailure(t *testing.T) {
-	wantErr := errors.New("entropy unavailable")
-	_, err := newLogger("json", "stdout", "", false, true, io.Discard, func() (*identifierRedactor, error) {
-		return nil, wantErr
+func TestNewWithIdentifierEntropyDefersFailure(t *testing.T) {
+	var stream bytes.Buffer
+	logger, err := NewWithIdentifierEntropy(IdentifierEntropyLoggerOpts{
+		Format:         "json",
+		Output:         "stdout",
+		IncludeBlocked: true,
+		Stream:         &stream,
+		Entropy:        failingIdentifierReader{},
 	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("newLogger error = %v, want %v", err, wantErr)
+	if err != nil {
+		t.Fatalf("construct logger with unavailable entropy: %v", err)
+	}
+	ctx, err := NewMCPLogContext("MCP", "safe-tool", "configured-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogBlocked(ctx.WithDoWAttribution("raw-subject", "agent"), scannerpkg.ScannerDenialOfWallet, "limit exceeded")
+	if !strings.Contains(stream.String(), `"method":"audit_identifier_redaction"`) {
+		t.Fatalf("entropy failure not surfaced: %s", stream.String())
+	}
+	if strings.Contains(stream.String(), "raw-subject") || strings.Contains(stream.String(), `"subject_discriminator"`) {
+		t.Fatalf("entropy failure leaked subject data: %s", stream.String())
+	}
+}
+
+func TestNewLoggerDefersIdentifierEntropyFailureAndRecovers(t *testing.T) {
+	wantErr := errors.New("entropy unavailable")
+	var stream bytes.Buffer
+	calls := 0
+	logger, err := newLogger("json", "stdout", "", false, true, &stream, func() (*identifierRedactor, error) {
+		calls++
+		if calls == 1 {
+			return nil, wantErr
+		}
+		return newIdentifierRedactorWithSalt([]byte("recovered-test-entropy")), nil
+	})
+	if err != nil {
+		t.Fatalf("newLogger error = %v, want logger availability", err)
+	}
+	if calls != 0 {
+		t.Fatalf("entropy source called %d times during logger construction, want 0", calls)
+	}
+	ctx, err := NewMCPLogContext("MCP", "safe-tool", "configured-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = ctx.WithDoWAttribution("raw-principal|198.51.100.7", "principal")
+	logger.LogBlocked(ctx, scannerpkg.ScannerDenialOfWallet, "limit exceeded")
+	first := stream.String()
+	for _, want := range []string{
+		`"event":"error"`,
+		`"method":"audit_identifier_redaction"`,
+		`"agent":"configured-agent"`,
+		`"subject_trust":"principal"`,
+	} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("degraded audit output missing %q: %s", want, first)
+		}
+	}
+	if strings.Contains(first, `"subject_discriminator"`) || strings.Contains(first, "raw-principal") || strings.Contains(first, "198.51.100.7") {
+		t.Fatalf("degraded audit output exposed subject data: %s", first)
+	}
+
+	logger.LogBlocked(ctx, scannerpkg.ScannerDenialOfWallet, "limit exceeded again")
+	if calls != 2 {
+		t.Fatalf("entropy source calls = %d, want retry after failure", calls)
+	}
+	if !strings.Contains(stream.String(), `"subject_discriminator":"hmac-sha256:`) {
+		t.Fatalf("recovered audit output missing discriminator: %s", stream.String())
 	}
 }

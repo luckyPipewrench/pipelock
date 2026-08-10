@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -90,6 +92,74 @@ func TestMustMCPDoWAuditContextHandlesMissingResource(t *testing.T) {
 		ctx := mustMCPDoWAuditContext(logger, "", MCPProxyOpts{})
 		if ctx.Method() != "MCP" {
 			t.Fatalf("fallback method = %q, want MCP", ctx.Method())
+		}
+	}
+}
+
+func TestMCPDoWAuditContextFallbackPreservesAttribution(t *testing.T) {
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		for _, tc := range []struct {
+			name       string
+			resource   string
+			newContext func(string, string, string) (audit.LogContext, error)
+		}{
+			{name: "empty", newContext: audit.NewMCPLogContext},
+			{
+				name:     "validation_rejected",
+				resource: "rejected-raw-resource",
+				newContext: func(_, _, _ string) (audit.LogContext, error) {
+					return audit.LogContext{}, errors.New("test validation rejection")
+				},
+			},
+		} {
+			t.Run(action+"_"+tc.name, func(t *testing.T) {
+				var stream bytes.Buffer
+				logger, err := audit.NewWithStream("json", "stdout", "", false, true, &stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				opts := MCPProxyOpts{
+					DoWSubjectAgent:     "configured-agent",
+					DoWSubjectAgentAuth: envelope.ActorAuthConfigDefault,
+					DoWAttribution: DoWAttribution{
+						SubjectKey: "raw-principal|198.51.100.7",
+						Trust:      config.DoWTrustPrincipal.String(),
+					},
+				}
+				ctx := mcpDoWAuditContext(logger, tc.resource, opts, tc.newContext)
+				if ctx.Resource() != dowAuditFallbackTarget {
+					t.Fatalf("fallback resource = %q, want %q", ctx.Resource(), dowAuditFallbackTarget)
+				}
+				if action == config.ActionBlock {
+					logger.LogBlocked(ctx, "denial_of_wallet", "limit exceeded")
+				} else {
+					logger.LogAnomaly(ctx, "denial_of_wallet", "limit exceeded", 0)
+				}
+
+				var event map[string]any
+				for _, line := range strings.Split(strings.TrimSpace(stream.String()), "\n") {
+					var candidate map[string]any
+					if json.Unmarshal([]byte(line), &candidate) == nil && candidate["scanner"] == "denial_of_wallet" {
+						event = candidate
+					}
+				}
+				if event == nil {
+					t.Fatalf("missing denial-of-wallet event: %s", stream.String())
+				}
+				if event["agent"] != "configured-agent" || event["subject_trust"] != "principal" {
+					t.Fatalf("fallback attribution = agent:%v trust:%v", event["agent"], event["subject_trust"])
+				}
+				discriminator, _ := event["subject_discriminator"].(string)
+				if !strings.HasPrefix(discriminator, "hmac-sha256:") {
+					t.Fatalf("fallback discriminator = %q", discriminator)
+				}
+				output := stream.String()
+				for _, raw := range []string{tc.resource, "raw-principal", "198.51.100.7"} {
+					if raw != "" && strings.Contains(output, raw) {
+						t.Fatalf("fallback audit exposed raw value %q: %s", raw, output)
+					}
+				}
+			})
 		}
 	}
 }

@@ -47,12 +47,14 @@ uses CONNECT tunnels (see below) and does not increment request counters.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_denial_of_wallet_events_total` | counter | `action`, `agent`, `subject_trust` | MCP denial-of-wallet limit events. `action` is `block` or `warn`. `agent` is the resolved configured profile, or `_default` when none exists. `subject_trust` is `principal`, `agent`, `network`, or `default` for the stdio bucket. Raw subject identifiers are never metric labels. |
+| `pipelock_denial_of_wallet_events_total` | counter | `action`, `agent`, `subject_trust` | MCP denial-of-wallet limit events. `action` is `block`, `warn`, or `unknown` for an unsupported action. `agent` is the resolved configured profile, or `_default` when none exists. `subject_trust` is `principal`, `agent`, `network`, `default` for the stdio bucket, or `unknown` for an unsupported grade. Raw subject identifiers are never metric labels. |
 
 The `agent` label follows the profile mapping used by the other proxy metrics
-and accepts at most 100 distinct profile names per process. Later names collapse
-to `_other`, which bounds cardinality even if hot reloads keep introducing new
-profiles. `subject_trust` and `action` use closed value sets. The per-subject
+and tracks at most 100 agent buckets per process, including the reserved
+`_default` bucket. Up to 99 configured profile names are tracked separately;
+later names collapse to `_other`, which bounds cardinality even if hot reloads
+keep introducing new profiles. `subject_trust` and `action` use closed value sets whose `unknown`
+fallback prevents unsupported input from creating unbounded labels. The per-subject
 discriminator exists only in the audit event because putting it in Prometheus
 would create a new time series for every client. Standalone `pipelock mcp
 proxy` exposes the same registry when `metrics_listen` is configured, even when

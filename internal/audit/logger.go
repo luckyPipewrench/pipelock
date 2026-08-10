@@ -582,7 +582,7 @@ type Logger struct {
 	includeBlocked     bool
 	fileHandle         *os.File      // non-nil if logging to file
 	emitter            *emit.Emitter // optional external event emitter
-	identifierRedactor *identifierRedactor
+	identifierRedactor *lazyIdentifierRedactor
 }
 
 // New creates a new audit logger. The caller should call Close when done.
@@ -598,6 +598,26 @@ func NewWithStream(format, output, filePath string, includeAllowed, includeBlock
 	return newLogger(format, output, filePath, includeAllowed, includeBlocked, stream, sharedIdentifierRedactor)
 }
 
+// IdentifierEntropyLoggerOpts configures an audit logger with an explicit
+// entropy source for runtime availability tests.
+type IdentifierEntropyLoggerOpts struct {
+	Format         string
+	Output         string
+	FilePath       string
+	IncludeAllowed bool
+	IncludeBlocked bool
+	Stream         io.Writer
+	Entropy        io.Reader
+}
+
+// NewWithIdentifierEntropy is NewWithStream with an explicit entropy source.
+// Production loggers use the process-wide cryptographic source instead.
+func NewWithIdentifierEntropy(opts IdentifierEntropyLoggerOpts) (*Logger, error) {
+	return newLogger(opts.Format, opts.Output, opts.FilePath, opts.IncludeAllowed, opts.IncludeBlocked, opts.Stream, func() (*identifierRedactor, error) {
+		return newIdentifierRedactorFrom(opts.Entropy)
+	})
+}
+
 func newLogger(
 	format, output, filePath string,
 	includeAllowed, includeBlocked bool,
@@ -606,10 +626,6 @@ func newLogger(
 ) (*Logger, error) {
 	if stream == nil {
 		return nil, errors.New("create audit logger: stream writer is nil")
-	}
-	identifierRedactor, err := identifierSource()
-	if err != nil {
-		return nil, err
 	}
 	var writers []io.Writer
 
@@ -652,17 +668,25 @@ func newLogger(
 		includeAllowed:     includeAllowed,
 		includeBlocked:     includeBlocked,
 		fileHandle:         fileHandle,
-		identifierRedactor: identifierRedactor,
+		identifierRedactor: newLazyIdentifierRedactor(identifierSource),
 	}, nil
 }
 
 // NewNop returns a no-op logger that discards all events.
 func NewNop() *Logger {
-	identifierRedactor, _ := sharedIdentifierRedactor()
 	return &Logger{
 		zl:                 zerolog.Nop(),
-		identifierRedactor: identifierRedactor,
+		identifierRedactor: newLazyIdentifierRedactor(sharedIdentifierRedactor),
 	}
+}
+
+func (l *Logger) subjectDiscriminator(subjectKey string) string {
+	discriminator, err := l.identifierRedactor.discriminator(subjectKey)
+	if err != nil {
+		l.LogError(NewMethodLogContext("audit_identifier_redaction"), err)
+		return ""
+	}
+	return discriminator
 }
 
 // SetEmitter sets the event emitter for external emission.
@@ -780,7 +804,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		str("scanner", scanner).
 		str("reason", reason).
 		optStr("agent", ctx.agent).
-		optStr("subject_discriminator", l.identifierRedactor.discriminator(ctx.dowSubjectKey)).
+		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("display_label", displayLabel).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
@@ -836,7 +860,7 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		optStr("agent", ctx.agent).
-		optStr("subject_discriminator", l.identifierRedactor.discriminator(ctx.dowSubjectKey)).
+		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("scanner", scanner).
 		optStr("mitre_technique", technique).

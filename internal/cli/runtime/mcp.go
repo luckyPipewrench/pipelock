@@ -84,6 +84,12 @@ var reservedTransportHeaders = map[string]struct{}{
 	http.CanonicalHeaderKey("Mcp-Name"):   {},
 }
 
+type mcpAuditLoggerFactory func(
+	format, output, filePath string,
+	includeAllowed, includeBlocked bool,
+	stream io.Writer,
+) (*audit.Logger, error)
+
 // singletonUpstreamHeaders carry credentials or negotiated service policy.
 // Multiple ordinary HTTP header values are legitimate and remain supported,
 // but these values must have exactly one operator meaning before the listener
@@ -571,6 +577,10 @@ func buildRedirectRT(cfg *config.Config) *mcp.RedirectRuntime {
 
 // McpCmd returns the mcp cobra command.
 func McpCmd() *cobra.Command {
+	return mcpCmdWithAuditLoggerFactory(audit.NewWithStream)
+}
+
+func mcpCmdWithAuditLoggerFactory(newAuditLogger mcpAuditLoggerFactory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "MCP (Model Context Protocol) security scanning",
@@ -582,7 +592,7 @@ Examples:
 	}
 
 	cmd.AddCommand(mcpScanCmd())
-	cmd.AddCommand(mcpProxyCmd())
+	cmd.AddCommand(mcpProxyCmdWithAuditLoggerFactory(newAuditLogger))
 	cmd.AddCommand(mcpIntegrityCmd())
 	return cmd
 }
@@ -662,6 +672,10 @@ Examples:
 }
 
 func mcpProxyCmd() *cobra.Command {
+	return mcpProxyCmdWithAuditLoggerFactory(audit.NewWithStream)
+}
+
+func mcpProxyCmdWithAuditLoggerFactory(newAuditLogger mcpAuditLoggerFactory) *cobra.Command {
 	var configFile string
 	var upstreamURL string
 	var listenAddr string
@@ -897,7 +911,7 @@ Key-free evidence capture:
 				return fmt.Errorf("create scanner: %w", err)
 			}
 			defer sc.Close()
-			auditLogger, err := audit.NewWithStream(
+			auditLogger, err := newAuditLogger(
 				cfg.Logging.Format,
 				cfg.Logging.Output,
 				cfg.Logging.File,

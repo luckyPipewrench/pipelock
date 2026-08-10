@@ -226,7 +226,7 @@ func New() *Metrics {
 		topScannerHits:              make(map[string]int64),
 		topAnomalyTypes:             make(map[string]int64),
 		agentStats:                  make(map[string]*agentCounters),
-		denialOfWalletAgents:        make(map[string]struct{}),
+		denialOfWalletAgents:        map[string]struct{}{"_default": {}},
 		receiptEmitFailureCounts:    make(map[string]int64),
 		requiredReceiptBlocks:       make(map[string]int64),
 		evidenceSequenceGapCounts:   make(map[string]int64),

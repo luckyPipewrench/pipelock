@@ -1966,10 +1966,12 @@ setting is explicit rather than inferred.
 `dow_min_subject_trust` is hot-reloadable; a change takes effect on the next
 request without restarting the listener.
 
-Every denial-of-wallet block and warning records the resolved configured agent,
-the subject trust grade, and a `subject_discriminator` in the audit event. The
-discriminator is a salted HMAC of the budget subject, so the record does not
-contain the raw client address or authenticated principal. It stays stable for
+Every denial-of-wallet block and warning records the resolved configured agent
+and subject trust grade. A `subject_discriminator` is included only when the
+privacy enforcer redacts the budget subject; it is omitted if privacy handling
+does not return a redacted value or cryptographic entropy is temporarily
+unavailable. The discriminator is a salted HMAC, so the audit event never falls
+back to the raw client address or authenticated principal. It stays stable for
 the life of the process, matching the in-memory budget state, and changes after
 a restart. Prometheus exposes the agent and trust grade but never the
 per-subject discriminator. Standalone `pipelock mcp proxy` writes these audit

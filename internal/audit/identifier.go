@@ -20,16 +20,48 @@ type identifierRedactor struct {
 }
 
 var processIdentifierRedactor struct {
-	once     sync.Once
+	mu       sync.Mutex
 	redactor *identifierRedactor
-	err      error
 }
 
 func sharedIdentifierRedactor() (*identifierRedactor, error) {
-	processIdentifierRedactor.once.Do(func() {
-		processIdentifierRedactor.redactor, processIdentifierRedactor.err = newIdentifierRedactor()
-	})
-	return processIdentifierRedactor.redactor, processIdentifierRedactor.err
+	processIdentifierRedactor.mu.Lock()
+	defer processIdentifierRedactor.mu.Unlock()
+	if processIdentifierRedactor.redactor != nil {
+		return processIdentifierRedactor.redactor, nil
+	}
+	redactor, err := newIdentifierRedactor()
+	if err != nil {
+		return nil, err
+	}
+	processIdentifierRedactor.redactor = redactor
+	return redactor, nil
+}
+
+type lazyIdentifierRedactor struct {
+	mu       sync.Mutex
+	redactor *identifierRedactor
+	source   func() (*identifierRedactor, error)
+}
+
+func newLazyIdentifierRedactor(source func() (*identifierRedactor, error)) *lazyIdentifierRedactor {
+	return &lazyIdentifierRedactor{source: source}
+}
+
+func (r *lazyIdentifierRedactor) discriminator(value string) (string, error) {
+	if r == nil || value == "" {
+		return "", nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.redactor == nil {
+		redactor, err := r.source()
+		if err != nil {
+			return "", err
+		}
+		r.redactor = redactor
+	}
+	return r.redactor.discriminator(value), nil
 }
 
 func newIdentifierRedactor() (*identifierRedactor, error) {

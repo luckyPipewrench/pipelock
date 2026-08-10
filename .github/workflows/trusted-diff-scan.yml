@@ -1,0 +1,131 @@
+name: Trusted Diff Scan
+
+# Scans a pull request diff for secrets using a Pipelock built from the
+# repository's own default branch, never from a published release and never
+# from the pull request's source.
+#
+# Two problems this fixes:
+#
+#   1. Release lag. The previous gate downloaded the latest published Pipelock
+#      release, so a scanner fix on main did not reach the gate until the next
+#      release shipped. A whole-file-deletion parser fix sat on main for weeks
+#      while the released binary rejected every deletion-bearing pull request
+#      with "unverifiable input: content outside unified diff hunks", surfaced
+#      to the author as "Secrets detected in PR diff".
+#
+#   2. Self-judging. Building the scanner from the pull request head would let a
+#      pull request supply the tool that inspects it. The scanner is built from
+#      origin/main, which a pull request cannot influence.
+#
+# KNOWN REMAINING GAP, tracked separately: on a pull_request event GitHub runs
+# the workflow file from the pull request head, so a pull request can still edit
+# this file. That is unchanged from the previous gate rather than introduced
+# here. Closing it requires either pull_request_target, which release-audit
+# currently bans for this repository, or a check source a pull request workflow
+# cannot mint. Code-owner review on every pull request is the current
+# compensating control.
+#
+# DESIGN INTENT, subject to the PR-controlled-workflow gap above: the scanner is
+# built from fetched origin/main, never from the pull request tree. This does not
+# make the check immutable: Actions still executes this workflow and its helper
+# scripts from the pull request head.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: trusted-diff-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  trusted-diff-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+          cache: false
+
+      # Build from origin/main in a worktree of its own. Using a separate
+      # worktree keeps the pull request tree untouched and makes it obvious that
+      # no pull request file contributes to the binary under test.
+      - name: Build scanner from origin/main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin main
+          main_sha=$(git rev-parse FETCH_HEAD)
+          echo "building scanner from origin/main ${main_sha}"
+          build_tree="${RUNNER_TEMP}/trusted-main"
+          git worktree add --detach "${build_tree}" "${main_sha}"
+          ( cd "${build_tree}" && go build -o "${RUNNER_TEMP}/pipelock" ./cmd/pipelock )
+          "${RUNNER_TEMP}/pipelock" --version
+
+      - name: Verify raw blob diff generation
+        run: bash scripts/test-generate-trusted-diff.sh "${RUNNER_TEMP}/pipelock"
+
+      - name: Scan the diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          merge_base=$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")
+          diff_file="${RUNNER_TEMP}/pr.diff"
+          # Keep normal text findings scoped to added lines. Fall back to the
+          # full new-side blob when attributes or Git's binary heuristic hide
+          # the patch. The generator rejects unscannable objects and bounds its
+          # path inventory and output before scanner input is accepted.
+          bash scripts/generate-trusted-diff.sh \
+            "${merge_base}" "${HEAD_SHA}" "${diff_file}" 52428800
+
+          "${RUNNER_TEMP}/pipelock" git scan-diff \
+            --exclude internal/scanner/scanner_test.go \
+            --exclude internal/scanner/scan_env_test.go \
+            --exclude internal/scanner/text_dlp_test.go \
+            --exclude internal/scanner/validate_test.go \
+            --exclude internal/proxy/intercept_test.go \
+            --exclude internal/proxy/forward_test.go \
+            --exclude internal/proxy/adaptive_escalation_test.go \
+            --exclude internal/proxy/adaptive_coverage_test.go \
+            --exclude internal/proxy/allowlist_scoring_test.go \
+            --exclude internal/proxy/session_api.go \
+            --exclude internal/cli/session/resolver.go \
+            --exclude internal/gitprotect/diffscan_test.go \
+            --exclude internal/config/config_test.go \
+            --exclude internal/cli/test.go \
+            --exclude internal/cli/license_test.go \
+            --exclude internal/cli/support/bundle_test.go \
+            --exclude 'enterprise/licenseservice/*_test.go' \
+            --exclude 'configs/*.yaml' \
+            --exclude test/secureiqlab/ \
+            --exclude README.md \
+            --exclude assets/demo.cast \
+            --exclude scripts/pr-review.py \
+            --exclude docs/attacks-blocked.md \
+            --exclude docs/bypass-resistance.md \
+            --exclude docs/configuration.md \
+            --exclude docs/scan-api.md \
+            --exclude docs/guides/deployment-recipes.md \
+            --exclude docs/guides/tls-interception.md \
+            --exclude docs/guides/zed.md \
+            --exclude examples/demo-readme.sh \
+            --exclude examples/sample-events.jsonl \
+            --exclude examples/quickstart/ \
+            --exclude internal/contract/testdata/golden/ \
+            --exclude internal/contract/testdata/invalid/ \
+            --exclude internal/signing/testdata/golden/ \
+            --exclude internal/cli/hermes/testdata/hermes_e2e_driver.py \
+            --exclude internal/cli/hermes/hermes_e2e_test.go \
+            --exclude sdk/conformance/testdata/aarp-corpus/ \
+            < "${diff_file}"

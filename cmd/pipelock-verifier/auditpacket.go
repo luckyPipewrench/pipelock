@@ -218,6 +218,24 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, chainErr)
 	}
 	report.ChainCheck = chainStatusLabel(chainResult)
+	if !chainResult.Valid {
+		if len(chainReceipts) == 0 {
+			// Empty evidence has no chain whose integrity can be assessed, but it
+			// does have a useful completeness verdict for compatibility with the
+			// cross-language verifier contract.
+			lifecycle := completeness.Analyze(chainReceipts, chainResult)
+			report.LifecycleStatus = lifecycle.Status
+			report.LifecycleReason = lifecycle.Reason
+			report.LifecycleAssessment = lifecycleAssessed
+			report.LifecycleAssessmentReason = ""
+		}
+		// Completeness findings describe a chain whose integrity has already
+		// passed. Do not relabel a concrete signature, hash, trust, or sequence
+		// rejection as a lifecycle failure.
+		report.Errors = append(report.Errors, fmt.Sprintf("chain: %s", chainResult.Error))
+		emitReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet chain rejected at seq %d: %s", chainResult.BrokenAtSeq, chainResult.Error))
+	}
 	lifecycle := completeness.Analyze(chainReceipts, chainResult)
 	report.LifecycleStatus = lifecycle.Status
 	report.LifecycleReason = lifecycle.Reason
@@ -234,9 +252,15 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 	report.CrossCheck = statusPass
 
-	report.Valid = chainResult.Valid && trustVerdict(&packet, opts)
+	report.Valid = chainResult.Valid && lifecycle.Status != completeness.StatusBroken && trustVerdict(&packet, opts)
+	if lifecycle.Status == completeness.StatusBroken {
+		report.Errors = append(report.Errors, fmt.Sprintf("lifecycle: %s", lifecycle.Reason))
+	}
 	emitReport(stdout, stderr, report, opts.jsonOutput)
 	if !report.Valid {
+		if lifecycle.Status == completeness.StatusBroken {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet lifecycle broken: %s", lifecycle.Error))
+		}
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("packet not trusted"))
 	}
 	return nil
@@ -346,13 +370,17 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 	if err != nil {
 		return receipt.ChainResult{}, nil, fmt.Errorf("extract receipts: %w", err)
 	}
-	if len(receipts) == 0 {
-		return receipt.ChainResult{}, nil, errors.New("empty chain")
-	}
 	keyHex := strings.TrimSpace(signerOverride)
 	resolvedKey, err := resolveSignerKey(keyHex)
 	if err != nil {
 		return receipt.ChainResult{}, nil, fmt.Errorf("resolve signer key: %w", err)
+	}
+	if len(receipts) == 0 {
+		// Empty evidence is a completed, failed chain verification rather than
+		// an inability to run verification. Keep it invalid while allowing the
+		// lifecycle analyzer to report UNVERIFIED/no_receipts, matching the
+		// TypeScript verifier's assessment contract.
+		return receipt.ChainResult{Valid: false, Error: "empty chain"}, receipts, nil
 	}
 	return receipt.VerifyChain(receipts, resolvedKey), receipts, nil
 }

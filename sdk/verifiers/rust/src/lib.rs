@@ -6,6 +6,7 @@ pub mod audit_packet;
 pub mod canonical;
 pub mod chain;
 pub mod cli;
+pub mod lifecycle;
 pub mod output;
 pub mod provenance;
 pub(crate) mod provenance_proof;

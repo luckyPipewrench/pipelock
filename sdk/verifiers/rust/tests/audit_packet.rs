@@ -4,6 +4,8 @@
 mod common;
 
 use pipelock_verifier_rs::audit_packet::{verify_audit_packet, AuditPacketOptions};
+use pipelock_verifier_rs::chain::{compute_totals, verify_chain};
+use pipelock_verifier_rs::recorder::extract_receipts;
 use pipelock_verifier_rs::util::sha256_hex;
 use serde_json::{json, Value};
 use std::fs;
@@ -44,6 +46,59 @@ fn audit_packet_verifies_end_to_end() {
     assert_eq!(report.schema_check, "pass");
     assert_eq!(report.chain_check, "pass");
     assert_eq!(report.cross_check, "pass");
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("UNVERIFIED"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("no_lifecycle"));
+}
+
+#[test]
+fn audit_packet_rejects_an_orphan_outcome_in_an_otherwise_valid_chain() {
+    let packet_dir = write_packet_with_evidence("g1-valid-chain.jsonl", None);
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert!(!report.valid);
+    assert_eq!(report.chain_check, "pass");
+    assert_eq!(report.cross_check, "pass");
+    assert!(has_error(&report.errors, "lifecycle: chain_broken"));
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
+}
+
+#[test]
+fn audit_packet_keeps_an_in_progress_lifecycle_valid_but_names_it() {
+    let packet_dir = write_packet_with_evidence("g1-restart-chain.jsonl", None);
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert!(report.valid, "{:?}", report.errors);
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("LIMITED"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("open_action"));
+}
+
+#[test]
+fn audit_packet_keeps_an_open_session_valid_but_marks_its_missing_close() {
+    let packet_dir = write_packet_with_evidence("g1-valid-chain.jsonl", Some(1));
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert!(report.valid, "{:?}", report.errors);
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("LIMITED"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("abnormal_end"));
+}
+
+#[test]
+fn audit_packet_reports_a_malformed_lifecycle_chain_as_assessed_and_broken() {
+    let root = common::repo_root();
+    let packet_dir = write_packet(None);
+    fs::copy(
+        root.join("sdk/conformance/testdata/g1-inconsistent-close.jsonl"),
+        packet_dir.join("evidence.jsonl"),
+    )
+    .unwrap();
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert!(!report.valid);
+    assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
 }
 
 #[test]
@@ -150,7 +205,11 @@ fn audit_packet_rejects_empty_chain() {
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
     assert!(!report.valid);
     assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.cross_check, "fail");
     assert!(has_error(&report.errors, "empty chain"));
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("UNVERIFIED"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("no_receipts"));
 }
 
 #[test]
@@ -243,8 +302,17 @@ fn audit_packet_reports_chain_failure_reason() {
     .unwrap();
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
     assert_eq!(report.chain_check, "fail");
-    assert_eq!(report.cross_check, "skipped");
-    assert!(has_error(&report.errors, "chain_prev_hash mismatch"));
+    assert_eq!(report.cross_check, "fail");
+    assert_eq!(report.lifecycle_assessment, "assessed");
+    assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
+    assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
+    assert!(report.errors.as_ref().is_some_and(|errors| errors
+        .iter()
+        .any(|error| error.starts_with("chain: ") && error.contains("chain_prev_hash mismatch"))));
+    assert!(report.errors.as_ref().is_some_and(|errors| errors
+        .iter()
+        .any(|error| error.starts_with("cross-check: ")
+            && error.contains("chain_prev_hash mismatch"))));
 }
 
 #[test]
@@ -274,6 +342,11 @@ fn offline_skips_chain_verification() {
     assert!(report.valid, "{:?}", report.errors);
     assert_eq!(report.chain_check, "skipped");
     assert_eq!(report.cross_check, "skipped");
+    assert_eq!(report.lifecycle_assessment, "not_assessed");
+    assert_eq!(
+        report.lifecycle_assessment_reason.as_deref(),
+        Some("offline mode skips chain re-verification")
+    );
 }
 
 fn base_packet() -> Value {
@@ -345,6 +418,45 @@ fn write_packet(mutator: Option<fn(&mut Value)>) -> PathBuf {
     fs::copy(
         root.join("sdk/conformance/testdata/valid-chain.jsonl"),
         dir.join("evidence.jsonl"),
+    )
+    .unwrap();
+    fs::write(dir.join("verifier.txt"), "ok\n").unwrap();
+    dir
+}
+
+fn write_packet_with_evidence(name: &str, lines: Option<usize>) -> PathBuf {
+    let root = common::repo_root();
+    let evidence = root.join("sdk/conformance/testdata").join(name);
+    let id = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pipelock-rust-verifier-lifecycle-{id}"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir(&dir).unwrap();
+    let raw_evidence = fs::read_to_string(&evidence).unwrap();
+    let evidence_text = match lines {
+        Some(lines) => format!(
+            "{}\n",
+            raw_evidence
+                .trim_end()
+                .lines()
+                .take(lines)
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+        None => raw_evidence,
+    };
+    fs::write(dir.join("evidence.jsonl"), evidence_text).unwrap();
+    let receipts = extract_receipts(&dir.join("evidence.jsonl")).unwrap();
+    let chain = verify_chain(&receipts, PUBLIC_KEY);
+    assert!(chain.valid, "{name}: {:?}", chain.error);
+    let mut packet = base_packet();
+    packet["summary"]["receipt_count"] = Value::from(chain.receipt_count as u64);
+    packet["summary"]["totals"] = serde_json::to_value(compute_totals(&receipts)).unwrap();
+    packet["verifier"]["receipt_count"] = Value::from(chain.receipt_count as u64);
+    packet["verifier"]["root_hash"] = Value::from(chain.root_hash);
+    packet["verifier"]["final_seq"] = Value::from(chain.final_seq);
+    fs::write(
+        dir.join("packet.json"),
+        format!("{}\n", serde_json::to_string_pretty(&packet).unwrap()),
     )
     .unwrap();
     fs::write(dir.join("verifier.txt"), "ok\n").unwrap();

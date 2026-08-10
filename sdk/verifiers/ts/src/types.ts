@@ -75,6 +75,8 @@ export interface ActionRecord {
   chain_prev_hash?: string;
   chain_seq?: number;
   run_nonce?: string;
+  decision_phase?: string;
+  session_control?: Record<string, unknown>;
   key_transition?: KeyTransition;
   venue?: string;
   jurisdiction?: string;
@@ -208,6 +210,8 @@ export interface AuditPacket {
 
 export interface ChainResult {
   valid: boolean;
+  integrity_verified?: boolean;
+  failure_kind?: "integrity" | "trust" | "lifecycle" | "lifecycle_missing_open";
   receipt_count: number;
   final_seq: number;
   root_hash: string;
@@ -239,4 +243,23 @@ export interface AuditPacketReport {
   schema_check: "pass" | "fail" | "skipped";
   chain_check: "pass" | "fail" | "skipped";
   cross_check: "pass" | "fail" | "skipped";
+  lifecycle_status?: LifecycleStatus;
+  lifecycle_reason?: LifecycleReason;
+  lifecycle_assessment: LifecycleAssessment;
+  lifecycle_assessment_reason?: string;
 }
+
+export type LifecycleStatus = "LIMITED" | "BROKEN" | "UNVERIFIED";
+
+export type LifecycleReason =
+  | "bounded_closed"
+  | "abnormal_end"
+  | "open_action"
+  | "heartbeat_gap"
+  | "no_open"
+  | "no_lifecycle"
+  | "recorder_disabled"
+  | "no_receipts"
+  | "chain_broken";
+
+export type LifecycleAssessment = "assessed" | "not_assessed";

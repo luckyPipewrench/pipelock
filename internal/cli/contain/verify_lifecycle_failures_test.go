@@ -6,6 +6,7 @@ package contain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -289,6 +290,12 @@ func TestVerificationMetadataFailuresAreVisible(t *testing.T) {
 				env.selfPath = tc.selfPath
 				env.hashFile = tc.hashFile
 			})
+			if tc.wantStatus == statusPass {
+				target := filepath.Join(t.TempDir(), "pipelock")
+				mustWriteFile(t, target, "deployed binary")
+				env.pipelockTarget = target
+				configureMatchingServiceBinary(t, env)
+			}
 			status, detail := probeBinaryIntegrity(context.Background(), env)
 			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
 				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
@@ -368,6 +375,7 @@ func TestProbeBinaryIntegrityVerifiesDeployedBinary(t *testing.T) {
 				env.selfPath = func() (string, error) { return invoking, nil }
 				env.hashFile = sha256HexOfFile
 			})
+			configureMatchingServiceBinary(t, env)
 			status, detail := probeBinaryIntegrity(context.Background(), env)
 			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
 				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
@@ -420,6 +428,7 @@ func TestProbeBinaryIntegrity_DoesNotMisreportAliasedInvokingBinary(t *testing.T
 				env.selfPath = func() (string, error) { return invoking, nil }
 				env.hashFile = sha256HexOfFile
 			})
+			configureMatchingServiceBinary(t, env)
 			status, detail := probeBinaryIntegrity(context.Background(), env)
 			if status != statusPass {
 				t.Fatalf("status = %q, want pass: %s", status, detail)
@@ -428,6 +437,301 @@ func TestProbeBinaryIntegrity_DoesNotMisreportAliasedInvokingBinary(t *testing.T
 				t.Fatalf("detail = %q, must not report a path alias as a different binary", detail)
 			}
 		})
+	}
+}
+
+func TestProbeBinaryIntegrity_VerifiesEffectiveServiceCommandAndRunningImage(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, target, pinPath string) (execPath, mainPID, runningImage string, readLinkErr error)
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name: "clean deployed command and running image match",
+			setup: func(t *testing.T, target, pinPath string) (string, string, string, error) {
+				t.Helper()
+				return target, "4242", target, nil
+			},
+			wantStatus: statusPass,
+			wantDetail: "deployed and running service binary hash",
+		},
+		{
+			name: "effective ExecStart points at a different binary",
+			setup: func(t *testing.T, target, pinPath string) (string, string, string, error) {
+				t.Helper()
+				other := filepath.Join(t.TempDir(), "other-pipelock")
+				mustWriteFile(t, other, "other executable")
+				return other, "4242", target, nil
+			},
+			wantStatus: statusFail,
+			wantDetail: "effective ExecStart path",
+		},
+		{
+			name: "deployed file was atomically replaced but service still maps the old image",
+			setup: func(t *testing.T, target, pinPath string) (string, string, string, error) {
+				t.Helper()
+				oldImage := target + ".old"
+				if err := os.Rename(target, oldImage); err != nil {
+					t.Fatalf("preserve running image: %v", err)
+				}
+				mustWriteFile(t, target+".new", "new deployed executable")
+				if err := os.Rename(target+".new", target); err != nil {
+					t.Fatalf("atomically replace deployed image: %v", err)
+				}
+				pinned, err := sha256HexOfFile(target)
+				if err != nil {
+					t.Fatalf("hash replacement: %v", err)
+				}
+				mustWriteFile(t, pinPath, pinned+"\n")
+				return target, "4242", oldImage, nil
+			},
+			wantStatus: statusFail,
+			wantDetail: "running service image",
+		},
+		{
+			name: "systemd reports no main process",
+			setup: func(t *testing.T, target, pinPath string) (string, string, string, error) {
+				t.Helper()
+				return target, "0", target, nil
+			},
+			wantStatus: statusFail,
+			wantDetail: "invalid MainPID",
+		},
+		{
+			name: "MainPID is stale",
+			setup: func(t *testing.T, target, pinPath string) (string, string, string, error) {
+				t.Helper()
+				return target, "4242", "", os.ErrNotExist
+			},
+			wantStatus: statusFail,
+			wantDetail: "read running service image",
+		},
+		{
+			name: "running image is not visible without root",
+			setup: func(t *testing.T, target, pinPath string) (string, string, string, error) {
+				t.Helper()
+				return target, "4242", "", os.ErrPermission
+			},
+			wantStatus: statusSkip,
+			wantDetail: "rerun as root",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "pipelock")
+			pinPath := filepath.Join(dir, "binary-pin.sha256")
+			mustWriteFile(t, target, "original executable")
+			pinned, err := sha256HexOfFile(target)
+			if err != nil {
+				t.Fatalf("hash deployed image: %v", err)
+			}
+			mustWriteFile(t, pinPath, pinned+"\n")
+
+			execPath, mainPID, runningImage, readLinkErr := tc.setup(t, target, pinPath)
+			procExe := serviceProcessExePath(testServicePID)
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.pipelockTarget = target
+				env.pinPath = pinPath
+				env.readFile = os.ReadFile
+				env.selfPath = func() (string, error) { return target, nil }
+				env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					if name != testSystemctl || !containsArg(args, "--value") {
+						return "", -1, fmt.Errorf("unexpected command %s %v", name, args)
+					}
+					switch {
+					case containsArg(args, "--property=ExecStart"):
+						return fmt.Sprintf("{ path=%s ; argv[]=%s run ; }\n", execPath, execPath), 0, nil
+					case containsArg(args, "--property=MainPID"):
+						return mainPID + "\n", 0, nil
+					default:
+						return "", -1, fmt.Errorf("unexpected systemctl property %v", args)
+					}
+				}
+				env.readLink = func(path string) (string, error) {
+					if path != procExe {
+						return "", fmt.Errorf("unexpected readLink %s", path)
+					}
+					if readLinkErr != nil {
+						return "", readLinkErr
+					}
+					return runningImage, nil
+				}
+				env.stat = func(path string) (os.FileInfo, error) {
+					if path == procExe {
+						return os.Stat(runningImage)
+					}
+					return os.Stat(path)
+				}
+				env.hashFile = func(path string) (string, error) {
+					if path == procExe {
+						return sha256HexOfFile(runningImage)
+					}
+					return sha256HexOfFile(path)
+				}
+			})
+
+			status, detail := probeBinaryIntegrity(context.Background(), env)
+			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestProbeBinaryIntegrity_RunningImageVerificationFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(env *probeEnv, target, procExe string)
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name: "systemctl reports a failed show command",
+			configure: func(env *probeEnv, _, _ string) {
+				env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+					return "unit not loaded\nextra detail", 5, nil
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "systemctl exit=5",
+		},
+		{
+			name: "systemctl reports a malformed effective command",
+			configure: func(env *probeEnv, _, _ string) {
+				env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+					return "MainPID=4242\nExecStart={ path=pipelock ; argv[]=pipelock run ; }\n", 0, nil
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "parse effective ExecStart",
+		},
+		{
+			name: "running image stat permission denied",
+			configure: func(env *probeEnv, _, procExe string) {
+				originalStat := env.stat
+				env.stat = func(path string) (os.FileInfo, error) {
+					if path == procExe {
+						return nil, os.ErrPermission
+					}
+					return originalStat(path)
+				}
+			},
+			wantStatus: statusSkip,
+			wantDetail: "stat running service image",
+		},
+		{
+			name: "running image stat stale process",
+			configure: func(env *probeEnv, _, procExe string) {
+				originalStat := env.stat
+				env.stat = func(path string) (os.FileInfo, error) {
+					if path == procExe {
+						return nil, os.ErrNotExist
+					}
+					return originalStat(path)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "stat running service image",
+		},
+		{
+			name: "running image hash permission denied",
+			configure: func(env *probeEnv, _, procExe string) {
+				originalHash := env.hashFile
+				env.hashFile = func(path string) (string, error) {
+					if path == procExe {
+						return "", os.ErrPermission
+					}
+					return originalHash(path)
+				}
+			},
+			wantStatus: statusSkip,
+			wantDetail: "hash running service image",
+		},
+		{
+			name: "running image hash stale process",
+			configure: func(env *probeEnv, _, procExe string) {
+				originalHash := env.hashFile
+				env.hashFile = func(path string) (string, error) {
+					if path == procExe {
+						return "", os.ErrNotExist
+					}
+					return originalHash(path)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "hash running service image",
+		},
+		{
+			name: "running image hash differs from pin",
+			configure: func(env *probeEnv, _, procExe string) {
+				originalHash := env.hashFile
+				env.hashFile = func(path string) (string, error) {
+					if path == procExe {
+						return strings.Repeat("b", sha256HexLen), nil
+					}
+					return originalHash(path)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "running service image hash mismatch",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "pipelock")
+			pinPath := filepath.Join(dir, "binary-pin.sha256")
+			mustWriteFile(t, target, "service image")
+			pinned, err := sha256HexOfFile(target)
+			if err != nil {
+				t.Fatalf("hash target: %v", err)
+			}
+			mustWriteFile(t, pinPath, pinned+"\n")
+			procExe := serviceProcessExePath(testServicePID)
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.pipelockTarget = target
+				env.pinPath = pinPath
+				env.readFile = os.ReadFile
+				env.selfPath = func() (string, error) { return target, nil }
+				env.hashFile = sha256HexOfFile
+				configureMatchingServiceBinary(t, env)
+			})
+			tc.configure(env, target, procExe)
+			status, detail := probeBinaryIntegrity(context.Background(), env)
+			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestProbeBinaryIntegrity_EnforcementOnlySkipsRunningImage(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "pipelock")
+	pinPath := filepath.Join(dir, "binary-pin.sha256")
+	mustWriteFile(t, target, "service image")
+	pinned, err := sha256HexOfFile(target)
+	if err != nil {
+		t.Fatalf("hash target: %v", err)
+	}
+	mustWriteFile(t, pinPath, pinned+"\n")
+
+	env := makeProbeEnv(t, func(env *probeEnv) {
+		env.pipelockTarget = target
+		env.pinPath = pinPath
+		env.readFile = os.ReadFile
+		env.selfPath = func() (string, error) { return target, nil }
+		env.hashFile = sha256HexOfFile
+		env.verifyRunningImage = false
+	})
+
+	status, detail := probeBinaryIntegrity(context.Background(), env)
+	if status != statusPass || !strings.Contains(detail, "binary hash") {
+		t.Fatalf("probe = (%q, %q), want deployed-pin pass", status, detail)
 	}
 }
 
@@ -452,6 +756,30 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 		fields := parseSystemdShow("noise without separator\nActiveState=active\n")
 		if len(fields) != 1 || fields["ActiveState"] != "active" {
 			t.Fatalf("fields = %v", fields)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "relative ExecStart path", raw: "{ path=pipelock ; argv[]=pipelock run ; }", want: "invalid executable path"},
+		{name: "missing ExecStart path", raw: "{ argv[]=/usr/local/bin/pipelock run ; }", want: "no executable path"},
+		{name: "multiple ExecStart paths", raw: "{ path=/usr/local/bin/pipelock ; }; { path=/usr/bin/other ; }", want: "expected one executable path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := systemdExecStartPath(tc.raw)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("missing systemd MainPID", func(t *testing.T) {
+		_, err := systemdMainPID("")
+		if err == nil || !strings.Contains(err.Error(), "missing MainPID") {
+			t.Fatalf("error = %v", err)
 		}
 	})
 

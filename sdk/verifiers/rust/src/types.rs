@@ -81,6 +81,9 @@ impl Totals {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChainResult {
     pub valid: bool,
+    pub integrity_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
     pub receipt_count: usize,
     pub final_seq: u64,
     pub root_hash: String,
@@ -106,6 +109,13 @@ pub struct AuditPacketReport {
     pub schema_check: String,
     pub chain_check: String,
     pub cross_check: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_reason: Option<String>,
+    pub lifecycle_assessment: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_assessment_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

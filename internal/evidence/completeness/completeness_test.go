@@ -414,7 +414,7 @@ func TestAnalyzeReasons(t *testing.T) {
 	}
 }
 
-func TestAnalyzeNoOpenIsBroken(t *testing.T) {
+func TestAnalyzeIntegrityVerifiedNoOpenIsUnverified(t *testing.T) {
 	t.Parallel()
 	b := newChainBuilder(t)
 	chain := []receipt.Receipt{
@@ -426,9 +426,8 @@ func TestAnalyzeNoOpenIsBroken(t *testing.T) {
 		t.Fatal("fixture should trigger the existing chain verifier no-open rejection")
 	}
 	report := Analyze(chain, res)
-	run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
-	if run.StructuralViolation != "heartbeat observed before session_open" {
-		t.Fatalf("structural_violation = %q, want heartbeat before open: %#v", run.StructuralViolation, run)
+	if report.Status != StatusUnverified || report.Reason != ReasonNoOpen {
+		t.Fatalf("report = %s/%s, want UNVERIFIED/no_open: %#v", report.Status, report.Reason, report)
 	}
 }
 
@@ -672,6 +671,9 @@ func TestAnalyzeLifecycleChainRejectsActionsOutsideOpenedRun(t *testing.T) {
 			if run.StructuralViolation != tc.wantViolation {
 				t.Fatalf("structural_violation = %q, want %q: %#v", run.StructuralViolation, tc.wantViolation, run)
 			}
+			if name == "pre_open_action" && report.BrokenAtIndex != 0 {
+				t.Fatalf("pre-open action broken_at_index = %d, want index 0 preserved: %#v", report.BrokenAtIndex, report)
+			}
 		})
 	}
 }
@@ -702,6 +704,107 @@ func TestAnalyzeHeartbeatClaimsMustMatchObservedPrefix(t *testing.T) {
 			run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
 			if run.StructuralViolation == "" {
 				t.Fatalf("heartbeat prefix mutation did not surface a structural violation for %s: %#v", name, run)
+			}
+		})
+	}
+}
+
+func TestAnalyzeLifecycleCountersRespectCrossLanguageSafeIntegerBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		build          func(*chainBuilder, uint64) []receipt.Receipt
+		wantViolation  string
+		assertAccepted func(*testing.T, RunReport)
+	}{
+		{
+			name: "heartbeat_beat",
+			build: func(b *chainBuilder, value uint64) []receipt.Receipt {
+				return []receipt.Receipt{b.open(), b.heartbeat(value, 0, 1), b.close(0, 1)}
+			},
+			wantViolation: "heartbeat lifecycle counter exceeds the cross-language safe integer range",
+			assertAccepted: func(t *testing.T, run RunReport) {
+				t.Helper()
+				if run.Heartbeats != 1 {
+					t.Fatalf("heartbeats = %d, want 1: %#v", run.Heartbeats, run)
+				}
+			},
+		},
+		{
+			name: "heartbeat_fsync_errors_gated",
+			build: func(b *chainBuilder, value uint64) []receipt.Receipt {
+				return []receipt.Receipt{b.open(), b.heartbeat(1, value, 1), b.close(value, 1)}
+			},
+			wantViolation: "heartbeat lifecycle counter exceeds the cross-language safe integer range",
+			assertAccepted: func(t *testing.T, run RunReport) {
+				t.Helper()
+				if run.LastHeartbeat == nil || run.LastHeartbeat.FsyncErrorsGated != maxSafeLifecycleInteger {
+					t.Fatalf("last heartbeat = %#v, want fsync_errors_gated=%d", run.LastHeartbeat, maxSafeLifecycleInteger)
+				}
+			},
+		},
+		{
+			name: "heartbeat_durability_blocks",
+			build: func(b *chainBuilder, value uint64) []receipt.Receipt {
+				return []receipt.Receipt{b.open(), b.heartbeat(1, 0, value), b.close(0, value)}
+			},
+			wantViolation: "heartbeat lifecycle counter exceeds the cross-language safe integer range",
+			assertAccepted: func(t *testing.T, run RunReport) {
+				t.Helper()
+				if run.LastHeartbeat == nil || run.LastHeartbeat.DurabilityBlocks != maxSafeLifecycleInteger {
+					t.Fatalf("last heartbeat = %#v, want durability_blocks=%d", run.LastHeartbeat, maxSafeLifecycleInteger)
+				}
+			},
+		},
+		{
+			name: "session_close_fsync_errors_gated",
+			build: func(b *chainBuilder, value uint64) []receipt.Receipt {
+				return []receipt.Receipt{b.open(), b.heartbeat(1, 0, 1), b.close(value, 1)}
+			},
+			wantViolation: "session_close lifecycle counter exceeds the cross-language safe integer range",
+			assertAccepted: func(t *testing.T, run RunReport) {
+				t.Helper()
+				if run.Close == nil || run.Close.FsyncErrorsGated != maxSafeLifecycleInteger {
+					t.Fatalf("close = %#v, want fsync_errors_gated=%d", run.Close, maxSafeLifecycleInteger)
+				}
+			},
+		},
+		{
+			name: "session_close_durability_blocks",
+			build: func(b *chainBuilder, value uint64) []receipt.Receipt {
+				return []receipt.Receipt{b.open(), b.heartbeat(1, 0, 1), b.close(0, value)}
+			},
+			wantViolation: "session_close lifecycle counter exceeds the cross-language safe integer range",
+			assertAccepted: func(t *testing.T, run RunReport) {
+				t.Helper()
+				if run.Close == nil || run.Close.DurabilityBlocks != maxSafeLifecycleInteger {
+					t.Fatalf("close = %#v, want durability_blocks=%d", run.Close, maxSafeLifecycleInteger)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			acceptedBuilder := newChainBuilder(t)
+			accepted := analyzeBuiltIntegrityOnly(tc.build(acceptedBuilder, maxSafeLifecycleInteger), acceptedBuilder.keyHex)
+			acceptedRun := requireOneRun(t, accepted, StatusLimited, accepted.Reason)
+			if acceptedRun.StructuralViolation != "" {
+				t.Fatalf("max safe integer was rejected: %#v", acceptedRun)
+			}
+			tc.assertAccepted(t, acceptedRun)
+
+			rejectedBuilder := newChainBuilder(t)
+			rejected := analyzeBuiltIntegrityOnly(tc.build(rejectedBuilder, maxSafeLifecycleInteger+1), rejectedBuilder.keyHex)
+			rejectedRun := requireOneRun(t, rejected, StatusBroken, ReasonChainBroken)
+			if rejectedRun.StructuralViolation != tc.wantViolation {
+				t.Fatalf("structural_violation = %q, want %q", rejectedRun.StructuralViolation, tc.wantViolation)
+			}
+			if rejected.BrokenAtSeq == 0 {
+				t.Fatalf("rejected report omitted the nonzero break sequence: %#v", rejected)
 			}
 		})
 	}
@@ -861,8 +964,8 @@ func TestAnalyzeOnlyMissingOpenIntegrityFailureDowngrades(t *testing.T) {
 		},
 		"missing_open_with_integrity": {
 			chainResult: receipt.ChainResult{FailureKind: receipt.ChainFailureLifecycleOpen, IntegrityVerified: true, Error: "missing open"},
-			wantStatus:  StatusBroken,
-			wantReason:  ReasonChainBroken,
+			wantStatus:  StatusUnverified,
+			wantReason:  ReasonNoOpen,
 		},
 	}
 
@@ -892,6 +995,12 @@ func TestAnalyzeOutcomeWithoutIntentIsBroken(t *testing.T) {
 	}
 	if run.StructuralViolation != "outcome without matching intent" {
 		t.Fatalf("structural_violation = %q", run.StructuralViolation)
+	}
+	if report.BrokenAtSeq != chain[1].ActionRecord.ChainSeq {
+		t.Fatalf("broken_at_seq = %d, want orphan outcome seq %d", report.BrokenAtSeq, chain[1].ActionRecord.ChainSeq)
+	}
+	if report.BrokenAtIndex != 1 {
+		t.Fatalf("broken_at_index = %d, want first orphan outcome index 1", report.BrokenAtIndex)
 	}
 }
 

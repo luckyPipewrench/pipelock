@@ -3,6 +3,7 @@
 
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::verify_chain_with_options;
+use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_receipt};
 use crate::provenance_proof::run_provenance;
 use crate::receipt::run_receipt;
@@ -142,16 +143,26 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
     } else {
         verify_chain_with_endorsements(&receipts, &parsed.session_id, &endorsements, &key_hex)
     };
+    let lifecycle = analyze_lifecycle(&receipts, &result);
+    let lifecycle_broken = lifecycle.status == "BROKEN";
     let report = ChainCommandReport {
         path: label,
-        valid: result.valid,
+        valid: result.valid && !lifecycle_broken,
         unpinned: (key_hex.is_empty()
-            && (result.valid || result.error.as_deref().unwrap_or("").contains("UNPINNED")))
-        .then_some(true),
+            && (result.error.as_deref().unwrap_or("").contains("UNPINNED")
+                || (result.valid && !lifecycle_broken)))
+            .then_some(true),
         receipt_count: result.receipt_count,
         final_seq: result.final_seq,
         root_hash: (!result.root_hash.is_empty()).then_some(result.root_hash),
-        error: result.error,
+        // Preserve the verifier's concrete cryptographic, hash, trust, or
+        // sequence failure. Lifecycle is a supplemental gate only when the
+        // chain itself verified successfully.
+        error: if lifecycle_broken && result.valid {
+            Some(format!("lifecycle: {}", lifecycle.reason))
+        } else {
+            result.error
+        },
         broken_at_seq: result.broken_at_seq,
     };
     emit_chain(&report, parsed.json)?;

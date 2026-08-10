@@ -145,6 +145,7 @@ type probeEnv struct {
 	toolsListPath      string
 	workspacePaths     []string
 	pipelockTarget     string
+	verifyRunningImage bool
 	// postureProofPath is the resolved path the current `contain run` writes its
 	// signed posture capsule to. It is exported into the contained launch env as
 	// PIPELOCK_POSTURE_PROOF so an in-child emitter binds the exact capsule this
@@ -159,6 +160,7 @@ type probeEnv struct {
 	groupIDs    groupIDsFunc
 	stat        func(path string) (os.FileInfo, error)
 	readFile    func(path string) ([]byte, error)
+	readLink    func(path string) (string, error)
 	selfPath    func() (string, error)
 	hashFile    func(path string) (string, error)
 }
@@ -189,6 +191,7 @@ func defaultProbeEnv() *probeEnv {
 		wrapperInvPath:     defaultWrapperInvPath,
 		toolsListPath:      defaultToolsListPath,
 		pipelockTarget:     defaultPipelockTarget,
+		verifyRunningImage: true,
 		runCmd:             realRunCommand,
 		dropCounter:        readContainmentDropCounter,
 		dialCtx:            realDial,
@@ -197,6 +200,7 @@ func defaultProbeEnv() *probeEnv {
 		groupIDs:           realGroupIDs,
 		stat:               os.Stat,
 		readFile:           os.ReadFile,
+		readLink:           os.Readlink,
 		selfPath:           os.Executable,
 		hashFile:           sha256HexOfFile,
 	}
@@ -327,7 +331,7 @@ func allProbes() []probe {
 		{7, "no_proxy_env_correct", "NO_PROXY in plk-launch matches policy", probeNoProxyEnv},
 		{8, "cc_agent_egress_denied", "pipelock-agent cannot reach the internet directly", probeCCAgentEgressDenied},
 		{9, "operator_egress_reachable", "operator user can still reach the internet", probeOperatorEgress},
-		{10, "binary_integrity_pin", "installed pipelock binary matches TOFU pin", probeBinaryIntegrity},
+		{10, "binary_integrity_pin", "deployed and running pipelock binary match TOFU pin", probeBinaryIntegrity},
 		{11, "cc_launch_allow_list_enforced", "plk-launch rejects tools missing from the allow-list", probeCCLaunchAllowList},
 		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
 	}
@@ -335,6 +339,14 @@ func allProbes() []probe {
 
 func probesForEnv(env *probeEnv) []probe {
 	probes := allProbes()
+	if !env.verifyRunningImage {
+		for i := range probes {
+			if probes[i].name == "binary_integrity_pin" {
+				probes[i].desc = "deployed pipelock binary matches TOFU pin; running-service image is not verified"
+				break
+			}
+		}
+	}
 	if len(env.workspacePaths) > 0 {
 		probes = append(probes, probe{13, "workspace_access", "pipelock-agent can read configured workspace paths", probeWorkspaceAccess})
 	}
@@ -522,19 +534,16 @@ func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string)
 }
 
 // probeBinaryIntegrity reads the integrity pin written at install time and
-// compares it against the SHA-256 of the binary at the deployed install path.
-// Skipped when the pin file is missing (install never happened) or
-// unreadable to this user (run as root to verify). Failure means either
-// the deployed binary was swapped after install or cannot be verified.
+// normally confirms all three identities agree: the deployed install path, the
+// effective systemd ExecStart path, and the executable mapped by the service's
+// current MainPID. In enforcement-only mode it checks the deployed path and pin
+// only, and reports that running-service image verification was not performed.
+// Running-image checks skip when the needed host state is unavailable to the
+// caller (for example, /proc access requires root).
 //
-// Two limits, stated because a probe should not imply more than it checks.
-// Nothing here reads the unit's effective ExecStart, so this establishes that
-// the binary at the install path is unchanged, not that the running service
-// has that binary mapped; proving the latter needs the live process image.
-// And the pin is written by our own installer, so this is trust-on-first-use
-// drift detection. It does not survive anyone able to rewrite both the binary
-// and the pin, which root can do.
-func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
+// This is still trust-on-first-use drift detection. It does not survive an
+// attacker able to rewrite the binary, pin, unit, and running process as root.
+func probeBinaryIntegrity(ctx context.Context, env *probeEnv) (string, string) {
 	data, err := env.readFile(env.pinPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -566,7 +575,80 @@ func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("binary hash mismatch: pin=%s got=%s (deployed binary swapped after install)",
 			shortHash(pinned), shortHash(got))
 	}
+	if !env.verifyRunningImage {
+		return statusPass, fmt.Sprintf("deployed %s (running service image not verified)", binaryIntegrityDetail(env, target, pinned))
+	}
 
+	// The installed pathname alone is not the running service identity. An
+	// atomic upgrade can replace and re-pin the file while the old executable
+	// remains mapped by the current service process until restart.
+	execStart, code, err := env.runCmd(ctx, "systemctl", "show", env.serviceName, "--property=ExecStart", "--value")
+	if err != nil {
+		return statusSkip, fmt.Sprintf("systemctl unavailable for running binary verification: %v", err)
+	}
+	if code != 0 {
+		return statusFail, fmt.Sprintf("systemctl exit=%d while reading ExecStart: %s", code, oneLine(execStart))
+	}
+
+	execPath, err := systemdExecStartPath(execStart)
+	if err != nil {
+		return statusFail, fmt.Sprintf("parse effective ExecStart: %v", err)
+	}
+	if filepath.Clean(execPath) != target {
+		return statusFail, fmt.Sprintf("effective ExecStart path %s does not match deployed binary %s", oneLine(execPath), oneLine(target))
+	}
+
+	mainPID, code, err := env.runCmd(ctx, "systemctl", "show", env.serviceName, "--property=MainPID", "--value")
+	if err != nil {
+		return statusSkip, fmt.Sprintf("systemctl unavailable for running binary verification: %v", err)
+	}
+	if code != 0 {
+		return statusFail, fmt.Sprintf("systemctl exit=%d while reading MainPID: %s", code, oneLine(mainPID))
+	}
+
+	pid, err := systemdMainPID(strings.TrimSpace(mainPID))
+	if err != nil {
+		return statusFail, fmt.Sprintf("parse service MainPID: %v", err)
+	}
+	procExe := serviceProcessExePath(pid)
+	runningPath, err := env.readLink(procExe)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusSkip, fmt.Sprintf("read running service image %s: %v (rerun as root)", procExe, err)
+		}
+		return statusFail, fmt.Sprintf("read running service image %s: %v", procExe, err)
+	}
+
+	targetInfo, err := env.stat(target)
+	if err != nil {
+		return statusFail, fmt.Sprintf("stat deployed binary %s: %v", target, err)
+	}
+	runningInfo, err := env.stat(procExe)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusSkip, fmt.Sprintf("stat running service image %s: %v (rerun as root)", procExe, err)
+		}
+		return statusFail, fmt.Sprintf("stat running service image %s: %v", procExe, err)
+	}
+	if !os.SameFile(targetInfo, runningInfo) {
+		return statusFail, fmt.Sprintf("running service image %s differs from deployed binary %s", oneLine(runningPath), oneLine(target))
+	}
+
+	runningHash, err := env.hashFile(procExe)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusSkip, fmt.Sprintf("hash running service image %s: %v (rerun as root)", procExe, err)
+		}
+		return statusFail, fmt.Sprintf("hash running service image %s: %v", procExe, err)
+	}
+	if runningHash != pinned {
+		return statusFail, fmt.Sprintf("running service image hash mismatch: pin=%s got=%s", shortHash(pinned), shortHash(runningHash))
+	}
+
+	return statusPass, fmt.Sprintf("deployed and running service %s", binaryIntegrityDetail(env, target, pinned))
+}
+
+func binaryIntegrityDetail(env *probeEnv, target, pinned string) string {
 	detail := fmt.Sprintf("binary hash %s matches pin", shortHash(pinned))
 	if self, err := env.selfPath(); err == nil && filepath.Clean(self) != target {
 		self = filepath.Clean(self)
@@ -582,7 +664,48 @@ func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
 			detail += fmt.Sprintf(" (note: invoking binary %s differs from deployed binary %s)", self, target)
 		}
 	}
-	return statusPass, detail
+	return detail
+}
+
+// systemdExecStartPath extracts the one executable path from systemctl show's
+// stable ExecStart representation. Pipelock's managed service is Type=simple
+// with exactly one command; accepting multiple commands here would leave its
+// running program ambiguous.
+func systemdExecStartPath(raw string) (string, error) {
+	var paths []string
+	for _, segment := range strings.Split(raw, ";") {
+		segment = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(segment), "{"))
+		if !strings.HasPrefix(segment, "path=") {
+			continue
+		}
+		path := strings.TrimPrefix(segment, "path=")
+		if path == "" || !filepath.IsAbs(path) {
+			return "", fmt.Errorf("invalid executable path %q", path)
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("no executable path in %q", raw)
+	}
+	if len(paths) != 1 {
+		return "", fmt.Errorf("expected one executable path, found %d", len(paths))
+	}
+	return paths[0], nil
+}
+
+func systemdMainPID(raw string) (int, error) {
+	if raw == "" {
+		return 0, errors.New("missing MainPID")
+	}
+	pid, err := strconv.Atoi(raw)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid MainPID %q", raw)
+	}
+	return pid, nil
+}
+
+func serviceProcessExePath(pid int) string {
+	return filepath.Join("/proc", strconv.Itoa(pid), "exe")
 }
 
 const sha256HexLen = 64
@@ -637,13 +760,13 @@ Probes inspect system users, the pipelock systemd unit, nftables rules,
 wrapper scripts, the CA bundle, the pipelock loopback bind, the NO_PROXY
 policy, run two egress canaries (pipelock-agent must NOT reach the internet
 directly; the operator user must still reach the internet), verify the
-installed binary matches the TOFU integrity pin written at install
-time, and exercise plk-launch end-to-end with a sentinel tool to confirm
+deployed and running service binaries match the TOFU integrity pin written at
+install time, and exercise plk-launch end-to-end with a sentinel tool to confirm
 the allow-list enforcement path actually fires. Pass --workspace to also
 verify that pipelock-agent can read/traverse real project directories.
 Pass --enforcement-only when another process owns the proxy lifecycle;
-that mode verifies the kernel/user/wrapper controls while skipping proxy
-liveness probes before making plk wrappers the default entry point.
+that mode verifies the kernel/user/wrapper controls and the pinned file at the
+deployed path, while skipping proxy liveness and running-service-image checks.
 
 verify never mutates state. Probes that require root visibility
 (nft list ruleset) record skip when run unprivileged.
@@ -668,7 +791,7 @@ Exit codes:
 	}
 
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit newline-delimited JSON instead of text")
-	cmd.Flags().BoolVar(&opts.enforcementOnly, "enforcement-only", false, "skip service and loopback listener liveness probes")
+	cmd.Flags().BoolVar(&opts.enforcementOnly, "enforcement-only", false, "skip service, loopback, and running-service-image checks")
 	cmd.Flags().IntVar(&opts.port, "port", defaultProxyPort, "pipelock listen port to probe on loopback")
 	cmd.Flags().StringArrayVar(&opts.workspacePaths, "workspace", nil, "workspace path that pipelock-agent must be able to read/traverse (repeatable)")
 
@@ -690,6 +813,13 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Mode policy is per invocation. Callers can share a probe environment in
+	// tests and embedders, so never toggle a field on their environment while a
+	// verification is running.
+	runEnv := *env
+	if opts.enforcementOnly {
+		runEnv.verifyRunningImage = false
+	}
 
 	w := cmd.OutOrStdout()
 	var textWriter *errorTrackingWriter
@@ -710,14 +840,14 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 		}
 	}
 
-	probes := probesForEnv(env)
+	probes := probesForEnv(&runEnv)
 	if opts.enforcementOnly {
 		probes = enforcementProbes(probes)
 	}
 	var passN, failN, skipN, unknownN int
 
 	for _, p := range probes {
-		status, detail := p.fn(ctx, env)
+		status, detail := p.fn(ctx, &runEnv)
 		switch status {
 		case statusPass:
 			passN++

@@ -25,9 +25,10 @@ name: Trusted Diff Scan
 # cannot mint. Code-owner review on every pull request is the current
 # compensating control.
 #
-# SAFETY INVARIANT: the scanner must always be built from the fetched
-# origin/main tree and never from the checked-out pull request tree. Every step
-# below that touches pull request content treats it strictly as diff text.
+# DESIGN INTENT, subject to the PR-controlled-workflow gap above: the scanner is
+# built from fetched origin/main, never from the pull request tree. This does not
+# make the check immutable: Actions still executes this workflow and its helper
+# scripts from the pull request head.
 
 on:
   pull_request:
@@ -70,6 +71,9 @@ jobs:
           ( cd "${build_tree}" && go build -o "${RUNNER_TEMP}/pipelock" ./cmd/pipelock )
           "${RUNNER_TEMP}/pipelock" --version
 
+      - name: Verify raw blob diff generation
+        run: bash scripts/test-generate-trusted-diff.sh "${RUNNER_TEMP}/pipelock"
+
       - name: Scan the diff
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -78,19 +82,13 @@ jobs:
           set -euo pipefail
           merge_base=$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")
           diff_file="${RUNNER_TEMP}/pr.diff"
-          # Disable external diff drivers and textconv so repository-supplied
-          # configuration cannot run a program during diff generation.
-          git -c diff.external= -c core.attributesFile=/dev/null \
-            diff --no-textconv --no-ext-diff "${merge_base}" "${HEAD_SHA}" > "${diff_file}"
-
-          bytes=$(wc -c < "${diff_file}")
-          echo "diff bytes: ${bytes}"
-          # Refuse an enormous diff rather than scanning it partially. An
-          # unscannable diff is not a clean diff.
-          if [ "${bytes}" -gt 52428800 ]; then
-            echo "::error::diff is ${bytes} bytes, above the 50MB scan limit; refusing to report a partial result"
-            exit 1
-          fi
+          # Scan every changed new-side blob in full. Normal textual diffs can
+          # hide content behind repository .gitattributes or Git's NUL-byte
+          # binary heuristic. The generator rejects unscannable objects and
+          # bounds both its path inventory and output before scanner input is
+          # accepted.
+          bash scripts/generate-trusted-diff.sh \
+            "${merge_base}" "${HEAD_SHA}" "${diff_file}" 52428800
 
           "${RUNNER_TEMP}/pipelock" git scan-diff \
             --exclude internal/scanner/scanner_test.go \

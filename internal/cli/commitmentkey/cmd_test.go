@@ -182,6 +182,10 @@ func TestCommandDenialBranches(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 	metadata := mustLoadMetadata(t, path)
+	keyringBeforeDenials, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read keyring before denial cases: %v", err)
+	}
 
 	for _, test := range []struct {
 		name          string
@@ -229,8 +233,12 @@ func TestCommandDenialBranches(t *testing.T) {
 		})
 	}
 
-	if got := mustLoadMetadata(t, path); len(got.Keys) != 1 || got.ActiveID != metadata.ActiveID {
-		t.Fatalf("retire without unaudited break glass changed keyring: %+v", got)
+	keyringAfterDenials, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read keyring after denial cases: %v", err)
+	}
+	if !bytes.Equal(keyringAfterDenials, keyringBeforeDenials) {
+		t.Fatal("denied command changed serialized keyring state")
 	}
 
 	if _, _, err := execute(t, "backup", "--keyring", path, "--out", backup); err != nil {

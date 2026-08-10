@@ -230,7 +230,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Eliminates repeated nil/enabled guards at every call site.
 	recordAdaptiveSignal := func(sig session.SignalType) {
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
-			decide.RecordSignal(rec, sig, decide.EscalationParams{
+			recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
 				Logger:        auditLogger,
 				Metrics:       m,
@@ -435,6 +435,35 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			LogMessage:     "blocked (a2a input scanning)",
 			ErrorCode:      -32001,
 			ErrorMessage:   "pipelock: request blocked by A2A input scanning",
+		}
+		return result
+	case blockingGateAirlockHard, blockingGateAirlockMissing:
+		blockMessage := mcpAirlockBlockMessage(eval)
+		_, _ = fmt.Fprintf(logW, "%s: %q\n", blockMessage, enforcementTarget)
+		if auditLogger != nil {
+			warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
+			auditLogger.LogAirlockDenyReason(audit.AirlockDenyOptions{
+				SessionKey:      auditSessionKey,
+				Tier:            eval.AirlockTier,
+				Transport:       firstNonEmpty(opts.Transport, transportMCPHTTP),
+				Method:          methodToolsCall,
+				Reason:          eval.AirlockReason,
+				ClientIP:        warnCtx.ClientIP,
+				RequestID:       canonicalID(verdict.ID),
+				HTTPCorrelation: true,
+			})
+		}
+		if m != nil {
+			m.RecordAirlockDenial(eval.AirlockTier, "mcp", methodToolsCall)
+		}
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
+			ID:             verdict.ID,
+			IsNotification: isRPCNotification(verdict.ID),
+			LogMessage:     "blocked (airlock)",
+			ErrorCode:      -32001,
+			ErrorMessage:   blockMessage,
+			ErrorData:      mcpBlockReasonData(blockreason.AirlockActive),
 		}
 		return result
 	case blockingGateDoW:

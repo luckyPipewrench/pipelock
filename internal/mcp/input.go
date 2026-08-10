@@ -271,7 +271,7 @@ func ForwardScannedInput(
 	// Eliminates repeated nil/enabled guards at every call site.
 	recordAdaptiveSignal := func(sig session.SignalType) {
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
-			decide.RecordSignal(rec, sig, decide.EscalationParams{
+			recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
 				Logger:        auditLogger,
 				Metrics:       m,
@@ -693,6 +693,33 @@ func ForwardScannedInput(
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (a2a input scanning)", lineNum),
 				ErrorCode:      -32001,
 				ErrorMessage:   "pipelock: request blocked by A2A input scanning",
+			}
+			_ = emitToolReceipt(config.ActionBlock)
+			continue
+		case blockingGateAirlockHard, blockingGateAirlockMissing:
+			blockMessage := mcpAirlockBlockMessage(eval)
+			airlockMsg := fmt.Sprintf("pipelock: input line %d: %s: %q", lineNum, blockMessage, enforcementTarget)
+			_, _ = fmt.Fprintln(logW, airlockMsg)
+			if auditLogger != nil {
+				auditLogger.LogAirlockDenyReason(audit.AirlockDenyOptions{
+					SessionKey: "default",
+					Tier:       eval.AirlockTier,
+					Transport:  firstNonEmpty(opts.Transport, transportMCPStdio),
+					Method:     methodToolsCall,
+					Reason:     eval.AirlockReason,
+					RequestID:  canonicalID(verdict.ID),
+				})
+			}
+			if m != nil {
+				m.RecordAirlockDenial(eval.AirlockTier, "mcp", methodToolsCall)
+			}
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     airlockMsg,
+				ErrorCode:      -32001,
+				ErrorMessage:   blockMessage,
+				ErrorData:      mcpBlockReasonData(blockreason.AirlockActive),
 			}
 			_ = emitToolReceipt(config.ActionBlock)
 			continue

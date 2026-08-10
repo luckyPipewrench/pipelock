@@ -39,6 +39,13 @@ var ErrNonSSEStreamResponse = errors.New("GET stream response is not text/event-
 // client.Do error because Go may include upstream-controlled response bytes.
 var ErrUpstreamRequestFailed = errors.New("upstream request failed")
 
+// ErrInvalidPipelockSessionToken indicates that a listener returned a malformed
+// Pipelock-owned state token. Accepting and replaying an arbitrary header would
+// turn a hostile upstream response into client-controlled listener state.
+var ErrInvalidPipelockSessionToken = errors.New("invalid Pipelock session token")
+
+const pipelockSessionTokenHeader = "Pipelock-Session-Token"
+
 // hasNonIdentityEncoding mirrors internal/proxy/bodyscan.hasNonIdentityEncoding.
 // Duplicated here to avoid an import cycle (proxy depends on mcp/transport).
 func hasNonIdentityEncoding(ce string) bool {
@@ -52,6 +59,21 @@ func hasNonIdentityEncoding(ce string) bool {
 		}
 	}
 	return false
+}
+
+func validPipelockSessionToken(token string) bool {
+	if len(token) != 43 {
+		return false
+	}
+	for i := range len(token) {
+		if (token[i] < 'A' || token[i] > 'Z') &&
+			(token[i] < 'a' || token[i] > 'z') &&
+			(token[i] < '0' || token[i] > '9') &&
+			token[i] != '-' && token[i] != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func IsSSEContentType(contentType string) bool {
@@ -69,11 +91,12 @@ func HasSingleSSEContentType(header http.Header) bool {
 // transport specification, handling both JSON and SSE response types,
 // session ID tracking, and 202 Accepted for notifications.
 type HTTPClient struct {
-	url       string
-	headers   http.Header
-	client    *http.Client
-	sessionMu sync.Mutex
-	sessionID string
+	url                  string
+	headers              http.Header
+	client               *http.Client
+	sessionMu            sync.Mutex
+	sessionID            string
+	listenerSessionToken string
 }
 
 // NewHTTPClient creates an HTTPClient that POSTs JSON-RPC messages to url.
@@ -171,11 +194,15 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	// header at parse time too; this Del is the defense-in-depth layer for
 	// programmatic callers that build *HTTPClient directly.
 	req.Header.Del("Mcp-Session-Id")
+	req.Header.Del(pipelockSessionTokenHeader)
 
-	// Include session ID if established.
+	// Include Pipelock-managed correlation state if established.
 	c.sessionMu.Lock()
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+	if c.listenerSessionToken != "" {
+		req.Header.Set(pipelockSessionTokenHeader, c.listenerSessionToken)
 	}
 	c.sessionMu.Unlock()
 
@@ -187,17 +214,29 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil, ErrUpstreamRequestFailed
 	}
 
-	trackSessionID := func() {
-		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-			c.sessionMu.Lock()
-			c.sessionID = sid
-			c.sessionMu.Unlock()
+	trackSessionID := func() error {
+		sid := resp.Header.Get("Mcp-Session-Id")
+		token := resp.Header.Get(pipelockSessionTokenHeader)
+		if token != "" && !validPipelockSessionToken(token) {
+			return ErrInvalidPipelockSessionToken
 		}
+		c.sessionMu.Lock()
+		defer c.sessionMu.Unlock()
+		if sid != "" {
+			c.sessionID = sid
+		}
+		if token != "" {
+			c.listenerSessionToken = token
+		}
+		return nil
 	}
 
 	// 202 Accepted: notification acknowledged, no body to read.
 	if resp.StatusCode == http.StatusAccepted {
-		trackSessionID()
+		if err := trackSessionID(); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
 		_ = resp.Body.Close()
 		return &emptyReader{}, nil
 	}
@@ -223,7 +262,10 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	trackSessionID()
+	if err := trackSessionID(); err != nil {
+		_ = resp.Body.Close()
+		return nil, err
+	}
 
 	// Fail closed on compressed responses before wrapping the body in
 	// SingleMessageReader or SSEReader. Both readers see opaque bytes
@@ -340,8 +382,13 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	req.Header.Set("Accept", "text/event-stream")
 
 	c.sessionMu.Lock()
+	req.Header.Del("Mcp-Session-Id")
+	req.Header.Del(pipelockSessionTokenHeader)
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+	if c.listenerSessionToken != "" {
+		req.Header.Set(pipelockSessionTokenHeader, c.listenerSessionToken)
 	}
 	c.sessionMu.Unlock()
 
@@ -399,13 +446,15 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	c.sessionMu.Lock()
 	sid := c.sessionID
+	listenerToken := c.listenerSessionToken
 	c.sessionMu.Unlock()
-	if sid == "" {
+	if sid == "" && listenerToken == "" {
 		return
 	}
 	clearSession := func() {
 		c.sessionMu.Lock()
 		c.sessionID = ""
+		c.listenerSessionToken = ""
 		c.sessionMu.Unlock()
 	}
 
@@ -424,7 +473,14 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 			req.Header.Add(key, v)
 		}
 	}
-	req.Header.Set("Mcp-Session-Id", sid)
+	req.Header.Del("Mcp-Session-Id")
+	req.Header.Del(pipelockSessionTokenHeader)
+	if sid != "" {
+		req.Header.Set("Mcp-Session-Id", sid)
+	}
+	if listenerToken != "" {
+		req.Header.Set(pipelockSessionTokenHeader, listenerToken)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		if logW != nil {

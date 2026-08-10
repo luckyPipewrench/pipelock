@@ -43,6 +43,8 @@ func (s *mockStore) GetOrCreate(key string) session.Recorder {
 	return s.rec
 }
 
+func (s *mockStore) Delete(string) {}
+
 func (s *mockStore) capturedKeys() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -551,6 +553,7 @@ func TestMCP_HTTP_Adaptive_AuthHeaderDLPRecordsSignalBlock(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+fakeToken)
+	req.Header.Set("Mcp-Session-Id", "adaptive-auth-header-test-session")
 
 	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test
 	if err != nil {

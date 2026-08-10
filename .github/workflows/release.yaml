@@ -474,7 +474,7 @@ jobs:
             local image="$1"
             local digest="$2"
             local output="$3"
-            "$tool_dir/syft" "${image}@${digest}" -o "cyclonedx-json=${output}"
+            "$tool_dir/syft" "registry:${image}@${digest}" -o "cyclonedx-json=${output}"
             gh release upload "$GITHUB_REF_NAME" "$output" --clobber
           }
 
@@ -703,6 +703,7 @@ jobs:
             echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
             exit 1
           }
+          echo "CHART_VERSION=$chart_version" >> "$GITHUB_ENV"
           helm package charts/pipelock --app-version "$app_version" --destination dist-chart
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
           trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
@@ -880,9 +881,9 @@ jobs:
         run: |
           set -euo pipefail
           app_version="${TAG_NAME#v}"
-          chart_version="$(helm show chart charts/pipelock | awk '$1 == "version:" { print $2 }')"
+          chart_version="$CHART_VERSION"
           test -n "$chart_version" || {
-            echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
+            echo "::error::chart version was not established before publication"
             exit 1
           }
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"

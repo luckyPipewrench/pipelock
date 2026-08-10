@@ -149,7 +149,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn('archive="syft_${SYFT_VERSION#v}_linux_amd64.tar.gz"', self.workflow)
         self.assertIn('got="$($tool_dir/syft version', self.workflow)
         self.assertIn('test "$got" = "$expected"', self.workflow)
-        self.assertIn('"$tool_dir/syft" "${image}@${digest}"', self.workflow)
+        self.assertIn('"$tool_dir/syft" "registry:${image}@${digest}"', self.workflow)
         self.assertIn('gh release upload "$GITHUB_REF_NAME" "$output" --clobber', self.workflow)
 
         for name, repository in PLATFORM_ARTIFACTS.items():
@@ -190,6 +190,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 self.assertLess(self.workflow.index(f"id: {attestation_id}"), proof_gate)
                 sbom_attestation_id = f"{attestation_id}-sbom"
                 self.assertIn(f"id: {sbom_attestation_id}", self.workflow)
+                self.assertLess(self.workflow.index(f"id: {sbom_attestation_id}"), proof_gate)
                 self.assertIn(
                     f"sbom-{repository.rsplit('/', maxsplit=1)[-1]}-linux-{arch}.cdx.json",
                     self.workflow,
@@ -267,6 +268,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn('steps.attest-release-images.outcome != \'success\'', self.workflow)
         self.assertIn('if [[ "$CHART_ALREADY_PUBLISHED" != true ]]; then', self.workflow)
         self.assertIn('diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock"', self.workflow)
+        self.assertIn('echo "CHART_VERSION=$chart_version" >> "$GITHUB_ENV"', self.workflow)
+        self.assertIn('chart_version="$CHART_VERSION"', self.workflow)
         digest_vars = {
             "pipelock": "PIPELOCK_INDEX_DIGEST",
             "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",

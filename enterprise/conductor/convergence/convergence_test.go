@@ -360,7 +360,7 @@ func TestBuild_AllStatesDistinguishable(t *testing.T) {
 			{InstanceID: "d-wrong", DesiredReplicas: 1, DesiredDigest: "aaaa"},
 			{InstanceID: "e-nobatch", DesiredReplicas: 1},
 			{InstanceID: "f-converged", DesiredReplicas: 1},
-			{InstanceID: "g-excluded", DesiredReplicas: 1, Excluded: true, ExcludedReason: "test only"},
+			{InstanceID: "g-excluded", DesiredReplicas: 1, Excluded: true, ExcludedOwner: "ops", ExcludedReason: "test only"},
 			{InstanceID: "i-unknown", DesiredReplicas: 1},
 		},
 		FleetStatus: []controlplane.FollowerFleetStatus{

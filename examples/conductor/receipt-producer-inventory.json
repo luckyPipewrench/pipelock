@@ -1,0 +1,23 @@
+{
+  "schema": "pipelock-receipt-producer-inventory-v1",
+  "org_id": "org-example",
+  "fleet_id": "production",
+  "producers": [
+    {
+      "instance_id": "edge-proxy-1",
+      "desired_replicas": 1,
+      "desired_digest": "sha256:replace-with-pinned-image-digest"
+    },
+    {
+      "instance_id": "edge-proxy-local",
+      "desired_replicas": 1,
+      "excluded": true,
+      "excluded_owner": "platform-team",
+      "excluded_reason": "local-only development proxy"
+    },
+    {
+      "instance_id": "edge-proxy-drained",
+      "desired_replicas": 0
+    }
+  ]
+}

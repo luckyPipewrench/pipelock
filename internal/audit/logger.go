@@ -1871,7 +1871,7 @@ func (l *Logger) LogAirlockDenyReason(opts AirlockDenyOptions) {
 		str("tier", opts.Tier).
 		str("transport", opts.Transport).
 		str("method", opts.Method).
-		optStr("reason", opts.Reason).
+		optStr("reason", hintReason).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, hintReason))
 	if opts.HTTPCorrelation {
 		e = e.optStr("client_ip", opts.ClientIP).

@@ -121,6 +121,18 @@ func TestLogAirlockDeny(t *testing.T) {
 	if entry["method"] != testMethodGet {
 		t.Errorf("expected method=%s, got %v", testMethodGet, entry["method"])
 	}
+	if entry["client_ip"] != testClientIP {
+		t.Errorf("expected client_ip=%s, got %v", testClientIP, entry["client_ip"])
+	}
+	if entry["request_id"] != testReqID {
+		t.Errorf("expected request_id=%s, got %v", testReqID, entry["request_id"])
+	}
+	if entry["reason"] != "hard" {
+		t.Errorf("expected fallback reason=hard, got %v", entry["reason"])
+	}
+	if entry["remediation_hint"] == "" {
+		t.Error("expected remediation_hint to remain populated through the compatibility wrapper")
+	}
 }
 
 func TestLogAirlockDenyReason(t *testing.T) {
@@ -162,12 +174,12 @@ func TestLogAirlockDenyReason(t *testing.T) {
 			if entry["event"] != string(EventAirlockDeny) {
 				t.Fatalf("event = %v, want %s", entry["event"], EventAirlockDeny)
 			}
-			if tc.reason == "" {
-				if _, ok := entry["reason"]; ok {
-					t.Fatalf("empty reason was emitted: %v", entry["reason"])
-				}
-			} else if entry["reason"] != tc.reason {
-				t.Fatalf("reason = %v, want %q", entry["reason"], tc.reason)
+			wantReason := tc.reason
+			if wantReason == "" {
+				wantReason = tc.tier
+			}
+			if entry["reason"] != wantReason {
+				t.Fatalf("reason = %v, want %q", entry["reason"], wantReason)
 			}
 			hint, ok := entry["remediation_hint"].(string)
 			if !ok || hint != wantHint {

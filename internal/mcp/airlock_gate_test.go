@@ -740,9 +740,8 @@ func TestRunHTTPListenerProxy_AirlockAuditUsesRequestClientIP(t *testing.T) {
 			continue
 		}
 		found = true
-		clientIP, ok := entry["client_ip"].(string)
-		if !ok || clientIP == "" {
-			t.Fatalf("listener airlock audit client_ip = %v, want request peer", entry["client_ip"])
+		if clientIP := entry["client_ip"]; clientIP != "127.0.0.1" {
+			t.Fatalf("listener airlock audit client_ip = %v, want request peer 127.0.0.1", clientIP)
 		}
 		if entry["transport"] != "mcp_http_listener" {
 			t.Fatalf("listener airlock audit transport = %v, want mcp_http_listener", entry["transport"])

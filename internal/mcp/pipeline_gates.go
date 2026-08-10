@@ -504,6 +504,9 @@ func EvaluateMCPInputGates(
 			eval.ContentVerdict.ID = frame.ID
 		}
 	}
+	// Airlock containment runs before cross-agent and taint observation. A
+	// contained tools/call is denied before it crosses the MCP boundary, so it
+	// must not emit evidence for a crossing that never occurred.
 	if applyMCPAirlockGate(opts, &eval, method) {
 		return eval
 	}

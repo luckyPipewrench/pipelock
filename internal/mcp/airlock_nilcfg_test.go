@@ -26,22 +26,29 @@ func TestEvaluateMCPInputGates_NilAirlockConfigKeepsContainedSessionsContained(t
 	frame := ParseMCPFrame(msg)
 
 	for _, tc := range []struct {
-		name        string
-		tier        string
-		wantBlocked bool
+		name              string
+		tier              string
+		recorderAvailable bool
+		wantBlocked       bool
 	}{
-		// No configuration and no tier: nothing to enforce, so allow.
-		{name: "nil config and no tier allows", tier: config.AirlockTierNone},
+		// No configuration and no readable tier: nothing to enforce, so allow.
+		{name: "nil config and unavailable tier allows"},
+		// No configuration and a readable non-containing tier: allow.
+		{name: "nil config and readable none tier allows", tier: config.AirlockTierNone, recorderAvailable: true},
 		// No configuration but the session is still contained: stay contained.
-		{name: "nil config and hard tier still denies", tier: config.AirlockTierHard, wantBlocked: true},
-		{name: "nil config and drain tier still denies", tier: config.AirlockTierDrain, wantBlocked: true},
+		{name: "nil config and readable hard tier still denies", tier: config.AirlockTierHard, recorderAvailable: true, wantBlocked: true},
+		{name: "nil config and readable drain tier still denies", tier: config.AirlockTierDrain, recorderAvailable: true, wantBlocked: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			opts := testOpts(sc)
 			opts.AirlockCfg = nil
 			opts.AirlockCfgFn = nil
-			opts.Rec = &airlockTestRecorder{tier: tc.tier}
+			if tc.recorderAvailable {
+				opts.Rec = &airlockTestRecorder{tier: tc.tier}
+			} else {
+				opts.Rec = nil
+			}
 
 			eval := EvaluateMCPInputGates(context.Background(), frame, msg, "client-a", opts, config.ActionWarn, config.ActionBlock, true)
 			if got := eval.BlockingGate != ""; got != tc.wantBlocked {

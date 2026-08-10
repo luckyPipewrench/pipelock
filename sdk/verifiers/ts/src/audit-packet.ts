@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import type { AuditPacket, AuditPacketReport, ChainResult, Receipt, Totals } from "./types.js";
 import { computeTotals, verifyChain } from "./chain.js";
+import { analyzeLifecycle } from "./lifecycle.js";
 import { extractReceipts } from "./recorder.js";
 import { validateAuditPacket } from "./schema.js";
 import {
@@ -57,6 +58,8 @@ function reportFromPacket(packetPath: string, packet?: AuditPacket): AuditPacket
     schema_check: "skipped",
     chain_check: "skipped",
     cross_check: "skipped",
+    lifecycle_assessment: "not_assessed",
+    lifecycle_assessment_reason: "chain re-verification did not complete",
   };
 }
 
@@ -154,6 +157,7 @@ export async function verifyAuditPacket(
   report.schema_check = "pass";
 
   if (opts.offline) {
+    report.lifecycle_assessment_reason = "offline mode skips chain re-verification";
     report.valid = trustVerdict(packet, opts);
     return report;
   }
@@ -186,6 +190,12 @@ export async function verifyAuditPacket(
     return report;
   }
   report.chain_check = chain.valid ? "pass" : "fail";
+  if (!chain.valid) pushError(report, `chain: ${chain.error ?? "verification failed"}`);
+  const lifecycle = analyzeLifecycle(receipts, chain);
+  report.lifecycle_status = lifecycle.status;
+  report.lifecycle_reason = lifecycle.reason;
+  report.lifecycle_assessment = "assessed";
+  delete report.lifecycle_assessment_reason;
 
   const crossErrors = crossCheck(packet, chain, receipts);
   if (crossErrors.length > 0) {
@@ -194,7 +204,8 @@ export async function verifyAuditPacket(
     return report;
   }
   report.cross_check = "pass";
-  report.valid = chain.valid && trustVerdict(packet, opts);
+  report.valid = chain.valid && lifecycle.status !== "BROKEN" && trustVerdict(packet, opts);
+  if (lifecycle.status === "BROKEN") pushError(report, `lifecycle: ${lifecycle.reason}`);
   if (!report.valid) pushError(report, "packet not trusted");
   return report;
 }

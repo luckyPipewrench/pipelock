@@ -41,6 +41,7 @@ func fleetCmd() *cobra.Command {
 	}
 	cmd.AddCommand(fleetStatusCmd())
 	cmd.AddCommand(fleetReportCmd())
+	cmd.AddCommand(fleetConvergenceCmd())
 	return cmd
 }
 

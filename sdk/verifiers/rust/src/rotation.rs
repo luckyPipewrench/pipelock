@@ -226,6 +226,7 @@ pub fn load_rotation_endorsement_file(path: &Path) -> Result<RotationEndorsement
 
 fn fail(mut base: ChainResult, message: impl Into<String>) -> ChainResult {
     base.valid = false;
+    base.failure_kind = None;
     base.error = Some(message.into());
     base
 }
@@ -281,6 +282,8 @@ pub fn verify_chain_with_endorsements(
     if session_id.trim().is_empty() {
         return ChainResult {
             valid: false,
+            integrity_verified: false,
+            failure_kind: None,
             receipt_count: receipts.len(),
             final_seq: 0,
             root_hash: String::new(),
@@ -293,6 +296,8 @@ pub fn verify_chain_with_endorsements(
     if receipts.is_empty() {
         return ChainResult {
             valid: false,
+            integrity_verified: false,
+            failure_kind: None,
             receipt_count: 0,
             final_seq: 0,
             root_hash: String::new(),
@@ -322,6 +327,8 @@ pub fn verify_chain_with_endorsements(
         if !transition && signer != authorized_signer {
             return ChainResult {
                 valid: false,
+                integrity_verified: false,
+                failure_kind: None,
                 receipt_count: receipts.len(),
                 final_seq: 0,
                 root_hash: String::new(),
@@ -342,7 +349,10 @@ pub fn verify_chain_with_endorsements(
         .collect::<Vec<_>>()
         .join(",");
     let base = verify_chain(receipts, &all_keys);
-    if !base.valid {
+    let lifecycle_only_failure = !base.valid
+        && base.integrity_verified
+        && base.failure_kind.as_deref() == Some("lifecycle_missing_open");
+    if !base.valid && !lifecycle_only_failure {
         return base;
     }
     let roots = root_key_hex

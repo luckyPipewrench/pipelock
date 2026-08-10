@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -65,6 +66,130 @@ func TestSafeWriter(t *testing.T) {
 	}
 	if buf.String() != string(data) {
 		t.Errorf("expected %q, got %q", string(data), buf.String())
+	}
+}
+
+func writeMCPFileSentryConfig(t *testing.T, bestEffort bool, paths ...string) string {
+	t.Helper()
+	var body strings.Builder
+	body.WriteString("mode: balanced\nfile_sentry:\n  enabled: true\n")
+	if bestEffort {
+		body.WriteString("  best_effort: true\n")
+	}
+	body.WriteString("  watch_paths:\n")
+	for _, path := range paths {
+		_, _ = fmt.Fprintf(&body, "    - %q\n", path)
+	}
+	body.WriteString("  scan_content: true\n")
+
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte(body.String()), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return configPath
+}
+
+func failFileSentryWatcher(t *testing.T, watchErr error) {
+	t.Helper()
+	old := newFileSentryWatcher
+	newFileSentryWatcher = func(*config.FileSentry, filesentry.DLPScanner, filesentry.Lineage, func(error)) (filesentry.Watcher, error) {
+		return nil, watchErr
+	}
+	t.Cleanup(func() { newFileSentryWatcher = old })
+}
+
+func TestMcpProxyCmd_FileSentryFailsWhenNoPathsArm(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nonexistent-zero-armed")
+	configPath := writeMCPFileSentryConfig(t, false, missing)
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil {
+		t.Fatal("mcp proxy succeeded even though file sentry armed no paths")
+	}
+	if !strings.Contains(err.Error(), "no watch paths armed") {
+		t.Fatalf("mcp proxy error = %v, want zero-armed file-sentry failure; stderr:\n%s", err, stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nonexistent-best-effort")
+	configPath := writeMCPFileSentryConfig(t, true, missing)
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil {
+		t.Fatal("mcp proxy succeeded in best-effort mode with zero armed paths")
+	}
+	if !strings.Contains(err.Error(), "no watch paths armed") {
+		t.Fatalf("mcp proxy error = %v, want zero-armed file-sentry failure; stderr:\n%s", err, stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryBestEffortRejectsInitializationFailure(t *testing.T) {
+	failFileSentryWatcher(t, errors.New("watcher setup failed"))
+	configPath := writeMCPFileSentryConfig(t, true, t.TempDir())
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil || !strings.Contains(err.Error(), "file sentry init failed") {
+		t.Fatalf("mcp proxy error = %v, want initialization failure; stderr:\n%s", err, stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryKeepsRunningWhenOnePathArms(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-mixed-coverage")
+	configPath := writeMCPFileSentryConfig(t, true, watchDir, missing)
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err != nil {
+		t.Fatalf("mcp proxy failed even though one file-sentry path armed: %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "file sentry watching 2 configured path(s)") || !strings.Contains(stderr, "1 skipped/unarmed subtree(s)") {
+		t.Fatalf("stderr missing mixed file-sentry coverage report:\n%s", stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryReportsCompleteCoverage(t *testing.T) {
+	configPath := writeMCPFileSentryConfig(t, false, t.TempDir())
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err != nil {
+		t.Fatalf("mcp proxy failed with complete file-sentry coverage: %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "file sentry watching 1 configured path(s) (action=warn)") {
+		t.Fatalf("stderr missing complete file-sentry coverage report:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "skipped/unarmed subtree") {
+		t.Fatalf("stderr reported degraded coverage for an armable watch path:\n%s", stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryBestEffortRejectsRequiredPathFailure(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-required")
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configBody := fmt.Sprintf("mode: balanced\nfile_sentry:\n  enabled: true\n  best_effort: true\n  watch_paths:\n    - %q\n    - path: %q\n      required: true\n  scan_content: true\n", watchDir, missing)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
+		t.Fatalf("mcp proxy error = %v, want required file-sentry failure; stderr:\n%s", err, stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-required-duplicate")
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configBody := fmt.Sprintf("mode: balanced\nfile_sentry:\n  enabled: true\n  best_effort: true\n  watch_paths:\n    - %q\n    - %q\n    - path: %q\n      required: true\n  scan_content: true\n", watchDir, missing, missing+string(filepath.Separator))
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
+		t.Fatalf("mcp proxy error = %v, want required duplicate file-sentry failure; stderr:\n%s", err, stderr)
 	}
 }
 

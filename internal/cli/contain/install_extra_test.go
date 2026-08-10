@@ -945,20 +945,21 @@ func TestProbeBinaryIntegrity_UppercasePinIsMalformedNotMismatch(t *testing.T) {
 	}
 }
 
-// A stat failure leaves file identity unknown rather than different. Reporting a
-// difference there would assert something unverified, which is the exact class of
-// overstatement this probe was changed to stop making. Each lookup is failed
-// independently, because either one alone is enough to leave identity unknown.
-func TestProbeBinaryIntegrity_StatFailureReportsUnknownNotDifference(t *testing.T) {
+// A failure to stat the deployed file makes running-image verification
+// incomplete and fails the probe. A failure to stat only the optional invoking
+// binary remains a note: it cannot change the deployed or running image proof.
+func TestProbeBinaryIntegrity_StatFailurePreservesRequiredRuntimeIdentity(t *testing.T) {
 	digest := "cc" + strings.Repeat("0", 62)
 
 	tests := []struct {
-		name string
-		fail string // which path's stat fails
+		name       string
+		fail       string // which path's stat fails
+		wantStatus string
+		wantDetail string
 	}{
-		{name: "deployed binary stat fails", fail: "target"},
-		{name: "invoking binary stat fails", fail: "self"},
-		{name: "both stats fail", fail: "both"},
+		{name: "deployed binary stat fails", fail: "target", wantStatus: statusFail, wantDetail: "stat deployed binary"},
+		{name: "invoking binary stat fails", fail: "self", wantStatus: statusPass, wantDetail: "could not compare"},
+		{name: "both stats fail", fail: "both", wantStatus: statusFail, wantDetail: "stat deployed binary"},
 	}
 
 	for _, tt := range tests {
@@ -1000,13 +1001,14 @@ func TestProbeBinaryIntegrity_StatFailureReportsUnknownNotDifference(t *testing.
 				}
 				return os.Stat(path)
 			}
+			configureMatchingServiceBinary(t, env)
 
 			status, detail := probeBinaryIntegrity(context.Background(), env)
-			if status != statusPass {
-				t.Fatalf("status = %s, want pass (the deployed binary still matches its pin)", status)
+			if status != tt.wantStatus {
+				t.Fatalf("status = %s, want %s (detail=%q)", status, tt.wantStatus, detail)
 			}
-			if !strings.Contains(detail, "could not compare") {
-				t.Errorf("detail = %q, want it to say the comparison was unavailable", detail)
+			if !strings.Contains(detail, tt.wantDetail) {
+				t.Errorf("detail = %q, want it to contain %q", detail, tt.wantDetail)
 			}
 			if strings.Contains(detail, "differs") {
 				t.Errorf("detail = %q, must not assert a difference it did not verify", detail)

@@ -22,6 +22,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,7 @@ const (
 	testSudoCmd      = "sudo"
 	testOperatorUser = "operator"
 	testSystemctl    = "systemctl"
+	testServicePID   = 4242
 	testNFT          = "nft"
 	testUserDel      = "userdel"
 	testRustup       = "rustup"
@@ -191,24 +193,25 @@ func TestProbeListedToolTargets_AgentContextFailuresSkip(t *testing.T) {
 func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 	t.Helper()
 	env := &probeEnv{
-		port:           8888,
-		operatorUser:   "",
-		proxyUserName:  testProxyUser,
-		agentUserName:  testAgentUser,
-		wrapperDir:     t.TempDir(),
-		toolWrappers:   []string{"plk-claude", "plk-codex"},
-		caBundlePath:   filepath.Join(t.TempDir(), "combined-ca.pem"),
-		launchPath:     "", // populated below
-		nftTable:       testTable,
-		nftChain:       testChain,
-		nftPath:        testNFT,
-		serviceName:    testService,
-		pinPath:        filepath.Join(t.TempDir(), "binary-pin.sha256"),
-		toolsListPath:  filepath.Join(t.TempDir(), "tools.list"),
-		pipelockTarget: defaultPipelockTarget,
-		runCmd:         rejectAllRun,
-		dropCounter:    rejectAllDropCounter,
-		dialCtx:        rejectAllDial,
+		port:               8888,
+		operatorUser:       "",
+		proxyUserName:      testProxyUser,
+		agentUserName:      testAgentUser,
+		wrapperDir:         t.TempDir(),
+		toolWrappers:       []string{"plk-claude", "plk-codex"},
+		caBundlePath:       filepath.Join(t.TempDir(), "combined-ca.pem"),
+		launchPath:         "", // populated below
+		nftTable:           testTable,
+		nftChain:           testChain,
+		nftPath:            testNFT,
+		serviceName:        testService,
+		pinPath:            filepath.Join(t.TempDir(), "binary-pin.sha256"),
+		toolsListPath:      filepath.Join(t.TempDir(), "tools.list"),
+		pipelockTarget:     defaultPipelockTarget,
+		verifyRunningImage: true,
+		runCmd:             rejectAllRun,
+		dropCounter:        rejectAllDropCounter,
+		dialCtx:            rejectAllDial,
 		wait: func(context.Context, time.Duration) error {
 			return nil
 		},
@@ -216,6 +219,7 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		groupIDs:   rejectAllGroupIDs,
 		stat:       os.Stat,
 		readFile:   rejectAllReadFile,
+		readLink:   rejectAllReadLink,
 		selfPath:   rejectAllSelfPath,
 		hashFile:   rejectAllHashFile,
 	}
@@ -250,6 +254,51 @@ func rejectAllLookup(name string) (*user.User, error) {
 
 func rejectAllReadFile(path string) ([]byte, error) {
 	return nil, fmt.Errorf("unstubbed readFile: %s", path)
+}
+
+func rejectAllReadLink(path string) (string, error) {
+	return "", fmt.Errorf("unstubbed readLink: %s", path)
+}
+
+// configureMatchingServiceBinary makes the running-process half of probe 10
+// point at env.pipelockTarget while leaving the test's deployed-file and
+// invoking-binary setup under its control.
+func configureMatchingServiceBinary(t *testing.T, env *probeEnv) {
+	t.Helper()
+	procExe := serviceProcessExePath(testServicePID)
+	originalStat := env.stat
+	originalHash := env.hashFile
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != testSystemctl || !containsArg(args, "--value") {
+			return "", -1, fmt.Errorf("unexpected command %s %v", name, args)
+		}
+		switch {
+		case containsArg(args, "--property=ExecStart"):
+			return fmt.Sprintf("{ path=%s ; argv[]=%s run ; }\n", env.pipelockTarget, env.pipelockTarget), 0, nil
+		case containsArg(args, "--property=MainPID"):
+			return fmt.Sprintf("%d\n", testServicePID), 0, nil
+		default:
+			return "", -1, fmt.Errorf("unexpected systemctl property %v", args)
+		}
+	}
+	env.readLink = func(path string) (string, error) {
+		if path != procExe {
+			return "", fmt.Errorf("unexpected readLink %s", path)
+		}
+		return env.pipelockTarget, nil
+	}
+	env.stat = func(path string) (os.FileInfo, error) {
+		if path == procExe {
+			return originalStat(env.pipelockTarget)
+		}
+		return originalStat(path)
+	}
+	env.hashFile = func(path string) (string, error) {
+		if path == procExe {
+			return originalHash(env.pipelockTarget)
+		}
+		return originalHash(path)
+	}
 }
 
 func rejectAllSelfPath() (string, error) {
@@ -2833,6 +2882,120 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	if !strings.Contains(out, "10 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing enforcement-only aggregate: %q", out)
 	}
+	if !strings.Contains(out, "probe 10: deployed pipelock binary matches TOFU pin; running-service image is not verified") ||
+		!strings.Contains(out, "running service image not verified") {
+		t.Errorf("enforcement-only probe 10 did not describe its limited evidence: %q", out)
+	}
+	if strings.Contains(out, "deployed and running pipelock binary match TOFU pin") {
+		t.Errorf("enforcement-only probe 10 claimed running-image verification: %q", out)
+	}
+}
+
+func TestRunVerify_EnforcementOnlyJSONReportsLimitedBinaryEvidence(t *testing.T) {
+	env := allPassEnv(t)
+	cmd := newVerifyCmd(t)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runVerify(cmd, env, verifyOpts{enforcementOnly: true, jsonOutput: true}); err != nil {
+		t.Fatalf("runVerify returned err: %v", err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec probeRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue // The aggregate record has a different JSON shape.
+		}
+		if rec.Name != "binary_integrity_pin" {
+			continue
+		}
+		if rec.Status != statusPass || !strings.Contains(rec.Detail, "running service image not verified") {
+			t.Fatalf("binary-integrity JSON record = %+v, want deployed-only pass evidence", rec)
+		}
+		return
+	}
+	t.Fatalf("binary-integrity JSON record missing from %q", buf.String())
+}
+
+func TestRunVerify_ConcurrentModesKeepRunningImagePolicyIsolated(t *testing.T) {
+	env := allPassEnv(t)
+	originalRun := env.runCmd
+
+	enforcementAtBarrier := make(chan struct{})
+	runtimeImageChecks := make(chan struct{}, 2)
+	releaseEnforcement := make(chan struct{})
+	var barrierOnce sync.Once
+	var releaseOnce sync.Once
+	unblockEnforcement := func() { releaseOnce.Do(func() { close(releaseEnforcement) }) }
+	t.Cleanup(unblockEnforcement)
+
+	var counterMu sync.Mutex
+	var counter uint64
+	env.dropCounter = func(_ context.Context, runEnv *probeEnv) (uint64, error) {
+		if !runEnv.verifyRunningImage {
+			barrierOnce.Do(func() {
+				close(enforcementAtBarrier)
+				<-releaseEnforcement
+			})
+		}
+		counterMu.Lock()
+		defer counterMu.Unlock()
+		counter++
+		return counter, nil
+	}
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == testSystemctl && containsArg(args, "--property=ExecStart") && containsArg(args, "--value") {
+			runtimeImageChecks <- struct{}{}
+		}
+		return originalRun(ctx, name, args...)
+	}
+
+	type verifyResult struct {
+		err error
+		out string
+	}
+	run := func(opts verifyOpts) <-chan verifyResult {
+		result := make(chan verifyResult, 1)
+		go func() {
+			cmd := newVerifyCmd(t)
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			result <- verifyResult{err: runVerify(cmd, env, opts), out: buf.String()}
+		}()
+		return result
+	}
+
+	enforcement := run(verifyOpts{enforcementOnly: true})
+	select {
+	case <-enforcementAtBarrier:
+	case <-time.After(time.Second):
+		t.Fatal("enforcement-only verification did not reach the barrier")
+	}
+
+	normal := run(verifyOpts{})
+	select {
+	case <-runtimeImageChecks:
+	case <-time.After(time.Second):
+		unblockEnforcement()
+		normalResult := <-normal
+		enforcementResult := <-enforcement
+		t.Fatalf("normal verification skipped its running-image check while enforcement-only was active: normal=%+v enforcement=%+v", normalResult, enforcementResult)
+	}
+
+	normalResult := <-normal
+	unblockEnforcement()
+	enforcementResult := <-enforcement
+	if normalResult.err != nil || enforcementResult.err != nil {
+		t.Fatalf("concurrent verification errors: normal=%+v enforcement=%+v", normalResult, enforcementResult)
+	}
+	select {
+	case <-runtimeImageChecks:
+		t.Fatal("enforcement-only verification ran the running-image check")
+	default:
+	}
+	if !env.verifyRunningImage {
+		t.Fatal("runVerify mutated the caller-owned running-image policy")
+	}
 }
 
 func TestRunVerify_FailExitCode(t *testing.T) {
@@ -2984,14 +3147,14 @@ func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 9 || agg.Aggregate.Fail != 1 ||
-					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
+				if agg.Aggregate.Pass != 8 || agg.Aggregate.Fail != 1 ||
+					agg.Aggregate.Skip != 2 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 9 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 8 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "9 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "8 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -3269,10 +3432,6 @@ func allPassEnv(t *testing.T) *probeEnv {
 		return &fakeConn{}, nil
 	}
 
-	// Probes 2, 3, 8, 9: subprocess stubs.
-	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		return defaultRunForAllPass(name, args)
-	}
 	var counterReads uint64
 	env.dropCounter = func(_ context.Context, _ *probeEnv) (uint64, error) {
 		counterReads++
@@ -3291,10 +3450,17 @@ func allPassEnv(t *testing.T) *probeEnv {
 	}
 	writeFakePEMBundle(t, env.caBundlePath, "Pipelock Test CA")
 
-	// Probe 10: deployed binary integrity. allPassEnv emits matching pin + hash so
-	// the probe returns pass. Tests that want to exercise mismatch override
-	// hashFile or readFile after calling allPassEnv.
+	// Probe 10: deployed and running binary integrity. allPassEnv emits matching
+	// pin + hashes and maps the synthetic process image to the deployed file.
+	// Tests that want to exercise mismatch override hashFile or readFile after
+	// calling allPassEnv.
 	const allPassHash = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+	deployed := filepath.Join(t.TempDir(), "pipelock")
+	writeFakeWrapper(t, deployed, 0o755)
+	procExe := serviceProcessExePath(testServicePID)
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		return defaultRunForAllPass(name, args)
+	}
 	env.readFile = func(path string) ([]byte, error) {
 		if path == env.pinPath {
 			return []byte(allPassHash + "\n"), nil
@@ -3307,9 +3473,22 @@ func allPassEnv(t *testing.T) *probeEnv {
 		}
 		return nil, fmt.Errorf("unexpected readFile %s", path)
 	}
+	env.readLink = func(path string) (string, error) {
+		if path != procExe {
+			return "", fmt.Errorf("unexpected readLink %s", path)
+		}
+		return defaultPipelockTarget, nil
+	}
+	originalStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		if path == procExe || path == defaultPipelockTarget {
+			return originalStat(deployed)
+		}
+		return originalStat(path)
+	}
 	env.selfPath = func() (string, error) { return defaultPipelockTarget, nil }
 	env.hashFile = func(path string) (string, error) {
-		if path == defaultPipelockTarget {
+		if path == defaultPipelockTarget || path == procExe {
 			return allPassHash, nil
 		}
 		return "", fmt.Errorf("unexpected hashFile %s", path)
@@ -3323,7 +3502,15 @@ func allPassEnv(t *testing.T) *probeEnv {
 func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	switch name {
 	case testSystemctl:
-		return "ActiveState=active\nSubState=running\nUser=pipelock-proxy\nType=simple\n", 0, nil
+		if containsArg(args, "--value") {
+			switch {
+			case containsArg(args, "--property=ExecStart"):
+				return "{ path=/usr/local/bin/pipelock ; argv[]=/usr/local/bin/pipelock run ; ignore_errors=no ; }\n", 0, nil
+			case containsArg(args, "--property=MainPID"):
+				return fmt.Sprintf("%d\n", testServicePID), 0, nil
+			}
+		}
+		return fmt.Sprintf("ActiveState=active\nSubState=running\nUser=pipelock-proxy\nType=simple\nMainPID=%d\nExecStart={ path=/usr/local/bin/pipelock ; argv[]=/usr/local/bin/pipelock run ; ignore_errors=no ; }\n", testServicePID), 0, nil
 	case testNFT:
 		return goodNFTContainmentOutput, 0, nil
 	case testSudoCmd:

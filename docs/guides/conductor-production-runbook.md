@@ -791,9 +791,9 @@ diagnostic snapshot while an operator works the alert.
 Inventory validation happens before the delivery-health check. The command
 rejects invalid entries, including duplicate producer IDs, missing replica
 counts, and unexplained local-only exceptions, rather than treating them as
-healthy. Delivery health then treats a missing, stale, or implausibly
-future-dated accepted batch as alerting. A recent timestamp is required, but it
-does not turn an invalid inventory into healthy delivery evidence.
+healthy. Delivery health then treats a missing, stale, implausibly future-dated,
+or incomplete accepted-batch record as alerting. A recent timestamp is required,
+but it does not turn an invalid inventory into healthy delivery evidence.
 
 ## 14. Remove a follower
 

@@ -34,12 +34,23 @@ func observeCrossAgentEmit(eval *MCPInputEvaluation, opts MCPProxyOpts, boundary
 // Callers switch on these to build per-gate block dispatch responses.
 const (
 	blockingGateA2ABody        = "a2a_body"
+	blockingGateAirlockHard    = "airlock_hard"
+	blockingGateAirlockMissing = "airlock_unavailable"
 	blockingGateDoW            = "dow"
 	blockingGateFrozenTool     = "frozen_tool"
 	blockingGateChain          = "chain"
 	blockingGateParseError     = "parse_error"
 	blockingGateTaintBlock     = "taint_block"
 	blockingGateTaintAskDenied = "taint_ask_denied"
+)
+
+const (
+	mcpAirlockHardReason        = "hard airlock blocks MCP tools/call"
+	mcpAirlockDrainReason       = "drain airlock blocks MCP tools/call"
+	mcpAirlockUnavailableReason = "airlock tier unavailable for MCP tools/call"
+	mcpAirlockInvalidReason     = "invalid airlock tier blocks MCP tools/call"
+	mcpAirlockTierUnavailable   = "unavailable"
+	mcpAirlockTierInvalid       = "invalid"
 )
 
 const (
@@ -88,7 +99,7 @@ func frameParseErrFailsClosed(err error) bool {
 type MCPInputEvaluation struct {
 	// BlockingGate names the first gate that returned a block-level
 	// verdict, or empty when every configured gate ran through.
-	// Values: "a2a_body", "dow", "chain", "parse_error",
+	// Values: "a2a_body", "airlock_hard", "airlock_unavailable", "dow", "chain", "parse_error",
 	// "taint_block", "taint_ask_denied". Callers use this as a
 	// log-framing key; block dispatch reads the per-gate fields
 	// below for the specific reason / code / message shape.
@@ -97,6 +108,13 @@ type MCPInputEvaluation struct {
 	// ContentVerdict is the ScanRequest output. Always populated
 	// because content scan is the first gate.
 	ContentVerdict InputVerdict
+
+	// AirlockTier is the bounded tier or synthetic state used for audit and
+	// metrics attribution when the airlock gate contains a tools/call request.
+	AirlockTier string
+	// AirlockReason distinguishes a hard-tier denial from a fail-closed
+	// denial when an enabled airlock's per-session tier is unavailable.
+	AirlockReason string
 
 	// A2AResult is populated when a2aCfg is non-nil and enabled and
 	// the method matches IsA2AMethod. A2AResult.Clean is true when
@@ -182,6 +200,66 @@ type MCPInputEvaluation struct {
 	// cross_agent taint source (evidence) is already appended in-gate so the
 	// taint snapshot and any receipt carry it.
 	CrossAgentEscalate bool
+}
+
+func applyMCPAirlockGate(opts MCPProxyOpts, eval *MCPInputEvaluation, method string) bool {
+	if method != methodToolsCall {
+		return false
+	}
+	// An explicitly DISABLED airlock releases containment: the operator turned
+	// the control off and tool calls resume. A nil config is deliberately NOT
+	// treated the same way here. Nil means no airlock configuration is
+	// currently reachable, which is not the same statement as "this session is
+	// not contained", so a session still carrying a hard or drain tier keeps
+	// being denied below. Collapsing nil into disabled would release a
+	// contained session the moment its config became unavailable, which is a
+	// fail-open on exactly the path containment exists for.
+	if cfg := opts.airlockCfg(); cfg != nil && !cfg.Enabled {
+		return false
+	}
+	tier, available := session.AirlockTier(opts.Rec)
+	if !available {
+		// No tier to read. With no configuration either there is nothing to
+		// enforce, so allow. With configuration present an unreadable tier is
+		// an unknown state and must fail closed.
+		cfg := opts.airlockCfg()
+		if cfg == nil || !cfg.Enabled {
+			return false
+		}
+		eval.AirlockTier = mcpAirlockTierUnavailable
+		eval.AirlockReason = mcpAirlockUnavailableReason
+		eval.BlockingGate = blockingGateAirlockMissing
+		return true
+	}
+	switch tier {
+	case "", config.AirlockTierNone, config.AirlockTierSoft:
+		return false
+	case config.AirlockTierHard:
+		eval.AirlockReason = mcpAirlockHardReason
+	case config.AirlockTierDrain:
+		eval.AirlockReason = mcpAirlockDrainReason
+	default:
+		eval.AirlockTier = mcpAirlockTierInvalid
+		eval.AirlockReason = fmt.Sprintf("%s: %q", mcpAirlockInvalidReason, tier)
+		eval.BlockingGate = blockingGateAirlockMissing
+		return true
+	}
+	eval.AirlockTier = tier
+	eval.BlockingGate = blockingGateAirlockHard
+	return true
+}
+
+func mcpAirlockBlockMessage(eval MCPInputEvaluation) string {
+	if eval.AirlockReason == mcpAirlockDrainReason {
+		return "pipelock: tool call blocked by drain airlock"
+	}
+	if eval.BlockingGate == blockingGateAirlockMissing {
+		if eval.AirlockTier == mcpAirlockTierInvalid {
+			return "pipelock: tool call blocked because the airlock tier is invalid"
+		}
+		return "pipelock: tool call blocked because the airlock tier is unavailable"
+	}
+	return "pipelock: tool call blocked by hard airlock"
 }
 
 func mcpFrameEnforcementIdentity(frame MCPFrame, method string) string {
@@ -357,6 +435,8 @@ func evaluateSessionBinding(check sessionBindingCheck) (action, reason string) {
 //
 //   - content scan via ScanRequest. Always runs. Establishes
 //     ContentVerdict.ID / Method used by later short-circuit paths.
+//   - hard airlock containment for tools/call. Protocol and discovery
+//     methods remain available for diagnosis and recovery.
 //   - A2A body scan when a2aCfg is enabled and the method matches
 //     IsA2AMethod. A block verdict short-circuits the remaining
 //     enforcement gates.
@@ -423,6 +503,12 @@ func EvaluateMCPInputGates(
 		if eval.ContentVerdict.ID == nil {
 			eval.ContentVerdict.ID = frame.ID
 		}
+	}
+	// Airlock containment runs before cross-agent and taint observation. A
+	// contained tools/call is denied before it crosses the MCP boundary, so it
+	// must not emit evidence for a crossing that never occurred.
+	if applyMCPAirlockGate(opts, &eval, method) {
+		return eval
 	}
 	if IsA2AMethod(method) {
 		// Cross-agent contamination: a contaminated session emitting an
@@ -575,6 +661,8 @@ func EvaluateMCPInputGates(
 //
 //   - content scan via ScanRequest. Always runs. Establishes
 //     ContentVerdict.ID / Method used by later short-circuit paths.
+//   - hard airlock containment for tools/call. Protocol and discovery
+//     methods remain available for diagnosis and recovery.
 //   - A2A body scan when a2aCfg is enabled and the method matches
 //     IsA2AMethod. A block verdict short-circuits the remaining gates.
 //   - policy check. Populates PolicyVerdict without short-circuit;
@@ -648,6 +736,9 @@ func EvaluateMCPInputGatesStdio(
 		if eval.ContentVerdict.ID == nil {
 			eval.ContentVerdict.ID = frame.ID
 		}
+	}
+	if applyMCPAirlockGate(opts, &eval, method) {
+		return eval
 	}
 	if IsA2AMethod(method) {
 		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryA2ARequest)

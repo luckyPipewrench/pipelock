@@ -1837,14 +1837,46 @@ func (l *Logger) LogAirlockEnter(sessionKey, tier, trigger, clientIP, requestID 
 
 // LogAirlockDeny logs a request denied by airlock enforcement.
 func (l *Logger) LogAirlockDeny(sessionKey, tier, transport, method, clientIP, requestID string) {
+	l.LogAirlockDenyReason(AirlockDenyOptions{
+		SessionKey:      sessionKey,
+		Tier:            tier,
+		Transport:       transport,
+		Method:          method,
+		ClientIP:        clientIP,
+		RequestID:       requestID,
+		HTTPCorrelation: true,
+	})
+}
+
+// AirlockDenyOptions describes an airlock denial audit event.
+type AirlockDenyOptions struct {
+	SessionKey      string
+	Tier            string
+	Transport       string
+	Method          string
+	Reason          string
+	ClientIP        string
+	RequestID       string
+	HTTPCorrelation bool
+}
+
+// LogAirlockDenyReason logs an airlock denial with a transport-specific reason.
+func (l *Logger) LogAirlockDenyReason(opts AirlockDenyOptions) {
+	hintReason := opts.Reason
+	if hintReason == "" {
+		hintReason = opts.Tier
+	}
 	e := newLogEntry(l.zl.Warn(), EventAirlockDeny).
-		str("session", sessionKey).
-		str("tier", tier).
-		str("transport", transport).
-		str("method", method).
-		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, tier)).
-		optStr("client_ip", clientIP).
-		optStr("request_id", requestID)
+		str("session", opts.SessionKey).
+		str("tier", opts.Tier).
+		str("transport", opts.Transport).
+		str("method", opts.Method).
+		optStr("reason", hintReason).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, hintReason))
+	if opts.HTTPCorrelation {
+		e = e.optStr("client_ip", opts.ClientIP).
+			optStr("request_id", opts.RequestID)
+	}
 	e.msg("airlock denied request")
 
 	if l.emitter != nil {

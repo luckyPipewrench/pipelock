@@ -75,6 +75,42 @@ type Recorder interface {
 	ThreatScore() float64
 }
 
+// AirlockTierProvider exposes the live containment tier for one session
+// without coupling transport packages to the proxy implementation.
+type AirlockTierProvider interface {
+	AirlockTier() string
+}
+
+// AirlockEscalator raises the live containment tier for one session.
+type AirlockEscalator interface {
+	EscalateAirlock(tier, trigger string) (changed bool, from, to string)
+}
+
+// AirlockTier returns the live containment tier when the recorder owns
+// airlock state. The boolean is false when the tier is unavailable.
+func AirlockTier(rec Recorder) (string, bool) {
+	if rec == nil {
+		return "", false
+	}
+	provider, ok := rec.(AirlockTierProvider)
+	if !ok {
+		return "", false
+	}
+	return provider.AirlockTier(), true
+}
+
+// EscalateAirlock raises the recorder's live containment tier when supported.
+func EscalateAirlock(rec Recorder, tier, trigger string) (changed bool, from, to string) {
+	if rec == nil {
+		return false, "", ""
+	}
+	provider, ok := rec.(AirlockEscalator)
+	if !ok {
+		return false, "", ""
+	}
+	return provider.EscalateAirlock(tier, trigger)
+}
+
 // Recoverer is an optional extension for recorders that can de-escalate
 // autonomously after time has passed.
 type Recoverer interface {

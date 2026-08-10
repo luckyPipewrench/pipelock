@@ -168,24 +168,46 @@ jobs:
         run: make reproducible-build-check
 
       - name: Login to GHCR
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          # GoReleaser still emits separate checksums.txt.sig/.pem assets.
-          # Cosign v3 requires the new bundle format and rejects those flags.
-          cosign-release: 'v2.6.1'
+      # GoReleaser signs the legacy detached signature and certificate pair.
+      # Cosign v3 requires bundle output, so use the newest maintained v2
+      # release and verify its archive digest before it reaches GoReleaser.
+      - name: Install and verify cosign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COSIGN_VERSION: v2.6.5
+          COSIGN_LINUX_AMD64_SHA256: c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/cosign-${COSIGN_VERSION}"
+          mkdir -p "$tool_dir"
+          gh release download "$COSIGN_VERSION" \
+            --repo sigstore/cosign \
+            --pattern cosign-linux-amd64 \
+            --dir "$tool_dir"
+          printf '%s  %s\n' \
+            "$COSIGN_LINUX_AMD64_SHA256" \
+            "$tool_dir/cosign-linux-amd64" | sha256sum --check
+          install -m 0755 "$tool_dir/cosign-linux-amd64" "$tool_dir/cosign"
+          got="$($tool_dir/cosign version | awk '/^GitVersion:/ { print $2 }')"
+          expected="$COSIGN_VERSION"
+          test "$got" = "$expected" || {
+            echo "::error::cosign reports $got, expected $expected"
+            exit 1
+          }
+          echo "cosign version: $got"
+          echo "$tool_dir" >> "$GITHUB_PATH"
 
       - name: Set GOVERSION
         run: echo "GOVERSION=$(go env GOVERSION)" >> "$GITHUB_ENV"
@@ -321,9 +343,30 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" dist/release.json --clobber
 
       - name: Generate SBOM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLONEDX_GOMOD_VERSION: v1.10.0
+          CYCLONEDX_GOMOD_LINUX_AMD64_SHA256: 5cce8ae99a5181be6a610ea5ed9ca9d596937cc04dc1a8f6f6b5e462d8c9900e
         run: |
-          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
-          cyclonedx-gomod mod -json -output sbom.cdx.json
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/cyclonedx-gomod-${CYCLONEDX_GOMOD_VERSION}"
+          archive="cyclonedx-gomod_${CYCLONEDX_GOMOD_VERSION#v}_linux_amd64.tar.gz"
+          mkdir -p "$tool_dir"
+          gh release download "$CYCLONEDX_GOMOD_VERSION" \
+            --repo CycloneDX/cyclonedx-gomod \
+            --pattern "$archive" \
+            --dir "$tool_dir"
+          printf '%s  %s\n' \
+            "$CYCLONEDX_GOMOD_LINUX_AMD64_SHA256" \
+            "$tool_dir/$archive" | sha256sum --check
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir"
+          got="$($tool_dir/cyclonedx-gomod version | awk '/^Version:/ { print $2 }')"
+          expected="$CYCLONEDX_GOMOD_VERSION"
+          test "$got" = "$expected" || {
+            echo "::error::cyclonedx-gomod reports $got, expected $expected"
+            exit 1
+          }
+          "$tool_dir/cyclonedx-gomod" mod -json -output sbom.cdx.json
 
       - name: Upload SBOM to release
         env:
@@ -338,25 +381,46 @@ jobs:
         id: platform-digests
         env:
           TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          CRANE_VERSION: v0.21.9
+          CRANE_LINUX_AMD64_SHA256: 5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e
         run: |
           set -euo pipefail
-          go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
+          tool_dir="$RUNNER_TEMP/crane-${CRANE_VERSION}"
+          archive="go-containerregistry_Linux_x86_64.tar.gz"
+          mkdir -p "$tool_dir"
+          gh release download "$CRANE_VERSION" \
+            --repo google/go-containerregistry \
+            --pattern "$archive" \
+            --dir "$tool_dir"
+          printf '%s  %s\n' \
+            "$CRANE_LINUX_AMD64_SHA256" \
+            "$tool_dir/$archive" | sha256sum --check
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir"
+          got="$($tool_dir/crane version)"
+          expected="${CRANE_VERSION#v}"
+          test "$got" = "$expected" || {
+            echo "::error::crane reports $got, expected $expected"
+            exit 1
+          }
+          echo "crane version: $got"
+          echo "$tool_dir" >> "$GITHUB_PATH"
           resolve_image() {
             local name="$1"
             local repository="$2"
             local staging_tag index_digest child_digest direct_digest arch
 
             staging_tag="${TAG#v}-staging"
-            index_digest="$(crane digest "${repository}:${staging_tag}")"
+            index_digest="$("$tool_dir/crane" digest "${repository}:${staging_tag}")"
             printf '%s_index=%s\n' "$name" "$index_digest" >> "$GITHUB_OUTPUT"
             for arch in amd64 arm64; do
-              child_digest="$(crane manifest "${repository}:${staging_tag}" | jq -er --arg arch "$arch" '
+              child_digest="$("$tool_dir/crane" manifest "${repository}:${staging_tag}" | jq -er --arg arch "$arch" '
                 [.manifests[] | select(
                   .platform.os == "linux" and
                   .platform.architecture == $arch
                 ) | .digest] | if length == 1 then .[0] else error("expected one linux/" + $arch + " child") end
               ')"
-              direct_digest="$(crane digest "${repository}:${staging_tag}-${arch}")"
+              direct_digest="$("$tool_dir/crane" digest "${repository}:${staging_tag}-${arch}")"
               test "$child_digest" = "$direct_digest" || {
                 echo "::error::${repository}:${staging_tag}-${arch} is not the index child"
                 exit 1
@@ -426,14 +490,14 @@ jobs:
       - name: Attest binary archives
         id: attest-binaries
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/pipelock_*.tar.gz
 
       - name: Attest checksums
         id: attest-checksums
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/checksums.txt
 
@@ -448,7 +512,7 @@ jobs:
       - name: Attest container image
         id: attest-pipelock-container
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_index }}
@@ -457,7 +521,7 @@ jobs:
       - name: Attest pipelock-init container image
         id: attest-pipelock-init-container
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_index }}
@@ -466,7 +530,7 @@ jobs:
       - name: Attest license-service container image
         id: attest-license-service-container
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_index }}
@@ -475,7 +539,7 @@ jobs:
       - name: Attest pipelock linux amd64 image
         id: attest-pipelock-amd64
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
@@ -484,7 +548,7 @@ jobs:
       - name: Attest pipelock linux arm64 image
         id: attest-pipelock-arm64
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
@@ -493,7 +557,7 @@ jobs:
       - name: Attest pipelock-init linux amd64 image
         id: attest-pipelock-init-amd64
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
@@ -502,7 +566,7 @@ jobs:
       - name: Attest pipelock-init linux arm64 image
         id: attest-pipelock-init-arm64
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
@@ -511,7 +575,7 @@ jobs:
       - name: Attest license-service linux amd64 image
         id: attest-license-service-amd64
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_amd64 }}
@@ -520,7 +584,7 @@ jobs:
       - name: Attest license-service linux arm64 image
         id: attest-license-service-arm64
         continue-on-error: true
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_arm64 }}
@@ -552,9 +616,9 @@ jobs:
           exit 1
 
       - name: Set up Helm
-        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.20.2
+          version: v3.21.3
 
       # Refuse a re-pushed release tag before moving any consumer image tag.
       # Without this preflight, replaying an older tag could roll :latest back

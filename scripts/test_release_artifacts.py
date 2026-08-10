@@ -24,6 +24,12 @@ GORELEASER_VERSION = "v2.17.1"
 GORELEASER_LINUX_AMD64_SHA256 = "a99bbc7ae0d8d897b07c4c497a9b62f222558804715ef219d1af05a7e417bc80"
 SYFT_VERSION = "v1.50.0"
 SYFT_LINUX_AMD64_SHA256 = "bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788"
+COSIGN_VERSION = "v2.6.5"
+COSIGN_LINUX_AMD64_SHA256 = "c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644"
+CYCLONEDX_GOMOD_VERSION = "v1.10.0"
+CYCLONEDX_GOMOD_LINUX_AMD64_SHA256 = "5cce8ae99a5181be6a610ea5ed9ca9d596937cc04dc1a8f6f6b5e462d8c9900e"
+CRANE_VERSION = "v0.21.9"
+CRANE_LINUX_AMD64_SHA256 = "5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e"
 
 PLATFORM_ARTIFACTS = {
     "pipelock": "ghcr.io/luckypipewrench/pipelock",
@@ -75,12 +81,50 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.assertNotIn(f'name_template: "{repository}:{{{{ .Version }}}}"', self.goreleaser)
             self.assertNotIn(f'name_template: "{repository}:latest"', self.goreleaser)
 
+    def test_other_release_tools_are_exactly_pinned_and_verified(self) -> None:
+        expected_tools = (
+            (
+                "COSIGN",
+                COSIGN_VERSION,
+                COSIGN_LINUX_AMD64_SHA256,
+                "sigstore/cosign",
+                "cosign-linux-amd64",
+                'got="$($tool_dir/cosign version',
+            ),
+            (
+                "CYCLONEDX_GOMOD",
+                CYCLONEDX_GOMOD_VERSION,
+                CYCLONEDX_GOMOD_LINUX_AMD64_SHA256,
+                "CycloneDX/cyclonedx-gomod",
+                "cyclonedx-gomod_",
+                'got="$($tool_dir/cyclonedx-gomod version',
+            ),
+            (
+                "CRANE",
+                CRANE_VERSION,
+                CRANE_LINUX_AMD64_SHA256,
+                "google/go-containerregistry",
+                "go-containerregistry_Linux_x86_64.tar.gz",
+                'got="$($tool_dir/crane version)',
+            ),
+        )
+        for prefix, version, digest, repository, asset, version_check in expected_tools:
+            self.assertIn(f"{prefix}_VERSION: {version}", self.workflow)
+            self.assertIn(f"{prefix}_LINUX_AMD64_SHA256: {digest}", self.workflow)
+            self.assertIn(f"--repo {repository}", self.workflow)
+            self.assertIn(asset, self.workflow)
+            self.assertIn("sha256sum --check", self.workflow)
+            self.assertIn(version_check, self.workflow)
+
+        self.assertNotIn("go install github.com/CycloneDX", self.workflow)
+        self.assertNotIn("go install github.com/google/go-containerregistry", self.workflow)
+
     def test_every_platform_is_resolved_from_the_staging_index(self) -> None:
         self.assertIn("Resolve release image platform digests", self.workflow)
         self.assertIn('for arch in amd64 arm64; do', self.workflow)
         self.assertIn('staging_tag="${TAG#v}-staging"', self.workflow)
-        self.assertIn('crane manifest "${repository}:${staging_tag}"', self.workflow)
-        self.assertIn('crane digest "${repository}:${staging_tag}-${arch}"', self.workflow)
+        self.assertIn('"$tool_dir/crane" manifest "${repository}:${staging_tag}"', self.workflow)
+        self.assertIn('"$tool_dir/crane" digest "${repository}:${staging_tag}-${arch}"', self.workflow)
         self.assertIn('is not the index child', self.workflow)
         for name, repository in PLATFORM_ARTIFACTS.items():
             self.assertIn(f"resolve_image {name} {repository}", self.workflow)

@@ -40,7 +40,7 @@ type lifecycleExpected struct {
 
 func TestLifecycleVerdictVectorsMatchGo(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "lifecycle-verdict-vectors.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("read lifecycle vectors: %v", err)
 	}

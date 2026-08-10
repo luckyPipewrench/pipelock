@@ -175,16 +175,18 @@ func TestParseRecipeRejectsUnknownAndTrailingFields(t *testing.T) {
 }
 
 func TestCommandDenialBranches(t *testing.T) {
+	const (
+		activeIDMarker = "{active-key-id}"
+		backupMarker   = "{backup-path}"
+		keyringMarker  = "{keyring-path}"
+		missingMarker  = "{missing-keyring-path}"
+	)
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "keyring.json")
 	backup := filepath.Join(dir, "backup.json")
 	if _, _, err := execute(t, "initialize", "--keyring", path); err != nil {
 		t.Fatalf("initialize: %v", err)
-	}
-	metadata := mustLoadMetadata(t, path)
-	keyringBeforeDenials, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		t.Fatalf("read keyring before denial cases: %v", err)
 	}
 
 	for _, test := range []struct {
@@ -195,29 +197,53 @@ func TestCommandDenialBranches(t *testing.T) {
 		wantErr       string
 		wantAuditText string
 	}{
-		{name: "initialize rerun", operation: "initialize", args: []string{"initialize", "--keyring", path}, wantAudit: true},
-		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
-		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true},
-		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1"}, wantAudit: true},
-		{name: "retire missing required flags before keyring access", operation: "retire", args: []string{"retire", "--keyring", filepath.Join(dir, "missing.json"), "--accept-loss", "--allow-unaudited"}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch" not set`, wantAuditText: `required flag(s) "key-id, epoch" not set`},
-		{name: "retire requires explicit unaudited break glass", operation: "retire", args: []string{"retire", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--accept-loss"}, wantAudit: true, wantErr: "--allow-unaudited is required to retire without a durable audit sink", wantAuditText: "--allow-unaudited is required to retire without a durable audit sink"},
-		{name: "backup missing required flag before keyring access", operation: "backup", args: []string{"backup", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true, wantErr: `required flag(s) "out" not set`, wantAuditText: `required flag(s) "out" not set`},
-		{name: "restore missing required flag before keyring access", operation: "restore", args: []string{"restore", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true, wantErr: `required flag(s) "from" not set`, wantAuditText: `required flag(s) "from" not set`},
-		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", path, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
-		{name: "test missing required flag before keyring access", operation: "test", args: []string{"test", "--keyring", filepath.Join(dir, "missing.json"), "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true, wantErr: `required flag(s) "commitment" not set`, wantAuditText: `required flag(s) "commitment" not set`},
-		{name: "test reports every missing required flag", operation: "test", args: []string{"test", "--keyring", filepath.Join(dir, "missing.json")}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch, source-id, commitment" not set`, wantAuditText: `required flag(s) "key-id, epoch, source-id, commitment" not set`},
-		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
+		{name: "initialize rerun", operation: "initialize", args: []string{"initialize", "--keyring", keyringMarker}, wantAudit: true},
+		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", missingMarker}, wantAudit: true},
+		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", missingMarker}, wantAudit: true},
+		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1"}, wantAudit: true},
+		{name: "retire missing required flags before keyring access", operation: "retire", args: []string{"retire", "--keyring", missingMarker, "--accept-loss", "--allow-unaudited"}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch" not set`, wantAuditText: `required flag(s) "key-id, epoch" not set`},
+		{name: "retire requires explicit unaudited break glass", operation: "retire", args: []string{"retire", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1", "--accept-loss"}, wantAudit: true, wantErr: "--allow-unaudited is required to retire without a durable audit sink", wantAuditText: "--allow-unaudited is required to retire without a durable audit sink"},
+		{name: "backup missing required flag before keyring access", operation: "backup", args: []string{"backup", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "out" not set`, wantAuditText: `required flag(s) "out" not set`},
+		{name: "restore missing required flag before keyring access", operation: "restore", args: []string{"restore", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "from" not set`, wantAuditText: `required flag(s) "from" not set`},
+		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", keyringMarker, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test missing required flag before keyring access", operation: "test", args: []string{"test", "--keyring", missingMarker, "--key-id", activeIDMarker, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true, wantErr: `required flag(s) "commitment" not set`, wantAuditText: `required flag(s) "commitment" not set`},
+		{name: "test reports every missing required flag", operation: "test", args: []string{"test", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch, source-id, commitment" not set`, wantAuditText: `required flag(s) "key-id, epoch, source-id, commitment" not set`},
+		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
 		{name: "missing path selector", operation: "inspect", args: []string{"inspect"}, wantAudit: true},
 		{name: "initialize missing path selector", operation: "initialize", args: []string{"initialize"}, wantAudit: true},
 		{name: "rotate missing path selector", operation: "rotate", args: []string{"rotate"}, wantAudit: true},
-		{name: "retire missing path selector", operation: "retire", args: []string{"retire", "--key-id", metadata.ActiveID, "--epoch", "1"}, wantAudit: true},
-		{name: "backup missing path selector", operation: "backup", args: []string{"backup", "--out", filepath.Join(dir, "unused.json")}, wantAudit: true},
-		{name: "restore missing path selector", operation: "restore", args: []string{"restore", "--from", path}, wantAudit: true},
-		{name: "test missing path selector", operation: "test", args: []string{"test", "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
-		{name: "test invalid source utf8", operation: "test", args: []string{"test", "--keyring", path, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", string([]byte{0xff}), "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "retire missing path selector", operation: "retire", args: []string{"retire", "--key-id", activeIDMarker, "--epoch", "1"}, wantAudit: true},
+		{name: "backup missing path selector", operation: "backup", args: []string{"backup", "--out", backupMarker}, wantAudit: true},
+		{name: "restore missing path selector", operation: "restore", args: []string{"restore", "--from", keyringMarker}, wantAudit: true},
+		{name: "test missing path selector", operation: "test", args: []string{"test", "--key-id", activeIDMarker, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
+		{name: "test invalid source utf8", operation: "test", args: []string{"test", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1", "--source-id", string([]byte{0xff}), "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, stderr, err := execute(t, test.args...)
+			caseDir := t.TempDir()
+			casePath := filepath.Join(caseDir, "keyring.json")
+			caseMissingPath := filepath.Join(caseDir, "missing.json")
+			caseBackupPath := filepath.Join(caseDir, "backup.json")
+			if _, _, err := execute(t, "initialize", "--keyring", casePath); err != nil {
+				t.Fatalf("initialize case keyring: %v", err)
+			}
+			caseMetadata := mustLoadMetadata(t, casePath)
+			replacer := strings.NewReplacer(
+				activeIDMarker, caseMetadata.ActiveID,
+				backupMarker, caseBackupPath,
+				keyringMarker, casePath,
+				missingMarker, caseMissingPath,
+			)
+			args := make([]string, len(test.args))
+			for i, arg := range test.args {
+				args[i] = replacer.Replace(arg)
+			}
+			before := map[string]testFileSnapshot{
+				casePath:        snapshotTestFile(t, casePath),
+				caseMissingPath: snapshotTestFile(t, caseMissingPath),
+				caseBackupPath:  snapshotTestFile(t, caseBackupPath),
+			}
+
+			_, stderr, err := execute(t, args...)
 			if err == nil {
 				t.Fatal("command succeeded")
 			}
@@ -230,15 +256,10 @@ func TestCommandDenialBranches(t *testing.T) {
 			if test.wantAuditText != "" {
 				assertAuditReason(t, stderr, test.wantAuditText)
 			}
+			for snapshotPath, snapshot := range before {
+				assertTestFileSnapshot(t, snapshotPath, snapshot)
+			}
 		})
-	}
-
-	keyringAfterDenials, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		t.Fatalf("read keyring after denial cases: %v", err)
-	}
-	if !bytes.Equal(keyringAfterDenials, keyringBeforeDenials) {
-		t.Fatal("denied command changed serialized keyring state")
 	}
 
 	if _, _, err := execute(t, "backup", "--keyring", path, "--out", backup); err != nil {
@@ -452,6 +473,34 @@ func mustLoadMetadata(t *testing.T, path string) domkey.Metadata {
 		t.Fatalf("Load: %v", err)
 	}
 	return keyring.Metadata()
+}
+
+type testFileSnapshot struct {
+	data   []byte
+	exists bool
+}
+
+func snapshotTestFile(t *testing.T, path string) testFileSnapshot {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return testFileSnapshot{}
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return testFileSnapshot{data: data, exists: true}
+}
+
+func assertTestFileSnapshot(t *testing.T, path string, want testFileSnapshot) {
+	t.Helper()
+	got := snapshotTestFile(t, path)
+	if got.exists != want.exists {
+		t.Fatalf("file existence for %s = %t, want %t", path, got.exists, want.exists)
+	}
+	if !bytes.Equal(got.data, want.data) {
+		t.Fatalf("file contents changed for %s", path)
+	}
 }
 
 func assertAudit(t *testing.T, raw, operation, outcome string) {

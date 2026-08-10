@@ -403,6 +403,42 @@ func startDeferredOperatorAPIOrReport(
 	return stop, nil
 }
 
+func startMCPMetricsServer(ctx context.Context, listenAddr string, m *metrics.Metrics, stderr io.Writer) (func(), error) {
+	if listenAddr == "" {
+		return func() {}, nil
+	}
+	if m == nil {
+		return func() {}, fmt.Errorf("start MCP metrics server: metrics collector is nil")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.PrometheusHandler())
+	mux.HandleFunc("/stats", m.StatsHandler())
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
+	if err != nil {
+		return func() {}, wrapBindError("metrics_listen", listenAddr, err)
+	}
+	srv := newHTTPServer(mux)
+	go func() {
+		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			_, _ = fmt.Fprintf(stderr, "pipelock: MCP metrics server stopped: %v\n", serveErr)
+		}
+	}()
+	_, _ = fmt.Fprintf(stderr, "pipelock: metrics listening on %s\n", ln.Addr())
+	stop := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}
+	return stop, nil
+}
+
+func resolvedMCPDoWAgentName(requested, resolved string, found bool) string {
+	if found || resolved == "" {
+		return requested
+	}
+	return resolved
+}
+
 func recoverDeferredActions(
 	manager *deferred.Manager,
 	journalPath string,
@@ -810,6 +846,7 @@ Key-free evidence capture:
 					return fmt.Errorf("unknown agent profile %q", agentName)
 				}
 			}
+			dowAgentName := resolvedMCPDoWAgentName(agentName, resolved.Name, found)
 			cfg = resolved.Config
 			bootSC.Close() // done with bootstrap scanner
 
@@ -860,7 +897,18 @@ Key-free evidence capture:
 				return fmt.Errorf("create scanner: %w", err)
 			}
 			defer sc.Close()
-			auditLogger := audit.NewNop()
+			auditLogger, err := audit.NewWithStream(
+				cfg.Logging.Format,
+				cfg.Logging.Output,
+				cfg.Logging.File,
+				cfg.Logging.IncludeAllowed,
+				cfg.Logging.IncludeBlocked,
+				cmd.ErrOrStderr(),
+			)
+			if err != nil {
+				return fmt.Errorf("create MCP audit logger: %w", err)
+			}
+			defer auditLogger.Close()
 			upstreamDialContext := mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc })
 
 			ks := killswitch.New(cfg)
@@ -933,19 +981,20 @@ Key-free evidence capture:
 				}
 			}
 
-			// Create session manager for adaptive enforcement in MCP proxy mode.
-			// Uses a dedicated metrics instance for MCP; reuses the same session
-			// profiling config as the HTTP proxy. store and adaptiveCfg are nil-safe
-			// downstream when session profiling is disabled.
+			// Create the MCP metrics registry independently of session profiling so
+			// transport and denial-of-wallet counters remain available in Free-tier
+			// configurations. The session store remains optional.
 			var store session.Store
 			var baselineChecker session.BaselineChecker
 			var adaptiveCfg *config.AdaptiveEnforcement
-			var mcpMetrics *metrics.Metrics
+			mcpMetrics := metrics.New()
 			if cfg.AdaptiveEnforcement.Enabled {
 				adaptiveCfg = &cfg.AdaptiveEnforcement
 			}
 			if cfg.SessionProfiling.Enabled {
-				mcpMetrics = metrics.New()
+				// Reuse the registry created above rather than replacing it: the
+				// denial-of-wallet and transport counters are already wired to
+				// that instance, and a second registry here would drop them.
 				smOpts := mcpSessionManagerOptions(cfg, auditLogger)
 				sm := proxy.NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, mcpMetrics, smOpts)
 				if cfg.BehavioralBaseline.Enabled {
@@ -957,7 +1006,6 @@ Key-free evidence capture:
 				store = sm.AsStore()
 				baselineChecker = sm
 			}
-
 			// Denial-of-wallet tracking: _default budget is free tier (always
 			// available). Named agent budgets are safe to read from cfg.Agents
 			// because EnforceLicenseGate (called during Load) already stripped
@@ -965,7 +1013,7 @@ Key-free evidence capture:
 			// builds the gate preserves _default and removes the rest; in OSS
 			// builds the gate func is nil so only _default survives if no
 			// named agents are configured.
-			dowWiring := buildMCPDoWWiring(cfg, agentName)
+			dowWiring := buildMCPDoWWiring(cfg, dowAgentName)
 
 			var receiptEmitter *receipt.Emitter
 			var v2ReceiptEmitter *proxydecision.Emitter
@@ -1024,9 +1072,7 @@ Key-free evidence capture:
 				// refactor: the resolved cfg carries the original rawBytes
 				// so Hash() still reflects the on-disk YAML even after
 				// bundle merge and auto-enable.
-				// mcpMetrics is non-nil only when session profiling is on; a
-				// nil MetricsSink is a safe no-op in the emitter, so emit-
-				// failure counters are wired opportunistically here.
+				// The shared MCP registry also captures receipt emission failures.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
 					Recorder:         rec,
 					PrivKey:          recPrivKey,
@@ -1086,6 +1132,26 @@ Key-free evidence capture:
 			}
 			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
 			defer heartbeatCancel()
+			var mcpLn net.Listener
+			if hasListen {
+				mcpLn, err = (&net.ListenConfig{}).Listen(heartbeatCtx, "tcp", listenAddr)
+				if err != nil {
+					bindErr := fmt.Errorf("MCP listener bind %s: %w", listenAddr, err)
+					if sentryClient != nil {
+						sentryClient.CaptureError(bindErr)
+					}
+					return bindErr
+				}
+				defer func() { _ = mcpLn.Close() }()
+			}
+			stopMetrics, metricsErr := startMCPMetricsServer(heartbeatCtx, cfg.MetricsListen, mcpMetrics, cmd.ErrOrStderr())
+			if metricsErr != nil {
+				if hasListen {
+					return fmt.Errorf("start metrics listener after reserving MCP --listen %q: %w", listenAddr, metricsErr)
+				}
+				return metricsErr
+			}
+			defer stopMetrics()
 			var heartbeatErrMu sync.Mutex
 			var heartbeatErr error
 			setRequiredHeartbeatErr := func(err error) {
@@ -1225,14 +1291,6 @@ Key-free evidence capture:
 					if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPListener, cfg); err != nil {
 						return err
 					}
-					mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
-					if lnErr != nil {
-						err := fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
-						if sentryClient != nil {
-							sentryClient.CaptureError(err)
-						}
-						return err
-					}
 					// Wrap static adaptiveCfg in a function to satisfy the
 					// AdaptiveConfigFunc signature. Short-lived: no hot-reload concern.
 					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
@@ -1244,7 +1302,8 @@ Key-free evidence capture:
 						ListenerAllowUnauthenticated: listenerAllowUnauthenticated,
 						UpstreamHeaders:              extraHeaders,
 						Scanner:                      sc, Approver: approver,
-						InputCfg: inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
+						AuditLogger: auditLogger,
+						InputCfg:    inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store, Baseline: baselineChecker, AdaptiveCfgFn: adaptiveFn, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
@@ -1296,7 +1355,8 @@ Key-free evidence capture:
 					}
 					wsOpts := mcp.MCPProxyOpts{
 						Scanner: sc, Approver: approver,
-						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+						AuditLogger: auditLogger,
+						InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store, Baseline: baselineChecker,
 						AdaptiveCfg:            adaptiveCfg,
@@ -1349,7 +1409,8 @@ Key-free evidence capture:
 				defer stopDeferAPI()
 				httpOpts := mcp.MCPProxyOpts{
 					Scanner: sc, Approver: approver,
-					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+					AuditLogger: auditLogger,
+					InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store, Baseline: baselineChecker,
 					AdaptiveCfg: adaptiveCfg, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
@@ -1527,7 +1588,8 @@ Key-free evidence capture:
 
 				proxyOpts := mcp.MCPProxyOpts{
 					Scanner: sc, Approver: approver,
-					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+					AuditLogger: auditLogger,
+					InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store, Baseline: baselineChecker,
 					AdaptiveCfg: adaptiveCfg, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
@@ -1653,7 +1715,8 @@ Key-free evidence capture:
 
 			proxyOpts := mcp.MCPProxyOpts{
 				Scanner: sc, Approver: approver,
-				InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+				AuditLogger: auditLogger,
+				InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 				KillSwitch: ks, ChainMatcher: chainMatcher,
 				CEE: cee, Store: store, Baseline: baselineChecker,
 				AdaptiveCfg: adaptiveCfg, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,

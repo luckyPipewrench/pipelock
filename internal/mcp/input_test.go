@@ -61,6 +61,14 @@ func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]
 func hexEncode(s string) string    { return hex.EncodeToString([]byte(s)) }
 func intPtrInput(v int) *int       { return &v }
 
+func gatherMetricsText(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	return w.Body.String()
+}
+
 func mcpRedactionSecret() string {
 	return "AKIA" + "IOSFODNN7EXAMPLE"
 }
@@ -4347,6 +4355,9 @@ func TestForwardScannedInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) 
 			reason := "tool call limit exceeded: 11/10"
 			opts := testOpts(sc)
 			opts.AuditLogger = auditLogger
+			opts.Metrics = metrics.New()
+			opts.DoWSubjectAgent = "configured-agent"
+			opts.DoWSubjectAgentAuth = envelope.ActorAuthConfigDefault
 			opts.DoWCheck = func(_, _, _ string) (bool, string, string, string) {
 				return false, tt.action, reason, "tool_call_limit"
 			}
@@ -4379,9 +4390,25 @@ func TestForwardScannedInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) 
 			if entry["scanner"] != scanner.ScannerDenialOfWallet {
 				t.Fatalf("scanner = %v, want %s", entry["scanner"], scanner.ScannerDenialOfWallet)
 			}
+			if entry["agent"] != "configured-agent" {
+				t.Fatalf("agent = %v, want configured-agent", entry["agent"])
+			}
+			if entry["subject_trust"] != dowSubjectTrustDefault {
+				t.Fatalf("subject_trust = %v, want %s", entry["subject_trust"], dowSubjectTrustDefault)
+			}
+			discriminator, _ := entry["subject_discriminator"].(string)
+			if !strings.HasPrefix(discriminator, "hmac-sha256:") {
+				t.Fatalf("subject_discriminator = %q, want hmac-sha256 prefix", discriminator)
+			}
 			hint, _ := entry["remediation_hint"].(string)
 			if !strings.Contains(hint, "agents._default.budget.max_tool_calls_per_session") {
 				t.Fatalf("remediation_hint = %q, want exact tool-call budget knob", hint)
+			}
+
+			metricsText := gatherMetricsText(t, opts.Metrics)
+			wantMetric := fmt.Sprintf(`pipelock_denial_of_wallet_events_total{action=%q,agent="configured-agent",subject_trust=%q} 1`, tt.action, dowSubjectTrustDefault)
+			if !strings.Contains(metricsText, wantMetric) {
+				t.Fatalf("metrics missing %q:\n%s", wantMetric, metricsText)
 			}
 		})
 	}

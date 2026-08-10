@@ -38,6 +38,13 @@ import (
 // When action is "warn", the caller logs but does not block the request.
 type DoWCheckFunc func(subjectKey, toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
 
+// DoWAttribution carries the already-resolved subject metadata used only for
+// audit and metrics. SubjectKey never enters metrics or audit output directly.
+type DoWAttribution struct {
+	SubjectKey string
+	Trust      string
+}
+
 const (
 	transportMCPStdio = "mcp_stdio"
 	transportMCPHTTP  = "mcp_http"
@@ -192,6 +199,10 @@ type MCPProxyOpts struct {
 	// invoking the shared input pipeline. Empty is valid only when
 	// DoWEnforceSubjectTrust is false.
 	DoWSubjectKey string
+	// DoWAttribution preserves the raw subject and its resolved trust grade for
+	// privacy-safe audit correlation after DoWSubjectKey has been blanked by a
+	// minimum-trust refusal. It does not participate in enforcement.
+	DoWAttribution DoWAttribution
 	// DoWSessionKey is a deprecated alias for older direct pipeline callers.
 	DoWSessionKey string
 	// DoWSubjectAgent and DoWSubjectAgentAuth are the configured fallback

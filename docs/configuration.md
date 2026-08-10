@@ -1947,6 +1947,11 @@ identification they are willing to bill against, in ascending order:
 | `agent` | Agent identity Pipelock bound or configured, plus peer address | ...run under distinct configured agent identities. A request-supplied agent name never reaches this grade, so a client cannot mint a fresh budget by claiming a new name. |
 | `principal` | Authenticated principal, such as an OAuth subject or mTLS client identity | ...are separately authenticated, including clients sharing one network path. |
 
+MCP stdio has no client address or authenticated client principal. Its calls
+use the single `_default` budget bucket and audit events report
+`subject_trust: default` so an investigation does not mistake that attribution
+for a stronger grade.
+
 A request graded at or above the minimum is billed and forwarded. A request
 graded below it is refused with a JSON-RPC error naming the subject-trust
 reason, and never reaches the upstream.
@@ -1960,6 +1965,16 @@ setting is explicit rather than inferred.
 
 `dow_min_subject_trust` is hot-reloadable; a change takes effect on the next
 request without restarting the listener.
+
+Every denial-of-wallet block and warning records the resolved configured agent,
+the subject trust grade, and a `subject_discriminator` in the audit event. The
+discriminator is a salted HMAC of the budget subject, so the record does not
+contain the raw client address or authenticated principal. It stays stable for
+the life of the process, matching the in-memory budget state, and changes after
+a restart. Prometheus exposes the agent and trust grade but never the
+per-subject discriminator. Standalone `pipelock mcp proxy` writes these audit
+events through the configured `logging` sink. Stream output goes to stderr so
+it cannot corrupt MCP stdio framing.
 
 > **Protocol note:** before revision `2026-07-28`, the HTTP listener additionally
 > required a server-minted `Mcp-Session-Id` that Pipelock had previously observed

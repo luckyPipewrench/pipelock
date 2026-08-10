@@ -6435,8 +6435,15 @@ func TestScanHTTPInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) {
 
 			reason := "tool call limit exceeded: 11/10"
 			opts := MCPProxyOpts{
-				Scanner:     testScannerForHTTP(t),
-				AuditLogger: auditLogger,
+				Scanner:             testScannerForHTTP(t),
+				AuditLogger:         auditLogger,
+				Metrics:             metrics.New(),
+				DoWSubjectAgent:     "configured-agent",
+				DoWSubjectAgentAuth: envelope.ActorAuthBound,
+				DoWAttribution: DoWAttribution{
+					SubjectKey: "configured-agent|198.51.100.7",
+					Trust:      config.DoWTrustAgent.String(),
+				},
 				DoWCheck: func(_, _, _ string) (bool, string, string, string) {
 					return false, tt.action, reason, "tool_call_limit"
 				},
@@ -6465,9 +6472,30 @@ func TestScanHTTPInput_DoWAuditEventsIncludeRemediationHint(t *testing.T) {
 			if entry["scanner"] != scanner.ScannerDenialOfWallet {
 				t.Fatalf("scanner = %v, want %s", entry["scanner"], scanner.ScannerDenialOfWallet)
 			}
+			if entry["agent"] != "configured-agent" {
+				t.Fatalf("agent = %v, want configured-agent", entry["agent"])
+			}
+			if entry["subject_trust"] != config.DoWTrustAgent.String() {
+				t.Fatalf("subject_trust = %v, want %s", entry["subject_trust"], config.DoWTrustAgent)
+			}
+			discriminator, _ := entry["subject_discriminator"].(string)
+			if !strings.HasPrefix(discriminator, "hmac-sha256:") {
+				t.Fatalf("subject_discriminator = %q, want hmac-sha256 prefix", discriminator)
+			}
+			for _, raw := range []string{"configured-agent|198.51.100.7", "198.51.100.7"} {
+				if strings.Contains(string(data), raw) {
+					t.Fatalf("audit event leaked raw DoW subject component %q: %s", raw, data)
+				}
+			}
 			hint, _ := entry["remediation_hint"].(string)
 			if !strings.Contains(hint, "agents._default.budget.max_tool_calls_per_session") {
 				t.Fatalf("remediation_hint = %q, want exact tool-call budget knob", hint)
+			}
+
+			metricsText := gatherMetricsText(t, opts.Metrics)
+			wantMetric := fmt.Sprintf(`pipelock_denial_of_wallet_events_total{action=%q,agent="configured-agent",subject_trust=%q} 1`, tt.action, config.DoWTrustAgent.String())
+			if !strings.Contains(metricsText, wantMetric) {
+				t.Fatalf("metrics missing %q:\n%s", wantMetric, metricsText)
 			}
 		})
 	}
@@ -6524,14 +6552,25 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	addr := ln.Addr().String()
 
 	var logBuf bytes.Buffer
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	auditLogger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("audit logger: %v", err)
+	}
+	t.Cleanup(auditLogger.Close)
+	m := metrics.New()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
-			Scanner:  sc,
-			InputCfg: inputCfg,
+			Scanner:             sc,
+			InputCfg:            inputCfg,
+			AuditLogger:         auditLogger,
+			Metrics:             m,
+			DoWSubjectAgent:     "configured-agent",
+			DoWSubjectAgentAuth: envelope.ActorAuthConfigDefault,
 			DoWCheck: func(_, toolName, _ string) (bool, string, string, string) {
 				if toolName == testDoWToolName {
 					return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
@@ -6567,6 +6606,21 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(respBody), testDoWBudgetReason) {
 		t.Errorf("expected DoW block response, got: %s", string(respBody))
+	}
+
+	auditLogger.Close()
+	data, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if !strings.Contains(string(data), `"agent":"configured-agent"`) || !strings.Contains(string(data), `"subject_trust":"agent"`) {
+		t.Fatalf("listener audit missing configured attribution: %s", data)
+	}
+	if strings.Contains(string(data), "configured-agent|127.0.0.1") {
+		t.Fatalf("listener audit leaked raw subject: %s", data)
+	}
+	if !strings.Contains(gatherMetricsText(t, m), `pipelock_denial_of_wallet_events_total{action="block",agent="configured-agent",subject_trust="agent"} 1`) {
+		t.Fatalf("listener metrics missing bounded DoW attribution:\n%s", gatherMetricsText(t, m))
 	}
 }
 

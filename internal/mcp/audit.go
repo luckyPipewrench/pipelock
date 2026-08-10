@@ -3,7 +3,18 @@
 
 package mcp
 
-import "github.com/luckyPipewrench/pipelock/internal/audit"
+import (
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+)
+
+const (
+	dowSubjectKeyDefault   = "_default"
+	dowSubjectTrustDefault = "default"
+	metricAgentDefault     = "_default"
+)
 
 func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.LogContext {
 	ctx, err := audit.NewMCPLogContext(method, resource, "")
@@ -14,4 +25,46 @@ func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.Lo
 		return audit.NewMethodLogContext(method)
 	}
 	return ctx
+}
+
+func resolvedDoWAttribution(opts MCPProxyOpts) (string, DoWAttribution) {
+	agent := identitykey.CEESafeAgent(opts.DoWSubjectAgent, opts.DoWSubjectAgentAuth)
+	if agent == "" {
+		agent = metricAgentDefault
+	}
+	attribution := opts.DoWAttribution
+	if attribution.SubjectKey == "" {
+		attribution.SubjectKey = dowSubjectKeyDefault
+	}
+	attribution.Trust = resolvedDoWTrust(attribution.Trust)
+	return agent, attribution
+}
+
+func resolvedDoWTrust(trust string) string {
+	switch trust {
+	case config.DoWTrustNetwork.String(), config.DoWTrustAgent.String(), config.DoWTrustPrincipal.String():
+		return trust
+	default:
+		return dowSubjectTrustDefault
+	}
+}
+
+func mustMCPDoWAuditContext(logger *audit.Logger, resource string, opts MCPProxyOpts) audit.LogContext {
+	agent, attribution := resolvedDoWAttribution(opts)
+	ctx, err := audit.NewMCPLogContext("MCP", resource, agent)
+	if err != nil {
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext("MCP"), err)
+		}
+		return audit.NewMethodLogContext("MCP")
+	}
+	return ctx.WithDoWAttribution(attribution.SubjectKey, attribution.Trust)
+}
+
+func recordDoWMetric(m *metrics.Metrics, action string, opts MCPProxyOpts) {
+	if m == nil {
+		return
+	}
+	agent, attribution := resolvedDoWAttribution(opts)
+	m.RecordDenialOfWalletEvent(action, agent, attribution.Trust)
 }

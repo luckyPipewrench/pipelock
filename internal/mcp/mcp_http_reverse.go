@@ -1199,7 +1199,9 @@ func RunHTTPListenerProxy(
 		scanOpts.AdaptiveCfg = adaptiveCfg
 		scanOpts.AdaptiveCfgFn = nil
 		scanOpts.WarnContext = r.Context()
-		scanOpts.DoWSubjectKey = trustedDoWSubjectKey(r, opts)
+		dowSubjectKey, dowSubjectTrust := opts.dowSubjectTrustFor(r)
+		scanOpts.DoWSubjectKey = trustedDoWSubjectKeyFor(dowSubjectKey, dowSubjectTrust, opts)
+		scanOpts.DoWAttribution = DoWAttribution{SubjectKey: dowSubjectKey, Trust: dowSubjectTrust.String()}
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -1824,6 +1826,10 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 // Pipelock itself had produced, which is not an authenticated identity proof.
 func trustedDoWSubjectKey(r *http.Request, opts MCPProxyOpts) string {
 	key, trust := opts.dowSubjectTrustFor(r)
+	return trustedDoWSubjectKeyFor(key, trust, opts)
+}
+
+func trustedDoWSubjectKeyFor(key string, trust config.DoWSubjectTrust, opts MCPProxyOpts) string {
 	if !opts.dowEnabled() {
 		return key
 	}

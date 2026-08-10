@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,10 +27,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testport"
 )
 
 // NOTE: Most mcp tests in the original cli package use rootCmd() which stays
@@ -703,10 +706,18 @@ func TestMcpProxyCmd_HelpMentionsFlightRecorderReceipts(t *testing.T) {
 }
 
 func TestMcpProxyCmd_ToolCallBudgetBlocksOverLimit(t *testing.T) {
-	t.Parallel()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		return runMCPProxyToolCallBudgetCase(t, addrs[0])
+	})
+}
 
-	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
-	if err := os.WriteFile(configPath, []byte(`mode: balanced
+func runMCPProxyToolCallBudgetCase(t *testing.T, metricsAddr string) error {
+	t.Helper()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "pipelock.yaml")
+	auditPath := filepath.Join(tempDir, "audit.jsonl")
+	configData := fmt.Sprintf(`mode: balanced
+metrics_listen: %q
 agents:
   _default:
     budget:
@@ -720,7 +731,13 @@ mcp_tool_scanning:
   enabled: false
 mcp_tool_policy:
   enabled: false
-`), 0o600); err != nil {
+logging:
+  format: json
+  output: file
+  file: %q
+  include_blocked: true
+`, metricsAddr, auditPath)
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -739,7 +756,7 @@ mcp_tool_policy:
 		"-test.run=TestMCPRuntimeHelperProcess$",
 	}, input)
 	if err != nil {
-		t.Fatalf("run mcp proxy command: %v\nstderr:\n%s", err, stderr)
+		return fmt.Errorf("run mcp proxy command: %w\nstderr:\n%s", err, stderr)
 	}
 
 	var found bool
@@ -758,6 +775,110 @@ mcp_tool_policy:
 	}
 	if !found {
 		t.Fatalf("second tools/call was not blocked by the real tracker; stdout:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "pipelock: metrics listening on ") {
+		t.Fatalf("standalone MCP proxy did not start configured metrics listener:\n%s", stderr)
+	}
+	auditData, readErr := os.ReadFile(filepath.Clean(auditPath))
+	if readErr != nil {
+		t.Fatalf("read standalone MCP audit: %v", readErr)
+	}
+	for _, want := range []string{
+		`"event":"blocked"`,
+		`"scanner":"denial_of_wallet"`,
+		`"agent":"_default"`,
+		`"subject_trust":"default"`,
+		`"subject_discriminator":"hmac-sha256:`,
+	} {
+		if !strings.Contains(string(auditData), want) {
+			t.Fatalf("standalone MCP audit missing %q: %s", want, auditData)
+		}
+	}
+	return nil
+}
+
+func TestStartMCPMetricsServerExposesRegistry(t *testing.T) {
+	m := metrics.New()
+	m.RecordDenialOfWalletEvent(config.ActionWarn, "_default", "default")
+	var stderr bytes.Buffer
+	stop, err := startMCPMetricsServer(t.Context(), "127.0.0.1:0", m, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	addr := strings.TrimSpace(strings.TrimPrefix(stderr.String(), "pipelock: metrics listening on "))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `pipelock_denial_of_wallet_events_total{action="warn",agent="_default",subject_trust="default"} 1`) {
+		t.Fatalf("metrics endpoint missing denial-of-wallet event:\n%s", body)
+	}
+}
+
+func TestStartMCPMetricsServerNoopAndNilCollector(t *testing.T) {
+	stop, err := startMCPMetricsServer(t.Context(), "", nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if _, err := startMCPMetricsServer(t.Context(), "127.0.0.1:0", nil, io.Discard); err == nil {
+		t.Fatal("expected nil metrics collector error")
+	}
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	if _, err := startMCPMetricsServer(t.Context(), ln.Addr().String(), metrics.New(), io.Discard); err == nil {
+		t.Fatal("expected metrics listener bind error")
+	}
+}
+
+func TestMCPProxyCmdRejectsMetricsListenerCollision(t *testing.T) {
+	addr := testport.ListenAddrs(t, 1)[0]
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configData := fmt.Sprintf("metrics_listen: %q\n", addr)
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := mcpProxyCmd()
+	cmd.SetArgs([]string{"--config", configPath, "--listen", addr, "--upstream", "http://127.0.0.1:1"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "after reserving MCP --listen") || !strings.Contains(err.Error(), "metrics_listen bind") {
+		t.Fatalf("collision error = %v", err)
+	}
+}
+
+func TestResolvedMCPDoWAgentName(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		resolved  string
+		found     bool
+		want      string
+	}{
+		{name: "configured profile", requested: "agent-a", resolved: "agent-a", found: true, want: "agent-a"},
+		{name: "default identity fallback", resolved: "_default", found: true},
+		{name: "expired profile", requested: "premium", resolved: "_default", want: "_default"},
+		{name: "missing fallback", requested: "premium", want: "premium"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolvedMCPDoWAgentName(tt.requested, tt.resolved, tt.found); got != tt.want {
+				t.Fatalf("resolvedMCPDoWAgentName() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

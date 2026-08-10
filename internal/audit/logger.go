@@ -436,13 +436,15 @@ type BundleRuleHit struct {
 //   - Target: CONNECT tunnel host:port destinations
 //   - Resource: MCP tool names, config file paths, listen addresses
 type LogContext struct {
-	method    string
-	url       string // actual HTTP URL
-	target    string // CONNECT host:port
-	resource  string // MCP tool, config path, listen address
-	clientIP  string
-	requestID string
-	agent     string
+	method          string
+	url             string // actual HTTP URL
+	target          string // CONNECT host:port
+	resource        string // MCP tool, config path, listen address
+	clientIP        string
+	requestID       string
+	agent           string
+	dowSubjectKey   string
+	dowSubjectTrust string
 }
 
 func (c LogContext) Method() string    { return c.method }
@@ -452,6 +454,15 @@ func (c LogContext) Resource() string  { return c.resource }
 func (c LogContext) ClientIP() string  { return c.clientIP }
 func (c LogContext) RequestID() string { return c.requestID }
 func (c LogContext) Agent() string     { return c.agent }
+
+// WithDoWAttribution adds denial-of-wallet subject metadata to a copy of the
+// context. The raw subject key stays process-local and is HMAC-redacted by the
+// logger before any local or external audit emission.
+func (c LogContext) WithDoWAttribution(subjectKey, subjectTrust string) LogContext {
+	c.dowSubjectKey = subjectKey
+	c.dowSubjectTrust = subjectTrust
+	return c
+}
 
 var (
 	errLogContextMissingClientIP  = errors.New("audit log context: client IP required")
@@ -566,22 +577,47 @@ func NewMethodLogContext(method string) LogContext {
 
 // Logger handles structured audit logging using zerolog.
 type Logger struct {
-	zl             zerolog.Logger
-	includeAllowed bool
-	includeBlocked bool
-	fileHandle     *os.File      // non-nil if logging to file
-	emitter        *emit.Emitter // optional external event emitter
+	zl                 zerolog.Logger
+	includeAllowed     bool
+	includeBlocked     bool
+	fileHandle         *os.File      // non-nil if logging to file
+	emitter            *emit.Emitter // optional external event emitter
+	identifierRedactor *identifierRedactor
 }
 
 // New creates a new audit logger. The caller should call Close when done.
 func New(format, output, filePath string, includeAllowed, includeBlocked bool) (*Logger, error) {
+	return newLogger(format, output, filePath, includeAllowed, includeBlocked, os.Stdout, sharedIdentifierRedactor)
+}
+
+// NewWithStream creates an audit logger whose stream output uses stream rather
+// than process stdout. Protocols that reserve stdout for framing, such as MCP
+// stdio, use this to send local audit records to stderr without corrupting the
+// protocol stream.
+func NewWithStream(format, output, filePath string, includeAllowed, includeBlocked bool, stream io.Writer) (*Logger, error) {
+	return newLogger(format, output, filePath, includeAllowed, includeBlocked, stream, sharedIdentifierRedactor)
+}
+
+func newLogger(
+	format, output, filePath string,
+	includeAllowed, includeBlocked bool,
+	stream io.Writer,
+	identifierSource func() (*identifierRedactor, error),
+) (*Logger, error) {
+	if stream == nil {
+		return nil, errors.New("create audit logger: stream writer is nil")
+	}
+	identifierRedactor, err := identifierSource()
+	if err != nil {
+		return nil, err
+	}
 	var writers []io.Writer
 
 	if output == "stdout" || output == "both" {
 		if format == "text" {
-			writers = append(writers, zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
+			writers = append(writers, zerolog.ConsoleWriter{Out: stream, TimeFormat: time.RFC3339})
 		} else {
-			writers = append(writers, os.Stdout)
+			writers = append(writers, stream)
 		}
 	}
 
@@ -596,7 +632,7 @@ func New(format, output, filePath string, includeAllowed, includeBlocked bool) (
 	}
 
 	if len(writers) == 0 {
-		writers = append(writers, os.Stdout)
+		writers = append(writers, stream)
 	}
 
 	var w io.Writer
@@ -612,17 +648,20 @@ func New(format, output, filePath string, includeAllowed, includeBlocked bool) (
 		Logger()
 
 	return &Logger{
-		zl:             zl,
-		includeAllowed: includeAllowed,
-		includeBlocked: includeBlocked,
-		fileHandle:     fileHandle,
+		zl:                 zl,
+		includeAllowed:     includeAllowed,
+		includeBlocked:     includeBlocked,
+		fileHandle:         fileHandle,
+		identifierRedactor: identifierRedactor,
 	}, nil
 }
 
 // NewNop returns a no-op logger that discards all events.
 func NewNop() *Logger {
+	identifierRedactor, _ := sharedIdentifierRedactor()
 	return &Logger{
-		zl: zerolog.Nop(),
+		zl:                 zerolog.Nop(),
+		identifierRedactor: identifierRedactor,
 	}
 }
 
@@ -741,6 +780,8 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		str("scanner", scanner).
 		str("reason", reason).
 		optStr("agent", ctx.agent).
+		optStr("subject_discriminator", l.identifierRedactor.discriminator(ctx.dowSubjectKey)).
+		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("display_label", displayLabel).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
 		optStr("mitre_technique", technique)
@@ -795,6 +836,8 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		optStr("agent", ctx.agent).
+		optStr("subject_discriminator", l.identifierRedactor.discriminator(ctx.dowSubjectKey)).
+		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("scanner", scanner).
 		optStr("mitre_technique", technique).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
@@ -1920,10 +1963,11 @@ func (l *Logger) LogShieldRewrite(category string, hits int, transport, targetUR
 // does NOT own the file - only the root logger should be Close()'d.
 func (l *Logger) With(key, value string) *Logger {
 	return &Logger{
-		zl:             l.zl.With().Str(key, value).Logger(),
-		includeAllowed: l.includeAllowed,
-		includeBlocked: l.includeBlocked,
-		emitter:        l.emitter,
+		zl:                 l.zl.With().Str(key, value).Logger(),
+		includeAllowed:     l.includeAllowed,
+		includeBlocked:     l.includeBlocked,
+		emitter:            l.emitter,
+		identifierRedactor: l.identifierRedactor,
 	}
 }
 

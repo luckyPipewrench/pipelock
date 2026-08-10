@@ -24,6 +24,12 @@ func (m *Metrics) registerProxyMetrics(reg *prometheus.Registry) {
 		Help:      "Total blocks by scanner type.",
 	}, []string{"scanner", "agent"})
 
+	m.denialOfWalletEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "denial_of_wallet_events_total",
+		Help:      "Denial-of-wallet limit events by action and bounded subject attribution.",
+	}, []string{"action", "agent", "subject_trust"})
+
 	m.requestLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "pipelock",
 		Name:      "request_duration_seconds",
@@ -75,7 +81,7 @@ func (m *Metrics) registerProxyMetrics(reg *prometheus.Registry) {
 	}, []string{"direction", "reason"})
 
 	reg.MustRegister(
-		m.requestsTotal, m.scannerHits, m.requestLatency,
+		m.requestsTotal, m.scannerHits, m.denialOfWalletEvents, m.requestLatency,
 		m.tunnelsTotal, m.tunnelDuration, m.tunnelBytes, m.activeTunnels,
 		m.sniTotal,
 		m.reverseProxyRequests, m.reverseProxyScanBlocked,
@@ -113,6 +119,60 @@ func (m *Metrics) RecordBlocked(domain, scannerName string, duration time.Durati
 		m.topScannerHits[scannerName]++
 	}
 	m.mu.Unlock()
+}
+
+// RecordDenialOfWalletEvent records both enforced and warn-only DoW outcomes.
+// Action and trust are normalized to closed sets before they become labels.
+// Agent is the resolved configured profile, matching the existing proxy metric
+// convention; raw subject identifiers never enter Prometheus.
+func (m *Metrics) RecordDenialOfWalletEvent(action, agent, subjectTrust string) {
+	if m == nil || m.denialOfWalletEvents == nil {
+		return
+	}
+	normalizedAction := normalizeDoWAction(action)
+	boundedAgent := m.boundedDoWAgent(agent)
+	m.denialOfWalletEvents.WithLabelValues(
+		normalizedAction,
+		boundedAgent,
+		normalizeDoWSubjectTrust(subjectTrust),
+	).Inc()
+	if normalizedAction == "block" {
+		m.RecordBlocked("mcp", "denial_of_wallet", 0, boundedAgent)
+	}
+}
+
+func (m *Metrics) boundedDoWAgent(agent string) string {
+	if agent == "" {
+		agent = "_default"
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.denialOfWalletAgents[agent]; ok {
+		return agent
+	}
+	if len(m.denialOfWalletAgents) >= maxTopEntries {
+		return "_other"
+	}
+	m.denialOfWalletAgents[agent] = struct{}{}
+	return agent
+}
+
+func normalizeDoWAction(action string) string {
+	switch action {
+	case "block", "warn":
+		return action
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeDoWSubjectTrust(trust string) string {
+	switch trust {
+	case "default", "network", "agent", "principal":
+		return trust
+	default:
+		return "unknown"
+	}
 }
 
 // RecordTunnel records a completed CONNECT tunnel.

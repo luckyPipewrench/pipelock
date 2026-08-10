@@ -470,11 +470,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
 			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
-			auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), scanner.ScannerDenialOfWallet, eval.DoWReason)
+			auditLogger.LogBlocked(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason)
 		}
-		if m != nil {
-			m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
-		}
+		recordDoWMetric(m, config.ActionBlock, opts)
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + eval.DoWReason}
@@ -536,8 +534,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
 			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
-			auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
+			auditLogger.LogAnomaly(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
 		}
+		recordDoWMetric(m, config.ActionWarn, opts)
 		recordAdaptiveSignal(session.SignalNearMiss)
 	}
 	// Chain warn has already been recorded as ChainAction on eval;

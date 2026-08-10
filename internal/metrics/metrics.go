@@ -27,6 +27,7 @@ type Metrics struct {
 	// Proxy / tunnel / SNI / reverse proxy (proxy.go).
 	requestsTotal           *prometheus.CounterVec
 	scannerHits             *prometheus.CounterVec
+	denialOfWalletEvents    *prometheus.CounterVec
 	requestLatency          prometheus.Histogram
 	tunnelsTotal            *prometheus.CounterVec
 	tunnelDuration          prometheus.Histogram
@@ -192,6 +193,7 @@ type Metrics struct {
 	sessionAnomalyCount    int64
 	sessionEscalationCount int64
 	agentStats             map[string]*agentCounters
+	denialOfWalletAgents   map[string]struct{}
 	degradedRuleBundles    []string
 
 	// Cross-request exfiltration stats callback (for JSON /stats endpoint).
@@ -224,6 +226,7 @@ func New() *Metrics {
 		topScannerHits:              make(map[string]int64),
 		topAnomalyTypes:             make(map[string]int64),
 		agentStats:                  make(map[string]*agentCounters),
+		denialOfWalletAgents:        make(map[string]struct{}),
 		receiptEmitFailureCounts:    make(map[string]int64),
 		requiredReceiptBlocks:       make(map[string]int64),
 		evidenceSequenceGapCounts:   make(map[string]int64),

@@ -51,6 +51,62 @@ func TestRecordBlocked(t *testing.T) {
 	m.mu.Unlock()
 }
 
+func TestRecordDenialOfWalletEventBoundedLabels(t *testing.T) {
+	m := New()
+	m.RecordDenialOfWalletEvent("block", testAgent, "agent")
+	m.RecordDenialOfWalletEvent("warn", testAgentAlt, "principal")
+	m.RecordDenialOfWalletEvent("attacker-action", testAgent, "attacker-trust")
+	m.RecordDenialOfWalletEvent("warn", "", "default")
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	text := w.Body.String()
+
+	for _, want := range []string{
+		`pipelock_denial_of_wallet_events_total{action="block",agent="test-agent",subject_trust="agent"} 1`,
+		`pipelock_denial_of_wallet_events_total{action="warn",agent="claude-code",subject_trust="principal"} 1`,
+		`pipelock_denial_of_wallet_events_total{action="unknown",agent="test-agent",subject_trust="unknown"} 1`,
+		`pipelock_denial_of_wallet_events_total{action="warn",agent="_default",subject_trust="default"} 1`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "attacker-action") || strings.Contains(text, "attacker-trust") {
+		t.Fatalf("unbounded action/trust label leaked into metrics:\n%s", text)
+	}
+}
+
+func TestRecordDenialOfWalletEventCapsAgentCardinality(t *testing.T) {
+	m := New()
+	for i := range maxTopEntries {
+		m.RecordDenialOfWalletEvent("block", fmt.Sprintf("profile-%03d", i), "agent")
+	}
+	m.RecordDenialOfWalletEvent("block", "profile-overflow", "agent")
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	text := w.Body.String()
+	if !strings.Contains(text, `agent="_other"`) {
+		t.Fatalf("overflow agent label not collapsed:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_scanner_hits_total{agent="_other",scanner="denial_of_wallet"} 1`) {
+		t.Fatalf("scanner hit did not use the bounded agent label:\n%s", text)
+	}
+	if strings.Contains(text, "profile-overflow") {
+		t.Fatalf("overflow profile created an unbounded series:\n%s", text)
+	}
+}
+
+func TestRecordDenialOfWalletEventNilMetrics(t *testing.T) {
+	var m *Metrics
+	m.RecordDenialOfWalletEvent("block", testAgent, "agent")
+	var zero Metrics
+	zero.RecordDenialOfWalletEvent("block", testAgent, "agent")
+}
+
 func TestPrometheusHandler(t *testing.T) {
 	m := New()
 	m.RecordAllowed(100*time.Millisecond, testAgent)

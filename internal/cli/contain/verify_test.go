@@ -41,6 +41,7 @@ const (
 	testSudoCmd      = "sudo"
 	testOperatorUser = "operator"
 	testSystemctl    = "systemctl"
+	testServicePID   = 4242
 	testNFT          = "nft"
 	testUserDel      = "userdel"
 	testRustup       = "rustup"
@@ -263,15 +264,21 @@ func rejectAllReadLink(path string) (string, error) {
 // invoking-binary setup under its control.
 func configureMatchingServiceBinary(t *testing.T, env *probeEnv) {
 	t.Helper()
-	const pid = 4242
-	procExe := serviceProcessExePath(pid)
+	procExe := serviceProcessExePath(testServicePID)
 	originalStat := env.stat
 	originalHash := env.hashFile
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		if name != testSystemctl || !containsArg(args, "--property=ExecStart,MainPID") {
+		if name != testSystemctl || !containsArg(args, "--value") {
 			return "", -1, fmt.Errorf("unexpected command %s %v", name, args)
 		}
-		return fmt.Sprintf("MainPID=%d\nExecStart={ path=%s ; argv[]=%s run ; }\n", pid, env.pipelockTarget, env.pipelockTarget), 0, nil
+		switch {
+		case containsArg(args, "--property=ExecStart"):
+			return fmt.Sprintf("{ path=%s ; argv[]=%s run ; }\n", env.pipelockTarget, env.pipelockTarget), 0, nil
+		case containsArg(args, "--property=MainPID"):
+			return fmt.Sprintf("%d\n", testServicePID), 0, nil
+		default:
+			return "", -1, fmt.Errorf("unexpected systemctl property %v", args)
+		}
 	}
 	env.readLink = func(path string) (string, error) {
 		if path != procExe {
@@ -3335,8 +3342,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	const allPassHash = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
 	deployed := filepath.Join(t.TempDir(), "pipelock")
 	writeFakeWrapper(t, deployed, 0o755)
-	const servicePID = 4242
-	procExe := serviceProcessExePath(servicePID)
+	procExe := serviceProcessExePath(testServicePID)
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		return defaultRunForAllPass(name, args)
 	}
@@ -3381,7 +3387,15 @@ func allPassEnv(t *testing.T) *probeEnv {
 func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	switch name {
 	case testSystemctl:
-		return "ActiveState=active\nSubState=running\nUser=pipelock-proxy\nType=simple\nMainPID=4242\nExecStart={ path=/usr/local/bin/pipelock ; argv[]=/usr/local/bin/pipelock run ; ignore_errors=no ; }\n", 0, nil
+		if containsArg(args, "--value") {
+			switch {
+			case containsArg(args, "--property=ExecStart"):
+				return "{ path=/usr/local/bin/pipelock ; argv[]=/usr/local/bin/pipelock run ; ignore_errors=no ; }\n", 0, nil
+			case containsArg(args, "--property=MainPID"):
+				return fmt.Sprintf("%d\n", testServicePID), 0, nil
+			}
+		}
+		return fmt.Sprintf("ActiveState=active\nSubState=running\nUser=pipelock-proxy\nType=simple\nMainPID=%d\nExecStart={ path=/usr/local/bin/pipelock ; argv[]=/usr/local/bin/pipelock run ; ignore_errors=no ; }\n", testServicePID), 0, nil
 	case testNFT:
 		return goodNFTContainmentOutput, 0, nil
 	case testSudoCmd:

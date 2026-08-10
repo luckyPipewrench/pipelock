@@ -567,23 +567,21 @@ func probeBinaryIntegrity(ctx context.Context, env *probeEnv) (string, string) {
 			shortHash(pinned), shortHash(got))
 	}
 	if !env.verifyRunningImage {
-		detail, status := binaryIntegrityDetail(env, target, pinned)
-		return status, detail
+		return statusPass, binaryIntegrityDetail(env, target, pinned)
 	}
 
 	// The installed pathname alone is not the running service identity. An
 	// atomic upgrade can replace and re-pin the file while the old executable
 	// remains mapped by the current service process until restart.
-	out, code, err := env.runCmd(ctx, "systemctl", "show", env.serviceName, "--property=ExecStart,MainPID")
+	execStart, code, err := env.runCmd(ctx, "systemctl", "show", env.serviceName, "--property=ExecStart", "--value")
 	if err != nil {
 		return statusSkip, fmt.Sprintf("systemctl unavailable for running binary verification: %v", err)
 	}
 	if code != 0 {
-		return statusFail, fmt.Sprintf("systemctl exit=%d while reading ExecStart/MainPID: %s", code, oneLine(out))
+		return statusFail, fmt.Sprintf("systemctl exit=%d while reading ExecStart: %s", code, oneLine(execStart))
 	}
 
-	fields := parseSystemdShow(out)
-	execPath, err := systemdExecStartPath(fields["ExecStart"])
+	execPath, err := systemdExecStartPath(execStart)
 	if err != nil {
 		return statusFail, fmt.Sprintf("parse effective ExecStart: %v", err)
 	}
@@ -591,7 +589,15 @@ func probeBinaryIntegrity(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("effective ExecStart path %s does not match deployed binary %s", oneLine(execPath), oneLine(target))
 	}
 
-	pid, err := systemdMainPID(fields["MainPID"])
+	mainPID, code, err := env.runCmd(ctx, "systemctl", "show", env.serviceName, "--property=MainPID", "--value")
+	if err != nil {
+		return statusSkip, fmt.Sprintf("systemctl unavailable for running binary verification: %v", err)
+	}
+	if code != 0 {
+		return statusFail, fmt.Sprintf("systemctl exit=%d while reading MainPID: %s", code, oneLine(mainPID))
+	}
+
+	pid, err := systemdMainPID(strings.TrimSpace(mainPID))
 	if err != nil {
 		return statusFail, fmt.Sprintf("parse service MainPID: %v", err)
 	}
@@ -630,15 +636,10 @@ func probeBinaryIntegrity(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("running service image hash mismatch: pin=%s got=%s", shortHash(pinned), shortHash(runningHash))
 	}
 
-	detail, status := binaryIntegrityDetail(env, target, pinned)
-	if status != statusPass {
-		return status, detail
-	}
-	detail = fmt.Sprintf("deployed and running service %s", detail)
-	return statusPass, detail
+	return statusPass, fmt.Sprintf("deployed and running service %s", binaryIntegrityDetail(env, target, pinned))
 }
 
-func binaryIntegrityDetail(env *probeEnv, target, pinned string) (string, string) {
+func binaryIntegrityDetail(env *probeEnv, target, pinned string) string {
 	detail := fmt.Sprintf("binary hash %s matches pin", shortHash(pinned))
 	if self, err := env.selfPath(); err == nil && filepath.Clean(self) != target {
 		self = filepath.Clean(self)
@@ -654,7 +655,7 @@ func binaryIntegrityDetail(env *probeEnv, target, pinned string) (string, string
 			detail += fmt.Sprintf(" (note: invoking binary %s differs from deployed binary %s)", self, target)
 		}
 	}
-	return detail, statusPass
+	return detail
 }
 
 // systemdExecStartPath extracts the one executable path from systemctl show's

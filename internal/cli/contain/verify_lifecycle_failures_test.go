@@ -531,17 +531,24 @@ func TestProbeBinaryIntegrity_VerifiesEffectiveServiceCommandAndRunningImage(t *
 			mustWriteFile(t, pinPath, pinned+"\n")
 
 			execPath, mainPID, runningImage, readLinkErr := tc.setup(t, target, pinPath)
-			procExe := serviceProcessExePath(4242)
+			procExe := serviceProcessExePath(testServicePID)
 			env := makeProbeEnv(t, func(env *probeEnv) {
 				env.pipelockTarget = target
 				env.pinPath = pinPath
 				env.readFile = os.ReadFile
 				env.selfPath = func() (string, error) { return target, nil }
 				env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-					if name != testSystemctl || !containsArg(args, "--property=ExecStart,MainPID") {
+					if name != testSystemctl || !containsArg(args, "--value") {
 						return "", -1, fmt.Errorf("unexpected command %s %v", name, args)
 					}
-					return fmt.Sprintf("MainPID=%s\nExecStart={ path=%s ; argv[]=%s run ; }\n", mainPID, execPath, execPath), 0, nil
+					switch {
+					case containsArg(args, "--property=ExecStart"):
+						return fmt.Sprintf("{ path=%s ; argv[]=%s run ; }\n", execPath, execPath), 0, nil
+					case containsArg(args, "--property=MainPID"):
+						return mainPID + "\n", 0, nil
+					default:
+						return "", -1, fmt.Errorf("unexpected systemctl property %v", args)
+					}
 				}
 				env.readLink = func(path string) (string, error) {
 					if path != procExe {
@@ -684,7 +691,7 @@ func TestProbeBinaryIntegrity_RunningImageVerificationFailures(t *testing.T) {
 				t.Fatalf("hash target: %v", err)
 			}
 			mustWriteFile(t, pinPath, pinned+"\n")
-			procExe := serviceProcessExePath(4242)
+			procExe := serviceProcessExePath(testServicePID)
 			env := makeProbeEnv(t, func(env *probeEnv) {
 				env.pipelockTarget = target
 				env.pinPath = pinPath
@@ -699,6 +706,32 @@ func TestProbeBinaryIntegrity_RunningImageVerificationFailures(t *testing.T) {
 				t.Fatalf("probe = (%q, %q), want (%q, containing %q)", status, detail, tc.wantStatus, tc.wantDetail)
 			}
 		})
+	}
+}
+
+func TestProbeBinaryIntegrity_EnforcementOnlySkipsRunningImage(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "pipelock")
+	pinPath := filepath.Join(dir, "binary-pin.sha256")
+	mustWriteFile(t, target, "service image")
+	pinned, err := sha256HexOfFile(target)
+	if err != nil {
+		t.Fatalf("hash target: %v", err)
+	}
+	mustWriteFile(t, pinPath, pinned+"\n")
+
+	env := makeProbeEnv(t, func(env *probeEnv) {
+		env.pipelockTarget = target
+		env.pinPath = pinPath
+		env.readFile = os.ReadFile
+		env.selfPath = func() (string, error) { return target, nil }
+		env.hashFile = sha256HexOfFile
+		env.verifyRunningImage = false
+	})
+
+	status, detail := probeBinaryIntegrity(context.Background(), env)
+	if status != statusPass || !strings.Contains(detail, "binary hash") {
+		t.Fatalf("probe = (%q, %q), want deployed-pin pass", status, detail)
 	}
 }
 

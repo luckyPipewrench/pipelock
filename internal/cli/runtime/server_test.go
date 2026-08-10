@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1429,6 +1430,19 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start continued despite zero file-sentry coverage")
+	}
+}
+
+func TestServer_StartFileSentryBestEffortRejectsInitializationFailure(t *testing.T) {
+	failFileSentryWatcher(t, errors.New("watcher setup failed"))
+	cfg := config.Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.BestEffort = true
+	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: t.TempDir()}}
+	s, _ := newTestServer(t, nil)
+
+	if _, err := s.startFileSentry(context.Background(), cfg, func() {}); err == nil || !strings.Contains(err.Error(), "file sentry init failed") {
+		t.Fatalf("startFileSentry error = %v, want initialization failure", err)
 	}
 }
 

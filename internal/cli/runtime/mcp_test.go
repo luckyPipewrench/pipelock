@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -88,6 +89,15 @@ func writeMCPFileSentryConfig(t *testing.T, bestEffort bool, paths ...string) st
 	return configPath
 }
 
+func failFileSentryWatcher(t *testing.T, watchErr error) {
+	t.Helper()
+	old := newFileSentryWatcher
+	newFileSentryWatcher = func(*config.FileSentry, filesentry.DLPScanner, filesentry.Lineage, func(error)) (filesentry.Watcher, error) {
+		return nil, watchErr
+	}
+	t.Cleanup(func() { newFileSentryWatcher = old })
+}
+
 func TestMcpProxyCmd_FileSentryFailsWhenNoPathsArm(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nonexistent-zero-armed")
 	configPath := writeMCPFileSentryConfig(t, false, missing)
@@ -111,6 +121,16 @@ func TestMcpProxyCmd_FileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no watch paths armed") {
 		t.Fatalf("mcp proxy error = %v, want zero-armed file-sentry failure; stderr:\n%s", err, stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryBestEffortRejectsInitializationFailure(t *testing.T) {
+	failFileSentryWatcher(t, errors.New("watcher setup failed"))
+	configPath := writeMCPFileSentryConfig(t, true, t.TempDir())
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil || !strings.Contains(err.Error(), "file sentry init failed") {
+		t.Fatalf("mcp proxy error = %v, want initialization failure; stderr:\n%s", err, stderr)
 	}
 }
 

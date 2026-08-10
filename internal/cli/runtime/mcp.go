@@ -1593,13 +1593,9 @@ Key-free evidence capture:
 				onErr := func(err error) {
 					_, _ = fmt.Fprintf(logW, "pipelock: [file_sentry] %v\n", err)
 				}
-				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin, onErr)
+				watcher, watchErr := newFileSentryWatcher(&cfg.FileSentry, sc, lin, onErr)
 				if watchErr != nil {
-					if cfg.FileSentry.BestEffort {
-						_, _ = fmt.Fprintf(logW, "pipelock: file sentry init failed (best_effort: continuing without file monitoring): %v\n", watchErr)
-					} else {
-						return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
-					}
+					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
 				}
 				// Arm synchronously before child launch.
 				if watcher != nil {

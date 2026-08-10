@@ -32,6 +32,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+var newFileSentryWatcher = filesentry.NewWatcher
+
 func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel context.CancelFunc) (func(), error) {
 	if cfg == nil || !cfg.FileSentry.Enabled {
 		return func() {}, nil
@@ -40,7 +42,7 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 	onErr := func(err error) {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: [file_sentry] %v\n", err)
 	}
-	watcher, err := filesentry.NewWatcher(&cfg.FileSentry, liveFileSentryScanner{
+	watcher, err := newFileSentryWatcher(&cfg.FileSentry, liveFileSentryScanner{
 		load: func() *scanner.Scanner {
 			if s.proxy == nil {
 				return nil
@@ -49,10 +51,6 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		},
 	}, nil, onErr)
 	if err != nil {
-		if cfg.FileSentry.BestEffort {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry init failed (best_effort: continuing without file monitoring): %v\n", err)
-			return func() {}, nil
-		}
 		return nil, fmt.Errorf("file sentry init failed (feature is enabled): %w", err)
 	}
 

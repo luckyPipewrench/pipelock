@@ -617,7 +617,9 @@ func TestExplainHostIsIPLiteral(t *testing.T) {
 		{"", false},
 		{"::1", true},
 		{"fe80::1", true},
-		{"1.2.3", false}, // not four octets
+		{"8.8", true},
+		{"127.0.1", true},
+		{"1.2.3", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
@@ -625,6 +627,22 @@ func TestExplainHostIsIPLiteral(t *testing.T) {
 				t.Errorf("explainHostIsIPLiteral(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExplainCmd_AlternativeIPIsNotDNSDependent(t *testing.T) {
+	report, err := decodeExplainJSON(t, "https://8.8/clean")
+	if err != nil {
+		t.Fatalf("clean alternative IP URL should not error: %v", err)
+	}
+	if !report.Allowed {
+		t.Fatal("expected allowed")
+	}
+	if report.Host != "8.8" {
+		t.Fatalf("host = %q, want original alternative literal 8.8", report.Host)
+	}
+	if report.DNSDependent {
+		t.Error("deterministic alternative IP literal must not be flagged dns_dependent")
 	}
 }
 

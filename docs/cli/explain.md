@@ -12,7 +12,7 @@ The remediation guidance is the point of the command: a hint must name a knob th
 
 ## No network access
 
-`explain` does not resolve DNS or fetch anything. It runs the layers that fire **before** DNS resolution: scheme, CRLF injection, path traversal, allowlist, blocklist, the immutable core SSRF literal check, core and URL DLP, and path/subdomain entropy. The hostname-based SSRF layer (layer 8) resolves DNS at runtime, so `explain` reports when a verdict would *additionally* depend on resolution rather than reaching out itself. IP literals that fall in private/loopback/link-local ranges are still caught here by the immutable core SSRF literal check, which needs no resolution.
+`explain` does not resolve DNS or fetch anything. It runs the layers that fire **before** DNS resolution: scheme, CRLF injection, path traversal, allowlist, blocklist, the immutable core SSRF literal check, core and URL DLP, and path/subdomain entropy. The hostname-based SSRF layer (layer 8) resolves DNS at runtime, so `explain` reports when a verdict would *additionally* depend on resolution rather than reaching out itself. Standard and legacy numeric IP forms such as `8.8` are deterministic literals, so they are not marked `dns_dependent`. IP literals that fall in private/loopback/link-local ranges are still caught here by the immutable core SSRF literal check, which needs no resolution.
 
 ## Per-scanner remediation mapping
 

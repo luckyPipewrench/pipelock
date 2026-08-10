@@ -420,7 +420,7 @@ func TestScan_BlocksSSRF_Multicast(t *testing.T) {
 	}
 }
 
-func TestParseAlternativeIP(t *testing.T) {
+func TestParseIPLiteralAlternativeGrammar(t *testing.T) {
 	tests := []struct {
 		name   string
 		input  string
@@ -463,7 +463,7 @@ func TestParseAlternativeIP(t *testing.T) {
 		{"octal full loopback", "017700000001", "127.0.0.1"},
 
 		// Non-IP inputs → nil
-		{"standard decimal dotted", "127.0.0.1", ""},
+		{"standard decimal dotted", "127.0.0.1", "127.0.0.1"},
 		{"hostname", "example.com", ""},
 		{"empty", "", ""},
 		{"too many octets", "0x7f.0.0.0.1", ""},
@@ -491,7 +491,7 @@ func TestParseAlternativeIP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ip := parseAlternativeIP(tt.input)
+			ip := ParseIPLiteral(tt.input)
 			if tt.expect == "" {
 				if ip != nil {
 					t.Errorf("expected nil for %q, got %s", tt.input, ip)

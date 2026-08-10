@@ -1,0 +1,33 @@
+name: Binding Probe
+
+# TEMPORARY DIAGNOSTIC. This workflow exists to answer one question and is
+# deleted immediately afterwards. Do not merge it.
+#
+# Question: the branch ruleset requires a status check whose CONTEXT is named
+# "security-scan". A context is a name, not a workflow identity. On a
+# pull_request event GitHub runs the workflow files from the pull request head,
+# so a pull request can define its own job with that name.
+#
+# If this trivially-passing job can satisfy the requirement, then any pull
+# request can mint the required check and the secret-scan gate is advisory
+# rather than enforced. If it cannot, the requirement is bound to something a
+# pull request cannot forge, and the gate holds.
+#
+# This probe is run against the repository owner's own repository, with their
+# authorization, to establish which of those two states is true.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report success without scanning anything
+        run: |
+          echo "binding probe - this job scanned nothing and exits 0"

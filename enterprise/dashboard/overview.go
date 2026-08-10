@@ -699,8 +699,6 @@ func budgetPressure(agent AgentBudgetView) (int, string) {
 	considerInt(agent.RequestCount, agent.MaxRequests, "request budget")
 	considerInt64(agent.ByteCount, agent.MaxBytes, "byte budget")
 	considerInt(agent.UniqueDomainCount, agent.MaxUniqueDomains, "unique-domain budget")
-	considerInt(agent.TotalToolCalls, agent.MaxToolCallsPerSession, "MCP tool-call budget")
-	considerInt(agent.Inflight, agent.MaxConcurrentToolCalls, "MCP concurrency budget")
 	return best, basis
 }
 

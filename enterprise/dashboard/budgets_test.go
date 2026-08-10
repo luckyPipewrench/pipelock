@@ -18,8 +18,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
-const budgetTestSensitiveSession = "mcp-session-sensitive-alpha"
-
 type fakeBudgetSource struct {
 	agents []AgentBudgetView
 	err    error
@@ -34,39 +32,22 @@ func (f *fakeBudgetSource) AllAgentBudgets(_ context.Context, limit int) ([]Agen
 		return nil, f.err
 	}
 	out := make([]AgentBudgetView, len(f.agents))
-	for i, a := range f.agents {
-		if len(a.Sessions) > 0 {
-			sessions := make([]AgentBudgetSessionView, len(a.Sessions))
-			copy(sessions, a.Sessions)
-			a.Sessions = sessions
-		}
-		out[i] = a
-	}
+	copy(out, f.agents)
 	return out, nil
 }
 
-func budgetAgentWithSession() AgentBudgetView {
+func budgetAgent() AgentBudgetView {
 	return AgentBudgetView{
-		Agent:                  "agent-alpha",
-		ForwardConfigured:      true,
-		RequestCount:           7,
-		ByteCount:              4096,
-		UniqueDomainCount:      2,
-		WindowStart:            time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
-		MaxRequests:            100,
-		MaxBytes:               1048576,
-		MaxUniqueDomains:       10,
-		WindowMinutes:          60,
-		DoWConfigured:          true,
-		ActiveSessions:         1,
-		TotalToolCalls:         3,
-		Inflight:               1,
-		MaxToolCallsPerSession: 50,
-		MaxConcurrentToolCalls: 5,
-		MaxWallClockMinutes:    30,
-		Sessions: []AgentBudgetSessionView{
-			{SessionID: budgetTestSensitiveSession, TotalToolCalls: 3, Inflight: 1, StartedAt: time.Date(2026, 7, 10, 12, 5, 0, 0, time.UTC)},
-		},
+		Agent:             "agent-alpha",
+		ForwardConfigured: true,
+		RequestCount:      7,
+		ByteCount:         4096,
+		UniqueDomainCount: 2,
+		WindowStart:       time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
+		MaxRequests:       100,
+		MaxBytes:          1048576,
+		MaxUniqueDomains:  10,
+		WindowMinutes:     60,
 	}
 }
 
@@ -105,7 +86,7 @@ func TestBudgets_Gating(t *testing.T) {
 				TrustedOuterAuth: true,
 				ReceiptDir:       t.TempDir(),
 				HasFeature:       tt.hasFeature,
-				BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}},
+				BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}},
 				AuthorizeRaw:     allowRawAccess,
 			})
 			rec := httptest.NewRecorder()
@@ -174,7 +155,7 @@ func TestBudgets_ConnectedEmptySourceExplainsSnapshotRows(t *testing.T) {
 		"agents with loaded budget rows",
 		"Budget pressure proves only mediated per-agent budget consumption",
 		"The source is connected",
-		"no agents with configured forward-proxy budgets or live MCP sessions",
+		"no agents with configured forward-proxy budgets",
 		"--runtime-snapshot-file",
 	} {
 		if !strings.Contains(body, want) {
@@ -183,12 +164,48 @@ func TestBudgets_ConnectedEmptySourceExplainsSnapshotRows(t *testing.T) {
 	}
 }
 
+func TestBudgets_RendersOnlyPopulatedForwardBudgetFields(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+		BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}},
+		AuthorizeRaw:     allowRawAccess,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// Every populated forward field is asserted by label AND rendered value.
+	// Checking only the request count would let a regression that drops the
+	// byte, unique-domain or window output pass unnoticed.
+	for _, want := range []string{
+		"Forward proxy",
+		"Requests (used / limit)", "7 / 100",
+		"Bytes (used / limit)", "4096 / 1048576",
+		"Unique domains (used / limit)", "2 / 10",
+		"Window", "60 min rolling",
+		"Window started", "2026-07-10T12:00:00Z",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("budget body missing populated forward field %q", want)
+		}
+	}
+	if strings.Contains(body, "MCP denial-of-wallet") {
+		t.Fatal("budget body advertised unpopulated MCP denial-of-wallet fields")
+	}
+}
+
 func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 	t.Parallel()
 
 	t.Run("trailing_slash_not_budget_panel", func(t *testing.T) {
 		t.Parallel()
-		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}}
+		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}}
 		handler := New(Options{
 			TrustedOuterAuth: true,
 			ReceiptDir:       t.TempDir(),
@@ -208,7 +225,7 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 
 	t.Run("post_rejected_before_source", func(t *testing.T) {
 		t.Parallel()
-		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}}
+		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}}
 		handler := New(Options{
 			TrustedOuterAuth: true,
 			ReceiptDir:       t.TempDir(),
@@ -250,43 +267,6 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 	})
 }
 
-// TestBudgets_SessionIDRedaction: the sensitive per-session identifier is
-// redacted in the metadata view and shown only in the raw view.
-func TestBudgets_SessionIDRedaction(t *testing.T) {
-	t.Parallel()
-
-	newHandler := func(raw func(*http.Request) error) http.Handler {
-		return New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       t.TempDir(),
-			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}},
-			AuthorizeRaw:     raw,
-		})
-	}
-
-	// Metadata view (no raw authorizer): session id must be redacted.
-	recMeta := httptest.NewRecorder()
-	newHandler(nil).ServeHTTP(recMeta, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
-	metaBody := recMeta.Body.String()
-	if recMeta.Code != http.StatusOK {
-		t.Fatalf("metadata status = %d, want 200", recMeta.Code)
-	}
-	if strings.Contains(metaBody, budgetTestSensitiveSession) {
-		t.Fatal("metadata view leaked the sensitive session id")
-	}
-	if !strings.Contains(metaBody, budgetRedacted) {
-		t.Fatal("metadata view did not mark the session id redacted")
-	}
-
-	// Raw view: session id must be visible.
-	recRaw := httptest.NewRecorder()
-	newHandler(allowRawAccess).ServeHTTP(recRaw, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
-	if !strings.Contains(recRaw.Body.String(), budgetTestSensitiveSession) {
-		t.Fatal("raw view did not show the session id")
-	}
-}
-
 func TestReadModel_Budgets_NilSource(t *testing.T) {
 	t.Parallel()
 	m := NewReadModel(Options{})
@@ -302,22 +282,18 @@ func TestReadModel_Budgets_NilSource(t *testing.T) {
 	}
 }
 
-func TestReadModel_Budgets_SortTruncateRedact(t *testing.T) {
+func TestReadModel_Budgets_SortAndTruncate(t *testing.T) {
 	t.Parallel()
 
 	// Unsorted input, one over the display cap.
 	agents := make([]AgentBudgetView, 0, budgetAgentLimit+1)
-	agents = append(agents, AgentBudgetView{
-		Agent: "zzz-last", DoWConfigured: true, ActiveSessions: 1,
-		Sessions: []AgentBudgetSessionView{{SessionID: "sensitive-zzz"}},
-	})
+	agents = append(agents, AgentBudgetView{Agent: "zzz-last", ForwardConfigured: true})
 	for i := 0; i < budgetAgentLimit; i++ {
 		agents = append(agents, AgentBudgetView{Agent: fmt.Sprintf("agent-%04d", i), ForwardConfigured: true})
 	}
 
 	m := NewReadModel(Options{BudgetSource: &fakeBudgetSource{agents: agents}})
 
-	// Redacted (metadata) view.
 	ov, err := m.Budgets(context.Background(), false)
 	if err != nil {
 		t.Fatalf("Budgets: %v", err)
@@ -334,65 +310,26 @@ func TestReadModel_Budgets_SortTruncateRedact(t *testing.T) {
 	if ov.Agents[0].Agent != "agent-0000" {
 		t.Fatalf("expected sorted-first agent-0000, got %q", ov.Agents[0].Agent)
 	}
-	// "zzz-last" (with the sensitive session) sorts last and is dropped by the
-	// cap, so build a small deterministic case for the redaction assertion.
-	small := NewReadModel(Options{BudgetSource: &fakeBudgetSource{agents: []AgentBudgetView{
-		{Agent: "a", DoWConfigured: true, ActiveSessions: 1, Sessions: []AgentBudgetSessionView{{SessionID: "sensitive-abc"}}},
-	}}})
-	red, err := small.Budgets(context.Background(), false)
-	if err != nil {
-		t.Fatalf("Budgets: %v", err)
-	}
-	if red.Agents[0].Sessions[0].SessionID != budgetRedacted {
-		t.Fatalf("session id not redacted in metadata view: %q", red.Agents[0].Sessions[0].SessionID)
-	}
-	rawov, err := small.Budgets(context.Background(), true)
-	if err != nil {
-		t.Fatalf("Budgets: %v", err)
-	}
-	if rawov.Agents[0].Sessions[0].SessionID != "sensitive-abc" {
-		t.Fatalf("session id should be visible in raw view, got %q", rawov.Agents[0].Sessions[0].SessionID)
-	}
 }
 
-func TestReadModel_Budgets_RequestsBoundedSourceAndCapsSessions(t *testing.T) {
+func TestReadModel_Budgets_RequestsBoundedSource(t *testing.T) {
 	t.Parallel()
 
-	sessions := make([]AgentBudgetSessionView, 0, budgetSessionLimit+1)
-	for i := 0; i <= budgetSessionLimit; i++ {
-		sessions = append(sessions, AgentBudgetSessionView{SessionID: fmt.Sprintf("session-%03d", i)})
-	}
-	source := &fakeBudgetSource{agents: []AgentBudgetView{{
-		Agent:          "agent-session-heavy",
-		DoWConfigured:  true,
-		ActiveSessions: len(sessions),
-		Sessions:       sessions,
-	}}}
+	source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}}
 	m := NewReadModel(Options{BudgetSource: source})
 
-	ov, err := m.Budgets(context.Background(), false)
+	_, err := m.Budgets(context.Background(), false)
 	if err != nil {
 		t.Fatalf("Budgets: %v", err)
 	}
 	if source.limit != budgetAgentLimit+1 {
 		t.Fatalf("BudgetSource limit = %d, want %d", source.limit, budgetAgentLimit+1)
 	}
-	if got := len(ov.Agents[0].Sessions); got != budgetSessionLimit {
-		t.Fatalf("session rows = %d, want cap %d", got, budgetSessionLimit)
-	}
-	if !ov.Agents[0].SessionsTruncated {
-		t.Fatal("expected SessionsTruncated when source returns more than the display cap")
-	}
-	for _, session := range ov.Agents[0].Sessions {
-		if session.SessionID != budgetRedacted {
-			t.Fatalf("metadata session id after cap/redaction = %q, want %q", session.SessionID, budgetRedacted)
-		}
-	}
 }
 
 func TestAgentBudgetView_Displays(t *testing.T) {
 	t.Parallel()
-	limited := AgentBudgetView{RequestCount: 3, MaxRequests: 10, TotalToolCalls: 4, MaxToolCallsPerSession: 50}
+	limited := AgentBudgetView{RequestCount: 3, MaxRequests: 10}
 	if got := limited.RequestsDisplay(); got != "3 / 10" {
 		t.Fatalf("RequestsDisplay = %q, want %q", got, "3 / 10")
 	}
@@ -401,22 +338,8 @@ func TestAgentBudgetView_Displays(t *testing.T) {
 	if got := limited.BytesDisplay(); got != "2147483648 / 2147483649" {
 		t.Fatalf("BytesDisplay = %q, want %q", got, "2147483648 / 2147483649")
 	}
-	// The total is summed across subjects while the limit is per subject, so
-	// the two must not be rendered as a ratio: an operator reading "80 / 50"
-	// would think the budget was blown when no subject had exceeded it.
-	const wantToolCalls = "4 across subjects (limit 50 per subject)"
-	if got := limited.ToolCallsDisplay(); got != wantToolCalls {
-		t.Fatalf("ToolCallsDisplay = %q, want %q", got, wantToolCalls)
-	}
-	overCap := AgentBudgetView{TotalToolCalls: 80, MaxToolCallsPerSession: 50}
-	if got := overCap.ToolCallsDisplay(); strings.Contains(got, "80 / 50") {
-		t.Fatalf("aggregate rendered as a per-subject ratio: %q", got)
-	}
-	unlimited := AgentBudgetView{RequestCount: 3, MaxRequests: 0, TotalToolCalls: 4, MaxToolCallsPerSession: 0}
+	unlimited := AgentBudgetView{RequestCount: 3, MaxRequests: 0}
 	if got := unlimited.RequestsDisplay(); got != "3 / "+budgetUnlimited {
 		t.Fatalf("RequestsDisplay unlimited = %q", got)
-	}
-	if got := unlimited.ToolCallsDisplay(); got != "4 / "+budgetUnlimited {
-		t.Fatalf("ToolCallsDisplay unlimited = %q", got)
 	}
 }

@@ -475,27 +475,63 @@ func mustLoadMetadata(t *testing.T, path string) domkey.Metadata {
 	return keyring.Metadata()
 }
 
+func TestSnapshotTestFilePreservesDanglingSymlink(t *testing.T) {
+	if !supportsUnixSymlinkTest(runtime.GOOS) {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	const target = "missing.json"
+	link := filepath.Join(dir, "keyring.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	snapshot := snapshotTestFile(t, link)
+	if !snapshot.exists {
+		t.Fatal("dangling symlink reported as nonexistent")
+	}
+	if snapshot.mode&os.ModeSymlink == 0 {
+		t.Fatalf("snapshot mode = %s, want symlink", snapshot.mode)
+	}
+	if snapshot.linkTarget != target {
+		t.Fatalf("symlink target = %q, want %q", snapshot.linkTarget, target)
+	}
+	if snapshot.data != nil {
+		t.Fatalf("symlink snapshot data = %q, want nil", snapshot.data)
+	}
+}
+
 type testFileSnapshot struct {
-	data   []byte
-	mode   os.FileMode
-	exists bool
+	data       []byte
+	linkTarget string
+	mode       os.FileMode
+	exists     bool
 }
 
 func snapshotTestFile(t *testing.T, path string) testFileSnapshot {
 	t.Helper()
 	cleanPath := filepath.Clean(path)
-	info, err := os.Stat(cleanPath)
+	info, err := os.Lstat(cleanPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return testFileSnapshot{}
 	}
 	if err != nil {
-		t.Fatalf("stat %s: %v", path, err)
+		t.Fatalf("lstat %s: %v", path, err)
 	}
-	data, err := os.ReadFile(cleanPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+	snapshot := testFileSnapshot{mode: info.Mode(), exists: true}
+	if info.Mode().IsRegular() {
+		snapshot.data, err = os.ReadFile(cleanPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
 	}
-	return testFileSnapshot{data: data, mode: info.Mode().Perm(), exists: true}
+	if info.Mode()&os.ModeSymlink != 0 {
+		snapshot.linkTarget, err = os.Readlink(cleanPath)
+		if err != nil {
+			t.Fatalf("readlink %s: %v", path, err)
+		}
+	}
+	return snapshot
 }
 
 func assertTestFileSnapshot(t *testing.T, path string, want testFileSnapshot) {
@@ -505,7 +541,10 @@ func assertTestFileSnapshot(t *testing.T, path string, want testFileSnapshot) {
 		t.Fatalf("file existence for %s = %t, want %t", path, got.exists, want.exists)
 	}
 	if got.exists && got.mode != want.mode {
-		t.Fatalf("file permissions for %s = %04o, want %04o", path, got.mode, want.mode)
+		t.Fatalf("file mode for %s = %s, want %s", path, got.mode, want.mode)
+	}
+	if got.linkTarget != want.linkTarget {
+		t.Fatalf("symlink target for %s = %q, want %q", path, got.linkTarget, want.linkTarget)
 	}
 	if !bytes.Equal(got.data, want.data) {
 		t.Fatalf("file contents changed for %s", path)
@@ -517,6 +556,9 @@ func assertAudit(t *testing.T, raw, operation, outcome string) {
 	event := decodeAudit(t, raw)
 	if event.EventType != "commitment_key_lifecycle" || event.Operation != operation || event.Outcome != outcome || event.Timestamp == "" {
 		t.Fatalf("audit event = %+v", event)
+	}
+	if outcome == "denied" && event.Reason == "" {
+		t.Fatalf("denied audit event has no reason: %+v", event)
 	}
 }
 

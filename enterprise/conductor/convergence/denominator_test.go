@@ -6,6 +6,8 @@
 package convergence
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +56,9 @@ func TestBuild_DuplicateFleetStatusFailsClosed(t *testing.T) {
 	now := time.Now().UTC()
 	report := Build(Inputs{
 		Now: now,
+		Intents: []DeploymentIntent{
+			{InstanceID: "dup-fs", DesiredReplicas: 1},
+		},
 		FleetStatus: []controlplane.FollowerFleetStatus{
 			{
 				FollowerSummary: controlplane.FollowerSummary{InstanceID: "dup-fs", Active: true},
@@ -78,6 +83,11 @@ func TestBuild_DuplicateFleetStatusFailsClosed(t *testing.T) {
 	if found.State != StateUnknown {
 		t.Fatalf("duplicate fleet-status record reported as %q, want %q", found.State, StateUnknown)
 	}
+	if report.DeliveryHealth.Expected != 1 || report.DeliveryHealth.Current != 0 ||
+		!slices.Equal(report.DeliveryHealth.Alerting, []string{"dup-fs"}) {
+		t.Fatalf("duplicate expected producer delivery health = %+v, want one alerting producer; "+
+			"an ambiguous expected producer must not leave the exit-code gate green", report.DeliveryHealth)
+	}
 }
 
 // TestBuild_DuplicateInstanceIDFailsClosed covers ambiguous identity.
@@ -95,7 +105,7 @@ func TestBuild_DuplicateInstanceIDFailsClosed(t *testing.T) {
 			{InstanceID: "dup-1", DesiredReplicas: 1},
 			// A second record for the same ID that would silently win and
 			// suppress the instance entirely.
-			{InstanceID: "dup-1", Excluded: true, ExcludedReason: "suppressed"},
+			{InstanceID: "dup-1", Excluded: true, ExcludedOwner: "ops", ExcludedReason: "suppressed"},
 		},
 	})
 
@@ -114,6 +124,11 @@ func TestBuild_DuplicateInstanceIDFailsClosed(t *testing.T) {
 	}
 	if found.State != StateUnknown {
 		t.Fatalf("duplicate instance ID reported as %q, want unknown with a conflict reason", found.State)
+	}
+	if report.DeliveryHealth.Expected != 1 || report.DeliveryHealth.Current != 0 ||
+		!slices.Equal(report.DeliveryHealth.Alerting, []string{"dup-1"}) {
+		t.Fatalf("conflicting expected producer delivery health = %+v, want one alerting producer; "+
+			"an excluded duplicate must not suppress an expected producer", report.DeliveryHealth)
 	}
 }
 
@@ -290,5 +305,141 @@ func TestEvidence_RuntimeBuildIsPopulated(t *testing.T) {
 		t.Fatalf("runtime_build = %q, want %q; the report declares this field, so "+
 			"leaving it empty overclaims what the evidence layer reports",
 			fc.LatestBatch.RuntimeBuild, "3.4.0")
+	}
+}
+
+func TestDeliveryHealth_ExpectedCurrentAndAlerting(t *testing.T) {
+	now := time.Now().UTC()
+	health := deliveryHealth([]FollowerConvergence{
+		{
+			InstanceID: "current",
+			State:      StateFullyConverged,
+			LatestBatch: &AuditEvidence{
+				ReceivedAt: now.Add(-time.Minute),
+			},
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "current", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "rolling",
+			State:      StateWrongDigest,
+			LatestBatch: &AuditEvidence{
+				ReceivedAt: now.Add(-time.Minute),
+			},
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "rolling", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "stale",
+			State:      StateStale,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "stale", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "missing",
+			State:      StateCurrentWithoutBatch,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "missing", DesiredReplicas: 1,
+			},
+		},
+		{
+			InstanceID: "local-only",
+			State:      StateExcluded,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "local-only", DesiredReplicas: 1, Excluded: true,
+				ExcludedOwner: "ops", ExcludedReason: "local-only proxy",
+			},
+		},
+		{
+			InstanceID: "scaled-zero",
+			State:      StateScaledZero,
+			DeploymentIntent: &DeploymentIntent{
+				InstanceID: "scaled-zero", DesiredReplicas: 0,
+			},
+		},
+	}, now, time.Minute)
+	if health.Expected != 4 || health.Current != 2 {
+		t.Fatalf("expected/current = %d/%d, want 4/2", health.Expected, health.Current)
+	}
+	if got, want := strings.Join(health.Alerting, ","), "stale,missing"; got != want {
+		t.Fatalf("alerting = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeAndConductorSummariesDoNotVouchForUnknownState(t *testing.T) {
+	healthOK := controlplane.FleetHealthOK
+	followers := []FollowerConvergence{{
+		InstanceID:      "unprovable",
+		State:           StateUnknown,
+		ConductorHealth: &healthOK,
+	}}
+
+	for name, summary := range map[string]DenominatorSummary{
+		"runtime":   runtimeSummary(followers),
+		"conductor": conductorSummary(followers),
+	} {
+		if summary.Total != 1 || summary.Healthy != 0 || summary.Unknown != 1 {
+			t.Errorf("%s summary = %+v, want one unknown and no healthy followers", name, summary)
+		}
+	}
+}
+
+func TestDeliveryBatchCurrentBoundaries(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name       string
+		batch      *AuditEvidence
+		staleAfter time.Duration
+		want       bool
+	}{
+		{name: "missing", batch: nil, staleAfter: time.Minute},
+		{name: "zero timestamp", batch: &AuditEvidence{}, staleAfter: time.Minute},
+		{name: "within clock skew", batch: &AuditEvidence{ReceivedAt: now.Add(time.Second)}, staleAfter: time.Minute, want: true},
+		{name: "beyond clock skew", batch: &AuditEvidence{ReceivedAt: now.Add(deliveryClockSkewAllowance + time.Nanosecond)}, staleAfter: time.Minute},
+		{name: "at boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6 * time.Minute)}, staleAfter: time.Minute, want: true},
+		{name: "past boundary", batch: &AuditEvidence{ReceivedAt: now.Add(-6*time.Minute - time.Nanosecond)}, staleAfter: time.Minute},
+		{name: "default window", batch: &AuditEvidence{ReceivedAt: now.Add(-29 * time.Minute)}, want: true},
+		{name: "overflowing direct caller window saturates", batch: &AuditEvidence{ReceivedAt: now.Add(-time.Hour)}, staleAfter: MaxEvidenceStaleAfter() + time.Nanosecond, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deliveryBatchCurrent(tt.batch, now, tt.staleAfter); got != tt.want {
+				t.Fatalf("deliveryBatchCurrent() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyFutureBatchIsUnknown(t *testing.T) {
+	now := time.Now().UTC()
+	status := &controlplane.FollowerFleetStatus{
+		FollowerSummary: controlplane.FollowerSummary{Active: true},
+		Health:          controlplane.FleetHealthOK,
+	}
+	intent := &DeploymentIntent{DesiredReplicas: 1}
+	batch := &controlplane.AuditBatchSummary{
+		ReceivedAt: now.Add(deliveryClockSkewAllowance + time.Nanosecond),
+	}
+
+	follower := classifyFollower("future", intent, status, batch, now, time.Minute)
+	if follower.State != StateUnknown {
+		t.Fatalf("future-dated batch state = %q, want %q", follower.State, StateUnknown)
+	}
+}
+
+func TestLatestBatchMapPrefersPlausibleTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+	batches := []controlplane.AuditBatchSummary{
+		{InstanceID: "producer", BatchID: "recent", ReceivedAt: now.Add(-time.Minute)},
+		{InstanceID: "producer", BatchID: "future", ReceivedAt: now.Add(time.Hour)},
+	}
+
+	latest := latestBatchMap(batches, now)["producer"]
+	if latest == nil || latest.BatchID != "recent" {
+		t.Fatalf("latest plausible batch = %+v, want recent", latest)
 	}
 }

@@ -67,6 +67,11 @@ const (
 	// ordinary gap between deliveries. Loose enough not to cry wolf, tight
 	// enough that a real delivery outage still surfaces.
 	evidenceStaleWindowMultiple = 6
+	maxDuration                 = time.Duration(1<<63 - 1)
+	// deliveryClockSkewAllowance tolerates ordinary clock skew between the
+	// Conductor host that stamps ReceivedAt and the operator host running this
+	// report. Larger future timestamps remain unprovable and alert.
+	deliveryClockSkewAllowance = 30 * time.Second
 
 	// StateUndeclared means conductor knows about this follower but no
 	// deployment intent declares it. It is distinct from StateUnknown: the
@@ -81,8 +86,10 @@ type DeploymentIntent struct {
 	DesiredReplicas int    `json:"desired_replicas"`
 	DesiredDigest   string `json:"desired_digest,omitempty"`
 	// Excluded marks this instance as intentionally not an expected receipt
-	// producer. The Reason field explains why (e.g. "local-only proxy").
+	// producer. Owner and reason make the exception reviewable instead of
+	// letting a delivery gap disappear behind an unexplained toggle.
 	Excluded       bool   `json:"excluded,omitempty"`
+	ExcludedOwner  string `json:"excluded_owner,omitempty"`
 	ExcludedReason string `json:"excluded_reason,omitempty"`
 }
 
@@ -147,8 +154,21 @@ type Report struct {
 	RuntimeCoverage    DenominatorSummary `json:"runtime_coverage"`
 	ConductorCoverage  DenominatorSummary `json:"conductor_coverage"`
 	EvidenceCoverage   DenominatorSummary `json:"evidence_coverage"`
+	DeliveryHealth     DeliveryHealth     `json:"delivery_health"`
 
 	Followers []FollowerConvergence `json:"followers"`
+}
+
+// DeliveryHealth is the explicit receipt-delivery view of the existing
+// convergence report. Expected means a configured, non-excluded,
+// non-scaled-zero producer. Current means that producer has a recent accepted
+// signed batch.
+// Local-only and scaled-zero instances remain visible in Followers but do not
+// count as failures.
+type DeliveryHealth struct {
+	Expected int      `json:"expected"`
+	Current  int      `json:"current"`
+	Alerting []string `json:"alerting"`
 }
 
 // Inputs collects the four data sources the convergence report joins.
@@ -198,7 +218,7 @@ func Build(in Inputs) Report {
 		}
 		statusByID[id] = &in.FleetStatus[i]
 	}
-	latestBatchByID := latestBatchMap(in.AuditBatches)
+	latestBatchByID := latestBatchMap(in.AuditBatches, now)
 
 	// Collect all known instance IDs from all sources.
 	seen := make(map[string]bool)
@@ -213,8 +233,18 @@ func Build(in Inputs) Report {
 	}
 
 	intentByID := make(map[string]*DeploymentIntent, len(in.Intents))
+	// Keep a conservative representative for delivery accounting even when
+	// duplicate intent records make normal classification impossible. If any
+	// record declares the producer expected, prefer it so an excluded or
+	// scaled-zero duplicate cannot make the exit-code gate report healthy.
+	deliveryIntentByID := make(map[string]*DeploymentIntent, len(in.Intents))
 	for i := range in.Intents {
 		id := in.Intents[i].InstanceID
+		candidate := &in.Intents[i]
+		current := deliveryIntentByID[id]
+		if current == nil || (!deliveryExpected(current) && deliveryExpected(candidate)) {
+			deliveryIntentByID[id] = candidate
+		}
 		if _, dup := intentByID[id]; dup {
 			conflictingIDs[id] = "multiple deployment-intent records for one instance ID"
 			continue
@@ -235,9 +265,10 @@ func Build(in Inputs) Report {
 		// guards against.
 		if reason, conflicted := conflictingIDs[id]; conflicted {
 			report.Followers = append(report.Followers, FollowerConvergence{
-				InstanceID: id,
-				State:      StateUnknown,
-				Reason:     reason,
+				InstanceID:       id,
+				State:            StateUnknown,
+				Reason:           reason,
+				DeploymentIntent: deliveryIntentByID[id],
 			})
 			continue
 		}
@@ -253,6 +284,7 @@ func Build(in Inputs) Report {
 	report.RuntimeCoverage = runtimeSummary(report.Followers)
 	report.ConductorCoverage = conductorSummary(report.Followers)
 	report.EvidenceCoverage = evidenceSummary(report.Followers)
+	report.DeliveryHealth = deliveryHealth(report.Followers, now, in.StaleAfter)
 
 	return report
 }
@@ -413,11 +445,14 @@ func classifyFollower(
 		return fc
 	}
 
-	// Check if the batch is stale relative to now.
-	if staleAfter <= 0 {
-		staleAfter = 5 * time.Minute
+	// Check the same bounded freshness predicate used by the delivery gate so
+	// one report cannot call a future-dated batch healthy and alerting at once.
+	if !batchTimestampPlausible(latestBatch.ReceivedAt, now) {
+		fc.State = StateUnknown
+		fc.Reason = "latest audit batch received_at is outside the allowed clock-skew window"
+		return fc
 	}
-	if now.Sub(latestBatch.ReceivedAt) > staleAfter*evidenceStaleWindowMultiple {
+	if !batchReceivedAtCurrent(latestBatch.ReceivedAt, now, staleAfter) {
 		fc.State = StateStale
 		fc.Reason = fmt.Sprintf("latest audit batch received %s ago", now.Sub(latestBatch.ReceivedAt).Truncate(time.Second))
 		return fc
@@ -495,12 +530,15 @@ func batchToEvidence(b *controlplane.AuditBatchSummary, instanceID, runtimeBuild
 	}
 }
 
-func latestBatchMap(batches []controlplane.AuditBatchSummary) map[string]*controlplane.AuditBatchSummary {
+func latestBatchMap(batches []controlplane.AuditBatchSummary, now time.Time) map[string]*controlplane.AuditBatchSummary {
 	m := make(map[string]*controlplane.AuditBatchSummary, len(batches))
 	for i := range batches {
 		b := &batches[i]
 		existing, ok := m[b.InstanceID]
-		if !ok || b.ReceivedAt.After(existing.ReceivedAt) {
+		candidatePlausible := batchTimestampPlausible(b.ReceivedAt, now)
+		existingPlausible := ok && batchTimestampPlausible(existing.ReceivedAt, now)
+		if !ok || (candidatePlausible && !existingPlausible) ||
+			(candidatePlausible == existingPlausible && b.ReceivedAt.After(existing.ReceivedAt)) {
 			m[b.InstanceID] = b
 		}
 	}
@@ -540,6 +578,10 @@ func runtimeSummary(followers []FollowerConvergence) DenominatorSummary {
 			continue
 		}
 		s.Total++
+		if f.State == StateUnknown {
+			s.Unknown++
+			continue
+		}
 		if f.ConductorHealth != nil && *f.ConductorHealth == controlplane.FleetHealthOK {
 			s.Healthy++
 		} else if f.State == StateUnknown || f.ConductorHealth == nil {
@@ -556,6 +598,10 @@ func conductorSummary(followers []FollowerConvergence) DenominatorSummary {
 			continue
 		}
 		s.Total++
+		if f.State == StateUnknown {
+			s.Unknown++
+			continue
+		}
 		if f.ConductorHealth != nil {
 			switch *f.ConductorHealth {
 			case controlplane.FleetHealthOK:
@@ -604,4 +650,61 @@ func evidenceSummary(followers []FollowerConvergence) DenominatorSummary {
 		}
 	}
 	return s
+}
+
+func deliveryHealth(followers []FollowerConvergence, now time.Time, staleAfter time.Duration) DeliveryHealth {
+	result := DeliveryHealth{Alerting: []string{}}
+	for _, follower := range followers {
+		if follower.State == StateExcluded || follower.State == StateScaledZero {
+			continue
+		}
+		if !deliveryExpected(follower.DeploymentIntent) {
+			continue
+		}
+		result.Expected++
+		if deliveryBatchCurrent(follower.LatestBatch, now, staleAfter) {
+			result.Current++
+			continue
+		}
+		result.Alerting = append(result.Alerting, follower.InstanceID)
+	}
+	return result
+}
+
+func deliveryBatchCurrent(batch *AuditEvidence, now time.Time, staleAfter time.Duration) bool {
+	if batch == nil {
+		return false
+	}
+	return batchReceivedAtCurrent(batch.ReceivedAt, now, staleAfter)
+}
+
+func batchReceivedAtCurrent(receivedAt, now time.Time, staleAfter time.Duration) bool {
+	if !batchTimestampPlausible(receivedAt, now) {
+		return false
+	}
+	return now.Sub(receivedAt) <= evidenceStaleWindow(staleAfter)
+}
+
+// MaxEvidenceStaleAfter is the largest runtime staleness window that can be
+// multiplied by the evidence window without overflowing a time.Duration.
+func MaxEvidenceStaleAfter() time.Duration {
+	return maxDuration / evidenceStaleWindowMultiple
+}
+
+func evidenceStaleWindow(staleAfter time.Duration) time.Duration {
+	if staleAfter <= 0 {
+		staleAfter = 5 * time.Minute
+	}
+	if staleAfter > MaxEvidenceStaleAfter() {
+		return maxDuration
+	}
+	return staleAfter * evidenceStaleWindowMultiple
+}
+
+func batchTimestampPlausible(receivedAt, now time.Time) bool {
+	return !receivedAt.IsZero() && !receivedAt.After(now.Add(deliveryClockSkewAllowance))
+}
+
+func deliveryExpected(intent *DeploymentIntent) bool {
+	return intent != nil && !intent.Excluded && intent.DesiredReplicas > 0
 }

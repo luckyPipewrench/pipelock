@@ -212,6 +212,25 @@ func TestNewActionScorecardStatusMapping(t *testing.T) {
 	}
 }
 
+func TestNewActionScorecardPreservesChainFailureDetailWhenLifecycleIsBroken(t *testing.T) {
+	sc := newActionScorecard(actionreceipt.ChainResult{
+		ReceiptCount:  3,
+		BrokenAtSeq:   2,
+		Error:         "hash link mismatch",
+		FailureKind:   actionreceipt.ChainFailureIntegrity,
+		BrokenAtIndex: 2,
+	}, false, completeness.Report{Status: completeness.StatusBroken, Reason: completeness.ReasonChainBroken})
+
+	if !strings.Contains(sc.Authentic.Detail, "no trusted signer key pinned") ||
+		!strings.Contains(sc.Authentic.Detail, "lifecycle: chain_broken") {
+		t.Fatalf("authentic detail lost evidence: %q", sc.Authentic.Detail)
+	}
+	if sc.Untampered.BrokenAtSeq != 2 || !strings.Contains(sc.Untampered.Reason, "hash link mismatch") ||
+		!strings.Contains(sc.Untampered.Reason, "lifecycle: chain_broken") {
+		t.Fatalf("untampered detail lost evidence: %+v", sc.Untampered)
+	}
+}
+
 func scorecardLine(t *testing.T, out string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {

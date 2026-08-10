@@ -535,6 +535,28 @@ fn g1_close_without_open_fixture_is_rejected() {
 }
 
 #[test]
+fn endorsement_verification_does_not_skip_root_trust_after_lifecycle_only_failure() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-close-without-open.jsonl"))
+            .unwrap();
+
+    let result =
+        verify_chain_with_endorsements(&receipts, "conformance-session", &[], &"0".repeat(64));
+
+    assert!(!result.valid);
+    assert_ne!(
+        result.failure_kind.as_deref(),
+        Some("lifecycle_missing_open"),
+        "failed endorsement verification must not preserve a lifecycle-only failure kind"
+    );
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("genesis signer key is not in the trusted root set"));
+}
+
+#[test]
 fn g1_new_session_after_close_fixture_verifies() {
     let root = common::repo_root();
     let receipts =

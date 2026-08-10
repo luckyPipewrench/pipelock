@@ -21,8 +21,8 @@ interface RunState {
 }
 
 interface DurabilitySnapshot {
-  fsyncErrorsGated: number;
-  durabilityBlocks: number;
+  fsyncErrorsGated?: number;
+  durabilityBlocks?: number;
 }
 
 const limited: LifecycleStatus = "LIMITED";
@@ -83,13 +83,18 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
     }
     if (kind === "session_close") {
       state.closed = true;
-      applyDurability(state, objectField(control, "close"));
+      if (!applyDurability(state, objectField(control, "close"))) {
+        return { status: broken, reason: "chain_broken" };
+      }
       continue;
     }
     if (kind === "heartbeat" || kind === "session_heartbeat") {
       const heartbeat = objectField(control, "heartbeat");
       const beat = heartbeat?.["beat"];
-      if (typeof beat === "number" && Number.isInteger(beat)) {
+      if (beat !== undefined && !validCounter(beat)) {
+        return { status: broken, reason: "chain_broken" };
+      }
+      if (beat !== undefined) {
         if (
           (state.sawHeartbeat && beat !== state.lastHeartbeat + 1) ||
           (!state.sawHeartbeat && beat !== 1)
@@ -99,7 +104,7 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
         state.sawHeartbeat = true;
         state.lastHeartbeat = beat;
       }
-      applyDurability(state, heartbeat);
+      if (!applyDurability(state, heartbeat)) return { status: broken, reason: "chain_broken" };
     }
   }
 
@@ -110,23 +115,36 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
   return report ?? { status: unverified, reason: "no_lifecycle" };
 }
 
-function applyDurability(state: RunState, value: Record<string, unknown> | undefined): void {
+function applyDurability(state: RunState, value: Record<string, unknown> | undefined): boolean {
+  const fsyncErrorsGated = counter(value?.["fsync_errors_gated"]);
+  const durabilityBlocks = counter(value?.["durability_blocks"]);
+  if (fsyncErrorsGated === null || durabilityBlocks === null) return false;
   const snapshot: DurabilitySnapshot = {
-    fsyncErrorsGated: counter(value?.["fsync_errors_gated"]),
-    durabilityBlocks: counter(value?.["durability_blocks"]),
+    fsyncErrorsGated,
+    durabilityBlocks,
   };
   if (
     state.lastDurability !== undefined &&
-    (snapshot.fsyncErrorsGated < state.lastDurability.fsyncErrorsGated ||
-      snapshot.durabilityBlocks < state.lastDurability.durabilityBlocks)
+    ((snapshot.fsyncErrorsGated !== undefined &&
+      state.lastDurability.fsyncErrorsGated !== undefined &&
+      snapshot.fsyncErrorsGated < state.lastDurability.fsyncErrorsGated) ||
+      (snapshot.durabilityBlocks !== undefined &&
+        state.lastDurability.durabilityBlocks !== undefined &&
+        snapshot.durabilityBlocks < state.lastDurability.durabilityBlocks))
   ) {
     state.durabilityDrop = true;
   }
   state.lastDurability = snapshot;
+  return true;
 }
 
-function counter(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+function validCounter(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function counter(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  return validCounter(value) ? value : null;
 }
 
 function sessionControl(receipt: Receipt): Record<string, unknown> | undefined {

@@ -445,6 +445,9 @@ func TestComputeScorecard_BrokenChainStillReportsLifecycle(t *testing.T) {
 	if evidence.Scorecard.Completeness.State != StateFail {
 		t.Fatalf("Completeness.State = %q, want %q", evidence.Scorecard.Completeness.State, StateFail)
 	}
+	if evidence.Scorecard.Completeness.Chip != chipChainBroken {
+		t.Fatalf("Completeness.Chip = %q, want %q", evidence.Scorecard.Completeness.Chip, chipChainBroken)
+	}
 	detail := evidence.Scorecard.Completeness.Detail
 	if !strings.Contains(detail, "lost to the break") {
 		t.Fatalf("broken-chain completeness must name the lost receipts: %q", detail)

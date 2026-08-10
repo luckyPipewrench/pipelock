@@ -21,10 +21,11 @@ type lifecycleVectorFile struct {
 }
 
 type lifecycleVector struct {
-	Name        string            `json:"name"`
-	Receipts    []json.RawMessage `json:"receipts"`
-	ChainResult lifecycleChain    `json:"chain_result"`
-	Expected    lifecycleExpected `json:"expected"`
+	Name          string            `json:"name"`
+	Receipts      []json.RawMessage `json:"receipts"`
+	ChainResult   lifecycleChain    `json:"chain_result"`
+	Expected      lifecycleExpected `json:"expected"`
+	GoDecodeError bool              `json:"go_decode_error,omitempty"`
 }
 
 type lifecycleChain struct {
@@ -64,7 +65,16 @@ func TestLifecycleVerdictVectorsMatchGo(t *testing.T) {
 		if _, ok := required[vector.Name]; ok {
 			required[vector.Name] = true
 		}
-		receipts := decodeLifecycleVectorReceipts(t, vector.Receipts)
+		receipts, err := decodeLifecycleVectorReceipts(vector.Receipts)
+		if vector.GoDecodeError {
+			if err == nil {
+				t.Fatalf("%s decoded successfully, want Go parser rejection", vector.Name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: decode receipts: %v", vector.Name, err)
+		}
 		report := Analyze(receipts, receipt.ChainResult{
 			Valid:             vector.ChainResult.Valid,
 			IntegrityVerified: vector.ChainResult.IntegrityVerified,
@@ -97,13 +107,12 @@ func TestLifecycleVerdictVectorsMatchGo(t *testing.T) {
 	}
 }
 
-func decodeLifecycleVectorReceipts(t *testing.T, raw []json.RawMessage) []receipt.Receipt {
-	t.Helper()
+func decodeLifecycleVectorReceipts(raw []json.RawMessage) ([]receipt.Receipt, error) {
 	receipts := make([]receipt.Receipt, len(raw))
 	for i := range raw {
 		if err := json.Unmarshal(raw[i], &receipts[i]); err != nil {
-			t.Fatalf("decode receipt %d: %v", i, err)
+			return nil, err
 		}
 	}
-	return receipts
+	return receipts, nil
 }

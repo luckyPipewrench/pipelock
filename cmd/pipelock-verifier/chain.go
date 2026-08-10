@@ -219,7 +219,7 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 		report.Error = unpinnedReceiptBanner
 		report.Valid = opts.allowUnpinned
 	}
-	if completenessReport.Status == completeness.StatusBroken {
+	if res.Valid && completenessReport.Status == completeness.StatusBroken {
 		report.Valid = false
 		report.Unpinned = false
 		report.Error = "lifecycle: " + string(completenessReport.Reason)

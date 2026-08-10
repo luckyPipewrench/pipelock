@@ -4,6 +4,8 @@
 use crate::types::{ChainResult, Receipt};
 use std::collections::HashMap;
 
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleReport {
     pub status: String,
@@ -25,8 +27,8 @@ struct RunState {
 
 #[derive(Clone, Copy)]
 struct DurabilitySnapshot {
-    fsync_errors_gated: u64,
-    durability_blocks: u64,
+    fsync_errors_gated: Option<u64>,
+    durability_blocks: Option<u64>,
 }
 
 // analyze_lifecycle mirrors the Go verifier's packet-level lifecycle verdict.
@@ -95,24 +97,41 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
             }
             Some("session_close") => {
                 state.closed = true;
-                apply_durability(state, control.get("close"));
+                if !apply_durability(state, control.get("close")) {
+                    return report("BROKEN", "chain_broken");
+                }
             }
             Some("heartbeat") | Some("session_heartbeat") => {
-                if let Some(beat) = control
+                let beat = control
                     .get("heartbeat")
                     .and_then(serde_json::Value::as_object)
                     .and_then(|heartbeat| heartbeat.get("beat"))
-                    .and_then(serde_json::Value::as_u64)
-                {
-                    if (state.saw_heartbeat && beat != state.last_heartbeat + 1)
-                        || (!state.saw_heartbeat && beat != 1)
+                    .map(lifecycle_counter);
+                let Some(beat) = beat else {
+                    if control
+                        .get("heartbeat")
+                        .and_then(serde_json::Value::as_object)
+                        .and_then(|heartbeat| heartbeat.get("beat"))
+                        .is_some()
                     {
-                        state.heartbeat_gap = true;
+                        return report("BROKEN", "chain_broken");
                     }
-                    state.saw_heartbeat = true;
-                    state.last_heartbeat = beat;
+                    apply_durability(state, control.get("heartbeat"));
+                    continue;
+                };
+                let Some(beat) = beat else {
+                    return report("BROKEN", "chain_broken");
+                };
+                if (state.saw_heartbeat && beat != state.last_heartbeat + 1)
+                    || (!state.saw_heartbeat && beat != 1)
+                {
+                    state.heartbeat_gap = true;
                 }
-                apply_durability(state, control.get("heartbeat"));
+                state.saw_heartbeat = true;
+                state.last_heartbeat = beat;
+                if !apply_durability(state, control.get("heartbeat")) {
+                    return report("BROKEN", "chain_broken");
+                }
             }
             _ => {}
         }
@@ -124,25 +143,42 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
         .unwrap_or_else(|| report("UNVERIFIED", "no_lifecycle"))
 }
 
-fn apply_durability(state: &mut RunState, value: Option<&serde_json::Value>) {
+fn apply_durability(state: &mut RunState, value: Option<&serde_json::Value>) -> bool {
     let snapshot = DurabilitySnapshot {
-        fsync_errors_gated: value
-            .and_then(|value| value.get("fsync_errors_gated"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        durability_blocks: value
-            .and_then(|value| value.get("durability_blocks"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
+        fsync_errors_gated: match value.and_then(|value| value.get("fsync_errors_gated")) {
+            Some(value) => match lifecycle_counter(value) {
+                Some(value) => Some(value),
+                None => return false,
+            },
+            None => None,
+        },
+        durability_blocks: match value.and_then(|value| value.get("durability_blocks")) {
+            Some(value) => match lifecycle_counter(value) {
+                Some(value) => Some(value),
+                None => return false,
+            },
+            None => None,
+        },
     };
     if let Some(previous) = state.last_durability {
-        if snapshot.fsync_errors_gated < previous.fsync_errors_gated
-            || snapshot.durability_blocks < previous.durability_blocks
+        if snapshot
+            .fsync_errors_gated
+            .zip(previous.fsync_errors_gated)
+            .is_some_and(|(current, previous)| current < previous)
+            || snapshot
+                .durability_blocks
+                .zip(previous.durability_blocks)
+                .is_some_and(|(current, previous)| current < previous)
         {
             state.durability_drop = true;
         }
     }
     state.last_durability = Some(snapshot);
+    true
+}
+
+fn lifecycle_counter(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().filter(|value| *value <= MAX_SAFE_INTEGER)
 }
 
 fn session_control(receipt: &Receipt) -> Option<&serde_json::Map<String, serde_json::Value>> {

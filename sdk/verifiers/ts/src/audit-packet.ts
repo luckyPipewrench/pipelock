@@ -190,6 +190,7 @@ export async function verifyAuditPacket(
     return report;
   }
   report.chain_check = chain.valid ? "pass" : "fail";
+  if (!chain.valid) pushError(report, `chain: ${chain.error ?? "verification failed"}`);
   const lifecycle = analyzeLifecycle(receipts, chain);
   report.lifecycle_status = lifecycle.status;
   report.lifecycle_reason = lifecycle.reason;

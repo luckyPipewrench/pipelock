@@ -8,6 +8,8 @@ package completeness
 
 import "github.com/luckyPipewrench/pipelock/internal/receipt"
 
+const maxSafeLifecycleInteger uint64 = 9_007_199_254_740_991
+
 // Status is the top-level completeness status vocabulary.
 type Status string
 
@@ -403,6 +405,11 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 	if heartbeat == nil {
 		return "heartbeat kind missing heartbeat payload"
 	}
+	if heartbeat.Beat > maxSafeLifecycleInteger ||
+		heartbeat.FsyncErrorsGated > maxSafeLifecycleInteger ||
+		heartbeat.DurabilityBlocks > maxSafeLifecycleInteger {
+		return "heartbeat lifecycle counter exceeds the cross-language safe integer range"
+	}
 	if ar.RunNonce == "" || heartbeat.RunNonce != ar.RunNonce {
 		return "heartbeat run_nonce does not match receipt run_nonce"
 	}
@@ -441,6 +448,10 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 func applyClose(st *runState, ar receipt.ActionRecord, closeRecord *receipt.SessionClose, ctx recordContext) string {
 	if closeRecord == nil {
 		return "session_close kind missing close payload"
+	}
+	if closeRecord.FsyncErrorsGated > maxSafeLifecycleInteger ||
+		closeRecord.DurabilityBlocks > maxSafeLifecycleInteger {
+		return "session_close lifecycle counter exceeds the cross-language safe integer range"
 	}
 	if ar.RunNonce == "" || closeRecord.RunNonce != ar.RunNonce {
 		return "session_close run_nonce does not match receipt run_nonce"

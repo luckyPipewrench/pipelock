@@ -147,7 +147,9 @@ async function runChainCommand(args: string[]): Promise<number> {
     valid: result.valid && !lifecycleBroken,
     unpinned:
       keyHex === "" &&
-      (result.error?.includes("UNPINNED") === true || (result.valid && !lifecycleBroken)),
+      (result.error?.includes("UNPINNED") === true || (result.valid && !lifecycleBroken))
+        ? true
+        : undefined,
     receipt_count: result.receipt_count,
     final_seq: result.final_seq,
     root_hash: result.root_hash || undefined,

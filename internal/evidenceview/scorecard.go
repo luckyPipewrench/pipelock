@@ -252,6 +252,14 @@ func completenessLine(chain receipt.ChainResult, receipts []receipt.Receipt) Lin
 			lifecycle.Reason,
 		)
 	}
+	if !chain.Valid {
+		return Line{
+			State:  StateFail,
+			Chip:   chipChainBroken,
+			Detail: detail,
+			Sub:    "Chain integrity verification failed; lifecycle evidence cannot be assessed.",
+		}
+	}
 	if lifecycle.Status == completeness.StatusBroken {
 		return Line{
 			State:  StateFail,

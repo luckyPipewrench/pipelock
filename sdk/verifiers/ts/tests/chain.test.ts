@@ -427,6 +427,18 @@ test("g1 close without open fixture is rejected", async () => {
   assert.match(result.error ?? "", /first receipt is not a matching session_open/u);
 });
 
+test("endorsement verification does not skip root trust after lifecycle-only failure", async () => {
+  const result = await verifyChainWithEndorsements(
+    extractReceipts(g1CloseWithoutOpen),
+    "0".repeat(64),
+    { sessionID: "conformance-session", endorsements: [] },
+  );
+
+  assert.equal(result.valid, false);
+  assert.notEqual(result.failure_kind, "lifecycle_missing_open");
+  assert.match(result.error ?? "", /genesis signer key is not in the trusted root set/u);
+});
+
 test("g1 new session after close fixture verifies", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;

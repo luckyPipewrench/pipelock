@@ -76,8 +76,9 @@ func newActionScorecard(res actionreceipt.ChainResult, keyPinned bool, report co
 			detail += ": " + report.Error
 		}
 		authentic.Status = "FAIL"
-		authentic.Detail = detail
-		untampered = scorecardUntampered{Status: "FAIL", Reason: detail}
+		authentic.Detail = appendScorecardDetail(authentic.Detail, detail)
+		untampered.Status = "FAIL"
+		untampered.Reason = appendScorecardDetail(untampered.Reason, detail)
 	}
 	gaps := uint64(0)
 	heartbeat := "continuous"
@@ -111,6 +112,13 @@ func newActionScorecard(res actionreceipt.ChainResult, keyPinned bool, report co
 			},
 		},
 	}
+}
+
+func appendScorecardDetail(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	return existing + "; " + addition
 }
 
 func emitScorecard(out io.Writer, sc scorecard) {

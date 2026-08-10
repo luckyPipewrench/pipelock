@@ -715,6 +715,29 @@ func TestChainCLIRejectsLifecycleBrokenChain(t *testing.T) {
 	}
 }
 
+func TestChainCLIPreservesIntegrityFailureInsteadOfRelabelingItAsLifecycle(t *testing.T) {
+	t.Parallel()
+	fixture := newCompletenessFixture(t)
+	chain := []receipt.Receipt{
+		fixture.open("run-integrity-broken", "open-integrity-broken"),
+		fixture.close("run-integrity-broken", "open-integrity-broken"),
+	}
+	chain[1].ActionRecord.Target = "https://api.vendor.example/forged"
+	path := writeChainRecorderJSONL(t, chain)
+
+	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("integrity-broken chain code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report chainReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if strings.Contains(report.Error, "lifecycle:") || !strings.Contains(report.Error, "signature") {
+		t.Fatalf("integrity error relabeled as lifecycle: %q", report.Error)
+	}
+}
+
 // The bare-v1 detector reads the whole file before deciding a route, so its
 // failure paths decide whether an unreadable or oversized file is refused or
 // silently falls through to the v2 route. Each case below drives the real

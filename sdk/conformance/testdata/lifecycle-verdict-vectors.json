@@ -367,6 +367,75 @@
       }
     },
     {
+      "name": "lifecycle_counter_exceeds_safe_integer",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-counter-range",
+            "chain_seq": 0,
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-counter-range",
+                "open_nonce": "open-counter-range",
+                "chain_open_seq": 0
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-counter-range",
+            "chain_seq": 1,
+            "chain_prev_hash": "root-counter-range",
+            "session_control": {
+              "kind": "heartbeat",
+              "heartbeat": {
+                "run_nonce": "run-counter-range",
+                "open_nonce": "open-counter-range",
+                "beat": 9007199254740992,
+                "chain_head": "root-counter-range",
+                "chain_seq_head": 0
+              }
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "negative_heartbeat_beat",
+      "go_decode_error": true,
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-negative-beat",
+            "session_control": {
+              "kind": "heartbeat",
+              "heartbeat": {
+                "run_nonce": "run-negative-beat",
+                "open_nonce": "open-negative-beat",
+                "beat": -1
+              }
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
       "name": "null_session_control",
       "receipts": [
         {

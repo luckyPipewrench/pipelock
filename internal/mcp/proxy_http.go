@@ -5,8 +5,6 @@ package mcp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -133,13 +131,6 @@ func mcpListenerExplicitHeaders(headers http.Header, names []string) map[string]
 
 func mcpListenerShouldScanHeaderNames(cfg *config.RequestBodyScanning) bool {
 	return cfg != nil && cfg.Enabled && cfg.ScanHeaders && cfg.HeaderMode == config.HeaderModeAll
-}
-
-// hashSessionKey produces a short, non-reversible identifier from a raw IP
-// for use in audit logs, so client IPs don't leak through the session field.
-func hashSessionKey(ip string) string {
-	h := sha256.Sum256([]byte(ip))
-	return "ip:" + hex.EncodeToString(h[:8]) // 16 hex chars, enough to correlate
 }
 
 // extractRPCID extracts the "id" field from a JSON-RPC message.

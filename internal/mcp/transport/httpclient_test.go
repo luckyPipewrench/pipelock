@@ -13,8 +13,10 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -620,6 +622,50 @@ func TestHTTPClient_OpenGETStream_IncludesSessionID(t *testing.T) {
 		t.Fatalf("OpenGETStream: %v", err)
 	}
 	drain(t, reader)
+}
+
+func TestHTTPClient_TracksPipelockListenerSessionToken(t *testing.T) {
+	token := strings.Repeat("a", 43)
+	if len(token) != 43 {
+		t.Fatalf("test token length = %d, want 43", len(token))
+	}
+	var calls atomic.Int32
+	deleteToken := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			if calls.Add(1) == 1 {
+				if got := r.Header.Get(pipelockSessionTokenHeader); got != "" {
+					t.Errorf("first POST token = %q, want empty", got)
+				}
+				w.Header().Set(pipelockSessionTokenHeader, token)
+			} else if got := r.Header.Get(pipelockSessionTokenHeader); got != token {
+				t.Errorf("follow-up POST token = %q, want %q", got, token)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+		case http.MethodDelete:
+			deleteToken <- r.Header.Get(pipelockSessionTokenHeader)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, http.Header{pipelockSessionTokenHeader: []string{"caller-supplied"}})
+	first, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	drain(t, first)
+	second, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("second SendMessage: %v", err)
+	}
+	drain(t, second)
+	c.DeleteSession(nil)
+	if got := <-deleteToken; got != token {
+		t.Errorf("DELETE token = %q, want %q", got, token)
+	}
 }
 
 func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
@@ -1446,5 +1492,159 @@ func TestHTTPClient_ClosingSSEReader_DoubleRead(t *testing.T) {
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF on third read, got %v", err)
+	}
+}
+
+// The client learns a Pipelock-issued token from a response and replays it on
+// later requests. A malformed token must be refused rather than stored, because
+// a stored bad token would be sent to the listener on every subsequent request
+// and fail there instead of here, where the cause is visible.
+func TestHTTPClient_PipelockSessionTokenValidation(t *testing.T) {
+	t.Parallel()
+
+	valid := strings.Repeat("A", 43)
+	for _, tc := range []struct {
+		name    string
+		token   string
+		wantErr bool
+	}{
+		{"valid token is stored", valid, false},
+		{"short token refused", strings.Repeat("A", 42), true},
+		{"long token refused", strings.Repeat("A", 44), true},
+		{"illegal character refused", strings.Repeat("A", 42) + "!", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var seenMu sync.Mutex
+			var seen []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenMu.Lock()
+				seen = append(seen, r.Header.Get(pipelockSessionTokenHeader))
+				seenMu.Unlock()
+				w.Header().Set(pipelockSessionTokenHeader, tc.token)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			}))
+			defer srv.Close()
+
+			c := NewHTTPClient(srv.URL, nil)
+			_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+			if tc.wantErr {
+				if !errors.Is(err, ErrInvalidPipelockSessionToken) {
+					t.Fatalf("err = %v, want ErrInvalidPipelockSessionToken", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SendMessage: %v", err)
+			}
+			// A second call must carry the learned token.
+			if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)); err != nil {
+				t.Fatalf("second SendMessage: %v", err)
+			}
+			seenMu.Lock()
+			defer seenMu.Unlock()
+			if len(seen) != 2 {
+				t.Fatalf("requests seen = %d, want 2", len(seen))
+			}
+			if seen[0] != "" {
+				t.Fatalf("first request carried a token before one was issued: %q", seen[0])
+			}
+			if seen[1] != tc.token {
+				t.Fatalf("second request token = %q, want %q", seen[1], tc.token)
+			}
+		})
+	}
+}
+
+func TestHTTPClient_InvalidTokenDoesNotCommitResponseState(t *testing.T) {
+	valid := strings.Repeat("C", 43)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.Header().Set("Mcp-Session-Id", "good-session")
+			w.Header().Set(pipelockSessionTokenHeader, valid)
+		case 2:
+			w.Header().Set("Mcp-Session-Id", "rejected-session")
+			w.Header().Set(pipelockSessionTokenHeader, "too-short")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	drain(t, reader)
+	if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)); !errors.Is(err, ErrInvalidPipelockSessionToken) {
+		t.Fatalf("second SendMessage error = %v, want ErrInvalidPipelockSessionToken", err)
+	}
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if c.sessionID != "good-session" || c.listenerSessionToken != valid {
+		t.Fatalf("rejected response changed state: session=%q token=%q", c.sessionID, c.listenerSessionToken)
+	}
+}
+
+// A notification is acknowledged with 202 and no body, and that path tracks the
+// token too. A bad token there must fail the same way it does on a normal
+// response rather than being silently accepted because there was nothing to read.
+func TestHTTPClient_NotificationRefusesInvalidPipelockToken(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(pipelockSessionTokenHeader, "too-short")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	if !errors.Is(err, ErrInvalidPipelockSessionToken) {
+		t.Fatalf("err = %v, want ErrInvalidPipelockSessionToken", err)
+	}
+}
+
+// The GET event stream is a separate request path, so it needs its own proof
+// that a learned token is replayed. Without it the stream would arrive at the
+// listener unbound and be refused.
+func TestHTTPClient_GETStreamCarriesPipelockToken(t *testing.T) {
+	t.Parallel()
+	token := strings.Repeat("B", 43)
+	gotToken := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gotToken <- r.Header.Get(pipelockSessionTokenHeader)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set(pipelockSessionTokenHeader, token)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	if _, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	reader, err := c.OpenGETStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenGETStream: %v", err)
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer func() { _ = closer.Close() }()
+	}
+	select {
+	case got := <-gotToken:
+		if got != token {
+			t.Fatalf("GET stream token = %q, want %q", got, token)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GET stream never reached the server")
 	}
 }

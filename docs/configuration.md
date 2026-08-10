@@ -1135,6 +1135,16 @@ mcp_session_binding:
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
+On the HTTP reverse listener, Pipelock keeps the tool baseline, adaptive enforcement state, taint risk, and chain history under a Pipelock-issued `Pipelock-Session-Token`. An allowed non-batch `initialize` response with `application/json` issues a 256-bit opaque token in that header. A client returns it on later POST, GET, and DELETE requests to use that persistent state. Pipelock does not forward this header upstream.
+
+`Mcp-Session-Id` remains upstream protocol routing data. It never selects or rekeys Pipelock listener state, even when an upstream changes or reuses it. This avoids moving one client's learned state into another partition or overwriting an existing partition.
+
+Token-bound state is enabled automatically when tool session binding, adaptive enforcement, taint, chain detection, or cross-request exfiltration detection is configured. A POST without a valid token, including one after eviction or DELETE, still receives request-local content scanning and follows that scan's verdict, but it receives no persistent state. GET and DELETE require a valid token because those methods operate on an established state. DELETE removes the recorder and cancels outstanding requests using that token.
+
+The registry holds at most 4,096 token states. It evicts the least recently used state and deletes its recorder. An evicted client must run `initialize` again to recover persistent state. Until then, its POST requests remain stateless but still pass through the content scanners. Stateless listener configurations do not require the token.
+
+The token is a Pipelock-issued bearer correlation capability, not an authenticated end-user identity. A deployment that lets an untrusted party start arbitrary allowed `initialize` flows must use listener authentication or another access boundary to control who can create new token states.
+
 ## MCP WebSocket Listener
 
 Controls inbound WebSocket connections when the MCP proxy runs in listener mode with a `ws://` or `wss://` upstream. Loopback origins are always allowed.

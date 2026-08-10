@@ -170,25 +170,17 @@ func TestRunHTTPListenerProxy_A2ASessionBindingBlocksNoBaseline(t *testing.T) {
 		nil,
 	)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(string(testA2ARequest(1, testA2AMethod))))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST listener proxy: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("ReadAll(response): %v", err)
-	}
+	token := listenerSetupToken(t, baseURL)
+	// Setup reaches upstream. The block invariant is that the A2A request adds
+	// no call beyond the successful handshake.
+	afterSetup := upstreamCalls.Load()
+	payloadStr := listenerPost(t, baseURL, token, string(testA2ARequest(1, testA2AMethod)))
+	payload := []byte(payloadStr)
 	if !strings.Contains(string(payload), bindingReasonNoBaseline) {
 		t.Fatalf("expected A2A session binding block, got: %s", payload)
 	}
-	if got := upstreamCalls.Load(); got != 0 {
-		t.Fatalf("upstream calls = %d, want 0", got)
+	if got := upstreamCalls.Load(); got != afterSetup {
+		t.Fatalf("blocked A2A request reached upstream: calls = %d, want %d", got, afterSetup)
 	}
 	if !strings.Contains(logBuf.String(), a2aBaselineIdentity(testA2AMethod)) {
 		t.Fatalf("expected A2A identity in binding log, got: %s", logBuf.String())

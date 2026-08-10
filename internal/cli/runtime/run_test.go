@@ -1086,10 +1086,10 @@ logging:
 			cancel()
 			return err
 		}
-		sessionID := initializeRunMCPListenerSessionWithStartupRetry(t, mcpAddr, cmdErr, &stderr)
+		sessionID, token := initializeRunMCPListenerSessionWithStartupRetry(t, mcpAddr, cmdErr, &stderr)
 		baseURL := "http://" + mcpAddr
-		postRunMCPListenerToolCall(t, baseURL, sessionID, "")
-		body := postRunMCPListenerToolCall(t, baseURL, sessionID, "tool call limit exceeded: 2/1")
+		postRunMCPListenerToolCall(t, baseURL, sessionID, token, "")
+		body := postRunMCPListenerToolCall(t, baseURL, sessionID, token, "tool call limit exceeded: 2/1")
 		if !strings.Contains(body, "tool call limit exceeded: 2/1") {
 			t.Fatalf("second tools/call body = %s, want DoW block", body)
 		}
@@ -1207,7 +1207,7 @@ func initializeRunMCPListenerSessionWithStartupRetry(
 	addr string,
 	cmdErr <-chan error,
 	stderr fmt.Stringer,
-) string {
+) (string, string) {
 	t.Helper()
 
 	resp := doMCPPostWithStartupRetry(
@@ -1219,10 +1219,10 @@ func initializeRunMCPListenerSessionWithStartupRetry(
 		acceptMCPInitializeResponse,
 	)
 	defer func() { _ = resp.Body.Close() }()
-	return resp.Header.Get("Mcp-Session-Id")
+	return resp.Header.Get("Mcp-Session-Id"), resp.Header.Get("Pipelock-Session-Token")
 }
 
-func postRunMCPListenerToolCall(t *testing.T, baseURL, sessionID, wantBody string) string {
+func postRunMCPListenerToolCall(t *testing.T, baseURL, sessionID, token, wantBody string) string {
 	t.Helper()
 	req, err := http.NewRequestWithContext(
 		context.Background(),
@@ -1235,6 +1235,7 @@ func postRunMCPListenerToolCall(t *testing.T, baseURL, sessionID, wantBody strin
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", sessionID)
+	req.Header.Set("Pipelock-Session-Token", token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("tools/call POST: %v", err)

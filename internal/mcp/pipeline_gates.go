@@ -206,11 +206,22 @@ func applyMCPAirlockGate(opts MCPProxyOpts, eval *MCPInputEvaluation, method str
 	if method != methodToolsCall {
 		return false
 	}
+	// An explicitly DISABLED airlock releases containment: the operator turned
+	// the control off and tool calls resume. A nil config is deliberately NOT
+	// treated the same way here. Nil means no airlock configuration is
+	// currently reachable, which is not the same statement as "this session is
+	// not contained", so a session still carrying a hard or drain tier keeps
+	// being denied below. Collapsing nil into disabled would release a
+	// contained session the moment its config became unavailable, which is a
+	// fail-open on exactly the path containment exists for.
 	if cfg := opts.airlockCfg(); cfg != nil && !cfg.Enabled {
 		return false
 	}
 	tier, available := session.AirlockTier(opts.Rec)
 	if !available {
+		// No tier to read. With no configuration either there is nothing to
+		// enforce, so allow. With configuration present an unreadable tier is
+		// an unknown state and must fail closed.
 		cfg := opts.airlockCfg()
 		if cfg == nil || !cfg.Enabled {
 			return false

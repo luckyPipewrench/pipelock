@@ -128,6 +128,21 @@ func TestMcpProxyCmd_FileSentryKeepsRunningWhenOnePathArms(t *testing.T) {
 	}
 }
 
+func TestMcpProxyCmd_FileSentryReportsCompleteCoverage(t *testing.T) {
+	configPath := writeMCPFileSentryConfig(t, false, t.TempDir())
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err != nil {
+		t.Fatalf("mcp proxy failed with complete file-sentry coverage: %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "file sentry watching 1 configured path(s) (action=warn)") {
+		t.Fatalf("stderr missing complete file-sentry coverage report:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "skipped/unarmed subtree") {
+		t.Fatalf("stderr reported degraded coverage for an armable watch path:\n%s", stderr)
+	}
+}
+
 func TestMcpProxyCmd_FileSentryBestEffortRejectsRequiredPathFailure(t *testing.T) {
 	watchDir := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "nonexistent-required")

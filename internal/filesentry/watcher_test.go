@@ -1677,6 +1677,35 @@ func TestWatcher_ArmBestEffortStillRejectsZeroCoverage(t *testing.T) {
 	}
 }
 
+func TestWatcher_ArmRejectsEmptyCoverage(t *testing.T) {
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if armErr := w.Arm(); !errors.Is(armErr, ErrNoWatchPaths) {
+		t.Fatalf("Arm error = %v, want errors.Is(ErrNoWatchPaths)", armErr)
+	}
+}
+
+func TestRecursiveAddResultErrorJoinsSkippedSubtrees(t *testing.T) {
+	result := recursiveAddResult{skipped: []skippedSubtree{
+		{path: "first", cause: fs.ErrPermission},
+		{path: "second", cause: fs.ErrNotExist},
+	}}
+	if err := result.err(); !errors.Is(err, fs.ErrPermission) || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("recursive result error = %v, want both skipped causes", err)
+	}
+	if err := (recursiveAddResult{}).err(); err != nil {
+		t.Fatalf("empty recursive result error = %v, want nil", err)
+	}
+}
+
 // TestWatcher_ArmMixedPathsArmsTheArmable verifies that best-effort Arm()
 // keeps a healthy path armed while reporting a missing auxiliary path.
 func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
@@ -1930,6 +1959,31 @@ func TestWatcher_ArmDeduplicatesConfiguredRoots(t *testing.T) {
 		if addCalls[path] != 1 {
 			t.Errorf("watch add calls for %q = %d, want 1", path, addCalls[path])
 		}
+	}
+}
+
+func TestWatcher_AddDirectoryDoesNotDuplicateAnArmedWatch(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
+
+	added, err := w.(*fsWatcher).addDirectory(root)
+	if err != nil {
+		t.Fatalf("addDirectory: %v", err)
+	}
+	if added {
+		t.Fatal("addDirectory added an already armed watch")
 	}
 }
 

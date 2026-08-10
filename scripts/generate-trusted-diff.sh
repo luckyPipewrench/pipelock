@@ -20,7 +20,11 @@ fail() {
 base=$1
 head=$2
 output=$3
-max_bytes=${4:-52428800}
+# Default must equal gitprotect.MaxDiffBytes. A generator limit below the
+# scanner's limit fails generation on diffs the scanner would have accepted,
+# and one above it produces input the scanner then rejects. The parity test in
+# internal/gitprotect pins the two together.
+max_bytes=${4:-104857600}
 
 [[ "$max_bytes" =~ ^[1-9][0-9]*$ ]] || fail "MAX_BYTES must be a positive integer"
 [[ "$max_bytes" -lt 9223372036854775807 ]] || fail "MAX_BYTES is too large"

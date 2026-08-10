@@ -75,7 +75,7 @@ jobs:
           # Added-line scope for normal text, full new-side blob only where
           # attributes or Git's binary heuristic hide the patch.
           bash "${RUNNER_TEMP}/trusted-main/scripts/generate-trusted-diff.sh" \
-            "${merge_base}" "${HEAD_SHA}" "${diff_file}" 52428800
+            "${merge_base}" "${HEAD_SHA}" "${diff_file}"
 
           "${RUNNER_TEMP}/pipelock" git scan-diff \
             --exclude internal/scanner/scanner_test.go \ \

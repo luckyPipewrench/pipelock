@@ -56,14 +56,7 @@ func TestSnapshotBudgetSourceMapsForwardRows(t *testing.T) {
 	if row.Agent != "agent-alpha" || !row.ForwardConfigured || row.RequestCount != 7 || row.UniqueDomainCount != 2 {
 		t.Fatalf("unexpected mapped row: %+v", row)
 	}
-	// Completeness: every field declared on AgentBudgetView must be mapped by
-	// the snapshot source. A zero value cannot stand in for "unmapped" here: a
-	// zero usage count is valid in a fresh window and a zero maximum is valid
-	// for an unlimited budget, so a zero-value heuristic would report correctly
-	// mapped rows as incomplete. Instead each declared field is compared to an
-	// explicit expectation, and a field with no expectation fails the test so
-	// that adding a field to the view forces a decision about populating it.
-	wantFields := map[string]any{
+	assertBudgetFieldsMapped(t, row, map[string]any{
 		"Agent":             "agent-alpha",
 		"ForwardConfigured": true,
 		"RequestCount":      7,
@@ -74,7 +67,79 @@ func TestSnapshotBudgetSourceMapsForwardRows(t *testing.T) {
 		"MaxBytes":          int64(1 << 20),
 		"MaxUniqueDomains":  10,
 		"WindowMinutes":     60,
+	})
+	fresh, ok := source.BudgetFreshness()
+	if !ok || fresh.ProducedAt != now || fresh.Stale {
+		t.Fatalf("freshness = %+v ok=%v, want produced_at and stale=false", fresh, ok)
 	}
+}
+
+// TestSnapshotBudgetSourceMapsLegitimateZeroValues pins the reason the
+// completeness check compares explicit expectations instead of asking whether a
+// field is zero. A fresh window has no requests yet and a zero maximum means
+// unlimited, so both are correctly mapped values that a zero-value heuristic
+// would report as unpopulated. Without this case every numeric expectation is
+// non-zero, and reintroducing that heuristic would still pass the suite.
+func TestSnapshotBudgetSourceMapsLegitimateZeroValues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "dashboard", "runtime-snapshot.json")
+	if err := runtimesnapshot.Write(path, runtimesnapshot.Envelope{
+		Version:    runtimesnapshot.Version,
+		ProducedAt: now,
+		ProducerID: "producer-1",
+		Budgets: []runtimesnapshot.AgentBudgetRow{{
+			Agent: "agent-zero",
+			// Fresh window: nothing consumed yet.
+			RequestCount:      0,
+			ByteCount:         0,
+			UniqueDomainCount: 0,
+			WindowStart:       now.Add(-time.Minute),
+			// MaxBytes 0 means unlimited; other limits stay positive so the
+			// agent still has a configured forward budget.
+			MaxRequests:      100,
+			MaxBytes:         0,
+			MaxUniqueDomains: 10,
+			WindowMinutes:    60,
+		}},
+	}); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	source := &snapshotBudgetSource{path: path, maxAge: time.Minute, now: func() time.Time { return now.Add(5 * time.Second) }}
+	rows, err := source.AllAgentBudgets(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("AllAgentBudgets: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	assertBudgetFieldsMapped(t, rows[0], map[string]any{
+		"Agent":             "agent-zero",
+		"ForwardConfigured": true,
+		"RequestCount":      0,
+		"ByteCount":         int64(0),
+		"UniqueDomainCount": 0,
+		"WindowStart":       now.Add(-time.Minute),
+		"MaxRequests":       100,
+		"MaxBytes":          int64(0),
+		"MaxUniqueDomains":  10,
+		"WindowMinutes":     60,
+	})
+	// The unlimited maximum must render as unlimited rather than as a zero cap.
+	if got := rows[0].BytesDisplay(); got != "0 / "+budgetUnlimited {
+		t.Errorf("BytesDisplay() = %q, want unlimited rendering", got)
+	}
+}
+
+// assertBudgetFieldsMapped checks that every field declared on AgentBudgetView
+// is mapped by the snapshot source and matches its expectation. A field with no
+// expectation fails, so adding a field to the view forces a decision about
+// populating it rather than letting it render blank.
+func assertBudgetFieldsMapped(t *testing.T, row AgentBudgetView, wantFields map[string]any) {
+	t.Helper()
+
 	value := reflect.ValueOf(row)
 	typeOfRow := value.Type()
 	for i := range value.NumField() {
@@ -90,10 +155,6 @@ func TestSnapshotBudgetSourceMapsForwardRows(t *testing.T) {
 	}
 	if len(wantFields) != value.NumField() {
 		t.Errorf("expectation count %d != declared field count %d", len(wantFields), value.NumField())
-	}
-	fresh, ok := source.BudgetFreshness()
-	if !ok || fresh.ProducedAt != now || fresh.Stale {
-		t.Fatalf("freshness = %+v ok=%v, want produced_at and stale=false", fresh, ok)
 	}
 }
 
